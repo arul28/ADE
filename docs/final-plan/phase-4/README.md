@@ -234,3 +234,14 @@ Phase 4 should enable a "tech department" loop: one persistent agent per employe
 - Log integrity: SHA-256 hash chain on append-only JSONL files.
 - Dynamic config reload for `local.yaml` changes without app restart.
 - One-time migration from pre-Phase-4 storage.
+
+### Cross-Cutting: Orchestrator + Mission UX Hardening (2026-03-09)
+
+While Phase 4 workstreams focus on CTO ecosystem features, the orchestrator baseline continues to be hardened independently. Recent changes (documented in `docs/ORCHESTRATOR_OVERHAUL.md`) include:
+
+- Kernel hardening: forced finalize removal, phase gating tightened to require success not just termination, intervention keying by ID
+- Mission UX: Workers/Ops tab removed (consolidated into chat threads + step detail), planning prompt preview added, chat signal filtering to suppress low-signal noise
+- Worker delivery: durable retry pipeline with in-flight lease tracking, startup replay, recovery interventions on exhausted retries
+- MCP: tool visibility scoping fix to prevent over-exposing internal tools
+
+These changes improve the foundation that Phase 4 workstreams (especially W-UX, W7b) build on.

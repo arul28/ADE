@@ -162,3 +162,31 @@ Delivered:
 - This file is authoritative for orchestrator Phases 5-7.
 - `docs/final-plan/phase-3.md` is historical/superseded context only.
 - `docs/architecture/AI_INTEGRATION.md` is architecture reference and must mirror active runtime contracts listed above.
+
+## Kernel Hardening (2026-03-09)
+
+Applied after Phase 7 close to tighten orchestrator invariants discovered during integration testing.
+
+### Forced Finalize Removal
+- `complete_mission` no longer accepts a `force` parameter.
+- Completion always routes through runtime validation gates; the coordinator cannot bypass required validation, outstanding interventions, or in-progress steps.
+- Mission completion is gated on all configured phase requirements (validation, predecessor success, evidence closeout).
+
+### Phase Gating Semantics
+- `mustBeFirst` phases now require **successful** completion, not merely terminal status. A failed or cancelled first phase blocks all downstream phases.
+- Optional phase failures are now tracked as risk factors in completion evaluation (previously silently ignored).
+- Phase transitions remain explicit coordinator actions enforced by runtime policy.
+
+### Intervention Keying
+- `resolveIntervention` now validates by `interventionId`, not positional matching.
+- Worker delivery interventions carry source message linkage for traceability.
+- Stale in-flight delivery attempts are failed deterministically after a configurable lease timeout.
+
+### Idempotent Replay
+- Worker message delivery uses in-flight lease tracking to prevent duplicate delivery.
+- Queued worker messages replay on startup reconciliation and on agent chat turn-completion signals.
+- Retry budget with exponential backoff prevents infinite retry loops; exhausted retries open recovery interventions.
+
+### MCP Tool Visibility
+- MCP tool listing now correctly scopes tools to the coordinator's configured tool set rather than exposing the full internal tool surface.
+- Planning-mode tool profiles restrict write operations during the planning phase.

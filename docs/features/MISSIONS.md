@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 >
-> Last updated: 2026-03-06
+> Last updated: 2026-03-09
 
 ## Overview
 
@@ -11,7 +11,7 @@ Missions are ADE's structured execution flow for multi-step work. A mission ente
 Current baseline:
 
 - planning is a built-in mission phase, not a hidden pre-pass,
-- mission detail uses Plan, Work, DAG, Chat, Activity, and Details sub-tabs,
+- mission detail uses Plan, Chat, Artifacts, and History sub-tabs,
 - mission chat persists first-class thread/message records only,
 - legacy metadata-only chat backfill is not active behavior.
 
@@ -41,12 +41,10 @@ Validation is strict runtime behavior:
 
 ## Mission Detail Tabs
 
-- **Plan**: task and phase summary.
-- **Work**: worker state, transcript-oriented inspection, and validator lineage.
-- **DAG**: dependency graph for executable work.
+- **Plan**: phase cards with step overview, active phase panel showing phase-gate status and advancement reasoning.
 - **Chat**: Global summary thread plus detailed worker/orchestrator threads.
-- **Activity**: durable event feed for runtime transitions and interventions.
-- **Details**: configuration, usage, budget, and mission summary.
+- **Artifacts**: mission artifacts and evidence closeout items.
+- **History**: activity timeline for runtime transitions, interventions, and worker lifecycle events.
 
 ### Chat Split
 
@@ -73,3 +71,50 @@ Mission persistence includes:
 - worker session lineage and transcripts,
 - mission artifacts,
 - mission-pack updates under `.ade/packs/missions/<missionId>/mission_pack.md`.
+
+## Chat Signal Filtering (2026-03-09)
+
+Mission chat applies multi-layer noise filtering to keep the user-facing chat surface high-signal:
+
+- **Structured signal classification**: messages with structured metadata (`kind` field) are classified by type. Only `plan`, `approval_request`, `user_message`, substantive `text`/`reasoning`, actionable `status` (failed/interrupted), and non-trivial `error` messages are surfaced.
+- **Low-signal noise detection**: short identifier-like tokens, streaming status lines, MCP prefixes, directory listings, and all-caps metadata strings are filtered. Short messages with sentence-ending punctuation ("Done.", "Error!") are preserved as genuine assistant responses.
+- **askUser detection**: case-insensitive detection of `askUser`/`ask_user` tool invocations promotes messages to user-visible interventions regardless of other filtering.
+- **Reasoning text joining**: consecutive reasoning blocks from the same turn/item are joined for display, with null-safe matching to prevent unrelated blocks from merging.
+
+### Architecture Decision
+
+Signal filtering exists because mission workers produce high volumes of low-signal streaming output (tool invocations, MCP metadata, intermediate status updates) that would overwhelm the chat surface. The filter is intentionally conservative — it's better to show a borderline message than to suppress a genuine assistant response.
+
+## Workers Tab Removal (2026-03-09)
+
+The previous `Workers` / `Ops` tab was removed from the mission detail view. Worker state inspection is now accessed through:
+
+- **Chat threads**: each worker thread shows the worker's conversation and can be opened from the plan/step detail.
+- **Step detail panel**: clicking a step shows its worker assignment, status, and provides a "Jump to worker" action.
+- **Activity feed**: worker lifecycle events (spawn, complete, fail) appear in the activity timeline.
+
+### Architecture Decision
+
+The Workers tab duplicated information available through chat threads and step detail. Removing it reduces the tab count and eliminates a maintenance surface that was frequently out of sync with the canonical chat-based worker view.
+
+## Planning Prompt Preview (2026-03-09)
+
+The mission creation dialog now includes a live planning prompt preview:
+
+- **PhaseCardEditor**: when the planning phase card is expanded, it fetches a preview of the exact prompt that will be sent to the planning worker via the `getPlanningPromptPreview` IPC channel.
+- **PromptInspectorCard**: renders the preview with token count, model info, and a copy-to-clipboard action.
+- **Debouncing**: the preview fetch is debounced (500ms) and uses a stable fingerprint memo to avoid redundant IPC calls when the phase configuration hasn't meaningfully changed.
+
+### Architecture Decision
+
+Live prompt preview gives users visibility into what the planner will actually receive before the mission starts. This replaces the previous pattern of launching the mission and then discovering the prompt was misconfigured.
+
+## Worker Message Recovery UX (2026-03-09)
+
+Worker message delivery uses a durable retry pipeline:
+
+- Messages targeting a worker are delivered via the agent chat service (`sendMessage` or `steer` fallback).
+- When a worker session can't be resolved (ambiguous lane fallback, no live session), the message stays queued with a descriptive error.
+- Retry budget with exponential backoff prevents infinite loops. Exhausted retries open a `manual_input` intervention for the user.
+- On startup, queued messages are replayed via reconciliation. Turn-completion signals from agent chat also trigger replay.
+- The `ManualInputResponseModal` surfaces delivery failures and lets the user provide recovery instructions.
