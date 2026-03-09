@@ -1,7 +1,8 @@
 import React from "react";
 import { CaretUp, CaretDown, X } from "@phosphor-icons/react";
-import { COLORS, MONO_FONT, LABEL_STYLE, inlineBadge } from "../lanes/laneDesignTokens";
-import type { ProcessRuntime, ProcessRuntimeStatus } from "../../../shared/types";
+import { COLORS, MONO_FONT, LABEL_STYLE, inlineBadge, processStatusColor } from "../lanes/laneDesignTokens";
+import { formatDurationMs } from "../../lib/format";
+import type { ProcessRuntime } from "../../../shared/types";
 
 export type ProcessMonitorProps = {
   runtimes: ProcessRuntime[];
@@ -9,30 +10,7 @@ export type ProcessMonitorProps = {
   onKill: (processId: string) => void;
 };
 
-function statusColor(status: ProcessRuntimeStatus): string {
-  switch (status) {
-    case "running":
-      return COLORS.success;
-    case "starting":
-    case "stopping":
-      return COLORS.warning;
-    case "degraded":
-    case "crashed":
-    case "exited":
-      return COLORS.danger;
-    default:
-      return COLORS.textDim;
-  }
-}
-
-function formatUptime(ms: number): string {
-  const secs = Math.floor(ms / 1000);
-  if (secs < 60) return `${secs}s`;
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins}m`;
-  const hrs = Math.floor(mins / 60);
-  return `${hrs}h ${mins % 60}m`;
-}
+const GRID_COLUMNS = "1fr 80px 70px 80px 80px 50px";
 
 export function ProcessMonitor({ runtimes, processNames, onKill }: ProcessMonitorProps) {
   const [expanded, setExpanded] = React.useState(false);
@@ -89,14 +67,15 @@ export function ProcessMonitor({ runtimes, processNames, onKill }: ProcessMonito
                   fontFamily: MONO_FONT,
                   fontSize: 10,
                   color: COLORS.textSecondary,
-                  background: `${statusColor(rt.status)}18`,
-                  border: `1px solid ${statusColor(rt.status)}30`,
+                  background: `${processStatusColor(rt.status)}18`,
+                  border: `1px solid ${processStatusColor(rt.status)}30`,
                   padding: "1px 6px",
                   whiteSpace: "nowrap",
                   borderRadius: 0,
                 }}
               >
                 {processNames[rt.processId] ?? rt.processId}
+                {rt.ports.length > 0 && ` :${rt.ports[0]}`}
               </span>
             ))}
             {activeRuntimes.length > 8 && (
@@ -127,7 +106,7 @@ export function ProcessMonitor({ runtimes, processNames, onKill }: ProcessMonito
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "1fr 80px 70px 80px 50px",
+              gridTemplateColumns: GRID_COLUMNS,
               gap: 8,
               padding: "6px 0",
               borderBottom: `1px solid ${COLORS.border}`,
@@ -139,6 +118,7 @@ export function ProcessMonitor({ runtimes, processNames, onKill }: ProcessMonito
             <span>Status</span>
             <span>PID</span>
             <span>Uptime</span>
+            <span>Ports</span>
             <span />
           </div>
 
@@ -161,7 +141,7 @@ export function ProcessMonitor({ runtimes, processNames, onKill }: ProcessMonito
                 key={rt.processId}
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "1fr 80px 70px 80px 50px",
+                  gridTemplateColumns: GRID_COLUMNS,
                   gap: 8,
                   padding: "6px 0",
                   borderBottom: `1px solid ${COLORS.border}`,
@@ -181,7 +161,7 @@ export function ProcessMonitor({ runtimes, processNames, onKill }: ProcessMonito
                 >
                   {processNames[rt.processId] ?? rt.processId}
                 </span>
-                <span style={inlineBadge(statusColor(rt.status), { fontSize: 9, padding: "1px 6px" })}>
+                <span style={inlineBadge(processStatusColor(rt.status), { fontSize: 9, padding: "1px 6px" })}>
                   {rt.status}
                 </span>
                 <span
@@ -200,7 +180,19 @@ export function ProcessMonitor({ runtimes, processNames, onKill }: ProcessMonito
                     color: COLORS.textMuted,
                   }}
                 >
-                  {(rt.uptimeMs ?? 0) > 0 ? formatUptime(rt.uptimeMs ?? 0) : "—"}
+                  {(rt.uptimeMs ?? 0) > 0 ? formatDurationMs(rt.uptimeMs ?? 0) : "—"}
+                </span>
+                <span
+                  style={{
+                    fontFamily: MONO_FONT,
+                    fontSize: 10,
+                    color: COLORS.textMuted,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {rt.ports.length > 0 ? rt.ports.map((p) => `:${p}`).join(", ") : "\u2014"}
                 </span>
                 <button
                   type="button"

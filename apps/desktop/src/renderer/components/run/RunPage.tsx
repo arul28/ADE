@@ -5,6 +5,7 @@ import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, outlineButton, primaryButton
 import { RunSidebar } from "./RunSidebar";
 import { CommandCard } from "./CommandCard";
 import { ProcessMonitor } from "./ProcessMonitor";
+import { LaneRuntimeBar } from "./LaneRuntimeBar";
 import { AddCommandDialog, type AddCommandInitialValues } from "./AddCommandDialog";
 import { AiScanPanel, type AiScanSuggestion } from "./AiScanPanel";
 import type {
@@ -628,6 +629,9 @@ export function RunPage() {
           Scan
         </button>
       </div>
+
+      {/* ── Runtime Bar ── */}
+      <LaneRuntimeBar laneId={effectiveLaneId} />
 
       {/* ── Body: Sidebar + Main ── */}
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>

@@ -1,6 +1,7 @@
 import React from "react";
 import { Play, Stop, DotsThreeVertical } from "@phosphor-icons/react";
-import { COLORS, MONO_FONT, inlineBadge } from "../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, inlineBadge, processStatusColor } from "../lanes/laneDesignTokens";
+import { formatDurationMs } from "../../lib/format";
 import type { ProcessDefinition, ProcessRuntime, ProcessRuntimeStatus } from "../../../shared/types";
 import { useClickOutside } from "../../hooks/useClickOutside";
 
@@ -13,23 +14,6 @@ export type CommandCardProps = {
   onDelete: (processId: string) => void;
   onMoveToStack: (processId: string) => void;
 };
-
-function statusDotColor(status: ProcessRuntimeStatus | undefined): string {
-  switch (status) {
-    case "running":
-      return COLORS.success;
-    case "starting":
-      return COLORS.warning;
-    case "degraded":
-    case "crashed":
-    case "exited":
-      return COLORS.danger;
-    case "stopping":
-      return COLORS.warning;
-    default:
-      return COLORS.textDim;
-  }
-}
 
 function isActive(status: ProcessRuntimeStatus | undefined): boolean {
   return status === "running" || status === "starting" || status === "stopping";
@@ -82,7 +66,7 @@ export function CommandCard({
             width: 7,
             height: 7,
             borderRadius: "50%",
-            background: statusDotColor(status),
+            background: processStatusColor(status),
             flexShrink: 0,
           }}
         />
@@ -140,11 +124,11 @@ export function CommandCard({
                 padding: "4px 0",
               }}
             >
-              {[
+              {([
                 { label: "Edit", action: () => onEdit(definition.id) },
                 { label: "Move to stack", action: () => onMoveToStack(definition.id) },
                 { label: "Delete", action: () => onDelete(definition.id), danger: true },
-              ].map((item) => (
+              ] as Array<{ label: string; action: () => void; danger?: boolean }>).map((item) => (
                 <button
                   key={item.label}
                   type="button"
@@ -162,7 +146,7 @@ export function CommandCard({
                     fontFamily: MONO_FONT,
                     fontSize: 11,
                     fontWeight: 600,
-                    color: (item as any).danger ? COLORS.danger : COLORS.textSecondary,
+                    color: item.danger ? COLORS.danger : COLORS.textSecondary,
                     cursor: "pointer",
                   }}
                   onMouseEnter={(e) => {
@@ -194,6 +178,34 @@ export function CommandCard({
       >
         {commandPreview}
       </div>
+
+      {/* Ports (when running) */}
+      {running && runtime && runtime.ports.length > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          {runtime.ports.map((port) => (
+            <button
+              key={port}
+              type="button"
+              onClick={() => {
+                void window.ade.app.openExternal(`http://localhost:${port}`);
+              }}
+              aria-label={`Open localhost:${port} in browser`}
+              style={{
+                fontFamily: MONO_FONT,
+                fontSize: 10,
+                color: COLORS.accent,
+                cursor: "pointer",
+                borderBottom: `1px dashed ${COLORS.accent}40`,
+                background: "transparent",
+                border: "none",
+                padding: 0,
+              }}
+            >
+              :{port}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Action row */}
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -261,7 +273,7 @@ export function CommandCard({
               marginLeft: "auto",
             }}
           >
-            {formatUptime(runtime.uptimeMs ?? 0)}
+            {formatDurationMs(runtime.uptimeMs ?? 0)}
           </span>
         )}
       </div>
@@ -269,11 +281,3 @@ export function CommandCard({
   );
 }
 
-function formatUptime(ms: number): string {
-  const secs = Math.floor(ms / 1000);
-  if (secs < 60) return `${secs}s`;
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins}m ${secs % 60}s`;
-  const hrs = Math.floor(mins / 60);
-  return `${hrs}h ${mins % 60}m`;
-}

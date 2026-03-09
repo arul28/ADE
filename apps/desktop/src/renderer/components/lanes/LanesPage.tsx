@@ -13,8 +13,6 @@ import { LaneStackPane } from "./LaneStackPane";
 import { LaneGitActionsPane } from "./LaneGitActionsPane";
 import { LaneDiffPane } from "./LaneDiffPane";
 import { LaneWorkPane } from "./LaneWorkPane";
-import { LaneInspectorPane } from "./LaneInspectorPane";
-import { LaneHealthDot } from "./LaneHealthDot";
 import { CreateLaneDialog } from "./CreateLaneDialog";
 import { AttachLaneDialog } from "./AttachLaneDialog";
 import { ManageLaneDialog } from "./ManageLaneDialog";
@@ -81,7 +79,6 @@ export function LanesPage() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const selectLane = useAppStore((s) => s.selectLane);
-  const setLaneInspectorTab = useAppStore((s) => s.setLaneInspectorTab);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const focusSession = useAppStore((s) => s.focusSession);
   const lanes = useAppStore((s) => s.lanes);
@@ -247,6 +244,9 @@ export function LanesPage() {
       return base.filter((lane) => (laneRuntimeById.get(lane.id)?.bucket ?? "none") === laneStatusFilter);
     }
     return base.sort((a, b) => {
+      const aPrimary = a.laneType === "primary" ? 0 : 1;
+      const bPrimary = b.laneType === "primary" ? 0 : 1;
+      if (aPrimary !== bPrimary) return aPrimary - bPrimary;
       const aBucket = laneRuntimeById.get(a.id)?.bucket ?? "none";
       const bBucket = laneRuntimeById.get(b.id)?.bucket ?? "none";
       const byBucket = bucketRank[aBucket] - bucketRank[bBucket];
@@ -387,18 +387,14 @@ export function LanesPage() {
   useEffect(() => {
     const laneId = params.get("laneId");
     const sessionId = params.get("sessionId");
-    const inspectorTab = params.get("inspectorTab");
     if (laneId) {
       selectLane(laneId);
-      if (inspectorTab === "terminals" || inspectorTab === "context" || inspectorTab === "stack" || inspectorTab === "merge") {
-        setLaneInspectorTab(laneId, inspectorTab);
-      }
       if (params.get("focus") === "single") {
         setActiveLaneIds([laneId]);
       }
     }
     if (sessionId) focusSession(sessionId);
-  }, [params, selectLane, setLaneInspectorTab, focusSession]);
+  }, [params, selectLane, focusSession]);
 
   useEffect(() => { void loadConflictStatuses(); }, [loadConflictStatuses, lanes.length]);
 
@@ -1110,12 +1106,6 @@ export function LanesPage() {
         bodyClassName: "overflow-hidden",
         children: <LaneWorkPane laneId={laneId} />
       },
-      "inspector": {
-        title: "Inspector",
-        icon: MagnifyingGlass,
-        bodyClassName: "overflow-hidden",
-        children: <LaneInspectorPane laneId={laneId} />
-      }
     };
   }, [lanePaneDetails, stackGraphLanes, handleLaneSelect, handleSelectFile, handleSelectCommit, expandedGitActionsLaneId, autoRebaseEnabled, openAutoRebaseSettings, runRebaseFlow, openRebaseDetails, openRebaseConflictResolver, laneRuntimeById]);
 
@@ -1457,7 +1447,6 @@ export function LanesPage() {
               ) : (
                 <span className="shrink-0" style={{ width: 10, height: 10, borderRadius: "50%", background: conflictDotColor(conflictStatus?.status) }} />
               )}
-              <LaneHealthDot laneId={lane.id} />
               {/* Terminal attention spinner */}
               {laneRuntime.bucket === "running" || laneRuntime.bucket === "awaiting-input" ? (
                 <span
@@ -1636,7 +1625,7 @@ export function LanesPage() {
         </div>
       ) : visibleLaneIds.length === 1 ? (
         <PaneTilingLayout
-          layoutId={`lanes:tiling:v3:${visibleLaneIds[0]}`}
+          layoutId={`lanes:tiling:v4:${visibleLaneIds[0]}`}
           tree={LANES_TILING_TREE}
           panes={getPaneConfigs(visibleLaneIds[0] ?? null)}
           className="flex-1 min-h-0"
@@ -1655,7 +1644,7 @@ export function LanesPage() {
               <Fragment key={laneId}>
                 <Panel id={`lane-column:${laneId}`} minSize="18%" defaultSize={`${defaultSize}%`} className="min-h-0 min-w-0">
                   <PaneTilingLayout
-                    layoutId={`lanes:tiling:v3:${laneId}`}
+                    layoutId={`lanes:tiling:v4:${laneId}`}
                     tree={LANES_TILING_TREE}
                     panes={getPaneConfigs(laneId)}
                     className="h-full min-h-0"
@@ -1694,7 +1683,7 @@ export function LanesPage() {
             </button>
           </div>
           <PaneTilingLayout
-            layoutId={`lanes:tiling:v3:${expandedLaneId}`}
+            layoutId={`lanes:tiling:v4:${expandedLaneId}`}
             tree={LANES_TILING_TREE}
             panes={getPaneConfigs(expandedLaneId)}
             className="flex-1 min-h-0"

@@ -137,32 +137,11 @@ export const LANES_TILING_TREE: PaneSplit = {
           { node: { type: "pane", id: "diff-viewer" }, defaultSize: 50, minSize: 15 }
         ]
       },
-      defaultSize: 28,
-      minSize: 15
+      defaultSize: 20,
+      minSize: 12
     },
-    {
-      node: {
-        type: "split",
-        direction: "vertical",
-        children: [
-          {
-            node: {
-              type: "split",
-              direction: "horizontal",
-              children: [
-                { node: { type: "pane", id: "git-actions" }, defaultSize: 50, minSize: 20 },
-                { node: { type: "pane", id: "inspector" }, defaultSize: 50, minSize: 20 }
-              ]
-            },
-            defaultSize: 35,
-            minSize: 12
-          },
-          { node: { type: "pane", id: "work" }, defaultSize: 65, minSize: 25 }
-        ]
-      },
-      defaultSize: 72,
-      minSize: 40
-    }
+    { node: { type: "pane", id: "work" }, defaultSize: 45, minSize: 25 },
+    { node: { type: "pane", id: "git-actions" }, defaultSize: 35, minSize: 20 }
   ]
 };
 

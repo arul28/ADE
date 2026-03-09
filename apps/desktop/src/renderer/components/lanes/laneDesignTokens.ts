@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import type { ProcessRuntimeStatus } from "../../../shared/types";
 
 export const COLORS = {
   pageBg: "#09080C",
@@ -132,6 +133,22 @@ export function recessedStyle(overrides?: CSSProperties): CSSProperties {
     padding: 12,
     ...overrides,
   };
+}
+
+export function processStatusColor(status: ProcessRuntimeStatus | undefined): string {
+  switch (status) {
+    case "running":
+      return COLORS.success;
+    case "starting":
+    case "stopping":
+      return COLORS.warning;
+    case "degraded":
+    case "crashed":
+    case "exited":
+      return COLORS.danger;
+    default:
+      return COLORS.textDim;
+  }
 }
 
 export function healthColor(status: string): string {

@@ -7,8 +7,7 @@ import {
   GitBranch,
   Stack,
   FileCode,
-  Terminal,
-  Compass
+  Terminal
 } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { cn } from "../ui/cn";
@@ -18,7 +17,6 @@ import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
 import { LaneStackPane } from "../lanes/LaneStackPane";
 import { LaneDiffPane } from "../lanes/LaneDiffPane";
 import { LaneWorkPane } from "../lanes/LaneWorkPane";
-import { LaneInspectorPane } from "../lanes/LaneInspectorPane";
 import { FloatingFilesWorkspace } from "./FloatingFilesWorkspace";
 import type { GitCommitSummary } from "../../../shared/types";
 
@@ -62,7 +60,7 @@ type LauncherDragState = {
 type LaneRuntimeBucket = "running" | "awaiting-input" | "ended" | "none";
 type LaneRuntimeMap = Map<string, { bucket: LaneRuntimeBucket }>;
 
-type WorkspaceView = "git" | "files" | "stack" | "diff" | "work" | "inspector";
+type WorkspaceView = "git" | "files" | "stack" | "diff" | "work";
 
 const EDGE_HOTSPOT_PX = 22;
 const LAUNCHER_SAFE_MARGIN = 28;
@@ -95,7 +93,6 @@ const WORKSPACE_VIEWS: Array<{
   { id: "stack", label: "Stack", Icon: Stack },
   { id: "diff", label: "Diff", Icon: FileCode },
   { id: "work", label: "Work", Icon: Terminal },
-  { id: "inspector", label: "Inspect", Icon: Compass }
 ];
 
 function clamp(value: number, min: number, max: number): number {
@@ -679,11 +676,7 @@ export function RightEdgeFloatingPane() {
       return <FloatingFilesWorkspace preferredLaneId={activeLaneId} />;
     }
 
-    if (workspaceView === "work") {
-      return <LaneWorkPane laneId={activeLaneId} />;
-    }
-
-    return <LaneInspectorPane laneId={activeLaneId} />;
+    return <LaneWorkPane laneId={activeLaneId} />;
   }, [
     activeLaneId,
     workspaceView,
