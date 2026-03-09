@@ -35,6 +35,12 @@ export type CoordinatorCheckpointDocument = CoordinatorCheckpoint;
 const stringOr = (value: unknown, fallback = ""): string =>
   typeof value === "string" ? value : fallback;
 
+const nullableString = (value: unknown): string | null =>
+  value === null ? null : stringOr(value).trim() || null;
+
+const nullableBool = (value: unknown): boolean | null =>
+  typeof value === "boolean" ? value : null;
+
 const clampNonNegativeInt = (value: unknown, fallback = 0): number => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
@@ -179,9 +185,9 @@ function normalizeCloseoutRequirement(value: unknown): MissionCloseoutRequiremen
       raw.status === "present" || raw.status === "missing" || raw.status === "waived"
         ? raw.status
         : "missing",
-    detail: raw.detail === null ? null : stringOr(raw.detail).trim() || null,
-    artifactId: raw.artifactId === null ? null : stringOr(raw.artifactId).trim() || null,
-    uri: raw.uri === null ? null : stringOr(raw.uri).trim() || null,
+    detail: nullableString(raw.detail),
+    artifactId: nullableString(raw.artifactId),
+    uri: nullableString(raw.uri),
     source:
       raw.source === "declared" || raw.source === "discovered" || raw.source === "runtime" || raw.source === "waiver"
         ? raw.source
@@ -203,22 +209,22 @@ function normalizeFinalizationPolicy(value: unknown): MissionFinalizationPolicy 
       : null;
   return {
     kind,
-    targetBranch: raw.targetBranch === null ? null : stringOr(raw.targetBranch).trim() || null,
-    draft: typeof raw.draft === "boolean" ? raw.draft : null,
+    targetBranch: nullableString(raw.targetBranch),
+    draft: nullableBool(raw.draft),
     prDepth,
-    autoRebase: typeof raw.autoRebase === "boolean" ? raw.autoRebase : null,
-    ciGating: typeof raw.ciGating === "boolean" ? raw.ciGating : null,
-    autoLand: typeof raw.autoLand === "boolean" ? raw.autoLand : null,
-    rehearseQueue: typeof raw.rehearseQueue === "boolean" ? raw.rehearseQueue : null,
-    autoResolveConflicts: typeof raw.autoResolveConflicts === "boolean" ? raw.autoResolveConflicts : null,
-    archiveLaneOnLand: typeof raw.archiveLaneOnLand === "boolean" ? raw.archiveLaneOnLand : null,
+    autoRebase: nullableBool(raw.autoRebase),
+    ciGating: nullableBool(raw.ciGating),
+    autoLand: nullableBool(raw.autoLand),
+    rehearseQueue: nullableBool(raw.rehearseQueue),
+    autoResolveConflicts: nullableBool(raw.autoResolveConflicts),
+    archiveLaneOnLand: nullableBool(raw.archiveLaneOnLand),
     mergeMethod:
       raw.mergeMethod === "merge" || raw.mergeMethod === "squash" || raw.mergeMethod === "rebase"
         ? raw.mergeMethod
         : null,
-    conflictResolverModel: raw.conflictResolverModel === null ? null : stringOr(raw.conflictResolverModel).trim() || null,
-    reasoningEffort: raw.reasoningEffort === null ? null : stringOr(raw.reasoningEffort).trim() || null,
-    description: raw.description === null ? null : stringOr(raw.description).trim() || null,
+    conflictResolverModel: nullableString(raw.conflictResolverModel),
+    reasoningEffort: nullableString(raw.reasoningEffort),
+    description: nullableString(raw.description),
   };
 }
 
@@ -258,21 +264,21 @@ function normalizeFinalizationState(value: unknown): MissionFinalizationState | 
     executionComplete: raw.executionComplete === true,
     contractSatisfied: raw.contractSatisfied === true,
     blocked: raw.blocked === true,
-    blockedReason: raw.blockedReason === null ? null : stringOr(raw.blockedReason).trim() || null,
-    summary: raw.summary === null ? null : stringOr(raw.summary).trim() || null,
-    detail: raw.detail === null ? null : stringOr(raw.detail).trim() || null,
-    resolverJobId: raw.resolverJobId === null ? null : stringOr(raw.resolverJobId).trim() || null,
-    integrationLaneId: raw.integrationLaneId === null ? null : stringOr(raw.integrationLaneId).trim() || null,
-    queueGroupId: raw.queueGroupId === null ? null : stringOr(raw.queueGroupId).trim() || null,
-    queueId: raw.queueId === null ? null : stringOr(raw.queueId).trim() || null,
-    queueRehearsalId: raw.queueRehearsalId === null ? null : stringOr(raw.queueRehearsalId).trim() || null,
-    scratchLaneId: raw.scratchLaneId === null ? null : stringOr(raw.scratchLaneId).trim() || null,
-    activePrId: raw.activePrId === null ? null : stringOr(raw.activePrId).trim() || null,
+    blockedReason: nullableString(raw.blockedReason),
+    summary: nullableString(raw.summary),
+    detail: nullableString(raw.detail),
+    resolverJobId: nullableString(raw.resolverJobId),
+    integrationLaneId: nullableString(raw.integrationLaneId),
+    queueGroupId: nullableString(raw.queueGroupId),
+    queueId: nullableString(raw.queueId),
+    queueRehearsalId: nullableString(raw.queueRehearsalId),
+    scratchLaneId: nullableString(raw.scratchLaneId),
+    activePrId: nullableString(raw.activePrId),
     waitReason,
-    proposalUrl: raw.proposalUrl === null ? null : stringOr(raw.proposalUrl).trim() || null,
+    proposalUrl: nullableString(raw.proposalUrl),
     prUrls: normalizeStringArray(raw.prUrls, 20),
-    reviewStatus: raw.reviewStatus === null ? null : stringOr(raw.reviewStatus).trim() || null,
-    mergeReadiness: raw.mergeReadiness === null ? null : stringOr(raw.mergeReadiness).trim() || null,
+    reviewStatus: nullableString(raw.reviewStatus),
+    mergeReadiness: nullableString(raw.mergeReadiness),
     requirements: Array.isArray(raw.requirements)
       ? raw.requirements
           .map((entry) => normalizeCloseoutRequirement(entry))
@@ -280,8 +286,8 @@ function normalizeFinalizationState(value: unknown): MissionFinalizationState | 
       : [],
     warnings: normalizeStringArray(raw.warnings, 40),
     updatedAt: stringOr(raw.updatedAt).trim() || nowIso(),
-    startedAt: raw.startedAt === null ? null : stringOr(raw.startedAt).trim() || null,
-    completedAt: raw.completedAt === null ? null : stringOr(raw.completedAt).trim() || null,
+    startedAt: nullableString(raw.startedAt),
+    completedAt: nullableString(raw.completedAt),
   };
 }
 
@@ -298,7 +304,7 @@ function normalizeCoordinatorAvailability(value: unknown): MissionCoordinatorAva
     available: raw.available === true,
     mode,
     summary,
-    detail: raw.detail === null ? null : stringOr(raw.detail).trim() || null,
+    detail: nullableString(raw.detail),
     updatedAt: stringOr(raw.updatedAt).trim() || nowIso(),
   };
 }

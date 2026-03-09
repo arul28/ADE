@@ -157,18 +157,19 @@ export function deriveActivePhaseViewModel(args: {
   }
 
   const capabilityWarnings: string[] = [];
-  const evidenceRequirements = activePhase.validationGate.evidenceRequirements ?? [];
-  const hardEvidence = evidenceRequirements.filter((entry) => entry === "screenshot" || entry === "browser_verification" || entry === "video_recording" || entry === "browser_trace");
-  const modelId = activePhase.model.modelId;
-  const capabilityProfile = modelCapabilities?.profiles.find((profile) => profile.modelId === modelId) ?? null;
-  if (hardEvidence.length > 0 && !capabilityProfile) {
-    capabilityWarnings.push(`Evidence requires ${hardEvidence.join(", ")}, but this run has no persisted capability profile for ${modelId}. Validate runtime support before relying on the gate.`);
-  }
-  if (hardEvidence.length > 0 && capabilityProfile) {
-    const capabilityText = `${capabilityProfile.strengths.join(" ")} ${capabilityProfile.weaknesses.join(" ")}`.toLowerCase();
-    const likelyBrowserCapable = capabilityText.includes("browser") || capabilityText.includes("computer use") || capabilityText.includes("verification");
-    if (!likelyBrowserCapable) {
-      capabilityWarnings.push(`Evidence requires ${hardEvidence.join(", ")}, but ${capabilityProfile.displayName} does not advertise browser/screenshot capability in the current runtime profile.`);
+  const HARD_EVIDENCE_KINDS = new Set(["screenshot", "browser_verification", "video_recording", "browser_trace"]);
+  const hardEvidence = (activePhase.validationGate.evidenceRequirements ?? []).filter((e) => HARD_EVIDENCE_KINDS.has(e));
+  if (hardEvidence.length > 0) {
+    const modelId = activePhase.model.modelId;
+    const capabilityProfile = modelCapabilities?.profiles.find((p) => p.modelId === modelId) ?? null;
+    if (!capabilityProfile) {
+      capabilityWarnings.push(`Evidence requires ${hardEvidence.join(", ")}, but this run has no persisted capability profile for ${modelId}. Validate runtime support before relying on the gate.`);
+    } else {
+      const capabilityText = `${capabilityProfile.strengths.join(" ")} ${capabilityProfile.weaknesses.join(" ")}`.toLowerCase();
+      const likelyBrowserCapable = capabilityText.includes("browser") || capabilityText.includes("computer use") || capabilityText.includes("verification");
+      if (!likelyBrowserCapable) {
+        capabilityWarnings.push(`Evidence requires ${hardEvidence.join(", ")}, but ${capabilityProfile.displayName} does not advertise browser/screenshot capability in the current runtime profile.`);
+      }
     }
   }
   if (activePhase.validationGate.required && activePhase.validationGate.capabilityFallback === "warn") {
@@ -241,8 +242,13 @@ function normalizeMissionArtifacts(mission: MissionDetail | null): UnifiedMissio
   }));
 }
 
-function normalizeOrchestratorArtifacts(runGraph: OrchestratorRunGraph | null, artifacts: OrchestratorArtifact[]): UnifiedMissionArtifact[] {
-  const stepById = new Map((runGraph?.steps ?? []).map((step) => [step.id, step] as const));
+type StepMap = Map<string, OrchestratorRunGraph["steps"][number]>;
+
+function buildStepMap(runGraph: OrchestratorRunGraph | null): StepMap {
+  return new Map((runGraph?.steps ?? []).map((step) => [step.id, step] as const));
+}
+
+function normalizeOrchestratorArtifacts(stepById: StepMap, artifacts: OrchestratorArtifact[]): UnifiedMissionArtifact[] {
   return artifacts.map((artifact) => {
     const step = artifact.stepId ? stepById.get(artifact.stepId) ?? null : null;
     const metadata = isRecord(step?.metadata) ? step.metadata : null;
@@ -266,8 +272,7 @@ function normalizeOrchestratorArtifacts(runGraph: OrchestratorRunGraph | null, a
   });
 }
 
-function normalizeCheckpoints(runGraph: OrchestratorRunGraph | null, checkpoints: OrchestratorWorkerCheckpoint[]): UnifiedMissionArtifact[] {
-  const stepById = new Map((runGraph?.steps ?? []).map((step) => [step.id, step] as const));
+function normalizeCheckpoints(stepById: StepMap, checkpoints: OrchestratorWorkerCheckpoint[]): UnifiedMissionArtifact[] {
   return checkpoints.map((checkpoint) => {
     const step = stepById.get(checkpoint.stepId) ?? null;
     const metadata = isRecord(step?.metadata) ? step.metadata : null;
@@ -308,9 +313,10 @@ export function buildMissionArtifactGroups(args: {
   orchestratorArtifacts: OrchestratorArtifact[];
   checkpoints: OrchestratorWorkerCheckpoint[];
 }): GroupedMissionArtifacts {
+  const stepById = buildStepMap(args.runGraph);
   const missionArtifacts = normalizeMissionArtifacts(args.mission);
-  const orchestratorArtifacts = normalizeOrchestratorArtifacts(args.runGraph, args.orchestratorArtifacts);
-  const checkpointArtifacts = normalizeCheckpoints(args.runGraph, args.checkpoints);
+  const orchestratorArtifacts = normalizeOrchestratorArtifacts(stepById, args.orchestratorArtifacts);
+  const checkpointArtifacts = normalizeCheckpoints(stepById, args.checkpoints);
   const all = [...missionArtifacts, ...orchestratorArtifacts, ...checkpointArtifacts]
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
 
