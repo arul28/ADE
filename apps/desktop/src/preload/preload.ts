@@ -443,6 +443,8 @@ import type {
   BudgetCapScope,
   BudgetCapProvider,
   BudgetCapConfig,
+  MemoryLifecycleSweepResult,
+  MemorySweepStatusEventPayload,
   GetMissionBudgetTelemetryArgs,
   GetMissionBudgetStatusArgs,
   MissionBudgetTelemetrySnapshot,
@@ -1277,7 +1279,14 @@ contextBridge.exposeInMainWorld("ade", {
       limit?: number;
       status?: "promoted" | "candidate" | "archived" | "all";
     }): Promise<unknown[]> =>
-      ipcRenderer.invoke(IPC.memorySearch, args)
+      ipcRenderer.invoke(IPC.memorySearch, args),
+    runSweep: async (): Promise<MemoryLifecycleSweepResult> =>
+      ipcRenderer.invoke(IPC.memoryRunSweep),
+    onSweepStatus: (cb: (payload: MemorySweepStatusEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: MemorySweepStatusEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.memorySweepStatus, listener);
+      return () => ipcRenderer.removeListener(IPC.memorySweepStatus, listener);
+    }
   },
   cto: {
     getState: async (args: CtoGetStateArgs = {}): Promise<CtoSnapshot> =>

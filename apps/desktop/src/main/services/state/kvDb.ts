@@ -1394,6 +1394,7 @@ function migrate(db: Database) {
       file_scope_pattern text,
       agent_id text,
       pinned integer not null default 0,
+      access_score real not null default 0,
       composite_score real not null default 0,
       write_gate_reason text,
       dedupe_key text not null default '',
@@ -1411,6 +1412,15 @@ function migrate(db: Database) {
   db.run("create index if not exists idx_unified_memories_project_pinned on unified_memories(project_id, pinned, tier)");
   db.run("create index if not exists idx_unified_memories_project_accessed on unified_memories(project_id, last_accessed_at)");
   db.run("create index if not exists idx_unified_memories_project_dedupe on unified_memories(project_id, scope, scope_owner_id, dedupe_key)");
+  try { db.run("alter table unified_memories add column access_score real not null default 0"); } catch {}
+  db.run(`
+    update unified_memories
+    set access_score = case
+      when coalesce(access_score, 0) > 0 then access_score
+      when coalesce(composite_score, 0) > 0 then composite_score
+      else min(1.0, max(0.0, coalesce(access_count, 0) / 10.0))
+    end
+  `);
 
   db.run(`
     create table if not exists unified_memory_embeddings (
@@ -1430,6 +1440,24 @@ function migrate(db: Database) {
   `);
   db.run("create index if not exists idx_unified_memory_embeddings_project on unified_memory_embeddings(project_id)");
   db.run("create index if not exists idx_unified_memory_embeddings_memory on unified_memory_embeddings(memory_id)");
+
+  db.run(`
+    create table if not exists memory_sweep_log (
+      sweep_id text primary key,
+      project_id text not null,
+      trigger_reason text not null,
+      started_at text not null,
+      completed_at text not null,
+      entries_decayed integer not null default 0,
+      entries_demoted integer not null default 0,
+      entries_promoted integer not null default 0,
+      entries_archived integer not null default 0,
+      entries_orphaned integer not null default 0,
+      duration_ms integer not null default 0,
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_memory_sweep_log_project_completed on memory_sweep_log(project_id, completed_at desc)");
 
   // One-time safe backfill from legacy memories table.
   db.run(`
@@ -1453,6 +1481,7 @@ function migrate(db: Database) {
       file_scope_pattern,
       agent_id,
       pinned,
+      access_score,
       composite_score,
       write_gate_reason,
       dedupe_key,
@@ -1500,6 +1529,7 @@ function migrate(db: Database) {
       null as file_scope_pattern,
       agent_id,
       0 as pinned,
+      min(1.0, max(0.0, coalesce(access_count, 0) / 10.0)) as access_score,
       0 as composite_score,
       null as write_gate_reason,
       lower(trim(content)) as dedupe_key,

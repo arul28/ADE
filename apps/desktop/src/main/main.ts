@@ -57,6 +57,7 @@ import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createMissionService } from "./services/missions/missionService";
 import { createMissionPreflightService } from "./services/missions/missionPreflightService";
 import { createUnifiedMemoryService } from "./services/memory/unifiedMemoryService";
+import { createMemoryLifecycleService } from "./services/memory/memoryLifecycleService";
 import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createWorkerAgentService } from "./services/cto/workerAgentService";
 import { createWorkerRevisionService } from "./services/cto/workerRevisionService";
@@ -829,6 +830,12 @@ app.whenReady().then(async () => {
     });
 
     const memoryService = createUnifiedMemoryService(db);
+    const memoryLifecycleService = createMemoryLifecycleService({
+      db,
+      logger,
+      projectId,
+      onStatus: (event) => emitProjectEvent(projectRoot, IPC.memorySweepStatus, event)
+    });
     const contextDocService = createContextDocService({
       db,
       logger,
@@ -1114,6 +1121,13 @@ app.whenReady().then(async () => {
       usageTrackingService
     });
 
+    void memoryLifecycleService.runStartupSweepIfDue().catch((error) => {
+      logger.warn("memory.lifecycle.startup_sweep_failed", {
+        projectId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
+
     // Head watcher: detects commits/rebases made outside ADE's Git UI (e.g. in the terminal),
     // then routes them through the same onHeadChanged pipeline (packs, automations, rebase suggestions).
     let headWatcherTimer: NodeJS.Timeout | null = null;
@@ -1343,6 +1357,7 @@ app.whenReady().then(async () => {
       sessionDeltaService,
       testService,
       memoryService,
+      memoryLifecycleService,
       ctoStateService,
       workerAgentService,
       workerRevisionService,
@@ -1417,6 +1432,7 @@ app.whenReady().then(async () => {
       sessionDeltaService: null,
       testService: null,
       memoryService: null,
+      memoryLifecycleService: null,
       ctoStateService: null,
       workerAgentService: null,
       workerRevisionService: null,

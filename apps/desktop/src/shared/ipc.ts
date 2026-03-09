@@ -388,6 +388,8 @@ export const IPC = {
   memoryPromote: "ade.memory.promote",
   memoryArchive: "ade.memory.archive",
   memorySearch: "ade.memory.search",
+  memoryRunSweep: "ade.memory.runSweep",
+  memorySweepStatus: "ade.memory.sweepStatus",
   ctoGetState: "ade.cto.getState",
   ctoEnsureSession: "ade.cto.ensureSession",
   ctoUpdateCoreMemory: "ade.cto.updateCoreMemory",

@@ -432,6 +432,7 @@ import type { createOrchestratorService } from "../orchestrator/orchestratorServ
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
 import { readCoordinatorCheckpoint } from "../orchestrator/missionStateDoc";
 import type { createMemoryService } from "../memory/memoryService";
+import type { createMemoryLifecycleService } from "../memory/memoryLifecycleService";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { createWorkerAgentService } from "../cto/workerAgentService";
 import type { createWorkerRevisionService } from "../cto/workerRevisionService";
@@ -498,6 +499,7 @@ export type AppContext = {
   testService: ReturnType<typeof createTestService>;
   sessionDeltaService?: SessionDeltaService | null;
   memoryService?: ReturnType<typeof createMemoryService> | null;
+  memoryLifecycleService?: ReturnType<typeof createMemoryLifecycleService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
   workerRevisionService?: ReturnType<typeof createWorkerRevisionService> | null;
@@ -3901,6 +3903,14 @@ export function registerIpc({
     return ctx.memoryService.searchMemories(arg.query, pid, scope, arg?.limit ?? 10, status, scopeOwnerId);
     }
   );
+
+  ipcMain.handle(IPC.memoryRunSweep, async () => {
+    const ctx = getCtx();
+    if (!ctx.memoryLifecycleService) {
+      throw new Error("Memory lifecycle service is not available.");
+    }
+    return ctx.memoryLifecycleService.runSweep({ reason: "manual" });
+  });
 
   // ── CTO state IPC ─────────────────────────────────────────────────
 

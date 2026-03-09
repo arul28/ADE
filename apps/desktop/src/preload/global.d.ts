@@ -81,6 +81,8 @@ import type {
   BudgetCapScope,
   BudgetCapProvider,
   BudgetCapConfig,
+  MemoryLifecycleSweepResult,
+  MemorySweepStatusEventPayload,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -920,6 +922,8 @@ declare global {
           limit?: number;
           status?: "promoted" | "candidate" | "archived" | "all";
         }) => Promise<unknown[]>;
+        runSweep: () => Promise<MemoryLifecycleSweepResult>;
+        onSweepStatus: (cb: (payload: MemorySweepStatusEventPayload) => void) => () => void;
       };
       cto?: {
         getState: (args?: CtoGetStateArgs) => Promise<CtoSnapshot>;

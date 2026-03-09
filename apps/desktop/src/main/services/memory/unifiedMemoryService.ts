@@ -45,6 +45,7 @@ export type Memory = {
   sourceId: string | null;
   fileScopePattern: string | null;
   pinned: boolean;
+  accessScore: number;
   compositeScore: number;
   writeGateReason: string | null;
 };
@@ -239,6 +240,11 @@ function resolveHigherTier(left: MemoryTier, right: MemoryTier): MemoryTier {
   return Math.min(left, right) as MemoryTier;
 }
 
+function seedAccessScore(importance: MemoryImportance, confidence: number): number {
+  const importanceScore = importance === "high" ? 1 : importance === "medium" ? 0.6 : 0.3;
+  return clamp01(Math.max(importanceScore, confidence));
+}
+
 function mergeMemoryContent(existing: string, incoming: string): string {
   const normalizedExisting = normalizeMemoryForDedup(existing);
   const normalizedIncoming = normalizeMemoryForDedup(incoming);
@@ -331,6 +337,7 @@ function mapMemoryRow(row: Record<string, unknown>): Memory {
     sourceId: row.source_id ? String(row.source_id) : null,
     fileScopePattern: row.file_scope_pattern ? String(row.file_scope_pattern) : null,
     pinned: pinned || tier === 1,
+    accessScore: Number(row.access_score ?? row.composite_score ?? 0),
     compositeScore: Number(row.composite_score ?? 0),
     writeGateReason: row.write_gate_reason ? String(row.write_gate_reason) : null,
   };
@@ -367,10 +374,14 @@ export function createUnifiedMemoryService(db: AdeDb) {
           SET access_count = access_count + 1,
               last_accessed_at = ?,
               updated_at = ?,
+              access_score = CASE
+                WHEN COALESCE(access_score, 0) > ? THEN COALESCE(access_score, 0)
+                ELSE ?
+              END,
               composite_score = ?
           WHERE id = ?
         `,
-        [now, now, compositeScore, id]
+        [now, now, compositeScore, compositeScore, compositeScore, id]
       );
       return;
     }
@@ -556,6 +567,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
       const nextPinned = opts.pinned || existing.pinned || nextTier === 1;
       const nextObservationCount = Math.max(1, existing.observationCount) + 1;
       const boostedConfidence = clamp01(Math.max(existing.confidence, opts.confidence) + 0.05);
+      const nextAccessScore = Math.max(existing.accessScore, seedAccessScore(nextImportance, boostedConfidence));
       const promotedAt = nextStatus === "promoted"
         ? existing.promotedAt ?? now
         : null;
@@ -578,6 +590,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
               source_id = COALESCE(?, source_id),
               file_scope_pattern = COALESCE(?, file_scope_pattern),
               agent_id = COALESCE(?, agent_id),
+              access_score = ?,
               promoted_at = ?,
               dedupe_key = ?,
               write_gate_reason = ?,
@@ -602,6 +615,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
           opts.sourceId ?? null,
           opts.fileScopePattern ?? null,
           opts.agentId ?? null,
+          nextAccessScore,
           promotedAt,
           gate.dedupeKey,
           gate.duplicateId ? "duplicate" : "near_duplicate",
@@ -630,6 +644,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
     const id = randomUUID();
     const pinned = opts.pinned || opts.tier === 1;
     const tier: MemoryTier = pinned ? 1 : opts.tier;
+    const accessScore = seedAccessScore(opts.importance, opts.confidence);
     const promotedAt = opts.status === "promoted" ? now : null;
 
     db.run(
@@ -654,6 +669,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
           file_scope_pattern,
           agent_id,
           pinned,
+          access_score,
           composite_score,
           write_gate_reason,
           dedupe_key,
@@ -663,7 +679,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
           access_count,
           promoted_at
         ) VALUES (
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, 0, ?
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, 0, ?
         )
       `,
       [
@@ -685,6 +701,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
         opts.fileScopePattern ?? null,
         opts.agentId ?? null,
         pinned ? 1 : 0,
+        accessScore,
         gate.dedupeKey,
         now,
         now,
