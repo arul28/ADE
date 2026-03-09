@@ -21,6 +21,7 @@ import {
   clipTextForContext,
   missionThreadId,
   parseWorkerProviderHint,
+  TERMINAL_STEP_STATUSES,
   WORKER_MESSAGE_RETRY_BUDGET,
   WORKER_MESSAGE_RETRY_INTERVENTION_COOLDOWN_MS,
   WORKER_MESSAGE_INFLIGHT_LEASE_MS,
@@ -471,13 +472,7 @@ export function upsertWorkerDeliveryInterventionCtx(
     try {
       const graph = ctx.orchestratorService.getRunGraph({ runId: args.context.runId, timelineLimit: 0 });
       const step = graph.steps.find((entry) => entry.id === args.context?.stepId) ?? null;
-      if (step && (
-        step.status === "succeeded"
-        || step.status === "failed"
-        || step.status === "skipped"
-        || step.status === "canceled"
-        || step.status === "superseded"
-      )) {
+      if (step && TERMINAL_STEP_STATUSES.has(step.status)) {
         ctx.logger.info("ai_orchestrator.worker_delivery_intervention_suppressed_terminal_step", {
           missionId: args.message.missionId,
           runId: args.context.runId,

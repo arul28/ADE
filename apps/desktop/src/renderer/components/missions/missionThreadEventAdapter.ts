@@ -1,4 +1,5 @@
 import type { AgentChatEvent, AgentChatEventEnvelope, ModelId, OrchestratorChatMessage } from "../../../shared/types";
+import { looksLikeLowSignalNoise } from "./missionHelpers";
 
 function readRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -8,26 +9,6 @@ function readRecord(value: unknown): Record<string, unknown> | null {
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
-function looksLikeLowSignalNoise(text: string): boolean {
-  const trimmed = text.trim();
-  if (!trimmed.length) return true;
-  if (/^streaming(?:\.\.\.)?$/i.test(trimmed)) return true;
-  if (/^usage$/i.test(trimmed)) return true;
-  if (/^mcp:/i.test(trimmed)) return true;
-  if (/^[\-dlcbps][rwx\-@+]{8,}/i.test(trimmed)) return true;
-  if (/^[A-Z0-9 .:_()/-]{24,}$/.test(trimmed)) return true;
-  // Single-token strings under 24 chars that look like identifiers or noise
-  // tokens rather than prose. Allow strings with sentence-ending punctuation
-  // (e.g. "Done.", "Error!") since those are genuine assistant responses.
-  if (!/\s/.test(trimmed) && trimmed.length < 24 && !/[.!?]/.test(trimmed)) return true;
-  if (/^[A-Za-z]+$/.test(trimmed) && trimmed.length < 24) return true;
-  return false;
-}
-
-function shouldPromoteAssistantText(text: string): boolean {
-  return !looksLikeLowSignalNoise(text);
 }
 
 function hasOwn(record: Record<string, unknown>, key: string): boolean {
@@ -220,7 +201,7 @@ function toStructuredEvents(message: OrchestratorChatMessage): AgentChatEventEnv
 
   switch (kind) {
     case "text":
-      if (!shouldPromoteAssistantText(message.content)) return null;
+      if (looksLikeLowSignalNoise(message.content)) return null;
       return [{
         sessionId,
         timestamp: message.timestamp,
@@ -232,7 +213,7 @@ function toStructuredEvents(message: OrchestratorChatMessage): AgentChatEventEnv
         },
       }];
     case "reasoning":
-      if (!shouldPromoteAssistantText(message.content)) return null;
+      if (looksLikeLowSignalNoise(message.content)) return null;
       return [{
         sessionId,
         timestamp: message.timestamp,
@@ -422,7 +403,7 @@ function toFallbackEvent(message: OrchestratorChatMessage): AgentChatEventEnvelo
   }
 
   if (!message.content.trim().length) return null;
-  if (!shouldPromoteAssistantText(message.content)) return null;
+  if (looksLikeLowSignalNoise(message.content)) return null;
 
   return {
     sessionId,

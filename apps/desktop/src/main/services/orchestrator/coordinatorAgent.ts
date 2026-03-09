@@ -488,23 +488,16 @@ export class CoordinatorAgent {
   }
 
   private isPlanningFirstPhaseRun(): boolean {
-    const phases = Array.isArray(this.deps.phases) ? [...this.deps.phases] : [];
-    if (phases.length === 0) return false;
-    const firstPhase = phases.sort((a, b) => a.position - b.position)[0] ?? null;
+    if (!Array.isArray(this.deps.phases) || this.deps.phases.length === 0) return false;
+    const firstPhase = [...this.deps.phases].sort((a, b) => a.position - b.position)[0];
     return firstPhase?.phaseKey.trim().toLowerCase() === "planning";
   }
 
   private hasOpenPlanningClarification(): boolean {
     const mission = this.deps.missionService.get(this.deps.missionId);
-    const interventions = mission?.interventions ?? [];
-    return interventions.some((intervention) => {
-      if (intervention.status !== "open" || intervention.interventionType !== "manual_input") {
-        return false;
-      }
-      const metadata =
-        intervention.metadata && typeof intervention.metadata === "object" && !Array.isArray(intervention.metadata)
-          ? (intervention.metadata as Record<string, unknown>)
-          : null;
+    return (mission?.interventions ?? []).some((intervention) => {
+      if (intervention.status !== "open" || intervention.interventionType !== "manual_input") return false;
+      const metadata = asRecord(intervention.metadata);
       const source = typeof metadata?.source === "string" ? metadata.source.trim().toLowerCase() : "";
       const phase = typeof metadata?.phase === "string" ? metadata.phase.trim().toLowerCase() : "";
       return source === "ask_user" || phase === "planning";
@@ -579,12 +572,8 @@ export class CoordinatorAgent {
     });
 
     const recoveryResult = await spawnWorkerTool.execute(this.buildPlanningRecoveryPrompt());
-    if (!recoveryResult || recoveryResult.ok !== true) {
-      const errorMessage =
-        recoveryResult && typeof recoveryResult.error === "string"
-          ? recoveryResult.error
-          : "unknown recovery failure";
-      throw new Error(`Planning watchdog recovery failed: ${errorMessage}`);
+    if (!recoveryResult?.ok) {
+      throw new Error(`Planning watchdog recovery failed: ${recoveryResult?.error ?? "unknown recovery failure"}`);
     }
   }
 

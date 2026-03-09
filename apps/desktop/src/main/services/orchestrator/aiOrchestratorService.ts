@@ -2019,58 +2019,46 @@ Check all worker statuses and continue managing the mission from here. Read work
     });
   };
 
+  const NULL_FINALIZATION_FIELDS = {
+    targetBranch: null,
+    draft: null,
+    prDepth: null,
+    autoRebase: null,
+    ciGating: null,
+    autoLand: null,
+    rehearseQueue: null,
+    autoResolveConflicts: null,
+    archiveLaneOnLand: null,
+    mergeMethod: null,
+    conflictResolverModel: null,
+    reasoningEffort: null,
+  } as const;
+
   const resolveMissionFinalizationPolicy = (strategy: PrStrategy | null | undefined): MissionFinalizationPolicy => {
     if (!strategy || strategy.kind === "manual") {
       return {
+        ...NULL_FINALIZATION_FIELDS,
         kind: "manual",
-        targetBranch: null,
-        draft: null,
-        prDepth: null,
-        autoRebase: null,
-        ciGating: null,
-        autoLand: null,
-        rehearseQueue: null,
-        autoResolveConflicts: null,
-        archiveLaneOnLand: null,
-        mergeMethod: null,
-        conflictResolverModel: null,
-        reasoningEffort: null,
         description: "Manual PR handling. Execution completion satisfies the mission contract."
       };
     }
     if (strategy.kind === "integration") {
       return {
+        ...NULL_FINALIZATION_FIELDS,
         kind: "integration",
         targetBranch: strategy.targetBranch ?? null,
         draft: strategy.draft ?? true,
         prDepth: strategy.prDepth ?? "resolve-conflicts",
-        autoRebase: null,
-        ciGating: null,
-        autoLand: null,
-        rehearseQueue: null,
-        autoResolveConflicts: null,
-        archiveLaneOnLand: null,
-        mergeMethod: null,
-        conflictResolverModel: null,
-        reasoningEffort: null,
         description: "Create a single integration PR as part of mission completion."
       };
     }
     if (strategy.kind === "per-lane") {
       return {
+        ...NULL_FINALIZATION_FIELDS,
         kind: "per-lane",
         targetBranch: strategy.targetBranch ?? null,
         draft: strategy.draft ?? true,
         prDepth: strategy.prDepth ?? null,
-        autoRebase: null,
-        ciGating: null,
-        autoLand: null,
-        rehearseQueue: null,
-        autoResolveConflicts: null,
-        archiveLaneOnLand: null,
-        mergeMethod: null,
-        conflictResolverModel: null,
-        reasoningEffort: null,
         description: "Create one PR per lane before the mission is considered complete."
       };
     }
@@ -2103,27 +2091,16 @@ Check all worker statuses and continue managing the mission from here. Read work
     };
   };
 
+  const EVIDENCE_TO_CLOSEOUT_KEYS = new Set<string>([
+    "planning_document", "research_summary", "changed_files_summary",
+    "test_report", "review_summary", "risk_notes", "final_outcome_summary",
+    "screenshot", "browser_verification", "video_recording", "browser_trace", "console_logs",
+  ]);
+
   const mapEvidenceRequirementToCloseoutKey = (
     requirement: ValidationEvidenceRequirement
-  ): MissionCloseoutRequirementKey | null => {
-    switch (requirement) {
-      case "planning_document":
-      case "research_summary":
-      case "changed_files_summary":
-      case "test_report":
-      case "review_summary":
-      case "risk_notes":
-      case "final_outcome_summary":
-      case "screenshot":
-      case "browser_verification":
-      case "video_recording":
-      case "browser_trace":
-      case "console_logs":
-        return requirement;
-      default:
-        return null;
-    }
-  };
+  ): MissionCloseoutRequirementKey | null =>
+    EVIDENCE_TO_CLOSEOUT_KEYS.has(requirement) ? requirement as MissionCloseoutRequirementKey : null;
 
   const buildMissionCloseoutRequirements = (args: {
     mission: MissionDetail;

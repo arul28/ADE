@@ -14,9 +14,6 @@ const THEME_CARD = "var(--color-card)";
 const THEME_BORDER = "var(--color-border)";
 const THEME_FG = "var(--color-fg)";
 const THEME_MUTED = "var(--color-muted-fg)";
-const THEME_RECESSED = "var(--color-surface-recessed)";
-const THEME_CARD_OVERLAY = "color-mix(in srgb, var(--color-card) 86%, transparent)";
-const THEME_RECESSED_OVERLAY = "color-mix(in srgb, var(--color-surface-recessed) 78%, transparent)";
 
 function SessionSurface({ session, isActive }: { session: TerminalSessionSummary; isActive: boolean }) {
   const isChat = isChatToolType(session.toolType);
@@ -105,7 +102,7 @@ export function WorkViewArea({
     return map;
   }, [lanes]);
 
-  const displaySessions = visibleSessions.length > 0 ? visibleSessions : [];
+  const displaySessions = visibleSessions;
   const activeSession = activeItemId
     ? sessionsById.get(activeItemId) ?? displaySessions[0] ?? null
     : null;
@@ -217,7 +214,7 @@ export function WorkViewArea({
                           >
                             {session.laneName}
                           </span>
-                  {secondary ? (
+                          {secondary ? (
                             <span className="truncate" style={{ color: "var(--color-muted-fg)", fontSize: 10 }}>
                               {truncateSessionLabel(secondary, 36)}
                             </span>
@@ -236,7 +233,7 @@ export function WorkViewArea({
                           width: 18,
                           height: 18,
                           border: "none",
-                                                    cursor: isBusy ? "default" : "pointer",
+                          cursor: isBusy ? "default" : "pointer",
                           opacity: isBusy ? 0.5 : 0.85,
                           color: "var(--color-muted-fg)",
                           background: "transparent",

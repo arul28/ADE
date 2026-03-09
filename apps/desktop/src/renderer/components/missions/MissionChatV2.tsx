@@ -29,7 +29,7 @@ import { MentionInput, type MentionParticipant } from "../shared/MentionInput";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 import { useMissionPolling } from "./useMissionPolling";
 import { MissionThreadMessageList } from "./MissionThreadMessageList";
-import { formatMissionWorkerPresentation } from "./missionHelpers";
+import { formatMissionWorkerPresentation, looksLikeLowSignalNoise } from "./missionHelpers";
 
 // ── Design tokens (aliases for backward compat) ──
 const MONO = MONO_FONT;
@@ -94,48 +94,20 @@ function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-function isStructuredSignalKind(kind: string | null): boolean {
-  return kind === "text"
-    || kind === "reasoning"
-    || kind === "status"
-    || kind === "done"
-    || kind === "error"
-    || kind === "approval_request"
-    || kind === "plan"
-    || kind === "user_message";
-}
-
-function looksLikeRawNoise(text: string): boolean {
-  const trimmed = text.trim();
-  if (!trimmed.length) return true;
-  if (/^streaming(?:\.\.\.)?$/i.test(trimmed)) return true;
-  if (/^usage$/i.test(trimmed)) return true;
-  if (/^mcp:/i.test(trimmed)) return true;
-  if (/^[\-dlcbps][rwx\-@+]{8,}/i.test(trimmed)) return true;
-  if (/^[A-Z0-9 .:_()/-]{24,}$/.test(trimmed)) return true;
-  // Single-token strings under 24 chars that look like identifiers or noise
-  // tokens rather than prose. Allow strings with sentence-ending punctuation
-  // (e.g. "Done.", "Error!") since those are genuine assistant responses.
-  if (!/\s/.test(trimmed) && trimmed.length < 24 && !/[.!?]/.test(trimmed)) return true;
-  if (/^[A-Za-z]+$/.test(trimmed) && trimmed.length < 24) return true;
-  return false;
-}
-
 function isUsefulStructuredSignal(msg: OrchestratorChatMessage, kind: string, structured: Record<string, unknown>): boolean {
   if (kind === "plan" || kind === "approval_request" || kind === "user_message") return true;
-  if (kind === "text" || kind === "reasoning") return !looksLikeRawNoise(msg.content);
+  if (kind === "text" || kind === "reasoning") return !looksLikeLowSignalNoise(msg.content);
   if (kind === "status") {
     const status = readString(structured.status)?.toLowerCase() ?? "";
     const message = readString(structured.message) ?? msg.content;
     if (status === "failed" || status === "interrupted") return true;
-    return message.length > 0 && !looksLikeRawNoise(message);
+    return message.length > 0 && !looksLikeLowSignalNoise(message);
   }
   if (kind === "error") {
     const errorMessage = readString(structured.message) ?? msg.content;
-    return errorMessage.length > 0 && !looksLikeRawNoise(errorMessage);
+    return errorMessage.length > 0 && !looksLikeLowSignalNoise(errorMessage);
   }
-  if (kind === "done") return false;
-  return isStructuredSignalKind(kind);
+  return false;
 }
 
 function isSignalMessage(msg: OrchestratorChatMessage): boolean {
@@ -148,7 +120,7 @@ function isSignalMessage(msg: OrchestratorChatMessage): boolean {
     return isUsefulStructuredSignal(msg, kind, structured ?? {});
   }
   const content = typeof msg.content === "string" ? msg.content : "";
-  return !looksLikeRawNoise(content);
+  return !looksLikeLowSignalNoise(content);
 }
 
 function formatStructuredValue(value: unknown): string {

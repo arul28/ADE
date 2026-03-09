@@ -287,6 +287,19 @@ export function compactText(value: string, maxChars = 140): string {
   return `${normalized.slice(0, maxChars - 1)}...`;
 }
 
+export function looksLikeLowSignalNoise(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed.length) return true;
+  if (/^streaming(?:\.\.\.)?$/i.test(trimmed)) return true;
+  if (/^usage$/i.test(trimmed)) return true;
+  if (/^mcp:/i.test(trimmed)) return true;
+  if (/^[\-dlcbps][rwx\-@+]{8,}/i.test(trimmed)) return true;
+  if (/^[A-Z0-9 .:_()/-]{24,}$/.test(trimmed)) return true;
+  if (!/\s/.test(trimmed) && trimmed.length < 24 && !/[.!?]/.test(trimmed)) return true;
+  if (/^[A-Za-z]+$/.test(trimmed) && trimmed.length < 24) return true;
+  return false;
+}
+
 function titleizeMissionWorkerToken(value: string): string {
   if (!value.length) return value;
   return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
