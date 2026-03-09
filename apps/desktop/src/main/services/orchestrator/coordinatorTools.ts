@@ -177,10 +177,22 @@ export const COORDINATOR_TOOL_NAMES = [
   "get_project_context",
 ] as const;
 
+const COORDINATOR_OBSERVATION_TOOL_NAMES = [
+  "get_mission",
+  "get_run_graph",
+  "get_step_output",
+  "get_worker_states",
+  "get_timeline",
+  "get_final_diff",
+  "stream_events",
+] as const;
+
 export function buildCoordinatorMcpAllowedTools(serverName = "ade"): string[] {
   const trimmed = serverName.trim();
   const resolvedServerName = trimmed.length > 0 ? trimmed : "ade";
-  return COORDINATOR_TOOL_NAMES.map((toolName) => `mcp__${resolvedServerName}__${toolName}`);
+  return [...COORDINATOR_TOOL_NAMES, ...COORDINATOR_OBSERVATION_TOOL_NAMES].map(
+    (toolName) => `mcp__${resolvedServerName}__${toolName}`,
+  );
 }
 
 export type CoordinatorWorkerDeliveryStatus =
@@ -191,6 +203,7 @@ export type CoordinatorWorkerDeliveryStatus =
 export type CoordinatorSendWorkerMessageFn = (args: {
   sessionId: string;
   text: string;
+  priority?: "normal" | "urgent";
 }) => Promise<CoordinatorWorkerDeliveryStatus>;
 
 // ---------------------------------------------------------------------------
@@ -570,7 +583,11 @@ export function createCoordinatorToolSet(deps: {
     return `Mission ${missionId}`;
   }
 
-  async function deliverToWorkerSession(sessionId: string, text: string): Promise<CoordinatorWorkerDeliveryStatus> {
+  async function deliverToWorkerSession(
+    sessionId: string,
+    text: string,
+    priority: "normal" | "urgent" = "normal",
+  ): Promise<CoordinatorWorkerDeliveryStatus> {
     if (!deps.sendWorkerMessageToSession) {
       return {
         ok: false,
@@ -580,7 +597,7 @@ export function createCoordinatorToolSet(deps: {
       };
     }
     try {
-      return await deps.sendWorkerMessageToSession({ sessionId, text });
+      return await deps.sendWorkerMessageToSession({ sessionId, text, priority });
     } catch (error) {
       return {
         ok: false,
@@ -1265,7 +1282,25 @@ export function createCoordinatorToolSet(deps: {
       return phase.length === 0 || phase === "planning" || phase === currentKey || phase === currentName;
     });
     if (blocking.length === 0) return null;
-    return `Planning input is still pending. Resolve ${blocking.length === 1 ? "the open clarification" : "the open clarifications"} before executing planning actions.`;
+    return `Planning input is still pending. Resolve ${blocking.length === 1 ? "the open question" : "the open questions"} before executing planning actions.`;
+  }
+
+  function getQuestionAskingBlockReason(g: OrchestratorRunGraph): string | null {
+    const phases = resolveMissionPhases(g);
+    const current = resolveCurrentPhaseCard(g, phases);
+    const currentKey = current?.phaseKey.trim().toLowerCase() ?? "";
+    const currentName = current?.name.trim().toLowerCase() ?? "";
+    if (currentKey === "planning" || currentName === "planning") return null;
+    return "Ask Questions is reserved for the Planning phase. Outside Planning, proceed with the best reasonable assumption unless runtime opens its own intervention.";
+  }
+
+  function getPlanningRepoReadBlockReason(g: OrchestratorRunGraph): string | null {
+    const phases = resolveMissionPhases(g);
+    const current = resolveCurrentPhaseCard(g, phases);
+    const currentKey = current?.phaseKey.trim().toLowerCase() ?? "";
+    const currentName = current?.name.trim().toLowerCase() ?? "";
+    if (currentKey !== "planning" && currentName !== "planning") return null;
+    return "Coordinator-side repo inspection is disabled during Planning. Use get_project_context to brief the planner, wait for the planning worker output, then transition phases before doing coordinator-side file reads.";
   }
 
   function promptContainsImplementationDirectives(prompt: string): boolean {
@@ -2343,7 +2378,7 @@ export function createCoordinatorToolSet(deps: {
         const deliveryPriority = priority === "high" || priority === "urgent" ? "urgent" : "normal";
         const messageId = randomUUID();
         const fromAttemptId = findRunningAttempt(g, fromStep.id)?.id ?? null;
-        const delivery = await deliverToWorkerSession(recipientAttempt.executorSessionId, content);
+        const delivery = await deliverToWorkerSession(recipientAttempt.executorSessionId, content, deliveryPriority);
         orchestratorService.appendRuntimeEvent({
           runId,
           stepId: toStep.id,
@@ -2724,6 +2759,11 @@ export function createCoordinatorToolSet(deps: {
           reason: "report_status",
           detail: report as unknown as Record<string, unknown>
         });
+        orchestratorService.emitRuntimeUpdate({
+          runId,
+          stepId: step.id,
+          reason: "worker_status_report"
+        });
         return { ok: true, report };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -2878,6 +2918,11 @@ export function createCoordinatorToolSet(deps: {
           handoffType: "worker_result_report",
           producer: workerId,
           payload: report as unknown as Record<string, unknown>
+        });
+        orchestratorService.emitRuntimeUpdate({
+          runId,
+          stepId: step.id,
+          reason: "worker_result_report"
         });
         return { ok: true, report };
       } catch (err) {
@@ -3069,6 +3114,11 @@ export function createCoordinatorToolSet(deps: {
           handoffType: "validation_report",
           producer: report.validatorWorkerId ?? "validator",
           payload: report as unknown as Record<string, unknown>
+        });
+        orchestratorService.emitRuntimeUpdate({
+          runId,
+          stepId: targetStep?.id ?? validatorStep?.id ?? null,
+          reason: "validation_report"
         });
         if (maxRetriesExceeded) {
           orchestratorService.appendTimelineEvent({
@@ -3975,6 +4025,8 @@ export function createCoordinatorToolSet(deps: {
           at: now,
           reason: transitionReason
         });
+        const existingPhaseBudgets = asRecord(phaseRuntime.phaseBudgets) ?? {};
+        const targetPhaseBudget = asRecord(existingPhaseBudgets[targetPhase.phaseKey]);
         phaseRuntime.transitions = transitions.slice(0, 64);
         phaseRuntime.currentPhaseKey = targetPhase.phaseKey;
         phaseRuntime.currentPhaseName = targetPhase.name;
@@ -3983,6 +4035,20 @@ export function createCoordinatorToolSet(deps: {
         phaseRuntime.currentPhaseValidation = targetPhase.validationGate;
         phaseRuntime.currentPhaseBudget = targetPhase.budget ?? {};
         phaseRuntime.transitionedAt = now;
+        phaseRuntime.phaseBudgets = {
+          ...existingPhaseBudgets,
+          [targetPhase.phaseKey]: {
+            enteredAt: typeof targetPhaseBudget?.enteredAt === "string" && targetPhaseBudget.enteredAt.trim().length > 0
+              ? targetPhaseBudget.enteredAt
+              : now,
+            usedTokens: Number.isFinite(Number(targetPhaseBudget?.usedTokens))
+              ? Number(targetPhaseBudget?.usedTokens)
+              : 0,
+            usedCostUsd: Number.isFinite(Number(targetPhaseBudget?.usedCostUsd))
+              ? Number(targetPhaseBudget?.usedCostUsd)
+              : 0
+          }
+        };
         metadata.phaseRuntime = phaseRuntime;
 
         db.run(
@@ -4889,7 +4955,7 @@ export function createCoordinatorToolSet(deps: {
 
   const ask_user = tool({
     description:
-      "Ask the user one or more structured clarification questions. Creates a single quiz-style intervention visible in the UI. Bundle all related questions in one call.",
+      "Ask the user one or more structured questions during Planning. Creates a single quiz-style intervention visible in the UI. Bundle all related questions in one call.",
     inputSchema: z.object({
       questions: z.array(z.object({
         question: z.string().describe("The question text"),
@@ -4902,6 +4968,11 @@ export function createCoordinatorToolSet(deps: {
     }),
     execute: async ({ questions, phase }) => {
       try {
+        const g = graph();
+        const questionBlockReason = getQuestionAskingBlockReason(g);
+        if (questionBlockReason) {
+          return { ok: false as const, error: questionBlockReason };
+        }
         const firstQuestion = questions[0].question.trim();
         if (!firstQuestion.length) {
           return { ok: false as const, error: "First question text is required." };
@@ -4913,8 +4984,8 @@ export function createCoordinatorToolSet(deps: {
         }
 
         const title = questions.length === 1
-          ? (firstQuestion.length > 96 ? "Coordinator clarification needed" : `Clarification: ${firstQuestion}`)
-          : `Coordinator has ${questions.length} clarification questions`;
+          ? (firstQuestion.length > 96 ? "Coordinator question ready" : `Question: ${firstQuestion}`)
+          : `Coordinator has ${questions.length} questions`;
         const bodyLines = questions.map((q: { question: string }, i: number) => `Q${i + 1}: ${q.question}`);
         const body = bodyLines.join("\n");
 
@@ -4923,7 +4994,7 @@ export function createCoordinatorToolSet(deps: {
           interventionType: "manual_input",
           title,
           body,
-          requestedAction: "Answer the clarification questions to unblock coordinator execution.",
+          requestedAction: "Answer the planning questions to unblock coordinator execution.",
           pauseMission: false,
           metadata: {
             source: "ask_user",
@@ -4990,6 +5061,11 @@ export function createCoordinatorToolSet(deps: {
     }),
     execute: async ({ question, context, urgency, canProceedWithoutAnswer }) => {
       try {
+        const g = graph();
+        const questionBlockReason = getQuestionAskingBlockReason(g);
+        if (questionBlockReason) {
+          return { ok: false as const, error: questionBlockReason };
+        }
         return openHumanIntervention({
           source: "request_user_input",
           question,
@@ -5016,6 +5092,11 @@ export function createCoordinatorToolSet(deps: {
     }),
     execute: async ({ filePath, maxLines }) => {
       try {
+        const g = graph();
+        const planningReadBlockReason = getPlanningRepoReadBlockReason(g);
+        if (planningReadBlockReason) {
+          return { ok: false, error: planningReadBlockReason };
+        }
         const fullPath = path.resolve(resolvedProjectRoot, filePath);
         // Security: ensure path is within project root
         if (!isWithinDir(resolvedProjectRoot, fullPath)) {
@@ -5088,6 +5169,11 @@ export function createCoordinatorToolSet(deps: {
     }),
     execute: async ({ pattern, searchType, maxResults }) => {
       try {
+        const g = graph();
+        const planningReadBlockReason = getPlanningRepoReadBlockReason(g);
+        if (planningReadBlockReason) {
+          return { ok: false, error: planningReadBlockReason };
+        }
         const limit = maxResults ?? 20;
         if (searchType === "filename") {
           // Simple recursive file listing with glob matching

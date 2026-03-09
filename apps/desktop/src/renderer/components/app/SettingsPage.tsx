@@ -206,7 +206,7 @@ function PhaseProfileSettingsCard({
                     budget: {},
                     orderingConstraints: {},
                     askQuestions: { enabled: false, mode: "never" },
-                    validationGate: { tier: "self", required: false },
+                    validationGate: { tier: "none", required: false },
                     isBuiltIn: false,
                     isCustom: true,
                     position: prev.length,
@@ -339,7 +339,7 @@ function PhaseProfilesSection() {
       <div style={SECTION_LABEL}>PHASE PROFILES</div>
 
       <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: MONO_FONT, marginBottom: 12 }}>
-        Phase profiles define the sequence of work phases for missions (development, testing, validation, PR). Built-in profiles can be viewed but not edited. Clone or create custom profiles to customize phase descriptions, instructions, models, validation gates, and clarification settings.
+        Phase profiles define the sequence of work phases for missions. Built-in profiles can be viewed but not edited. Clone or create custom profiles to customize phase descriptions, custom instructions, models, and Planning question behavior.
       </div>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>

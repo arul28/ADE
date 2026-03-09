@@ -31,18 +31,21 @@ import {
   DEFAULT_INTEGRATION_PR_POLICY
 } from "./orchestratorConstants";
 
-import { getModelById } from "../../../shared/modelRegistry";
+import { getDefaultModelDescriptor, getModelById } from "../../../shared/modelRegistry";
 import { TERMINAL_STEP_STATUSES, filterExecutionSteps } from "./orchestratorContext";
 
 // ─────────────────────────────────────────────────────
 // Default policy
 // ─────────────────────────────────────────────────────
 
+const DEFAULT_CLAUDE_POLICY_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
+const DEFAULT_CODEX_POLICY_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.3-codex";
+
 export const DEFAULT_EXECUTION_POLICY: MissionExecutionPolicy = {
-  planning: { mode: "auto", model: "anthropic/claude-sonnet-4-6" },
-  implementation: { model: "openai/gpt-5.3-codex" },
-  testing: { mode: "post_implementation", model: "openai/gpt-5.3-codex" },
-  validation: { mode: "optional", model: "openai/gpt-5.3-codex" },
+  planning: { mode: "auto", model: DEFAULT_CLAUDE_POLICY_MODEL_ID },
+  implementation: { model: DEFAULT_CODEX_POLICY_MODEL_ID },
+  testing: { mode: "post_implementation", model: DEFAULT_CODEX_POLICY_MODEL_ID },
+  validation: { mode: "optional", model: DEFAULT_CODEX_POLICY_MODEL_ID },
   codeReview: { mode: "off" },
   testReview: { mode: "off" },
   prReview: { mode: "off" },
@@ -809,6 +812,26 @@ function phaseKeyToExecutionPhase(phaseKey: string): ExecutionPhase | null {
   return null;
 }
 
+type PhaseEvaluationTarget = {
+  key: string;
+  label: string;
+  enabled: boolean;
+  required: boolean;
+};
+
+const BUILT_IN_EXECUTION_PHASES: ExecutionPhase[] = [
+  "implementation",
+  "testing",
+  "validation",
+  "codeReview",
+  "testReview",
+  "integration"
+];
+
+function normalizePhaseIdentity(value: string | null | undefined): string {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
 /**
  * Evaluates run completion using PhaseCard[] + MissionLevelSettings.
  * Phase present in array = enabled. validationGate.required = required.
@@ -822,56 +845,105 @@ export function evaluateRunCompletionFromPhases(
   const diagnostics: CompletionDiagnostic[] = [];
   const riskFactors: string[] = [];
 
-  // Map steps to phases
-  const phaseSteps = new Map<ExecutionPhase, OrchestratorStep[]>();
-  for (const step of relevantSteps) {
-    const stepType = typeof step.metadata?.stepType === "string" ? step.metadata.stepType : "";
-    const taskType = typeof step.metadata?.taskType === "string" ? step.metadata.taskType : "";
-    const phase = stepTypeToPhase(stepType, taskType);
-    if (phase) {
-      const bucket = phaseSteps.get(phase) ?? [];
-      bucket.push(step);
-      phaseSteps.set(phase, bucket);
-    }
-  }
+  const phaseTargets = new Map<string, PhaseEvaluationTarget>();
+  const configuredPhaseAliases = new Map<string, string>();
+  const customPhaseOrder: string[] = [];
 
-  // Derive which phases are required from the phase cards
-  const enabledPhases = new Set<ExecutionPhase>();
-  const requiredPhases = new Set<ExecutionPhase>();
-  const phaseLabelByExecution = new Map<ExecutionPhase, string>();
+  for (const phase of BUILT_IN_EXECUTION_PHASES) {
+    phaseTargets.set(phase, {
+      key: phase,
+      label: phase,
+      enabled: false,
+      required: false
+    });
+    configuredPhaseAliases.set(phase, phase);
+  }
 
   for (const card of phases) {
-    const ep = phaseKeyToExecutionPhase(card.phaseKey);
-    if (ep) {
-      enabledPhases.add(ep);
-      if (!phaseLabelByExecution.has(ep)) {
-        phaseLabelByExecution.set(ep, card.name || card.phaseKey || ep);
-      }
-      if (card.validationGate.required) {
-        requiredPhases.add(ep);
-      }
+    const rawPhaseKey = typeof card.phaseKey === "string" ? card.phaseKey.trim() : "";
+    const rawPhaseName = typeof card.name === "string" ? card.name.trim() : "";
+    const normalizedPhaseKey = normalizePhaseIdentity(rawPhaseKey);
+    const normalizedPhaseName = normalizePhaseIdentity(rawPhaseName);
+    const builtInPhase = card.isCustom ? null : phaseKeyToExecutionPhase(rawPhaseKey);
+    const targetKey = builtInPhase ?? normalizedPhaseKey;
+
+    if (!targetKey) {
+      continue;
+    }
+
+    let target = phaseTargets.get(targetKey);
+    if (!target) {
+      target = {
+        key: targetKey,
+        label: rawPhaseName || rawPhaseKey || targetKey,
+        enabled: false,
+        required: false
+      };
+      phaseTargets.set(targetKey, target);
+      customPhaseOrder.push(targetKey);
+    }
+
+    target.enabled = true;
+    if ((rawPhaseName || rawPhaseKey) && target.label === target.key) {
+      target.label = rawPhaseName || rawPhaseKey;
+    }
+    if (card.validationGate.required) {
+      target.required = true;
+    }
+
+    if (normalizedPhaseKey) {
+      configuredPhaseAliases.set(normalizedPhaseKey, targetKey);
+    }
+    if (normalizedPhaseName) {
+      configuredPhaseAliases.set(normalizedPhaseName, targetKey);
     }
   }
 
-  // Implementation is always required
-  enabledPhases.add("implementation");
-  requiredPhases.add("implementation");
-
-  // Integration is conditional on multi-lane
-  if (settings.integrationPr && hasMultipleLanes(relevantSteps)) {
-    enabledPhases.add("integration");
+  const implementationTarget = phaseTargets.get("implementation");
+  if (implementationTarget) {
+    implementationTarget.enabled = true;
+    implementationTarget.required = true;
   }
 
-  const allPhases: ExecutionPhase[] = [
-    "implementation", "testing", "validation",
-    "codeReview", "testReview", "integration"
-  ];
+  if (settings.integrationPr && hasMultipleLanes(relevantSteps)) {
+    const integrationTarget = phaseTargets.get("integration");
+    if (integrationTarget) {
+      integrationTarget.enabled = true;
+    }
+  }
 
-  for (const phase of allPhases) {
+  const phaseSteps = new Map<string, OrchestratorStep[]>();
+  for (const step of relevantSteps) {
+    const meta = step.metadata ?? {};
+    const explicitPhaseKey = normalizePhaseIdentity(typeof meta.phaseKey === "string" ? meta.phaseKey : "");
+    const explicitPhaseName = normalizePhaseIdentity(typeof meta.phaseName === "string" ? meta.phaseName : "");
+    const stepType = typeof meta.stepType === "string" ? meta.stepType : "";
+    const taskType = typeof meta.taskType === "string" ? meta.taskType : "";
+
+    const resolvedTargetKey =
+      configuredPhaseAliases.get(explicitPhaseKey)
+      ?? configuredPhaseAliases.get(explicitPhaseName)
+      ?? stepTypeToPhase(stepType, taskType);
+
+    if (!resolvedTargetKey || !phaseTargets.has(resolvedTargetKey)) {
+      continue;
+    }
+
+    const bucket = phaseSteps.get(resolvedTargetKey) ?? [];
+    bucket.push(step);
+    phaseSteps.set(resolvedTargetKey, bucket);
+  }
+
+  const evaluationOrder = [...BUILT_IN_EXECUTION_PHASES, ...customPhaseOrder];
+
+  for (const phase of evaluationOrder) {
+    const target = phaseTargets.get(phase);
+    if (!target) {
+      continue;
+    }
+
     const stepsInPhase = phaseSteps.get(phase) ?? [];
-    const required = requiredPhases.has(phase);
-    const enabled = enabledPhases.has(phase);
-    const phaseLabel = phaseLabelByExecution.get(phase) ?? phase;
+    const { enabled, label: phaseLabel, required } = target;
 
     if (stepsInPhase.length === 0) {
       if (required) {

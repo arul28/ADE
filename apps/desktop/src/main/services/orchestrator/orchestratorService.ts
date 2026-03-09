@@ -508,6 +508,41 @@ function resolveRunPhaseCardsFromMetadata(runMetadata: Record<string, unknown> |
   return phaseCards && phaseCards.length > 0 ? phaseCards : null;
 }
 
+function buildInitialPhaseRuntime(phaseCards: PhaseCard[] | null | undefined): Record<string, unknown> | null {
+  const sorted = Array.isArray(phaseCards)
+    ? [...phaseCards].sort((left, right) => left.position - right.position)
+    : [];
+  const initialPhase = sorted[0] ?? null;
+  if (!initialPhase) return null;
+  const transitionedAt = nowIso();
+  return {
+    currentPhaseKey: initialPhase.phaseKey,
+    currentPhaseName: initialPhase.name,
+    currentPhaseModel: initialPhase.model,
+    currentPhaseInstructions: initialPhase.instructions,
+    currentPhaseValidation: initialPhase.validationGate,
+    currentPhaseBudget: initialPhase.budget ?? {},
+    transitionedAt,
+    transitions: [
+      {
+        fromPhaseKey: null,
+        fromPhaseName: null,
+        toPhaseKey: initialPhase.phaseKey,
+        toPhaseName: initialPhase.name,
+        at: transitionedAt,
+        reason: "run_initialized"
+      }
+    ],
+    phaseBudgets: {
+      [initialPhase.phaseKey]: {
+        enteredAt: transitionedAt,
+        usedTokens: 0,
+        usedCostUsd: 0
+      }
+    }
+  };
+}
+
 function resolveRunMissionLevelSettingsFromMetadata(
   runMetadata: Record<string, unknown> | null | undefined,
 ): MissionLevelSettings | null {
@@ -531,6 +566,117 @@ function isPlanningLikeStepMetadata(stepMetadata: Record<string, unknown> | null
   const stepType = typeof stepMetadata.stepType === "string" ? stepMetadata.stepType.trim().toLowerCase() : "";
   const phaseKey = typeof stepMetadata.phaseKey === "string" ? stepMetadata.phaseKey.trim().toLowerCase() : "";
   return stepMetadata.readOnlyExecution === true || stepType === "planning" || phaseKey === "planning";
+}
+
+function resolveCurrentRunPhaseCard(
+  runMetadata: Record<string, unknown> | null | undefined,
+  phaseCards: PhaseCard[] | null | undefined,
+): PhaseCard | null {
+  if (!runMetadata || !Array.isArray(phaseCards) || phaseCards.length === 0) return null;
+  const sorted = [...phaseCards].sort((left, right) => left.position - right.position);
+  const phaseRuntime = asRecord(runMetadata.phaseRuntime);
+  const currentPhaseKey = typeof phaseRuntime?.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
+  const currentPhaseName = typeof phaseRuntime?.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim() : "";
+  if (currentPhaseKey.length > 0) {
+    const byKey = sorted.find((phase) => phase.phaseKey === currentPhaseKey);
+    if (byKey) return byKey;
+  }
+  if (currentPhaseName.length > 0) {
+    const byName = sorted.find((phase) => phase.name === currentPhaseName);
+    if (byName) return byName;
+  }
+  return null;
+}
+
+function resolvePhaseCardForStep(
+  step: OrchestratorStep,
+  phaseCards: PhaseCard[] | null | undefined,
+): PhaseCard | null {
+  if (!Array.isArray(phaseCards) || phaseCards.length === 0) return null;
+  const stepMetadata = asRecord(step.metadata);
+  const stepPhaseKey = typeof stepMetadata?.phaseKey === "string" ? stepMetadata.phaseKey.trim() : "";
+  const stepPhaseName = typeof stepMetadata?.phaseName === "string" ? stepMetadata.phaseName.trim() : "";
+  if (stepPhaseKey.length > 0) {
+    const byKey = phaseCards.find((phase) => phase.phaseKey === stepPhaseKey);
+    if (byKey) return byKey;
+  }
+  if (stepPhaseName.length > 0) {
+    const byName = phaseCards.find((phase) => phase.name === stepPhaseName);
+    if (byName) return byName;
+  }
+  return null;
+}
+
+function stepRequiresValidation(
+  step: OrchestratorStep,
+  phaseCards: PhaseCard[] | null | undefined,
+): boolean {
+  const stepMetadata = asRecord(step.metadata);
+  const validationContract = parseValidationContract(stepMetadata?.validationContract ?? null);
+  if (validationContract?.required) return true;
+  const phaseCard = resolvePhaseCardForStep(step, phaseCards);
+  if (!phaseCard) return false;
+  return phaseCard.validationGate.required === true && normalizeValidationTier(phaseCard.validationGate.tier) !== "none";
+}
+
+function stepMatchesPhase(step: OrchestratorStep, phase: PhaseCard): boolean {
+  const stepMetadata = asRecord(step.metadata);
+  const stepPhaseKey = typeof stepMetadata?.phaseKey === "string" ? stepMetadata.phaseKey.trim() : "";
+  const stepPhaseName = typeof stepMetadata?.phaseName === "string" ? stepMetadata.phaseName.trim() : "";
+  return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
+}
+
+function getExecutionStepsForPhase(phase: PhaseCard, steps: OrchestratorStep[]): OrchestratorStep[] {
+  return filterExecutionSteps(steps.filter((step) => stepMatchesPhase(step, phase)));
+}
+
+function phaseHasSuccessfulCompletionRuntime(phase: PhaseCard, steps: OrchestratorStep[]): boolean {
+  const phaseKey = phase.phaseKey.trim().toLowerCase();
+  const phaseName = phase.name.trim().toLowerCase();
+  const phaseSteps = getExecutionStepsForPhase(phase, steps);
+  if (phaseSteps.length === 0) return false;
+  if (phaseKey === "planning" || phaseName === "planning") {
+    return phaseSteps.some((step) => isPlanningLikeStepMetadata(asRecord(step.metadata)) && step.status === "succeeded");
+  }
+  const allTerminalWithoutFailure = phaseSteps.every(
+    (step) => step.status === "succeeded" || step.status === "skipped" || step.status === "superseded",
+  );
+  const hasConcreteSuccess = phaseSteps.some((step) => step.status === "succeeded");
+  return allTerminalWithoutFailure && hasConcreteSuccess;
+}
+
+function phaseHasNonTerminalExecutionWork(phase: PhaseCard, steps: OrchestratorStep[]): boolean {
+  return getExecutionStepsForPhase(phase, steps).some((step) => !TERMINAL_STEP_STATUSES.has(step.status));
+}
+
+function phaseHasAssignedExecutionWork(phase: PhaseCard, steps: OrchestratorStep[]): boolean {
+  return getExecutionStepsForPhase(phase, steps).length > 0;
+}
+
+function canEnterConfiguredPhase(
+  targetPhase: PhaseCard,
+  phases: PhaseCard[],
+  steps: OrchestratorStep[],
+): boolean {
+  const targetIndex = phases.findIndex((phase) => phase.phaseKey === targetPhase.phaseKey);
+  if (targetIndex < 0) return false;
+  for (let index = 0; index < targetIndex; index += 1) {
+    const earlier = phases[index]!;
+    const mustComplete = earlier.validationGate.required || earlier.orderingConstraints.mustBeFirst;
+    if (mustComplete && !phaseHasSuccessfulCompletionRuntime(earlier, steps)) {
+      return false;
+    }
+  }
+  const mustFollow = targetPhase.orderingConstraints.mustFollow ?? [];
+  for (const rawPredecessor of mustFollow) {
+    const predecessorKey = rawPredecessor.trim();
+    if (!predecessorKey.length) continue;
+    const predecessor = phases.find((phase) => phase.phaseKey === predecessorKey || phase.name === predecessorKey);
+    if (predecessor && !phaseHasSuccessfulCompletionRuntime(predecessor, steps)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function createOrchestratorService({
@@ -1670,10 +1816,232 @@ export function createOrchestratorService({
     return { satisfied: false, permanentlyBlocked: allTerminal };
   };
 
+  const evaluateConfiguredPhaseGate = (args: {
+    step: OrchestratorStep;
+    phaseCards: PhaseCard[] | null;
+    currentPhase: PhaseCard | null;
+  }): {
+    satisfied: boolean;
+    reason: "no_configured_phases" | "step_unphased" | "phase_runtime_missing" | "inactive_phase" | null;
+  } => {
+    if (!Array.isArray(args.phaseCards) || args.phaseCards.length === 0) {
+      return { satisfied: true, reason: "no_configured_phases" };
+    }
+    const stepPhase = resolvePhaseCardForStep(args.step, args.phaseCards);
+    if (!stepPhase) {
+      return { satisfied: true, reason: "step_unphased" };
+    }
+    if (!args.currentPhase) {
+      return { satisfied: false, reason: "phase_runtime_missing" };
+    }
+    return {
+      satisfied: stepPhase.phaseKey === args.currentPhase.phaseKey,
+      reason: stepPhase.phaseKey === args.currentPhase.phaseKey ? null : "inactive_phase"
+    };
+  };
+
+  const evaluateValidationDependencyGate = (args: {
+    step: OrchestratorStep;
+    stepsById: Map<string, OrchestratorStep>;
+    phaseCards: PhaseCard[] | null;
+  }): {
+    satisfied: boolean;
+    blockingDependencyIds: string[];
+  } => {
+    if (!args.step.dependencyStepIds.length || args.step.joinPolicy === "advisory") {
+      return { satisfied: true, blockingDependencyIds: [] };
+    }
+    const depSteps = args.step.dependencyStepIds
+      .map((id) => args.stepsById.get(id) ?? null)
+      .filter((dep): dep is OrchestratorStep => Boolean(dep));
+    const validatedSuccessCount = depSteps.filter((dep) => {
+      if (dep.status !== "succeeded" && dep.status !== "skipped" && dep.status !== "superseded") return false;
+      if (!stepRequiresValidation(dep, args.phaseCards)) return true;
+      return hasPassingValidation(asRecord(dep.metadata));
+    }).length;
+    if (args.step.joinPolicy === "any_success") {
+      return { satisfied: validatedSuccessCount >= 1, blockingDependencyIds: [] };
+    }
+    if (args.step.joinPolicy === "quorum") {
+      const required = args.step.quorumCount && args.step.quorumCount > 0
+        ? args.step.quorumCount
+        : Math.max(1, Math.ceil(depSteps.length / 2));
+      return { satisfied: validatedSuccessCount >= required, blockingDependencyIds: [] };
+    }
+    const blockingDependencyIds = depSteps
+      .filter((dep) => dep.status === "succeeded" && stepRequiresValidation(dep, args.phaseCards))
+      .filter((dep) => !hasPassingValidation(asRecord(dep.metadata)))
+      .map((dep) => dep.id);
+    return {
+      satisfied: blockingDependencyIds.length === 0,
+      blockingDependencyIds
+    };
+  };
+
+  const applyRunPhaseTransition = (args: {
+    runId: string;
+    targetPhase: PhaseCard;
+    reason: string;
+    source: "kernel_auto_phase_sync" | "kernel_phase_runtime_init";
+  }): {
+    changed: boolean;
+    currentPhase: PhaseCard;
+    metadata: Record<string, unknown>;
+  } | null => {
+    const runRow = getRunRow(args.runId);
+    if (!runRow) return null;
+    const metadata = parseJsonRecord(runRow.metadata_json) ?? {};
+    const phaseRuntimeSource = asRecord(metadata.phaseRuntime);
+    const phaseRuntime: Record<string, unknown> = phaseRuntimeSource ? { ...phaseRuntimeSource } : {};
+    const previousPhaseKey = typeof phaseRuntime.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
+    const previousPhaseName = typeof phaseRuntime.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim() : "";
+    if (previousPhaseKey === args.targetPhase.phaseKey && previousPhaseName === args.targetPhase.name) {
+      return {
+        changed: false,
+        currentPhase: args.targetPhase,
+        metadata,
+      };
+    }
+    const now = nowIso();
+    const transitions = Array.isArray(phaseRuntime.transitions) ? [...phaseRuntime.transitions] : [];
+    transitions.unshift({
+      fromPhaseKey: previousPhaseKey || null,
+      fromPhaseName: previousPhaseName || null,
+      toPhaseKey: args.targetPhase.phaseKey,
+      toPhaseName: args.targetPhase.name,
+      at: now,
+      reason: args.reason
+    });
+    const existingPhaseBudgets = asRecord(phaseRuntime.phaseBudgets) ?? {};
+    const targetPhaseBudget = asRecord(existingPhaseBudgets[args.targetPhase.phaseKey]);
+    phaseRuntime.transitions = transitions.slice(0, 64);
+    phaseRuntime.currentPhaseKey = args.targetPhase.phaseKey;
+    phaseRuntime.currentPhaseName = args.targetPhase.name;
+    phaseRuntime.currentPhaseModel = args.targetPhase.model;
+    phaseRuntime.currentPhaseInstructions = args.targetPhase.instructions;
+    phaseRuntime.currentPhaseValidation = args.targetPhase.validationGate;
+    phaseRuntime.currentPhaseBudget = args.targetPhase.budget ?? {};
+    phaseRuntime.transitionedAt = now;
+    phaseRuntime.phaseBudgets = {
+      ...existingPhaseBudgets,
+      [args.targetPhase.phaseKey]: {
+        enteredAt: typeof targetPhaseBudget?.enteredAt === "string" && targetPhaseBudget.enteredAt.trim().length > 0
+          ? targetPhaseBudget.enteredAt
+          : now,
+        usedTokens: Number.isFinite(Number(targetPhaseBudget?.usedTokens))
+          ? Number(targetPhaseBudget?.usedTokens)
+          : 0,
+        usedCostUsd: Number.isFinite(Number(targetPhaseBudget?.usedCostUsd))
+          ? Number(targetPhaseBudget?.usedCostUsd)
+          : 0
+      }
+    };
+    const updatedMetadata = {
+      ...metadata,
+      phaseRuntime
+    };
+    db.run(
+      `update orchestrator_runs set metadata_json = ?, updated_at = ? where id = ? and project_id = ?`,
+      [JSON.stringify(updatedMetadata), now, args.runId, projectId]
+    );
+    appendTimelineEvent({
+      runId: args.runId,
+      eventType: "phase_transition",
+      reason: args.reason,
+      detail: {
+        fromPhaseKey: previousPhaseKey || null,
+        fromPhaseName: previousPhaseName || null,
+        toPhaseKey: args.targetPhase.phaseKey,
+        toPhaseName: args.targetPhase.name,
+        phaseModel: args.targetPhase.model,
+        phaseValidation: args.targetPhase.validationGate,
+        phaseBudget: args.targetPhase.budget ?? {},
+        transitionedAt: now,
+        source: args.source
+      }
+    });
+    emit({ type: "orchestrator-run-updated", runId: args.runId, reason: "phase_transition" });
+    emit({
+      type: "orchestrator-step-updated",
+      runId: args.runId,
+      reason: "phase_transition"
+    });
+    return {
+      changed: true,
+      currentPhase: args.targetPhase,
+      metadata: updatedMetadata,
+    };
+  };
+
+  const syncConfiguredPhaseRuntime = (runId: string, steps: OrchestratorStep[]): {
+    phaseCards: PhaseCard[] | null;
+    currentPhase: PhaseCard | null;
+  } => {
+    const runRow = getRunRow(runId);
+    const runMetadata = runRow ? parseJsonRecord(runRow.metadata_json) : null;
+    const phaseCards = resolveRunPhaseCardsFromMetadata(runMetadata);
+    if (!phaseCards || phaseCards.length === 0) {
+      return {
+        phaseCards: null,
+        currentPhase: null
+      };
+    }
+    const sortedPhases = [...phaseCards].sort((left, right) => left.position - right.position);
+    const currentPhase = resolveCurrentRunPhaseCard(runMetadata, sortedPhases);
+    const resolveAutoAdvanceTarget = (): PhaseCard | null => {
+      if (!currentPhase) {
+        return (
+          sortedPhases.find((phase) =>
+            phaseHasAssignedExecutionWork(phase, steps) && canEnterConfiguredPhase(phase, sortedPhases, steps)
+          )
+          ?? sortedPhases[0]
+          ?? null
+        );
+      }
+      if (phaseHasNonTerminalExecutionWork(currentPhase, steps)) {
+        return null;
+      }
+      const currentIndex = sortedPhases.findIndex((phase) => phase.phaseKey === currentPhase.phaseKey);
+      if (currentIndex < 0) return null;
+      for (let index = currentIndex + 1; index < sortedPhases.length; index += 1) {
+        const candidate = sortedPhases[index]!;
+        if (!phaseHasAssignedExecutionWork(candidate, steps)) continue;
+        if (canEnterConfiguredPhase(candidate, sortedPhases, steps)) {
+          return candidate;
+        }
+      }
+      return null;
+    };
+    const targetPhase = resolveAutoAdvanceTarget();
+    if (!targetPhase) {
+      return {
+        phaseCards: sortedPhases,
+        currentPhase
+      };
+    }
+    if (currentPhase?.phaseKey === targetPhase.phaseKey) {
+      return {
+        phaseCards: sortedPhases,
+        currentPhase
+      };
+    }
+    const applied = applyRunPhaseTransition({
+      runId,
+      targetPhase,
+      reason: currentPhase ? "kernel_auto_advance" : "kernel_initialize_phase_runtime",
+      source: currentPhase ? "kernel_auto_phase_sync" : "kernel_phase_runtime_init"
+    });
+    return {
+      phaseCards: sortedPhases,
+      currentPhase: applied?.currentPhase ?? targetPhase
+    };
+  };
+
   const refreshStepReadiness = (runId: string) => {
     const rows = listStepRows(runId);
     if (!rows.length) return;
     const steps = rows.map(toStep);
+    const { phaseCards, currentPhase } = syncConfiguredPhaseRuntime(runId, steps);
     const stepsById = new Map<string, OrchestratorStep>(steps.map((step) => [step.id, step] as const));
     const statusesById = new Map<string, OrchestratorStepStatus>(steps.map((step) => [step.id, step.status] as const));
     const now = nowIso();
@@ -1681,6 +2049,19 @@ export function createOrchestratorService({
     for (const step of steps) {
       if (step.status === "running" || TERMINAL_STEP_STATUSES.has(step.status)) continue;
       const gate = evaluateDependencyGate(step, stepsById);
+      const phaseGate = evaluateConfiguredPhaseGate({
+        step,
+        phaseCards,
+        currentPhase
+      });
+      const validationGate =
+        gate.satisfied && phaseGate.satisfied
+          ? evaluateValidationDependencyGate({
+              step,
+              stepsById,
+              phaseCards
+            })
+          : { satisfied: true, blockingDependencyIds: [] };
       const stepPolicy = resolveStepPolicy(step);
       const claimScoped = (stepPolicy.claimScopes ?? []).length > 0;
       const nextRetryAtRaw = typeof step.metadata?.nextRetryAt === "string" ? step.metadata.nextRetryAt : null;
@@ -1688,12 +2069,12 @@ export function createOrchestratorService({
       const retryDeferred = Number.isFinite(nextRetryAtMs) && nextRetryAtMs > Date.now();
       const stickyBlocked = step.status === "blocked" && step.metadata?.blockedSticky === true;
       let next: OrchestratorStepStatus = step.status;
-      if (gate.satisfied) {
+      if (gate.satisfied && phaseGate.satisfied && validationGate.satisfied) {
         if (stickyBlocked) {
           next = "blocked";
         } else if (retryDeferred) {
           next = "pending";
-        } else if (step.status === "pending" || step.status === "blocked") {
+        } else if (step.status === "pending" || step.status === "blocked" || step.status === "ready") {
           next = "ready";
         }
       } else if (gate.permanentlyBlocked) {
@@ -1757,7 +2138,12 @@ export function createOrchestratorService({
             from: step.status,
             to: next,
             joinPolicy: step.joinPolicy,
-            dependencies: step.dependencyStepIds
+            dependencies: step.dependencyStepIds,
+            dependencyGateSatisfied: gate.satisfied,
+            phaseGateSatisfied: phaseGate.satisfied,
+            phaseGateReason: phaseGate.reason,
+            validationGateSatisfied: validationGate.satisfied,
+            validationBlockingDependencyIds: validationGate.blockingDependencyIds
           }
         });
       }
@@ -4198,6 +4584,18 @@ export function createOrchestratorService({
       const autopilotEnabled = requestedRunMode === "autopilot" && fallbackExecutor !== "manual";
       const autopilotOwnerId = String(args.autopilotOwnerId ?? "").trim() || "orchestrator-autopilot";
       const missionMetadata = parseJsonRecord(mission.metadata_json) ?? {};
+      const missionPhaseConfiguration = asRecord(missionMetadata.phaseConfiguration);
+      const missionLevelSettings = asRecord(missionMetadata.missionLevelSettings);
+      const missionExecutionPolicy = isExecutionPolicyRecord(missionMetadata.executionPolicy)
+        ? (missionMetadata.executionPolicy as MissionExecutionPolicy)
+        : null;
+      const missionPhaseOverride = Array.isArray(missionMetadata.phaseOverride)
+        ? missionMetadata.phaseOverride as PhaseCard[]
+        : null;
+      const missionPhaseProfileId =
+        typeof missionMetadata.phaseProfileId === "string" && missionMetadata.phaseProfileId.trim().length > 0
+          ? missionMetadata.phaseProfileId.trim()
+          : null;
       const plannerSummary = asRecord(asRecord(missionMetadata.plannerPlan)?.missionSummary);
       const plannerParallelismRaw = Number(
         args.metadata?.plannerParallelismCap ?? plannerSummary?.parallelismCap ?? Number.NaN
@@ -4416,6 +4814,11 @@ export function createOrchestratorService({
           missionGoal: mission.prompt ?? "",
           missionPrompt: mission.prompt ?? "",
           runMode: requestedRunMode,
+          ...(missionLevelSettings ? { missionLevelSettings } : {}),
+          ...(missionPhaseConfiguration ? { phaseConfiguration: missionPhaseConfiguration } : {}),
+          ...(missionExecutionPolicy ? { executionPolicy: missionExecutionPolicy } : {}),
+          ...(missionPhaseOverride ? { phaseOverride: missionPhaseOverride } : {}),
+          ...(missionPhaseProfileId ? { phaseProfileId: missionPhaseProfileId } : {}),
           ...(launchTeamRuntime
             ? {
                 teamRuntime: {
@@ -5108,7 +5511,13 @@ export function createOrchestratorService({
       const profileId = normalizeProfileId(args.contextProfile);
       const createdAt = nowIso();
       const schedulerState = String(args.schedulerState ?? "initialized").trim() || "initialized";
-      const metadata = args.metadata ?? {};
+      const rawMetadata = args.metadata ?? {};
+      const phaseCards = resolveRunPhaseCardsFromMetadata(rawMetadata);
+      const metadata: Record<string, unknown> = { ...rawMetadata };
+      if (phaseCards && !asRecord(metadata.phaseRuntime)) {
+        const phaseRuntime = buildInitialPhaseRuntime(phaseCards);
+        if (phaseRuntime) metadata.phaseRuntime = phaseRuntime;
+      }
 
       const byKey = new Map<string, string>();
       const dependencyStepKeysByStepKey = new Map<string, string[]>();
@@ -6035,7 +6444,9 @@ export function createOrchestratorService({
               },
             },
             "unified",
-            memoryService ? { memoryService, projectId } : undefined,
+            memoryService
+              ? { memoryService, projectId, workerRuntime: "in_process" }
+              : { projectId, workerRuntime: "in_process" },
           );
 
           const laneWorktreePath = (() => {

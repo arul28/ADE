@@ -2,7 +2,12 @@
 // PR types
 // ---------------------------------------------------------------------------
 
-import type { ConflictRiskLevel } from "./conflicts";
+import type {
+  ConflictResolverOriginSurface,
+  ConflictResolverPermissionMode,
+  ConflictRiskLevel,
+  ExternalConflictResolverProvider,
+} from "./conflicts";
 
 export type PrState = "draft" | "open" | "merged" | "closed";
 export type PrChecksStatus = "pending" | "passing" | "failing" | "none";
@@ -102,6 +107,23 @@ export type PrEventPayload =
       type: "queue-state";
       groupId: string;
       state: QueueState;
+      currentPosition: number;
+      timestamp: string;
+    }
+  | {
+      type: "queue-rehearsal-step";
+      groupId: string;
+      rehearsalId: string;
+      prId: string;
+      entryState: QueueRehearsalEntryState;
+      position: number;
+      timestamp: string;
+    }
+  | {
+      type: "queue-rehearsal-state";
+      groupId: string;
+      rehearsalId: string;
+      state: QueueRehearsalStateStatus;
       currentPosition: number;
       timestamp: string;
     }
@@ -472,6 +494,119 @@ export type RebaseNeed = {
 export type QueueEntryState = "pending" | "landing" | "rebasing" | "resolving" | "landed" | "failed" | "paused" | "skipped";
 export type QueueState = "idle" | "landing" | "paused" | "completed" | "cancelled";
 export type IntegrationFlowState = "proposal" | "creating" | "merging" | "conflict" | "resolving" | "completed" | "failed";
+export type QueueWaitReason =
+  | "ci"
+  | "review"
+  | "merge_conflict"
+  | "resolver_failed"
+  | "merge_blocked"
+  | "manual"
+  | "canceled";
+
+export type QueueRehearsalEntryState =
+  | "pending"
+  | "rehearsing"
+  | "resolving"
+  | "ready"
+  | "resolved"
+  | "failed"
+  | "blocked"
+  | "cancelled";
+
+export type QueueRehearsalStateStatus = "running" | "paused" | "completed" | "failed" | "cancelled";
+
+export type QueueRehearsalWaitReason =
+  | "manual"
+  | "resolver_failed"
+  | "capability_gap"
+  | "canceled";
+
+export type QueueAutomationConfig = {
+  method: MergeMethod;
+  archiveLane: boolean;
+  autoResolve: boolean;
+  ciGating: boolean;
+  resolverProvider: ExternalConflictResolverProvider | null;
+  resolverModel: string | null;
+  reasoningEffort: string | null;
+  permissionMode: ConflictResolverPermissionMode | null;
+  confidenceThreshold: number | null;
+  originSurface: ConflictResolverOriginSurface;
+  originMissionId: string | null;
+  originRunId: string | null;
+  originLabel: string | null;
+};
+
+export type QueueRehearsalConfig = {
+  method: MergeMethod;
+  autoResolve: boolean;
+  resolverProvider: ExternalConflictResolverProvider | null;
+  resolverModel: string | null;
+  reasoningEffort: string | null;
+  permissionMode: ConflictResolverPermissionMode | null;
+  preserveScratchLane: boolean;
+  originSurface: ConflictResolverOriginSurface;
+  originMissionId: string | null;
+  originRunId: string | null;
+  originLabel: string | null;
+};
+
+export type StartQueueAutomationArgs = {
+  groupId: string;
+  method: MergeMethod;
+  archiveLane?: boolean;
+  autoResolve?: boolean;
+  ciGating?: boolean;
+  resolverProvider?: ExternalConflictResolverProvider | null;
+  resolverModel?: string | null;
+  reasoningEffort?: string | null;
+  permissionMode?: ConflictResolverPermissionMode | null;
+  confidenceThreshold?: number | null;
+  originSurface?: ConflictResolverOriginSurface;
+  originMissionId?: string | null;
+  originRunId?: string | null;
+  originLabel?: string | null;
+};
+
+export type StartQueueRehearsalArgs = {
+  groupId: string;
+  method: MergeMethod;
+  autoResolve?: boolean;
+  resolverProvider?: ExternalConflictResolverProvider | null;
+  resolverModel?: string | null;
+  reasoningEffort?: string | null;
+  permissionMode?: ConflictResolverPermissionMode | null;
+  preserveScratchLane?: boolean;
+  originSurface?: ConflictResolverOriginSurface;
+  originMissionId?: string | null;
+  originRunId?: string | null;
+  originLabel?: string | null;
+};
+
+export type ResumeQueueAutomationArgs = {
+  queueId: string;
+  method?: MergeMethod;
+  archiveLane?: boolean;
+  autoResolve?: boolean;
+  ciGating?: boolean;
+  resolverProvider?: ExternalConflictResolverProvider | null;
+  resolverModel?: string | null;
+  reasoningEffort?: string | null;
+  permissionMode?: ConflictResolverPermissionMode | null;
+  confidenceThreshold?: number | null;
+  originSurface?: ConflictResolverOriginSurface;
+  originMissionId?: string | null;
+  originRunId?: string | null;
+  originLabel?: string | null;
+};
+
+export type PauseQueueAutomationArgs = {
+  queueId: string;
+};
+
+export type CancelQueueAutomationArgs = {
+  queueId: string;
+};
 
 export type LandQueueNextArgs = {
   groupId: string;
@@ -487,17 +622,68 @@ export type QueueLandingEntry = {
   laneName: string;
   position: number;
   state: QueueEntryState;
+  prNumber?: number | null;
+  githubUrl?: string | null;
+  resolvedByAi?: boolean;
+  resolverRunId?: string | null;
+  mergeCommitSha?: string | null;
+  waitingOn?: QueueWaitReason | null;
+  updatedAt?: string | null;
   error?: string;
 };
 
 export type QueueLandingState = {
   queueId: string;
   groupId: string;
+  groupName: string | null;
+  targetBranch: string | null;
   state: QueueState;
   entries: QueueLandingEntry[];
   currentPosition: number;
+  activePrId: string | null;
+  activeResolverRunId: string | null;
+  lastError: string | null;
+  waitReason: QueueWaitReason | null;
+  config: QueueAutomationConfig;
   startedAt: string;
   completedAt: string | null;
+  updatedAt: string;
+};
+
+export type QueueRehearsalEntry = {
+  prId: string;
+  laneId: string;
+  laneName: string;
+  position: number;
+  state: QueueRehearsalEntryState;
+  prNumber?: number | null;
+  githubUrl?: string | null;
+  resolvedByAi?: boolean;
+  resolverRunId?: string | null;
+  simulatedCommitSha?: string | null;
+  changedFiles?: string[];
+  conflictPaths?: string[];
+  updatedAt?: string | null;
+  error?: string;
+};
+
+export type QueueRehearsalState = {
+  rehearsalId: string;
+  groupId: string;
+  groupName: string | null;
+  targetBranch: string | null;
+  state: QueueRehearsalStateStatus;
+  entries: QueueRehearsalEntry[];
+  currentPosition: number;
+  scratchLaneId: string | null;
+  activePrId: string | null;
+  activeResolverRunId: string | null;
+  lastError: string | null;
+  waitReason: QueueRehearsalWaitReason | null;
+  config: QueueRehearsalConfig;
+  startedAt: string;
+  completedAt: string | null;
+  updatedAt: string;
 };
 
 // --------------------------------
@@ -544,7 +730,22 @@ export type PrDepth =
 export type PrStrategy =
   | { kind: "integration"; targetBranch?: string; draft?: boolean; prDepth?: PrDepth }
   | { kind: "per-lane"; targetBranch?: string; draft?: boolean; prDepth?: PrDepth }
-  | { kind: "queue"; targetBranch?: string; draft?: boolean; autoRebase?: boolean; ciGating?: boolean; prDepth?: PrDepth }
+  | {
+      kind: "queue";
+      targetBranch?: string;
+      draft?: boolean;
+      autoRebase?: boolean;
+      ciGating?: boolean;
+      prDepth?: PrDepth;
+      autoLand?: boolean;
+      rehearseQueue?: boolean;
+      autoResolveConflicts?: boolean;
+      archiveLaneOnLand?: boolean;
+      mergeMethod?: MergeMethod;
+      conflictResolverModel?: string;
+      reasoningEffort?: string;
+      permissionMode?: ConflictResolverPermissionMode;
+    }
   | { kind: "manual" };
 
 // --------------------------------

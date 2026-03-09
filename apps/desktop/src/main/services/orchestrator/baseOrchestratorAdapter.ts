@@ -116,13 +116,19 @@ export interface BaseAdapterConfig {
 export function buildFullPrompt(
   args: OrchestratorExecutorStartArgs,
   _executorKind?: OrchestratorExecutorKind,
-  opts?: { memoryService?: ReturnType<typeof createMemoryService>; projectId?: string }
+  opts?: {
+    memoryService?: ReturnType<typeof createMemoryService>;
+    projectId?: string;
+    workerRuntime?: "tracked_session" | "in_process";
+  }
 ): {
   prompt: string;
   filePatterns: string[];
   steeringDirectiveCount: number;
 } {
   const { run, step } = args;
+  const workerRuntime = opts?.workerRuntime ?? "tracked_session";
+  const hasMissionTooling = workerRuntime === "tracked_session";
 
   // 1. Build system prompt
   const systemParts: string[] = [];
@@ -211,19 +217,31 @@ export function buildFullPrompt(
     );
   }
   systemParts.push(
-    [
-      "RESULT REPORTING:",
-      "- Use `report_status` for short progress updates when you make meaningful progress or hit a blocker.",
-      "- Before you exit, ALWAYS call `report_result` with your outcome, summary, filesChanged, and testsRun fields filled in as accurately as possible.",
-      ...(readOnlyExecution
-        ? [
-            "- This step cannot write files. Do NOT attempt `.ade/checkpoints/...` or `.ade/step-output-...md` writes.",
-            "- Put your findings, plan, warnings, and suggested next steps into `report_result` instead."
-          ]
-        : [
-            "- After calling `report_result`, also write the checkpoint and step-output files described below."
-          ])
-    ].join("\n")
+    hasMissionTooling
+      ? [
+          "RESULT REPORTING:",
+          "- Use `report_status` for short progress updates when you make meaningful progress or hit a blocker.",
+          "- Before you exit, ALWAYS call `report_result` with your outcome, summary, filesChanged, and testsRun fields filled in as accurately as possible.",
+          ...(readOnlyExecution
+            ? [
+                "- This step cannot write files. Do NOT attempt `.ade/checkpoints/...` or `.ade/step-output-...md` writes.",
+                "- Put your findings, plan, warnings, and suggested next steps into `report_result` instead."
+              ]
+            : [
+                "- After calling `report_result`, also write the checkpoint and step-output files described below."
+              ])
+        ].join("\n")
+      : [
+          "RESULT REPORTING:",
+          "- This worker is running in-process. You do NOT have ADE mission-control tools such as `report_status`, `report_result`, `get_pending_messages`, or `get_run_graph`.",
+          "- Return your outcome directly in the final assistant response.",
+          "- Format the final response with these headings when relevant: Accomplished, Changed Files, Tests Run, Risks / Notes.",
+          ...(readOnlyExecution
+            ? [
+                "- This step is read-only. Do not claim any file changes unless you actually made them."
+              ]
+            : [])
+        ].join("\n")
   );
 
   const steeringDirectives = Array.isArray(step.metadata?.steeringDirectives)
@@ -411,20 +429,31 @@ export function buildFullPrompt(
   systemParts.push("You are working within ADE (Autonomous Development Environment), an Electron-based multi-agent development tool. ADE manages lanes (git worktrees), missions (task orchestration), PRs, and agent sessions. You have access to the project's full context including PRD and architecture docs when provided.");
 
   // MCP server collaboration tools
-  systemParts.push(
-    [
-      "ADE MCP TOOLS: You have access to the ADE MCP server which provides team collaboration tools.",
-      "Your worker identity (mission, run, step, attempt IDs) is automatically resolved — you don't need to pass IDs to observation tools.",
-      "Key tools available:",
-      "- get_worker_states: See all peer workers in your run and their current status",
-      "- get_run_graph: See the full execution plan, step statuses, and dependencies",
-      "- get_mission: Get mission details and metadata",
-      "- get_pending_messages: Check for messages from the coordinator or peer workers",
-      "- get_timeline: See recent events in your run",
-      "- stream_events: Poll for new orchestrator events",
-      "Use get_pending_messages periodically to check for steering directives or peer communications."
-    ].join("\n")
-  );
+  if (hasMissionTooling) {
+    systemParts.push(
+      [
+        "ADE MCP TOOLS: You have access to the ADE MCP server which provides team collaboration tools.",
+        "Your worker identity (mission, run, step, attempt IDs) is automatically resolved — you don't need to pass IDs to observation tools.",
+        "Key tools available:",
+        "- get_worker_states: See all peer workers in your run and their current status",
+        "- get_run_graph: See the full execution plan, step statuses, and dependencies",
+        "- get_mission: Get mission details and metadata",
+        "- get_pending_messages: Check for messages from the coordinator or peer workers",
+        "- get_timeline: See recent events in your run",
+        "- stream_events: Poll for new orchestrator events",
+        "Use get_pending_messages periodically to check for steering directives or peer communications."
+      ].join("\n")
+    );
+  } else {
+    systemParts.push(
+      [
+        "RUNTIME LIMITS:",
+        "- This worker runs as a bounded in-process execution, not a tracked ADE session.",
+        "- You will not receive follow-up steering while this attempt is running.",
+        "- Treat the current prompt as the full assignment and complete it end-to-end in one pass."
+      ].join("\n")
+    );
+  }
 
   // Team runtime capabilities
   {
@@ -432,7 +461,7 @@ export function buildFullPrompt(
       ? (run.metadata as Record<string, unknown>).teamRuntime as TeamRuntimeConfig | undefined
       : undefined;
 
-    if (teamRuntime?.enabled) {
+    if (teamRuntime?.enabled && hasMissionTooling) {
       systemParts.push(
         [
           "TEAM RUNTIME (ACTIVE): You are part of an ADE agent team with shared task management.",
@@ -442,6 +471,14 @@ export function buildFullPrompt(
           "- Focus on your claimed task — the coordinator manages task distribution",
           "- When your task is done, report completion and the coordinator will assign more work or finalize the run",
           "- If you discover something relevant to other tasks, write it with memory_add so it is preserved in project memories and shared facts"
+        ].join("\n")
+      );
+    } else if (teamRuntime?.enabled) {
+      systemParts.push(
+        [
+          "TEAM RUNTIME (ACTIVE): This mission is running with team semantics, but your worker is one-shot and not live-steerable.",
+          "- Finish the assignment in this prompt without waiting for re-assignment.",
+          "- Surface discoveries for sibling steps in your final response."
         ].join("\n")
       );
     }

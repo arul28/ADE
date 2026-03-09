@@ -28,10 +28,14 @@ import type {
   MissionSummary,
   MissionPermissionConfig,
   ModelConfig,
+  GetModelCapabilitiesResult,
   OrchestratorAttempt,
+  OrchestratorArtifact,
   OrchestratorChatTarget,
   OrchestratorExecutorKind,
+  OrchestratorPromptInspector,
   OrchestratorRunGraph,
+  OrchestratorWorkerCheckpoint,
   ProjectConfigSnapshot,
   StartOrchestratorRunFromMissionArgs,
   MissionDashboardSnapshot,
@@ -40,9 +44,8 @@ import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
 import { OrchestratorActivityFeed } from "./OrchestratorActivityFeed";
 import { OrchestratorDAG } from "./OrchestratorDAG";
-import { MissionPhaseBadge } from "./MissionPhaseBadge";
+
 import { CompletionBanner } from "./CompletionBanner";
-import { UsageDashboard } from "./UsageDashboard";
 import { MissionChatV2 } from "./MissionChatV2";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
 import { relativeWhen } from "../../lib/format";
@@ -73,7 +76,8 @@ import {
   type MissionListViewMode,
   type MissionSettingsDraft,
 } from "./missionHelpers";
-import { CreateMissionDialog, type CreateDraft, type CreateMissionDefaults } from "./CreateMissionDialog";
+import type { CreateDraft, CreateMissionDefaults } from "./CreateMissionDialog";
+import { MissionCreateDialogHost } from "./MissionCreateDialogHost";
 import { MissionSettingsDialog } from "./MissionSettingsDialog";
 import { PlanTab } from "./PlanTab";
 import { WorkTab } from "./WorkTab";
@@ -85,6 +89,12 @@ import { ClarificationQuizModal } from "./ClarificationQuizModal";
 import { ManualInputResponseModal } from "./ManualInputResponseModal";
 import { MissionLogsTab } from "./MissionLogsTab";
 import type { ClarificationQuestion, ClarificationQuiz, MissionIntervention } from "../../../shared/types";
+import { MissionArtifactsTab } from "./MissionArtifactsTab";
+import { MissionActivePhasePanel } from "./MissionActivePhasePanel";
+import { PromptInspectorCard } from "./PromptInspectorCard";
+import { buildMissionArtifactGroups, deriveActivePhaseViewModel } from "./missionControlViewModel";
+import { useMissionStateDocument } from "./useMissionStateDocument";
+import { openMissionCreateDialog } from "./missionCreateDialogStore";
 
 /* Re-export helpers used by tests */
 export { collapsePlannerStreamMessages, resolveStepHeartbeatAt } from "./missionHelpers";
@@ -121,7 +131,7 @@ function buildQuizDirective(quiz: ClarificationQuiz): string {
     return `- ${question}: ${answer.answer} (${source})`;
   });
   return [
-    "Coordinator clarification answers:",
+    "Coordinator question answers:",
     ...answerLines,
     "Proceed using these answers.",
   ].join("\n");
@@ -147,9 +157,6 @@ export default function MissionsPage() {
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
-  const [createOpen, setCreateOpen] = useState(false);
-  const closeCreateDialog = useCallback(() => setCreateOpen(false), []);
-  const [createBusy, setCreateBusy] = useState(false);
   const [runBusy, setRunBusy] = useState(false);
   const [missionSettingsOpen, setMissionSettingsOpen] = useState(false);
   const [missionSettingsBusy, setMissionSettingsBusy] = useState(false);
@@ -158,13 +165,23 @@ export default function MissionsPage() {
   const [missionSettingsSnapshot, setMissionSettingsSnapshot] = useState<ProjectConfigSnapshot | null>(null);
   const [missionSettingsDraft, setMissionSettingsDraft] = useState<MissionSettingsDraft>(DEFAULT_MISSION_SETTINGS_DRAFT);
 
-  const [activeTab, setActiveTab] = useState<WorkspaceTab>("plan");
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>("overview");
+  const [planSubview, setPlanSubview] = useState<"board" | "dag">("board");
   const [searchFilter, setSearchFilter] = useState("");
   const [missionListView, setMissionListView] = useState<MissionListViewMode>("list");
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const [chatJumpTarget, setChatJumpTarget] = useState<OrchestratorChatTarget | null>(null);
   const [logsFocusInterventionId, setLogsFocusInterventionId] = useState<string | null>(null);
   const [activityPanelMode, setActivityPanelMode] = useState<"signal" | "logs">("signal");
+  const [orchestratorArtifacts, setOrchestratorArtifacts] = useState<OrchestratorArtifact[]>([]);
+  const [workerCheckpoints, setWorkerCheckpoints] = useState<OrchestratorWorkerCheckpoint[]>([]);
+  const [modelCapabilities, setModelCapabilities] = useState<GetModelCapabilitiesResult | null>(null);
+  const [coordinatorPromptInspector, setCoordinatorPromptInspector] = useState<OrchestratorPromptInspector | null>(null);
+  const [coordinatorPromptLoading, setCoordinatorPromptLoading] = useState(false);
+  const [coordinatorPromptError, setCoordinatorPromptError] = useState<string | null>(null);
+  const [workerPromptInspector, setWorkerPromptInspector] = useState<OrchestratorPromptInspector | null>(null);
+  const [workerPromptLoading, setWorkerPromptLoading] = useState(false);
+  const [workerPromptError, setWorkerPromptError] = useState<string | null>(null);
 
   /* ── Steering state ── */
   const [steerBusy, setSteerBusy] = useState(false);
@@ -175,8 +192,6 @@ export default function MissionsPage() {
   /* ── Intervention modal state ── */
   const [activeInterventionId, setActiveInterventionId] = useState<string | null>(null);
   const autoOpenedInterventionIdsRef = useRef<Set<string>>(new Set());
-  const [detailsAdvancedOpen, setDetailsAdvancedOpen] = useState(false);
-  const [usageOpen, setUsageOpen] = useState(false);
 
   /* ── Track original step count for dynamic step indicator ── */
   const [originalStepCount, setOriginalStepCount] = useState<number | null>(null);
@@ -233,6 +248,20 @@ export default function MissionsPage() {
       profileName: typeof runMeta?.phaseProfileName === "string" ? runMeta.phaseProfileName : null,
     };
   }, [runGraph?.run?.metadata, selectedMission?.phaseConfiguration]);
+
+  const activePhaseView = useMemo(() => deriveActivePhaseViewModel({
+    mission: selectedMission,
+    runGraph,
+    modelCapabilities,
+  }), [modelCapabilities, runGraph, selectedMission]);
+  const { stateDoc: missionStateDoc, loading: missionStateLoading, error: missionStateError } = useMissionStateDocument(runGraph?.run.id ?? null);
+
+  const groupedArtifacts = useMemo(() => buildMissionArtifactGroups({
+    mission: selectedMission,
+    runGraph,
+    orchestratorArtifacts,
+    checkpoints: workerCheckpoints,
+  }), [orchestratorArtifacts, runGraph, selectedMission, workerCheckpoints]);
 
   const canStartOrRerun = !runGraph || runGraph.run.status === "succeeded" || runGraph.run.status === "failed" || runGraph.run.status === "canceled";
   const canCancelRun = Boolean(
@@ -480,6 +509,26 @@ export default function MissionsPage() {
     }
   }, [originalStepCount]);
 
+  const loadRunArtifacts = useCallback(async (missionId: string, runId: string | null) => {
+    const trimmed = missionId.trim();
+    if (!trimmed) {
+      setOrchestratorArtifacts([]);
+      setWorkerCheckpoints([]);
+      return;
+    }
+    try {
+      const [artifacts, checkpoints] = await Promise.all([
+        window.ade.orchestrator.listArtifacts({ missionId: trimmed, runId }),
+        window.ade.orchestrator.listWorkerCheckpoints({ missionId: trimmed, runId }),
+      ]);
+      setOrchestratorArtifacts(Array.isArray(artifacts) ? artifacts : []);
+      setWorkerCheckpoints(Array.isArray(checkpoints) ? checkpoints : []);
+    } catch {
+      setOrchestratorArtifacts([]);
+      setWorkerCheckpoints([]);
+    }
+  }, []);
+
   const scheduleOrchestratorGraphRefresh = useCallback((missionId: string, delayMs = 180) => {
     if (graphRefreshTimerRef.current !== null) {
       window.clearTimeout(graphRefreshTimerRef.current);
@@ -501,6 +550,21 @@ export default function MissionsPage() {
   }, [loadMissionSettings]);
 
   useEffect(() => {
+    let cancelled = false;
+    window.ade.orchestrator.getModelCapabilities().then(
+      (result) => {
+        if (!cancelled) setModelCapabilities(result);
+      },
+      () => {
+        if (!cancelled) setModelCapabilities(null);
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!selectedMissionId) {
       if (graphRefreshTimerRef.current !== null) {
         window.clearTimeout(graphRefreshTimerRef.current);
@@ -512,6 +576,10 @@ export default function MissionsPage() {
       setLogsFocusInterventionId(null);
       setActivityPanelMode("signal");
       setOriginalStepCount(null);
+      setOrchestratorArtifacts([]);
+      setWorkerCheckpoints([]);
+      setCoordinatorPromptInspector(null);
+      setWorkerPromptInspector(null);
       return;
     }
     setChatJumpTarget(null);
@@ -520,6 +588,12 @@ export default function MissionsPage() {
     void loadMissionDetail(selectedMissionId);
     void loadOrchestratorGraph(selectedMissionId);
   }, [selectedMissionId, loadMissionDetail, loadOrchestratorGraph]);
+
+  useEffect(() => {
+    if (!selectedMissionId) return;
+    const runId = runGraph?.run.id ?? null;
+    void loadRunArtifacts(selectedMissionId, runId);
+  }, [loadRunArtifacts, runGraph?.run.id, selectedMissionId]);
 
   useEffect(() => {
     if (!runGraph || TERMINAL_RUN_STATUSES.has(runGraph.run.status)) {
@@ -567,6 +641,7 @@ export default function MissionsPage() {
         if (payload.missionId && payload.missionId === selectedMissionId) {
           void loadMissionDetail(payload.missionId);
           scheduleOrchestratorGraphRefresh(payload.missionId, 120);
+          void loadRunArtifacts(payload.missionId, runGraph?.run.id ?? null);
         }
       }, 300);
     });
@@ -574,7 +649,7 @@ export default function MissionsPage() {
       if (missionEventTimerRef.current !== null) window.clearTimeout(missionEventTimerRef.current);
       unsub();
     };
-  }, [loadDashboard, loadMissionDetail, refreshMissionList, scheduleOrchestratorGraphRefresh, selectedMissionId]);
+  }, [loadDashboard, loadMissionDetail, loadRunArtifacts, refreshMissionList, runGraph?.run.id, scheduleOrchestratorGraphRefresh, selectedMissionId]);
 
   useEffect(() => {
     const selectedRunId = runGraph?.run.id ?? null;
@@ -586,13 +661,14 @@ export default function MissionsPage() {
         orchestratorEventTimerRef.current = null;
         scheduleOrchestratorGraphRefresh(selectedMissionId);
         void loadDashboard();
+        void loadRunArtifacts(selectedMissionId, selectedRunId);
       }, 300);
     });
     return () => {
       if (orchestratorEventTimerRef.current !== null) window.clearTimeout(orchestratorEventTimerRef.current);
       unsub();
     };
-  }, [loadDashboard, runGraph?.run.id, scheduleOrchestratorGraphRefresh, selectedMissionId]);
+  }, [loadDashboard, loadRunArtifacts, runGraph?.run.id, scheduleOrchestratorGraphRefresh, selectedMissionId]);
 
   useEffect(() => {
     return () => {
@@ -630,7 +706,6 @@ export default function MissionsPage() {
     const prompt = draft.prompt.trim();
     if (!prompt) { setError("Mission prompt is required."); return; }
     const resolvedLaneId = draft.laneId.trim() || defaultCreateLaneId || "";
-    setCreateBusy(true);
     try {
       const created = await window.ade.missions.create({
         title: draft.title.trim() || undefined,
@@ -654,15 +729,16 @@ export default function MissionsPage() {
         launchMode: "autopilot",
       });
       setSelectedMissionId(created.id);
-      await refreshMissionList({ preserveSelection: true, silent: true });
-      await loadMissionDetail(created.id);
-      await loadOrchestratorGraph(created.id);
+      await Promise.all([
+        refreshMissionList({ preserveSelection: true, silent: true }),
+        loadMissionDetail(created.id),
+        loadOrchestratorGraph(created.id),
+      ]);
       setError(null);
-      setCreateOpen(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setCreateBusy(false);
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      throw err instanceof Error ? err : new Error(message);
     }
   }, [defaultCreateLaneId, refreshMissionList, loadMissionDetail, loadOrchestratorGraph]);
 
@@ -684,9 +760,11 @@ export default function MissionsPage() {
         executorKind: fallbackExecutor,
         plannerProvider
       });
-      await loadOrchestratorGraph(selectedMission.id);
-      await loadMissionDetail(selectedMission.id);
-      await refreshMissionList({ preserveSelection: true, silent: true });
+      await Promise.all([
+        loadOrchestratorGraph(selectedMission.id),
+        loadMissionDetail(selectedMission.id),
+        refreshMissionList({ preserveSelection: true, silent: true }),
+      ]);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -810,23 +888,6 @@ export default function MissionsPage() {
     return attemptsByStep.get(selectedStep.id) ?? [];
   }, [attemptsByStep, selectedStep]);
 
-  const missionPhaseRows = useMemo(() => {
-    if (!selectedMission) return [] as Array<{ key: string; name: string; completed: number; total: number }>;
-    const map = new Map<string, { key: string; name: string; completed: number; total: number }>();
-    for (const step of selectedMission.steps) {
-      const meta = isRecord(step.metadata) ? step.metadata : {};
-      const key = typeof meta.phaseKey === "string" && meta.phaseKey.trim().length > 0 ? meta.phaseKey : "development";
-      const name = typeof meta.phaseName === "string" && meta.phaseName.trim().length > 0 ? meta.phaseName : "Development";
-      const row = map.get(key) ?? { key, name, completed: 0, total: 0 };
-      row.total += 1;
-      if (step.status === "succeeded" || step.status === "skipped" || step.status === "canceled") {
-        row.completed += 1;
-      }
-      map.set(key, row);
-    }
-    return Array.from(map.values());
-  }, [selectedMission]);
-
   const failedExecutionSteps = useMemo(
     () => executionSteps.filter((step) => step.status === "failed"),
     [executionSteps]
@@ -857,6 +918,41 @@ export default function MissionsPage() {
   const handleViewWorkSession = useCallback((sessionId: string) => {
     navigate(`/work?sessionId=${encodeURIComponent(sessionId)}`);
   }, [navigate]);
+
+  const loadCoordinatorPromptInspector = useCallback(async () => {
+    if (!runGraph) return;
+    setCoordinatorPromptLoading(true);
+    setCoordinatorPromptError(null);
+    try {
+      const inspector = await window.ade.orchestrator.getPromptInspector({
+        runId: runGraph.run.id,
+        target: "coordinator",
+      });
+      setCoordinatorPromptInspector(inspector);
+    } catch (err) {
+      setCoordinatorPromptError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCoordinatorPromptLoading(false);
+    }
+  }, [runGraph]);
+
+  const loadWorkerPromptInspector = useCallback(async (stepId: string) => {
+    if (!runGraph) return;
+    setWorkerPromptLoading(true);
+    setWorkerPromptError(null);
+    try {
+      const inspector = await window.ade.orchestrator.getPromptInspector({
+        runId: runGraph.run.id,
+        target: "worker",
+        stepId,
+      });
+      setWorkerPromptInspector(inspector);
+    } catch (err) {
+      setWorkerPromptError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setWorkerPromptLoading(false);
+    }
+  }, [runGraph]);
 
   const openManualInputInterventions = useMemo(
     () =>
@@ -890,8 +986,8 @@ export default function MissionsPage() {
   }, [activeInterventionId, selectedMission]);
 
   useEffect(() => {
-    setDetailsAdvancedOpen(false);
-    setUsageOpen(false);
+    setCoordinatorPromptInspector(null);
+    setWorkerPromptInspector(null);
   }, [selectedMissionId]);
 
   // Reconcile selection only against displayed cards — no auto-reset mismatch
@@ -906,6 +1002,15 @@ export default function MissionsPage() {
     const running = steps.find((step) => step.status === "running");
     setSelectedStepId((running ?? steps[0]).id);
   }, [runGraph, selectedStepId]);
+
+  useEffect(() => {
+    setWorkerPromptInspector(null);
+    setWorkerPromptError(null);
+  }, [selectedStepId]);
+
+  const chatFocused = activeTab === "chat";
+  const compactPhaseChrome = chatFocused;
+  const showCompletionBanner = activeTab !== "chat";
 
   /* ── Loading screen ── */
   if (loading) {
@@ -927,15 +1032,14 @@ export default function MissionsPage() {
     <LazyMotion features={domAnimation}>
       <div className="flex h-full min-h-0" style={{ background: COLORS.pageBg }}>
         {/* ════════════ LEFT SIDEBAR ════════════ */}
-        <div className="flex w-[280px] shrink-0 flex-col" style={{ background: COLORS.cardBg, borderRight: `1px solid ${COLORS.border}` }}>
-          {/* Sidebar Header - 64px */}
-          <div className="flex items-center justify-between shrink-0 h-16 px-4" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+        <div className="flex w-[248px] shrink-0 flex-col" style={{ background: COLORS.cardBg, borderRight: `1px solid ${COLORS.border}` }}>
+          <div className="flex items-center justify-between shrink-0 h-12 px-3" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
             <div className="flex items-center gap-2">
-              <Rocket size={18} weight="bold" style={{ color: COLORS.accent }} />
-              <span className="text-[16px] font-bold tracking-[-0.3px]" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
+              <Rocket size={16} weight="bold" style={{ color: COLORS.accent }} />
+              <span className="text-[14px] font-bold tracking-[-0.2px]" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
                 MISSIONS
               </span>
-              <span className="px-2.5 py-1 text-[9px] font-bold uppercase tracking-[1px]" style={{ background: `${COLORS.accent}18`, border: `1px solid ${COLORS.accent}30`, color: COLORS.accent, fontFamily: MONO_FONT }}>
+              <span className="px-2 py-0.5 text-[8px] font-bold uppercase tracking-[1px]" style={{ background: `${COLORS.accent}18`, border: `1px solid ${COLORS.accent}30`, color: COLORS.accent, fontFamily: MONO_FONT }}>
                 {missions.length} TOTAL
               </span>
             </div>
@@ -953,7 +1057,9 @@ export default function MissionsPage() {
                   setMissionSettingsOpen(true);
                   setMissionSettingsNotice(null);
                   setMissionSettingsError(null);
-                  void loadMissionSettings();
+                  if (!missionSettingsSnapshot) {
+                    void loadMissionSettings();
+                  }
                 }}
                 className="p-1 transition-colors"
                 style={{ color: COLORS.textMuted }}
@@ -962,7 +1068,7 @@ export default function MissionsPage() {
                 <GearSix className="h-3.5 w-3.5" />
               </button>
               <button
-                onClick={() => setCreateOpen(true)}
+                onClick={() => openMissionCreateDialog()}
                 className="p-1 transition-colors"
                 style={{ color: COLORS.accent }}
                 title="New Mission"
@@ -973,7 +1079,7 @@ export default function MissionsPage() {
           </div>
 
           {/* View mode toggle + Search */}
-          <div className="px-3 py-2 space-y-2">
+          <div className="px-2.5 py-2 space-y-2">
             <div className="flex items-center gap-2">
               <div className="relative flex-1">
                 <MagnifyingGlass className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2" style={{ color: COLORS.textDim }} />
@@ -1015,7 +1121,7 @@ export default function MissionsPage() {
                     <Rocket size={28} weight="regular" style={{ color: `${COLORS.accent}40` }} />
                     <p>No missions yet. Missions coordinate your AI agents to accomplish complex tasks.</p>
                     <button
-                      onClick={() => setCreateOpen(true)}
+                      onClick={() => openMissionCreateDialog()}
                       style={primaryButton()}
                     >
                       START MISSION
@@ -1151,13 +1257,13 @@ export default function MissionsPage() {
           {!selectedMissionId ? (
             <MissionsHomeDashboard
               snapshot={dashboard}
-              onNewMission={() => setCreateOpen(true)}
+              onNewMission={() => openMissionCreateDialog()}
               onViewMission={(missionId) => setSelectedMissionId(missionId)}
             />
           ) : (
             <>
               {/* ── Header Bar ── */}
-              <div className="flex items-center gap-3 shrink-0 px-6 py-3" style={{ borderBottom: `1px solid ${COLORS.border}`, background: COLORS.cardBg }}>
+              <div className="flex items-center gap-3 shrink-0 px-4 py-2" style={{ borderBottom: `1px solid ${COLORS.border}`, background: COLORS.cardBg }}>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <h2 className="truncate text-sm font-bold" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
@@ -1171,7 +1277,7 @@ export default function MissionsPage() {
                         </span>
                       );
                     })()}
-                    {selectedMission && (() => {
+                    {selectedMission && selectedMission.priority !== "normal" && (() => {
                       const p = PRIORITY_STYLES[selectedMission.priority];
                       return (
                         <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[1px]" style={{ background: p.background, color: p.color, border: p.border, fontFamily: MONO_FONT }}>
@@ -1179,46 +1285,31 @@ export default function MissionsPage() {
                         </span>
                       );
                     })()}
-                    {(runGraph?.run?.metadata || selectedMission?.phaseConfiguration) && (
-                      <MissionPhaseBadge
-                        phases={missionPhaseBadge.phases}
-                        profileName={missionPhaseBadge.profileName}
-                      />
-                    )}
+                    {/* Phase badge removed — phases now shown in stepper below */}
                   </div>
-                  <div className="mt-0.5 flex items-center gap-3 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                  <div className="mt-0.5 flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                     <span><Clock className="inline h-3 w-3 mr-0.5" /><ElapsedTime startedAt={selectedMission?.startedAt ?? null} endedAt={missionElapsedEndedAt} /></span>
                     {selectedMission?.laneName && (
                       <span><GitBranch className="inline h-3 w-3 mr-0.5" />{selectedMission.laneName}</span>
                     )}
-                    {runGraph && (
-                      <span>Run: {runGraph.run.status}</span>
-                    )}
                     {executionProgress.total > 0 && (
-                      <span>
-                        Progress: {executionProgress.completed}/{executionProgress.total}
-                        {executionProgress.failed > 0 ? `, ${executionProgress.failed} failed` : ""}
-                        {executionProgress.running > 0 ? `, ${executionProgress.running} running` : ""}
-                        {executionProgress.blocked > 0 ? `, ${executionProgress.blocked} blocked` : ""}
-                      </span>
+                      <span>{executionProgress.completed}/{executionProgress.total} steps</span>
                     )}
                   </div>
-                  {executionProgress.total > 0 && (
-                    <div className="mt-2 h-1.5 w-full overflow-hidden" style={{ background: COLORS.recessedBg }}>
+                  {!chatFocused && executionProgress.total > 0 && (
+                    <div className="mt-1.5 h-1 w-full overflow-hidden" style={{ background: COLORS.recessedBg }}>
                       <div
                         className="h-full transition-all"
                         style={{ width: `${executionProgress.pct}%`, background: COLORS.accent }}
                       />
                     </div>
                   )}
-                  <div className="mt-1 text-[9px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
-                    Canonical progress tracks executable work only. Planning-only nodes stay visible in the DAG but do not affect this summary.
-                  </div>
+                  {/* Canonical progress note removed for cleaner header */}
                 </div>
 
                 {/* Quick actions */}
                 <div className="flex items-center gap-1.5">
-                  {hasNonTerminalRun && (
+                  {!chatFocused && hasNonTerminalRun && (
                     <span
                       className="px-1 text-[9px] uppercase tracking-[0.5px]"
                       style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}
@@ -1294,8 +1385,8 @@ export default function MissionsPage() {
                     ? "Coordinator is waiting on 1 answer"
                     : `Coordinator is waiting on ${blockingCount} answers`
                   : optionalCount === 1
-                    ? "Coordinator has 1 optional clarification"
-                    : `Coordinator has ${optionalCount} optional clarifications`;
+                    ? "Coordinator has 1 optional question"
+                    : `Coordinator has ${optionalCount} optional questions`;
                 const detail = isQuizIntervention(primaryIntervention)
                   ? `${primaryIntervention.metadata.questions.length} question${primaryIntervention.metadata.questions.length === 1 ? "" : "s"} ready to answer`
                   : primaryIntervention.title;
@@ -1304,8 +1395,8 @@ export default function MissionsPage() {
                     style={{
                       background: COLORS.cardBg,
                       border: `1px solid ${blockingCount > 0 ? COLORS.warning : COLORS.accentBorder}`,
-                      margin: "12px 16px",
-                      padding: "12px 16px",
+                      margin: compactPhaseChrome ? "8px 12px" : "12px 16px",
+                      padding: compactPhaseChrome ? "8px 12px" : "12px 16px",
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "space-between",
@@ -1321,7 +1412,7 @@ export default function MissionsPage() {
                         <div
                           style={{
                             fontFamily: MONO_FONT,
-                            fontSize: 11,
+                            fontSize: compactPhaseChrome ? 10 : 11,
                             fontWeight: 700,
                             textTransform: "uppercase",
                             letterSpacing: "1px",
@@ -1334,7 +1425,7 @@ export default function MissionsPage() {
                           style={{
                             marginTop: 4,
                             fontFamily: SANS_FONT,
-                            fontSize: 12,
+                            fontSize: compactPhaseChrome ? 11 : 12,
                             color: COLORS.textSecondary,
                             whiteSpace: "nowrap",
                             overflow: "hidden",
@@ -1355,29 +1446,46 @@ export default function MissionsPage() {
                 );
               })()}
 
+              {runGraph && (
+                <MissionActivePhasePanel
+                  activePhase={activePhaseView}
+                  allPhases={missionPhaseBadge.phases}
+                  promptInspector={coordinatorPromptInspector}
+                  promptLoading={coordinatorPromptLoading}
+                  promptError={coordinatorPromptError}
+                  onInspectPrompt={() => void loadCoordinatorPromptInspector()}
+                  coordinatorAvailability={missionStateDoc?.coordinatorAvailability ?? null}
+                  compact={compactPhaseChrome}
+                />
+              )}
+
+              {/* Phase pills removed — now integrated into MissionActivePhasePanel stepper */}
+
               {/* ── Tab Navigation ── */}
-              <div className="flex items-center gap-0 px-4" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+              <div className="flex items-center gap-0 px-3" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
                 {([
-                  { key: "plan" as WorkspaceTab, num: "01", label: "PLAN", icon: SquaresFour },
-                  { key: "work" as WorkspaceTab, num: "02", label: "WORK", icon: TerminalWindow },
-                  { key: "dag" as WorkspaceTab, num: "03", label: "DAG", icon: Graph },
-                  { key: "chat" as WorkspaceTab, num: "04", label: "CHAT", icon: ChatCircle },
-                  { key: "activity" as WorkspaceTab, num: "05", label: "ACTIVITY", icon: Pulse },
-                  { key: "details" as WorkspaceTab, num: "06", label: "DETAILS", icon: Lightning }
+                  { key: "overview" as WorkspaceTab, label: "Overview", icon: SquaresFour },
+                  { key: "plan" as WorkspaceTab, label: "Plan", icon: Graph },
+                  { key: "ops" as WorkspaceTab, label: "Workers", icon: TerminalWindow },
+                  { key: "chat" as WorkspaceTab, label: "Chat", icon: ChatCircle },
+                  { key: "artifacts" as WorkspaceTab, label: "Artifacts", icon: Lightning },
+                  { key: "history" as WorkspaceTab, label: "History", icon: Pulse }
                 ]).map((tab) => {
                   const isActive = activeTab === tab.key;
                   return (
                     <button
                       key={tab.key}
                       onClick={() => setActiveTab(tab.key)}
-                      className="flex items-center gap-2 px-4 py-2.5 text-[11px] font-bold uppercase tracking-[1px] transition-colors"
-                      style={isActive
-                        ? { background: `${COLORS.accent}18`, borderLeft: `2px solid ${COLORS.accent}`, color: COLORS.textPrimary, fontFamily: MONO_FONT }
-                        : { background: "transparent", borderLeft: "2px solid transparent", color: COLORS.textMuted, fontFamily: MONO_FONT }
-                      }
+                      className="flex items-center gap-1.5 px-2.5 py-2 text-[11px] transition-colors"
+                      style={{
+                        color: isActive ? COLORS.textPrimary : COLORS.textMuted,
+                        fontFamily: SANS_FONT,
+                        fontWeight: isActive ? 600 : 400,
+                        borderBottom: isActive ? `2px solid ${COLORS.accent}` : "2px solid transparent",
+                        background: "transparent",
+                      }}
                     >
-                      <span style={{ color: isActive ? COLORS.accent : COLORS.textDim }}>{tab.num}</span>
-                      <tab.icon className="h-3.5 w-3.5" />
+                      <tab.icon className="h-3.5 w-3.5" style={{ color: isActive ? COLORS.accent : COLORS.textDim }} />
                       <span>{tab.label}</span>
                     </button>
                   );
@@ -1385,12 +1493,13 @@ export default function MissionsPage() {
               </div>
 
               {/* ── Completion Banner ── */}
-              {runGraph && (
+              {runGraph && showCompletionBanner && (
                 <div className="px-4 pt-3 space-y-2">
                   <CompletionBanner
                     status={runGraph.run.status}
                     evaluation={runGraph.completionEvaluation}
                     runId={runGraph.run.id}
+                    stateDoc={missionStateDoc}
                   />
                 </div>
               )}
@@ -1400,66 +1509,174 @@ export default function MissionsPage() {
                 "flex-1 min-h-0",
                 activeTab === "chat"
                   ? "flex flex-col overflow-hidden"
-                  : activeTab === "work"
+                  : activeTab === "ops"
                     ? "flex flex-col overflow-hidden p-4"
                     : "overflow-auto p-4"
               )}>
+                {activeTab === "overview" && selectedMission && (
+                  <div className="space-y-3">
+                    {/* Mission prompt */}
+                    <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+                      <div className="text-[10px] font-semibold" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
+                        Prompt
+                      </div>
+                      <div className="mt-1.5 text-[12px]" style={{ color: COLORS.textPrimary, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                        {selectedMission.prompt}
+                      </div>
+                    </div>
+
+                    {/* State summary */}
+                    <MissionStateSummary
+                      runId={runGraph?.run.id ?? null}
+                      stateDoc={missionStateDoc}
+                      loading={missionStateLoading}
+                      error={missionStateError}
+                      onOpenIntervention={(interventionId) => setActiveInterventionId(interventionId)}
+                    />
+
+                    {/* Failed steps — only if there are failures */}
+                    {failedExecutionSteps.length > 0 && (
+                      <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+                        <div className="text-[10px] font-semibold" style={{ color: COLORS.danger, fontFamily: MONO_FONT }}>
+                          {failedExecutionSteps.length} failed step{failedExecutionSteps.length !== 1 ? "s" : ""}
+                        </div>
+                        <div className="mt-1.5 space-y-1">
+                          {failedExecutionSteps.map((step) => (
+                            <div key={step.id} className="flex items-center gap-2 text-[11px]">
+                              <span style={{ color: COLORS.danger }}>{"\u2717"}</span>
+                              <span style={{ color: COLORS.textPrimary }}>{step.title}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Interventions — only if there are any */}
+                    {selectedMission.interventions.length > 0 && (
+                      <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+                        <div className="flex items-center justify-between">
+                          <div className="text-[10px] font-semibold" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                            Interventions ({selectedMission.interventions.length})
+                          </div>
+                          <button
+                            type="button"
+                            className="text-[9px]"
+                            style={{ color: COLORS.textDim, fontFamily: MONO_FONT, background: "none", border: "none", cursor: "pointer" }}
+                            onClick={() => setActiveTab("history")}
+                          >
+                            View history →
+                          </button>
+                        </div>
+                        <div className="mt-1.5 space-y-1">
+                          {selectedMission.interventions.slice(0, 6).map((iv) => (
+                            <div key={iv.id} className="flex items-center justify-between gap-3 px-2 py-1.5" style={{ background: COLORS.recessedBg }}>
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span
+                                  className="px-1 py-0.5 text-[8px] font-bold uppercase shrink-0"
+                                  style={{
+                                    color: iv.status === "open" ? COLORS.warning : COLORS.success,
+                                    border: `1px solid ${iv.status === "open" ? COLORS.warning : COLORS.success}40`,
+                                    background: `${iv.status === "open" ? COLORS.warning : COLORS.success}12`,
+                                    fontFamily: MONO_FONT,
+                                  }}
+                                >
+                                  {iv.status === "open" ? "open" : "resolved"}
+                                </span>
+                                <span className="text-[11px] truncate" style={{ color: COLORS.textPrimary }}>{iv.title}</span>
+                              </div>
+                              <span className="text-[9px] shrink-0" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
+                                {iv.interventionType.replace(/_/g, " ")}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {activeTab === "plan" && (
                   <div className="flex h-full min-h-0 flex-col gap-3 lg:flex-row">
                     <div className="min-h-0 min-w-0 flex-1 overflow-auto">
-                      <PlanTab
-                        mission={selectedMission}
-                        runGraph={runGraph}
-                        attemptsByStep={attemptsByStep}
-                        selectedStepId={selectedStepId}
-                        onStepSelect={setSelectedStepId}
-                      />
+                      <div className="mb-3 flex items-center gap-2">
+                        <button
+                          type="button"
+                          style={outlineButton({
+                            height: 24,
+                            padding: "0 8px",
+                            fontSize: 9,
+                            background: planSubview === "board" ? `${COLORS.accent}14` : COLORS.cardBg,
+                            color: planSubview === "board" ? COLORS.accent : COLORS.textMuted,
+                            border: `1px solid ${planSubview === "board" ? `${COLORS.accent}35` : COLORS.border}`,
+                          })}
+                          onClick={() => setPlanSubview("board")}
+                        >
+                          BOARD
+                        </button>
+                        <button
+                          type="button"
+                          style={outlineButton({
+                            height: 24,
+                            padding: "0 8px",
+                            fontSize: 9,
+                            background: planSubview === "dag" ? `${COLORS.accent}14` : COLORS.cardBg,
+                            color: planSubview === "dag" ? COLORS.accent : COLORS.textMuted,
+                            border: `1px solid ${planSubview === "dag" ? `${COLORS.accent}35` : COLORS.border}`,
+                          })}
+                          onClick={() => setPlanSubview("dag")}
+                        >
+                          DAG
+                        </button>
+                      </div>
+                      {planSubview === "board" ? (
+                        <PlanTab
+                          mission={selectedMission}
+                          runGraph={runGraph}
+                          attemptsByStep={attemptsByStep}
+                          selectedStepId={selectedStepId}
+                          onStepSelect={setSelectedStepId}
+                        />
+                      ) : (
+                        <OrchestratorDAG
+                          steps={runSteps}
+                          attempts={runAttempts}
+                          claims={runClaims}
+                          selectedStepId={selectedStepId}
+                          onStepClick={setSelectedStepId}
+                          runId={runGraph?.run?.id}
+                        />
+                      )}
                     </div>
-                    <StepDetailPanel
-                      step={selectedStep}
-                      attempts={selectedStepAttempts}
-                      allSteps={runSteps}
-                      claims={runClaims}
-                      onOpenWorkerThread={(target) => {
-                        setChatJumpTarget(target);
-                        setActiveTab("chat");
-                      }}
-                      onViewWorkSession={handleViewWorkSession}
-                    />
+                    <div className="space-y-3 lg:w-[380px] lg:max-w-[40%] lg:shrink-0">
+                      <StepDetailPanel
+                        step={selectedStep}
+                        attempts={selectedStepAttempts}
+                        allSteps={runSteps}
+                        claims={runClaims}
+                        onOpenWorkerThread={(target) => {
+                          setChatJumpTarget(target);
+                          setActiveTab("chat");
+                        }}
+                        onViewWorkSession={handleViewWorkSession}
+                        onInspectPrompt={(stepId) => void loadWorkerPromptInspector(stepId)}
+                      />
+                      {selectedStep ? (
+                        <PromptInspectorCard
+                          inspector={workerPromptInspector}
+                          loading={workerPromptLoading}
+                          error={workerPromptError}
+                          title="Selected step effective prompt"
+                        />
+                      ) : null}
+                    </div>
                   </div>
                 )}
 
-                {activeTab === "work" && (
+                {activeTab === "ops" && (
                   <WorkTab runGraph={runGraph} />
                 )}
 
-                {activeTab === "dag" && (
-                  <div className="flex h-full min-h-0 flex-col gap-3 lg:flex-row">
-                    <div className="min-h-0 min-w-0 flex-1 overflow-auto">
-                    <OrchestratorDAG
-                      steps={runSteps}
-                      attempts={runAttempts}
-                      claims={runClaims}
-                      selectedStepId={selectedStepId}
-                      onStepClick={setSelectedStepId}
-                      runId={runGraph?.run?.id}
-                    />
-                    </div>
-                    <StepDetailPanel
-                      step={selectedStep}
-                      attempts={selectedStepAttempts}
-                      allSteps={runSteps}
-                      claims={runClaims}
-                      onOpenWorkerThread={(target) => {
-                        setChatJumpTarget(target);
-                        setActiveTab("chat");
-                      }}
-                      onViewWorkSession={handleViewWorkSession}
-                    />
-                  </div>
-                )}
-
-                {activeTab === "activity" && (
+                {activeTab === "history" && (
                   <div className="space-y-3">
                     <div className="flex items-center gap-1">
                       <button
@@ -1530,169 +1747,17 @@ export default function MissionsPage() {
                     missionStatus={selectedMission?.status ?? null}
                     runId={runGraph?.run.id ?? null}
                     runStatus={runGraph?.run.status ?? null}
+                    runMetadata={runGraph?.run.metadata ?? null}
                     jumpTarget={chatJumpTarget}
                     onJumpHandled={() => setChatJumpTarget(null)}
                   />
                 )}
 
-                {activeTab === "details" && selectedMission && (
-                  <div className="space-y-3">
-                    <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-                      <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                        Mission prompt
-                      </div>
-                      <div className="mt-2 text-[12px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                        {selectedMission.prompt}
-                      </div>
-                    </div>
-
-                    <div className="grid gap-3 lg:grid-cols-2">
-                      <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-                        <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                          Mission metadata
-                        </div>
-                        <div className="mt-2 space-y-1 text-[11px]" style={{ color: COLORS.textSecondary }}>
-                          <div>Status: <span style={{ color: COLORS.textPrimary }}>{selectedMission.status}</span></div>
-                          <div>Priority: <span style={{ color: COLORS.textPrimary }}>{selectedMission.priority}</span></div>
-                          <div>Phase profile: <span style={{ color: COLORS.textPrimary }}>{selectedMission.phaseConfiguration?.profile?.name ?? "Default"}</span></div>
-                          <div>Lanes: <span style={{ color: COLORS.textPrimary }}>{missionLaneLabels.length > 0 ? missionLaneLabels.join(", ") : "None"}</span></div>
-                        </div>
-                        {missionPhaseRows.length > 0 ? (
-                          <div className="mt-3 space-y-1">
-                            {missionPhaseRows.map((row) => (
-                              <div key={row.key} className="flex items-center justify-between text-[10px]" style={{ fontFamily: MONO_FONT }}>
-                                <span style={{ color: COLORS.textSecondary }}>{row.name}</span>
-                                <span style={{ color: COLORS.textMuted }}>{row.completed}/{row.total}</span>
-                              </div>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-
-                      <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-                        <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                          Failure summary
-                        </div>
-                        <div className="mt-2 space-y-1">
-                          {failedExecutionSteps.length === 0 ? (
-                            <div className="text-[11px]" style={{ color: COLORS.textSecondary }}>
-                              No executable steps are currently failed.
-                            </div>
-                          ) : failedExecutionSteps.map((step) => (
-                            <div key={step.id} className="px-2 py-1.5 text-[11px]" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
-                              <div style={{ color: COLORS.textPrimary }}>{step.title}</div>
-                              <div className="mt-1" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>{step.stepKey}</div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-                      <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                        Modified files
-                      </div>
-                      <div className="mt-2 space-y-1">
-                        {missionFileChanges.length === 0 ? (
-                          <div className="text-[11px]" style={{ color: COLORS.textSecondary }}>
-                            No file activity recorded yet.
-                          </div>
-                        ) : missionFileChanges.slice(0, 30).map((file) => (
-                          <div key={file} className="text-[10px]" style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT }}>
-                            {file}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-                      <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                        Interventions
-                      </div>
-                      <div className="mt-2 space-y-2">
-                        {selectedMission.interventions.length === 0 ? (
-                          <div className="text-[11px]" style={{ color: COLORS.textSecondary }}>
-                            No interventions on this mission.
-                          </div>
-                        ) : selectedMission.interventions.slice(0, 10).map((iv) => {
-                          const isOpen = iv.status === "open";
-                          return (
-                            <div key={iv.id} className="px-2 py-1.5" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
-                              <div className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                                <span style={{ color: isOpen ? COLORS.warning : COLORS.success }}>{isOpen ? "OPEN" : "RESOLVED"}</span>
-                                <span>{iv.interventionType.replace(/_/g, " ")}</span>
-                              </div>
-                              <div className="mt-1 text-[11px]" style={{ color: COLORS.textPrimary }}>
-                                {iv.title}
-                              </div>
-                              <div className="mt-1 flex items-center gap-2">
-                                <button
-                                  type="button"
-                                  style={outlineButton({ height: 24, padding: "0 8px", fontSize: 9 })}
-                                  onClick={() => {
-                                    setLogsFocusInterventionId(iv.id);
-                                    setActivityPanelMode("logs");
-                                    setActiveTab("activity");
-                                  }}
-                                >
-                                  VIEW LOGS
-                                </button>
-                                {isOpen ? (
-                                  <button
-                                    type="button"
-                                    style={outlineButton({ height: 24, padding: "0 8px", fontSize: 9 })}
-                                    onClick={() => {
-                                      if (iv.interventionType === "manual_input") {
-                                        setActiveInterventionId(iv.id);
-                                        return;
-                                      }
-                                      setActiveTab("chat");
-                                    }}
-                                  >
-                                    {iv.interventionType === "manual_input" ? "ANSWER" : "OPEN CHAT"}
-                                  </button>
-                                ) : null}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-                      <button
-                        type="button"
-                        onClick={() => setDetailsAdvancedOpen((prev) => !prev)}
-                        className="flex w-full items-center justify-between text-[10px] font-bold uppercase tracking-[1px]"
-                        style={{ color: detailsAdvancedOpen ? COLORS.accent : COLORS.textMuted, fontFamily: MONO_FONT }}
-                      >
-                        <span>Advanced mission state</span>
-                        <span>{detailsAdvancedOpen ? "Hide" : "Show"}</span>
-                      </button>
-                      {detailsAdvancedOpen && (
-                        <div className="mt-3">
-                          <MissionStateSummary runId={runGraph?.run.id ?? null} />
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-                      <button
-                        type="button"
-                        onClick={() => setUsageOpen((prev) => !prev)}
-                        className="flex w-full items-center justify-between text-[10px] font-bold uppercase tracking-[1px]"
-                        style={{ color: usageOpen ? COLORS.accent : COLORS.textMuted, fontFamily: MONO_FONT }}
-                      >
-                        <span>Usage and budget</span>
-                        <span>{usageOpen ? "Hide" : "Show"}</span>
-                      </button>
-                      {usageOpen && (
-                        <div className="mt-3">
-                          <UsageDashboard missionId={selectedMission.id} missionTitle={selectedMission.title} />
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                {activeTab === "artifacts" && (
+                  <MissionArtifactsTab
+                    groupedArtifacts={groupedArtifacts}
+                    closeoutRequirements={missionStateDoc?.finalization?.requirements ?? []}
+                  />
                 )}
               </div>
             </>
@@ -1701,38 +1766,27 @@ export default function MissionsPage() {
       </div>
 
       {/* ════════════ CREATE DIALOG ════════════ */}
-      <AnimatePresence>
-        {createOpen && (
-          <CreateMissionDialog
-            open={createOpen}
-            onClose={closeCreateDialog}
-            onLaunch={handleLaunchMission}
-            busy={createBusy}
-            lanes={mappedLanes}
-            defaultLaneId={defaultCreateLaneId}
-            missionDefaults={createMissionDefaults}
-          />
-        )}
-      </AnimatePresence>
+      <MissionCreateDialogHost
+        lanes={mappedLanes}
+        defaultLaneId={defaultCreateLaneId}
+        missionDefaults={createMissionDefaults}
+        onLaunch={handleLaunchMission}
+      />
 
       {/* ════════════ MISSION SETTINGS DIALOG ════════════ */}
-      <AnimatePresence>
-        {missionSettingsOpen && (
-          <MissionSettingsDialog
-            open={missionSettingsOpen}
-            onClose={() => {
-              if (missionSettingsBusy) return;
-              setMissionSettingsOpen(false);
-            }}
-            draft={missionSettingsDraft}
-            onDraftChange={(update) => setMissionSettingsDraft((prev) => ({ ...prev, ...update }))}
-            onSave={() => void saveMissionSettings()}
-            busy={missionSettingsBusy}
-            error={missionSettingsError}
-            notice={missionSettingsNotice}
-          />
-        )}
-      </AnimatePresence>
+      <MissionSettingsDialog
+        open={missionSettingsOpen}
+        onClose={() => {
+          if (missionSettingsBusy) return;
+          setMissionSettingsOpen(false);
+        }}
+        draft={missionSettingsDraft}
+        onDraftChange={(update) => setMissionSettingsDraft((prev) => ({ ...prev, ...update }))}
+        onSave={() => void saveMissionSettings()}
+        busy={missionSettingsBusy}
+        error={missionSettingsError}
+        notice={missionSettingsNotice}
+      />
 
       {/* ════════════ MANUAL INPUT MODALS ════════════ */}
       {activeInterventionId && selectedMission && (() => {

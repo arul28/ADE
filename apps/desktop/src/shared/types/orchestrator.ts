@@ -4,7 +4,7 @@
 
 import type { ModelId } from "./core";
 import type { ModelConfig } from "./models";
-import type { PrDepth } from "./prs";
+import type { PrDepth, QueueWaitReason } from "./prs";
 import type { MissionDetail, MissionStepHandoff } from "./missions";
 import type {
   OrchestratorContextProfileId,
@@ -632,6 +632,111 @@ export type OrchestratorRetrospectivePatternStat = {
   updatedAt: string;
 };
 
+export type MissionCloseoutRequirementKey =
+  | "planning_document"
+  | "research_summary"
+  | "changed_files_summary"
+  | "test_report"
+  | "implementation_summary"
+  | "validation_verdict"
+  | "screenshot"
+  | "browser_verification"
+  | "browser_trace"
+  | "video_recording"
+  | "console_logs"
+  | "risk_notes"
+  | "pr_url"
+  | "proposal_url"
+  | "review_summary"
+  | "final_outcome_summary";
+
+export type MissionCloseoutRequirementStatus =
+  | "present"
+  | "missing"
+  | "incomplete"
+  | "waived"
+  | "blocked_by_capability";
+
+export type MissionCloseoutRequirement = {
+  key: MissionCloseoutRequirementKey;
+  label: string;
+  required: boolean;
+  status: MissionCloseoutRequirementStatus;
+  detail: string | null;
+  artifactId: string | null;
+  uri: string | null;
+  source: "declared" | "discovered" | "runtime" | "waiver";
+};
+
+export type MissionFinalizationPolicyKind = "disabled" | "manual" | "integration" | "per-lane" | "queue";
+
+export type MissionFinalizationStatus =
+  | "idle"
+  | "finalizing"
+  | "creating_pr"
+  | "rehearsing_queue"
+  | "landing_queue"
+  | "resolving_integration_conflicts"
+  | "resolving_queue_conflicts"
+  | "waiting_for_green"
+  | "awaiting_operator_review"
+  | "posting_review_comment"
+  | "finalization_failed"
+  | "completed";
+
+export type MissionFinalizationPolicy = {
+  kind: MissionFinalizationPolicyKind;
+  targetBranch: string | null;
+  draft: boolean | null;
+  prDepth: PrDepth | null;
+  autoRebase: boolean | null;
+  ciGating: boolean | null;
+  autoLand: boolean | null;
+  rehearseQueue: boolean | null;
+  autoResolveConflicts: boolean | null;
+  archiveLaneOnLand: boolean | null;
+  mergeMethod: "merge" | "squash" | "rebase" | null;
+  conflictResolverModel: string | null;
+  reasoningEffort: string | null;
+  description: string | null;
+};
+
+export type MissionFinalizationState = {
+  policy: MissionFinalizationPolicy;
+  status: MissionFinalizationStatus;
+  executionComplete: boolean;
+  contractSatisfied: boolean;
+  blocked: boolean;
+  blockedReason: string | null;
+  summary: string | null;
+  detail: string | null;
+  resolverJobId: string | null;
+  integrationLaneId: string | null;
+  queueGroupId: string | null;
+  queueId: string | null;
+  queueRehearsalId: string | null;
+  scratchLaneId: string | null;
+  activePrId: string | null;
+  waitReason: QueueWaitReason | null;
+  proposalUrl: string | null;
+  prUrls: string[];
+  reviewStatus: string | null;
+  mergeReadiness: string | null;
+  requirements: MissionCloseoutRequirement[];
+  warnings: string[];
+  updatedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+};
+
+export type MissionCoordinatorAvailability = {
+  available: boolean;
+  mode: "offline" | "consult_only" | "continuation_required";
+  summary: string;
+  detail: string | null;
+  updatedAt: string;
+};
+
 export type MissionStateDocument = {
   schemaVersion: 1;
   missionId: string;
@@ -644,6 +749,8 @@ export type MissionStateDocument = {
   activeIssues: MissionStateIssue[];
   modifiedFiles: string[];
   pendingInterventions: MissionStatePendingIntervention[];
+  finalization?: MissionFinalizationState | null;
+  coordinatorAvailability?: MissionCoordinatorAvailability | null;
   reflections?: OrchestratorReflectionEntry[];
   latestRetrospective?: MissionRetrospective | null;
 };
@@ -659,12 +766,26 @@ export type MissionStateDocumentPatch = {
   resolveIssue?: { id: string; resolution: string };
   updateProgress?: Partial<MissionStateProgress>;
   pendingInterventions?: MissionStatePendingIntervention[];
+  finalization?: MissionFinalizationState | null;
+  coordinatorAvailability?: MissionCoordinatorAvailability | null;
   reflections?: OrchestratorReflectionEntry[];
   latestRetrospective?: MissionRetrospective | null;
 };
 
 export type GetMissionStateDocumentArgs = {
   runId: string;
+};
+
+export type ListOrchestratorArtifactsArgs = {
+  missionId?: string;
+  runId?: string | null;
+  stepId?: string | null;
+};
+
+export type ListOrchestratorWorkerCheckpointsArgs = {
+  missionId?: string;
+  runId?: string | null;
+  stepId?: string | null;
 };
 
 export type OrchestratorContextSnapshot = {
@@ -1439,6 +1560,51 @@ export type OrchestratorWorkerCheckpoint = {
   filePath: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type OrchestratorPromptLayerSource =
+  | "system_owned"
+  | "mission_goal"
+  | "phase_snapshot"
+  | "step_runtime"
+  | "runtime_overlay"
+  | "user_steering"
+  | "runtime_context";
+
+export type OrchestratorPromptSourceKind =
+  | "default_template"
+  | "mission_override"
+  | "run_snapshot"
+  | "live_effective_prompt"
+  | "system_owned";
+
+export type OrchestratorPromptLayer = {
+  id: string;
+  label: string;
+  source: OrchestratorPromptLayerSource;
+  sourceKind: OrchestratorPromptSourceKind;
+  editable: boolean;
+  text: string;
+  description?: string | null;
+};
+
+export type GetOrchestratorPromptInspectorArgs = {
+  runId: string;
+  target: "coordinator" | "worker";
+  stepId?: string | null;
+};
+
+export type OrchestratorPromptInspector = {
+  target: "coordinator" | "worker";
+  runId: string;
+  missionId: string;
+  stepId: string | null;
+  phaseKey: string | null;
+  phaseName: string | null;
+  title: string;
+  notes: string[];
+  layers: OrchestratorPromptLayer[];
+  fullPrompt: string;
 };
 
 export type OrchestratorArtifactKind = "file" | "branch" | "pr" | "test_report" | "checkpoint" | "custom";

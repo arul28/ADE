@@ -2,9 +2,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type {
   CoordinatorCheckpoint,
+  MissionCloseoutRequirement,
+  MissionCoordinatorAvailability,
   MissionStateDecision,
   MissionStateDocument,
   MissionStateDocumentPatch,
+  MissionFinalizationPolicy,
+  MissionFinalizationState,
   MissionStateIssue,
   MissionStatePendingIntervention,
   MissionRetrospective,
@@ -161,6 +165,144 @@ function normalizePendingIntervention(value: unknown): MissionStatePendingInterv
   };
 }
 
+function normalizeCloseoutRequirement(value: unknown): MissionCloseoutRequirement | null {
+  const raw = isRecord(value) ? value : null;
+  if (!raw) return null;
+  const key = stringOr(raw.key).trim();
+  const label = stringOr(raw.label).trim();
+  if (!key.length || !label.length) return null;
+  return {
+    key: key as MissionCloseoutRequirement["key"],
+    label,
+    required: raw.required === true,
+    status:
+      raw.status === "present" || raw.status === "missing" || raw.status === "waived"
+        ? raw.status
+        : "missing",
+    detail: raw.detail === null ? null : stringOr(raw.detail).trim() || null,
+    artifactId: raw.artifactId === null ? null : stringOr(raw.artifactId).trim() || null,
+    uri: raw.uri === null ? null : stringOr(raw.uri).trim() || null,
+    source:
+      raw.source === "declared" || raw.source === "discovered" || raw.source === "runtime" || raw.source === "waiver"
+        ? raw.source
+        : "runtime",
+  };
+}
+
+function normalizeFinalizationPolicy(value: unknown): MissionFinalizationPolicy | null {
+  const raw = isRecord(value) ? value : null;
+  if (!raw) return null;
+  const kind =
+    raw.kind === "disabled" || raw.kind === "manual" || raw.kind === "integration" || raw.kind === "per-lane" || raw.kind === "queue"
+      ? raw.kind
+      : null;
+  if (!kind) return null;
+  const prDepth =
+    raw.prDepth === "propose-only" || raw.prDepth === "resolve-conflicts" || raw.prDepth === "open-and-comment"
+      ? raw.prDepth
+      : null;
+  return {
+    kind,
+    targetBranch: raw.targetBranch === null ? null : stringOr(raw.targetBranch).trim() || null,
+    draft: typeof raw.draft === "boolean" ? raw.draft : null,
+    prDepth,
+    autoRebase: typeof raw.autoRebase === "boolean" ? raw.autoRebase : null,
+    ciGating: typeof raw.ciGating === "boolean" ? raw.ciGating : null,
+    autoLand: typeof raw.autoLand === "boolean" ? raw.autoLand : null,
+    rehearseQueue: typeof raw.rehearseQueue === "boolean" ? raw.rehearseQueue : null,
+    autoResolveConflicts: typeof raw.autoResolveConflicts === "boolean" ? raw.autoResolveConflicts : null,
+    archiveLaneOnLand: typeof raw.archiveLaneOnLand === "boolean" ? raw.archiveLaneOnLand : null,
+    mergeMethod:
+      raw.mergeMethod === "merge" || raw.mergeMethod === "squash" || raw.mergeMethod === "rebase"
+        ? raw.mergeMethod
+        : null,
+    conflictResolverModel: raw.conflictResolverModel === null ? null : stringOr(raw.conflictResolverModel).trim() || null,
+    reasoningEffort: raw.reasoningEffort === null ? null : stringOr(raw.reasoningEffort).trim() || null,
+    description: raw.description === null ? null : stringOr(raw.description).trim() || null,
+  };
+}
+
+function normalizeFinalizationState(value: unknown): MissionFinalizationState | null {
+  const raw = isRecord(value) ? value : null;
+  if (!raw) return null;
+  const policy = normalizeFinalizationPolicy(raw.policy);
+  if (!policy) return null;
+  const status =
+    raw.status === "idle"
+    || raw.status === "finalizing"
+    || raw.status === "creating_pr"
+    || raw.status === "rehearsing_queue"
+    || raw.status === "landing_queue"
+    || raw.status === "resolving_integration_conflicts"
+    || raw.status === "resolving_queue_conflicts"
+    || raw.status === "waiting_for_green"
+    || raw.status === "awaiting_operator_review"
+    || raw.status === "posting_review_comment"
+    || raw.status === "finalization_failed"
+    || raw.status === "completed"
+      ? raw.status
+      : "idle";
+  const waitReason =
+    raw.waitReason === "ci"
+    || raw.waitReason === "review"
+    || raw.waitReason === "merge_conflict"
+    || raw.waitReason === "resolver_failed"
+    || raw.waitReason === "merge_blocked"
+    || raw.waitReason === "manual"
+    || raw.waitReason === "canceled"
+      ? raw.waitReason
+      : null;
+  return {
+    policy,
+    status,
+    executionComplete: raw.executionComplete === true,
+    contractSatisfied: raw.contractSatisfied === true,
+    blocked: raw.blocked === true,
+    blockedReason: raw.blockedReason === null ? null : stringOr(raw.blockedReason).trim() || null,
+    summary: raw.summary === null ? null : stringOr(raw.summary).trim() || null,
+    detail: raw.detail === null ? null : stringOr(raw.detail).trim() || null,
+    resolverJobId: raw.resolverJobId === null ? null : stringOr(raw.resolverJobId).trim() || null,
+    integrationLaneId: raw.integrationLaneId === null ? null : stringOr(raw.integrationLaneId).trim() || null,
+    queueGroupId: raw.queueGroupId === null ? null : stringOr(raw.queueGroupId).trim() || null,
+    queueId: raw.queueId === null ? null : stringOr(raw.queueId).trim() || null,
+    queueRehearsalId: raw.queueRehearsalId === null ? null : stringOr(raw.queueRehearsalId).trim() || null,
+    scratchLaneId: raw.scratchLaneId === null ? null : stringOr(raw.scratchLaneId).trim() || null,
+    activePrId: raw.activePrId === null ? null : stringOr(raw.activePrId).trim() || null,
+    waitReason,
+    proposalUrl: raw.proposalUrl === null ? null : stringOr(raw.proposalUrl).trim() || null,
+    prUrls: normalizeStringArray(raw.prUrls, 20),
+    reviewStatus: raw.reviewStatus === null ? null : stringOr(raw.reviewStatus).trim() || null,
+    mergeReadiness: raw.mergeReadiness === null ? null : stringOr(raw.mergeReadiness).trim() || null,
+    requirements: Array.isArray(raw.requirements)
+      ? raw.requirements
+          .map((entry) => normalizeCloseoutRequirement(entry))
+          .filter((entry): entry is MissionCloseoutRequirement => Boolean(entry))
+      : [],
+    warnings: normalizeStringArray(raw.warnings, 40),
+    updatedAt: stringOr(raw.updatedAt).trim() || nowIso(),
+    startedAt: raw.startedAt === null ? null : stringOr(raw.startedAt).trim() || null,
+    completedAt: raw.completedAt === null ? null : stringOr(raw.completedAt).trim() || null,
+  };
+}
+
+function normalizeCoordinatorAvailability(value: unknown): MissionCoordinatorAvailability | null {
+  const raw = isRecord(value) ? value : null;
+  if (!raw) return null;
+  const mode =
+    raw.mode === "offline" || raw.mode === "consult_only" || raw.mode === "continuation_required"
+      ? raw.mode
+      : null;
+  const summary = stringOr(raw.summary).trim();
+  if (!mode || !summary.length) return null;
+  return {
+    available: raw.available === true,
+    mode,
+    summary,
+    detail: raw.detail === null ? null : stringOr(raw.detail).trim() || null,
+    updatedAt: stringOr(raw.updatedAt).trim() || nowIso(),
+  };
+}
+
 
 function normalizeReflectionEntry(value: unknown): OrchestratorReflectionEntry | null {
   const raw = isRecord(value) ? value : null;
@@ -279,6 +421,8 @@ function normalizeDocument(rawDoc: unknown): MissionStateDocument | null {
         .filter((entry): entry is MissionStatePendingIntervention => Boolean(entry))
     : [];
   const modifiedFiles = normalizeStringArray(raw.modifiedFiles);
+  const finalization = normalizeFinalizationState(raw.finalization);
+  const coordinatorAvailability = normalizeCoordinatorAvailability(raw.coordinatorAvailability);
   return {
     schemaVersion: 1,
     missionId,
@@ -291,6 +435,8 @@ function normalizeDocument(rawDoc: unknown): MissionStateDocument | null {
     activeIssues: activeIssues.slice(-MAX_ACTIVE_ISSUES),
     modifiedFiles,
     pendingInterventions: pendingInterventions.slice(-MAX_PENDING_INTERVENTIONS),
+    finalization,
+    coordinatorAvailability,
     reflections: Array.isArray(raw.reflections)
       ? raw.reflections.map((entry) => normalizeReflectionEntry(entry)).filter((entry): entry is OrchestratorReflectionEntry => Boolean(entry)).slice(-200)
       : [],
@@ -385,6 +531,8 @@ function applyPatch(doc: MissionStateDocument, patch: MissionStateDocumentPatch)
     activeIssues: [...doc.activeIssues],
     modifiedFiles: [...doc.modifiedFiles],
     pendingInterventions: [...doc.pendingInterventions],
+    finalization: doc.finalization ?? null,
+    coordinatorAvailability: doc.coordinatorAvailability ?? null,
     reflections: [...(doc.reflections ?? [])],
     latestRetrospective: doc.latestRetrospective ?? null,
     updatedAt: nowIso(),
@@ -470,6 +618,16 @@ function applyPatch(doc: MissionStateDocument, patch: MissionStateDocumentPatch)
       .map((entry) => normalizePendingIntervention(entry))
       .filter((entry): entry is MissionStatePendingIntervention => Boolean(entry))
       .slice(-MAX_PENDING_INTERVENTIONS);
+  }
+
+  if (patch.finalization !== undefined) {
+    next.finalization = patch.finalization ? normalizeFinalizationState(patch.finalization) : null;
+  }
+
+  if (patch.coordinatorAvailability !== undefined) {
+    next.coordinatorAvailability = patch.coordinatorAvailability
+      ? normalizeCoordinatorAvailability(patch.coordinatorAvailability)
+      : null;
   }
 
   if (patch.reflections) {

@@ -632,6 +632,7 @@ export function extractAndRegisterArtifacts(
     const step = graph.steps.find((s) => s.id === attempt.stepId);
     const stepMeta = step && isRecord(step.metadata) ? step.metadata : {};
     const planStep = isRecord(stepMeta.planStep) ? stepMeta.planStep : null;
+    const lastResultReport = isRecord(stepMeta.lastResultReport) ? stepMeta.lastResultReport : null;
     const artifactHints: string[] = Array.isArray(planStep?.artifactHints)
       ? (planStep!.artifactHints as unknown[]).map((h) => String(h ?? "").trim()).filter(Boolean)
       : [];
@@ -661,6 +662,14 @@ export function extractAndRegisterArtifacts(
         declared: isDeclared
       });
     };
+
+    const stepSummary = typeof envelope.summary === "string" ? envelope.summary.trim() : "";
+    if (stepSummary.length > 0) {
+      register("step_summary", "custom", stepSummary, {
+        title: "Step summary",
+        summary: stepSummary,
+      });
+    }
 
     // Extract file artifacts from filesChanged / filesModified
     const filesChangedRaw = outputs.filesChanged ?? outputs.files_changed ?? outputs.filesModified ?? outputs.files_modified;
@@ -699,6 +708,39 @@ export function extractAndRegisterArtifacts(
     if (typeof prUrl === "string" && prUrl.trim().length > 0) {
       register("implementation_pr", "pr", prUrl.trim());
     }
+
+    const reportArtifacts = Array.isArray(lastResultReport?.artifacts) ? lastResultReport.artifacts : [];
+    reportArtifacts.forEach((entry, index) => {
+      const artifact = isRecord(entry) ? entry : null;
+      const rawTitle = artifact && typeof artifact.title === "string" ? artifact.title.trim() : "";
+      const rawType = artifact && typeof artifact.type === "string" ? artifact.type.trim().toLowerCase() : "";
+      const rawUri = artifact && typeof artifact.uri === "string" ? artifact.uri.trim() : "";
+      const title = rawTitle || `Worker artifact ${index + 1}`;
+      const artifactKeyBase = rawTitle.length
+        ? rawTitle.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "")
+        : `reported_artifact_${index + 1}`;
+      const artifactKey = artifactKeyBase.length ? artifactKeyBase : `reported_artifact_${index + 1}`;
+      const kind =
+        rawType === "branch"
+          ? "branch"
+          : rawType === "pr" || rawType === "pull_request"
+            ? "pr"
+            : rawType === "test_report"
+              ? "test_report"
+              : rawUri.length
+                ? "file"
+                : "custom";
+      const value = rawUri.length
+        ? rawUri
+        : artifact?.metadata != null
+          ? JSON.stringify(artifact.metadata)
+          : title;
+      register(artifactKey, kind, value, {
+        title,
+        type: rawType || "artifact",
+        ...(isRecord(artifact?.metadata) ? artifact.metadata : {}),
+      });
+    });
 
     // Match remaining output keys against declared artifactHints
     for (const hintKey of artifactHints) {

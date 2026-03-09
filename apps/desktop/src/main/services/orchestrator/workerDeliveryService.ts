@@ -467,6 +467,31 @@ export function upsertWorkerDeliveryInterventionCtx(
   }
   const mission = ctx.missionService.get(args.message.missionId);
   if (!mission) return null;
+  if (args.context?.runId && args.context.stepId) {
+    try {
+      const graph = ctx.orchestratorService.getRunGraph({ runId: args.context.runId, timelineLimit: 0 });
+      const step = graph.steps.find((entry) => entry.id === args.context?.stepId) ?? null;
+      if (step && (
+        step.status === "succeeded"
+        || step.status === "failed"
+        || step.status === "skipped"
+        || step.status === "canceled"
+        || step.status === "superseded"
+      )) {
+        ctx.logger.info("ai_orchestrator.worker_delivery_intervention_suppressed_terminal_step", {
+          missionId: args.message.missionId,
+          runId: args.context.runId,
+          stepId: args.context.stepId,
+          stepStatus: step.status,
+          messageId: args.message.id,
+          retries: args.retries,
+        });
+        return null;
+      }
+    } catch {
+      // Best effort only. If graph lookup fails, keep the existing recovery path.
+    }
+  }
   if (mission.status === "queued") {
     try {
       ctx.missionService.update({
@@ -509,7 +534,8 @@ export function upsertWorkerDeliveryInterventionCtx(
       attemptId: args.context?.attemptId ?? args.message.attemptId ?? null,
       sessionId: args.context?.sessionId ?? args.message.sourceSessionId ?? null,
       runId: args.context?.runId ?? args.message.runId ?? null,
-      workerDeliveryFailure: true
+      workerDeliveryFailure: true,
+      recoveryType: "worker_delivery_failure",
     }
   });
   ctx.workerDeliveryInterventionCooldowns.set(cooldownKey, nowMs);
@@ -937,7 +963,8 @@ function isQueuedSteerDeliveryPending(
 export async function sendWorkerMessageToSessionWithStatusCtx(
   ctx: OrchestratorContext,
   sessionId: string,
-  text: string
+  text: string,
+  options?: { priority?: "normal" | "urgent" }
 ): Promise<WorkerSessionDeliveryStatus> {
   if (!ctx.agentChatService) {
     return {
@@ -946,6 +973,62 @@ export async function sendWorkerMessageToSessionWithStatusCtx(
       reason: "delivery_failed",
       error: "Agent chat service unavailable."
     };
+  }
+  const agentChatService = ctx.agentChatService;
+  const priority = options?.priority === "urgent" ? "urgent" : "normal";
+  const attemptSteerDelivery = async (): Promise<WorkerSessionDeliveryStatus> => {
+    try {
+      await agentChatService.steer({
+        sessionId,
+        text
+      });
+      const steerQueued = await isSteerLikelyQueuedForSession(ctx, sessionId);
+      if (steerQueued) {
+        return {
+          ok: true,
+          delivered: false,
+          reason: "worker_busy_steered",
+          method: "steer"
+        };
+      }
+      return { ok: true, delivered: true, method: "steer" };
+    } catch (steerError) {
+      const steerText = normalizeDeliveryError(steerError);
+      if (!isNoActiveTurnError(steerText)) {
+        return {
+          ok: false,
+          delivered: false,
+          reason: inferSessionDeliveryFailureReason(steerText),
+          error: steerText
+        };
+      }
+      try {
+        await agentChatService.sendMessage({
+          sessionId,
+          text
+        });
+        return { ok: true, delivered: true, method: "send" };
+      } catch (retryError) {
+        const retryText = normalizeDeliveryError(retryError);
+        if (isBusyDeliveryError(retryText)) {
+          return {
+            ok: true,
+            delivered: false,
+            reason: "worker_busy_steered",
+            method: "steer"
+          };
+        }
+        return {
+          ok: false,
+          delivered: false,
+          reason: inferSessionDeliveryFailureReason(retryText),
+          error: retryText
+        };
+      }
+    }
+  };
+  if (priority === "urgent") {
+    return await attemptSteerDelivery();
   }
   try {
     await ctx.agentChatService.sendMessage({
@@ -963,56 +1046,17 @@ export async function sendWorkerMessageToSessionWithStatusCtx(
         error: sendError
       };
     }
-    try {
-      await ctx.agentChatService.steer({
-        sessionId,
-        text
-      });
-      const steerQueued = await isSteerLikelyQueuedForSession(ctx, sessionId);
-      if (steerQueued) {
-        return {
-          ok: true,
-          delivered: false,
-          reason: "worker_busy_steered",
-          method: "steer"
-        };
-      }
-      return { ok: true, delivered: true, method: "steer" };
-    } catch (steerError) {
-      const steerText = normalizeDeliveryError(steerError);
-      if (isNoActiveTurnError(steerText)) {
-        try {
-          await ctx.agentChatService.sendMessage({
-            sessionId,
-            text
-          });
-          return { ok: true, delivered: true, method: "send" };
-        } catch (retryError) {
-          const retryText = normalizeDeliveryError(retryError);
-          return {
-            ok: false,
-            delivered: false,
-            reason: inferSessionDeliveryFailureReason(retryText),
-            error: retryText
-          };
-        }
-      }
-      return {
-        ok: false,
-        delivered: false,
-        reason: inferSessionDeliveryFailureReason(steerText),
-        error: steerText
-      };
-    }
+    return await attemptSteerDelivery();
   }
 }
 
 export async function sendWorkerMessageToSessionCtx(
   ctx: OrchestratorContext,
   sessionId: string,
-  text: string
+  text: string,
+  options?: { priority?: "normal" | "urgent" }
 ): Promise<"send" | "steer"> {
-  const status = await sendWorkerMessageToSessionWithStatusCtx(ctx, sessionId, text);
+  const status = await sendWorkerMessageToSessionWithStatusCtx(ctx, sessionId, text, options);
   if (!status.ok) {
     throw new Error(status.error ?? status.reason);
   }

@@ -534,6 +534,90 @@ describe("conflictService conflict context integrity", () => {
     expect(run.cwdLaneId).toBe("lane-integration");
   });
 
+  it("tracks shared resolver session metadata across prepare, attach, and cancel", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-session-meta-"));
+    const { laneHeadSha } = seedRepoWithLaneWork(repoRoot);
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const projectId = "proj-session-meta";
+    await seedProjectAndLane(db, projectId, repoRoot);
+
+    insertPrediction({
+      db,
+      projectId,
+      laneAId: "lane-1",
+      laneBId: "lane-target",
+      laneASha: laneHeadSha,
+      overlaps: ["src/a.ts"]
+    });
+
+    const lanes = [
+      createLaneSummary(repoRoot, { id: "lane-1", name: "Source lane", branchRef: "feature/lane-1" }),
+      createLaneSummary(repoRoot, { id: "lane-target", name: "Target lane", branchRef: "main" })
+    ];
+    const service = createConflictService({
+      db,
+      logger: createLogger(),
+      projectId,
+      projectRoot: repoRoot,
+      laneService: {
+        list: async () => lanes,
+        getLaneBaseAndBranch: ({ laneId }: { laneId: string }) => {
+          const lane = lanes.find((entry) => entry.id === laneId) ?? lanes[0]!;
+          return { worktreePath: lane.worktreePath, baseRef: lane.baseRef, branchRef: lane.branchRef };
+        }
+      } as any,
+      projectConfigService: {
+        get: () => ({
+          local: { providers: { contextTools: { conflictResolvers: {} } } },
+          effective: { providerMode: "guest", providers: {} }
+        })
+      } as any,
+    });
+
+    const prepared = await service.prepareResolverSession({
+      provider: "claude",
+      sourceLaneIds: ["lane-1"],
+      targetLaneId: "lane-target",
+      scenario: "single-merge",
+      model: "anthropic/claude-sonnet-4-6",
+      reasoningEffort: "high",
+      permissionMode: "full_edit",
+      originSurface: "mission",
+      originMissionId: "mission-1",
+      originRunId: "run-1",
+      originLabel: "Mission finalization",
+    });
+
+    expect(prepared.status).toBe("blocked");
+    const preparedSummary = service.listExternalResolverRuns({ laneId: "lane-1" }).find((entry) => entry.runId === prepared.runId);
+    expect(preparedSummary?.originSurface).toBe("mission");
+    expect(preparedSummary?.originMissionId).toBe("mission-1");
+    expect(preparedSummary?.originRunId).toBe("run-1");
+    expect(preparedSummary?.model).toBe("anthropic/claude-sonnet-4-6");
+    expect(preparedSummary?.reasoningEffort).toBe("high");
+    expect(preparedSummary?.permissionMode).toBe("full_edit");
+
+    const attached = await service.attachResolverSession({
+      runId: prepared.runId,
+      sessionId: "session-1",
+      ptyId: "pty-1",
+      command: ["claude", "--dangerously-skip-permissions"],
+    });
+
+    expect(attached.status).toBe("blocked");
+    expect(attached.sessionId).toBe("session-1");
+    expect(attached.ptyId).toBe("pty-1");
+    expect(attached.command).toEqual(["claude", "--dangerously-skip-permissions"]);
+
+    const canceled = await service.cancelResolverSession({
+      runId: prepared.runId,
+      reason: "User canceled the resolver.",
+    });
+
+    expect(canceled.status).toBe("canceled");
+    expect(canceled.error).toContain("User canceled");
+  });
+
   it("short-circuits external resolver when context is insufficient", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-external-insufficient-"));
     const { laneHeadSha } = seedRepoWithLaneWork(repoRoot);

@@ -249,6 +249,22 @@ export type MissionPlannerRun = {
 
 export type MissionPhaseValidationTier = "none" | "self" | "dedicated";
 
+export type ValidationEvidenceRequirement =
+  | "planning_document"
+  | "research_summary"
+  | "changed_files_summary"
+  | "test_report"
+  | "review_summary"
+  | "risk_notes"
+  | "final_outcome_summary"
+  | "screenshot"
+  | "browser_verification"
+  | "video_recording"
+  | "browser_trace"
+  | "console_logs";
+
+export type ValidationCapabilityFallbackPolicy = "block" | "warn";
+
 export type PhaseCardOrderingConstraints = {
   mustBeFirst?: boolean;
   mustBeLast?: boolean;
@@ -274,6 +290,8 @@ export type PhaseCardValidationGate = {
   tier: MissionPhaseValidationTier;
   required: boolean;
   criteria?: string;
+  evidenceRequirements?: ValidationEvidenceRequirement[];
+  capabilityFallback?: ValidationCapabilityFallbackPolicy;
 };
 
 export type PhaseCard = {
@@ -621,6 +639,7 @@ export type CreateMissionArgs = {
 
 export type MissionPreflightCheckId =
   | "models"
+  | "capabilities"
   | "permissions"
   | "worktrees"
   | "phase_structural"

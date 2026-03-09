@@ -13,18 +13,23 @@ import {
   CaretRight,
 } from "@phosphor-icons/react";
 import type {
+  MissionAgentRuntimeConfig,
   OrchestratorChatThread,
   OrchestratorChatMessage,
+  OrchestratorMetadata,
+  OrchestratorTeamRuntimeState,
   OrchestratorWorkerState,
   OrchestratorChatTarget,
   ActiveAgentInfo,
   MissionStatus,
   OrchestratorRunStatus,
+  TeamRuntimeConfig,
 } from "../../../shared/types";
 import { MentionInput, type MentionParticipant } from "../shared/MentionInput";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 import { useMissionPolling } from "./useMissionPolling";
 import { MissionThreadMessageList } from "./MissionThreadMessageList";
+import { formatMissionWorkerPresentation } from "./missionHelpers";
 
 // ── Design tokens (aliases for backward compat) ──
 const MONO = MONO_FONT;
@@ -49,11 +54,13 @@ type Channel = {
   id: string;
   kind: ChannelKind;
   label: string;
+  fullLabel: string;
   threadId: string | null;
   status: "active" | "closed";
   stepKey: string | null;
   attemptId: string | null;
   unreadCount: number;
+  phaseLabel: string | null;
 };
 
 type MissionChatV2Props = {
@@ -61,6 +68,7 @@ type MissionChatV2Props = {
   missionStatus: MissionStatus | null;
   runId: string | null;
   runStatus: OrchestratorRunStatus | null;
+  runMetadata: OrchestratorMetadata | null;
   jumpTarget: OrchestratorChatTarget | null;
   onJumpHandled: () => void;
 };
@@ -80,6 +88,47 @@ function readRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function isStructuredSignalKind(kind: string | null): boolean {
+  return kind === "text"
+    || kind === "reasoning"
+    || kind === "status"
+    || kind === "done"
+    || kind === "error"
+    || kind === "approval_request"
+    || kind === "plan"
+    || kind === "user_message";
+}
+
+function looksLikeRawNoise(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed.length) return true;
+  if (/^streaming(?:\.\.\.)?$/i.test(trimmed)) return true;
+  if (/^usage$/i.test(trimmed)) return true;
+  if (/^mcp:/i.test(trimmed)) return true;
+  if (/^[\-dlcbps][rwx\-@+]{8,}/i.test(trimmed)) return true;
+  if (/^[A-Z0-9 .:_()/-]{24,}$/.test(trimmed)) return true;
+  if (!/\s/.test(trimmed) && trimmed.length < 24) return true;
+  if (/^[A-Za-z]+$/.test(trimmed) && trimmed.length < 24) return true;
+  return false;
+}
+
+function isSignalMessage(msg: OrchestratorChatMessage): boolean {
+  if (msg.visibility === "metadata_only") return false;
+  if (msg.role === "user") return true;
+  const metadata = readRecord(msg.metadata);
+  const structured = readRecord(metadata?.structuredStream);
+  const kind = readString(structured?.kind);
+  if (kind) {
+    return isStructuredSignalKind(kind);
+  }
+  const content = typeof msg.content === "string" ? msg.content : "";
+  return !looksLikeRawNoise(content);
 }
 
 function formatStructuredValue(value: unknown): string {
@@ -134,16 +183,48 @@ function workerStatusToParticipantStatus(state?: string): "active" | "completed"
   }
 }
 
-export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, missionStatus, runId, runStatus, jumpTarget, onJumpHandled }: MissionChatV2Props) {
+type MentionTargetOption = MentionParticipant & {
+  threadId: string | null;
+  target: OrchestratorChatTarget | null;
+  helper: string;
+};
+
+function normalizeMentionKey(value: string, fallback: string, used: Set<string>): string {
+  const base = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || fallback;
+  let candidate = base;
+  let suffix = 2;
+  while (used.has(candidate)) {
+    candidate = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  used.add(candidate);
+  return candidate;
+}
+
+export const MissionChatV2 = React.memo(function MissionChatV2({
+  missionId,
+  missionStatus,
+  runId,
+  runStatus,
+  runMetadata,
+  jumpTarget,
+  onJumpHandled,
+}: MissionChatV2Props) {
   // ── State ──
   const [threads, setThreads] = useState<OrchestratorChatThread[]>([]);
   const [globalMessages, setGlobalMessages] = useState<OrchestratorChatMessage[]>([]);
   const [threadMessages, setThreadMessages] = useState<OrchestratorChatMessage[]>([]);
   const [workerStates, setWorkerStates] = useState<OrchestratorWorkerState[]>([]);
   const [activeAgents, setActiveAgents] = useState<ActiveAgentInfo[]>([]);
+  const [teamRuntimeState, setTeamRuntimeState] = useState<OrchestratorTeamRuntimeState | null>(null);
   const [selectedChannelId, setSelectedChannelId] = useState<string>("global");
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [globalViewMode, setGlobalViewMode] = useState<"signal" | "raw">("signal");
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [completedCollapsed, setCompletedCollapsed] = useState(false);
   const [jumpNotice, setJumpNotice] = useState<string | null>(null);
@@ -167,11 +248,13 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
       id: "global",
       kind: "global",
       label: "Global",
+      fullLabel: "Global",
       threadId: null,
       status: "active",
       stepKey: null,
       attemptId: null,
       unreadCount: 0,
+      phaseLabel: null,
     });
 
     // Coordinator thread
@@ -181,11 +264,13 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
         id: `thread:${coordThread.id}`,
         kind: "orchestrator",
         label: "Orchestrator",
+        fullLabel: "Orchestrator",
         threadId: coordThread.id,
         status: coordThread.status,
         stepKey: null,
         attemptId: null,
         unreadCount: coordThread.unreadCount,
+        phaseLabel: null,
       });
     }
 
@@ -196,26 +281,34 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
         id: `thread:${t.id}`,
         kind: "teammate",
         label: t.title || "Teammate",
+        fullLabel: t.title || "Teammate",
         threadId: t.id,
         status: t.status,
         stepKey: t.stepKey ?? null,
         attemptId: t.attemptId ?? null,
         unreadCount: t.unreadCount,
+        phaseLabel: null,
       });
     }
 
     // Worker threads
     const workerThreads = threads.filter((t) => t.threadType === "worker");
     for (const t of workerThreads) {
+      const presentation = formatMissionWorkerPresentation({
+        title: t.title,
+        stepKey: t.stepKey ?? null,
+      });
       result.push({
         id: `thread:${t.id}`,
         kind: "worker",
-        label: t.title || t.stepKey || "Worker",
+        label: presentation.label,
+        fullLabel: presentation.fullLabel,
         threadId: t.id,
         status: t.status,
         stepKey: t.stepKey ?? null,
         attemptId: t.attemptId ?? null,
         unreadCount: t.unreadCount,
+        phaseLabel: presentation.phaseLabel,
       });
     }
 
@@ -247,34 +340,86 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
     [channels, selectedChannelId]
   );
 
-  // ── Build participants for MentionInput ──
-  const participants = useMemo<MentionParticipant[]>(() => {
-    const result: MentionParticipant[] = [
-      { id: "orchestrator", label: "orchestrator", status: "active", role: "orchestrator" },
-      { id: "all", label: "all", status: "active", role: "broadcast" },
+  // ── Build mention targets for MentionInput + quick-target chips ──
+  const mentionTargets = useMemo<MentionTargetOption[]>(() => {
+    const used = new Set<string>(["orchestrator", "all"]);
+    const coordinatorThread = channels.find((channel) => channel.kind === "orchestrator") ?? null;
+    const result: MentionTargetOption[] = [
+      {
+        id: "orchestrator",
+        label: "orchestrator",
+        status: "active",
+        role: "orchestrator",
+        threadId: coordinatorThread?.threadId ?? null,
+        target: { kind: "coordinator", runId: runId ?? null },
+        helper: "Message the coordinator",
+      },
+      {
+        id: "all",
+        label: "all",
+        status: "active",
+        role: "broadcast",
+        threadId: coordinatorThread?.threadId ?? null,
+        target: { kind: "workers", runId: runId ?? null, includeClosed: false },
+        helper: "Broadcast to active workers",
+      },
     ];
 
     for (const ch of channels) {
       if (ch.kind === "teammate") {
+        const mentionId = normalizeMentionKey(ch.label, `teammate-${result.length}`, used);
+        const thread = threads.find((entry) => entry.id === ch.threadId) ?? null;
+        const teamMemberId = thread && typeof (thread as { teamMemberId?: unknown }).teamMemberId === "string"
+          ? (thread as { teamMemberId?: string }).teamMemberId ?? null
+          : null;
         result.push({
-          id: ch.label,
+          id: mentionId,
           label: ch.label,
           status: ch.status === "active" ? "active" : "completed",
           role: "teammate",
+          threadId: ch.threadId,
+          target: { kind: "teammate", runId: thread?.runId ?? runId ?? null, teamMemberId, sessionId: thread?.sessionId ?? null },
+          helper: "Message this teammate directly",
         });
-      } else if (ch.kind === "worker" && ch.stepKey) {
-        const agentInfo = activeAgents.find((a) => a.attemptId === ch.attemptId);
+      } else if (ch.kind === "worker") {
+        const agentInfo = activeAgents.find((agent) => agent.attemptId === ch.attemptId);
+        if (workerStatusToParticipantStatus(agentInfo?.state) !== "active") continue;
+        const rawLabel = ch.fullLabel;
+        const mentionId = normalizeMentionKey(rawLabel, `worker-${result.length}`, used);
+        const thread = threads.find((entry) => entry.id === ch.threadId) ?? null;
         result.push({
-          id: ch.stepKey,
-          label: ch.stepKey,
+          id: mentionId,
+          label: rawLabel,
           status: workerStatusToParticipantStatus(agentInfo?.state),
           role: "worker",
+          threadId: ch.threadId,
+          target: {
+            kind: "worker",
+            runId: thread?.runId ?? runId ?? null,
+            stepId: thread?.stepId ?? null,
+            stepKey: thread?.stepKey ?? null,
+            attemptId: thread?.attemptId ?? null,
+            sessionId: thread?.sessionId ?? null,
+            laneId: thread?.laneId ?? null,
+          },
+          helper: "Message this worker directly",
         });
       }
     }
 
     return result;
-  }, [channels, activeAgents]);
+  }, [activeAgents, channels, runId, threads]);
+
+  const participants = useMemo<MentionParticipant[]>(
+    () => mentionTargets.map(({ id, label, status, role }) => ({ id, label, status, role })),
+    [mentionTargets],
+  );
+
+  const mentionTargetMap = useMemo(() => {
+    const map = new Map<string, MentionTargetOption>();
+    for (const target of mentionTargets) map.set(target.id, target);
+    return map;
+  }, [mentionTargets]);
 
   // Keep channelsRef in sync so event handlers don't need channels as a dependency
   useEffect(() => {
@@ -332,14 +477,18 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
 
   const refreshWorkers = useCallback(async () => {
     try {
-      const [states, agents] = await Promise.all([
+      const [states, agents, runtimeState] = await Promise.all([
         runId
           ? window.ade.orchestrator.getWorkerStates({ runId })
           : Promise.resolve([] as OrchestratorWorkerState[]),
         window.ade.orchestrator.getActiveAgents({ missionId }),
+        runId
+          ? window.ade.orchestrator.getTeamRuntimeState({ runId }).catch(() => null)
+          : Promise.resolve(null),
       ]);
       setWorkerStates(states);
       setActiveAgents(agents);
+      setTeamRuntimeState(runtimeState);
     } catch {
       // ignore
     }
@@ -463,6 +612,13 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
     onJumpHandled();
   }, [jumpTarget, onJumpHandled, threads]);
 
+  useEffect(() => {
+    if (selectedChannel?.kind !== "worker" && selectedChannel?.kind !== "orchestrator") return;
+    if (threadMessages.length > 0) {
+      setJumpNotice(null);
+    }
+  }, [selectedChannel, threadMessages.length]);
+
   // ── Auto-scroll ──
   useEffect(() => {
     if (scrollRef.current && !showJumpToLatest) {
@@ -492,13 +648,22 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
       );
       msgs = msgs.filter((msg) => {
         const metadata = readRecord(msg.metadata);
-        return metadata?.missionChatMode !== "thread_only";
+        if (metadata?.missionChatMode !== "thread_only") return true;
+        const target = msg.target;
+        if (target?.kind === "coordinator") return true;
+        return msg.threadId === `mission:${missionId}`;
       });
+      if (globalViewMode === "signal") {
+        msgs = msgs.filter((msg) => isSignalMessage(msg));
+      }
     } else {
       msgs = threadMessages;
+      if (selectedChannel?.kind === "worker" || selectedChannel?.kind === "orchestrator") {
+        msgs = msgs.filter((msg) => isSignalMessage(msg));
+      }
     }
     return msgs;
-  }, [selectedChannel, globalMessages, threadMessages]);
+  }, [selectedChannel, globalMessages, threadMessages, missionId, globalViewMode]);
 
   // ── Attempt name map ──
   const attemptNameMap = useMemo(() => {
@@ -530,10 +695,26 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
         action: "Wait for readiness, then send directives.",
       };
     }
+    if (selectedChannel?.kind === "worker") {
+      const workerState = selectedChannel.attemptId
+        ? workerStateByAttempt.get(selectedChannel.attemptId)?.state
+        : undefined;
+      if (
+        selectedChannel.status !== "active"
+        || workerState === "completed"
+        || workerState === "failed"
+        || workerState === "disposed"
+      ) {
+        return {
+          reason: "This worker is no longer running.",
+          action: "Read the thread for history, or message @orchestrator to redirect the mission.",
+        };
+      }
+    }
     if (runStatus === "paused" || missionStatus === "intervention_required") {
       return {
-        reason: "Mission paused — intervention required.",
-        action: "Resolve intervention and resume the run first.",
+        reason: "Mission is waiting on an intervention.",
+        action: "Resolve the open intervention, then continue from the coordinator or an active worker.",
       };
     }
     if (runStatus === "succeeded" || runStatus === "failed" || runStatus === "canceled") {
@@ -543,13 +724,86 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
       };
     }
     return null;
-  }, [missionStatus, runId, runStatus]);
+  }, [missionStatus, runId, runStatus, selectedChannel, workerStateByAttempt]);
 
   const selectedThreadShowStreamingIndicator = useMemo(() => {
     if (selectedChannel?.kind !== "worker" || !selectedChannel.attemptId) return false;
     const state = workerStateByAttempt.get(selectedChannel.attemptId)?.state;
     return state === "initializing" || state === "working";
   }, [selectedChannel, workerStateByAttempt]);
+
+  const teamRuntimeConfig = useMemo(() => {
+    const metadata = readRecord(runMetadata);
+    const runtime = readRecord(metadata?.teamRuntime);
+    if (!runtime) return null;
+    return {
+      enabled: runtime.enabled === true,
+      targetProvider:
+        runtime.targetProvider === "claude" || runtime.targetProvider === "codex"
+          ? runtime.targetProvider
+          : "auto",
+      teammateCount: Number.isFinite(Number(runtime.teammateCount))
+        ? Math.max(0, Math.floor(Number(runtime.teammateCount)))
+        : 0,
+      allowParallelAgents: runtime.allowParallelAgents !== false,
+      allowSubAgents: runtime.allowSubAgents !== false,
+      allowClaudeAgentTeams: runtime.allowClaudeAgentTeams !== false,
+    } satisfies TeamRuntimeConfig;
+  }, [runMetadata]);
+
+  const agentRuntimeConfig = useMemo(() => {
+    const metadata = readRecord(runMetadata);
+    const runtime = readRecord(metadata?.agentRuntime);
+    if (!runtime && !teamRuntimeConfig) return null;
+    return {
+      allowParallelAgents:
+        typeof runtime?.allowParallelAgents === "boolean"
+          ? runtime.allowParallelAgents
+          : teamRuntimeConfig?.allowParallelAgents !== false,
+      allowSubAgents:
+        typeof runtime?.allowSubAgents === "boolean"
+          ? runtime.allowSubAgents
+          : teamRuntimeConfig?.allowSubAgents !== false,
+      allowClaudeAgentTeams:
+        typeof runtime?.allowClaudeAgentTeams === "boolean"
+          ? runtime.allowClaudeAgentTeams
+          : teamRuntimeConfig?.allowClaudeAgentTeams !== false,
+    } satisfies MissionAgentRuntimeConfig;
+  }, [runMetadata, teamRuntimeConfig]);
+
+  const quickTargets = useMemo(
+    () => mentionTargets.filter((target) => target.id === "orchestrator" || target.id === "all" || target.status === "active").slice(0, 8),
+    [mentionTargets],
+  );
+
+  const appendMentionTarget = useCallback((targetId: string) => {
+    setInput((prev) => {
+      const token = `@${targetId}`;
+      if (prev.includes(token)) return prev;
+      const base = prev.trimEnd();
+      return `${base}${base.length ? " " : ""}${token} `;
+    });
+  }, []);
+
+  const runtimeSummary = useMemo(() => {
+    if (teamRuntimeConfig?.enabled) {
+      const teammateCount = teamRuntimeState?.teammateIds.length ?? teamRuntimeConfig.teammateCount ?? 0;
+      const providerLabel = teamRuntimeConfig.targetProvider === "auto"
+        ? "auto"
+        : teamRuntimeConfig.targetProvider;
+      return {
+        title: "Team runtime",
+        detail: `${teamRuntimeState?.phase ?? "bootstrapping"} · ${teammateCount} teammate${teammateCount === 1 ? "" : "s"} · ${providerLabel}`,
+      };
+    }
+    if (agentRuntimeConfig) {
+      return {
+        title: "Coordinator chat",
+        detail: "Direct worker targeting is available from here.",
+      };
+    }
+    return null;
+  }, [agentRuntimeConfig, teamRuntimeConfig, teamRuntimeState]);
 
   // ── Send message ──
   const handleSend = useCallback(
@@ -558,16 +812,16 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
       setSending(true);
       try {
         if (selectedChannel?.kind === "global" || mentions.length > 0) {
-          // For global channel or messages with mentions, use sendAgentMessage if targeting agents
-          // Otherwise fall back to sendThreadMessage targeting the coordinator
           const coordThread = threads.find((t) => t.threadType === "coordinator");
           if (coordThread) {
-            const target: OrchestratorChatTarget = mentions.includes("all")
-              ? { kind: "workers", runId: runId ?? null, includeClosed: false }
-              : { kind: "coordinator", runId: runId ?? null };
+            const mentionTarget = mentions
+              .map((mention) => mentionTargetMap.get(mention))
+              .find((entry) => entry?.target != null) ?? null;
+            const target: OrchestratorChatTarget = mentionTarget?.target
+              ?? { kind: "coordinator", runId: runId ?? null };
             await window.ade.orchestrator.sendThreadMessage({
               missionId,
-              threadId: coordThread.id,
+              threadId: mentionTarget?.threadId ?? coordThread.id,
               content: message,
               target,
             });
@@ -616,7 +870,28 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
         setSending(false);
       }
     },
-    [chatBlocked, sending, selectedChannel, threads, missionId, runId, refreshThreads, refreshGlobalMessages, refreshThreadMessages]
+    [chatBlocked, mentionTargetMap, sending, selectedChannel, threads, missionId, runId, refreshThreads, refreshGlobalMessages, refreshThreadMessages]
+  );
+
+  const handleApproval = useCallback(
+    async (
+      sessionId: string,
+      itemId: string,
+      decision: "accept" | "accept_for_session" | "decline" | "cancel",
+      responseText?: string | null,
+    ) => {
+      try {
+        await window.ade.agentChat.approve({ sessionId, itemId, decision, responseText });
+        setJumpNotice(null);
+        await Promise.all([refreshThreads(), refreshGlobalMessages()]);
+        if (selectedChannel?.threadId) {
+          await refreshThreadMessages(selectedChannel.threadId);
+        }
+      } catch (error) {
+        setJumpNotice(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [refreshGlobalMessages, refreshThreadMessages, refreshThreads, selectedChannel]
   );
 
   // ── Channel name for header ──
@@ -625,7 +900,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
     switch (selectedChannel.kind) {
       case "global": return "Global";
       case "orchestrator": return "Orchestrator";
-      default: return selectedChannel.label;
+      default: return selectedChannel.fullLabel;
     }
   })();
 
@@ -633,11 +908,32 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
     <div className="flex h-full min-h-0">
       {/* ── Sidebar ── */}
       <aside
-        className="flex w-[200px] shrink-0 flex-col"
+        className="flex w-[176px] shrink-0 flex-col"
         style={{ background: BG_SIDEBAR, borderRight: `1px solid ${BORDER}` }}
       >
-        <div className="px-3 py-2" style={{ borderBottom: `1px solid ${BORDER}` }}>
-          <div style={{ ...LABEL_STYLE, color: TEXT_PRIMARY }}>CHAT</div>
+        <div className="px-2.5 py-2" style={{ borderBottom: `1px solid ${BORDER}` }}>
+          <div className="flex items-center justify-between gap-2">
+            <div style={{ ...LABEL_STYLE, color: TEXT_PRIMARY }}>Conversations</div>
+            {selectedChannel?.kind === "global" && (
+              <div className="flex items-center gap-1">
+                {(["signal", "raw"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setGlobalViewMode(mode)}
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px]"
+                    style={{
+                      background: globalViewMode === mode ? `${ACCENT}18` : "transparent",
+                      color: globalViewMode === mode ? ACCENT : TEXT_MUTED,
+                      border: `1px solid ${globalViewMode === mode ? `${ACCENT}30` : BORDER}`,
+                    }}
+                  >
+                    {mode === "signal" ? "Signal" : "Raw"}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-1.5 space-y-0.5">
@@ -705,7 +1001,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
                   isSelected={selectedChannelId === ch.id}
                   onClick={() => setSelectedChannelId(ch.id)}
                   unreadCount={ch.unreadCount}
-                  stepKey={ch.stepKey}
+                  badge={ch.phaseLabel ?? undefined}
                 />
               ))}
             </>
@@ -739,7 +1035,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
                     isSelected={selectedChannelId === ch.id}
                     onClick={() => setSelectedChannelId(ch.id)}
                     unreadCount={ch.unreadCount}
-                    stepKey={ch.stepKey}
+                    badge={ch.phaseLabel ?? undefined}
                   />
                 ))}
             </>
@@ -757,11 +1053,11 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
       <div className="flex min-w-0 flex-1 flex-col" style={{ background: BG_PAGE }}>
         {/* Header */}
         <div
-          className="flex items-center gap-2 px-4 py-2"
+          className="flex items-center gap-2 px-3 py-1.5"
           style={{ borderBottom: `1px solid ${BORDER}` }}
         >
           <Hash size={14} weight="regular" style={{ color: TEXT_MUTED }} />
-          <span className="text-xs font-semibold" style={{ color: TEXT_PRIMARY, fontFamily: MONO }}>
+          <span className="min-w-0 truncate text-[11px] font-semibold" style={{ color: TEXT_PRIMARY, fontFamily: MONO }}>
             {channelHeaderName}
           </span>
           {selectedChannel && selectedChannel.kind !== "global" && (
@@ -801,23 +1097,38 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
               style={{ background: "#8B5CF618", color: "#8B5CF6", border: "1px solid #8B5CF630" }}
             >
               <Wrench size={10} weight="fill" />
-              Worker{selectedChannel.stepKey ? `: ${selectedChannel.stepKey}` : ""}
+              {selectedChannel.phaseLabel ? `${selectedChannel.phaseLabel} worker` : "Worker"}
             </span>
           )}
-          {selectedChannel?.kind === "global" && (
-            <span
-              className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px]"
-              style={{ background: `${ACCENT}18`, color: ACCENT, border: `1px solid ${ACCENT}30` }}
-            >
-              <Globe size={10} weight="fill" />
-              All Messages
-            </span>
-          )}
+          <div className="ml-auto flex items-center gap-1">
+            {runtimeSummary && selectedChannel?.kind === "global" && (
+              <span
+                className="hidden items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px] lg:inline-flex"
+                style={{
+                  background: `${ACCENT}10`,
+                  color: TEXT_SECONDARY,
+                  border: `1px solid ${ACCENT}18`,
+                  fontFamily: MONO,
+                }}
+                title={runtimeSummary.detail}
+              >
+                <Globe size={10} weight="fill" />
+                {runtimeSummary.title}
+              </span>
+            )}
+            {agentRuntimeConfig && selectedChannel?.kind !== "worker" && (
+              <>
+                <RuntimeFlagPill label="Parallel" enabled={agentRuntimeConfig.allowParallelAgents} />
+                <RuntimeFlagPill label="Sub-agents" enabled={agentRuntimeConfig.allowSubAgents} />
+                <RuntimeFlagPill label="Claude teams" enabled={agentRuntimeConfig.allowClaudeAgentTeams} />
+              </>
+            )}
+          </div>
         </div>
 
         {jumpNotice && (
           <div
-            className="px-4 py-2 text-[11px]"
+            className="px-3 py-1.5 text-[10px]"
             style={{ borderBottom: `1px solid ${WARNING}30`, background: `${WARNING}12`, color: WARNING }}
           >
             {jumpNotice}
@@ -830,9 +1141,9 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
             style={{
               background: `${WARNING}12`,
               borderBottom: `1px solid ${WARNING}30`,
-              padding: "8px 16px",
+              padding: "6px 12px",
               fontFamily: MONO,
-              fontSize: "11px",
+              fontSize: "10px",
               color: WARNING,
               display: "flex",
               alignItems: "center",
@@ -845,59 +1156,48 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
         )}
 
         {/* Message list */}
-        {selectedChannel?.kind === "global" ? (
-          <div
-            ref={scrollRef}
-            onScroll={handleScroll}
-            className="relative flex-1 overflow-y-auto px-4 py-3 space-y-2"
-          >
-            {displayMessages.length === 0 && (
-              <div
-                className="flex h-32 items-center justify-center text-xs"
-                style={{ color: TEXT_MUTED }}
-              >
-                No messages yet. Messages from all channels appear here.
-              </div>
-            )}
-
-            {displayMessages.map((msg) => (
-              <MessageBubble
-                key={msg.id}
-                msg={msg}
-                attemptNameMap={attemptNameMap}
-                isGlobalView
-              />
-            ))}
-
-            {/* Jump to latest */}
-            {showJumpToLatest && (
-              <button
-                onClick={jumpToLatest}
-                className="sticky bottom-2 left-1/2 -translate-x-1/2 flex items-center gap-1 px-3 py-1 font-bold shadow-lg transition-opacity hover:opacity-90"
-                style={{
-                  background: ACCENT,
-                  color: BG_PAGE,
-                  fontFamily: MONO,
-                  fontSize: "10px",
-                  textTransform: "uppercase",
-                  letterSpacing: "1px",
-                }}
-              >
-                <CaretDown size={12} weight="regular" />
-                JUMP TO LATEST
-              </button>
-            )}
-          </div>
-        ) : (
-          <MissionThreadMessageList
-            messages={displayMessages}
-            showStreamingIndicator={selectedThreadShowStreamingIndicator}
-            className="flex-1"
-          />
-        )}
+        <MissionThreadMessageList
+          messages={displayMessages}
+          showStreamingIndicator={selectedChannel?.kind === "global" ? false : selectedThreadShowStreamingIndicator}
+          className="flex-1"
+          onApproval={handleApproval}
+        />
 
         {/* Input bar */}
         <div style={{ borderTop: `1px solid ${BORDER}` }}>
+          {quickTargets.length > 0 && (
+            <div
+              className="flex flex-wrap items-center gap-1 px-3 py-1.5"
+              style={{ borderBottom: `1px solid ${BORDER}`, background: BG_MAIN }}
+            >
+              <span style={{ ...LABEL_STYLE, fontSize: 9 }}>Targets</span>
+              {quickTargets.map((target) => (
+                <button
+                  key={target.id}
+                  type="button"
+                  onClick={() => appendMentionTarget(target.id)}
+                  disabled={sending || Boolean(chatBlocked)}
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] transition-opacity hover:opacity-90 disabled:opacity-50"
+                  style={{
+                    background: `${ACCENT}10`,
+                    border: `1px solid ${ACCENT}18`,
+                    color: TEXT_PRIMARY,
+                    fontFamily: MONO,
+                  }}
+                  title={target.helper}
+                >
+                  <span
+                    className="inline-block h-1.5 w-1.5 rounded-full"
+                    style={{ backgroundColor: target.status === "failed" ? STATUS_RED : target.status === "completed" ? STATUS_GRAY : STATUS_GREEN }}
+                  />
+                  <span>@{target.id}</span>
+                  {target.label !== target.id && (
+                    <span style={{ color: TEXT_MUTED }}>{target.label}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
           <MentionInput
             value={input}
             onChange={setInput}
@@ -908,7 +1208,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({ missionId, miss
                 case "global": return "Message global (use @mention to target)...";
                 case "orchestrator": return "Message the orchestrator...";
                 case "teammate": return `Message teammate ${selectedChannel?.label ?? ""}...`;
-                default: return `Message ${selectedChannel?.label ?? "worker"}...`;
+                default: return `Message ${selectedChannel?.fullLabel ?? "worker"}...`;
               }
             })()}
             disabled={sending || Boolean(chatBlocked)}
@@ -946,6 +1246,22 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
+function RuntimeFlagPill({ label, enabled }: { label: string; enabled: boolean }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px]"
+      style={{
+        background: enabled ? "#22C55E18" : "#6B728018",
+        color: enabled ? "#22C55E" : TEXT_MUTED,
+        border: `1px solid ${enabled ? "#22C55E30" : "#6B728030"}`,
+      }}
+    >
+      {label}
+      <span>{enabled ? "on" : "off"}</span>
+    </span>
+  );
+}
+
 function ChannelButton({
   icon,
   label,
@@ -955,7 +1271,6 @@ function ChannelButton({
   unreadCount,
   badge,
   badgeColor,
-  stepKey,
 }: {
   icon: React.ReactNode;
   label: string;
@@ -965,7 +1280,6 @@ function ChannelButton({
   unreadCount: number;
   badge?: string;
   badgeColor?: string;
-  stepKey?: string | null;
 }) {
   return (
     <button
@@ -991,7 +1305,7 @@ function ChannelButton({
         <span className="shrink-0" style={{ color: isSelected ? ACCENT : TEXT_MUTED }}>
           {icon}
         </span>
-        <span className="truncate text-xs">{label}</span>
+        <span className="truncate text-[11px]">{label}</span>
         {unreadCount > 0 && (
           <span
             className="ml-auto shrink-0 px-1 py-0.5 text-[9px] font-semibold"
@@ -1001,7 +1315,7 @@ function ChannelButton({
           </span>
         )}
       </div>
-      {(badge || stepKey) && (
+      {badge && (
         <div className="flex items-center gap-1 pl-5">
           {badge && badgeColor && (
             <span
@@ -1011,12 +1325,12 @@ function ChannelButton({
               {badge}
             </span>
           )}
-          {stepKey && (
+          {badge && !badgeColor && (
             <span
               className="inline-flex items-center px-1 py-0 text-[8px] font-bold uppercase tracking-[0.5px]"
               style={{ background: `${ACCENT}12`, color: ACCENT, border: `1px solid ${ACCENT}25` }}
             >
-              {stepKey}
+              {badge}
             </span>
           )}
         </div>
@@ -1136,7 +1450,7 @@ const MessageBubble = React.memo(function MessageBubble({
     );
   }
 
-  if (structuredStream && !isGlobalView) {
+  if (structuredStream) {
     const headerColorMap: Record<string, string> = {
       reasoning: "#38BDF8",
       tool: "#F59E0B",

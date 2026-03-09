@@ -55,9 +55,11 @@ ADE exposes its internal capabilities to AI processes through a Model Context Pr
 
 Electron's process model provides a natural trust boundary. The main process (Node.js) is trusted and has full filesystem and process access. The renderer process (Chromium) is untrusted and communicates exclusively through a typed IPC bridge. This prevents any renderer-side vulnerability from directly accessing the filesystem or spawning processes.
 
-### Pluggable Compute Backends
+### Pluggable Compute Backends (Dropped)
 
-ADE supports pluggable compute backends for lane and mission execution. The `ComputeBackend` interface abstracts environment lifecycle (create, destroy, exec, preview URL) across Local (default), VPS (remote relay), and Daytona (opt-in cloud sandbox) backends. This allows agents to execute in isolated environments without changing orchestration logic.
+> **Note**: Phase 5.5 (Compute Backend Abstraction) was dropped. VPS is just another machine running ADE; sandboxing was removed from scope. This section is retained for historical context.
+
+ADE originally planned pluggable compute backends for lane and mission execution. The `ComputeBackend` interface would have abstracted environment lifecycle (create, destroy, exec, preview URL) across Local (default), VPS (remote relay), and Daytona (opt-in cloud sandbox) backends.
 
 ### Git Worktrees as the Isolation Primitive
 
@@ -123,7 +125,7 @@ The Local Core Engine is the brain of ADE. It runs exclusively in Electron's mai
 
 #### Type System
 
-Shared types live in `src/shared/types/`, a directory of 17 domain-scoped modules re-exported through a barrel `index.ts`. Each module owns the types for one domain:
+Shared types live in `src/shared/types/`, a directory of 19 domain-scoped modules re-exported through a barrel `index.ts`. Each module owns the types for one domain:
 
 | Module | Domain |
 |--------|--------|
@@ -143,6 +145,9 @@ Shared types live in `src/shared/types/`, a directory of 17 domain-scoped module
 | `budget.ts` | Budget caps, usage accounting, subscription tracking |
 | `models.ts` | Model descriptors, provider families, pricing, registry types |
 | `usage.ts` | Token usage, cost aggregation, billing events |
+| `agents.ts` | Agent identity, capability, and worker org chart types |
+| `cto.ts` | CTO agent state, config, and org management types |
+| `linearSync.ts` | Linear sync state, issue mapping, dispatch types |
 
 Runtime constants (status maps and default isolation rules) live in `src/main/services/orchestrator/orchestratorConstants.ts`, separate from the type definitions.
 
@@ -186,15 +191,14 @@ Common utility code is consolidated into shared modules to eliminate duplication
 | `metaReasoner` | `metaReasoner.ts` | AI-driven fan-out dispatch analysis, dynamic step injection, fan-out strategy selection |
 | `compactionEngine` | `compactionEngine.ts` | Token monitoring, self-summarization at 70% threshold, shared-fact/summarization writeback, conversation replacement. Full silent memory-flush integration remains future work. |
 | `memoryService` | `memoryService.ts` | Unified durable memory backend backed by `unified_memories`: project/agent/mission scopes, pinned/hot/cold tiers, lexical/composite ranking, pin/promote/archive flows, and DB-backed persistence in `.ade/ade.db`. Embedding-backed retrieval, consolidation, and full pre-compaction flush remain future work. |
-| `ctoAgent` | *Planned* | MCP entry point for external agent systems — intent classification, routing to mission/task/review/query handlers, identity-based learned routing |
+| `ctoAgent` | `ctoStateService.ts` | CTO agent subsystem — persistent identity, 3-tier memory, org chart, heartbeat, Linear sync, budget enforcement |
 | `externalMcpClient` | *Planned* | Connects to external MCP servers for extended agent capabilities — lazy connect, permission integration, tool manifest merging |
 | `adeStateManager` | *Planned* | Manages `.ade/` portable state directory — cross-machine sync via git, embedding regeneration on clone, state integrity checks |
-| `laneEnvironmentService` | *Planned* | Lane environment initialization (env files, ports, Docker, deps) |
-| `laneProxyService` | *Planned* | Per-lane hostname proxy (*.localhost routing) |
-| `previewLaunchService` | *Planned* | Preview URL generation and browser launch |
+| `laneEnvironmentService` | `laneEnvironmentService.ts` | Lane environment initialization (env files, ports, Docker, deps) |
+| `laneProxyService` | `laneProxyService.ts` | Per-lane hostname proxy (*.localhost routing); preview launch is embedded here (not a standalone service) |
 | `browserProfileService` | *Planned* | Chrome profile isolation per lane |
-| `computeBackendService` | *Planned* | Compute backend abstraction and selection |
-| `daytonaService` | *Planned* | Daytona SDK integration (opt-in cloud sandbox) |
+| `computeBackendService` | *Dropped* | Compute backend abstraction — dropped with Phase 5.5 (VPS is just another machine running ADE) |
+| `daytonaService` | *Dropped* | Daytona SDK integration — dropped with Phase 5.5 |
 
 #### AI Orchestrator Module Decomposition
 
@@ -429,7 +433,7 @@ Real-time events (PTY data, process status changes, test run updates, AI streami
 
 | Dependency | Usage | Required |
 |------------|-------|----------|
-| Daytona SDK | Opt-in cloud sandbox compute for lane/mission execution | No (opt-in) |
+| Daytona SDK | Dropped with Phase 5.5 | No (removed) |
 | Docker | Lane environment initialization (optional containerized deps) | No (optional) |
 
 ### Cross-Machine Architecture
@@ -496,8 +500,9 @@ Current codebase status is feature-rich across lanes, files, terminals, conflict
 | Bidirectional Linear Sync (W4) | Complete (Phase 4) |
 | External MCP consumption (agents connect to external MCP servers) | Planned (Phase 4) |
 | `.ade/` portable state (cross-machine git sync) | Planned (Phase 4) |
-| Compute backend abstraction (Phase 5.5) | Planned |
+| Play Runtime Isolation (Phase 5) — laneEnvironmentService, laneProxyService, portAllocationService, laneTemplateService, oauthRedirectService, runtimeDiagnosticsService | Complete |
+| Compute backend abstraction (Phase 5.5) | Dropped (VPS is just another machine running ADE) |
 
-Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is ~90% complete — orchestrator evolution shipped (meta-reasoner, compaction engine, session persistence, inter-agent messaging, mission chat workspace, scoped memory architecture, shared facts, run narrative, phase-based planning runtime, PR strategies). MCP dual-mode architecture shipped: transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding at `.ade/mcp.sock`, smart entry point auto-detection, 35 tools available in both modes. Phase 4 W1-W4 and W6 are complete. Remaining Phase 4 workstreams execute in order W7→W5. Native sqlite-vec integration is deferred; current shipped retrieval is lexical/composite scoring, with embedding-backed retrieval still future work. Phase 5.5 (Compute Backend Abstraction) is planned. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
+Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is ~90% complete — orchestrator evolution shipped (meta-reasoner, compaction engine, session persistence, inter-agent messaging, mission chat workspace, scoped memory architecture, shared facts, run narrative, phase-based planning runtime, PR strategies). MCP dual-mode architecture shipped: transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding at `.ade/mcp.sock`, smart entry point auto-detection, 35 tools available in both modes. Phase 4 W1-W4 and W6 are complete. Remaining Phase 4 workstreams execute in order W7→W5. Native sqlite-vec integration is deferred; current shipped retrieval is lexical/composite scoring, with embedding-backed retrieval still future work. Phase 5 (Play Runtime Isolation) is complete. Phase 5.5 (Compute Backend Abstraction) was dropped — VPS is just another machine running ADE. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
 
 - `docs/final-plan/README.md`

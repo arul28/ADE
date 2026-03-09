@@ -153,6 +153,46 @@ describe("runtimeEventRouter", () => {
     expect(message).toContain("attempt_completed");
   });
 
+  it("routes worker report and phase transition reasons onto the coordinator live path", () => {
+    const coordinator = {
+      injectEvent: vi.fn(),
+    } as any;
+
+    routeEventToCoordinator(coordinator, {
+      type: "orchestrator-step-updated",
+      runId: "run-1",
+      stepId: "step-1",
+      at: "2026-03-03T00:00:00.000Z",
+      reason: "worker_status_report",
+    } as any);
+    routeEventToCoordinator(coordinator, {
+      type: "orchestrator-step-updated",
+      runId: "run-1",
+      stepId: "step-1",
+      at: "2026-03-03T00:00:00.050Z",
+      reason: "worker_result_report",
+    } as any);
+    routeEventToCoordinator(coordinator, {
+      type: "orchestrator-step-updated",
+      runId: "run-1",
+      stepId: "step-1",
+      at: "2026-03-03T00:00:00.100Z",
+      reason: "validation_report",
+    } as any);
+    routeEventToCoordinator(coordinator, {
+      type: "orchestrator-step-updated",
+      runId: "run-1",
+      at: "2026-03-03T00:00:00.150Z",
+      reason: "phase_transition",
+    } as any);
+
+    expect(coordinator.injectEvent).toHaveBeenCalledTimes(4);
+    expect(String(coordinator.injectEvent.mock.calls[0]?.[1] ?? "")).toContain("worker_status_report");
+    expect(String(coordinator.injectEvent.mock.calls[1]?.[1] ?? "")).toContain("worker_result_report");
+    expect(String(coordinator.injectEvent.mock.calls[2]?.[1] ?? "")).toContain("validation_report");
+    expect(String(coordinator.injectEvent.mock.calls[3]?.[1] ?? "")).toContain("phase_transition");
+  });
+
   it("clips oversized routed messages and emits suppression summaries after rate limiting", () => {
     vi.useFakeTimers();
     try {

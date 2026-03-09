@@ -33,6 +33,7 @@ export const StepDetailPanel = React.memo(function StepDetailPanel({
   claims,
   onOpenWorkerThread,
   onViewWorkSession,
+  onInspectPrompt,
 }: {
   step: OrchestratorStep | null;
   attempts: OrchestratorAttempt[];
@@ -40,6 +41,7 @@ export const StepDetailPanel = React.memo(function StepDetailPanel({
   claims: OrchestratorClaim[];
   onOpenWorkerThread: (target: OrchestratorChatTarget) => void;
   onViewWorkSession?: (sessionId: string) => void;
+  onInspectPrompt?: (stepId: string) => void;
 }) {
   const [showFullOutput, setShowFullOutput] = useState(false);
 
@@ -305,6 +307,16 @@ export const StepDetailPanel = React.memo(function StepDetailPanel({
       )}
 
       <div className="mt-3 space-y-1.5">
+        {!isPlanNode && onInspectPrompt && (
+          <button
+            type="button"
+            onClick={() => onInspectPrompt(step.id)}
+            className="w-full px-2 py-1.5 text-[10px] font-bold uppercase tracking-[1px] transition-colors"
+            style={{ background: `${COLORS.warning}12`, border: `1px solid ${COLORS.warning}28`, color: COLORS.warning, fontFamily: MONO_FONT }}
+          >
+            INSPECT EFFECTIVE PROMPT
+          </button>
+        )}
         {!isPlanNode && latestAttempt && (
           <button
             onClick={() => onOpenWorkerThread({

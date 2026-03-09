@@ -14,10 +14,13 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { getDefaultModelDescriptor } from "../shared/modelRegistry";
+
 const noop = () => () => {};
 const resolved = <T>(v: T) => async () => v;
 const resolvedArg = <T>(v: T) => async (_a: any) => v;
 const resolvedArg2 = <T>(v: T) => async (_a: any, _b: any) => v;
+const DEFAULT_BROWSER_MOCK_CODEX_MODEL = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4-codex";
 
 const MOCK_PROJECT = {
   id: "browser-mock",
@@ -406,26 +409,106 @@ const MOCK_QUEUE_STATE: Record<string, any> = {
   "queue-commerce-v3": {
     queueId: "queue-commerce-v3",
     groupId: "queue-commerce-v3",
+    groupName: "Release v3.0 - Commerce",
+    targetBranch: "main",
     state: "landing",
     entries: [
-      { prId: "pr-q1", laneId: "lane-payments", laneName: "feature/payments", position: 0, state: "landed" },
-      { prId: "pr-q2", laneId: "lane-checkout", laneName: "feature/checkout-flow", position: 1, state: "landing" },
-      { prId: "pr-q3", laneId: "lane-notifications", laneName: "feature/notifications", position: 2, state: "pending" },
+      { prId: "pr-q1", laneId: "lane-payments", laneName: "feature/payments", position: 0, prNumber: 160, githubUrl: "https://github.com/mock/repo/pull/160", state: "landed", updatedAt: yesterday },
+      { prId: "pr-q2", laneId: "lane-checkout", laneName: "feature/checkout-flow", position: 1, prNumber: 161, githubUrl: "https://github.com/mock/repo/pull/161", state: "landing", updatedAt: now },
+      { prId: "pr-q3", laneId: "lane-notifications", laneName: "feature/notifications", position: 2, prNumber: 162, githubUrl: "https://github.com/mock/repo/pull/162", state: "pending", updatedAt: null },
     ],
     currentPosition: 1,
+    activePrId: "pr-q2",
+    activeResolverRunId: null,
+    lastError: null,
+    waitReason: null,
+    config: {
+      method: "squash",
+      archiveLane: false,
+      autoResolve: true,
+      ciGating: true,
+      resolverProvider: "claude",
+      resolverModel: "anthropic/claude-sonnet-4-6",
+      reasoningEffort: "medium",
+      permissionMode: "guarded_edit",
+      confidenceThreshold: null,
+      originSurface: "queue",
+      originMissionId: null,
+      originRunId: null,
+      originLabel: "Release v3.0 - Commerce",
+    },
     startedAt: yesterday,
     completedAt: null,
+    updatedAt: now,
   },
   "queue-billing-upgrade": {
     queueId: "queue-billing-upgrade",
     groupId: "queue-billing-upgrade",
+    groupName: "Billing Upgrade",
+    targetBranch: "main",
     state: "idle",
     entries: [
-      { prId: "pr-q4", laneId: "lane-billing", laneName: "feature/billing-v2", position: 0, state: "pending" },
+      { prId: "pr-q4", laneId: "lane-billing", laneName: "feature/billing-v2", position: 0, prNumber: 170, githubUrl: "https://github.com/mock/repo/pull/170", state: "pending", updatedAt: null },
     ],
     currentPosition: 0,
+    activePrId: null,
+    activeResolverRunId: null,
+    lastError: null,
+    waitReason: null,
+    config: {
+      method: "squash",
+      archiveLane: false,
+      autoResolve: false,
+      ciGating: true,
+      resolverProvider: null,
+      resolverModel: "anthropic/claude-sonnet-4-6",
+      reasoningEffort: "medium",
+      permissionMode: "guarded_edit",
+      confidenceThreshold: null,
+      originSurface: "queue",
+      originMissionId: null,
+      originRunId: null,
+      originLabel: "Billing Upgrade",
+    },
     startedAt: now,
     completedAt: null,
+    updatedAt: now,
+  },
+};
+
+const MOCK_QUEUE_REHEARSAL_STATE: Record<string, any> = {
+  "queue-commerce-v3": {
+    rehearsalId: "rehearsal-commerce-v3",
+    groupId: "queue-commerce-v3",
+    groupName: "Release v3.0 - Commerce",
+    targetBranch: "main",
+    state: "completed",
+    entries: [
+      { prId: "pr-q1", laneId: "lane-payments", laneName: "feature/payments", position: 0, prNumber: 160, githubUrl: "https://github.com/mock/repo/pull/160", state: "ready", changedFiles: ["payments.ts"], updatedAt: yesterday },
+      { prId: "pr-q2", laneId: "lane-checkout", laneName: "feature/checkout-flow", position: 1, prNumber: 161, githubUrl: "https://github.com/mock/repo/pull/161", state: "resolved", resolvedByAi: true, changedFiles: ["checkout.ts"], conflictPaths: ["checkout.ts"], updatedAt: now },
+    ],
+    currentPosition: 2,
+    scratchLaneId: "lane-queue-rehearsal",
+    activePrId: null,
+    activeResolverRunId: null,
+    lastError: null,
+    waitReason: null,
+    config: {
+      method: "squash",
+      autoResolve: true,
+      resolverProvider: "claude",
+      resolverModel: "anthropic/claude-sonnet-4-6",
+      reasoningEffort: "medium",
+      permissionMode: "guarded_edit",
+      preserveScratchLane: true,
+      originSurface: "queue",
+      originMissionId: null,
+      originRunId: null,
+      originLabel: "Release v3.0 - Commerce",
+    },
+    startedAt: yesterday,
+    completedAt: now,
+    updatedAt: now,
   },
 };
 
@@ -576,7 +659,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
             runId,
             missionId,
             provider: "codex",
-            model: "openai/gpt-5.3-codex",
+            model: DEFAULT_BROWSER_MOCK_CODEX_MODEL,
             role: "worker",
             source: "ade-worker",
             parentWorkerId: null,
@@ -621,6 +704,20 @@ if (typeof window !== "undefined" && !(window as any).ade) {
           },
         ];
       },
+      listArtifacts: resolvedArg([]),
+      listWorkerCheckpoints: resolvedArg([]),
+      getPromptInspector: resolvedArg({
+        target: "coordinator",
+        runId: "mock-run",
+        missionId: "mock-mission",
+        stepId: null,
+        phaseKey: null,
+        phaseName: null,
+        title: "Mock prompt inspector",
+        notes: [],
+        layers: [],
+        fullPrompt: "",
+      }),
       getTeamRuntimeState: resolvedArg(null),
       finalizeRun: resolvedArg({ success: true, blockers: [] }),
       getModelCapabilities: resolved({ models: [] }),
@@ -917,7 +1014,9 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       listExternalResolverRuns: resolved([]),
       commitExternalResolverRun: resolvedArg({}),
       prepareResolverSession: resolvedArg({}),
+      attachResolverSession: resolvedArg({}),
       finalizeResolverSession: resolvedArg({}),
+      cancelResolverSession: resolvedArg({}),
       suggestResolverTarget: resolvedArg({}),
       onEvent: noop,
     },
@@ -954,8 +1053,59 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       commitIntegration: resolvedArg({}),
       landStackEnhanced: resolvedArg([]),
       landQueueNext: resolvedArg({ success: true, prNumber: 161, sha: "def456" }),
+      startQueueAutomation: async (args: { groupId: string; autoResolve?: boolean; archiveLane?: boolean; ciGating?: boolean; method?: string; resolverModel?: string; reasoningEffort?: string }) => {
+        const state = MOCK_QUEUE_STATE[args.groupId];
+        if (!state) throw new Error(`Unknown queue group: ${args.groupId}`);
+        state.state = "landing";
+        state.config = {
+          ...state.config,
+          autoResolve: args.autoResolve ?? state.config.autoResolve,
+          archiveLane: args.archiveLane ?? state.config.archiveLane,
+          ciGating: args.ciGating ?? state.config.ciGating,
+          method: args.method ?? state.config.method,
+          resolverModel: args.resolverModel ?? state.config.resolverModel,
+          reasoningEffort: args.reasoningEffort ?? state.config.reasoningEffort,
+        };
+        return state;
+      },
+      pauseQueueAutomation: async (queueId: string) => {
+        const state = Object.values(MOCK_QUEUE_STATE).find((candidate) => candidate.queueId === queueId) ?? null;
+        if (state) state.state = "paused";
+        return state;
+      },
+      resumeQueueAutomation: async (args: { queueId: string }) => {
+        const state = Object.values(MOCK_QUEUE_STATE).find((candidate) => candidate.queueId === args.queueId) ?? null;
+        if (state) state.state = "landing";
+        return state;
+      },
+      cancelQueueAutomation: async (queueId: string) => {
+        const state = Object.values(MOCK_QUEUE_STATE).find((candidate) => candidate.queueId === queueId) ?? null;
+        if (state) state.state = "cancelled";
+        return state;
+      },
+      startQueueRehearsal: async (args: { groupId: string; autoResolve?: boolean; method?: string; resolverModel?: string; reasoningEffort?: string }) => {
+        const state = MOCK_QUEUE_REHEARSAL_STATE[args.groupId];
+        if (!state) throw new Error(`Unknown queue group: ${args.groupId}`);
+        state.state = "running";
+        state.config = {
+          ...state.config,
+          autoResolve: args.autoResolve ?? state.config.autoResolve,
+          method: args.method ?? state.config.method,
+          resolverModel: args.resolverModel ?? state.config.resolverModel,
+          reasoningEffort: args.reasoningEffort ?? state.config.reasoningEffort,
+        };
+        return state;
+      },
+      cancelQueueRehearsal: async (rehearsalId: string) => {
+        const state = Object.values(MOCK_QUEUE_REHEARSAL_STATE).find((candidate) => candidate.rehearsalId === rehearsalId) ?? null;
+        if (state) state.state = "cancelled";
+        return state;
+      },
       getHealth: resolvedArg({}),
       getQueueState: async (groupId: string) => MOCK_QUEUE_STATE[groupId] ?? null,
+      listQueueStates: async () => Object.values(MOCK_QUEUE_STATE),
+      getQueueRehearsalState: async (groupId: string) => MOCK_QUEUE_REHEARSAL_STATE[groupId] ?? null,
+      listQueueRehearsals: async () => Object.values(MOCK_QUEUE_REHEARSAL_STATE),
       getConflictAnalysis: resolvedArg({}),
       getMergeContext: async (prId: string) =>
         MOCK_MERGE_CONTEXTS[prId] ?? { prId, groupId: null, groupType: null, sourceLaneIds: [], targetLaneId: null, members: [] },

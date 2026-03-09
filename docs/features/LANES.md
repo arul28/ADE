@@ -466,10 +466,10 @@ lanes (
 
 **Phase 8 completed**: LANES-039 through LANES-048. PaneTilingLayout, terminal tiling, rebase suggestions, lane appearance customization, reparent, create child, import branch, quick-launch profiles, and lane filter/search are all operational.
 
-**Phase 5 partial**: LANES-049 (env init, W1), LANES-053 (templates, W2), LANES-050 (port allocation, W3), and LANES-055 (overlay extensions, W1) are complete. Remaining Phase 5 items (LANES-051, 052, 054, 056, 057, 058) are still TODO.
+**Phase 5 near-complete**: LANES-049 (env init, W1), LANES-053 (templates, W2), LANES-050 (port allocation, W3), LANES-055 (overlay extensions, W1), LANES-051 (hostname proxy, W4), LANES-052 (preview launch, W4), LANES-054 (OAuth redirect, W5), LANES-056 (runtime diagnostics, W6), and LANES-057 (renderer UI, W4-W6) are all complete. Only LANES-058 (E2E validation) remains TODO.
 
 **Remaining tasks** are scheduled as follows:
-- **Phase 5 (Lane Runtime Isolation)**: LANES-051, LANES-052, LANES-054, LANES-056, LANES-057, LANES-058
+- **Phase 5 (Lane Runtime Isolation)**: LANES-058
 - **Phase 9 (Advanced Features)**: LANES-032, LANES-036, LANES-037, LANES-038
 
 ### Phase 5 — Lane Runtime Isolation
@@ -478,13 +478,13 @@ lanes (
 |----|------|--------|
 | LANES-049 | Lane environment initialization service | DONE — Phase 5 W1 (`laneEnvironmentService.ts`, steps: env-files, docker, dependencies, mount-points) |
 | LANES-050 | Port allocation and lease manager | DONE — Phase 5 W3 (`portAllocationService.ts`, lease-based port range allocation with conflict detection) |
-| LANES-051 | Per-lane hostname proxy (*.localhost) | TODO |
-| LANES-052 | Preview launch service | TODO |
+| LANES-051 | Per-lane hostname proxy (*.localhost) | DONE — Phase 5 W4 (`laneProxyService.ts`, reverse proxy routing by Host header) |
+| LANES-052 | Preview launch service | DONE — Phase 5 W4 (`LanePreviewPanel.tsx`, preview URL generation and launch) |
 | LANES-053 | Lane template CRUD and storage | DONE — Phase 5 W2 (`laneTemplateService.ts`, reusable initialization recipes, template selector in CreateLaneDialog) |
-| LANES-054 | Auth redirect handling per-lane: state-parameter routing (single OAuth callback URL, route by state param to correct lane), hostname-based routing (for providers supporting wildcards), setup assistant in Settings | TODO |
+| LANES-054 | Auth redirect handling per-lane: state-parameter routing (single OAuth callback URL, route by state param to correct lane), hostname-based routing (for providers supporting wildcards), setup assistant in Settings | DONE — Phase 5 W5 (`oauthRedirectService.ts`, state-parameter and hostname-based routing with tests) |
 | LANES-055 | LaneOverlayPolicy extension for env/port/proxy | DONE — Phase 5 W1 (extended `LaneOverlayOverrides` with `portRange`, `proxyHostname`, `computeBackend`, `envInit`) |
-| LANES-056 | Runtime diagnostics (health checks, port conflicts) | TODO |
-| LANES-057 | Renderer UI updates for lane env/proxy/preview | TODO |
+| LANES-056 | Runtime diagnostics (health checks, port conflicts) | DONE — Phase 5 W6 (`runtimeDiagnosticsService.ts` + `RuntimeDiagnosticsPanel.tsx`) |
+| LANES-057 | Renderer UI updates for lane env/proxy/preview | DONE — Phase 5 W4-W6 (LanePreviewPanel, RuntimeDiagnosticsPanel, LaneOverlayConfigPanel, PortAllocationPanel, LaneEnvInitProgress) |
 | LANES-058 | E2E validation for lane isolation | TODO |
 
 ---

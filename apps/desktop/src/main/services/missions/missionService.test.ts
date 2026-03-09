@@ -574,6 +574,39 @@ describe("missionService lifecycle", () => {
     dispose();
   });
 
+  it("normalizes question and validation settings to planning-only semantics", async () => {
+    const { db, projectId, laneId, dispose } = await createDbWithProjectAndLane();
+    const service = createMissionService({ db, projectId });
+    const profiles = service.listPhaseProfiles();
+    const defaultProfile = profiles.find((profile) => profile.isDefault);
+    if (!defaultProfile) throw new Error("Expected default profile");
+
+    const created = service.create({
+      prompt: "Normalize phase semantics",
+      laneId,
+      phaseProfileId: defaultProfile.id,
+      phaseOverride: defaultProfile.phases.map((phase, index) => ({
+        ...phase,
+        position: index,
+        askQuestions: phase.phaseKey === "development"
+          ? { enabled: true, mode: "always", maxQuestions: 9 }
+          : phase.askQuestions,
+        validationGate: phase.phaseKey === "planning"
+          ? { tier: "self", required: true, criteria: "Should be removed" }
+          : phase.validationGate,
+      })),
+    });
+
+    const planning = created.phaseConfiguration?.selectedPhases.find((phase) => phase.phaseKey === "planning");
+    const development = created.phaseConfiguration?.selectedPhases.find((phase) => phase.phaseKey === "development");
+    expect(planning?.validationGate.tier).toBe("none");
+    expect(planning?.validationGate.required).toBe(false);
+    expect(development?.askQuestions.enabled).toBe(false);
+    expect(development?.askQuestions.mode).toBe("never");
+
+    dispose();
+  });
+
   it("returns mission dashboard snapshots for active/recent/weekly views", async () => {
     const { db, projectId, laneId, dispose } = await createDbWithProjectAndLane();
     const service = createMissionService({ db, projectId });

@@ -1,136 +1,28 @@
-import React from "react";
-import { Terminal } from "@phosphor-icons/react";
-import type { TerminalSessionSummary } from "../../../shared/types";
+import React, { useMemo } from "react";
+import { ChatCircleText, Command, Terminal } from "@phosphor-icons/react";
+import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { SessionCard } from "./SessionCard";
-import { LaunchPanel } from "./LaunchPanel";
-import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
-import type { WorkStatusFilter } from "../../state/appStore";
+import { sortLanesForTabs } from "../lanes/laneUtils";
+import { MONO_FONT } from "../lanes/laneDesignTokens";
+import type { WorkDraftKind, WorkStatusFilter } from "../../state/appStore";
 
-/* ── inline style helpers ─────────────────────────────────────────── */
+const STATUS_OPTIONS: ReadonlyArray<{ value: "all" | "running" | "awaiting-input" | "ended"; label: string; color?: string }> = [
+  { value: "all", label: "All" },
+  { value: "running", label: "Running", color: "var(--color-success)" },
+  { value: "awaiting-input", label: "Awaiting", color: "var(--color-warning)" },
+  { value: "ended", label: "Ended", color: "var(--color-error)" },
+];
 
-const chipBase: React.CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  padding: "2px 10px",
-  fontSize: 9,
-  fontWeight: 700,
-  fontFamily: MONO_FONT,
-  textTransform: "uppercase",
-  letterSpacing: "1px",
-  borderRadius: 0,
-  cursor: "pointer",
-  transition: "all 150ms",
-  whiteSpace: "nowrap",
-  flexShrink: 0,
-};
-
-const chipActive: React.CSSProperties = {
-  ...chipBase,
-  color: COLORS.accent,
-  background: `${COLORS.accent}18`,
-  border: `1px solid ${COLORS.accent}30`,
-};
-
-const chipInactive: React.CSSProperties = {
-  ...chipBase,
-  color: COLORS.textMuted,
-  background: "transparent",
-  border: `1px solid ${COLORS.outlineBorder}`,
-};
-
-function statusPillStyle(
-  active: boolean,
-  variant: "all" | "running" | "awaiting-input" | "ended",
-): React.CSSProperties {
-  if (!active) {
-    return {
-      ...chipBase,
-      color: COLORS.textMuted,
-      background: "transparent",
-      border: `1px solid ${COLORS.outlineBorder}`,
-    };
-  }
-  switch (variant) {
-    case "all":
-      return {
-        ...chipBase,
-        color: COLORS.accent,
-        background: `${COLORS.accent}18`,
-        border: `1px solid ${COLORS.accent}30`,
-      };
-    case "running":
-      return {
-        ...chipBase,
-        color: COLORS.success,
-        background: `${COLORS.success}18`,
-        border: `1px solid ${COLORS.success}30`,
-      };
-    case "awaiting-input":
-      return {
-        ...chipBase,
-        color: COLORS.warning,
-        background: `${COLORS.warning}18`,
-        border: `1px solid ${COLORS.warning}30`,
-      };
-    case "ended":
-      return {
-        ...chipBase,
-        color: COLORS.danger,
-        background: `${COLORS.danger}15`,
-        border: `1px solid ${COLORS.danger}30`,
-      };
-  }
-}
-
-const searchInputStyle: React.CSSProperties = {
-  height: 28,
-  width: "100%",
-  borderRadius: 0,
-  border: `1px solid ${COLORS.outlineBorder}`,
-  background: COLORS.recessedBg,
-  padding: "0 10px",
-  fontSize: 11,
-  fontFamily: MONO_FONT,
-  color: COLORS.textPrimary,
-  outline: "none",
-};
-
-const groupHeaderBg: React.CSSProperties = {
-  position: "sticky",
-  top: 0,
-  zIndex: 10,
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-  padding: "6px 8px",
-  marginBottom: 4,
-  background: `${COLORS.pageBg}E6`, // 90% opacity
-  backdropFilter: "blur(8px)",
-};
-
-const groupLabelBase: React.CSSProperties = {
-  fontSize: 10,
-  fontWeight: 700,
-  fontFamily: MONO_FONT,
-  textTransform: "uppercase",
-  letterSpacing: "1px",
-  flexShrink: 0,
-};
-
-const headerLineBase: React.CSSProperties = {
-  flex: 1,
-  height: 1,
-  marginLeft: 8,
-};
-
-const STATUS_OPTIONS = [
-  { value: "all" as const, label: "ALL", variant: "all" as const },
-  { value: "running" as const, label: "RUNNING", variant: "running" as const },
-  { value: "awaiting-input" as const, label: "AWAITING INPUT", variant: "awaiting-input" as const },
-  { value: "ended" as const, label: "ENDED", variant: "ended" as const },
-] as const;
-
-/* ── component ────────────────────────────────────────────────────── */
+const ENTRY_OPTIONS: Array<{
+  kind: WorkDraftKind;
+  label: string;
+  icon: typeof ChatCircleText;
+  color: string;
+}> = [
+  { kind: "chat", label: "New Chat", icon: ChatCircleText, color: "#8B5CF6" },
+  { kind: "cli", label: "New CLI", icon: Command, color: "#F97316" },
+  { kind: "shell", label: "New Shell", icon: Terminal, color: "#22C55E" },
+];
 
 export const SessionListPane = React.memo(function SessionListPane({
   lanes,
@@ -146,15 +38,16 @@ export const SessionListPane = React.memo(function SessionListPane({
   q,
   setQ,
   selectedSessionId,
+  draftKind,
+  showingDraft,
+  onShowDraftKind,
   onSelectSession,
   onResume,
   resumingSessionId,
-  onLaunchPty,
-  onLaunchChat,
   onInfoClick,
   onContextMenu,
 }: {
-  lanes: { id: string; name: string }[];
+  lanes: LaneSummary[];
   filtered: TerminalSessionSummary[];
   runningFiltered: TerminalSessionSummary[];
   awaitingInputFiltered: TerminalSessionSummary[];
@@ -167,83 +60,176 @@ export const SessionListPane = React.memo(function SessionListPane({
   q: string;
   setQ: (v: string) => void;
   selectedSessionId: string | null;
+  draftKind: WorkDraftKind;
+  showingDraft: boolean;
+  onShowDraftKind: (kind: WorkDraftKind) => void;
   onSelectSession: (id: string) => void;
   onResume: (session: TerminalSessionSummary) => void;
   resumingSessionId: string | null;
-  onLaunchPty: (laneId: string, profile: "claude" | "codex" | "shell", tracked?: boolean) => void;
-  onLaunchChat: (laneId: string) => void;
   onInfoClick: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
   onContextMenu: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
 }) {
-  return (
-    <div className="flex h-full flex-col">
-      {/* Launch panel */}
-      <LaunchPanel
-        lanes={lanes}
-        onLaunchPty={onLaunchPty}
-        onLaunchChat={onLaunchChat}
-      />
+  const orderedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
 
-      {/* Filters */}
-      <div style={{ padding: "8px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
-        {/* Lane filter chips */}
-        <div className="flex items-center gap-1 overflow-x-auto scrollbar-none pb-0.5">
+  return (
+    <div className="flex h-full flex-col overflow-hidden">
+      {/* ── New session buttons ── */}
+      <div
+        style={{
+          padding: "8px 10px",
+          borderBottom: "1px solid var(--color-border)",
+          display: "flex",
+          gap: 4,
+          fontFamily: MONO_FONT,
+        }}
+      >
+        {ENTRY_OPTIONS.map((entry) => {
+          const Icon = entry.icon;
+          const active = showingDraft && draftKind === entry.kind;
+          return (
+            <button
+              key={entry.kind}
+              type="button"
+              onClick={() => onShowDraftKind(entry.kind)}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                padding: "5px 10px",
+                border: `1px solid ${active ? `${entry.color}40` : "var(--color-border)"}`,
+                background: active ? `${entry.color}12` : "transparent",
+                color: active ? "var(--color-fg)" : "var(--color-muted-fg)",
+                fontFamily: MONO_FONT,
+                fontSize: 9,
+                fontWeight: 700,
+                letterSpacing: "0.14em",
+                textTransform: "uppercase",
+                cursor: "pointer",
+                transition: "all 120ms",
+              }}
+            >
+              <Icon size={10} weight="bold" style={{ color: entry.color }} />
+              {entry.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ── Lane filter + status + search ── */}
+      <div
+        style={{
+          padding: "6px 10px",
+          borderBottom: "1px solid var(--color-border)",
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+          fontFamily: MONO_FONT,
+        }}
+      >
+        {/* Lane chips — horizontal scroll */}
+        <div className="flex items-center gap-1 overflow-x-auto scrollbar-none">
           <button
             type="button"
-            style={filterLaneId === "all" ? chipActive : chipInactive}
             onClick={() => setFilterLaneId("all")}
+            style={{
+              padding: "3px 8px",
+              fontSize: 9,
+              fontWeight: 700,
+              fontFamily: MONO_FONT,
+              textTransform: "uppercase",
+              letterSpacing: "0.12em",
+              border: `1px solid ${filterLaneId === "all" ? "var(--color-fg)" : "var(--color-border)"}`,
+              background: filterLaneId === "all" ? "var(--color-fg)" : "transparent",
+              color: filterLaneId === "all" ? "var(--color-card)" : "var(--color-muted-fg)",
+              cursor: "pointer",
+              whiteSpace: "nowrap",
+              flexShrink: 0,
+              transition: "all 120ms",
+            }}
           >
-            ALL
+            All lanes
           </button>
-          {lanes.map((l) => (
+          {orderedLanes.map((lane) => (
             <button
-              key={l.id}
+              key={lane.id}
               type="button"
+              onClick={() => setFilterLaneId(lane.id)}
+              title={lane.name}
               style={{
-                ...(filterLaneId === l.id ? chipActive : chipInactive),
+                padding: "3px 8px",
+                fontSize: 9,
+                fontWeight: 700,
+                fontFamily: MONO_FONT,
+                textTransform: "uppercase",
+                letterSpacing: "0.12em",
+                border: `1px solid ${filterLaneId === lane.id ? "var(--color-fg)" : "var(--color-border)"}`,
+                background: filterLaneId === lane.id ? "var(--color-fg)" : "transparent",
+                color: filterLaneId === lane.id ? "var(--color-card)" : "var(--color-muted-fg)",
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+                flexShrink: 0,
                 maxWidth: 100,
                 overflow: "hidden",
                 textOverflow: "ellipsis",
+                transition: "all 120ms",
               }}
-              onClick={() => setFilterLaneId(l.id)}
-              title={l.name}
             >
-              {l.name}
+              {lane.name}
             </button>
           ))}
         </div>
 
-        {/* Status toggle pills */}
+        {/* Status filters */}
         <div className="flex items-center gap-1">
-          {STATUS_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              style={statusPillStyle(filterStatus === opt.value, opt.variant)}
-              onClick={() => setFilterStatus(opt.value)}
-            >
-              {opt.label}
-            </button>
-          ))}
+          {STATUS_OPTIONS.map((opt) => {
+            const active = filterStatus === opt.value;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setFilterStatus(opt.value)}
+                style={{
+                  padding: "3px 8px",
+                  fontSize: 9,
+                  fontWeight: 700,
+                  fontFamily: MONO_FONT,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.12em",
+                  border: `1px solid ${active ? (opt.color ?? "var(--color-fg)") : "var(--color-border)"}`,
+                  background: active && opt.color ? `color-mix(in srgb, ${opt.color} 14%, transparent)` : "transparent",
+                  color: active ? (opt.color ?? "var(--color-fg)") : "var(--color-muted-fg)",
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                  transition: "all 120ms",
+                }}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
         </div>
 
-        {/* Search bar */}
+        {/* Search */}
         <input
-          style={searchInputStyle}
+          style={{
+            height: 28,
+            width: "100%",
+            border: "1px solid var(--color-border)",
+            background: "transparent",
+            padding: "0 8px",
+            fontSize: 10,
+            fontFamily: MONO_FONT,
+            color: "var(--color-fg)",
+            outline: "none",
+          }}
           placeholder="SEARCH BY NAME, LANE, TYPE..."
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          onFocus={(e) => {
-            e.currentTarget.style.borderColor = COLORS.accent;
-          }}
-          onBlur={(e) => {
-            e.currentTarget.style.borderColor = COLORS.outlineBorder;
-          }}
         />
       </div>
 
-      {/* Session list */}
-      <div className="min-h-0 flex-1 overflow-auto">
+      {/* ── Session list ── */}
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
         {filtered.length === 0 ? (
           <div
             style={{
@@ -256,17 +242,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               textAlign: "center",
             }}
           >
-            <div
-              style={{
-                marginBottom: 12,
-                padding: 12,
-                borderRadius: 0,
-                background: `${COLORS.accent}15`,
-                border: `1px solid ${COLORS.accent}25`,
-              }}
-            >
-              <Terminal size={20} weight="regular" style={{ color: COLORS.accent }} />
-            </div>
+            <Terminal size={18} weight="regular" style={{ color: "var(--color-muted-fg)", opacity: 0.3, marginBottom: 10 }} />
             <div
               style={{
                 fontSize: 10,
@@ -274,60 +250,53 @@ export const SessionListPane = React.memo(function SessionListPane({
                 fontFamily: MONO_FONT,
                 textTransform: "uppercase",
                 letterSpacing: "1px",
-                color: COLORS.textSecondary,
+                color: "var(--color-fg)",
               }}
             >
-              NO TERMINAL SESSIONS
+              No sessions in this view
             </div>
             <div
               style={{
                 marginTop: 6,
-                fontSize: 11,
+                fontSize: 10,
                 fontFamily: MONO_FONT,
-                color: COLORS.textMuted,
+                color: "var(--color-muted-fg)",
                 lineHeight: 1.5,
-                maxWidth: 220,
+                maxWidth: 200,
               }}
             >
-              Start a new session to begin working.
+              Change filters or start a new session above.
             </div>
           </div>
         ) : (
-          <div className="px-2 pb-2">
-            {/* Running group */}
+          <div className="px-2 pb-2 pt-1">
             {runningFiltered.length > 0 && (
               <div>
-                <div style={groupHeaderBg}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 4px", marginBottom: 4 }}>
                   <span
                     style={{
-                      height: 6,
-                      width: 6,
-                      borderRadius: 0,
-                      background: COLORS.success,
+                      height: 5,
+                      width: 5,
+                      background: "var(--color-success)",
                       animation: "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite",
                       flexShrink: 0,
                     }}
                   />
-                  <span style={{ ...groupLabelBase, color: COLORS.success }}>
-                    RUNNING &middot; {runningFiltered.length}
+                  <span style={{ fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", color: "var(--color-success)" }}>
+                    Running · {runningFiltered.length}
                   </span>
-                  <span
-                    style={{
-                      ...headerLineBase,
-                      background: `linear-gradient(to right, ${COLORS.success}40, transparent)`,
-                    }}
-                  />
+                  <span style={{ flex: 1, height: 1, marginLeft: 6, background: "color-mix(in srgb, var(--color-success) 20%, transparent)" }} />
                 </div>
-                <div className="space-y-1.5">
-                  {runningFiltered.map((s) => (
+                <div className="space-y-1">
+                  {runningFiltered.map((session) => (
                     <SessionCard
-                      key={s.id}
-                      session={s}
-                      isSelected={selectedSessionId === s.id}
+                      key={session.id}
+                      session={session}
+                      isSelected={selectedSessionId === session.id}
                       onSelect={onSelectSession}
-                      onResume={() => onResume(s)}
-                      onInfoClick={(e) => onInfoClick(s, e)}
-                      onContextMenu={(e) => { e.preventDefault(); onContextMenu(s, e); }}
+                      onResume={() => onResume(session)}
+                      onInfoClick={(e) => onInfoClick(session, e)}
+                      onContextMenu={(e) => { e.preventDefault(); onContextMenu(session, e); }}
                       resumingSessionId={resumingSessionId}
                     />
                   ))}
@@ -335,41 +304,24 @@ export const SessionListPane = React.memo(function SessionListPane({
               </div>
             )}
 
-            {/* Awaiting input group */}
             {awaitingInputFiltered.length > 0 && (
-              <div className={runningFiltered.length > 0 ? "mt-4" : ""}>
-                <div style={groupHeaderBg}>
-                  <span
-                    className="animate-spin"
-                    style={{
-                      height: 6,
-                      width: 6,
-                      borderRadius: 0,
-                      border: `1.5px solid ${COLORS.warning}`,
-                      borderTopColor: "transparent",
-                      flexShrink: 0,
-                    }}
-                  />
-                  <span style={{ ...groupLabelBase, color: COLORS.warning }}>
-                    AWAITING INPUT &middot; {awaitingInputFiltered.length}
+              <div className={runningFiltered.length > 0 ? "mt-3" : ""}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 4px", marginBottom: 4 }}>
+                  <span style={{ fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", color: "var(--color-warning)" }}>
+                    Awaiting input · {awaitingInputFiltered.length}
                   </span>
-                  <span
-                    style={{
-                      ...headerLineBase,
-                      background: `linear-gradient(to right, ${COLORS.warning}40, transparent)`,
-                    }}
-                  />
+                  <span style={{ flex: 1, height: 1, marginLeft: 6, background: "color-mix(in srgb, var(--color-warning) 20%, transparent)" }} />
                 </div>
-                <div className="space-y-1.5">
-                  {awaitingInputFiltered.map((s) => (
+                <div className="space-y-1">
+                  {awaitingInputFiltered.map((session) => (
                     <SessionCard
-                      key={s.id}
-                      session={s}
-                      isSelected={selectedSessionId === s.id}
+                      key={session.id}
+                      session={session}
+                      isSelected={selectedSessionId === session.id}
                       onSelect={onSelectSession}
-                      onResume={() => onResume(s)}
-                      onInfoClick={(e) => onInfoClick(s, e)}
-                      onContextMenu={(e) => { e.preventDefault(); onContextMenu(s, e); }}
+                      onResume={() => onResume(session)}
+                      onInfoClick={(e) => onInfoClick(session, e)}
+                      onContextMenu={(e) => { e.preventDefault(); onContextMenu(session, e); }}
                       resumingSessionId={resumingSessionId}
                     />
                   ))}
@@ -377,39 +329,24 @@ export const SessionListPane = React.memo(function SessionListPane({
               </div>
             )}
 
-            {/* Ended group */}
             {endedFiltered.length > 0 && (
-              <div className={runningFiltered.length > 0 || awaitingInputFiltered.length > 0 ? "mt-4" : ""}>
-                <div style={groupHeaderBg}>
-                  <span
-                    style={{
-                      height: 6,
-                      width: 6,
-                      borderRadius: 0,
-                      background: COLORS.danger,
-                      flexShrink: 0,
-                    }}
-                  />
-                  <span style={{ ...groupLabelBase, color: COLORS.danger }}>
-                    ENDED &middot; {endedFiltered.length}
+              <div className={runningFiltered.length > 0 || awaitingInputFiltered.length > 0 ? "mt-3" : ""}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 4px", marginBottom: 4 }}>
+                  <span style={{ fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", color: "var(--color-error)" }}>
+                    Ended · {endedFiltered.length}
                   </span>
-                  <span
-                    style={{
-                      ...headerLineBase,
-                      background: `linear-gradient(to right, ${COLORS.danger}30, transparent)`,
-                    }}
-                  />
+                  <span style={{ flex: 1, height: 1, marginLeft: 6, background: "color-mix(in srgb, var(--color-error) 20%, transparent)" }} />
                 </div>
-                <div className="space-y-1.5">
-                  {endedFiltered.map((s) => (
+                <div className="space-y-1">
+                  {endedFiltered.map((session) => (
                     <SessionCard
-                      key={s.id}
-                      session={s}
-                      isSelected={selectedSessionId === s.id}
+                      key={session.id}
+                      session={session}
+                      isSelected={selectedSessionId === session.id}
                       onSelect={onSelectSession}
-                      onResume={() => onResume(s)}
-                      onInfoClick={(e) => onInfoClick(s, e)}
-                      onContextMenu={(e) => { e.preventDefault(); onContextMenu(s, e); }}
+                      onResume={() => onResume(session)}
+                      onInfoClick={(e) => onInfoClick(session, e)}
+                      onContextMenu={(e) => { e.preventDefault(); onContextMenu(session, e); }}
                       resumingSessionId={resumingSessionId}
                     />
                   ))}

@@ -39,6 +39,7 @@ export type AgentChatEvent =
       tool: string;
       args: unknown;
       itemId: string;
+      parentItemId?: string;
       turnId?: string;
     }
   | {
@@ -46,6 +47,7 @@ export type AgentChatEvent =
       tool: string;
       result: unknown;
       itemId: string;
+      parentItemId?: string;
       turnId?: string;
       status?: "running" | "completed" | "failed";
     }
@@ -137,6 +139,7 @@ export type AgentChatEventEnvelope = {
 };
 
 export type AgentChatPermissionMode = "default" | "plan" | "edit" | "full-auto" | "config-toml";
+export type AgentChatExecutionMode = "focused" | "parallel" | "subagents" | "teams";
 export type AgentChatIdentityKey = "cto";
 
 export type AgentChatSession = {
@@ -146,6 +149,7 @@ export type AgentChatSession = {
   model: string;
   modelId?: ModelId;
   reasoningEffort?: string | null;
+  executionMode?: AgentChatExecutionMode | null;
   permissionMode?: AgentChatPermissionMode;
   identityKey?: AgentChatIdentityKey;
   capabilityMode?: CtoCapabilityMode;
@@ -164,6 +168,7 @@ export type AgentChatSessionSummary = {
   title?: string | null;
   goal?: string | null;
   reasoningEffort?: string | null;
+  executionMode?: AgentChatExecutionMode | null;
   permissionMode?: AgentChatPermissionMode;
   identityKey?: AgentChatIdentityKey;
   capabilityMode?: CtoCapabilityMode;
@@ -208,8 +213,10 @@ export type AgentChatListArgs = {
 export type AgentChatSendArgs = {
   sessionId: string;
   text: string;
+  displayText?: string;
   attachments?: AgentChatFileRef[];
   reasoningEffort?: string | null;
+  executionMode?: AgentChatExecutionMode | null;
 };
 
 export type AgentChatSteerArgs = {

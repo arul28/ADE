@@ -156,6 +156,7 @@ export function createMissionPreflightService(args: {
 
     let modelAvailabilityDetails: string[] = [];
     let modelFailures: string[] = [];
+    let orchestratorModelId: string | null = null;
     let availabilityModels: Array<{ id: string; shortId: string; family: string; displayName: string }> = [];
     try {
       const availability = await aiIntegrationService.getAvailabilityAsync();
@@ -172,7 +173,7 @@ export function createMissionPreflightService(args: {
           });
         }
       }
-      const orchestratorModelId = toNonEmptyString(launch.modelConfig?.orchestratorModel?.modelId);
+      orchestratorModelId = toNonEmptyString(launch.modelConfig?.orchestratorModel?.modelId);
       if (orchestratorModelId) {
         requestedModels.push({
           label: "Orchestrator",
@@ -229,6 +230,103 @@ export function createMissionPreflightService(args: {
             summary: "One or more selected models are unavailable.",
             details: modelFailures,
             fixHint: "Authenticate the required provider CLIs/API keys or switch the phase/orchestrator model.",
+          }),
+    );
+
+    const capabilityIssues: string[] = [];
+    const capabilityWarnings: string[] = [];
+    for (const phase of selected.phases) {
+      const evidenceRequirements = phase.validationGate.evidenceRequirements ?? [];
+      if (!phase.validationGate.required || evidenceRequirements.length === 0) continue;
+      const descriptor = getModelById(phase.model.modelId) ?? resolveModelAlias(phase.model.modelId);
+      const requiresBrowserEvidence = evidenceRequirements.some((requirement) =>
+        requirement === "screenshot"
+        || requirement === "browser_verification"
+        || requirement === "browser_trace"
+        || requirement === "video_recording"
+      );
+      if (requiresBrowserEvidence && descriptor) {
+        const likelyBrowserCapable = descriptor.capabilities.tools && descriptor.capabilities.vision;
+        if (!likelyBrowserCapable) {
+          const message = `${phase.name}: requires browser/screenshot evidence, but ${descriptor.displayName} does not advertise both tools and vision support.`;
+          if ((phase.validationGate.capabilityFallback ?? "block") === "block") capabilityIssues.push(message);
+          else capabilityWarnings.push(message);
+        }
+      }
+      if (requiresBrowserEvidence && !descriptor) {
+        const message = `${phase.name}: requires browser/screenshot evidence, but model ${phase.model.modelId} could not be resolved for capability checks.`;
+        if ((phase.validationGate.capabilityFallback ?? "block") === "block") capabilityIssues.push(message);
+        else capabilityWarnings.push(message);
+      }
+    }
+
+    const selectedPrStrategy = launch.executionPolicy?.prStrategy;
+    const activeLanes = await laneService.list({ includeArchived: false }).catch(() => []);
+    const needsCliConflictResolver =
+      (
+        selectedPrStrategy?.kind === "integration"
+        && (selectedPrStrategy.prDepth ?? "resolve-conflicts") !== "propose-only"
+      )
+      || (
+        selectedPrStrategy?.kind === "queue"
+        && (selectedPrStrategy.autoLand === true || selectedPrStrategy.rehearseQueue === true)
+        && selectedPrStrategy.autoResolveConflicts === true
+      );
+    if (selectedPrStrategy?.kind === "queue" && selectedPrStrategy.autoLand === true && selectedPrStrategy.rehearseQueue === true) {
+      capabilityIssues.push("Queue finalization cannot auto-land and dry-run the queue at the same time. Pick either auto-land or rehearse-only.");
+    }
+    if (selectedPrStrategy?.kind === "queue" && selectedPrStrategy.rehearseQueue === true) {
+      const targetBranch = toNonEmptyString(selectedPrStrategy.targetBranch) ?? "main";
+      const targetExists = activeLanes.some((lane) => {
+        const branchRef = String((lane as { branchRef?: string }).branchRef ?? "").trim().replace(/^refs\/heads\//, "").replace(/^origin\//, "");
+        const baseRef = String((lane as { baseRef?: string }).baseRef ?? "").trim().replace(/^refs\/heads\//, "").replace(/^origin\//, "");
+        return lane.id === targetBranch || branchRef === targetBranch || baseRef === targetBranch;
+      });
+      if (!targetExists) {
+        capabilityIssues.push(`Queue rehearsal requires a local lane for target branch "${targetBranch}", but ADE could not find one.`);
+      }
+    }
+    if (needsCliConflictResolver) {
+      const hasCliResolverModel = [
+        ...selected.phases.map((phase) => phase.model.modelId),
+        orchestratorModelId ?? "",
+        selectedPrStrategy?.kind === "queue" ? selectedPrStrategy.conflictResolverModel ?? "" : "",
+      ]
+        .map((modelId) => getModelById(modelId) ?? resolveModelAlias(modelId))
+        .some((descriptor) =>
+          Boolean(descriptor)
+          && descriptor!.isCliWrapped
+          && (descriptor!.family === "anthropic" || descriptor!.family === "openai")
+        );
+      if (!hasCliResolverModel) {
+        capabilityIssues.push(
+          selectedPrStrategy?.kind === "queue"
+            ? selectedPrStrategy.rehearseQueue
+              ? "Queue rehearsal is configured to resolve conflicts automatically, but no compatible Claude/Codex CLI resolver model is configured on the mission."
+              : "Queue auto-land is configured to resolve conflicts automatically, but no compatible Claude/Codex CLI resolver model is configured on the mission."
+            : "Integration finalization is configured to resolve conflicts automatically, but no compatible Claude/Codex CLI resolver model is configured on the mission."
+        );
+      }
+    }
+
+    checklist.push(
+      capabilityIssues.length === 0 && capabilityWarnings.length === 0
+        ? toChecklistItem({
+            id: "capabilities",
+            severity: "pass",
+            title: "Capability contracts",
+            summary: "Configured evidence and finalization contracts have matching runtime capabilities.",
+            details: ["No blocking capability gaps detected in the selected phase or finalization contract."],
+          })
+        : toChecklistItem({
+            id: "capabilities",
+            severity: capabilityIssues.length > 0 ? "fail" : "warning",
+            title: "Capability contracts",
+            summary: capabilityIssues.length > 0
+              ? "One or more required capabilities are missing for the selected mission contract."
+              : "Some optional capability-backed evidence may require fallback or operator review.",
+            details: [...capabilityIssues, ...capabilityWarnings],
+            fixHint: "Switch to models that support the required evidence/finalization flow, or relax the phase/finalization contract before launch.",
           }),
     );
 

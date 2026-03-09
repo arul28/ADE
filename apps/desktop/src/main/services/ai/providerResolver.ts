@@ -231,6 +231,12 @@ function buildCliDefaultSettings(
   if (providerOverrides && typeof providerOverrides === "object") {
     Object.assign(settings, providerOverrides);
   }
+  if (provider === "claude" && settings.settingSources == null) {
+    settings.settingSources = ["user", "project", "local"];
+  }
+  if (provider === "claude" && settings.systemPrompt == null) {
+    settings.systemPrompt = { type: "preset", preset: "claude_code" };
+  }
   return settings;
 }
 

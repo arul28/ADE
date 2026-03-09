@@ -17,6 +17,16 @@ describe("shouldUseSdkTools", () => {
 });
 
 describe("buildCoordinatorCliOptions", () => {
+  it("includes coordinator observation tools in the Claude allowlist", () => {
+    const allowlist = buildCoordinatorMcpAllowedTools("ade");
+    expect(allowlist).toEqual(expect.arrayContaining([
+      "mcp__ade__get_run_graph",
+      "mcp__ade__get_step_output",
+      "mcp__ade__get_timeline",
+      "mcp__ade__stream_events",
+    ]));
+  });
+
   it("configures Claude coordinators for headless MCP execution", () => {
     const cli = buildCoordinatorCliOptions({
       modelId: "anthropic/claude-sonnet-4-6",
@@ -38,7 +48,7 @@ describe("buildCoordinatorCliOptions", () => {
         },
       },
       claude: {
-        permissionMode: "plan",
+        permissionMode: "acceptEdits",
         allowedTools: buildCoordinatorMcpAllowedTools("ade"),
         settingSources: [],
         debugFile: "/tmp/ade-project/.ade/logs/coordinator-run-123.claude.log",

@@ -32,13 +32,13 @@ export function AgentQuestionModal({
 
   return (
     <div
-      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/70 px-4"
+      className="fixed inset-0 z-[9999] flex items-center justify-center bg-[radial-gradient(circle_at_top,rgba(167,139,250,0.12),rgba(8,7,12,0.84))] px-4 backdrop-blur-md"
       onClick={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div className="w-full max-w-2xl border border-border/30 bg-[var(--color-surface)] shadow-[var(--shadow-panel)]">
-        <div className="flex items-center justify-between border-b border-border/15 bg-surface/80 px-5 py-3">
+      <div className="ade-glass-card w-full max-w-2xl overflow-hidden border-border/20 bg-[linear-gradient(180deg,rgba(26,21,40,0.92),rgba(18,15,28,0.82))] shadow-[var(--shadow-panel)]">
+        <div className="flex items-center justify-between border-b border-border/15 bg-[linear-gradient(90deg,rgba(167,139,250,0.1),transparent)] px-5 py-3">
           <div className="flex items-center gap-2">
             <ChatCircleText size={16} className="text-accent/80" />
             <div className="font-mono text-[11px] font-bold uppercase tracking-[0.18em] text-accent/75">
@@ -56,7 +56,7 @@ export function AgentQuestionModal({
         </div>
 
         <div className="space-y-4 px-5 py-5">
-          <div className="rounded-sm border border-accent/20 bg-accent/[0.05] px-4 py-3">
+          <div className="rounded-sm border border-accent/20 bg-[linear-gradient(180deg,rgba(167,139,250,0.1),rgba(167,139,250,0.04))] px-4 py-3">
             <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-accent/60">
               Waiting On You
             </div>
@@ -73,12 +73,12 @@ export function AgentQuestionModal({
               value={answer}
               onChange={(event) => setAnswer(event.target.value)}
               placeholder="Type the answer you want the agent to follow..."
-              className="min-h-[180px] w-full resize-y border border-border/20 bg-surface-recessed/90 px-4 py-3 font-mono text-[12px] leading-6 text-fg outline-none transition-colors placeholder:text-muted-fg/30 focus:border-accent/45"
+              className="min-h-[180px] w-full resize-y border border-border/20 bg-[linear-gradient(180deg,rgba(17,15,26,0.94),rgba(13,11,19,0.9))] px-4 py-3 font-mono text-[12px] leading-6 text-fg outline-none transition-colors placeholder:text-muted-fg/30 focus:border-accent/45"
             />
           </div>
         </div>
 
-        <div className="flex items-center justify-between gap-3 border-t border-border/15 bg-surface/70 px-5 py-3">
+        <div className="flex items-center justify-between gap-3 border-t border-border/15 bg-[linear-gradient(180deg,rgba(255,255,255,0.02),transparent)] px-5 py-3">
           <div className="text-[12px] text-muted-fg/55">
             Send a concrete answer, or decline if you want the agent to continue without new guidance.
           </div>

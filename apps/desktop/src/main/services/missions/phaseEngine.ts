@@ -7,6 +7,7 @@ import type {
   ModelConfig,
   MissionPhaseConfiguration,
 } from "../../../shared/types";
+import { getDefaultModelDescriptor } from "../../../shared/modelRegistry";
 /** Inline type — formerly in the deleted missionPlanningService module. */
 type MissionPlanStepDraft = {
   index: number;
@@ -27,11 +28,14 @@ export const BUILT_IN_PHASE_KEYS = {
   prAndConflicts: "pr_conflict_resolution",
 } as const;
 
+const DEFAULT_CLAUDE_PHASE_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
+const DEFAULT_CODEX_PHASE_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4-codex";
+
 const DEFAULT_MODELS: Record<string, ModelConfig> = {
-  [BUILT_IN_PHASE_KEYS.planning]: { modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
-  [BUILT_IN_PHASE_KEYS.development]: { modelId: "openai/gpt-5.3-codex", thinkingLevel: "medium" },
-  [BUILT_IN_PHASE_KEYS.testing]: { modelId: "openai/gpt-5.3-codex", thinkingLevel: "low" },
-  [BUILT_IN_PHASE_KEYS.validation]: { modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
+  [BUILT_IN_PHASE_KEYS.planning]: { modelId: DEFAULT_CLAUDE_PHASE_MODEL_ID, thinkingLevel: "medium" },
+  [BUILT_IN_PHASE_KEYS.development]: { modelId: DEFAULT_CODEX_PHASE_MODEL_ID, thinkingLevel: "medium" },
+  [BUILT_IN_PHASE_KEYS.testing]: { modelId: DEFAULT_CODEX_PHASE_MODEL_ID, thinkingLevel: "low" },
+  [BUILT_IN_PHASE_KEYS.validation]: { modelId: DEFAULT_CLAUDE_PHASE_MODEL_ID, thinkingLevel: "medium" },
 };
 
 export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
@@ -54,7 +58,7 @@ export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
         maxQuestions: 5,
       },
       validationGate: {
-        tier: "self",
+        tier: "none",
         required: false,
       },
       isBuiltIn: true,
@@ -73,12 +77,11 @@ export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
       budget: {},
       orderingConstraints: {},
       askQuestions: {
-        enabled: true,
-        mode: "auto_if_uncertain",
-        maxQuestions: 3,
+        enabled: false,
+        mode: "never",
       },
       validationGate: {
-        tier: "self",
+        tier: "none",
         required: false,
       },
       isBuiltIn: true,

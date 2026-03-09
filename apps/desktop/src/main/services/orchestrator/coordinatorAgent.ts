@@ -22,7 +22,7 @@ import {
   type CompactionMonitor,
   type TranscriptEntry,
 } from "../ai/compactionEngine";
-import { buildCodingAgentSystemPrompt, composeSystemPrompt } from "../ai/tools/systemPrompt";
+import { asRecord, filterExecutionSteps } from "./orchestratorContext";
 import { readMissionStateDocument, writeCoordinatorCheckpoint } from "./missionStateDoc";
 import { resolveModel } from "../ai/providerResolver";
 import { detectAllAuth } from "../ai/authDetector";
@@ -136,7 +136,6 @@ const CHECKPOINT_DAG_MUTATION_TOOLS = new Set([
   "mark_step_complete",
   "complete_mission",
 ]);
-
 export function shouldUseSdkTools(modelId: string): boolean {
   const descriptor = resolveModelDescriptor(modelId);
   if (!descriptor?.isCliWrapped) return true;
@@ -170,7 +169,7 @@ export function buildCoordinatorCliOptions(args: {
       ? "ade"
       : (mcpServerNames[0] ?? "ade");
     cli.claude = {
-      permissionMode: "plan",
+      permissionMode: "acceptEdits",
       allowedTools: buildCoordinatorMcpAllowedTools(coordinatorMcpServerName),
       settingSources: [],
       debugFile: path.join(logDir, `coordinator-${args.runId}.claude.log`),
@@ -238,6 +237,16 @@ ${capabilities}
 - Keep entries concrete and actionable (clear observation + recommendation + context).
 - Use current run/step/attempt scope (caller-context fallback is supported).
 ${identity.inheritedRules ? `\n## Rules\n${identity.inheritedRules}` : ""}`;
+}
+
+function formatStreamError(error: unknown): string {
+  if (typeof error === "string" && error.trim().length > 0) return error;
+  if (error instanceof Error && error.message.trim().length > 0) return error.message;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error ?? "unknown error");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -477,6 +486,107 @@ export class CoordinatorAgent {
     });
   }
 
+  private isPlanningFirstPhaseRun(): boolean {
+    const phases = Array.isArray(this.deps.phases) ? [...this.deps.phases] : [];
+    if (phases.length === 0) return false;
+    const firstPhase = phases.sort((a, b) => a.position - b.position)[0] ?? null;
+    return firstPhase?.phaseKey.trim().toLowerCase() === "planning";
+  }
+
+  private hasOpenPlanningClarification(): boolean {
+    const mission = this.deps.missionService.get(this.deps.missionId);
+    const interventions = mission?.interventions ?? [];
+    return interventions.some((intervention) => {
+      if (intervention.status !== "open" || intervention.interventionType !== "manual_input") {
+        return false;
+      }
+      const metadata =
+        intervention.metadata && typeof intervention.metadata === "object" && !Array.isArray(intervention.metadata)
+          ? (intervention.metadata as Record<string, unknown>)
+          : null;
+      const source = typeof metadata?.source === "string" ? metadata.source.trim().toLowerCase() : "";
+      const phase = typeof metadata?.phase === "string" ? metadata.phase.trim().toLowerCase() : "";
+      return source === "ask_user" || phase === "planning";
+    });
+  }
+
+  private hasPlanningExecutionRecord(): boolean {
+    try {
+      const graph = this.deps.orchestratorService.getRunGraph({
+        runId: this.deps.runId,
+        timelineLimit: 0,
+      });
+      return filterExecutionSteps(graph.steps).some((step) => {
+        const metadata = asRecord(step.metadata);
+        const phaseKey = typeof metadata?.phaseKey === "string" ? metadata.phaseKey.trim().toLowerCase() : "";
+        const phaseName = typeof metadata?.phaseName === "string" ? metadata.phaseName.trim().toLowerCase() : "";
+        const stepType = typeof metadata?.stepType === "string" ? metadata.stepType.trim().toLowerCase() : "";
+        return phaseKey === "planning" || phaseName === "planning" || stepType === "planning";
+      });
+    } catch {
+      return false;
+    }
+  }
+
+  private buildPlanningRecoveryPrompt(): { name: string; prompt: string; modelId?: string } {
+    const phases = Array.isArray(this.deps.phases) ? [...this.deps.phases] : [];
+    const planningPhase = phases
+      .sort((a, b) => a.position - b.position)
+      .find((phase) => phase.phaseKey.trim().toLowerCase() === "planning") ?? null;
+    const sections = [
+      `Mission goal:\n${this.deps.missionGoal}`,
+      planningPhase?.instructions?.trim().length
+        ? `Planning phase instructions:\n${planningPhase.instructions.trim()}`
+        : null,
+      [
+        "Read-only planning pass:",
+        "- Research the codebase and discover the implementation plan.",
+        "- Identify dependencies, risks, sequencing, and the best execution DAG.",
+        "- Do not modify files, run write operations, or ask for plan-exit approval.",
+        "- Return a concrete plan the coordinator can use to enter Development automatically.",
+      ].join("\n"),
+    ].filter((entry): entry is string => Boolean(entry));
+
+    return {
+      name: "planning-worker",
+      prompt: sections.join("\n\n"),
+      ...(planningPhase?.model?.modelId ? { modelId: planningPhase.model.modelId } : {}),
+    };
+  }
+
+  private async enforcePlanningFirstTurnDelegation(turnId: string): Promise<void> {
+    if (this.turnCount !== 0) return;
+    if (!this.isPlanningFirstPhaseRun()) return;
+    if (this.hasPlanningExecutionRecord()) return;
+    if (this.hasOpenPlanningClarification()) return;
+
+    const spawnWorkerTool = this.tools.spawn_worker as { execute?: (args: unknown) => Promise<any> } | undefined;
+    if (typeof spawnWorkerTool?.execute !== "function") {
+      throw new Error("Planning watchdog could not recover because spawn_worker is unavailable.");
+    }
+
+    this.deps.logger.warn("coordinator_agent.planning_watchdog_triggered", {
+      runId: this.deps.runId,
+      turnId,
+      reason: "first_turn_did_not_spawn_planner",
+    });
+    this.deps.onCoordinatorEvent?.({
+      type: "error",
+      turnId,
+      message:
+        "Coordinator first turn did not create the planning worker. ADE recovered by forcing a read-only planning worker so the mission can continue.",
+    });
+
+    const recoveryResult = await spawnWorkerTool.execute(this.buildPlanningRecoveryPrompt());
+    if (!recoveryResult || recoveryResult.ok !== true) {
+      const errorMessage =
+        recoveryResult && typeof recoveryResult.error === "string"
+          ? recoveryResult.error
+          : "unknown recovery failure";
+      throw new Error(`Planning watchdog recovery failed: ${errorMessage}`);
+    }
+  }
+
   private async runTurn(): Promise<void> {
     const sdkModel = await this.resolveModel();
     const useSdkTools = shouldUseSdkTools(this.deps.modelId);
@@ -498,19 +608,9 @@ export class CoordinatorAgent {
     });
 
     try {
-      const harnessedSystemPrompt = composeSystemPrompt(
-        this.systemPrompt,
-        buildCodingAgentSystemPrompt({
-          cwd: this.deps.projectRoot,
-          mode: "planning",
-          permissionMode: "plan",
-          toolNames: Object.keys(this.tools),
-          interactive: false,
-        }),
-      );
       const result = streamText({
         model: sdkModel,
-        system: harnessedSystemPrompt,
+        system: this.systemPrompt,
         messages: this.conversationHistory,
         ...(useSdkTools ? { tools: this.tools as any } : {}),
         stopWhen: stepCountIs(MAX_TOOL_STEPS_PER_TURN),
@@ -618,12 +718,14 @@ export class CoordinatorAgent {
         if (part.type === "tool-error") {
           this.deps.onCoordinatorEvent?.({
             type: "error",
-            message: `Tool '${String(part.toolName ?? "tool")}' failed: ${String(part.error ?? "unknown error")}`,
+            message: `Tool '${String(part.toolName ?? "tool")}' failed: ${formatStreamError(part.error)}`,
             itemId: String(part.toolCallId ?? `${turnId}-tool`),
             turnId,
           });
         }
       }
+
+      await this.enforcePlanningFirstTurnDelegation(turnId);
 
       // Record token usage for compaction monitoring
       if (this.compactionMonitor) {
@@ -827,17 +929,17 @@ export class CoordinatorAgent {
                   ? "auto if uncertain"
                   : "never";
             parts.push(
-              `   Clarification: enabled (${modeLabel}, max ${Math.max(1, Math.min(10, Number(p.askQuestions.maxQuestions ?? 5) || 5))} questions)`
+              `   Ask Questions: enabled (${modeLabel}, max ${Math.max(1, Math.min(10, Number(p.askQuestions.maxQuestions ?? 5) || 5))} questions)`
             );
           } else {
-            parts.push("   Clarification: disabled (never)");
+            parts.push("   Ask Questions: disabled (never)");
           }
           if (p.orderingConstraints.mustBeFirst) parts.push(`   Ordering: must be first`);
           if (p.orderingConstraints.mustBeLast) parts.push(`   Ordering: must be last`);
           if (p.orderingConstraints.canLoop) parts.push(`   Loop: can repeat${p.orderingConstraints.loopTarget ? ` (back to ${p.orderingConstraints.loopTarget})` : ""}`);
           return parts.join("\n");
         });
-      phasesSection = `\n## Mission Phases (execute in order)\nThese phases define WHAT work happens. You decide HOW — how many workers, what prompts, what approach.\nClarification rules per phase govern when you may use the ask_user tool:
+      phasesSection = `\n## Mission Phases (execute in order)\nThese phases define WHAT work happens. You decide HOW — how many workers, what prompts, what approach.\nQuestion rules per phase govern when you may use the ask_user tool:
 - "auto_if_uncertain": You MAY use ask_user if you encounter genuine ambiguity that could cause significant rework. Do not ask for trivial things.
 - "always": You MUST use ask_user to gather clarifying questions from the user BEFORE spawning any workers or building the task DAG for that phase. This is mandatory.
 - "never": Do not ask questions in that phase; proceed with reasonable assumptions.
@@ -854,7 +956,7 @@ When you enter the Planning phase (your first phase), follow this protocol:
    - Bundle all questions into one ask_user call. Wait for the user to respond before proceeding.
    - Once the user has answered, incorporate their responses into your planning.
 2. Start the Planning phase immediately:
-   - If clarification is not required, your first turn should usually be: get_project_context, then spawn ONE planning worker.
+   - If no planning questions are needed, your first turn should usually be: get_project_context, then spawn ONE planning worker.
    - Do NOT spend the first turn doing coordinator-side repo exploration, shell work, or file-by-file analysis.
    - Before the planner starts, avoid read_file/search_files unless the mission explicitly names a specific file or integration point that materially changes the planner brief.
 3. Spawn ONE planning worker with a rich research prompt that includes the full mission goal and the planning phase instructions
@@ -880,7 +982,9 @@ If the Planning phase is NOT in your phase list, skip straight to building tasks
     // Build available workers section
     let workersSection = `\n## Available Workers
 You can spawn these types of workers:
-- Unified worker (tool: spawn_worker) — choose model per worker with \`modelId\`; CLI models run as subprocess sessions and API/local models run in-process.`;
+- Unified worker (tool: spawn_worker) — choose model per worker with \`modelId\`; CLI models run as tracked subprocess sessions and API/local models run as bounded in-process workers.
+- Prefer CLI workers when you expect follow-up steering, mid-flight messaging, or iterative back-and-forth.
+- Prefer API/local workers for bounded one-shot tasks that can succeed from a single prompt without live coordination.`;
     if (providers?.length) {
       const available = providers.filter((p) => p.available).map((p) => p.name);
       if (available.length > 0) {
@@ -909,7 +1013,7 @@ You can spawn these types of workers:
       }
     }
 
-    return `You are the team lead for a software engineering mission. You have a team of AI coding agents (workers) you can spawn, steer, and shut down. You receive a mission from the user. You deliver the completed mission. Everything in between is your job.
+    return `You are ADE's mission lead for a software engineering mission. You have a team of AI workers you can spawn, steer, and shut down through ADE's mission-control tools. You receive a mission from the user. You deliver the completed mission. Everything in between is your job.
 
 ## Your Role
 
@@ -917,7 +1021,7 @@ You are the persistent brain. Workers are disposable hands.
 
 Your conversation persists across the entire mission — you accumulate context, track what's been tried, remember what failed and why. Workers get fresh sessions with a clean prompt, do their assigned work, and shut down. You are the continuity. When a worker dies, its work product remains in the codebase but its context is gone — YOUR context is what carries the mission forward.
 
-You are NOT a task router or dispatcher. You are a thinking, reasoning team lead who reads code, understands architecture, makes judgment calls, and owns the outcome. The difference between you and a dumb orchestrator is that you THINK before you act and EVALUATE after each step.
+You are NOT a repo-editing worker. You are the mission lead who owns phase state, worker spawning, runtime judgment, and final completion. In normal operation, workers inspect the repo, edit code, and run commands. You keep the mission aligned and delegated. The difference between you and a dumb orchestrator is that you THINK before you act and EVALUATE after each step.
 
 ## Your Mission
 ${this.deps.missionGoal}
@@ -948,6 +1052,10 @@ These flags are enforced deterministically by the tools — violations are rejec
 - **allowParallelAgents**: When false, spawn workers sequentially (one at a time).
 - **allowSubAgents**: When false, delegate_to_subagent is disabled. Use spawn_worker instead.
 - **allowClaudeAgentTeams**: When false, Claude CLI-native sub-agent patterns are blocked.
+
+### Approval Model
+- Mission runs do NOT use provider-native approval prompts. Do not rely on ExitPlanMode or any out-of-band provider approval flow.
+- If you need user input, use ask_user during Planning only. Outside Planning, continue with the best reasonable assumption unless runtime opens its own intervention.
 ${phasesSection}${planningPhaseSection}
 ${workersSection}
 ${projectSection}

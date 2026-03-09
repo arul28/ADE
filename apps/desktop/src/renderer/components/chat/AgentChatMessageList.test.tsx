@@ -185,10 +185,10 @@ describe("AgentChatMessageList", () => {
       />
     );
 
-    expect(screen.getByText("completed")).toBeTruthy();
+    expect(screen.getByText("Usage")).toBeTruthy();
     expect(screen.getByText(/Claude Sonnet 4\.6/i)).toBeTruthy();
-    expect(screen.getByText("IN 42")).toBeTruthy();
-    expect(screen.getByText("OUT 13")).toBeTruthy();
+    expect(screen.getByText("In 42")).toBeTruthy();
+    expect(screen.getByText("Out 13")).toBeTruthy();
   });
 
   it("renders error with red styling", () => {
@@ -208,7 +208,7 @@ describe("AgentChatMessageList", () => {
     expect(screen.getByText("Something failed")).toBeTruthy();
     expect(screen.getByText("UsageLimitExceeded")).toBeTruthy();
 
-    const errorBlock = container.querySelector(".border-red-500\\/15");
+    const errorBlock = container.querySelector(".border-red-500\\/12");
     expect(errorBlock).toBeTruthy();
   });
 
@@ -264,6 +264,52 @@ describe("AgentChatMessageList", () => {
 
     expect(screen.getByText("Hello world")).toBeTruthy();
     expect(screen.getAllByText("Agent")).toHaveLength(1);
+  });
+
+  it("keeps activity in the streaming indicator while collapsing reasoning deltas", () => {
+    render(
+      <AgentChatMessageList
+        showStreamingIndicator
+        events={[
+          envelope({ type: "activity", activity: "thinking", detail: "Analyzing" }),
+          envelope({ type: "reasoning", text: "Plan ", turnId: "turn-1", itemId: "reason-1" }, 1),
+          envelope({ type: "activity", activity: "thinking", detail: "Analyzing" }, 2),
+          envelope({ type: "reasoning", text: "the fix", turnId: "turn-1", itemId: "reason-1" }, 3),
+        ]}
+      />
+    );
+
+    // Reasoning is collapsed by default — verify the label renders and activity indicator is visible
+    expect(screen.getByText("Reasoning")).toBeTruthy();
+    expect(screen.getAllByText("Thinking: Analyzing")).toHaveLength(1);
+  });
+
+  it("merges reasoning deltas across interleaved tool chatter in the same turn", () => {
+    render(
+      <AgentChatMessageList
+        events={[
+          envelope({ type: "reasoning", text: "Let ", turnId: "turn-1", itemId: "reason-1" }),
+          envelope({ type: "tool_call", tool: "get_project_context", args: {}, itemId: "tool-1", turnId: "turn-1" }, 1),
+          envelope({ type: "tool_result", tool: "get_project_context", result: { ok: true }, itemId: "tool-1", turnId: "turn-1", status: "completed" }, 2),
+          envelope({ type: "reasoning", text: "me think this through", turnId: "turn-1", itemId: "reason-2" }, 3),
+        ]}
+      />
+    );
+
+    expect(screen.getByText("Let me think this through")).toBeTruthy();
+    expect(screen.getAllByText("Reasoning")).toHaveLength(1);
+  });
+
+  it("renders a stable placeholder for tiny reasoning fragments", () => {
+    render(
+      <AgentChatMessageList
+        events={[
+          envelope({ type: "reasoning", text: "Let", turnId: "turn-1", itemId: "reason-1" }),
+        ]}
+      />
+    );
+
+    expect(screen.getByText("Thinking...")).toBeTruthy();
   });
 
   it("merges tool calls and tool results into a single invocation card", () => {

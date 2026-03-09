@@ -786,6 +786,7 @@ const COORDINATOR_TOOL_SPECS: ToolSpec[] = [
   { name: "update_tool_profiles", description: "Coordinator: update runtime role/tool profiles.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "transfer_lane", description: "Coordinator: transfer a worker step to another lane.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "provision_lane", description: "Coordinator: provision a new mission child lane.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "set_current_phase", description: "Coordinator: set the active mission phase.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "create_task", description: "Coordinator: create a logical mission task without spawning a worker.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "update_task", description: "Coordinator: update task metadata/status.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "assign_task", description: "Coordinator: assign a task to an existing worker.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
@@ -810,6 +811,13 @@ const AGENT_VISIBLE_COORDINATOR_TOOL_NAMES = new Set([
   "report_validation",
   "delegate_to_subagent",
   "delegate_parallel",
+  "get_worker_output",
+  "list_workers",
+  "read_mission_status",
+  "read_mission_state",
+  "list_tasks",
+  "get_budget_status",
+  "get_project_context",
 ]);
 
 const AGENT_VISIBLE_COORDINATOR_TOOL_SPECS = COORDINATOR_TOOL_SPECS.filter((tool) =>
@@ -1259,9 +1267,14 @@ function parseInitializeIdentity(params: unknown): SessionIdentity {
   const data = safeObject(params);
   const identity = safeObject(data.identity);
   const envContext = resolveEnvCallerContext();
-  const role = asTrimmedString(identity.role) || process.env.ADE_DEFAULT_ROLE || "";
+  const requestedRole = asTrimmedString(identity.role);
   const validRole: SessionIdentity["role"] =
-    role === "orchestrator" || role === "agent" || role === "evaluator" ? role : "external";
+    envContext.role
+      ?? (
+        requestedRole === "orchestrator" || requestedRole === "agent" || requestedRole === "evaluator"
+          ? requestedRole
+          : "external"
+      );
 
   return {
     callerId: asOptionalTrimmedString(identity.callerId) ?? envContext.attemptId ?? "unknown",
@@ -3698,6 +3711,7 @@ export function createMcpRequestHandler(args: {
       session.initialized = true;
       session.protocolVersion = asOptionalTrimmedString(params.protocolVersion) ?? DEFAULT_PROTOCOL_VERSION;
       session.identity = parseInitializeIdentity(params);
+      const resourcesEnabled = session.identity.role !== "orchestrator";
       return {
         protocolVersion: session.protocolVersion,
         serverInfo: {
@@ -3708,10 +3722,14 @@ export function createMcpRequestHandler(args: {
           tools: {
             listChanged: false
           },
-          resources: {
-            listChanged: false,
-            subscribe: false
-          }
+          ...(resourcesEnabled
+            ? {
+                resources: {
+                  listChanged: false,
+                  subscribe: false
+                }
+              }
+            : {})
         }
       };
     }

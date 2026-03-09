@@ -11,6 +11,9 @@ import type {
   ConflictChip,
   ConflictEventPayload,
   ConflictExternalResolverContextGap,
+  ConflictResolverOriginSurface,
+  ConflictResolverPermissionMode,
+  ConflictResolverPostActionState,
   ConflictExternalResolverRunStatus,
   ConflictExternalResolverRunSummary,
   ConflictFileType,
@@ -45,6 +48,8 @@ import type {
   PrepareResolverSessionArgs,
   PrepareResolverSessionResult,
   FinalizeResolverSessionArgs,
+  AttachResolverSessionArgs,
+  CancelResolverSessionArgs,
   SuggestResolverTargetArgs,
   SuggestResolverTargetResult,
   ResolverSessionScenario,
@@ -116,13 +121,25 @@ type ExternalResolverRunRecord = {
   sourceLaneIds: string[];
   cwdLaneId: string;
   integrationLaneId: string | null;
+  scenario: ResolverSessionScenario;
+  model: string | null;
+  reasoningEffort: string | null;
+  permissionMode: ConflictResolverPermissionMode | null;
+  originSurface: ConflictResolverOriginSurface;
+  originMissionId: string | null;
+  originRunId: string | null;
+  originLabel: string | null;
   command: string[];
+  changedFiles: string[];
   summary: string | null;
   patchPath: string | null;
   logPath: string | null;
   insufficientContext: boolean;
   contextGaps: ConflictExternalResolverContextGap[];
   warnings: string[];
+  ptyId: string | null;
+  sessionId: string | null;
+  postActions: ConflictResolverPostActionState | null;
   committedAt?: string | null;
   commitSha?: string | null;
   commitMessage?: string | null;
@@ -836,15 +853,28 @@ export function createConflictService({
     sourceLaneIds: run.sourceLaneIds,
     cwdLaneId: run.cwdLaneId,
     integrationLaneId: run.integrationLaneId,
+    scenario: run.scenario,
+    model: run.model,
+    reasoningEffort: run.reasoningEffort,
+    permissionMode: run.permissionMode,
+    command: run.command,
+    changedFiles: run.changedFiles,
     summary: run.summary,
     patchPath: run.patchPath,
     logPath: run.logPath,
     insufficientContext: run.insufficientContext,
     contextGaps: run.contextGaps,
     warnings: run.warnings,
+    originSurface: run.originSurface,
+    originMissionId: run.originMissionId ?? null,
+    originRunId: run.originRunId ?? null,
+    originLabel: run.originLabel ?? null,
+    ptyId: run.ptyId ?? null,
+    sessionId: run.sessionId ?? null,
     committedAt: run.committedAt ?? null,
     commitSha: run.commitSha ?? null,
     commitMessage: run.commitMessage ?? null,
+    postActions: run.postActions ?? null,
     error: run.error
   });
 
@@ -2907,135 +2937,55 @@ export function createConflictService({
     const integrationLane = sourceLaneIds.length > 1
       ? await ensureIntegrationLane({ targetLaneId, integrationLaneName: args.integrationLaneName })
       : null;
-    const cwdLaneId = sourceLaneIds.length === 1 ? sourceLaneIds[0]! : integrationLane!.id;
     if (integrationLane) laneByIdMap.set(integrationLane.id, integrationLane);
+    const requestedCwdLaneId = typeof args.cwdLaneId === "string" ? args.cwdLaneId.trim() : "";
+    const cwdLaneId = requestedCwdLaneId.length > 0
+      ? requestedCwdLaneId
+      : (sourceLaneIds.length === 1 ? sourceLaneIds[0]! : integrationLane!.id);
     const cwdLane = laneByIdMap.get(cwdLaneId) ?? (integrationLane && integrationLane.id === cwdLaneId ? integrationLane : null);
     if (!cwdLane) throw new Error(`Execution lane not found: ${cwdLaneId}`);
 
-    const contexts: Array<{
-      laneId: string;
-      peerLaneId: string | null;
-      preview: ConflictProposalPreview;
-      conflictContext: Record<string, unknown> | null;
-    }> = [];
-    const contextGaps: ConflictExternalResolverContextGap[] = [];
-    for (const sourceLaneId of sourceLaneIds) {
-      const preview = await prepareProposal({ laneId: sourceLaneId, peerLaneId: targetLaneId });
-      const prepared = preparedContexts.get(preview.contextDigest);
-      const conflictContext = prepared?.conflictContext ?? null;
-      const cc =
-        isRecord(conflictContext) && isRecord(conflictContext.conflictContext)
-          ? conflictContext.conflictContext
-          : conflictContext;
-      const insufficient = isRecord(cc) && Boolean(cc.insufficientContext);
-      if (insufficient) {
-        const reasons = Array.isArray(cc.insufficientReasons) ? cc.insufficientReasons.map((value) => String(value)) : [];
-        if (!reasons.length) {
-          contextGaps.push({
-            code: "insufficient_context",
-            message: `${sourceLaneId} -> ${targetLaneId}: insufficient_context_flagged`
-          });
-        } else {
-          for (const reason of reasons) {
-            contextGaps.push({
-              code: "insufficient_context",
-              message: `${sourceLaneId} -> ${targetLaneId}: ${reason}`
-            });
-          }
-        }
-      }
-      contexts.push({
-        laneId: sourceLaneId,
-        peerLaneId: targetLaneId,
-        preview,
-        conflictContext: prepared?.conflictContext ?? null
-      });
-    }
-    const runId = randomUUID();
+    const scenario: ResolverSessionScenario = sourceLaneIds.length > 1 ? "integration-merge" : "single-merge";
+    const prepared = await prepareResolverSession({
+      provider: args.provider,
+      targetLaneId,
+      sourceLaneIds,
+      cwdLaneId,
+      integrationLaneName: args.integrationLaneName,
+      scenario,
+      model: args.model ?? null,
+      reasoningEffort: args.reasoningEffort ?? null,
+      permissionMode: args.permissionMode ?? null,
+      originSurface: args.originSurface ?? "manual",
+      originMissionId: args.originMissionId ?? null,
+      originRunId: args.originRunId ?? null,
+      originLabel: args.originLabel ?? null,
+    });
+    const runId = prepared.runId;
     const runDir = path.join(externalRunsRootDir, runId);
-    fs.mkdirSync(runDir, { recursive: true });
-    const contextRefs = buildExternalResolverContextRefs({
-      runDir,
-      targetLaneId,
-      sourceLaneIds,
-      cwdLaneId,
-      integrationLaneId: integrationLane?.id ?? null,
-      contexts,
-      lanesById: laneByIdMap
-    });
-    const missingRequiredContexts = contextRefs
-      .filter((entry) => entry.required && !entry.exists)
-      .map((entry) => entry.repoRelativePath);
-    const startedAt = new Date().toISOString();
-
-    if (contextGaps.length > 0) {
-      const blocked: ExternalResolverRunRecord = {
-        schema: "ade.conflictExternalRun.v1",
-        runId,
-        provider: args.provider,
-        status: "blocked",
-        startedAt,
-        completedAt: new Date().toISOString(),
-        targetLaneId,
-        sourceLaneIds,
-        cwdLaneId,
-        integrationLaneId: integrationLane?.id ?? null,
-        command: [],
-        summary: "Insufficient context blocked external resolver execution.",
-        patchPath: null,
-        logPath: null,
-        insufficientContext: true,
-        contextGaps,
-        warnings: [
-          "insufficient_context_blocked",
-          ...missingRequiredContexts.map((relPath) => `missing_context:${relPath}`)
-        ],
-        committedAt: null,
-        commitSha: null,
-        commitMessage: null,
-        error: null
-      };
-      writeExternalRunRecord(blocked);
-      return toRunSummary(blocked);
+    const existingRun = readExternalRunRecord(runId);
+    if (!existingRun) {
+      throw new Error(`Resolver session state missing for ${runId}`);
     }
-
-    const prompt = buildExternalResolverPrompt({
-      targetLaneId,
-      sourceLaneIds,
-      contexts,
-      contextRefs,
-      cwdLaneId,
-      integrationLaneId: integrationLane?.id ?? null
-    });
-    const promptPath = path.join(runDir, "prompt.md");
-    fs.writeFileSync(promptPath, prompt, "utf8");
+    if (prepared.status === "blocked") {
+      return toRunSummary(existingRun);
+    }
+    const promptPath = prepared.promptFilePath;
+    const missingRequiredContexts = existingRun.warnings
+      .filter((warning) => warning.startsWith("missing_context:"))
+      .map((warning) => warning.slice("missing_context:".length));
 
     const commandTemplate = resolveExternalResolverCommand(args.provider);
     if (!commandTemplate.length) {
       const missing: ExternalResolverRunRecord = {
-        schema: "ade.conflictExternalRun.v1",
-        runId,
-        provider: args.provider,
+        ...existingRun,
         status: "failed",
-        startedAt,
         completedAt: new Date().toISOString(),
-        targetLaneId,
-        sourceLaneIds,
-        cwdLaneId,
-        integrationLaneId: integrationLane?.id ?? null,
-        command: [],
-        summary: null,
-        patchPath: null,
-        logPath: null,
-        insufficientContext: false,
-        contextGaps: [],
         warnings: [
+          ...existingRun.warnings,
           "resolver_command_missing_in_config",
           ...missingRequiredContexts.map((relPath) => `missing_context:${relPath}`)
         ],
-        committedAt: null,
-        commitSha: null,
-        commitMessage: null,
         error: "No external resolver command configured for provider."
       };
       writeExternalRunRecord(missing);
@@ -3055,6 +3005,11 @@ export function createConflictService({
     if (!bin) {
       throw new Error("Invalid external resolver command template");
     }
+
+    writeExternalRunRecord({
+      ...existingRun,
+      command: renderedCommand
+    });
 
     const proc = await new Promise<{ stdout: string; stderr: string; status: number | null; signal: NodeJS.Signals | null }>((resolve) => {
       const child = spawn(bin, renderedCommand.slice(1), {
@@ -3093,31 +3048,21 @@ export function createConflictService({
 
     const status: ConflictExternalResolverRunStatus = proc.status === 0 ? "completed" : "failed";
     const runRecord: ExternalResolverRunRecord = {
-      schema: "ade.conflictExternalRun.v1",
-      runId,
-      provider: args.provider,
+      ...existingRun,
       status,
-      startedAt,
       completedAt: new Date().toISOString(),
-      targetLaneId,
-      sourceLaneIds,
-      cwdLaneId,
-      integrationLaneId: integrationLane?.id ?? null,
       command: renderedCommand,
+      changedFiles: finalPatchPath ? extractPathsFromUnifiedDiff(diffResult.stdout) : [],
       summary: extractResolverSummary(stdout),
       patchPath: finalPatchPath,
       logPath: outputLogPath,
-      insufficientContext: false,
-      contextGaps: [],
       warnings: [
+        ...existingRun.warnings,
         ...(proc.signal ? [`process_signal:${proc.signal}`] : []),
         ...(diffResult.stdoutTruncated ? ["git_diff_stdout_truncated"] : []),
         ...(diffResult.stderrTruncated ? ["git_diff_stderr_truncated"] : []),
         ...missingRequiredContexts.map((relPath) => `missing_context:${relPath}`)
       ],
-      committedAt: null,
-      commitSha: null,
-      commitMessage: null,
       error: proc.status === 0 ? null : (stderr.trim() || `Exit code ${proc.status ?? -1}`)
     };
     writeExternalRunRecord(runRecord);
@@ -3416,8 +3361,9 @@ export function createConflictService({
     const defaultCwdLaneId = sourceLaneIds.length === 1 ? sourceLaneIds[0]! : (integrationLane?.id ?? sourceLaneIds[0]!);
     let cwdLaneId = defaultCwdLaneId;
 
-    // For multi-source integration, always run in integration lane worktree.
-    if (sourceLaneIds.length > 1 && integrationLane?.id) {
+    if (requestedCwdLaneId && laneByIdMap.has(requestedCwdLaneId)) {
+      cwdLaneId = requestedCwdLaneId;
+    } else if (sourceLaneIds.length > 1 && integrationLane?.id) {
       cwdLaneId = integrationLane.id;
     } else if (
       requestedCwdLaneId &&
@@ -3507,20 +3453,32 @@ export function createConflictService({
       schema: "ade.conflictExternalRun.v1",
       runId,
       provider: args.provider,
-      status: status === "blocked" ? "blocked" : "running",
+      status: status === "blocked" ? "blocked" : "pending",
       startedAt,
       completedAt: status === "blocked" ? startedAt : null,
       targetLaneId,
       sourceLaneIds,
       cwdLaneId,
       integrationLaneId: integrationLane?.id ?? null,
+      scenario,
+      model: args.model ?? null,
+      reasoningEffort: args.reasoningEffort ?? null,
+      permissionMode: args.permissionMode ?? null,
+      originSurface: args.originSurface ?? "manual",
+      originMissionId: args.originMissionId ?? null,
+      originRunId: args.originRunId ?? null,
+      originLabel: args.originLabel ?? null,
       command: [],
+      changedFiles: [],
       summary: status === "blocked" ? "Insufficient context blocked external resolver execution." : null,
       patchPath: null,
       logPath: null,
       insufficientContext: contextGaps.length > 0,
       contextGaps,
       warnings,
+      ptyId: null,
+      sessionId: null,
+      postActions: null,
       committedAt: null,
       commitSha: null,
       commitMessage: null,
@@ -3567,16 +3525,64 @@ export function createConflictService({
       ...run,
       status,
       completedAt,
+      changedFiles: finalPatchPath ? extractPathsFromUnifiedDiff(diffResult.stdout) : [],
       patchPath: finalPatchPath,
       warnings: [
         ...(run.warnings ?? []),
         ...(diffResult.stdoutTruncated ? ["git_diff_stdout_truncated"] : []),
         ...(diffResult.stderrTruncated ? ["git_diff_stderr_truncated"] : [])
       ],
+      postActions: args.postActions
+        ? {
+            autoCommit: args.postActions.autoCommit === true,
+            autoPush: args.postActions.autoPush === true,
+            commitMessage: args.postActions.commitMessage ?? null,
+            committedAt: args.postActions.committedAt ?? null,
+            commitSha: args.postActions.commitSha ?? null,
+            pushAt: args.postActions.pushAt ?? null,
+            pushSucceeded: args.postActions.pushSucceeded ?? null,
+            error: args.postActions.error ?? null,
+          }
+        : run.postActions,
+      committedAt: args.postActions?.committedAt ?? run.committedAt ?? null,
+      commitSha: args.postActions?.commitSha ?? run.commitSha ?? null,
+      commitMessage: args.postActions?.commitMessage ?? run.commitMessage ?? null,
       error: args.exitCode === 0 ? null : `Exit code ${args.exitCode}`
     };
     writeExternalRunRecord(updatedRecord);
 
+    return toRunSummary(updatedRecord);
+  };
+
+  const attachResolverSession = async (args: AttachResolverSessionArgs): Promise<ConflictExternalResolverRunSummary> => {
+    const runId = args.runId.trim();
+    if (!runId) throw new Error("runId is required");
+    const run = readExternalRunRecord(runId);
+    if (!run) throw new Error(`External resolver run not found: ${runId}`);
+    const updatedRecord: ExternalResolverRunRecord = {
+      ...run,
+      status: run.status === "pending" ? "running" : run.status,
+      ptyId: args.ptyId.trim(),
+      sessionId: args.sessionId.trim(),
+      command: Array.isArray(args.command) ? args.command.map((entry) => String(entry)) : run.command
+    };
+    writeExternalRunRecord(updatedRecord);
+    return toRunSummary(updatedRecord);
+  };
+
+  const cancelResolverSession = async (args: CancelResolverSessionArgs): Promise<ConflictExternalResolverRunSummary> => {
+    const runId = args.runId.trim();
+    if (!runId) throw new Error("runId is required");
+    const run = readExternalRunRecord(runId);
+    if (!run) throw new Error(`External resolver run not found: ${runId}`);
+    const reason = typeof args.reason === "string" && args.reason.trim().length > 0 ? args.reason.trim() : "Canceled by operator.";
+    const updatedRecord: ExternalResolverRunRecord = {
+      ...run,
+      status: "canceled",
+      completedAt: run.completedAt ?? new Date().toISOString(),
+      error: run.error ?? reason
+    };
+    writeExternalRunRecord(updatedRecord);
     return toRunSummary(updatedRecord);
   };
 
@@ -3947,7 +3953,9 @@ export function createConflictService({
     applyProposal,
     undoProposal,
     prepareResolverSession,
+    attachResolverSession,
     finalizeResolverSession,
+    cancelResolverSession,
     suggestResolverTarget,
     simulateChainedMerge,
     scanRebaseNeeds,

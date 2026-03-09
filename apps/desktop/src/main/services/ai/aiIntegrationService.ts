@@ -5,8 +5,10 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { AgentModelDescriptor, AgentProvider, ExecutorOpts } from "./agentExecutor";
 import type { AiApiKeyVerificationResult } from "../../../shared/types";
 import {
+  getDefaultModelDescriptor,
   getModelById,
   getAvailableModels,
+  listModelDescriptorsForProvider,
   MODEL_REGISTRY,
   resolveModelAlias,
   enrichModelRegistry,
@@ -100,21 +102,24 @@ type RuntimeTaskDefaults = {
   timeoutMs: number;
 };
 
+const DEFAULT_CLAUDE_TASK_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
+const DEFAULT_CODEX_TASK_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4-codex";
+
 const TASK_DEFAULTS: Record<AiTaskType, RuntimeTaskDefaults> = {
   planning: {
-    modelId: "anthropic/claude-sonnet-4-6",
+    modelId: DEFAULT_CLAUDE_TASK_MODEL_ID,
     timeoutMs: 45_000
   },
   implementation: {
-    modelId: "openai/gpt-5.3-codex",
+    modelId: DEFAULT_CODEX_TASK_MODEL_ID,
     timeoutMs: 120_000
   },
   review: {
-    modelId: "anthropic/claude-sonnet-4-6",
+    modelId: DEFAULT_CLAUDE_TASK_MODEL_ID,
     timeoutMs: 30_000
   },
   conflict_resolution: {
-    modelId: "anthropic/claude-sonnet-4-6",
+    modelId: DEFAULT_CLAUDE_TASK_MODEL_ID,
     timeoutMs: 60_000
   },
   narrative: {
@@ -130,24 +135,17 @@ const TASK_DEFAULTS: Record<AiTaskType, RuntimeTaskDefaults> = {
     timeoutMs: 20_000
   },
   mission_planning: {
-    modelId: "anthropic/claude-sonnet-4-6",
+    modelId: DEFAULT_CLAUDE_TASK_MODEL_ID,
     timeoutMs: 300_000
   },
   initial_context: {
-    modelId: "anthropic/claude-sonnet-4-6",
+    modelId: DEFAULT_CLAUDE_TASK_MODEL_ID,
     timeoutMs: 45_000
   }
 };
 
-const CODEX_FALLBACK_MODELS: AgentModelDescriptor[] = [
-  { id: "gpt-5.3-codex", label: "gpt-5.3-codex" },
-  { id: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark" },
-  { id: "gpt-5.2-codex", label: "gpt-5.2-codex" },
-  { id: "gpt-5.1-codex-max", label: "gpt-5.1-codex-max" },
-  { id: "codex-mini-latest", label: "codex-mini-latest" },
-  { id: "o4-mini", label: "o4-mini" },
-  { id: "o3", label: "o3" }
-];
+const CODEX_FALLBACK_MODELS: AgentModelDescriptor[] = listModelDescriptorsForProvider("codex")
+  .map((descriptor) => ({ id: descriptor.id, label: descriptor.displayName }));
 
 function toStringOrNull(value: unknown): string | null {
   const text = typeof value === "string" ? value.trim() : "";
@@ -708,8 +706,7 @@ export function createAiIntegrationService(args: {
 
     const fallback = provider === "codex"
       ? CODEX_FALLBACK_MODELS
-      : MODEL_REGISTRY
-          .filter((descriptor) => descriptor.family === "anthropic" && !descriptor.deprecated)
+      : listModelDescriptorsForProvider("claude")
           .map((descriptor) => ({ id: descriptor.id, label: descriptor.displayName }));
     modelListCache.set(provider, { models: fallback, cachedAt: now });
     return fallback;

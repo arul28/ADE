@@ -7,11 +7,13 @@ export const THEME_IDS: ThemeId[] = ["dark", "light"];
 export type TerminalAttentionIndicator = "none" | "running-active" | "running-needs-attention";
 export type WorkViewMode = "tabs" | "grid";
 export type WorkStatusFilter = "all" | "running" | "awaiting-input" | "ended";
+export type WorkDraftKind = "chat" | "cli" | "shell";
 export type WorkProjectViewState = {
   openItemIds: string[];
   activeItemId: string | null;
   selectedItemId: string | null;
   viewMode: WorkViewMode;
+  draftKind: WorkDraftKind;
   laneFilter: string;
   statusFilter: WorkStatusFilter;
   search: string;
@@ -43,6 +45,7 @@ function createDefaultWorkProjectViewState(): WorkProjectViewState {
     activeItemId: null,
     selectedItemId: null,
     viewMode: "tabs",
+    draftKind: "chat",
     laneFilter: "all",
     statusFilter: "all",
     search: "",

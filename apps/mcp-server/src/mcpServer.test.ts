@@ -320,6 +320,7 @@ function createRuntime() {
       updateStepDependencies: vi.fn(),
       appendRuntimeEvent: vi.fn(),
       appendTimelineEvent: vi.fn(),
+      emitRuntimeUpdate: vi.fn(),
       listRetrospectives: vi.fn(() => [
         {
           id: "retro:run-1",
@@ -556,7 +557,7 @@ describe("mcpServer", () => {
     expect(names.length).toBeGreaterThan(38);
   });
 
-  it("shows only self-scoped delegation and reporting coordinator tools to agent callers", async () => {
+  it("shows agent-safe delegation, reporting, and observation coordinator tools to agent callers", async () => {
     const { runtime } = createRuntime();
     const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
 
@@ -579,6 +580,13 @@ describe("mcpServer", () => {
         "report_validation",
         "delegate_to_subagent",
         "delegate_parallel",
+        "get_worker_output",
+        "list_workers",
+        "read_mission_status",
+        "read_mission_state",
+        "list_tasks",
+        "get_budget_status",
+        "get_project_context",
       ])
     );
     expect(names).not.toEqual(
@@ -591,6 +599,37 @@ describe("mcpServer", () => {
         "update_tool_profiles",
       ])
     );
+  });
+
+  it("lets agent callers use safe mission observation coordinator tools", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
+      steps: [],
+      attempts: [],
+      claims: [],
+      contextSnapshots: [],
+      handoffs: [],
+      timeline: [],
+      runtimeEvents: [],
+      completionEvaluation: { complete: false }
+    }));
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-1",
+      attemptId: "attempt-1"
+    });
+
+    const response = await callTool(handler, "read_mission_status", {});
+
+    expect(response.isError).toBeUndefined();
+    expect(response.structuredContent.ok).toBe(true);
+    expect(response.structuredContent.runId).toBe("run-1");
   });
 
   it("rejects coordinator-only tool calls from agent callers before coordinator dispatch", async () => {
@@ -703,6 +742,134 @@ describe("mcpServer", () => {
 
     expect(response.isError).toBe(true);
     expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("requires run context");
+  });
+
+  it("falls back to env orchestrator role when initialize sends an unknown role", async () => {
+    const fixture = createRuntime();
+    const previousRole = process.env.ADE_DEFAULT_ROLE;
+    const previousMissionId = process.env.ADE_MISSION_ID;
+    const previousRunId = process.env.ADE_RUN_ID;
+    process.env.ADE_DEFAULT_ROLE = "orchestrator";
+    process.env.ADE_MISSION_ID = "mission-1";
+    process.env.ADE_RUN_ID = "run-1";
+    try {
+      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+        run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
+        steps: [],
+        attempts: [],
+        claims: [],
+        contextSnapshots: [],
+        handoffs: [],
+        timeline: [],
+        runtimeEvents: [],
+        completionEvaluation: { complete: false }
+      }));
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+      await initialize(handler, { callerId: "coord-1", role: "assistant" as any });
+      const response = await callTool(handler, "read_mission_status", {});
+
+      expect(response.isError).toBeUndefined();
+      expect(response.structuredContent.ok).toBe(true);
+      expect(response.structuredContent.runId).toBe("run-1");
+    } finally {
+      if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
+      else process.env.ADE_DEFAULT_ROLE = previousRole;
+      if (previousMissionId == null) delete process.env.ADE_MISSION_ID;
+      else process.env.ADE_MISSION_ID = previousMissionId;
+      if (previousRunId == null) delete process.env.ADE_RUN_ID;
+      else process.env.ADE_RUN_ID = previousRunId;
+    }
+  });
+
+  it("keeps env orchestrator role even when initialize requests agent", async () => {
+    const fixture = createRuntime();
+    const previousRole = process.env.ADE_DEFAULT_ROLE;
+    const previousMissionId = process.env.ADE_MISSION_ID;
+    const previousRunId = process.env.ADE_RUN_ID;
+    process.env.ADE_DEFAULT_ROLE = "orchestrator";
+    process.env.ADE_MISSION_ID = "mission-1";
+    process.env.ADE_RUN_ID = "run-1";
+    try {
+      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+        run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
+        steps: [],
+        attempts: [],
+        claims: [],
+        contextSnapshots: [],
+        handoffs: [],
+        timeline: [],
+        runtimeEvents: [],
+        completionEvaluation: { complete: false }
+      }));
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+      await initialize(handler, { callerId: "coord-1", role: "agent" as any });
+      const response = await callTool(handler, "read_mission_status", {});
+
+      expect(response.isError).toBeUndefined();
+      expect(response.structuredContent.ok).toBe(true);
+      expect(response.structuredContent.runId).toBe("run-1");
+    } finally {
+      if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
+      else process.env.ADE_DEFAULT_ROLE = previousRole;
+      if (previousMissionId == null) delete process.env.ADE_MISSION_ID;
+      else process.env.ADE_MISSION_ID = previousMissionId;
+      if (previousRunId == null) delete process.env.ADE_RUN_ID;
+      else process.env.ADE_RUN_ID = previousRunId;
+    }
+  });
+
+  it("does not let env agent sessions escalate to orchestrator tools", async () => {
+    const fixture = createRuntime();
+    const previousRole = process.env.ADE_DEFAULT_ROLE;
+    const previousMissionId = process.env.ADE_MISSION_ID;
+    const previousRunId = process.env.ADE_RUN_ID;
+    const previousStepId = process.env.ADE_STEP_ID;
+    const previousAttemptId = process.env.ADE_ATTEMPT_ID;
+    process.env.ADE_DEFAULT_ROLE = "agent";
+    process.env.ADE_MISSION_ID = "mission-1";
+    process.env.ADE_RUN_ID = "run-1";
+    process.env.ADE_STEP_ID = "step-1";
+    process.env.ADE_ATTEMPT_ID = "attempt-1";
+    try {
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+      await initialize(handler, { callerId: "worker-1", role: "orchestrator" as any });
+      const response = await callTool(handler, "spawn_worker", {
+        name: "rogue-worker",
+        prompt: "Try to escape worker scope",
+      });
+
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("Unsupported tool: spawn_worker");
+    } finally {
+      if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
+      else process.env.ADE_DEFAULT_ROLE = previousRole;
+      if (previousMissionId == null) delete process.env.ADE_MISSION_ID;
+      else process.env.ADE_MISSION_ID = previousMissionId;
+      if (previousRunId == null) delete process.env.ADE_RUN_ID;
+      else process.env.ADE_RUN_ID = previousRunId;
+      if (previousStepId == null) delete process.env.ADE_STEP_ID;
+      else process.env.ADE_STEP_ID = previousStepId;
+      if (previousAttemptId == null) delete process.env.ADE_ATTEMPT_ID;
+      else process.env.ADE_ATTEMPT_ID = previousAttemptId;
+    }
+  });
+
+  it("does not advertise resources to orchestrator callers", async () => {
+    const { runtime } = createRuntime();
+    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+
+    const response = await handler({
+      jsonrpc: "2.0",
+      id: 99,
+      method: "initialize",
+      params: { identity: { callerId: "coord-1", role: "orchestrator" } }
+    }) as any;
+
+    expect(response.capabilities?.tools).toBeTruthy();
+    expect(response.capabilities?.resources).toBeUndefined();
   });
 
   it("routes reflection_add and uses initialize identity fallback", async () => {

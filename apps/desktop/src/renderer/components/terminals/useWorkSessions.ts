@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import type { TerminalSessionSummary, TerminalToolType } from "../../../shared/types";
-import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
-import { useAppStore, type WorkProjectViewState, type WorkStatusFilter, type WorkViewMode } from "../../state/appStore";
+import { getDefaultModelDescriptor, getModelById, MODEL_REGISTRY, resolveModelAlias } from "../../../shared/modelRegistry";
+import { useAppStore, type WorkDraftKind, type WorkProjectViewState, type WorkStatusFilter, type WorkViewMode } from "../../state/appStore";
 import { sessionMatchesStatusFilter, sessionStatusBucket } from "../../lib/terminalAttention";
 import { isChatToolType } from "../../lib/sessions";
 
@@ -11,6 +11,7 @@ const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
   activeItemId: null,
   selectedItemId: null,
   viewMode: "tabs",
+  draftKind: "chat",
   laneFilter: "all",
   statusFilter: "all",
   search: "",
@@ -29,6 +30,15 @@ function resolveModelDescriptor(modelIdOrAlias: string | null | undefined) {
   if (!raw.length) return null;
   return getModelById(raw) ?? resolveModelAlias(raw);
 }
+
+const DEFAULT_CLAUDE_CHAT_MODEL_ID = getDefaultModelDescriptor("claude")?.id
+  ?? MODEL_REGISTRY.find((model) => model.family === "anthropic" && model.isCliWrapped)?.id
+  ?? MODEL_REGISTRY[0]?.id
+  ?? "anthropic/claude-sonnet-4-6";
+const DEFAULT_CODEX_CHAT_MODEL_ID = getDefaultModelDescriptor("codex")?.id
+  ?? MODEL_REGISTRY.find((model) => model.family === "openai" && model.isCliWrapped)?.id
+  ?? MODEL_REGISTRY[0]?.id
+  ?? "openai/gpt-5.4-codex";
 
 function arraysEqual(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
@@ -68,6 +78,7 @@ export function useWorkSessions() {
   const refreshQueuedRef = useRef(false);
   const hasRunningSessionsRef = useRef(false);
   const backgroundRefreshTimerRef = useRef<number | null>(null);
+  const appliedQuerySessionIdRef = useRef<string | null>(null);
 
   const projectViewState = useMemo(() => {
     if (!projectRoot) return DEFAULT_PROJECT_WORK_STATE;
@@ -90,6 +101,7 @@ export function useWorkSessions() {
   const activeItemId = projectViewState.activeItemId;
   const selectedSessionId = projectViewState.selectedItemId;
   const viewMode = projectViewState.viewMode;
+  const draftKind = projectViewState.draftKind;
   const filterLaneId = projectViewState.laneFilter;
   const filterStatus = projectViewState.statusFilter;
   const q = projectViewState.search;
@@ -97,6 +109,26 @@ export function useWorkSessions() {
   const setViewMode = useCallback(
     (nextMode: WorkViewMode) => {
       setProjectViewState({ viewMode: nextMode });
+    },
+    [setProjectViewState],
+  );
+
+  const setDraftKind = useCallback(
+    (nextKind: WorkDraftKind) => {
+      setProjectViewState({ draftKind: nextKind });
+    },
+    [setProjectViewState],
+  );
+
+  const showDraftKind = useCallback(
+    (nextKind: WorkDraftKind) => {
+      setProjectViewState((prev) => ({
+        ...prev,
+        draftKind: nextKind,
+        viewMode: "tabs",
+        activeItemId: null,
+        selectedItemId: null,
+      }));
     },
     [setProjectViewState],
   );
@@ -198,6 +230,7 @@ export function useWorkSessions() {
           openItemIds: nextOpen,
           activeItemId: nextActive,
           selectedItemId: nextSelected,
+          draftKind: nextOpen.length === 0 ? "chat" : prev.draftKind,
         };
       });
     },
@@ -252,6 +285,40 @@ export function useWorkSessions() {
       statusFilter: status ?? prev.statusFilter,
     }));
   }, [lanes, searchParams, setProjectViewState]);
+
+  useEffect(() => {
+    const sessionParam = (searchParams.get("sessionId") ?? "").trim();
+    if (!sessionParam) {
+      appliedQuerySessionIdRef.current = null;
+      return;
+    }
+    if (appliedQuerySessionIdRef.current === sessionParam) return;
+
+    const session = sessions.find((entry) => entry.id === sessionParam);
+    if (!session) return;
+
+    appliedQuerySessionIdRef.current = sessionParam;
+    selectLane(session.laneId);
+    focusSession(session.id);
+    setProjectViewState((prev) => {
+      const nextOpen = prev.openItemIds.includes(session.id)
+        ? prev.openItemIds
+        : [...prev.openItemIds, session.id];
+      if (
+        arraysEqual(prev.openItemIds, nextOpen)
+        && prev.activeItemId === session.id
+        && prev.selectedItemId === session.id
+      ) {
+        return prev;
+      }
+      return {
+        ...prev,
+        openItemIds: nextOpen,
+        activeItemId: session.id,
+        selectedItemId: session.id,
+      };
+    });
+  }, [focusSession, searchParams, selectLane, sessions, setProjectViewState]);
 
   useEffect(() => {
     const unsubExit = window.ade.pty.onExit(() => {
@@ -384,17 +451,10 @@ export function useWorkSessions() {
   }, [sessions]);
 
   const visibleSessions = useMemo(() => {
-    const fromOpen = openItemIds
+    return openItemIds
       .map((id) => sessionsById.get(id))
       .filter((session): session is TerminalSessionSummary => session != null);
-    if (fromOpen.length > 0) return fromOpen;
-
-    const selected = selectedSessionId ? sessionsById.get(selectedSessionId) ?? null : null;
-    if (selected) return [selected];
-
-    const preferred = sessions.find((session) => session.status === "running") ?? sessions[0] ?? null;
-    return preferred ? [preferred] : [];
-  }, [openItemIds, selectedSessionId, sessionsById, sessions]);
+  }, [openItemIds, sessionsById]);
 
   const selectedSession = useMemo(
     () => (selectedSessionId ? sessions.find((session) => session.id === selectedSessionId) ?? null : null),
@@ -404,23 +464,25 @@ export function useWorkSessions() {
   useEffect(() => {
     if (!projectRoot) return;
     const validIds = new Set(sessions.map((session) => session.id));
-    const fallbackId = sessions.find((session) => session.status === "running")?.id ?? sessions[0]?.id ?? null;
 
     setProjectViewState((prev) => {
       const nextOpen = prev.openItemIds.filter((id) => validIds.has(id));
-      const hadOpen = nextOpen.length > 0;
-      const normalizedOpen = hadOpen ? nextOpen : fallbackId ? [fallbackId] : [];
+      const userIsViewingDraft = prev.activeItemId == null && prev.selectedItemId == null;
       const nextActive =
-        prev.activeItemId && validIds.has(prev.activeItemId)
-          ? prev.activeItemId
-          : normalizedOpen[0] ?? null;
+        userIsViewingDraft
+          ? null
+          : prev.activeItemId && validIds.has(prev.activeItemId) && nextOpen.includes(prev.activeItemId)
+            ? prev.activeItemId
+            : nextOpen[0] ?? null;
       const nextSelected =
-        prev.selectedItemId && validIds.has(prev.selectedItemId)
-          ? prev.selectedItemId
-          : nextActive;
+        userIsViewingDraft
+          ? null
+          : prev.selectedItemId && validIds.has(prev.selectedItemId)
+            ? prev.selectedItemId
+            : nextActive;
 
       if (
-        arraysEqual(prev.openItemIds, normalizedOpen) &&
+        arraysEqual(prev.openItemIds, nextOpen) &&
         prev.activeItemId === nextActive &&
         prev.selectedItemId === nextSelected
       ) {
@@ -429,7 +491,7 @@ export function useWorkSessions() {
 
       return {
         ...prev,
-        openItemIds: normalizedOpen,
+        openItemIds: nextOpen,
         activeItemId: nextActive,
         selectedItemId: nextSelected,
       };
@@ -540,8 +602,14 @@ export function useWorkSessions() {
     ]);
   }, [runningSessions, closeSession, closeChatSession]);
 
-  const handleLaunchPty = useCallback(
-    async (laneId: string, profile: "claude" | "codex" | "shell", tracked = true) => {
+  const launchPtySession = useCallback(
+    async (args: {
+      laneId: string;
+      profile: "claude" | "codex" | "shell";
+      tracked?: boolean;
+      title?: string;
+      startupCommand?: string;
+    }) => {
       const toolTypeMap = {
         claude: "claude" as const,
         codex: "codex" as const,
@@ -550,26 +618,34 @@ export function useWorkSessions() {
       const titleMap = { claude: "Claude Code", codex: "Codex", shell: "Shell" };
       const commandMap = { claude: "claude", codex: "codex", shell: "" };
       const result = await window.ade.pty.create({
-        laneId,
+        laneId: args.laneId,
         cols: 100,
         rows: 30,
-        title: titleMap[profile],
-        tracked,
-        toolType: toolTypeMap[profile],
-        startupCommand: commandMap[profile] || undefined,
+        title: args.title ?? titleMap[args.profile],
+        tracked: args.tracked ?? true,
+        toolType: toolTypeMap[args.profile],
+        startupCommand: args.startupCommand ?? commandMap[args.profile] ?? undefined,
       });
-      selectLane(laneId);
+      selectLane(args.laneId);
       focusSession(result.sessionId);
       openSessionTab(result.sessionId);
       await refresh();
+      return result;
     },
     [focusSession, openSessionTab, refresh, selectLane],
+  );
+
+  const handleLaunchPty = useCallback(
+    async (laneId: string, profile: "claude" | "codex" | "shell", tracked = true) => {
+      await launchPtySession({ laneId, profile, tracked });
+    },
+    [launchPtySession],
   );
 
   const handleLaunchChat = useCallback(
     async (laneId: string, modelIdOrProvider?: string) => {
       let provider: "claude" | "codex" | "unified" = "codex";
-      let model = "gpt-5.3-codex";
+      let model = DEFAULT_CODEX_CHAT_MODEL_ID;
       let modelId: string | undefined;
 
       const applyDescriptor = (raw: string | null | undefined): boolean => {
@@ -587,9 +663,9 @@ export function useWorkSessions() {
       };
 
       if (modelIdOrProvider === "codex") {
-        applyDescriptor("openai/gpt-5.3-codex");
+        applyDescriptor(DEFAULT_CODEX_CHAT_MODEL_ID);
       } else if (modelIdOrProvider === "claude") {
-        applyDescriptor("anthropic/claude-sonnet-4-6");
+        applyDescriptor(DEFAULT_CLAUDE_CHAT_MODEL_ID);
       } else if (modelIdOrProvider && modelIdOrProvider.trim().length) {
         applyDescriptor(modelIdOrProvider);
       } else {
@@ -605,11 +681,11 @@ export function useWorkSessions() {
               detectedLocal.provider === "ollama" ? "ollama/llama-3.3" : `${detectedLocal.provider}/auto`;
             applyDescriptor(localModelId);
           } else if (status.availableProviders.codex) {
-            const codexId = status.models.codex?.[0]?.id ?? "openai/gpt-5.3-codex";
-            applyDescriptor(codexId) || applyDescriptor("openai/gpt-5.3-codex");
+            const codexId = status.models.codex?.[0]?.id ?? DEFAULT_CODEX_CHAT_MODEL_ID;
+            applyDescriptor(codexId) || applyDescriptor(DEFAULT_CODEX_CHAT_MODEL_ID);
           } else if (status.availableProviders.claude) {
-            const claudeId = status.models.claude?.[0]?.id ?? "anthropic/claude-sonnet-4-6";
-            applyDescriptor(claudeId) || applyDescriptor("anthropic/claude-sonnet-4-6");
+            const claudeId = status.models.claude?.[0]?.id ?? DEFAULT_CLAUDE_CHAT_MODEL_ID;
+            applyDescriptor(claudeId) || applyDescriptor(DEFAULT_CLAUDE_CHAT_MODEL_ID);
           } else {
             const availableModelIds = Array.isArray(status.availableModelIds)
               ? status.availableModelIds.map((entry) => String(entry ?? "").trim()).filter(Boolean)
@@ -630,7 +706,7 @@ export function useWorkSessions() {
         }
 
         if (!modelId) {
-          applyDescriptor("openai/gpt-5.3-codex") || applyDescriptor("anthropic/claude-sonnet-4-6");
+          applyDescriptor(DEFAULT_CODEX_CHAT_MODEL_ID) || applyDescriptor(DEFAULT_CLAUDE_CHAT_MODEL_ID);
         }
       }
 
@@ -673,6 +749,9 @@ export function useWorkSessions() {
     setActiveItemId,
     viewMode,
     setViewMode,
+    draftKind,
+    setDraftKind,
+    showDraftKind,
     openSessionTab,
     closeTab,
 
@@ -685,6 +764,7 @@ export function useWorkSessions() {
     closeAllRunning,
     resumeSession,
     closeChatSession,
+    launchPtySession,
     handleLaunchPty,
     handleLaunchChat,
 

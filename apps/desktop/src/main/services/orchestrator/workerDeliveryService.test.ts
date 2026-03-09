@@ -4,7 +4,11 @@ import { createRequire } from "node:module";
 import initSqlJs from "sql.js";
 import type { Database, SqlJsStatic } from "sql.js";
 import { getChatMessageById, sendThreadMessageCtx, upsertThread } from "./chatMessageService";
-import { resolveWorkerDeliverySessionCtx, routeMessageToCoordinatorCtx } from "./workerDeliveryService";
+import {
+  resolveWorkerDeliverySessionCtx,
+  routeMessageToCoordinatorCtx,
+  upsertWorkerDeliveryInterventionCtx,
+} from "./workerDeliveryService";
 
 type SqlValue = string | number | null | Uint8Array;
 
@@ -314,6 +318,72 @@ describe("workerDeliveryService resolveWorkerDeliverySessionCtx", () => {
 
     expect(resolution.sessionId).toBeNull();
     expect(resolution.error).toContain("Lane fallback is blocked");
+  });
+});
+
+describe("workerDeliveryService upsertWorkerDeliveryInterventionCtx", () => {
+  it("does not open a manual-input intervention for a worker that has already finished", () => {
+    const addIntervention = vi.fn();
+    const ctx = {
+      workerDeliveryInterventionCooldowns: new Map(),
+      missionService: {
+        get: vi.fn(() => ({
+          id: "mission-1",
+          status: "in_progress",
+          interventions: [],
+        })),
+        update: vi.fn(),
+        addIntervention,
+      },
+      orchestratorService: {
+        getRunGraph: vi.fn(() => ({
+          run: { id: "run-1", missionId: "mission-1" },
+          steps: [
+            {
+              id: "step-1",
+              status: "succeeded",
+            },
+          ],
+          attempts: [],
+          claims: [],
+          contextSnapshots: [],
+          handoffs: [],
+          timeline: [],
+          runtimeEvents: [],
+        })),
+      },
+      logger: {
+        info: vi.fn(),
+        debug: vi.fn(),
+      },
+    } as any;
+    const deps = {
+      appendChatMessage: vi.fn(),
+      recordRuntimeEvent: vi.fn(),
+    };
+
+    const result = upsertWorkerDeliveryInterventionCtx(
+      ctx,
+      {
+        message: {
+          id: "message-1",
+          missionId: "mission-1",
+          laneId: "lane-1",
+        } as any,
+        context: {
+          runId: "run-1",
+          stepId: "step-1",
+          stepKey: "planner-step",
+          laneId: "lane-1",
+        } as any,
+        retries: 4,
+        error: "No worker agent-chat session is currently mapped to this thread.",
+      },
+      deps as any,
+    );
+
+    expect(result).toBeNull();
+    expect(addIntervention).not.toHaveBeenCalled();
   });
 });
 

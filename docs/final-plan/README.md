@@ -123,15 +123,11 @@ Baseline derived from code in `apps/desktop`.
 
 Not implemented yet:
 
-- Phase 3 orchestrator overhaul complete (Phases 1-7 shipped; reflection protocol included).
-- CTO agent + org chart (persistent project-aware org with worker agents, Linear sync, auto-dispatch)
 - Automations platform + Night Shift in Automations (templates, external triggers, executor routing, overnight execution)
-- Play runtime isolation stack (ports/routing/preview/profile isolation)
 - Multi-device sync (cr-sqlite + WebSocket real-time replication)
 - Device registry and brain management (which machine runs agents)
 - iOS companion app (remote control, push notifications, mission monitoring)
 - VPS headless deployment (headless ADE on remote machines)
-- Mission Introspection (reflection protocol for system self-improvement)
 - Provider usage telemetry parity (CLI/API/local) and budget UX refinements
 
 ### 2.5 Phase 3 Status Snapshot (2026-03-02 update)
@@ -197,7 +193,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Subscription Usage Tracking (local CLI data analysis) | Phase 3 | Phase 3 | Planned |
 | Missions Home Dashboard (aggregate stats, history) | Phase 3 | Phase 3 | Implemented (Task 4) |
 | Budget Management (subscription + API key) | Phase 3 | Phase 3 | Implemented (Task 6) |
-| CTO Agent (persistent project-aware assistant) | Phase 4 | Phase 3 | Planned |
+| CTO Agent (persistent project-aware assistant) | Phase 4 | Phase 3 | Complete (W1) |
 | Automations Platform + Night Shift | Phase 4 | Phase 3 | Planned |
 | Learning Packs (auto-curated knowledge) | Phase 4 | Phase 3 | Planned |
 | Memory Architecture Upgrade (vector search, tiers) | Phase 4 | Phase 3 | Planned |
@@ -208,19 +204,19 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | .ade/ State Sync (cr-sqlite database sync) | Phase 6 | Phase 4 | Planned |
 | External MCP Consumption | Phase 4 | Phase 3 | Planned |
 | OpenClaw Bridge (External Agent Gateway) | Phase 4 | Phase 4 W1 (CTO) + W8 (External MCP) | Planned |
-| Worker Agents & Org Chart | Phase 4 | Phase 4 W1 | Planned |
-| Heartbeat & Activation System (coalescing, deferred promotion) | Phase 4 | Phase 4 W1 | Planned |
-| Bidirectional Linear Sync (polling, auto-dispatch, reconciliation) | Phase 4 | Phase 4 W2 + W3 | Planned |
+| Worker Agents & Org Chart | Phase 4 | Phase 4 W1 | Complete (W2) |
+| Heartbeat & Activation System (coalescing, deferred promotion) | Phase 4 | Phase 4 W1 | Complete (W3) |
+| Bidirectional Linear Sync (polling, auto-dispatch, reconciliation) | Phase 4 | Phase 4 W2 + W3 | Complete (W4) |
 | Mission Templates (reusable archetypes in .ade/templates/) | Phase 4 | Phase 4 W4 | Planned |
-| Per-Agent Monthly Budgets (auto-pause enforcement) | Phase 4 | Phase 4 W2 | Planned |
-| Multi-Adapter Pattern (claude-local, codex-local, openclaw, process) | Phase 4 | Phase 4 W2 | Planned |
-| Agent Config Versioning (revision tracking, rollback) | Phase 4 | Phase 4 W2 | Planned |
-| Task Session Persistence (per-task context across invocations) | Phase 4 | Phase 4 W2 | Planned |
+| Per-Agent Monthly Budgets (auto-pause enforcement) | Phase 4 | Phase 4 W2 | Complete (W2) |
+| Multi-Adapter Pattern (claude-local, codex-local, openclaw, process) | Phase 4 | Phase 4 W2 | Complete (W2) |
+| Agent Config Versioning (revision tracking, rollback) | Phase 4 | Phase 4 W2 | Complete (W2) |
+| Task Session Persistence (per-task context across invocations) | Phase 4 | Phase 4 W2 | Complete (W2) |
 | Issue Tracker Abstraction (Linear first, GitHub Issues planned) | Phase 4 | Phase 4 W4 | Planned |
 | Pre-compaction Memory Flush | Phase 4 | Phase 3 (HW6) | Planned |
 | Memory Consolidation | Phase 4 | Phase 3 | Planned |
 | Episodic + Procedural Memory | Phase 4 | Phase 3 | Planned |
-| Play runtime isolation | Phase 5 | Phase 3 (parallel with Phase 4) | Planned |
+| Play runtime isolation | Phase 5 | Phase 3 (parallel with Phase 4) | Complete |
 | cr-sqlite multi-device sync | Phase 6 | Phase 4 | Planned |
 | Device registry & brain management | Phase 6 | Phase 4 | Planned |
 | Tailscale integration | Phase 6 | Phase 4 | Planned |

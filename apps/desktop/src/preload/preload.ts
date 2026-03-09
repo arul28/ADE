@@ -237,7 +237,9 @@ import type {
   UndoConflictProposalArgs,
   PrepareResolverSessionArgs,
   PrepareResolverSessionResult,
+  AttachResolverSessionArgs,
   FinalizeResolverSessionArgs,
+  CancelResolverSessionArgs,
   SuggestResolverTargetArgs,
   SuggestResolverTargetResult,
   CreateQueuePrsArgs,
@@ -261,7 +263,11 @@ import type {
   CommitIntegrationArgs,
   LandStackEnhancedArgs,
   LandQueueNextArgs,
+  ResumeQueueAutomationArgs,
+  StartQueueAutomationArgs,
+  StartQueueRehearsalArgs,
   QueueLandingState,
+  QueueRehearsalState,
   PrConflictAnalysis,
   PrMergeContext,
   PrHealth,
@@ -419,6 +425,12 @@ import type {
   ExecutionPlanPreview,
   GetMissionStateDocumentArgs,
   MissionStateDocument,
+  ListOrchestratorArtifactsArgs,
+  ListOrchestratorWorkerCheckpointsArgs,
+  GetOrchestratorPromptInspectorArgs,
+  OrchestratorArtifact,
+  OrchestratorWorkerCheckpoint,
+  OrchestratorPromptInspector,
   GetMissionLogsArgs,
   GetMissionLogsResult,
   ExportMissionLogsArgs,
@@ -675,6 +687,16 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.orchestratorGetExecutionPlanPreview, args),
     getMissionStateDocument: async (args: GetMissionStateDocumentArgs): Promise<MissionStateDocument | null> =>
       ipcRenderer.invoke(IPC.orchestratorGetMissionStateDocument, args),
+    listArtifacts: async (args: ListOrchestratorArtifactsArgs): Promise<OrchestratorArtifact[]> =>
+      ipcRenderer.invoke(IPC.orchestratorListArtifacts, args),
+    listWorkerCheckpoints: async (
+      args: ListOrchestratorWorkerCheckpointsArgs
+    ): Promise<OrchestratorWorkerCheckpoint[]> =>
+      ipcRenderer.invoke(IPC.orchestratorListWorkerCheckpoints, args),
+    getPromptInspector: async (
+      args: GetOrchestratorPromptInspectorArgs
+    ): Promise<OrchestratorPromptInspector | null> =>
+      ipcRenderer.invoke(IPC.orchestratorGetPromptInspector, args),
     getCheckpointStatus: async (
       args: { runId: string }
     ): Promise<{ savedAt: string; turnCount: number; compactionCount: number } | null> =>
@@ -1008,8 +1030,12 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.conflictsCommitExternalResolverRun, args),
     prepareResolverSession: (args: PrepareResolverSessionArgs): Promise<PrepareResolverSessionResult> =>
       ipcRenderer.invoke(IPC.conflictsPrepareResolverSession, args),
+    attachResolverSession: (args: AttachResolverSessionArgs): Promise<ConflictExternalResolverRunSummary> =>
+      ipcRenderer.invoke(IPC.conflictsAttachResolverSession, args),
     finalizeResolverSession: (args: FinalizeResolverSessionArgs): Promise<ConflictExternalResolverRunSummary> =>
       ipcRenderer.invoke(IPC.conflictsFinalizeResolverSession, args),
+    cancelResolverSession: (args: CancelResolverSessionArgs): Promise<ConflictExternalResolverRunSummary> =>
+      ipcRenderer.invoke(IPC.conflictsCancelResolverSession, args),
     suggestResolverTarget: (args: SuggestResolverTargetArgs): Promise<SuggestResolverTargetResult> =>
       ipcRenderer.invoke(IPC.conflictsSuggestResolverTarget, args),
     onEvent: (cb: (ev: ConflictEventPayload) => void) => {
@@ -1064,10 +1090,28 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.prsLandStackEnhanced, args),
     landQueueNext: (args: LandQueueNextArgs): Promise<LandResult> =>
       ipcRenderer.invoke(IPC.prsLandQueueNext, args),
+    startQueueAutomation: (args: StartQueueAutomationArgs): Promise<QueueLandingState> =>
+      ipcRenderer.invoke(IPC.prsStartQueueAutomation, args),
+    pauseQueueAutomation: (queueId: string): Promise<QueueLandingState | null> =>
+      ipcRenderer.invoke(IPC.prsPauseQueueAutomation, { queueId }),
+    resumeQueueAutomation: (args: ResumeQueueAutomationArgs): Promise<QueueLandingState | null> =>
+      ipcRenderer.invoke(IPC.prsResumeQueueAutomation, args),
+    cancelQueueAutomation: (queueId: string): Promise<QueueLandingState | null> =>
+      ipcRenderer.invoke(IPC.prsCancelQueueAutomation, { queueId }),
+    startQueueRehearsal: (args: StartQueueRehearsalArgs): Promise<QueueRehearsalState> =>
+      ipcRenderer.invoke(IPC.prsStartQueueRehearsal, args),
+    cancelQueueRehearsal: (rehearsalId: string): Promise<QueueRehearsalState | null> =>
+      ipcRenderer.invoke(IPC.prsCancelQueueRehearsal, { rehearsalId }),
     getHealth: (prId: string): Promise<PrHealth> =>
       ipcRenderer.invoke(IPC.prsGetHealth, { prId }),
     getQueueState: (groupId: string): Promise<QueueLandingState | null> =>
       ipcRenderer.invoke(IPC.prsGetQueueState, { groupId }),
+    listQueueStates: (args?: { includeCompleted?: boolean; limit?: number }): Promise<QueueLandingState[]> =>
+      ipcRenderer.invoke(IPC.prsListQueueStates, args ?? {}),
+    getQueueRehearsalState: (groupId: string): Promise<QueueRehearsalState | null> =>
+      ipcRenderer.invoke(IPC.prsGetQueueRehearsalState, { groupId }),
+    listQueueRehearsals: (args?: { includeCompleted?: boolean; limit?: number }): Promise<QueueRehearsalState[]> =>
+      ipcRenderer.invoke(IPC.prsListQueueRehearsals, args ?? {}),
     getConflictAnalysis: (prId: string): Promise<PrConflictAnalysis> =>
       ipcRenderer.invoke(IPC.prsGetConflictAnalysis, { prId }),
     getMergeContext: (prId: string): Promise<PrMergeContext> =>

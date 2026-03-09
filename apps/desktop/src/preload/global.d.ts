@@ -172,6 +172,7 @@ import type {
   CommitIntegrationArgs,
   LandQueueNextArgs,
   QueueLandingState,
+  QueueRehearsalState,
   PrHealth,
   RebaseNeed,
   RebaseLaneArgs,
@@ -373,12 +374,18 @@ import type {
   ListOrchestratorWorkerDigestsArgs,
   GetOrchestratorContextCheckpointArgs,
   ListOrchestratorLaneDecisionsArgs,
+  ListOrchestratorArtifactsArgs,
+  ListOrchestratorWorkerCheckpointsArgs,
   MissionMetricsConfig,
   MissionMetricSample,
   SetMissionMetricsConfigArgs,
   ExecutionPlanPreview,
   GetMissionStateDocumentArgs,
   MissionStateDocument,
+  OrchestratorArtifact,
+  OrchestratorWorkerCheckpoint,
+  GetOrchestratorPromptInspectorArgs,
+  OrchestratorPromptInspector,
   GetMissionBudgetTelemetryArgs,
   GetMissionBudgetStatusArgs,
   MissionBudgetTelemetrySnapshot,
@@ -568,6 +575,9 @@ declare global {
         listWorkerDigests: (args: ListOrchestratorWorkerDigestsArgs) => Promise<OrchestratorWorkerDigest[]>;
         getContextCheckpoint: (args: GetOrchestratorContextCheckpointArgs) => Promise<OrchestratorContextCheckpoint | null>;
         listLaneDecisions: (args: ListOrchestratorLaneDecisionsArgs) => Promise<OrchestratorLaneDecision[]>;
+        listArtifacts: (args: ListOrchestratorArtifactsArgs) => Promise<OrchestratorArtifact[]>;
+        listWorkerCheckpoints: (args: ListOrchestratorWorkerCheckpointsArgs) => Promise<OrchestratorWorkerCheckpoint[]>;
+        getPromptInspector: (args: GetOrchestratorPromptInspectorArgs) => Promise<OrchestratorPromptInspector>;
         getMissionMetrics: (args: GetMissionMetricsArgs) => Promise<{ config: MissionMetricsConfig | null; samples: MissionMetricSample[] }>;
         setMissionMetricsConfig: (args: SetMissionMetricsConfigArgs) => Promise<MissionMetricsConfig>;
         getExecutionPlanPreview: (args: { runId: string }) => Promise<ExecutionPlanPreview | null>;
@@ -746,7 +756,9 @@ declare global {
         listExternalResolverRuns: (args?: ListExternalConflictResolverRunsArgs) => Promise<ConflictExternalResolverRunSummary[]>;
         commitExternalResolverRun: (args: CommitExternalConflictResolverRunArgs) => Promise<CommitExternalConflictResolverRunResult>;
         prepareResolverSession: (args: import("../shared/types").PrepareResolverSessionArgs) => Promise<import("../shared/types").PrepareResolverSessionResult>;
+        attachResolverSession: (args: import("../shared/types").AttachResolverSessionArgs) => Promise<import("../shared/types").ConflictExternalResolverRunSummary>;
         finalizeResolverSession: (args: import("../shared/types").FinalizeResolverSessionArgs) => Promise<import("../shared/types").ConflictExternalResolverRunSummary>;
+        cancelResolverSession: (args: import("../shared/types").CancelResolverSessionArgs) => Promise<import("../shared/types").ConflictExternalResolverRunSummary>;
         suggestResolverTarget: (args: import("../shared/types").SuggestResolverTargetArgs) => Promise<import("../shared/types").SuggestResolverTargetResult>;
         onEvent: (cb: (ev: ConflictEventPayload) => void) => () => void;
       };
@@ -793,8 +805,17 @@ declare global {
         onAiResolutionEvent: (cb: (ev: PrAiResolutionEventPayload) => void) => () => void;
         landStackEnhanced: (args: import("../shared/types").LandStackEnhancedArgs) => Promise<import("../shared/types").LandResult[]>;
         landQueueNext: (args: LandQueueNextArgs) => Promise<LandResult>;
+        startQueueAutomation: (args: import("../shared/types").StartQueueAutomationArgs) => Promise<QueueLandingState>;
+        pauseQueueAutomation: (queueId: string) => Promise<QueueLandingState | null>;
+        resumeQueueAutomation: (args: import("../shared/types").ResumeQueueAutomationArgs) => Promise<QueueLandingState | null>;
+        cancelQueueAutomation: (queueId: string) => Promise<QueueLandingState | null>;
+        startQueueRehearsal: (args: import("../shared/types").StartQueueRehearsalArgs) => Promise<QueueRehearsalState>;
+        cancelQueueRehearsal: (rehearsalId: string) => Promise<QueueRehearsalState | null>;
         getHealth: (prId: string) => Promise<PrHealth>;
         getQueueState: (groupId: string) => Promise<QueueLandingState | null>;
+        listQueueStates: (args?: { includeCompleted?: boolean; limit?: number }) => Promise<QueueLandingState[]>;
+        getQueueRehearsalState: (groupId: string) => Promise<QueueRehearsalState | null>;
+        listQueueRehearsals: (args?: { includeCompleted?: boolean; limit?: number }) => Promise<QueueRehearsalState[]>;
         getConflictAnalysis: (prId: string) => Promise<import("../shared/types").PrConflictAnalysis>;
         getMergeContext: (prId: string) => Promise<PrMergeContext>;
         listWithConflicts: () => Promise<import("../shared/types").PrWithConflicts[]>;

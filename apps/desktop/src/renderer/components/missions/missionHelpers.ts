@@ -141,7 +141,7 @@ export const WORKER_STATUS_HEX: Record<string, string> = {
   disposed: "#71717A",
 };
 
-export type WorkspaceTab = "plan" | "work" | "dag" | "chat" | "activity" | "details";
+export type WorkspaceTab = "overview" | "plan" | "ops" | "chat" | "artifacts" | "history";
 export type MissionListViewMode = "list" | "board";
 export type PlannerProvider = "auto" | "claude" | "codex";
 export type TeammatePlanMode = "auto" | "off" | "required";
@@ -285,6 +285,76 @@ export function compactText(value: string, maxChars = 140): string {
   if (!normalized.length) return "";
   if (normalized.length <= maxChars) return normalized;
   return `${normalized.slice(0, maxChars - 1)}...`;
+}
+
+function titleizeMissionWorkerToken(value: string): string {
+  if (!value.length) return value;
+  return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
+}
+
+function inferMissionWorkerPhase(raw: string): string | null {
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized.length) return null;
+  if (normalized.startsWith("planner") || normalized.startsWith("plan")) return "Planning";
+  if (normalized.startsWith("dev") || normalized.startsWith("implement")) return "Development";
+  if (normalized.startsWith("validator") || normalized.startsWith("validate")) return "Validation";
+  if (normalized.startsWith("test")) return "Testing";
+  if (normalized.startsWith("review")) return "Review";
+  return null;
+}
+
+function humanizeMissionWorkerText(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed.length) return "Worker";
+  const withoutPrefix = trimmed
+    .replace(/^Worker:\s*/i, "")
+    .replace(/^worker[_:-]*/i, "")
+    .replace(/^teammate[_:-]*/i, "");
+  const withoutTimestamp = withoutPrefix.replace(/[_-]\d{10,}$/, "");
+  const withColon = withoutTimestamp.replace(/__/g, ": ");
+  return withColon
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function formatMissionWorkerPresentation(args: {
+  title?: string | null;
+  stepKey?: string | null;
+}): {
+  label: string;
+  fullLabel: string;
+  phaseLabel: string | null;
+} {
+  const raw = (args.title && args.title.trim().length ? args.title : args.stepKey) ?? "Worker";
+  const human = humanizeMissionWorkerText(raw);
+  const [lead, ...rest] = human.split(":");
+  const inferredPhase = inferMissionWorkerPhase(lead ?? "") ?? inferMissionWorkerPhase(args.stepKey ?? "");
+  if (rest.length > 0 && inferredPhase) {
+    const detail = rest.join(":").trim();
+    return {
+      label: detail.length ? detail : inferredPhase,
+      fullLabel: detail.length ? `${inferredPhase}: ${detail}` : inferredPhase,
+      phaseLabel: inferredPhase,
+    };
+  }
+  const tokens = human.split(/\s+/).filter(Boolean);
+  if (tokens.length > 1) {
+    const maybePhase = inferMissionWorkerPhase(tokens[0] ?? "");
+    if (maybePhase) {
+      const detail = tokens.slice(1).join(" ").trim();
+      return {
+        label: detail.length ? detail : maybePhase,
+        fullLabel: detail.length ? `${maybePhase}: ${detail}` : maybePhase,
+        phaseLabel: maybePhase,
+      };
+    }
+  }
+  return {
+    label: human,
+    fullLabel: inferredPhase && human !== inferredPhase ? `${inferredPhase}: ${human}` : human,
+    phaseLabel: inferredPhase ?? (human === "Worker" ? null : titleizeMissionWorkerToken(human.split(" ")[0] ?? "")),
+  };
 }
 
 export function isPlannerStreamMessage(msg: OrchestratorChatMessage): boolean {

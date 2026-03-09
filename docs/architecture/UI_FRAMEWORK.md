@@ -82,15 +82,13 @@ Routes are defined in `apps/desktop/src/renderer/components/app/App.tsx`. Curren
 - `/onboarding`
 - `/lanes`
 - `/files`
-- `/terminals` (legacy redirect to `/work`)
 - `/work`
-- `/context` (legacy redirect to `/settings`)
 - `/graph`
 - `/prs`
 - `/history`
 - `/automations`
-- `/agents` (compatibility alias to `/automations`)
 - `/missions`
+- `/cto`
 - `/settings`
 
 Primary left-rail nav (`TabNav`) exposes 11 tabs:
@@ -188,7 +186,7 @@ Renderer components are feature-grouped under `apps/desktop/src/renderer/compone
 | `ActivityNarrativeHeader.tsx` | ~150 | Run narrative header for the Activity tab |
 | `MissionsHomeDashboard.tsx` | ~100 | Mission list/dashboard landing page |
 
-Other mission-scoped components that remain as standalone files: `MissionChatV2.tsx` (mission chat container), `MissionThreadMessageList.tsx` (shared renderer wrapper for worker/orchestrator threads), `OrchestratorDAG.tsx`, `ModelSelector.tsx`, `ModelProfileSelector.tsx`, `SmartBudgetPanel.tsx`, `PolicyEditor.tsx`, `UsageDashboard.tsx`, `AgentPresencePanel.tsx`, `MissionComposer.tsx`, `MissionControlPage.tsx`, `PhaseProgressBar.tsx`.
+Other mission-scoped components that remain as standalone files: `MissionChatV2.tsx` (mission chat container), `MissionThreadMessageList.tsx` (shared renderer wrapper for worker/orchestrator threads), `OrchestratorDAG.tsx`, `ModelSelector.tsx`, `ModelProfileSelector.tsx`, `SmartBudgetPanel.tsx`, `UsageDashboard.tsx`, `AgentPresencePanel.tsx`, `MissionComposer.tsx`, `MissionControlPage.tsx`, `PhaseProgressBar.tsx`.
 
 ### WorkspaceGraphPage Decomposition
 

@@ -423,7 +423,47 @@ function toPhaseCards(raw: unknown[]): PhaseCard[] {
 
 function normalizePhaseCards(phases: PhaseCard[]): PhaseCard[] {
   return phases
-    .map((phase, index) => ({ ...phase, position: index }))
+    .map((phase, index) => {
+      const phaseKey = String(phase.phaseKey ?? "").trim().toLowerCase();
+      const planningPhase = phaseKey === "planning";
+      const testingOrValidation = phaseKey === "testing" || phaseKey === "validation";
+      const planningMode =
+        phase.askQuestions.mode === "always" || phase.askQuestions.mode === "auto_if_uncertain"
+          ? phase.askQuestions.mode
+          : "auto_if_uncertain";
+      const askQuestions: PhaseCard["askQuestions"] = planningPhase
+        ? {
+            ...phase.askQuestions,
+            enabled: phase.askQuestions.mode === "never" ? false : phase.askQuestions.enabled !== false,
+            mode: phase.askQuestions.mode === "never" ? "never" : planningMode,
+            maxQuestions: Math.max(1, Math.min(10, Number(phase.askQuestions.maxQuestions ?? 5) || 5)),
+          }
+        : {
+            ...phase.askQuestions,
+            enabled: false,
+            mode: "never",
+          };
+      const validationGate: PhaseCard["validationGate"] = planningPhase || phaseKey === "development"
+        ? {
+            ...phase.validationGate,
+            tier: "none",
+            required: false,
+            criteria: undefined,
+            evidenceRequirements: undefined,
+          }
+        : testingOrValidation
+          ? {
+              ...phase.validationGate,
+              tier: phase.validationGate.tier === "none" ? "dedicated" : phase.validationGate.tier,
+            }
+          : phase.validationGate;
+      return {
+        ...phase,
+        askQuestions,
+        validationGate,
+        position: index,
+      };
+    })
     .sort((a, b) => a.position - b.position)
     .map((phase, index) => ({ ...phase, position: index }));
 }

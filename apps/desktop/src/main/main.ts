@@ -34,6 +34,7 @@ import { createGithubService } from "./services/github/githubService";
 import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
 import { createQueueLandingService } from "./services/prs/queueLandingService";
+import { createQueueRehearsalService } from "./services/prs/queueRehearsalService";
 import { detectDefaultBaseRef, ensureAdeExcluded, resolveRepoRoot, toProjectInfo, upsertProjectRow } from "./services/projects/projectService";
 import { IPC } from "../shared/ipc";
 import type { ProjectInfo } from "../shared/types";
@@ -754,14 +755,34 @@ app.whenReady().then(async () => {
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.prsEvent, event)
     });
 
+    let orchestratorServiceRef: ReturnType<typeof createOrchestratorService> | null = null;
+    let aiOrchestratorServiceRef: ReturnType<typeof createAiOrchestratorService> | null = null;
     const queueLandingService = createQueueLandingService({
       db,
       logger,
       projectId,
       prService,
-      emitEvent: (event) => emitProjectEvent(projectRoot, IPC.prsEvent, event)
+      laneService,
+      conflictService,
+      emitEvent: (event) => emitProjectEvent(projectRoot, IPC.prsEvent, event),
+      onStateChanged: (state) => {
+        aiOrchestratorServiceRef?.onQueueLandingStateChanged?.(state);
+      }
     });
     queueLandingService.init();
+    const queueRehearsalService = createQueueRehearsalService({
+      db,
+      logger,
+      projectId,
+      prService,
+      laneService,
+      conflictService,
+      emitEvent: (event) => emitProjectEvent(projectRoot, IPC.prsEvent, event),
+      onStateChanged: (state) => {
+        aiOrchestratorServiceRef?.onQueueRehearsalStateChanged?.(state);
+      }
+    });
+    queueRehearsalService.init();
 
     const fileService = createFileService({
       laneService,
@@ -770,8 +791,6 @@ app.whenReady().then(async () => {
       }
     });
 
-    let orchestratorServiceRef: ReturnType<typeof createOrchestratorService> | null = null;
-    let aiOrchestratorServiceRef: ReturnType<typeof createAiOrchestratorService> | null = null;
     const onTrackedSessionEnded = ({ laneId, sessionId, exitCode }: { laneId: string; sessionId: string; exitCode: number | null }) => {
       jobEngine?.onSessionEnded({ laneId, sessionId });
       automationService?.onSessionEnded({ laneId, sessionId });
@@ -965,7 +984,19 @@ app.whenReady().then(async () => {
       db,
       projectId,
       projectRoot,
-      onEvent: (event) => emitProjectEvent(projectRoot, IPC.missionsEvent, event)
+      onEvent: (event) => {
+        emitProjectEvent(projectRoot, IPC.missionsEvent, event);
+        if (event.reason === "ready_to_start" && event.missionId) {
+          void aiOrchestratorServiceRef?.startMissionRun({
+            missionId: event.missionId,
+          }).catch((error) => {
+            logger.warn("missions.queue_autostart_failed", {
+              missionId: event.missionId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+        }
+      }
     });
     // Run phase built-in migration/cleanup once at startup so launcher state is canonical.
     try {
@@ -1022,12 +1053,22 @@ app.whenReady().then(async () => {
       projectConfigService,
       aiIntegrationService,
       prService,
+      conflictService,
+      queueLandingService,
+      queueRehearsalService,
       projectRoot,
       missionBudgetService,
       onThreadEvent: (event) => emitProjectEvent(projectRoot, IPC.orchestratorThreadEvent, event),
       onDagMutation: (event) => emitProjectEvent(projectRoot, IPC.orchestratorDagMutation, event)
     });
     aiOrchestratorServiceRef = aiOrchestratorService;
+    try {
+      missionService.processQueue();
+    } catch (error) {
+      logger.warn("missions.queue_autostart_bootstrap_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     const linearSyncService = createLinearSyncService({
       db,
@@ -1282,6 +1323,7 @@ app.whenReady().then(async () => {
       prService,
       prPollingService,
       queueLandingService,
+      queueRehearsalService,
       jobEngine,
       automationService,
       automationPlannerService,
@@ -1357,6 +1399,7 @@ app.whenReady().then(async () => {
       prService: null,
       prPollingService: null,
       queueLandingService: null,
+      queueRehearsalService: null,
       jobEngine: null,
       automationService: null,
       automationPlannerService: null,

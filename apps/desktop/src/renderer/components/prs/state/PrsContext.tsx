@@ -17,6 +17,7 @@ import type {
   RebaseNeed,
   RebaseEventPayload,
   QueueLandingState,
+  QueueRehearsalState,
   PrEventPayload,
   LaneSummary,
   AutoRebaseLaneStatus,
@@ -59,6 +60,7 @@ type PrsState = {
 
   // Queue state
   queueStates: Record<string, QueueLandingState>;
+  queueRehearsals: Record<string, QueueRehearsalState>;
 
   // Inline terminal
   inlineTerminal: InlineTerminalState;
@@ -133,6 +135,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
 
   // Queue state
   const [queueStates, setQueueStates] = useState<Record<string, QueueLandingState>>({});
+  const [queueRehearsals, setQueueRehearsals] = useState<Record<string, QueueRehearsalState>>({});
 
   // Inline terminal
   const [inlineTerminal, setInlineTerminal] = useState<InlineTerminalState>(null);
@@ -185,9 +188,11 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     if (isInitial) setLoading(true);
     setError(null);
     try {
-      const [prList, laneList] = await Promise.all([
+      const [prList, laneList, queueStateList, queueRehearsalList] = await Promise.all([
         window.ade.prs.listWithConflicts(),
         window.ade.lanes.list({ includeStatus: false }),
+        window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 }),
+        window.ade.prs.listQueueRehearsals({ includeCompleted: true, limit: 50 }),
       ]);
       const prsChanged = !jsonEqual(prsRef.current, prList);
 
@@ -195,6 +200,14 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       // to avoid unnecessary re-render cascades in child components.
       setPrs((prev) => (jsonEqual(prev, prList) ? prev : prList));
       setLanes((prev) => (jsonEqual(prev, laneList) ? prev : laneList));
+      setQueueStates((prev) => {
+        const next = Object.fromEntries(queueStateList.map((state) => [state.groupId, state] as const));
+        return jsonEqual(prev, next) ? prev : next;
+      });
+      setQueueRehearsals((prev) => {
+        const next = Object.fromEntries(queueRehearsalList.map((state) => [state.groupId, state] as const));
+        return jsonEqual(prev, next) ? prev : next;
+      });
       prsRef.current = prList;
 
       // Clear selectedPrId if the PR no longer exists
@@ -295,27 +308,21 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
           return jsonEqual(prev, next) ? prev : next;
         });
         scheduleRefresh();
-      } else if (event.type === "queue-state") {
-        setQueueStates((prev) => {
-          const existing = prev[event.groupId];
-          if (!existing) return prev;
-          return {
-            ...prev,
-            [event.groupId]: {
-              ...existing,
-              state: event.state,
-              currentPosition: event.currentPosition,
-            },
-          };
-        });
-      } else if (event.type === "queue-step") {
-        // Refresh queue state for the group
+      } else if (event.type === "queue-state" || event.type === "queue-step") {
         window.ade.prs.getQueueState(event.groupId).then((qs) => {
           if (qs) {
             setQueueStates((prev) => ({ ...prev, [event.groupId]: qs }));
           }
         }).catch((err) => {
           console.warn("[PrsContext] Failed to fetch queue state for group:", event.groupId, err);
+        });
+      } else if (event.type === "queue-rehearsal-state" || event.type === "queue-rehearsal-step") {
+        window.ade.prs.getQueueRehearsalState(event.groupId).then((qs) => {
+          if (qs) {
+            setQueueRehearsals((prev) => ({ ...prev, [event.groupId]: qs }));
+          }
+        }).catch((err) => {
+          console.warn("[PrsContext] Failed to fetch queue rehearsal state for group:", event.groupId, err);
         });
       }
     });
@@ -389,6 +396,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       rebaseNeeds,
       autoRebaseStatuses,
       queueStates,
+      queueRehearsals,
       inlineTerminal,
       resolverModel,
       resolverReasoningLevel,
@@ -426,6 +434,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       rebaseNeeds,
       autoRebaseStatuses,
       queueStates,
+      queueRehearsals,
       inlineTerminal,
       resolverModel,
       resolverReasoningLevel,

@@ -1,9 +1,5 @@
 import React, { useCallback, useMemo, useState } from "react";
-import {
-  ArrowClockwise as RefreshCw,
-  Stop as Square,
-  Terminal,
-} from "@phosphor-icons/react";
+import { Terminal } from "@phosphor-icons/react";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
 import { useWorkSessions } from "./useWorkSessions";
 import { SessionListPane } from "./SessionListPane";
@@ -11,7 +7,8 @@ import { WorkViewArea } from "./WorkViewArea";
 import { SessionContextMenu, type SessionContextMenuState } from "./SessionContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
 import type { TerminalSessionSummary } from "../../../shared/types";
-import { COLORS, MONO_FONT, SANS_FONT, inlineBadge, outlineButton } from "../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, inlineBadge } from "../lanes/laneDesignTokens";
+import { sortLanesForTabs } from "../lanes/laneUtils";
 
 /* ---- Layout (2-pane: sessions | view) ---- */
 
@@ -28,6 +25,7 @@ const TERMINALS_TILING_TREE: PaneSplit = {
 
 export function TerminalsPage() {
   const work = useWorkSessions();
+  const sortedLanes = useMemo(() => sortLanesForTabs(work.lanes), [work.lanes]);
 
   /* Floating overlays */
   const [contextMenu, setContextMenu] = useState<SessionContextMenuState>(null);
@@ -74,7 +72,7 @@ export function TerminalsPage() {
         meta: work.loading ? "loading" : `${work.filtered.length}`,
         children: (
           <SessionListPane
-            lanes={work.lanes.map((l) => ({ id: l.id, name: l.name }))}
+            lanes={sortedLanes}
             filtered={work.filtered}
             runningFiltered={work.runningFiltered}
             awaitingInputFiltered={work.awaitingInputFiltered}
@@ -87,11 +85,12 @@ export function TerminalsPage() {
             q={work.q}
             setQ={work.setQ}
             selectedSessionId={work.selectedSessionId}
+            draftKind={work.draftKind}
+            showingDraft={work.activeItemId == null}
+            onShowDraftKind={work.showDraftKind}
             onSelectSession={handleSelectSession}
             onResume={(s) => work.resumeSession(s).catch(() => {})}
             resumingSessionId={work.resumingSessionId}
-            onLaunchPty={(laneId, profile, tracked) => work.handleLaunchPty(laneId, profile, tracked).catch(() => {})}
-            onLaunchChat={(laneId) => work.handleLaunchChat(laneId).catch(() => {})}
             onInfoClick={handleInfoClick}
             onContextMenu={handleContextMenu}
           />
@@ -104,58 +103,51 @@ export function TerminalsPage() {
         bodyClassName: "overflow-hidden",
         children: (
           <WorkViewArea
+            lanes={sortedLanes}
             sessions={work.sessions}
             visibleSessions={work.visibleSessions}
             activeItemId={work.activeItemId}
             viewMode={work.viewMode}
+            draftKind={work.draftKind}
             setViewMode={work.setViewMode}
             onSelectItem={work.setActiveItemId}
             onCloseItem={work.closeTab}
+            onOpenChatSession={work.openSessionTab}
+            onLaunchPtySession={work.launchPtySession}
             closingPtyIds={work.closingPtyIds}
           />
         ),
       },
     }),
-    [work, handleSelectSession, handleInfoClick, handleContextMenu],
+    [work, sortedLanes, handleSelectSession, handleInfoClick, handleContextMenu],
   );
 
   return (
-    <div className="flex h-full min-w-0 flex-col" style={{ background: COLORS.pageBg, fontFamily: MONO_FONT }}>
+    <div className="flex h-full min-w-0 flex-col" style={{ background: "var(--color-bg)", fontFamily: MONO_FONT }}>
       {/* Header */}
       <div
         style={{
-          height: 64,
+          height: 48,
           display: "flex",
           alignItems: "center",
-          padding: "0 24px",
-          background: COLORS.recessedBg,
+          padding: "0 18px",
+          background: "linear-gradient(90deg, color-mix(in srgb, var(--color-surface-recessed) 94%, transparent), color-mix(in srgb, var(--color-surface) 86%, transparent))",
           borderBottom: `1px solid ${COLORS.border}`,
           flexShrink: 0,
         }}
       >
         {/* Left side */}
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <span
-            style={{
-              fontFamily: MONO_FONT,
-              fontSize: 12,
-              fontWeight: 700,
-              color: COLORS.textDim,
-              letterSpacing: "1px",
-            }}
-          >
-            01
-          </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span
             style={{
               fontFamily: SANS_FONT,
-              fontSize: 20,
+              fontSize: 15,
               fontWeight: 700,
               color: COLORS.textPrimary,
-              letterSpacing: "-0.02em",
+              letterSpacing: "-0.03em",
             }}
           >
-            WORK
+            Work
           </span>
           {work.runningSessions.length > 0 ? (
             <span style={inlineBadge(COLORS.success)}>
@@ -172,31 +164,6 @@ export function TerminalsPage() {
               {work.runningSessions.length} RUNNING
             </span>
           ) : null}
-        </div>
-
-        {/* Right side */}
-        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
-          <button
-            style={{
-              ...outlineButton(),
-              opacity: work.runningSessions.length === 0 ? 0.4 : 1,
-              pointerEvents: work.runningSessions.length === 0 ? "none" : "auto",
-            }}
-            disabled={work.runningSessions.length === 0}
-            onClick={() => work.closeAllRunning().catch(() => {})}
-          >
-            <Square size={14} weight="regular" />
-            CLOSE ALL
-          </button>
-          <button
-            style={{
-              ...outlineButton({ padding: "0 8px" }),
-            }}
-            onClick={() => work.refresh().catch(() => {})}
-            title="Refresh"
-          >
-            <RefreshCw size={14} weight="regular" />
-          </button>
         </div>
       </div>
       {/* Accent line */}

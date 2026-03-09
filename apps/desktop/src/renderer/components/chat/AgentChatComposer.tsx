@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { At, Image, Pause, Square, X, Hash, PaperPlaneTilt, Lightning } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
+  AgentChatExecutionMode,
   AgentChatFileRef,
   AgentChatPermissionMode,
   ContextPackOption
@@ -17,6 +18,14 @@ import {
   type SafetyLevel,
 } from "../shared/permissionOptions";
 
+type ExecutionModeOption = {
+  value: AgentChatExecutionMode;
+  label: string;
+  summary: string;
+  helper: string;
+  accent: string;
+};
+
 const SLASH_COMMANDS = [
   { command: "/plan", label: "Plan", description: "Create a development plan", category: "Generate" },
   { command: "/review", label: "Review", description: "Review code changes", category: "Generate" },
@@ -26,7 +35,7 @@ const SLASH_COMMANDS = [
   { command: "/effort", label: "Effort", description: "Change reasoning effort", category: "Settings" }
 ];
 
-// Rich hover pane rendered above the button
+/* ── Permission hover pane ── */
 function PermissionHoverPane({ opt }: { opt: PermissionOption }) {
   const colors = safetyColors(opt.safety);
   const badgeLabel = safetyBadgeLabel(opt.safety);
@@ -35,91 +44,54 @@ function PermissionHoverPane({ opt }: { opt: PermissionOption }) {
     <div
       className={cn(
         "pointer-events-none absolute z-50 w-[260px]",
-        "border border-border/20 bg-surface-overlay/95 shadow-[var(--shadow-panel)] backdrop-blur-md",
+        "border border-border/20 bg-surface-overlay/95 shadow-[var(--shadow-float)]",
         "border-l-2",
         colors.border
       )}
-      style={{
-        bottom: "calc(100% + 8px)",
-        left: "50%",
-        transform: "translateX(-50%)",
-      }}
+      style={{ bottom: "calc(100% + 8px)", left: "50%", transform: "translateX(-50%)" }}
     >
-      {/* Header */}
       <div className="flex items-center gap-2 border-b border-border/12 px-3 py-2">
-        <span className="font-mono text-[11px] font-bold uppercase tracking-wider text-fg/85">
-          {opt.label}
-        </span>
-        <span className={cn("ml-auto font-mono text-[9px] font-bold uppercase tracking-widest", colors.badge)}>
-          {badgeLabel}
-        </span>
+        <span className="font-mono text-[11px] font-bold uppercase tracking-wider text-fg/85">{opt.label}</span>
+        <span className={cn("ml-auto font-mono text-[9px] font-bold uppercase tracking-widest", colors.badge)}>{badgeLabel}</span>
       </div>
-
-      {/* Body */}
       <div className="space-y-2.5 px-3 py-2.5">
-        {/* Detail */}
-        <p className="font-mono text-[11px] leading-[1.5] text-fg/65">
-          {opt.detail}
-        </p>
-
-        {/* Allows */}
+        <p className="font-mono text-[11px] leading-[1.5] text-fg/65">{opt.detail}</p>
         {opt.allows.length > 0 && (
           <div className="space-y-1">
             {opt.allows.map((item) => (
               <div key={item} className="flex items-start gap-1.5">
-                <span className="mt-0.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-emerald-400/70" />
+                <span className="mt-0.5 h-1.5 w-1.5 flex-shrink-0 bg-emerald-400/70" />
                 <span className="font-mono text-[10px] text-emerald-400/80">{item}</span>
               </div>
             ))}
           </div>
         )}
-
-        {/* Gates */}
         {opt.gates && opt.gates.length > 0 && (
           <div className="space-y-1">
             {opt.gates.map((item) => (
               <div key={item} className="flex items-start gap-1.5">
-                <span className="mt-0.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-amber-400/70" />
+                <span className="mt-0.5 h-1.5 w-1.5 flex-shrink-0 bg-amber-400/70" />
                 <span className="font-mono text-[10px] text-amber-400/70">{item}</span>
               </div>
             ))}
           </div>
         )}
-
-        {/* Blocks */}
         {opt.blocks && opt.blocks.length > 0 && (
           <div className="space-y-1">
             {opt.blocks.map((item) => (
               <div key={item} className="flex items-start gap-1.5">
-                <span className="mt-0.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-red-400/70" />
+                <span className="mt-0.5 h-1.5 w-1.5 flex-shrink-0 bg-red-400/70" />
                 <span className="font-mono text-[10px] text-red-400/70">{item}</span>
               </div>
             ))}
           </div>
         )}
-
-        {/* Warning */}
         {opt.warning && (
           <div className="border border-red-500/20 bg-red-500/[0.08] px-2 py-1.5">
             <span className="font-mono text-[10px] leading-[1.4] text-red-400/80">{opt.warning}</span>
           </div>
         )}
       </div>
-
-      {/* Arrow pointing down */}
-      <div
-        className="absolute left-1/2 top-full -translate-x-1/2 border-[5px] border-transparent border-t-border/30"
-      />
-      {/* Arrow inner fill */}
-      <div
-        className="absolute left-1/2 top-full -translate-x-1/2"
-        style={{
-          borderLeft: "4px solid transparent",
-          borderRight: "4px solid transparent",
-          borderTop: "4px solid var(--color-surface-overlay)",
-          marginTop: "-1px",
-        }}
-      />
     </div>
   );
 }
@@ -139,6 +111,8 @@ export function AgentChatComposer({
   permissionMode,
   sessionProvider,
   sessionIsCliWrapped,
+  executionMode,
+  executionModeOptions = [],
   onModelChange,
   onReasoningEffortChange,
   onDraftChange,
@@ -149,6 +123,7 @@ export function AgentChatComposer({
   onRemoveAttachment,
   onSearchAttachments,
   onContextPacksChange,
+  onExecutionModeChange,
   onPermissionModeChange,
   onClearEvents
 }: {
@@ -170,6 +145,8 @@ export function AgentChatComposer({
   permissionMode?: AgentChatPermissionMode;
   sessionProvider?: string;
   sessionIsCliWrapped?: boolean;
+  executionMode?: AgentChatExecutionMode | null;
+  executionModeOptions?: ExecutionModeOption[];
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
   onDraftChange: (value: string) => void;
@@ -180,6 +157,7 @@ export function AgentChatComposer({
   onRemoveAttachment: (path: string) => void;
   onSearchAttachments: (query: string) => Promise<AgentChatFileRef[]>;
   onContextPacksChange: (packs: ContextPackOption[]) => void;
+  onExecutionModeChange?: (mode: AgentChatExecutionMode) => void;
   onPermissionModeChange?: (mode: AgentChatPermissionMode) => void;
   onClearEvents?: () => void;
 }) {
@@ -203,7 +181,7 @@ export function AgentChatComposer({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const canAttach = !turnActive;
 
-  const attachedPaths = useMemo(() => new Set(attachments.map((attachment) => attachment.path)), [attachments]);
+  const attachedPaths = useMemo(() => new Set(attachments.map((a) => a.path)), [attachments]);
   const selectedModel = useMemo(() => getModelById(modelId), [modelId]);
 
   const filteredSlashCommands = useMemo(() => {
@@ -226,9 +204,7 @@ export function AgentChatComposer({
       setAttachmentCursor(0);
       return;
     }
-    const timeout = window.setTimeout(() => {
-      attachmentInputRef.current?.focus();
-    }, 0);
+    const timeout = window.setTimeout(() => attachmentInputRef.current?.focus(), 0);
     return () => window.clearTimeout(timeout);
   }, [attachmentPickerOpen]);
 
@@ -241,54 +217,31 @@ export function AgentChatComposer({
       setAttachmentCursor(0);
       return;
     }
-
     let cancelled = false;
     const timeout = window.setTimeout(() => {
       setAttachmentBusy(true);
       onSearchAttachments(query)
         .then((results) => {
           if (cancelled) return;
-          setAttachmentResults(results.filter((result) => !attachedPaths.has(result.path)));
+          setAttachmentResults(results.filter((r) => !attachedPaths.has(r.path)));
           setAttachmentCursor(0);
         })
-        .catch(() => {
-          if (cancelled) return;
-          setAttachmentResults([]);
-        })
-        .finally(() => {
-          if (!cancelled) setAttachmentBusy(false);
-        });
+        .catch(() => { if (!cancelled) setAttachmentResults([]); })
+        .finally(() => { if (!cancelled) setAttachmentBusy(false); });
     }, 120);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timeout);
-    };
+    return () => { cancelled = true; window.clearTimeout(timeout); };
   }, [attachmentPickerOpen, attachmentQuery, attachedPaths, onSearchAttachments]);
 
   /* ── Context pack picker ── */
   useEffect(() => {
-    if (!contextPickerOpen) {
-      setContextCursor(0);
-      return;
-    }
+    if (!contextPickerOpen) { setContextCursor(0); return; }
     if (!laneId) return;
-
     let cancelled = false;
     window.ade.agentChat
       .listContextPacks({ laneId })
-      .then((packs) => {
-        if (!cancelled) {
-          setContextPacks(packs);
-          setContextCursor(0);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setContextPacks([]);
-      });
-    return () => {
-      cancelled = true;
-    };
+      .then((packs) => { if (!cancelled) { setContextPacks(packs); setContextCursor(0); } })
+      .catch(() => { if (!cancelled) setContextPacks([]); });
+    return () => { cancelled = true; };
   }, [contextPickerOpen, laneId]);
 
   const selectAttachment = (attachment: AgentChatFileRef) => {
@@ -299,16 +252,8 @@ export function AgentChatComposer({
   const handleSlashSelect = (cmd: (typeof SLASH_COMMANDS)[number]) => {
     setSlashPickerOpen(false);
     setSlashQuery("");
-
-    if (cmd.command === "/clear" && onClearEvents) {
-      onClearEvents();
-      onDraftChange("");
-      return;
-    }
-    if (cmd.command === "/plan" || cmd.command === "/review") {
-      onDraftChange(`${cmd.command} ${draft}`);
-      return;
-    }
+    if (cmd.command === "/clear" && onClearEvents) { onClearEvents(); onDraftChange(""); return; }
+    if (cmd.command === "/plan" || cmd.command === "/review") { onDraftChange(`${cmd.command} ${draft}`); return; }
     onDraftChange(`${cmd.command} `);
   };
 
@@ -333,153 +278,123 @@ export function AgentChatComposer({
     isCliWrapped: sessionIsCliWrapped ?? false,
   });
 
+  /* ── Keyboard handler for textarea ── */
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const commandModified = event.metaKey || event.ctrlKey;
+
+    /* Slash picker keyboard */
+    if (slashPickerOpen) {
+      if (event.key === "Escape") { event.preventDefault(); setSlashPickerOpen(false); setSlashQuery(""); return; }
+      if (event.key === "ArrowDown") { event.preventDefault(); setSlashCursor((v) => Math.min(v + 1, Math.max(filteredSlashCommands.length - 1, 0))); return; }
+      if (event.key === "ArrowUp") { event.preventDefault(); setSlashCursor((v) => Math.max(v - 1, 0)); return; }
+      if (event.key === "Enter" || event.key === "Tab") {
+        const cmd = filteredSlashCommands[slashCursor];
+        if (cmd) { event.preventDefault(); handleSlashSelect(cmd); return; }
+      }
+    }
+
+    /* Context picker keyboard */
+    if (contextPickerOpen) {
+      if (event.key === "Escape") { event.preventDefault(); setContextPickerOpen(false); return; }
+      if (event.key === "ArrowDown") { event.preventDefault(); setContextCursor((v) => Math.min(v + 1, Math.max(contextPacks.length - 1, 0))); return; }
+      if (event.key === "ArrowUp") { event.preventDefault(); setContextCursor((v) => Math.max(v - 1, 0)); return; }
+      if (event.key === "Enter") {
+        const pack = contextPacks[contextCursor];
+        if (pack && pack.available) { event.preventDefault(); toggleContextPack(pack); return; }
+      }
+    }
+
+    /* Trigger pickers */
+    if (event.key === "/" && draft.length === 0 && !commandModified && !event.altKey) {
+      event.preventDefault();
+      window.setTimeout(() => { setSlashPickerOpen(true); setSlashQuery(""); setSlashCursor(0); }, 0);
+      return;
+    }
+    if (event.key === "#" && !commandModified && !event.altKey) {
+      event.preventDefault();
+      setContextPickerOpen(true);
+      setContextCursor(0);
+      return;
+    }
+    if (event.key === "@" && !commandModified && !event.altKey) {
+      if (!canAttach) return;
+      event.preventDefault();
+      setAttachmentPickerOpen(true);
+      return;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      if (attachmentPickerOpen) { setAttachmentPickerOpen(false); return; }
+      if (pendingApproval) { onApproval("cancel"); return; }
+      if (draft.length) { onDraftChange(""); }
+      return;
+    }
+
+    if (event.key === "." && commandModified && turnActive) { event.preventDefault(); onInterrupt(); return; }
+
+    if (event.key !== "Enter" || event.shiftKey) return;
+    const commandEnter = commandModified;
+    const shouldSend = sendOnEnter ? !commandEnter : commandEnter;
+    if (!shouldSend) return;
+    event.preventDefault();
+    onSubmit();
+  };
+
   return (
-    <div className="border-t border-border/10 bg-gradient-to-b from-surface/60 to-surface/40">
+    <div className="border-t border-border/15 bg-card/60">
       {/* ── Pending approval banner ── */}
       {pendingApproval ? (
-        <div className="border-b border-amber-500/10 bg-gradient-to-r from-amber-500/[0.05] to-transparent px-4 py-3">
-          <div className="mb-1 flex items-center gap-2">
-            <Lightning size={12} weight="bold" className="text-amber-500" />
-            <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-fg/80">Approval · {pendingApproval.kind}</span>
+        <div className="border-b border-amber-500/15 bg-amber-500/[0.04] px-4 py-2.5">
+          <div className="mb-1.5 flex items-center gap-2">
+            <Lightning size={11} weight="bold" className="text-amber-400" />
+            <span className="font-mono text-[9px] font-bold uppercase tracking-widest text-fg/70">Approval · {pendingApproval.kind}</span>
           </div>
-          <div className="mb-2.5 text-[12px] text-fg/70">{pendingApproval.description}</div>
-          <div className="flex flex-wrap items-center gap-1.5">
-            <button
-              type="button"
-              className="border border-accent/40 bg-accent/15 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-fg transition-colors hover:bg-accent/25"
-              onClick={() => onApproval("accept")}
-            >
-              Accept
-            </button>
-            <button
-              type="button"
-              className="border border-accent/20 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/70 transition-colors hover:bg-accent/10"
-              onClick={() => onApproval("accept_for_session")}
-            >
-              Accept All
-            </button>
-            <button
-              type="button"
-              className="border border-border/25 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/15"
-              onClick={() => onApproval("decline")}
-            >
-              Decline
-            </button>
+          <div className="mb-2 font-mono text-[11px] leading-relaxed text-fg/60">{pendingApproval.description}</div>
+          <div className="flex items-center gap-1.5">
+            <button type="button" className="border border-accent/30 bg-accent/10 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/80 transition-colors hover:bg-accent/20" onClick={() => onApproval("accept")}>Accept</button>
+            <button type="button" className="border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/10" onClick={() => onApproval("accept_for_session")}>Accept All</button>
+            <button type="button" className="border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10" onClick={() => onApproval("decline")}>Decline</button>
           </div>
         </div>
       ) : null}
 
-      {/* ── Attachments bar ── */}
+      {/* ── Attached files ── */}
       {attachments.length ? (
-        <div className="flex flex-wrap items-center gap-1.5 border-b border-border/12 px-4 py-2">
-          <At size={11} weight="bold" className="text-accent/40" />
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-border/8 px-4 py-1.5">
           {attachments.map((attachment) => (
-            <span key={attachment.path} className="inline-flex items-center gap-1 border border-accent/15 bg-accent/[0.04] px-2 py-0.5 font-mono text-[10px] text-fg/70">
-              {attachment.type === "image" ? <Image size={10} weight="bold" /> : <At size={10} weight="bold" />}
-              <span className="max-w-[200px] truncate">{attachment.path}</span>
-              <button
-                type="button"
-                className="ml-0.5 text-fg/40 transition-colors hover:text-fg/80"
-                title={`Remove ${attachment.path}`}
-                onClick={() => onRemoveAttachment(attachment.path)}
-              >
-                <X size={10} weight="bold" />
+            <span key={attachment.path} className="inline-flex items-center gap-1 border border-border/15 px-2 py-0.5 font-mono text-[9px] text-fg/60">
+              {attachment.type === "image" ? <Image size={9} weight="bold" /> : <At size={9} weight="bold" />}
+              <span className="max-w-[180px] truncate">{attachment.path}</span>
+              <button type="button" className="ml-0.5 text-fg/30 hover:text-fg/70" title={`Remove ${attachment.path}`} onClick={() => onRemoveAttachment(attachment.path)}>
+                <X size={8} weight="bold" />
               </button>
             </span>
           ))}
         </div>
       ) : null}
 
-      {/* ── Context packs bar ── */}
+      {/* ── Context packs ── */}
       {selectedContextPacks.length ? (
-        <div className="flex flex-wrap items-center gap-1.5 border-b border-border/12 px-4 py-2">
-          <Hash size={11} weight="bold" className="text-violet-400/40" />
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-border/8 px-4 py-1.5">
           {selectedContextPacks.map((pack) => (
-            <span key={`${pack.scope}:${pack.featureKey ?? ""}:${pack.missionId ?? ""}`} className="inline-flex items-center gap-1 border border-violet-500/15 bg-violet-500/[0.04] px-2 py-0.5 font-mono text-[10px] text-fg/70">
-              <span className="max-w-[180px] truncate">{pack.label}</span>
-              <button
-                type="button"
-                className="ml-0.5 text-muted-fg/40 transition-colors hover:text-fg/80"
-                title={`Remove ${pack.label}`}
-                onClick={() => removeContextPack(pack)}
-              >
-                <X size={10} weight="bold" />
+            <span key={`${pack.scope}:${pack.featureKey ?? ""}:${pack.missionId ?? ""}`} className="inline-flex items-center gap-1 border border-violet-500/15 px-2 py-0.5 font-mono text-[9px] text-fg/60">
+              <Hash size={9} weight="bold" className="text-violet-400/50" />
+              <span className="max-w-[160px] truncate">{pack.label}</span>
+              <button type="button" className="ml-0.5 text-fg/30 hover:text-fg/70" title={`Remove ${pack.label}`} onClick={() => removeContextPack(pack)}>
+                <X size={8} weight="bold" />
               </button>
             </span>
           ))}
         </div>
       ) : null}
 
-      {/* ── Attachment picker dropdown ── */}
-      {attachmentPickerOpen ? (
-        <div className="border-b border-border/10 bg-surface-recessed/80">
-          <div className="flex items-center gap-2 border-b border-border/10 px-4 py-2">
-            <At size={12} weight="bold" className="text-accent/40" />
-            <input
-              ref={attachmentInputRef}
-              value={attachmentQuery}
-              onChange={(event) => setAttachmentQuery(event.target.value)}
-              placeholder="Search files..."
-              className="h-6 flex-1 bg-transparent font-mono text-[11px] text-fg/80 outline-none placeholder:text-muted-fg/30"
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  setAttachmentPickerOpen(false);
-                  return;
-                }
-                if (event.key === "ArrowDown") {
-                  event.preventDefault();
-                  setAttachmentCursor((value) => Math.min(value + 1, Math.max(attachmentResults.length - 1, 0)));
-                  return;
-                }
-                if (event.key === "ArrowUp") {
-                  event.preventDefault();
-                  setAttachmentCursor((value) => Math.max(value - 1, 0));
-                  return;
-                }
-                if (event.key === "Enter") {
-                  const candidate = attachmentResults[attachmentCursor];
-                  if (!candidate) return;
-                  event.preventDefault();
-                  selectAttachment(candidate);
-                }
-              }}
-            />
-          </div>
-          <div className="max-h-40 overflow-auto py-1">
-            {!attachmentQuery.trim().length ? (
-              <div className="px-4 py-2 font-mono text-[10px] text-muted-fg/30">Type to search files...</div>
-            ) : attachmentBusy ? (
-              <div className="px-4 py-2 font-mono text-[10px] text-muted-fg/30">Searching...</div>
-            ) : attachmentResults.length ? (
-              attachmentResults.map((result, index) => (
-                <button
-                  key={result.path}
-                  type="button"
-                  className={cn(
-                    "flex w-full items-center gap-2 px-4 py-1.5 text-left font-mono text-[10px] text-fg/70",
-                    index === attachmentCursor ? "bg-accent/10 text-fg/90" : "hover:bg-border/8"
-                  )}
-                  onMouseEnter={() => setAttachmentCursor(index)}
-                  onClick={() => selectAttachment(result)}
-                >
-                  {result.type === "image" ? <Image size={12} weight="bold" className="text-accent/50" /> : <At size={12} weight="bold" className="text-muted-fg/30" />}
-                  <span className="truncate">{result.path}</span>
-                </button>
-              ))
-            ) : (
-              <div className="px-4 py-2 font-mono text-[10px] text-muted-fg/30">No matching files.</div>
-            )}
-          </div>
-        </div>
-      ) : null}
-
-      {/* ── Main input area ── */}
+      {/* ── Pickers (positioned above input) ── */}
       <div className="relative">
         {/* Slash command picker */}
         {slashPickerOpen && filteredSlashCommands.length > 0 ? (
-          <div className="absolute bottom-full left-0 z-10 mb-0 w-72 border border-border/15 bg-surface-overlay/95 shadow-[var(--shadow-float)] backdrop-blur-md">
-            <div className="border-b border-border/8 px-3 py-1.5 font-mono text-[9px] font-bold uppercase tracking-[2px] text-muted-fg/25">
+          <div className="absolute bottom-full left-0 z-10 w-72 border border-border/15 bg-card shadow-[var(--shadow-float)]">
+            <div className="border-b border-border/8 px-3 py-1.5 font-mono text-[9px] font-bold uppercase tracking-widest text-muted-fg/30">
               Commands
             </div>
             <div className="max-h-52 overflow-auto py-1">
@@ -489,13 +404,13 @@ export function AgentChatComposer({
                   type="button"
                   className={cn(
                     "flex w-full items-center gap-3 px-3 py-1.5 text-left font-mono text-[10px]",
-                    index === slashCursor ? "bg-accent/10 text-fg" : "text-fg/60 hover:bg-border/8"
+                    index === slashCursor ? "bg-accent/8 text-fg" : "text-fg/50 hover:bg-border/6"
                   )}
                   onMouseEnter={() => setSlashCursor(index)}
                   onClick={() => handleSlashSelect(cmd)}
                 >
-                  <span className="w-14 text-accent/70">{cmd.command}</span>
-                  <span className="flex-1 text-fg/50">{cmd.description}</span>
+                  <span className="w-14 text-accent/60">{cmd.command}</span>
+                  <span className="flex-1 text-fg/40">{cmd.description}</span>
                 </button>
               ))}
             </div>
@@ -504,8 +419,8 @@ export function AgentChatComposer({
 
         {/* Context pack picker */}
         {contextPickerOpen ? (
-          <div className="absolute bottom-full left-0 z-10 mb-0 w-80 border border-border/15 bg-surface-overlay/95 shadow-[var(--shadow-float)] backdrop-blur-md">
-            <div className="border-b border-border/8 px-3 py-1.5 font-mono text-[9px] font-bold uppercase tracking-[2px] text-muted-fg/25">
+          <div className="absolute bottom-full left-0 z-10 w-80 border border-border/15 bg-card shadow-[var(--shadow-float)]">
+            <div className="border-b border-border/8 px-3 py-1.5 font-mono text-[9px] font-bold uppercase tracking-widest text-muted-fg/30">
               Context Packs
             </div>
             <div className="max-h-52 overflow-auto py-1">
@@ -518,7 +433,7 @@ export function AgentChatComposer({
                       type="button"
                       className={cn(
                         "flex w-full items-center gap-3 px-3 py-1.5 text-left font-mono text-[10px]",
-                        index === contextCursor ? "bg-accent/10" : "hover:bg-border/8",
+                        index === contextCursor ? "bg-accent/8" : "hover:bg-border/6",
                         !pack.available && "opacity-30"
                       )}
                       disabled={!pack.available}
@@ -527,13 +442,13 @@ export function AgentChatComposer({
                     >
                       <span className={cn(
                         "flex h-3.5 w-3.5 items-center justify-center border text-[9px]",
-                        isSelected ? "border-violet-400/50 bg-violet-500/15 text-violet-300" : "border-border/25 text-transparent"
+                        isSelected ? "border-violet-400/40 bg-violet-500/12 text-violet-300" : "border-border/20 text-transparent"
                       )}>
                         {isSelected ? "\u2713" : ""}
                       </span>
                       <div className="flex-1">
-                        <div className="text-fg/75">{pack.label}</div>
-                        <div className="text-[9px] text-muted-fg/35">{pack.description}</div>
+                        <div className="text-fg/70">{pack.label}</div>
+                        <div className="text-[9px] text-muted-fg/30">{pack.description}</div>
                       </div>
                     </button>
                   );
@@ -542,201 +457,134 @@ export function AgentChatComposer({
                 <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/30">No context packs available.</div>
               )}
             </div>
-            <div className="border-t border-border/12 px-3 py-1.5">
-              <button
-                type="button"
-                className="font-mono text-[10px] text-accent/50 hover:text-accent"
-                onClick={() => setContextPickerOpen(false)}
-              >
-                Done
-              </button>
+            <div className="border-t border-border/8 px-3 py-1.5">
+              <button type="button" className="font-mono text-[10px] text-accent/50 hover:text-accent" onClick={() => setContextPickerOpen(false)}>Done</button>
             </div>
           </div>
         ) : null}
 
-        {/* Textarea + send */}
-        <div className="flex items-end">
+        {/* Attachment picker */}
+        {attachmentPickerOpen ? (
+          <div className="absolute bottom-full left-0 z-10 w-80 border border-border/15 bg-card shadow-[var(--shadow-float)]">
+            <div className="flex items-center gap-2 border-b border-border/8 px-3 py-2">
+              <At size={11} weight="bold" className="text-muted-fg/30" />
+              <input
+                ref={attachmentInputRef}
+                value={attachmentQuery}
+                onChange={(e) => setAttachmentQuery(e.target.value)}
+                placeholder="Search files..."
+                className="h-5 flex-1 bg-transparent font-mono text-[11px] text-fg/80 outline-none placeholder:text-muted-fg/25"
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") { event.preventDefault(); setAttachmentPickerOpen(false); return; }
+                  if (event.key === "ArrowDown") { event.preventDefault(); setAttachmentCursor((v) => Math.min(v + 1, Math.max(attachmentResults.length - 1, 0))); return; }
+                  if (event.key === "ArrowUp") { event.preventDefault(); setAttachmentCursor((v) => Math.max(v - 1, 0)); return; }
+                  if (event.key === "Enter") {
+                    const candidate = attachmentResults[attachmentCursor];
+                    if (candidate) { event.preventDefault(); selectAttachment(candidate); }
+                  }
+                }}
+              />
+            </div>
+            <div className="max-h-40 overflow-auto py-1">
+              {!attachmentQuery.trim().length ? (
+                <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/25">Type to search files...</div>
+              ) : attachmentBusy ? (
+                <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/25">Searching...</div>
+              ) : attachmentResults.length ? (
+                attachmentResults.map((result, index) => (
+                  <button
+                    key={result.path}
+                    type="button"
+                    className={cn(
+                      "flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-[10px] text-fg/60",
+                      index === attachmentCursor ? "bg-accent/8 text-fg/80" : "hover:bg-border/6"
+                    )}
+                    onMouseEnter={() => setAttachmentCursor(index)}
+                    onClick={() => selectAttachment(result)}
+                  >
+                    {result.type === "image" ? <Image size={11} weight="bold" className="text-muted-fg/40" /> : <At size={11} weight="bold" className="text-muted-fg/25" />}
+                    <span className="truncate">{result.path}</span>
+                  </button>
+                ))
+              ) : (
+                <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/25">No matching files.</div>
+              )}
+            </div>
+          </div>
+        ) : null}
+
+        {/* ── Textarea + send ── */}
+        <div className="flex items-end gap-2 px-3 py-2">
           <textarea
             ref={textareaRef}
             value={draft}
             onChange={(event) => {
               const val = event.target.value;
               onDraftChange(val);
-
-              if (slashPickerOpen && !val.startsWith("/")) {
-                setSlashPickerOpen(false);
-                setSlashQuery("");
-              }
-              if (slashPickerOpen && val.startsWith("/")) {
-                setSlashQuery(val.slice(1));
-                setSlashCursor(0);
-              }
+              if (slashPickerOpen && !val.startsWith("/")) { setSlashPickerOpen(false); setSlashQuery(""); }
+              if (slashPickerOpen && val.startsWith("/")) { setSlashQuery(val.slice(1)); setSlashCursor(0); }
             }}
-            className={cn(
-              "min-h-[56px] max-h-[200px] flex-1 resize-none bg-transparent px-4 py-3 font-mono text-[12px] leading-[1.6] text-fg/85",
-              "outline-none placeholder:text-muted-fg/25"
-            )}
+            className="min-h-[56px] max-h-[180px] flex-1 resize-none border border-border/12 bg-surface-recessed/50 px-3 py-2.5 font-mono text-[12px] leading-[1.65] text-fg/80 outline-none transition-colors placeholder:text-muted-fg/20 focus:border-accent/25"
             placeholder={turnActive ? "Steer the active turn..." : "Message the agent..."}
-            onKeyDown={(event) => {
-              const commandModified = event.metaKey || event.ctrlKey;
-
-              /* Slash picker keyboard */
-              if (slashPickerOpen) {
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  setSlashPickerOpen(false);
-                  setSlashQuery("");
-                  return;
-                }
-                if (event.key === "ArrowDown") {
-                  event.preventDefault();
-                  setSlashCursor((v) => Math.min(v + 1, Math.max(filteredSlashCommands.length - 1, 0)));
-                  return;
-                }
-                if (event.key === "ArrowUp") {
-                  event.preventDefault();
-                  setSlashCursor((v) => Math.max(v - 1, 0));
-                  return;
-                }
-                if (event.key === "Enter") {
-                  const cmd = filteredSlashCommands[slashCursor];
-                  if (cmd) {
-                    event.preventDefault();
-                    handleSlashSelect(cmd);
-                    return;
-                  }
-                }
-                if (event.key === "Tab") {
-                  const cmd = filteredSlashCommands[slashCursor];
-                  if (cmd) {
-                    event.preventDefault();
-                    handleSlashSelect(cmd);
-                    return;
-                  }
-                }
-              }
-
-              /* Context picker keyboard */
-              if (contextPickerOpen) {
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  setContextPickerOpen(false);
-                  return;
-                }
-                if (event.key === "ArrowDown") {
-                  event.preventDefault();
-                  setContextCursor((v) => Math.min(v + 1, Math.max(contextPacks.length - 1, 0)));
-                  return;
-                }
-                if (event.key === "ArrowUp") {
-                  event.preventDefault();
-                  setContextCursor((v) => Math.max(v - 1, 0));
-                  return;
-                }
-                if (event.key === "Enter") {
-                  const pack = contextPacks[contextCursor];
-                  if (pack && pack.available) {
-                    event.preventDefault();
-                    toggleContextPack(pack);
-                    return;
-                  }
-                }
-              }
-
-              /* Trigger slash picker */
-              if (event.key === "/" && draft.length === 0 && !commandModified && !event.altKey) {
-                event.preventDefault();
-                window.setTimeout(() => {
-                  setSlashPickerOpen(true);
-                  setSlashQuery("");
-                  setSlashCursor(0);
-                }, 0);
-                return;
-              }
-
-              /* Trigger context picker */
-              if (event.key === "#" && !commandModified && !event.altKey) {
-                event.preventDefault();
-                setContextPickerOpen(true);
-                setContextCursor(0);
-                return;
-              }
-
-              if (event.key === "@" && !commandModified && !event.altKey) {
-                if (!canAttach) return;
-                event.preventDefault();
-                setAttachmentPickerOpen(true);
-                return;
-              }
-
-              if (event.key === "Escape") {
-                event.preventDefault();
-                if (attachmentPickerOpen) {
-                  setAttachmentPickerOpen(false);
-                  return;
-                }
-                if (pendingApproval) {
-                  onApproval("cancel");
-                  return;
-                }
-                if (draft.length) {
-                  onDraftChange("");
-                }
-                return;
-              }
-
-              if (event.key === "." && commandModified && turnActive) {
-                event.preventDefault();
-                onInterrupt();
-                return;
-              }
-
-              if (event.key !== "Enter" || event.shiftKey) return;
-              const commandEnter = commandModified;
-              const shouldSend = sendOnEnter ? !commandEnter : commandEnter;
-              if (!shouldSend) return;
-              event.preventDefault();
-              onSubmit();
-            }}
+            onKeyDown={handleKeyDown}
           />
-
-          <div className="flex items-center gap-1 px-2 pb-3">
+          <div className="flex items-center gap-1.5 pb-0.5">
             {turnActive ? (
+              <>
+                <button
+                  type="button"
+                  className={cn(
+                    "flex h-8 items-center justify-center border px-2 transition-all",
+                    !draft.trim().length
+                      ? "border-border/8 text-muted-fg/12"
+                      : "border-accent/25 bg-accent/8 text-accent/60 hover:bg-accent/15 hover:text-accent"
+                  )}
+                  disabled={!draft.trim().length}
+                  onClick={onSubmit}
+                  title="Steer"
+                >
+                  <PaperPlaneTilt size={11} weight="fill" />
+                </button>
+                <button
+                  type="button"
+                  className="group relative flex h-8 w-8 items-center justify-center border border-red-500/25 bg-red-500/8 text-red-400/70 transition-all hover:border-red-500/40 hover:bg-red-500/15 hover:text-red-400"
+                  title="Interrupt (Cmd+.)"
+                  onClick={onInterrupt}
+                >
+                  <Square size={11} weight="fill" />
+                  <span className="absolute inset-0 animate-pulse border border-red-500/15" />
+                </button>
+              </>
+            ) : (
               <button
                 type="button"
-                className="flex h-8 w-8 items-center justify-center border border-red-500/25 bg-red-500/[0.06] text-red-400/70 transition-colors hover:bg-red-500/15 hover:text-red-400"
-                title="Interrupt (Cmd+.)"
-                onClick={onInterrupt}
+                className={cn(
+                  "flex h-8 w-8 items-center justify-center border transition-all",
+                  busy || !draft.trim().length
+                    ? "border-border/8 text-muted-fg/12"
+                    : "border-accent/30 bg-accent/10 text-accent/70 hover:bg-accent/20 hover:text-accent"
+                )}
+                disabled={busy || !draft.trim().length}
+                onClick={onSubmit}
+                title="Send"
               >
-                <Square size={14} weight="fill" />
+                {busy ? (
+                  <div className="flex items-center gap-0.5">
+                    <span className="h-1 w-1 animate-bounce bg-accent/60 [animation-delay:0ms]" />
+                    <span className="h-1 w-1 animate-bounce bg-accent/60 [animation-delay:100ms]" />
+                    <span className="h-1 w-1 animate-bounce bg-accent/60 [animation-delay:200ms]" />
+                  </div>
+                ) : (
+                  <PaperPlaneTilt size={13} weight="fill" />
+                )}
               </button>
-            ) : null}
-
-            <button
-              type="button"
-              className={cn(
-                "flex h-8 w-8 items-center justify-center border transition-all",
-                busy || !draft.trim().length
-                  ? "border-border/15 text-muted-fg/20"
-                  : "border-accent/30 bg-accent/10 text-accent hover:bg-accent/20"
-              )}
-              disabled={busy || !draft.trim().length}
-              onClick={onSubmit}
-              title={turnActive ? "Steer" : "Send"}
-            >
-              {busy ? (
-                <Pause size={14} weight="fill" />
-              ) : (
-                <PaperPlaneTilt size={14} weight="fill" />
-              )}
-            </button>
+            )}
           </div>
         </div>
       </div>
 
-      {/* ── Toolbar row ── */}
-      <div className="flex flex-wrap items-center gap-2 border-t border-border/12 px-3 py-1.5">
-        {/* Model selector */}
+      {/* ── Toolbar ── */}
+      <div className="flex items-center gap-2 border-t border-border/8 px-3 py-1">
         <UnifiedModelSelector
           value={modelId}
           onChange={onModelChange}
@@ -748,7 +596,7 @@ export function AgentChatComposer({
 
         {/* Permission mode */}
         {permissionMode && onPermissionModeChange && permissionOptions.length > 0 ? (
-          <div className="relative inline-flex items-center gap-0.5">
+          <div className="relative flex items-center gap-px border border-border/10 bg-surface-recessed/40">
             {permissionOptions.map((opt) => {
               const isActive = permissionMode === opt.value;
               const isHovered = hoveredMode === opt.value;
@@ -758,10 +606,8 @@ export function AgentChatComposer({
                   <button
                     type="button"
                     className={cn(
-                      "inline-flex items-center gap-1 px-2.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wider transition-all",
-                      isActive
-                        ? colors.activeBg + " text-fg/85"
-                        : "text-muted-fg/30 hover:bg-border/10 hover:text-muted-fg/60"
+                      "px-2 py-0.5 font-mono text-[8px] font-bold uppercase tracking-wider transition-colors",
+                      isActive ? colors.activeBg + " text-fg/80" : "text-muted-fg/25 hover:text-muted-fg/50"
                     )}
                     onClick={() => onPermissionModeChange(opt.value)}
                     onMouseEnter={() => setHoveredMode(opt.value)}
@@ -770,8 +616,6 @@ export function AgentChatComposer({
                   >
                     {opt.label}
                   </button>
-
-                  {/* Rich hover pane */}
                   {isHovered ? <PermissionHoverPane opt={opt} /> : null}
                 </div>
               );
@@ -779,38 +623,30 @@ export function AgentChatComposer({
           </div>
         ) : null}
 
-        {/* Quick actions + send hint */}
+        {/* Quick-action triggers (keep for tests + discoverability) */}
         <div className="ml-auto flex items-center gap-1">
           <button
             type="button"
-            className={cn(
-              "px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider transition-colors",
-              canAttach ? "text-muted-fg/30 hover:text-accent/60" : "text-muted-fg/15"
-            )}
+            className="px-1 py-0.5 font-mono text-[8px] text-muted-fg/20 transition-colors hover:text-muted-fg/50"
             disabled={!canAttach}
-            onClick={() => canAttach && setAttachmentPickerOpen((open) => !open)}
-            title="Attach files (@)"
-          >
-            @
-          </button>
+            onClick={() => canAttach && setAttachmentPickerOpen((o) => !o)}
+            title="Attach files or images (@)"
+          >@</button>
           <button
             type="button"
-            className="px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-muted-fg/30 transition-colors hover:text-accent/60"
-            onClick={() => setContextPickerOpen((open) => !open)}
+            className="px-1 py-0.5 font-mono text-[8px] text-muted-fg/20 transition-colors hover:text-muted-fg/50"
+            onClick={() => setContextPickerOpen((o) => !o)}
             title="Context packs (#)"
-          >
-            #
-          </button>
-          <span className="text-border/15">|</span>
-          <span className="font-mono text-[9px] text-muted-fg/20">
-            {sendOnEnter ? "\u23ce send" : "\u2318\u23ce send"}
+          >#</button>
+          <button
+            type="button"
+            className="px-1 py-0.5 font-mono text-[8px] text-muted-fg/20 transition-colors hover:text-muted-fg/50"
+            onClick={() => { setSlashPickerOpen(true); setSlashQuery(""); setSlashCursor(0); }}
+            title="Commands (/)"
+          >/</button>
+          <span className="ml-1 font-mono text-[8px] text-muted-fg/15">
+            {sendOnEnter ? "Enter sends" : "⌘↵ sends"}
           </span>
-          {turnActive ? (
-            <>
-              <span className="text-border/15">|</span>
-              <span className="font-mono text-[9px] text-muted-fg/20">\u2318. stop</span>
-            </>
-          ) : null}
         </div>
       </div>
     </div>

@@ -1,4 +1,4 @@
-import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
+import { getDefaultModelDescriptor, getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 
 export type ClaudeCliModelAlias = "opus" | "sonnet" | "haiku";
 
@@ -50,7 +50,7 @@ export function resolveClaudeCliModel(model: string | null | undefined): string 
  */
 export function resolveCodexCliModel(model: string | null | undefined): string {
   const raw = String(model ?? "").trim();
-  if (!raw.length) return "gpt-5.3-codex";
+  if (!raw.length) return getDefaultModelDescriptor("codex")?.sdkModelId ?? "gpt-5.4";
 
   const descriptor = getModelById(raw) ?? resolveModelAlias(raw);
   if (descriptor?.isCliWrapped && descriptor.family === "openai") {

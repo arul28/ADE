@@ -210,8 +210,10 @@ import type {
   ListExternalConflictResolverRunsArgs,
   CommitExternalConflictResolverRunArgs,
   CommitExternalConflictResolverRunResult,
+  AttachResolverSessionArgs,
   RunConflictPredictionArgs,
   UndoConflictProposalArgs,
+  CancelResolverSessionArgs,
   RunTestSuiteArgs,
   SessionDeltaSummary,
   StackChainItem,
@@ -315,12 +317,18 @@ import type {
   GetOrchestratorWorkerDigestArgs,
   ListOrchestratorWorkerDigestsArgs,
   ListOrchestratorLaneDecisionsArgs,
+  ListOrchestratorArtifactsArgs,
+  ListOrchestratorWorkerCheckpointsArgs,
   MissionMetricsConfig,
   MissionMetricSample,
   SetMissionMetricsConfigArgs,
   ExecutionPlanPreview,
   GetMissionStateDocumentArgs,
   MissionStateDocument,
+  OrchestratorArtifact,
+  OrchestratorWorkerCheckpoint,
+  GetOrchestratorPromptInspectorArgs,
+  OrchestratorPromptInspector,
   GetMissionLogsArgs,
   GetMissionLogsResult,
   ExportMissionLogsArgs,
@@ -405,6 +413,7 @@ import type { createGithubService } from "../github/githubService";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
+import type { createQueueRehearsalService } from "../prs/queueRehearsalService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import { readGlobalState, writeGlobalState } from "../state/globalState";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
@@ -472,6 +481,7 @@ export type AppContext = {
   prService: ReturnType<typeof createPrService>;
   prPollingService: ReturnType<typeof createPrPollingService>;
   queueLandingService: ReturnType<typeof createQueueLandingService>;
+  queueRehearsalService: ReturnType<typeof createQueueRehearsalService>;
   jobEngine: ReturnType<typeof createJobEngine>;
   automationService: ReturnType<typeof createAutomationService>;
   automationPlannerService: ReturnType<typeof createAutomationPlannerService>;
@@ -745,7 +755,7 @@ function buildPrAiResolverCommand(
     } else if (opts.permissionMode === "guarded_edit") {
       parts.push("--permission-mode", "acceptEdits");
     } else {
-      parts.push("--permission-mode", "manual");
+      parts.push("--permission-mode", "plan");
     }
     parts.push("--model", opts.model);
     if (opts.reasoning) {
@@ -759,9 +769,9 @@ function buildPrAiResolverCommand(
   if (opts.permissionMode === "full_edit") {
     parts.push("--full-auto");
   } else if (opts.permissionMode === "guarded_edit") {
-    parts.push("--ask-for-approval", "on-failure", "--sandbox", "workspace-write");
+    parts.push("-c", "approval_policy=on-failure", "-c", "sandbox_mode=workspace-write");
   } else {
-    parts.push("--ask-for-approval", "untrusted", "--sandbox", "read-only");
+    parts.push("-c", "approval_policy=untrusted", "-c", "sandbox_mode=read-only");
   }
   parts.push("--model", opts.model);
   if (opts.reasoning) {
@@ -1783,6 +1793,30 @@ export function registerIpc({
     async (_event, arg: ListOrchestratorLaneDecisionsArgs): Promise<OrchestratorLaneDecision[]> => {
       const ctx = getCtx();
       return ctx.aiOrchestratorService.listLaneDecisions(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorListArtifacts,
+    async (_event, arg: ListOrchestratorArtifactsArgs): Promise<OrchestratorArtifact[]> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.listArtifacts(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorListWorkerCheckpoints,
+    async (_event, arg: ListOrchestratorWorkerCheckpointsArgs): Promise<OrchestratorWorkerCheckpoint[]> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.listWorkerCheckpoints(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorGetPromptInspector,
+    async (_event, arg: GetOrchestratorPromptInspectorArgs): Promise<OrchestratorPromptInspector> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.getPromptInspector(arg);
     }
   );
 
@@ -2977,7 +3011,15 @@ export function registerIpc({
 
   ipcMain.handle(IPC.conflictsPrepareResolverSession, async (_event, arg) => getCtx().conflictService.prepareResolverSession(arg));
 
+  ipcMain.handle(IPC.conflictsAttachResolverSession, async (_event, arg: AttachResolverSessionArgs) =>
+    getCtx().conflictService.attachResolverSession(arg)
+  );
+
   ipcMain.handle(IPC.conflictsFinalizeResolverSession, async (_event, arg) => getCtx().conflictService.finalizeResolverSession(arg));
+
+  ipcMain.handle(IPC.conflictsCancelResolverSession, async (_event, arg: CancelResolverSessionArgs) =>
+    getCtx().conflictService.cancelResolverSession(arg)
+  );
 
   ipcMain.handle(IPC.conflictsSuggestResolverTarget, async (_event, arg) => getCtx().conflictService.suggestResolverTarget(arg));
 
@@ -3219,9 +3261,55 @@ export function registerIpc({
     return landed;
   });
 
+  ipcMain.handle(IPC.prsStartQueueAutomation, async (_event, arg) => {
+    const ctx = getCtx();
+    const state = await ctx.queueLandingService.startQueue(arg);
+    triggerAutoContextDocs(ctx, {
+      trigger: "per_pr",
+      reason: `prs_start_queue_automation:${arg.groupId}`,
+    });
+    return state;
+  });
+
+  ipcMain.handle(IPC.prsPauseQueueAutomation, async (_event, arg) => getCtx().queueLandingService.pauseQueue(arg.queueId));
+
+  ipcMain.handle(IPC.prsResumeQueueAutomation, async (_event, arg) => {
+    const ctx = getCtx();
+    const state = ctx.queueLandingService.resumeQueue(arg);
+    triggerAutoContextDocs(ctx, {
+      trigger: "per_pr",
+      reason: `prs_resume_queue_automation:${arg.queueId}`,
+    });
+    return state;
+  });
+
+  ipcMain.handle(IPC.prsCancelQueueAutomation, async (_event, arg) => getCtx().queueLandingService.cancelQueue(arg.queueId));
+
+  ipcMain.handle(IPC.prsStartQueueRehearsal, async (_event, arg) => {
+    const ctx = getCtx();
+    const state = await ctx.queueRehearsalService.startQueueRehearsal(arg);
+    triggerAutoContextDocs(ctx, {
+      trigger: "per_pr",
+      reason: `prs_start_queue_rehearsal:${arg.groupId}`,
+    });
+    return state;
+  });
+
+  ipcMain.handle(IPC.prsCancelQueueRehearsal, async (_event, arg) => getCtx().queueRehearsalService.cancelQueueRehearsal(arg.rehearsalId));
+
   ipcMain.handle(IPC.prsGetHealth, async (_event, arg: { prId: string }): Promise<PrHealth> => getCtx().prService.getPrHealth(arg.prId));
 
-  ipcMain.handle(IPC.prsGetQueueState, async (_event, arg: { groupId: string }): Promise<QueueLandingState | null> => getCtx().prService.getQueueState(arg.groupId));
+  ipcMain.handle(IPC.prsGetQueueState, async (_event, arg: { groupId: string }): Promise<QueueLandingState | null> =>
+    getCtx().queueLandingService.getQueueStateByGroup(arg.groupId)
+  );
+
+  ipcMain.handle(IPC.prsListQueueStates, async (_event, arg = {}) => getCtx().queueLandingService.listQueueStates(arg));
+
+  ipcMain.handle(IPC.prsGetQueueRehearsalState, async (_event, arg: { groupId: string }) =>
+    getCtx().queueRehearsalService.getQueueRehearsalStateByGroup(arg.groupId)
+  );
+
+  ipcMain.handle(IPC.prsListQueueRehearsals, async (_event, arg = {}) => getCtx().queueRehearsalService.listQueueRehearsals(arg));
 
   ipcMain.handle(IPC.prsCreateIntegrationLaneForProposal, async (_event, arg: CreateIntegrationLaneForProposalArgs): Promise<CreateIntegrationLaneForProposalResult> =>
     getCtx().prService.createIntegrationLaneForProposal(arg));

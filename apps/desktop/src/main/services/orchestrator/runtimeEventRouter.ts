@@ -225,6 +225,7 @@ const COORDINATOR_IMPORTANT_RUNTIME_REASONS = new Set([
   "manual_step_requires_operator",
   "milestone_ready_validation_required",
   "no_output_after_startup",
+  "phase_transition",
   "question_answered_resume",
   "required_validation_gate_blocked",
   "required_validation_missing",
@@ -235,8 +236,11 @@ const COORDINATOR_IMPORTANT_RUNTIME_REASONS = new Set([
   "validation_auto_spawned",
   "validation_contract_unfulfilled",
   "validation_gate_blocked",
+  "validation_report",
   "validation_retry_exhausted",
   "validation_self_check_reminder",
+  "worker_result_report",
+  "worker_status_report",
 ]);
 
 type CoordinatorRouteGuardState = {

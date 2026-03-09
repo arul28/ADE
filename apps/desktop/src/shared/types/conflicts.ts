@@ -159,7 +159,22 @@ export type ConflictProposalProvider = "subscription";
 
 export type ExternalConflictResolverProvider = "codex" | "claude";
 
-export type ConflictExternalResolverRunStatus = "running" | "completed" | "failed" | "blocked";
+export type ConflictResolverOriginSurface = "mission" | "integration" | "rebase" | "queue" | "graph" | "manual";
+
+export type ConflictResolverPermissionMode = "read_only" | "guarded_edit" | "full_edit";
+
+export type ConflictResolverPostActionState = {
+  autoCommit: boolean;
+  autoPush: boolean;
+  commitMessage: string | null;
+  committedAt: string | null;
+  commitSha: string | null;
+  pushAt: string | null;
+  pushSucceeded: boolean | null;
+  error: string | null;
+};
+
+export type ConflictExternalResolverRunStatus = "pending" | "running" | "completed" | "failed" | "blocked" | "canceled";
 
 export type ConflictExternalResolverContextGap = {
   code: string;
@@ -179,12 +194,25 @@ export type ConflictExternalResolverRunSummary = {
   summary: string | null;
   patchPath: string | null;
   logPath: string | null;
+  changedFiles: string[];
   insufficientContext: boolean;
   contextGaps: ConflictExternalResolverContextGap[];
   warnings: string[];
+  scenario: ResolverSessionScenario;
+  model: string | null;
+  reasoningEffort: string | null;
+  permissionMode: ConflictResolverPermissionMode | null;
+  command: string[];
+  originSurface: ConflictResolverOriginSurface;
+  originMissionId: string | null;
+  originRunId: string | null;
+  originLabel: string | null;
+  ptyId: string | null;
+  sessionId: string | null;
   committedAt?: string | null;
   commitSha?: string | null;
   commitMessage?: string | null;
+  postActions?: ConflictResolverPostActionState | null;
   error: string | null;
 };
 
@@ -192,7 +220,15 @@ export type RunExternalConflictResolverArgs = {
   provider: ExternalConflictResolverProvider;
   targetLaneId: string;
   sourceLaneIds: string[];
+  cwdLaneId?: string;
   integrationLaneName?: string;
+  model?: string | null;
+  reasoningEffort?: string | null;
+  permissionMode?: ConflictResolverPermissionMode | null;
+  originSurface?: ConflictResolverOriginSurface;
+  originMissionId?: string | null;
+  originRunId?: string | null;
+  originLabel?: string | null;
 };
 
 export type ListExternalConflictResolverRunsArgs = {
@@ -332,6 +368,13 @@ export type PrepareResolverSessionArgs = {
   cwdLaneId?: string;
   integrationLaneName?: string;
   scenario?: ResolverSessionScenario;
+  model?: string | null;
+  reasoningEffort?: string | null;
+  permissionMode?: ConflictResolverPermissionMode | null;
+  originSurface?: ConflictResolverOriginSurface;
+  originMissionId?: string | null;
+  originRunId?: string | null;
+  originLabel?: string | null;
 };
 
 export type PrepareResolverSessionResult = {
@@ -348,6 +391,19 @@ export type PrepareResolverSessionResult = {
 export type FinalizeResolverSessionArgs = {
   runId: string;
   exitCode: number;
+  postActions?: Partial<ConflictResolverPostActionState> | null;
+};
+
+export type AttachResolverSessionArgs = {
+  runId: string;
+  ptyId: string;
+  sessionId: string;
+  command?: string[];
+};
+
+export type CancelResolverSessionArgs = {
+  runId: string;
+  reason?: string | null;
 };
 
 export type SuggestResolverTargetArgs = {

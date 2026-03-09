@@ -1,23 +1,14 @@
 import { useMemo } from "react";
-import { GridFour, List, Monitor, X } from "@phosphor-icons/react";
-import type { TerminalSessionSummary } from "../../../shared/types";
-import type { WorkViewMode } from "../../state/appStore";
-import { useAppStore } from "../../state/appStore";
+import { GridFour, List, X } from "@phosphor-icons/react";
+import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
+import type { WorkDraftKind, WorkViewMode } from "../../state/appStore";
 import { TerminalView } from "./TerminalView";
 import { ToolLogo } from "./ToolLogos";
 import { AgentChatPane } from "../chat/AgentChatPane";
-import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
+import { WorkStartSurface } from "./WorkStartSurface";
+import { MONO_FONT } from "../lanes/laneDesignTokens";
 import { isChatToolType, primarySessionLabel, secondarySessionLabel, truncateSessionLabel } from "../../lib/sessions";
 import { sessionStatusDot } from "../../lib/terminalAttention";
-
-/* Inject global keyframe once */
-const BLINK_KEYFRAME_ID = "ade-industrial-blink";
-if (typeof document !== "undefined" && !document.getElementById(BLINK_KEYFRAME_ID)) {
-  const style = document.createElement("style");
-  style.id = BLINK_KEYFRAME_ID;
-  style.textContent = `@keyframes industrialBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }`;
-  document.head.appendChild(style);
-}
 
 const THEME_CARD = "var(--color-card)";
 const THEME_BORDER = "var(--color-border)";
@@ -26,11 +17,6 @@ const THEME_MUTED = "var(--color-muted-fg)";
 const THEME_RECESSED = "var(--color-surface-recessed)";
 const THEME_CARD_OVERLAY = "color-mix(in srgb, var(--color-card) 86%, transparent)";
 const THEME_RECESSED_OVERLAY = "color-mix(in srgb, var(--color-surface-recessed) 78%, transparent)";
-
-
-function zeroPad(n: number): string {
-  return n < 10 ? `0${n}` : `${n}`;
-}
 
 function SessionSurface({ session, isActive }: { session: TerminalSessionSummary; isActive: boolean }) {
   const isChat = isChatToolType(session.toolType);
@@ -52,20 +38,19 @@ function SessionSurface({ session, isActive }: { session: TerminalSessionSummary
     <div
       className="flex h-full w-full items-center justify-center px-5"
       style={{
-        background: isActive ? THEME_CARD_OVERLAY : THEME_RECESSED_OVERLAY,
+        background: THEME_CARD,
       }}
     >
       <div
         style={{
-          borderRadius: 0,
-          border: `1px solid ${COLORS.danger}40`,
+          border: "1px solid color-mix(in srgb, var(--color-error) 20%, transparent)",
           background: THEME_CARD,
-          padding: "10px 14px",
+          padding: "8px 14px",
           fontFamily: MONO_FONT,
-          fontSize: 12,
+          fontSize: 10,
           color: THEME_MUTED,
           textTransform: "uppercase",
-          letterSpacing: "0.08em",
+          letterSpacing: "0.12em",
         }}
       >
         Session ended
@@ -75,22 +60,36 @@ function SessionSurface({ session, isActive }: { session: TerminalSessionSummary
 }
 
 export function WorkViewArea({
+  lanes,
   sessions,
   visibleSessions,
   activeItemId,
   viewMode,
+  draftKind,
   setViewMode,
   onSelectItem,
   onCloseItem,
+  onOpenChatSession,
+  onLaunchPtySession,
   closingPtyIds,
 }: {
+  lanes: LaneSummary[];
   sessions: TerminalSessionSummary[];
   visibleSessions: TerminalSessionSummary[];
   activeItemId: string | null;
   viewMode: WorkViewMode;
+  draftKind: WorkDraftKind;
   setViewMode: (mode: WorkViewMode) => void;
   onSelectItem: (sessionId: string) => void;
   onCloseItem: (sessionId: string) => void;
+  onOpenChatSession: (sessionId: string) => void;
+  onLaunchPtySession: (args: {
+    laneId: string;
+    profile: "claude" | "codex" | "shell";
+    title?: string;
+    startupCommand?: string;
+    tracked?: boolean;
+  }) => Promise<unknown>;
   closingPtyIds: Set<string>;
 }) {
   const sessionsById = useMemo(() => {
@@ -98,11 +97,10 @@ export function WorkViewArea({
     for (const session of sessions) map.set(session.id, session);
     return map;
   }, [sessions]);
-  const lanes = useAppStore((s) => s.lanes);
   const laneColorById = useMemo(() => {
     const map = new Map<string, string>();
     for (const lane of lanes) {
-      map.set(lane.id, lane.color ?? COLORS.accent);
+      map.set(lane.id, lane.color ?? "rgba(var(--tab-tint-rgb, 113, 113, 122), 0.95)");
     }
     return map;
   }, [lanes]);
@@ -110,7 +108,7 @@ export function WorkViewArea({
   const displaySessions = visibleSessions.length > 0 ? visibleSessions : [];
   const activeSession = activeItemId
     ? sessionsById.get(activeItemId) ?? displaySessions[0] ?? null
-    : displaySessions[0] ?? null;
+    : null;
 
   if (viewMode === "grid") {
     return (
@@ -127,7 +125,7 @@ export function WorkViewArea({
               fontWeight: 700,
               textTransform: "uppercase",
               letterSpacing: "1px",
-              color: COLORS.textMuted,
+              color: "var(--color-muted-fg)",
             }}
           >
             GRID VIEW
@@ -141,9 +139,9 @@ export function WorkViewArea({
               fontWeight: 700,
               fontFamily: MONO_FONT,
               letterSpacing: "1px",
-              color: COLORS.accent,
-              background: COLORS.accentSubtle,
-              border: `1px solid ${COLORS.accentBorder}`,
+              color: "rgba(var(--tab-tint-rgb, 113, 113, 122), 0.95)",
+              background: "rgba(var(--tab-tint-rgb, 113, 113, 122), 0.14)",
+              border: "1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.24)",
               borderRadius: 0,
             }}
           >
@@ -152,9 +150,11 @@ export function WorkViewArea({
         </div>
 
         {displaySessions.length === 0 ? (
-          <EmptyState
-            heading="No session selected"
-            body="Click a session from the list to open it here."
+          <WorkStartSurface
+            draftKind={draftKind}
+            lanes={lanes}
+            onOpenChatSession={onOpenChatSession}
+            onLaunchPtySession={onLaunchPtySession}
           />
         ) : (
           <div className="min-h-0 flex-1 overflow-auto p-2">
@@ -163,7 +163,7 @@ export function WorkViewArea({
                 const isActive = activeSession?.id === session.id;
                 const dot = sessionStatusDot(session);
                 const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
-                const laneColor = laneColorById.get(session.laneId) ?? COLORS.accent;
+                const laneColor = laneColorById.get(session.laneId) ?? "rgba(var(--tab-tint-rgb, 113, 113, 122), 0.95)";
                 const primary = primarySessionLabel(session);
                 const secondary = secondarySessionLabel(session);
                 return (
@@ -172,9 +172,9 @@ export function WorkViewArea({
                     className="flex min-h-[260px] flex-col overflow-hidden"
                     style={{
                       border: isActive
-                        ? `1px solid ${laneColor}`
+                        ? `1px solid ${laneColor}40`
                         : `1px solid ${THEME_BORDER}`,
-                      background: `linear-gradient(180deg, ${laneColor}10 0%, ${THEME_RECESSED} 42%)`,
+                      background: THEME_CARD,
                     }}
                   >
                     <div
@@ -192,7 +192,7 @@ export function WorkViewArea({
                         <span className="flex items-center gap-2" style={{ fontFamily: MONO_FONT, fontSize: 11 }}>
                           <span
                             title={dot.label}
-                            className={`${dot.cls} h-2.5 w-2.5 shrink-0 rounded-full${dot.spinning ? " animate-spin" : ""}`}
+                            className={`${dot.cls} h-2.5 w-2.5 shrink-0 ${dot.spinning ? " animate-spin" : ""}`}
                           />
                           <ToolLogo toolType={session.toolType} size={12} />
                           <span className="truncate" style={{ color: THEME_FG }}>
@@ -217,8 +217,8 @@ export function WorkViewArea({
                           >
                             {session.laneName}
                           </span>
-                          {secondary ? (
-                            <span className="truncate" style={{ color: COLORS.textMuted, fontSize: 10 }}>
+                  {secondary ? (
+                            <span className="truncate" style={{ color: "var(--color-muted-fg)", fontSize: 10 }}>
                               {truncateSessionLabel(secondary, 36)}
                             </span>
                           ) : null}
@@ -236,10 +236,9 @@ export function WorkViewArea({
                           width: 18,
                           height: 18,
                           border: "none",
-                          borderRadius: 0,
-                          cursor: isBusy ? "default" : "pointer",
+                                                    cursor: isBusy ? "default" : "pointer",
                           opacity: isBusy ? 0.5 : 0.85,
-                          color: COLORS.textMuted,
+                          color: "var(--color-muted-fg)",
                           background: "transparent",
                         }}
                       >
@@ -262,120 +261,79 @@ export function WorkViewArea({
   return (
     <div className="flex h-full flex-col">
         <div
-          className="flex items-center gap-1 px-1 py-1 min-h-[36px]"
-          style={{ borderBottom: `1px solid ${THEME_BORDER}` }}
+          className="flex items-center gap-0 px-0.5"
+          style={{
+            borderBottom: `1px solid ${THEME_BORDER}`,
+            background: THEME_CARD,
+            height: 28,
+            minHeight: 28,
+            maxHeight: 28,
+          }}
         >
         <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
           <div
-            className="mx-1 h-4"
-            style={{ width: 1, background: THEME_BORDER }}
+            className="mx-1"
+            style={{ width: 1, height: 14, background: THEME_BORDER }}
           />
-        <div className="flex-1 flex items-center gap-0.5 overflow-x-auto scrollbar-none min-w-0">
-          {displaySessions.map((session, idx) => {
+        <div className="flex-1 flex items-center gap-0 overflow-x-auto scrollbar-none min-w-0">
+          {displaySessions.map((session) => {
             const isActive = activeSession?.id === session.id;
             const dot = sessionStatusDot(session);
             const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
-            const laneColor = laneColorById.get(session.laneId) ?? COLORS.accent;
             const primary = primarySessionLabel(session);
-            const secondary = secondarySessionLabel(session);
             return (
               <button
                 key={session.id}
                 type="button"
-                className="group/tab inline-flex shrink-0 flex-col items-start gap-1 transition-all"
+                className="group/tab inline-flex shrink-0 items-center gap-1.5 transition-colors"
                 style={{
-                  padding: "9px 14px 10px",
-                  minWidth: 220,
-                  borderRadius: 0,
+                  padding: "0 8px",
+                  height: 28,
                   fontFamily: MONO_FONT,
-                  fontSize: 11,
-                  fontWeight: 500,
-                  background: isActive ? `${laneColor}18` : "transparent",
-                  backgroundImage: isActive
-                    ? `linear-gradient(180deg, ${laneColor}22 0%, transparent 100%)`
-                    : undefined,
-                  color: isActive ? COLORS.textPrimary : COLORS.textMuted,
+                  fontSize: 10,
+                  fontWeight: isActive ? 600 : 400,
+                  background: "transparent",
+                  color: isActive ? THEME_FG : "var(--color-muted-fg)",
                   cursor: "pointer",
                   border: "none",
-                  borderBottom: isActive ? `2px solid ${laneColor}` : "2px solid transparent",
+                  borderBottom: isActive ? "1.5px solid var(--color-accent)" : "1.5px solid transparent",
+                  opacity: isActive ? 1 : 0.5,
                 }}
                 onClick={() => onSelectItem(session.id)}
               >
-                <span className="flex w-full items-center gap-2">
-                  <span
-                    style={{
-                      fontFamily: MONO_FONT,
-                      fontSize: 10,
-                      fontWeight: 700,
-                      color: isActive ? laneColor : COLORS.textDim,
-                    }}
-                  >
-                    {zeroPad(idx + 1)}
-                  </span>
-                  <ToolLogo toolType={session.toolType} size={12} />
-                  <span className="max-w-[150px] truncate" style={{ color: THEME_FG }}>
-                    {truncateSessionLabel(primary, 32)}
-                  </span>
-                  <span
-                    title={dot.label}
-                    className={`${dot.cls} ml-auto h-2.5 w-2.5 shrink-0 rounded-full${dot.spinning ? " animate-spin" : ""}`}
-                  />
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    className="inline-flex items-center justify-center opacity-0 group-hover/tab:opacity-100 transition-opacity"
-                    style={{
-                      width: 16,
-                      height: 16,
-                      borderRadius: 0,
-                      cursor: isBusy ? "default" : "pointer",
-                    }}
-                    onMouseEnter={(e) => {
-                      (e.currentTarget as HTMLElement).style.background = COLORS.outlineBorder;
-                    }}
-                    onMouseLeave={(e) => {
-                      (e.currentTarget as HTMLElement).style.background = "transparent";
-                    }}
-                    onClick={(e) => {
+                <ToolLogo toolType={session.toolType} size={10} />
+                <span className="max-w-[120px] truncate">
+                  {truncateSessionLabel(primary, 20)}
+                </span>
+                <span
+                  title={dot.label}
+                  className={`${dot.cls} h-1.5 w-1.5 shrink-0${dot.spinning ? " animate-spin" : ""}`}
+                />
+                <span
+                  role="button"
+                  tabIndex={0}
+                  className="inline-flex items-center justify-center opacity-0 group-hover/tab:opacity-100 transition-opacity"
+                  style={{
+                    width: 14,
+                    height: 14,
+                    cursor: isBusy ? "default" : "pointer",
+                    color: "var(--color-muted-fg)",
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (isBusy) return;
+                    onCloseItem(session.id);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
                       e.stopPropagation();
                       if (isBusy) return;
                       onCloseItem(session.id);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        if (isBusy) return;
-                        onCloseItem(session.id);
-                      }
-                    }}
-                  >
-                    <X size={10} />
-                  </span>
-                </span>
-                <span className="flex w-full items-center gap-2 pl-[24px]">
-                  <span
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      padding: "1px 6px",
-                      fontSize: 9,
-                      fontWeight: 700,
-                      fontFamily: MONO_FONT,
-                      letterSpacing: "0.12em",
-                      textTransform: "uppercase",
-                      color: laneColor,
-                      background: `${laneColor}16`,
-                      border: `1px solid ${laneColor}33`,
-                    }}
-                  >
-                    {session.laneName}
-                  </span>
-                  {secondary ? (
-                    <span className="max-w-[120px] truncate" style={{ color: COLORS.textMuted, fontSize: 10 }}>
-                      {truncateSessionLabel(secondary, 24)}
-                    </span>
-                  ) : null}
+                    }
+                  }}
+                >
+                  <X size={8} />
                 </span>
               </button>
             );
@@ -383,70 +341,17 @@ export function WorkViewArea({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1" style={{ background: THEME_RECESSED }}>
+      <div className="min-h-0 flex-1" style={{ background: THEME_CARD }}>
         {activeSession ? (
           <SessionSurface session={activeSession} isActive />
         ) : (
-          <EmptyState
-            heading="No session selected"
-            body="Click a session from the list to open it here."
+          <WorkStartSurface
+            draftKind={draftKind}
+            lanes={lanes}
+            onOpenChatSession={onOpenChatSession}
+            onLaunchPtySession={onLaunchPtySession}
           />
         )}
-      </div>
-    </div>
-  );
-}
-
-function EmptyState({ heading, body }: { heading: string; body: string }) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center px-6">
-      <div
-        style={{
-          marginBottom: 12,
-          border: `1px solid ${THEME_BORDER}`,
-          background: THEME_CARD,
-          padding: 14,
-          borderRadius: 0,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-      >
-        <Monitor size={24} weight="regular" style={{ color: COLORS.accent }} />
-      </div>
-      <div
-        style={{
-          fontFamily: SANS_FONT,
-          fontSize: 14,
-          fontWeight: 600,
-          color: THEME_FG,
-        }}
-      >
-        {heading}
-      </div>
-      <div
-        style={{
-          marginTop: 6,
-          maxWidth: 280,
-          textAlign: "center",
-          fontFamily: MONO_FONT,
-          fontSize: 12,
-          lineHeight: "1.6",
-          color: THEME_MUTED,
-        }}
-      >
-        {body}
-      </div>
-      <div
-        style={{
-          marginTop: 16,
-          fontFamily: MONO_FONT,
-          fontSize: 12,
-          color: COLORS.success,
-        }}
-      >
-        <span>{"> "}</span>
-        <span style={{ animation: "industrialBlink 1s step-end infinite" }}>_</span>
       </div>
     </div>
   );
@@ -460,55 +365,36 @@ function ViewModeToggle({
   setViewMode: (mode: WorkViewMode) => void;
 }) {
   return (
-    <div
-      className="flex items-center p-0.5"
-      style={{
-        border: `1px solid ${COLORS.outlineBorder}`,
-        borderRadius: 0,
-        background: "transparent",
-      }}
-    >
+    <div className="flex items-center gap-0">
       <button
         onClick={() => setViewMode("tabs")}
         className="transition-colors"
         style={{
-          padding: 4,
-          borderRadius: 0,
+          padding: "2px 4px",
           border: "none",
           cursor: "pointer",
-          background: viewMode === "tabs" ? COLORS.accentSubtle : "transparent",
-          color: viewMode === "tabs" ? COLORS.accent : COLORS.textMuted,
-        }}
-        onMouseEnter={(e) => {
-          if (viewMode !== "tabs") (e.currentTarget as HTMLElement).style.color = COLORS.textSecondary;
-        }}
-        onMouseLeave={(e) => {
-          if (viewMode !== "tabs") (e.currentTarget as HTMLElement).style.color = COLORS.textMuted;
+          background: "transparent",
+          color: viewMode === "tabs" ? THEME_FG : "var(--color-muted-fg)",
+          opacity: viewMode === "tabs" ? 0.8 : 0.3,
         }}
         title="Tab View"
       >
-        <List size={13} />
+        <List size={12} />
       </button>
       <button
         onClick={() => setViewMode("grid")}
         className="transition-colors"
         style={{
-          padding: 4,
-          borderRadius: 0,
+          padding: "2px 4px",
           border: "none",
           cursor: "pointer",
-          background: viewMode === "grid" ? COLORS.accentSubtle : "transparent",
-          color: viewMode === "grid" ? COLORS.accent : COLORS.textMuted,
-        }}
-        onMouseEnter={(e) => {
-          if (viewMode !== "grid") (e.currentTarget as HTMLElement).style.color = COLORS.textSecondary;
-        }}
-        onMouseLeave={(e) => {
-          if (viewMode !== "grid") (e.currentTarget as HTMLElement).style.color = COLORS.textMuted;
+          background: "transparent",
+          color: viewMode === "grid" ? THEME_FG : "var(--color-muted-fg)",
+          opacity: viewMode === "grid" ? 0.8 : 0.3,
         }}
         title="Grid View"
       >
-        <GridFour size={13} />
+        <GridFour size={12} />
       </button>
     </div>
   );

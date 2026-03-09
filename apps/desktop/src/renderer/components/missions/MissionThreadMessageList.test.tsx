@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OrchestratorChatMessage } from "../../../shared/types";
 import { MissionThreadMessageList } from "./MissionThreadMessageList";
 
@@ -64,5 +64,73 @@ describe("MissionThreadMessageList", () => {
     expect(screen.getByText("Check on the worker.")).toBeTruthy();
     expect(screen.getAllByText("Read")).toHaveLength(1);
     expect(screen.getByText(/completed/i)).toBeTruthy();
+  });
+
+  it("routes approval actions through the mission chat approval handler", () => {
+    const onApproval = vi.fn();
+
+    render(
+      <MissionThreadMessageList
+        messages={[
+          message({
+            id: "approval-msg",
+            content: "Approval required",
+            metadata: {
+              structuredStream: {
+                kind: "approval_request",
+                sessionId: "worker-session",
+                turnId: "turn-2",
+                itemId: "approval-1",
+                requestKind: "command",
+                description: "Run command: printf approved",
+                detail: { command: "printf approved" },
+              },
+            },
+          }),
+        ]}
+        onApproval={onApproval}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+
+    expect(onApproval).toHaveBeenCalledWith("worker-session", "approval-1", "accept", undefined);
+  });
+
+  it("submits ask-user answers through the mission chat question modal", () => {
+    const onApproval = vi.fn();
+
+    render(
+      <MissionThreadMessageList
+        messages={[
+          message({
+            id: "question-msg",
+            content: "Need input",
+            metadata: {
+              structuredStream: {
+                kind: "approval_request",
+                sessionId: "worker-session",
+                turnId: "turn-3",
+                itemId: "approval-ask-user",
+                requestKind: "tool_call",
+                description: "Which environment should I use?",
+                detail: {
+                  tool: "askUser",
+                  question: "Which environment should I use?",
+                },
+              },
+            },
+          }),
+        ]}
+        onApproval={onApproval}
+      />
+    );
+
+    fireEvent.change(screen.getByPlaceholderText("Type the answer you want the agent to follow..."), {
+      target: { value: "Use staging." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Send Answer/i }));
+
+    expect(onApproval).toHaveBeenCalledWith("worker-session", "approval-ask-user", "accept", "Use staging.");
   });
 });

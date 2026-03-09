@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
+import { CaretDown, CaretRight } from "@phosphor-icons/react";
 import type { MissionStateDocument, RunCompletionEvaluation, OrchestratorRunStatus } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
@@ -7,170 +8,120 @@ type CompletionBannerProps = {
   status: OrchestratorRunStatus;
   evaluation?: RunCompletionEvaluation | null;
   runId?: string | null;
+  stateDoc?: MissionStateDocument | null;
   className?: string;
 };
 
-const BANNER_STYLES: Partial<Record<OrchestratorRunStatus, {
-  containerStyle: React.CSSProperties;
-  textColor: string;
+const BANNER_CONFIG: Partial<Record<OrchestratorRunStatus, {
+  bg: string;
+  border: string;
+  color: string;
   label: string;
 }>> = {
-  succeeded: {
-    containerStyle: { background: `${COLORS.success}18`, border: `1px solid ${COLORS.success}30` },
-    textColor: COLORS.success,
-    label: "MISSION COMPLETED SUCCESSFULLY"
-  },
-  failed: {
-    containerStyle: { background: `${COLORS.danger}18`, border: `1px solid ${COLORS.danger}30` },
-    textColor: COLORS.danger,
-    label: "MISSION FAILED"
-  },
-  paused: {
-    containerStyle: { background: `${COLORS.warning}18`, border: `1px solid ${COLORS.warning}30` },
-    textColor: COLORS.warning,
-    label: "MISSION PAUSED"
-  },
-  canceled: {
-    containerStyle: { background: "#71717A18", border: "1px solid #71717A30" },
-    textColor: "#71717A",
-    label: "MISSION CANCELED"
-  }
+  succeeded: { bg: `${COLORS.success}08`, border: `${COLORS.success}30`, color: COLORS.success, label: "Completed" },
+  failed: { bg: `${COLORS.danger}08`, border: `${COLORS.danger}30`, color: COLORS.danger, label: "Failed" },
+  paused: { bg: `${COLORS.warning}08`, border: `${COLORS.warning}30`, color: COLORS.warning, label: "Paused" },
+  canceled: { bg: "#71717A08", border: "#71717A30", color: "#71717A", label: "Canceled" },
 };
 
-const STRUCTURED_SUMMARY_STATUSES = new Set<OrchestratorRunStatus>([
-  "succeeded",
-  "failed",
-]);
-
-function summarizeMissionState(stateDoc: MissionStateDocument | null) {
+function summarize(stateDoc: MissionStateDocument | null) {
   if (!stateDoc) return null;
   const outcomes = stateDoc.stepOutcomes;
-  const succeeded = outcomes.filter((entry) => entry.status === "succeeded").length;
-  const failed = outcomes.filter((entry) => entry.status === "failed").length;
-  const skipped = outcomes.filter((entry) => entry.status === "skipped").length;
-  const inProgress = outcomes.filter((entry) => entry.status === "in_progress").length;
+  const succeeded = outcomes.filter((e) => e.status === "succeeded").length;
+  const failed = outcomes.filter((e) => e.status === "failed").length;
   const tests = outcomes.reduce(
-    (acc, entry) => {
-      if (!entry.testsRun) return acc;
-      acc.passed += entry.testsRun.passed;
-      acc.failed += entry.testsRun.failed;
-      acc.skipped += entry.testsRun.skipped;
+    (acc, e) => {
+      if (!e.testsRun) return acc;
+      acc.passed += e.testsRun.passed;
+      acc.failed += e.testsRun.failed;
       return acc;
     },
-    { passed: 0, failed: 0, skipped: 0 }
+    { passed: 0, failed: 0 },
   );
-  const openIssues = stateDoc.activeIssues.filter((entry) => entry.status === "open").length;
-  const mitigatedIssues = stateDoc.activeIssues.filter((entry) => entry.status === "mitigated").length;
-  const resolvedIssues = stateDoc.activeIssues.filter((entry) => entry.status === "resolved").length;
-
-  return {
-    totalOutcomes: outcomes.length,
-    succeeded,
-    failed,
-    skipped,
-    inProgress,
-    tests,
-    filesChanged: stateDoc.modifiedFiles.length,
-    openIssues,
-    mitigatedIssues,
-    resolvedIssues,
-  };
+  return { total: outcomes.length, succeeded, failed, files: stateDoc.modifiedFiles.length, tests };
 }
 
-export function CompletionBanner({ status, evaluation, runId, className }: CompletionBannerProps) {
-  const style = BANNER_STYLES[status];
-  const [stateDoc, setStateDoc] = useState<MissionStateDocument | null>(null);
-  const shouldShowStructuredSummary = STRUCTURED_SUMMARY_STATUSES.has(status);
-  const summary = useMemo(() => summarizeMissionState(stateDoc), [stateDoc]);
+export function CompletionBanner({ status, evaluation, stateDoc = null, className }: CompletionBannerProps) {
+  const [expanded, setExpanded] = useState(false);
+  const finalization = stateDoc?.finalization ?? null;
+  const coordinatorAvailability = stateDoc?.coordinatorAvailability ?? null;
 
-  useEffect(() => {
-    if (!runId || !shouldShowStructuredSummary) {
-      setStateDoc(null);
-      return;
+  const config = useMemo(() => {
+    if (status === "succeeded" && finalization?.status === "finalization_failed") {
+      return { bg: `${COLORS.danger}08`, border: `${COLORS.danger}30`, color: COLORS.danger, label: "Completed — finalization failed" };
     }
-    let cancelled = false;
-    const loadState = async () => {
-      try {
-        const next = await window.ade.orchestrator.getMissionStateDocument({ runId });
-        if (cancelled) return;
-        setStateDoc(next);
-      } catch {
-        // Banner still shows without the structured summary
-      }
-    };
-    void loadState();
-    return () => {
-      cancelled = true;
-    };
-  }, [runId, shouldShowStructuredSummary]);
+    if (status === "succeeded" && finalization && !finalization.contractSatisfied) {
+      return { bg: `${COLORS.warning}08`, border: `${COLORS.warning}30`, color: COLORS.warning, label: `Completed — ${finalization.status.replace(/_/g, " ")}` };
+    }
+    return BANNER_CONFIG[status];
+  }, [finalization, status]);
 
-  if (!style) return null;
+  const summary = useMemo(() => summarize(stateDoc), [stateDoc]);
+  if (!config) return null;
 
-  const showEvaluationDetails = status !== "canceled";
-  const blockingDiagnostics = showEvaluationDetails
-    ? (evaluation?.diagnostics?.filter((d) => d.blocking) ?? [])
-    : [];
-  const riskFactors = showEvaluationDetails ? (evaluation?.riskFactors ?? []) : [];
+  const blockingDiagnostics = status !== "canceled" ? (evaluation?.diagnostics?.filter((d) => d.blocking) ?? []) : [];
+  const riskFactors = status !== "canceled" ? (evaluation?.riskFactors ?? []) : [];
+  const hasDetails = summary || blockingDiagnostics.length > 0 || riskFactors.length > 0 || finalization?.summary;
 
   return (
     <div
       className={cn("px-3 py-2", className)}
-      style={{ ...style.containerStyle, borderRadius: 0 }}
+      style={{ background: config.bg, borderLeft: `3px solid ${config.border}` }}
     >
-      <div
-        style={{
-          color: style.textColor,
-          fontFamily: MONO_FONT,
-          fontSize: 11,
-          fontWeight: 700,
-          textTransform: "uppercase",
-          letterSpacing: "1px"
-        }}
-      >
-        {style.label}
+      <div className="flex items-center justify-between">
+        <span
+          className="text-[11px] font-semibold uppercase tracking-wide"
+          style={{ color: config.color, fontFamily: MONO_FONT }}
+        >
+          {config.label}
+        </span>
+
+        {hasDetails && (
+          <button
+            type="button"
+            onClick={() => setExpanded((p) => !p)}
+            className="flex items-center gap-1 text-[9px]"
+            style={{ color: COLORS.textDim, fontFamily: MONO_FONT, background: "none", border: "none", cursor: "pointer", padding: 0 }}
+          >
+            {expanded ? <CaretDown weight="bold" className="h-2.5 w-2.5" /> : <CaretRight weight="bold" className="h-2.5 w-2.5" />}
+            Details
+          </button>
+        )}
       </div>
 
-      {summary && shouldShowStructuredSummary && (
-        <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-1 text-[10px]" style={{ fontFamily: MONO_FONT, color: COLORS.textPrimary }}>
-          <div>Steps: {summary.totalOutcomes} total</div>
-          <div>Files changed: {summary.filesChanged}</div>
-          <div>Succeeded: {summary.succeeded}</div>
-          <div>Failed: {summary.failed}</div>
-          <div>Skipped: {summary.skipped}</div>
-          <div>In progress: {summary.inProgress}</div>
-          <div>Tests: {summary.tests.passed} pass / {summary.tests.failed} fail / {summary.tests.skipped} skip</div>
-          <div>Issues: {summary.openIssues} open / {summary.mitigatedIssues} mitigated / {summary.resolvedIssues} resolved</div>
+      {/* Inline summary */}
+      {summary && (status === "succeeded" || status === "failed") && (
+        <div className="mt-1 flex items-center gap-3 text-[10px]" style={{ fontFamily: MONO_FONT, color: COLORS.textSecondary }}>
+          <span>{summary.total} steps</span>
+          {summary.succeeded > 0 && <span style={{ color: COLORS.success }}>{summary.succeeded} passed</span>}
+          {summary.failed > 0 && <span style={{ color: COLORS.danger }}>{summary.failed} failed</span>}
+          {summary.files > 0 && <span>{summary.files} files</span>}
+          {summary.tests.passed + summary.tests.failed > 0 && (
+            <span>Tests: {summary.tests.passed}p / {summary.tests.failed}f</span>
+          )}
         </div>
       )}
 
-      {riskFactors.length > 0 && (
-        <div className="mt-1 space-y-0.5">
+      {/* Expanded details */}
+      {expanded && (
+        <div className="mt-2 space-y-1">
+          {finalization?.summary && (
+            <div className="text-[10px]" style={{ fontFamily: MONO_FONT, color: COLORS.textSecondary }}>
+              {finalization.summary}
+            </div>
+          )}
+          {coordinatorAvailability?.summary && status === "succeeded" && (
+            <div className="text-[10px]" style={{ fontFamily: MONO_FONT, color: COLORS.textDim }}>
+              {coordinatorAvailability.summary}
+            </div>
+          )}
           {riskFactors.map((factor, i) => (
-            <div
-              key={i}
-              style={{
-                color: COLORS.warning,
-                fontSize: 10,
-                fontFamily: MONO_FONT
-              }}
-            >
+            <div key={i} className="text-[10px]" style={{ color: COLORS.warning, fontFamily: MONO_FONT }}>
               {"\u26A0"} {factor.replace(/_/g, " ")}
             </div>
           ))}
-        </div>
-      )}
-
-      {blockingDiagnostics.length > 0 && (
-        <div className="mt-1 space-y-0.5">
           {blockingDiagnostics.map((d, i) => (
-            <div
-              key={i}
-              style={{
-                color: COLORS.danger,
-                fontSize: 10,
-                fontFamily: MONO_FONT
-              }}
-            >
+            <div key={i} className="text-[10px]" style={{ color: COLORS.danger, fontFamily: MONO_FONT }}>
               {"\u2717"} {d.message}
             </div>
           ))}
