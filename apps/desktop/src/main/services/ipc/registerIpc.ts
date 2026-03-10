@@ -1679,6 +1679,39 @@ export function registerIpc({
     return ctx.missionService.getDashboard();
   });
 
+  ipcMain.handle(
+    IPC.missionsGetFullMissionView,
+    async (_event, arg: import("../../../shared/types").GetFullMissionViewArgs): Promise<import("../../../shared/types").FullMissionViewResult> => {
+      const ctx = getCtx();
+      const missionId = typeof arg?.missionId === "string" ? arg.missionId.trim() : "";
+      if (!missionId) return { mission: null, runGraph: null, artifacts: [], checkpoints: [], dashboard: null };
+
+      let dashboard: import("../../../shared/types").MissionDashboardSnapshot | null = null;
+      try { dashboard = ctx.missionService.getDashboard(); } catch { /* best-effort */ }
+
+      const mission = await ctx.missionService.get(missionId);
+
+      let runGraph: import("../../../shared/types").OrchestratorRunGraph | null = null;
+      let artifacts: import("../../../shared/types").OrchestratorArtifact[] = [];
+      let checkpoints: import("../../../shared/types").OrchestratorWorkerCheckpoint[] = [];
+
+      const runs = await ctx.orchestratorService.listRuns({ missionId, limit: 20 });
+      const latestRun = runs[0];
+      if (latestRun) {
+        const [graph, arts, cps] = await Promise.all([
+          ctx.orchestratorService.getRunGraph({ runId: latestRun.id, timelineLimit: 120 }),
+          Promise.resolve().then(() => ctx.aiOrchestratorService.listArtifacts({ missionId, runId: latestRun.id })).catch(() => []),
+          Promise.resolve().then(() => ctx.aiOrchestratorService.listWorkerCheckpoints({ missionId, runId: latestRun.id })).catch(() => []),
+        ]);
+        runGraph = graph;
+        artifacts = Array.isArray(arts) ? arts : [];
+        checkpoints = Array.isArray(cps) ? cps : [];
+      }
+
+      return { mission, runGraph, artifacts, checkpoints, dashboard };
+    },
+  );
+
   ipcMain.handle(IPC.missionsPreflight, async (_event, arg: MissionPreflightRequest): Promise<MissionPreflightResult> => {
     const ctx = getCtx();
     return await ctx.missionPreflightService.runPreflight(arg);

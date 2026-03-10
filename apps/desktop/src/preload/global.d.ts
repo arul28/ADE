@@ -321,6 +321,8 @@ import type {
   ImportPhaseProfileArgs,
   MissionPhaseConfiguration,
   MissionDashboardSnapshot,
+  GetFullMissionViewArgs,
+  FullMissionViewResult,
   MissionPreflightRequest,
   MissionPreflightResult,
   GetMissionRunViewArgs,
@@ -547,6 +549,7 @@ declare global {
         importPhaseProfile: (args: ImportPhaseProfileArgs) => Promise<PhaseProfile>;
         getPhaseConfiguration: (missionId: string) => Promise<MissionPhaseConfiguration | null>;
         getDashboard: () => Promise<MissionDashboardSnapshot>;
+        getFullMissionView: (args: GetFullMissionViewArgs) => Promise<FullMissionViewResult>;
         preflight: (args: MissionPreflightRequest) => Promise<MissionPreflightResult>;
         getRunView: (args: GetMissionRunViewArgs) => Promise<MissionRunView | null>;
         subscribeRunView: (args: GetMissionRunViewArgs, cb: (view: MissionRunView | null) => void) => () => void;

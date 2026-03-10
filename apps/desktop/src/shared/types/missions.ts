@@ -474,6 +474,18 @@ export type MissionDashboardSnapshot = {
   };
 };
 
+export type GetFullMissionViewArgs = {
+  missionId: string;
+};
+
+export type FullMissionViewResult = {
+  mission: MissionDetail | null;
+  runGraph: import("./orchestrator").OrchestratorRunGraph | null;
+  artifacts: import("./orchestrator").OrchestratorArtifact[];
+  checkpoints: import("./orchestrator").OrchestratorWorkerCheckpoint[];
+  dashboard: MissionDashboardSnapshot | null;
+};
+
 export type ListPhaseProfilesArgs = {
   includeArchived?: boolean;
 };

@@ -208,6 +208,7 @@ export const IPC = {
   missionsImportPhaseProfile: "ade.missions.importPhaseProfile",
   missionsGetPhaseConfiguration: "ade.missions.getPhaseConfiguration",
   missionsGetDashboard: "ade.missions.getDashboard",
+  missionsGetFullMissionView: "ade.missions.getFullMissionView",
   missionsPreflight: "ade.missions.preflight",
   missionsGetRunView: "ade.missions.getRunView",
   missionsEvent: "ade.missions.event",

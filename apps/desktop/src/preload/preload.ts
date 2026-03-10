@@ -614,6 +614,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.missionsGetPhaseConfiguration, { missionId }),
     getDashboard: async (): Promise<MissionDashboardSnapshot> =>
       ipcRenderer.invoke(IPC.missionsGetDashboard),
+    getFullMissionView: async (args: import("../shared/types").GetFullMissionViewArgs): Promise<import("../shared/types").FullMissionViewResult> =>
+      ipcRenderer.invoke(IPC.missionsGetFullMissionView, args),
     preflight: async (args: MissionPreflightRequest): Promise<MissionPreflightResult> =>
       ipcRenderer.invoke(IPC.missionsPreflight, args),
     getRunView: async (args: GetMissionRunViewArgs): Promise<MissionRunView | null> =>
