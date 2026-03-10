@@ -1,4 +1,4 @@
-import { useMemo, type MouseEvent as ReactMouseEvent } from "react";
+import { useMemo, useRef, type MouseEvent as ReactMouseEvent } from "react";
 import {
   Rocket,
   SpinnerGap,
@@ -9,6 +9,7 @@ import {
   List,
   Kanban,
 } from "@phosphor-icons/react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import type { MissionSummary } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton } from "../lanes/laneDesignTokens";
@@ -184,7 +185,7 @@ export function MissionSidebar() {
       </div>
 
       {/* Mission list / board */}
-      <div className="flex-1 overflow-y-auto px-2 pb-2">
+      <div className={cn("flex-1 min-h-0 px-2 pb-2", missionListView === "list" && filteredMissions.length > 0 ? "overflow-hidden" : "overflow-y-auto")}>
         {filteredMissions.length === 0 ? (
           <div className="px-2 py-8 text-center text-xs" style={{ color: COLORS.textDim }}>
             {missions.length === 0 ? (
@@ -321,17 +322,35 @@ function MissionListView(props: {
   onContextMenu: (m: MissionSummary, e: ReactMouseEvent<HTMLButtonElement>) => void;
 }) {
   const { missions, selectedMissionId, onSelect, onContextMenu } = props;
+  const parentRef = useRef<HTMLDivElement>(null);
+  const virtualizer = useVirtualizer({
+    count: missions.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 64,
+    overscan: 5,
+  });
   return (
-    <div className="space-y-1">
-      {missions.map((m) => (
-        <MissionListItem
-          key={m.id}
-          mission={m}
-          isSelected={m.id === selectedMissionId}
-          onSelect={onSelect}
-          onContextMenu={onContextMenu}
-        />
-      ))}
+    <div ref={parentRef} className="h-full overflow-y-auto" data-testid="mission-list-virtual">
+      <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
+        {virtualizer.getVirtualItems().map((virtualRow) => {
+          const m = missions[virtualRow.index]!;
+          return (
+            <div
+              key={m.id}
+              data-index={virtualRow.index}
+              ref={virtualizer.measureElement}
+              style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${virtualRow.start}px)` }}
+            >
+              <MissionListItem
+                mission={m}
+                isSelected={m.id === selectedMissionId}
+                onSelect={onSelect}
+                onContextMenu={onContextMenu}
+              />
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
