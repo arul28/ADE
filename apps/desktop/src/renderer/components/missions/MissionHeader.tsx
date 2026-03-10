@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useCallback } from "react";
 import {
   Clock,
   SpinnerGap,
@@ -9,11 +9,8 @@ import {
   Trash,
 } from "@phosphor-icons/react";
 import type {
-  MissionDetail,
   MissionSummary,
   OrchestratorExecutorKind,
-  OrchestratorRunGraph,
-  OrchestratorStep,
   StartOrchestratorRunFromMissionArgs,
 } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
@@ -27,35 +24,42 @@ import {
   filterExecutionSteps,
   isRecord,
 } from "./missionHelpers";
-import { useMissionsStore } from "./useMissionsStore";
+import { useMissionsStore, type MissionsStore } from "./useMissionsStore";
+import { useShallow } from "zustand/react/shallow";
 
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "canceled"]);
+
+/* ── Fine-grained derived selectors (VAL-ARCH-008) ── */
+const selectHeaderData = (s: MissionsStore) => ({
+  selectedMission: s.selectedMission,
+  runGraph: s.runGraph,
+  runBusy: s.runBusy,
+  checkpointStatus: s.checkpointStatus,
+  activeTab: s.activeTab,
+  cleanupBusy: s.cleanupBusy,
+  manageMissionBusy: s.manageMissionBusy,
+});
+
+const selectHeaderMissionSummary = (s: MissionsStore) => {
+  if (!s.selectedMissionId) return null;
+  return s.missions.find((m) => m.id === s.selectedMissionId) ?? null;
+};
 
 /* ════════════════════ MISSION HEADER ════════════════════ */
 
 export function MissionHeader() {
-  const selectedMission = useMissionsStore((s) => s.selectedMission);
-  const runGraph = useMissionsStore((s) => s.runGraph);
-  const runBusy = useMissionsStore((s) => s.runBusy);
-  const checkpointStatus = useMissionsStore((s) => s.checkpointStatus);
-  const activeTab = useMissionsStore((s) => s.activeTab);
-  const cleanupBusy = useMissionsStore((s) => s.cleanupBusy);
-  const manageMissionBusy = useMissionsStore((s) => s.manageMissionBusy);
-  const missions = useMissionsStore((s) => s.missions);
-  const selectedMissionId = useMissionsStore((s) => s.selectedMissionId);
+  /* ── Grouped selector for render data (VAL-ARCH-008) ── */
+  const {
+    selectedMission,
+    runGraph,
+    runBusy,
+    checkpointStatus,
+    activeTab,
+    cleanupBusy,
+    manageMissionBusy,
+  } = useMissionsStore(useShallow(selectHeaderData));
 
-  const setRunBusy = useMissionsStore((s) => s.setRunBusy);
-  const setError = useMissionsStore((s) => s.setError);
-  const setCleanupBusy = useMissionsStore((s) => s.setCleanupBusy);
-  const setMissionContextMenu = useMissionsStore((s) => s.setMissionContextMenu);
-  const refreshMissionList = useMissionsStore((s) => s.refreshMissionList);
-  const loadMissionDetail = useMissionsStore((s) => s.loadMissionDetail);
-  const loadOrchestratorGraph = useMissionsStore((s) => s.loadOrchestratorGraph);
-
-  const setManageMission = useMissionsStore((s) => s.setManageMission);
-  const setManageMissionOpen = useMissionsStore((s) => s.setManageMissionOpen);
-  const setManageMissionCleanupLanes = useMissionsStore((s) => s.setManageMissionCleanupLanes);
-  const setManageMissionError = useMissionsStore((s) => s.setManageMissionError);
+  const selectedMissionSummary = useMissionsStore(selectHeaderMissionSummary);
 
   const executionSteps = useMemo(
     () => filterExecutionSteps(runGraph?.steps ?? []),
@@ -83,11 +87,6 @@ export function MissionHeader() {
       executor: typeof autopilot?.executorKind === "string" ? autopilot.executorKind : null,
     };
   }, [runGraph]);
-
-  const selectedMissionSummary = useMemo(() => {
-    if (!selectedMissionId) return null;
-    return missions.find((m) => m.id === selectedMissionId) ?? null;
-  }, [missions, selectedMissionId]);
 
   const canStartOrRerun =
     !runGraph ||
@@ -127,28 +126,37 @@ export function MissionHeader() {
 
   const chatFocused = activeTab === "chat";
 
-  /* ── Actions ── */
-  const openManageMissionDialog = (mission: MissionSummary) => {
-    setManageMission(mission);
-    setManageMissionCleanupLanes(false);
-    setManageMissionError(null);
-    setManageMissionOpen(true);
-  };
+  /* ── Actions (access store imperatively to avoid extra subscriptions) ── */
+  const openManageMissionDialog = useCallback((mission: MissionSummary) => {
+    const s = useMissionsStore.getState();
+    s.setManageMission(mission);
+    s.setManageMissionCleanupLanes(false);
+    s.setManageMissionError(null);
+    s.setManageMissionOpen(true);
+  }, []);
 
-  const handleStartRun = async () => {
-    if (!selectedMission) return;
-    setRunBusy(true);
+  const handleStartRun = useCallback(async () => {
+    const s = useMissionsStore.getState();
+    if (!s.selectedMission) return;
+    s.setRunBusy(true);
     try {
+      const autopilot =
+        s.runGraph?.run.metadata &&
+        typeof s.runGraph.run.metadata.autopilot === "object" &&
+        !Array.isArray(s.runGraph.run.metadata.autopilot)
+          ? (s.runGraph.run.metadata.autopilot as Record<string, unknown>)
+          : null;
+      const executorKind = typeof autopilot?.executorKind === "string" ? autopilot.executorKind : null;
       const fallbackExecutor: OrchestratorExecutorKind =
-        runAutopilotState.executor && runAutopilotState.executor.length > 0
-          ? (runAutopilotState.executor as OrchestratorExecutorKind)
+        executorKind && executorKind.length > 0
+          ? (executorKind as OrchestratorExecutorKind)
           : "unified";
       const plannerProvider: "claude" | "codex" | null =
-        runAutopilotState.executor === "claude" || runAutopilotState.executor === "codex"
-          ? (runAutopilotState.executor as "claude" | "codex")
+        executorKind === "claude" || executorKind === "codex"
+          ? (executorKind as "claude" | "codex")
           : null;
       const startArgs = {
-        missionId: selectedMission.id,
+        missionId: s.selectedMission.id,
         runMode: "autopilot",
         autopilotOwnerId: "missions-autopilot",
         defaultExecutorKind: fallbackExecutor,
@@ -157,83 +165,87 @@ export function MissionHeader() {
       } satisfies StartOrchestratorRunFromMissionArgs;
       await window.ade.orchestrator.startRunFromMission(startArgs);
       await Promise.all([
-        loadOrchestratorGraph(selectedMission.id),
-        loadMissionDetail(selectedMission.id),
-        refreshMissionList({ preserveSelection: true, silent: true }),
+        s.loadOrchestratorGraph(s.selectedMission.id),
+        s.loadMissionDetail(s.selectedMission.id),
+        s.refreshMissionList({ preserveSelection: true, silent: true }),
       ]);
-      setError(null);
+      s.setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      s.setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setRunBusy(false);
+      s.setRunBusy(false);
     }
-  };
+  }, []);
 
-  const handlePauseRun = async () => {
-    if (!runGraph || !selectedMission) return;
-    setRunBusy(true);
+  const handlePauseRun = useCallback(async () => {
+    const s = useMissionsStore.getState();
+    if (!s.runGraph || !s.selectedMission) return;
+    s.setRunBusy(true);
     try {
-      await window.ade.orchestrator.pauseRun({ runId: runGraph.run.id, reason: "Paused from Missions UI." });
-      await loadOrchestratorGraph(selectedMission.id);
-      setError(null);
+      await window.ade.orchestrator.pauseRun({ runId: s.runGraph.run.id, reason: "Paused from Missions UI." });
+      await s.loadOrchestratorGraph(s.selectedMission.id);
+      s.setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      s.setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setRunBusy(false);
+      s.setRunBusy(false);
     }
-  };
+  }, []);
 
-  const handleCancelRun = async () => {
-    if (!runGraph || !selectedMission) return;
-    setRunBusy(true);
+  const handleCancelRun = useCallback(async () => {
+    const s = useMissionsStore.getState();
+    if (!s.runGraph || !s.selectedMission) return;
+    s.setRunBusy(true);
     try {
-      await window.ade.orchestrator.cancelRun({ runId: runGraph.run.id, reason: "Canceled from Missions UI." });
-      await loadOrchestratorGraph(selectedMission.id);
-      setError(null);
+      await window.ade.orchestrator.cancelRun({ runId: s.runGraph.run.id, reason: "Canceled from Missions UI." });
+      await s.loadOrchestratorGraph(s.selectedMission.id);
+      s.setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      s.setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setRunBusy(false);
+      s.setRunBusy(false);
     }
-  };
+  }, []);
 
-  const handleResumeRun = async () => {
-    if (!runGraph || !selectedMission) return;
-    setRunBusy(true);
+  const handleResumeRun = useCallback(async () => {
+    const s = useMissionsStore.getState();
+    if (!s.runGraph || !s.selectedMission) return;
+    s.setRunBusy(true);
     try {
-      await window.ade.orchestrator.resumeRun({ runId: runGraph.run.id });
-      await loadOrchestratorGraph(selectedMission.id);
-      setError(null);
+      await window.ade.orchestrator.resumeRun({ runId: s.runGraph.run.id });
+      await s.loadOrchestratorGraph(s.selectedMission.id);
+      s.setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      s.setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setRunBusy(false);
+      s.setRunBusy(false);
     }
-  };
+  }, []);
 
-  const handleCleanupLanes = async () => {
-    if (!selectedMission) return;
+  const handleCleanupLanes = useCallback(async () => {
+    const s = useMissionsStore.getState();
+    if (!s.selectedMission) return;
     if (!window.confirm("Archive ADE-managed lanes created by this mission?")) return;
-    setCleanupBusy(true);
+    s.setCleanupBusy(true);
     try {
       const result = await window.ade.orchestrator.cleanupTeamResources({
-        missionId: selectedMission.id,
+        missionId: s.selectedMission.id,
         cleanupLanes: true,
       });
       if (result.laneErrors.length > 0) {
-        setError(
+        s.setError(
           `Lane cleanup archived ${result.lanesArchived.length}/${result.laneIds.length}. ` +
             `${result.laneErrors.length} lane(s) failed to archive.`,
         );
       } else {
-        setError(null);
+        s.setError(null);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      s.setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setCleanupBusy(false);
+      s.setCleanupBusy(false);
     }
-  };
+  }, []);
 
   if (!selectedMission) return null;
 

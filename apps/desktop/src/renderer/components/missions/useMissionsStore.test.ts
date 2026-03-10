@@ -5,10 +5,19 @@ import { useMissionsStore, initialMissionsState, type MissionsStore } from "./us
 const mockMissionsList = vi.fn().mockResolvedValue([]);
 const mockMissionsGet = vi.fn().mockResolvedValue(null);
 const mockMissionsGetDashboard = vi.fn().mockResolvedValue({ active: [], recent: [], weekly: { missions: 0, successRate: 0, avgDurationMs: 0, totalCostUsd: 0 } });
+const mockGetFullMissionView = vi.fn().mockResolvedValue({
+  mission: null,
+  runGraph: null,
+  artifacts: [],
+  checkpoints: [],
+  dashboard: null,
+});
+const mockMissionsOnEvent = vi.fn().mockReturnValue(() => {});
 const mockOrchestratorListRuns = vi.fn().mockResolvedValue([]);
 const mockOrchestratorGetRunGraph = vi.fn().mockResolvedValue(null);
 const mockOrchestratorListArtifacts = vi.fn().mockResolvedValue([]);
 const mockOrchestratorListWorkerCheckpoints = vi.fn().mockResolvedValue([]);
+const mockOrchestratorOnEvent = vi.fn().mockReturnValue(() => {});
 const mockProjectConfigGet = vi.fn().mockResolvedValue({
   shared: {},
   local: { ai: {} },
@@ -26,12 +35,15 @@ vi.stubGlobal("window", {
       list: mockMissionsList,
       get: mockMissionsGet,
       getDashboard: mockMissionsGetDashboard,
+      getFullMissionView: mockGetFullMissionView,
+      onEvent: mockMissionsOnEvent,
     },
     orchestrator: {
       listRuns: mockOrchestratorListRuns,
       getRunGraph: mockOrchestratorGetRunGraph,
       listArtifacts: mockOrchestratorListArtifacts,
       listWorkerCheckpoints: mockOrchestratorListWorkerCheckpoints,
+      onEvent: mockOrchestratorOnEvent,
     },
     projectConfig: {
       get: mockProjectConfigGet,
@@ -264,6 +276,116 @@ describe("useMissionsStore", () => {
       expect(state.activeTab).toBe("plan");
       expect(state.searchFilter).toBe("hello");
       expect(state.error).toBe("some error");
+    });
+  });
+
+  describe("selectMission (VAL-ARCH-004)", () => {
+    it("calls getFullMissionView and populates store in one shot", async () => {
+      const mission = { id: "m1", title: "Test", status: "in_progress", prompt: "do stuff" };
+      const runGraph = {
+        run: { id: "r1", status: "active" },
+        steps: [{ id: "s1" }],
+        attempts: [],
+        claims: [],
+        timeline: [],
+      };
+      const artifacts = [{ id: "a1", kind: "plan", value: "plan.md" }];
+      const checkpoints = [{ id: "c1" }];
+      const dashboard = { active: [], recent: [], weekly: { missions: 1, successRate: 100, avgDurationMs: 0, totalCostUsd: 0 } };
+
+      mockGetFullMissionView.mockResolvedValueOnce({
+        mission,
+        runGraph,
+        artifacts,
+        checkpoints,
+        dashboard,
+      });
+
+      await useMissionsStore.getState().selectMission("m1");
+
+      const state = useMissionsStore.getState();
+      expect(mockGetFullMissionView).toHaveBeenCalledWith({ missionId: "m1" });
+      expect(state.selectedMissionId).toBe("m1");
+      expect(state.selectedMission).toEqual(mission);
+      expect(state.runGraph).toEqual(runGraph);
+      expect(state.orchestratorArtifacts).toEqual(artifacts);
+      expect(state.workerCheckpoints).toEqual(checkpoints);
+      expect(state.dashboard).toEqual(dashboard);
+      expect(state.originalStepCount).toBe(1);
+      expect(state.error).toBeNull();
+    });
+
+    it("clears selection when called with null", async () => {
+      useMissionsStore.setState({
+        selectedMission: { id: "m1" } as any,
+        runGraph: { run: { id: "r1" } } as any,
+        orchestratorArtifacts: [{ id: "a1" }] as any[],
+      });
+
+      await useMissionsStore.getState().selectMission(null);
+
+      const state = useMissionsStore.getState();
+      expect(state.selectedMissionId).toBeNull();
+      expect(state.selectedMission).toBeNull();
+      expect(state.runGraph).toBeNull();
+      expect(state.orchestratorArtifacts).toEqual([]);
+      expect(mockGetFullMissionView).not.toHaveBeenCalled();
+    });
+
+    it("sets error on failure without crashing", async () => {
+      mockGetFullMissionView.mockRejectedValueOnce(new Error("IPC error"));
+
+      await useMissionsStore.getState().selectMission("m1");
+
+      expect(useMissionsStore.getState().error).toBe("IPC error");
+      expect(useMissionsStore.getState().selectedMissionId).toBe("m1");
+    });
+
+    it("resets transient state on new selection", async () => {
+      useMissionsStore.setState({
+        chatJumpTarget: { kind: "coordinator", runId: "r1" } as any,
+        logsFocusInterventionId: "intv-1",
+        coordinatorPromptInspector: { sections: [] } as any,
+      });
+      mockGetFullMissionView.mockResolvedValueOnce({
+        mission: null,
+        runGraph: null,
+        artifacts: [],
+        checkpoints: [],
+        dashboard: null,
+      });
+
+      await useMissionsStore.getState().selectMission("m2");
+
+      const state = useMissionsStore.getState();
+      expect(state.chatJumpTarget).toBeNull();
+      expect(state.logsFocusInterventionId).toBeNull();
+      expect(state.coordinatorPromptInspector).toBeNull();
+    });
+  });
+
+  describe("initEventSubscriptions (VAL-ARCH-007)", () => {
+    it("subscribes to mission and orchestrator events", () => {
+      const cleanup = useMissionsStore.getState().initEventSubscriptions();
+
+      expect(mockMissionsOnEvent).toHaveBeenCalledTimes(1);
+      expect(mockOrchestratorOnEvent).toHaveBeenCalledTimes(1);
+
+      // Cleanup should call the unsub fns
+      cleanup();
+    });
+
+    it("returns a cleanup function that unsubscribes", () => {
+      const unsubMissions = vi.fn();
+      const unsubOrchestrator = vi.fn();
+      mockMissionsOnEvent.mockReturnValueOnce(unsubMissions);
+      mockOrchestratorOnEvent.mockReturnValueOnce(unsubOrchestrator);
+
+      const cleanup = useMissionsStore.getState().initEventSubscriptions();
+      cleanup();
+
+      expect(unsubMissions).toHaveBeenCalledTimes(1);
+      expect(unsubOrchestrator).toHaveBeenCalledTimes(1);
     });
   });
 });

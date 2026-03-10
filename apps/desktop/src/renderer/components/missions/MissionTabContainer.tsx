@@ -12,7 +12,8 @@ import type {
 import { cn } from "../ui/cn";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { type WorkspaceTab, filterExecutionSteps, isRecord } from "./missionHelpers";
-import { useMissionsStore } from "./useMissionsStore";
+import { useMissionsStore, type MissionsStore } from "./useMissionsStore";
+import { useShallow } from "zustand/react/shallow";
 
 /* ── Imported tab content components ── */
 import { OrchestratorActivityFeed } from "./OrchestratorActivityFeed";
@@ -109,41 +110,63 @@ function SubTabButton(props: {
   );
 }
 
+/* ══════════════════ Grouped selectors (VAL-ARCH-008) ══════════════════ */
+
+/** Core render data for tab content — grouped to avoid N separate subscriptions. */
+const selectTabContentData = (s: MissionsStore) => ({
+  selectedMissionId: s.selectedMissionId,
+  selectedMission: s.selectedMission,
+  runGraph: s.runGraph,
+  activeTab: s.activeTab,
+  planSubview: s.planSubview,
+  selectedStepId: s.selectedStepId,
+  activityPanelMode: s.activityPanelMode,
+  orchestratorArtifacts: s.orchestratorArtifacts,
+  workerCheckpoints: s.workerCheckpoints,
+  modelCapabilities: s.modelCapabilities,
+  chatJumpTarget: s.chatJumpTarget,
+  logsFocusInterventionId: s.logsFocusInterventionId,
+  steerBusy: s.steerBusy,
+});
+
+/** Prompt inspector state — rarely changes, grouped separately. */
+const selectPromptInspectorData = (s: MissionsStore) => ({
+  coordinatorPromptInspector: s.coordinatorPromptInspector,
+  coordinatorPromptLoading: s.coordinatorPromptLoading,
+  coordinatorPromptError: s.coordinatorPromptError,
+  workerPromptInspector: s.workerPromptInspector,
+  workerPromptLoading: s.workerPromptLoading,
+  workerPromptError: s.workerPromptError,
+});
+
 /* ════════════════════ TAB CONTENT ════════════════════ */
 
 export function MissionTabContent() {
-  const selectedMissionId = useMissionsStore((s) => s.selectedMissionId);
-  const selectedMission = useMissionsStore((s) => s.selectedMission);
-  const runGraph = useMissionsStore((s) => s.runGraph);
-  const activeTab = useMissionsStore((s) => s.activeTab);
-  const planSubview = useMissionsStore((s) => s.planSubview);
-  const selectedStepId = useMissionsStore((s) => s.selectedStepId);
-  const activityPanelMode = useMissionsStore((s) => s.activityPanelMode);
-  const orchestratorArtifacts = useMissionsStore((s) => s.orchestratorArtifacts);
-  const workerCheckpoints = useMissionsStore((s) => s.workerCheckpoints);
-  const modelCapabilities = useMissionsStore((s) => s.modelCapabilities);
-  const coordinatorPromptInspector = useMissionsStore((s) => s.coordinatorPromptInspector);
-  const coordinatorPromptLoading = useMissionsStore((s) => s.coordinatorPromptLoading);
-  const coordinatorPromptError = useMissionsStore((s) => s.coordinatorPromptError);
-  const workerPromptInspector = useMissionsStore((s) => s.workerPromptInspector);
-  const workerPromptLoading = useMissionsStore((s) => s.workerPromptLoading);
-  const workerPromptError = useMissionsStore((s) => s.workerPromptError);
-  const chatJumpTarget = useMissionsStore((s) => s.chatJumpTarget);
-  const logsFocusInterventionId = useMissionsStore((s) => s.logsFocusInterventionId);
-  const steerBusy = useMissionsStore((s) => s.steerBusy);
+  /* ── Grouped selectors (VAL-ARCH-008) ── */
+  const {
+    selectedMissionId,
+    selectedMission,
+    runGraph,
+    activeTab,
+    planSubview,
+    selectedStepId,
+    activityPanelMode,
+    orchestratorArtifacts,
+    workerCheckpoints,
+    modelCapabilities,
+    chatJumpTarget,
+    logsFocusInterventionId,
+    steerBusy,
+  } = useMissionsStore(useShallow(selectTabContentData));
 
-  const setPlanSubview = useMissionsStore((s) => s.setPlanSubview);
-  const setSelectedStepId = useMissionsStore((s) => s.setSelectedStepId);
-  const setActiveTab = useMissionsStore((s) => s.setActiveTab);
-  const setActivityPanelMode = useMissionsStore((s) => s.setActivityPanelMode);
-  const setChatJumpTarget = useMissionsStore((s) => s.setChatJumpTarget);
-  const setLogsFocusInterventionId = useMissionsStore((s) => s.setLogsFocusInterventionId);
-  const setError = useMissionsStore((s) => s.setError);
-  const setSteerBusy = useMissionsStore((s) => s.setSteerBusy);
-  const setActiveInterventionId = useMissionsStore((s) => s.setActiveInterventionId);
-  const refreshMissionList = useMissionsStore((s) => s.refreshMissionList);
-  const loadMissionDetail = useMissionsStore((s) => s.loadMissionDetail);
-  const loadOrchestratorGraph = useMissionsStore((s) => s.loadOrchestratorGraph);
+  const {
+    coordinatorPromptInspector,
+    coordinatorPromptLoading,
+    coordinatorPromptError,
+    workerPromptInspector,
+    workerPromptLoading,
+    workerPromptError,
+  } = useMissionsStore(useShallow(selectPromptInspectorData));
 
   const runSteps = useMemo(() => runGraph?.steps ?? [], [runGraph?.steps]);
   const runAttempts = useMemo(() => runGraph?.attempts ?? [], [runGraph?.attempts]);
@@ -214,50 +237,53 @@ export function MissionTabContent() {
   const compactPhaseChrome = chatFocused;
   const showCompletionBanner = activeTab !== "chat";
 
-  /* ── Prompt inspectors ── */
+  /* ── Prompt inspectors (imperative store access to avoid extra subscriptions) ── */
   const loadCoordinatorPromptInspector = async () => {
-    if (!runGraph) return;
-    useMissionsStore.getState().setCoordinatorPromptLoading(true);
-    useMissionsStore.getState().setCoordinatorPromptError(null);
+    const s = useMissionsStore.getState();
+    if (!s.runGraph) return;
+    s.setCoordinatorPromptLoading(true);
+    s.setCoordinatorPromptError(null);
     try {
       const inspector = await window.ade.orchestrator.getPromptInspector({
-        runId: runGraph.run.id,
+        runId: s.runGraph.run.id,
         target: "coordinator",
       });
-      useMissionsStore.getState().setCoordinatorPromptInspector(inspector);
+      s.setCoordinatorPromptInspector(inspector);
     } catch (err) {
-      useMissionsStore.getState().setCoordinatorPromptError(err instanceof Error ? err.message : String(err));
+      s.setCoordinatorPromptError(err instanceof Error ? err.message : String(err));
     } finally {
-      useMissionsStore.getState().setCoordinatorPromptLoading(false);
+      s.setCoordinatorPromptLoading(false);
     }
   };
 
   const loadWorkerPromptInspector = async (stepId: string) => {
-    if (!runGraph) return;
-    useMissionsStore.getState().setWorkerPromptLoading(true);
-    useMissionsStore.getState().setWorkerPromptError(null);
+    const s = useMissionsStore.getState();
+    if (!s.runGraph) return;
+    s.setWorkerPromptLoading(true);
+    s.setWorkerPromptError(null);
     try {
       const inspector = await window.ade.orchestrator.getPromptInspector({
-        runId: runGraph.run.id,
+        runId: s.runGraph.run.id,
         target: "worker",
         stepId,
       });
-      useMissionsStore.getState().setWorkerPromptInspector(inspector);
+      s.setWorkerPromptInspector(inspector);
     } catch (err) {
-      useMissionsStore.getState().setWorkerPromptError(err instanceof Error ? err.message : String(err));
+      s.setWorkerPromptError(err instanceof Error ? err.message : String(err));
     } finally {
-      useMissionsStore.getState().setWorkerPromptLoading(false);
+      s.setWorkerPromptLoading(false);
     }
   };
 
-  /* ── Intervention handling ── */
+  /* ── Intervention handling (imperative store access) ── */
   const handleOpenIntervention = (interventionId: string) => {
-    if (!selectedMission) return;
-    const intervention = selectedMission.interventions.find((e) => e.id === interventionId) ?? null;
+    const s = useMissionsStore.getState();
+    if (!s.selectedMission) return;
+    const intervention = s.selectedMission.interventions.find((e) => e.id === interventionId) ?? null;
     if (!intervention || intervention.status !== "open") return;
 
     if (intervention.interventionType === "manual_input") {
-      setActiveInterventionId(intervention.id);
+      s.setActiveInterventionId(intervention.id);
       return;
     }
 
@@ -267,64 +293,65 @@ export function MissionTabContent() {
     const interventionStepKey = typeof metadata.stepKey === "string" && metadata.stepKey.trim().length > 0 ? metadata.stepKey.trim() : null;
     const interventionAttemptId = typeof metadata.attemptId === "string" && metadata.attemptId.trim().length > 0 ? metadata.attemptId.trim() : null;
     const reasonCode = typeof metadata.reasonCode === "string" && metadata.reasonCode.trim().length > 0 ? metadata.reasonCode.trim() : null;
-    const currentRunId = runGraph?.run.id ?? null;
+    const currentRunId = s.runGraph?.run.id ?? null;
     const sameRun = interventionRunId ? interventionRunId === currentRunId : Boolean(currentRunId);
     const resolvedStepId =
-      sameRun && interventionStepId && runGraph?.steps.some((step) => step.id === interventionStepId)
+      sameRun && interventionStepId && s.runGraph?.steps.some((step) => step.id === interventionStepId)
         ? interventionStepId
         : null;
 
     if (reasonCode === "coordinator_unavailable" || reasonCode === "coordinator_recovery_failed") {
-      setLogsFocusInterventionId(null);
-      setChatJumpTarget({ kind: "coordinator", runId: interventionRunId ?? currentRunId });
-      setActiveTab("chat");
+      s.setLogsFocusInterventionId(null);
+      s.setChatJumpTarget({ kind: "coordinator", runId: interventionRunId ?? currentRunId });
+      s.setActiveTab("chat");
       return;
     }
 
     if (intervention.interventionType === "failed_step") {
       if (resolvedStepId) {
-        setSelectedStepId(resolvedStepId);
-        setPlanSubview("board");
+        s.setSelectedStepId(resolvedStepId);
+        s.setPlanSubview("board");
       }
       if (sameRun && (interventionAttemptId || resolvedStepId || interventionStepKey)) {
-        setLogsFocusInterventionId(null);
-        setChatJumpTarget({
+        s.setLogsFocusInterventionId(null);
+        s.setChatJumpTarget({
           kind: "worker",
           runId: interventionRunId ?? currentRunId,
           stepId: resolvedStepId,
           stepKey: interventionStepKey,
           attemptId: interventionAttemptId,
         });
-        setActiveTab("chat");
+        s.setActiveTab("chat");
         return;
       }
-      setLogsFocusInterventionId(intervention.id);
-      setActiveTab("history");
+      s.setLogsFocusInterventionId(intervention.id);
+      s.setActiveTab("history");
       return;
     }
 
-    setLogsFocusInterventionId(intervention.id);
-    setActiveTab("history");
+    s.setLogsFocusInterventionId(intervention.id);
+    s.setActiveTab("history");
   };
 
   const handleInterventionResponse = async (interventionId: string, directiveText: string) => {
-    if (!selectedMission) return;
-    setSteerBusy(true);
+    const s = useMissionsStore.getState();
+    if (!s.selectedMission) return;
+    s.setSteerBusy(true);
     try {
       await window.ade.orchestrator.steerMission({
-        missionId: selectedMission.id,
+        missionId: s.selectedMission.id,
         interventionId,
         directive: directiveText,
         priority: "instruction",
       });
-      setActiveInterventionId(null);
-      await refreshMissionList({ preserveSelection: true, silent: true });
-      await loadMissionDetail(selectedMission.id);
-      await loadOrchestratorGraph(selectedMission.id);
+      s.setActiveInterventionId(null);
+      await s.refreshMissionList({ preserveSelection: true, silent: true });
+      await s.loadMissionDetail(s.selectedMission.id);
+      await s.loadOrchestratorGraph(s.selectedMission.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      s.setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSteerBusy(false);
+      s.setSteerBusy(false);
     }
   };
 
@@ -392,7 +419,7 @@ export function MissionTabContent() {
                     color: planSubview === "board" ? COLORS.accent : COLORS.textMuted,
                     border: `1px solid ${planSubview === "board" ? `${COLORS.accent}35` : COLORS.border}`,
                   })}
-                  onClick={() => setPlanSubview("board")}
+                  onClick={() => useMissionsStore.getState().setPlanSubview("board")}
                 >
                   BOARD
                 </button>
@@ -404,19 +431,19 @@ export function MissionTabContent() {
                     color: planSubview === "dag" ? COLORS.accent : COLORS.textMuted,
                     border: `1px solid ${planSubview === "dag" ? `${COLORS.accent}35` : COLORS.border}`,
                   })}
-                  onClick={() => setPlanSubview("dag")}
+                  onClick={() => useMissionsStore.getState().setPlanSubview("dag")}
                 >
                   DAG
                 </button>
               </div>
               {planSubview === "board" ? (
-                <PlanTab mission={selectedMission} runGraph={runGraph} attemptsByStep={attemptsByStep} selectedStepId={selectedStepId} onStepSelect={setSelectedStepId} />
+                <PlanTab mission={selectedMission} runGraph={runGraph} attemptsByStep={attemptsByStep} selectedStepId={selectedStepId} onStepSelect={(id) => useMissionsStore.getState().setSelectedStepId(id)} />
               ) : (
-                <OrchestratorDAG steps={runSteps} attempts={runAttempts} claims={runClaims} selectedStepId={selectedStepId} onStepClick={setSelectedStepId} runId={runGraph?.run?.id} />
+                <OrchestratorDAG steps={runSteps} attempts={runAttempts} claims={runClaims} selectedStepId={selectedStepId} onStepClick={(id) => useMissionsStore.getState().setSelectedStepId(id)} runId={runGraph?.run?.id} />
               )}
             </div>
             <div className="space-y-3 lg:w-[380px] lg:max-w-[40%] lg:shrink-0">
-              <StepDetailPanel step={selectedStep} attempts={selectedStepAttempts} allSteps={runSteps} claims={runClaims} onOpenWorkerThread={(target) => { setChatJumpTarget(target); setActiveTab("chat"); }} onInspectPrompt={(stepId) => void loadWorkerPromptInspector(stepId)} />
+              <StepDetailPanel step={selectedStep} attempts={selectedStepAttempts} allSteps={runSteps} claims={runClaims} onOpenWorkerThread={(target) => { useMissionsStore.getState().setChatJumpTarget(target); useMissionsStore.getState().setActiveTab("chat"); }} onInspectPrompt={(stepId) => void loadWorkerPromptInspector(stepId)} />
               {selectedStep ? <PromptInspectorCard inspector={workerPromptInspector} loading={workerPromptLoading} error={workerPromptError} title="Selected step effective prompt" /> : null}
             </div>
           </div>
@@ -425,8 +452,8 @@ export function MissionTabContent() {
         {activeTab === "history" && (
           <div className="space-y-3">
             <div className="flex items-center gap-1">
-              <ModeToggleButton label="Timeline" tab="signal" activeMode={activityPanelMode} onSelect={(m) => setActivityPanelMode(m as "signal" | "logs")} />
-              <ModeToggleButton label="Raw Logs" tab="logs" activeMode={activityPanelMode} onSelect={(m) => setActivityPanelMode(m as "signal" | "logs")} />
+              <ModeToggleButton label="Timeline" tab="signal" activeMode={activityPanelMode} onSelect={(m) => useMissionsStore.getState().setActivityPanelMode(m as "signal" | "logs")} />
+              <ModeToggleButton label="Raw Logs" tab="logs" activeMode={activityPanelMode} onSelect={(m) => useMissionsStore.getState().setActivityPanelMode(m as "signal" | "logs")} />
             </div>
             {activityPanelMode === "signal" ? (
               <>
@@ -446,7 +473,7 @@ export function MissionTabContent() {
                 missionId={selectedMission.id}
                 runId={runGraph?.run.id ?? null}
                 focusInterventionId={logsFocusInterventionId}
-                onFocusHandled={() => setLogsFocusInterventionId(null)}
+                onFocusHandled={() => useMissionsStore.getState().setLogsFocusInterventionId(null)}
               />
             ) : null}
           </div>
@@ -455,7 +482,7 @@ export function MissionTabContent() {
         {activeTab === "chat" && selectedMissionId && (
           <div className="flex flex-1 min-h-0 overflow-hidden">
             <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-              <MissionChatV2 missionId={selectedMissionId} missionStatus={selectedMission?.status ?? null} runId={runGraph?.run.id ?? null} runStatus={runGraph?.run.status ?? null} runMetadata={runGraph?.run.metadata ?? null} runView={runView} jumpTarget={chatJumpTarget} onJumpHandled={() => setChatJumpTarget(null)} />
+              <MissionChatV2 missionId={selectedMissionId} missionStatus={selectedMission?.status ?? null} runId={runGraph?.run.id ?? null} runStatus={runGraph?.run.status ?? null} runMetadata={runGraph?.run.metadata ?? null} runView={runView} jumpTarget={chatJumpTarget} onJumpHandled={() => useMissionsStore.getState().setChatJumpTarget(null)} />
             </div>
             {runView && (<div className="w-[280px] shrink-0 overflow-y-auto p-2" style={{ borderLeft: `1px solid ${COLORS.border}`, background: COLORS.pageBg }}><MissionRunPanel runView={runView} interventions={selectedMission?.interventions} onOpenIntervention={handleOpenIntervention} /></div>)}
           </div>

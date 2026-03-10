@@ -200,6 +200,19 @@ export type MissionsActions = {
   saveMissionSettings: () => Promise<void>;
   applyMissionSettingsSnapshot: (snapshot: ProjectConfigSnapshot) => void;
 
+  /** Consolidated mission selection via single getFullMissionView IPC call. */
+  selectMission: (missionId: string | null) => Promise<void>;
+
+  /* ── Event subscription lifecycle ── */
+  /** Start event subscriptions and debounced refresh timers. Returns cleanup fn. */
+  initEventSubscriptions: () => () => void;
+
+  /* ── Attention toast management (timers owned by store, not components) ── */
+  addAttentionToast: (message: string, severity: "warning" | "error", missionTitle: string, missionId: string) => void;
+  dismissAttentionToast: (id: string) => void;
+  /** Cleanup all toast timers (call on unmount) */
+  cleanupToastTimers: () => void;
+
   /* ── Selection reset ── */
   clearSelection: () => void;
 };
@@ -254,6 +267,9 @@ export const initialMissionsState: MissionsState = {
   manageMissionError: null,
   cleanupBusy: false,
 };
+
+/* ── Toast timer registry (module-scoped, not per-render) ── */
+const toastTimers = new Map<string, number>();
 
 /* ════════════════════ STORE CREATION ════════════════════ */
 
@@ -542,6 +558,123 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
     } finally {
       set({ missionSettingsBusy: false });
     }
+  },
+
+  /* ── Consolidated mission selection (VAL-ARCH-004) ── */
+  selectMission: async (missionId: string | null) => {
+    // Update selected ID immediately for responsive UI
+    set({ selectedMissionId: missionId });
+
+    if (!missionId) {
+      get().clearSelection();
+      return;
+    }
+
+    // Reset transient state for new selection
+    set({
+      chatJumpTarget: null,
+      logsFocusInterventionId: null,
+      activityPanelMode: "signal",
+      coordinatorPromptInspector: null,
+      workerPromptInspector: null,
+    });
+
+    try {
+      const view = await window.ade.missions.getFullMissionView({ missionId });
+      set((state) => ({
+        selectedMission: view.mission,
+        runGraph: view.runGraph,
+        orchestratorArtifacts: Array.isArray(view.artifacts) ? view.artifacts : [],
+        workerCheckpoints: Array.isArray(view.checkpoints) ? view.checkpoints : [],
+        dashboard: view.dashboard ?? state.dashboard,
+        originalStepCount:
+          state.originalStepCount === null && view.runGraph && view.runGraph.steps.length > 0
+            ? view.runGraph.steps.length
+            : state.originalStepCount,
+        error: null,
+      }));
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
+  /* ── Event subscriptions (VAL-ARCH-007) ── */
+  initEventSubscriptions: () => {
+    let graphRefreshTimer: number | null = null;
+    let missionEventTimer: number | null = null;
+    let orchestratorEventTimer: number | null = null;
+
+    const scheduleGraphRefresh = (missionId: string, delayMs = 180) => {
+      if (graphRefreshTimer !== null) window.clearTimeout(graphRefreshTimer);
+      graphRefreshTimer = window.setTimeout(() => {
+        graphRefreshTimer = null;
+        void get().loadOrchestratorGraph(missionId);
+      }, delayMs);
+    };
+
+    const unsubMissions = window.ade.missions.onEvent((payload) => {
+      if (missionEventTimer !== null) window.clearTimeout(missionEventTimer);
+      missionEventTimer = window.setTimeout(() => {
+        missionEventTimer = null;
+        void get().refreshMissionList({ preserveSelection: true, silent: true });
+        void get().loadDashboard();
+        const currentSelectedId = get().selectedMissionId;
+        if (payload.missionId && payload.missionId === currentSelectedId) {
+          void get().loadMissionDetail(payload.missionId);
+          scheduleGraphRefresh(payload.missionId, 120);
+          void get().loadRunArtifacts(payload.missionId, get().runGraph?.run.id ?? null);
+        }
+      }, 300);
+    });
+
+    const unsubOrchestrator = window.ade.orchestrator.onEvent((event) => {
+      const currentSelectedId = get().selectedMissionId;
+      if (!currentSelectedId) return;
+      const selectedRunId = get().runGraph?.run.id ?? null;
+      if (selectedRunId && event.runId && event.runId !== selectedRunId) return;
+      if (orchestratorEventTimer !== null) window.clearTimeout(orchestratorEventTimer);
+      orchestratorEventTimer = window.setTimeout(() => {
+        orchestratorEventTimer = null;
+        scheduleGraphRefresh(currentSelectedId);
+        void get().loadDashboard();
+        void get().loadRunArtifacts(currentSelectedId, selectedRunId);
+      }, 300);
+    });
+
+    return () => {
+      if (graphRefreshTimer !== null) window.clearTimeout(graphRefreshTimer);
+      if (missionEventTimer !== null) window.clearTimeout(missionEventTimer);
+      if (orchestratorEventTimer !== null) window.clearTimeout(orchestratorEventTimer);
+      unsubMissions();
+      unsubOrchestrator();
+    };
+  },
+
+  /* ── Attention toast management (VAL-ARCH-007) ── */
+  addAttentionToast: (message, severity, missionTitle, missionId) => {
+    const id = globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+    set((state) => ({
+      attentionToasts: [
+        { id, missionTitle, message, severity, missionId },
+        ...state.attentionToasts,
+      ].slice(0, 3),
+    }));
+    const timer = window.setTimeout(() => get().dismissAttentionToast(id), 12_000);
+    toastTimers.set(id, timer);
+  },
+
+  dismissAttentionToast: (id) => {
+    set((state) => ({
+      attentionToasts: state.attentionToasts.filter((t) => t.id !== id),
+    }));
+    const timer = toastTimers.get(id);
+    if (timer != null) window.clearTimeout(timer);
+    toastTimers.delete(id);
+  },
+
+  cleanupToastTimers: () => {
+    for (const timer of toastTimers.values()) window.clearTimeout(timer);
+    toastTimers.clear();
   },
 
   /* ── Selection reset ── */
