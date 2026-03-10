@@ -68,6 +68,12 @@ function setupWindowAde(healthStatsSequence: MemoryHealthStats[], downloadRespon
       runConsolidation: vi.fn(async () => undefined),
       onConsolidationStatus: vi.fn(() => () => undefined),
       downloadEmbeddingModel,
+      getBudget: vi.fn(async () => []),
+      getCandidates: vi.fn(async () => []),
+      search: vi.fn(async () => []),
+      pin: vi.fn(async () => undefined),
+      archive: vi.fn(async () => undefined),
+      promote: vi.fn(async () => undefined),
     },
     ai: {
       getStatus: vi.fn(async () => ({
@@ -101,12 +107,15 @@ describe("EmbeddingHealthSection", () => {
 
     render(<MemoryHealthTab />);
 
-    expect(await screen.findByText("Memory Health")).toBeTruthy();
-    expect(screen.getByText("ENTRY COUNTS")).toBeTruthy();
-    expect(screen.getByText("EMBEDDINGS")).toBeTruthy();
-    expect(screen.getByText("0 / 0 entries embedded")).toBeTruthy();
-    expect(screen.getByText("Model unavailable")).toBeTruthy();
+    expect(await screen.findByText("Memory")).toBeTruthy();
+    expect(screen.getByText("STORAGE USAGE")).toBeTruthy();
+    expect(screen.getByText("SMART SEARCH")).toBeTruthy();
+    expect(screen.getByText("0 / 0 indexed")).toBeTruthy();
+    expect(screen.getByText("Not downloaded")).toBeTruthy();
     expect(screen.getByRole("button", { name: /download model/i })).toBeTruthy();
+
+    // Cache stats are inside Advanced section
+    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
     expect(screen.getByText("Cache size")).toBeTruthy();
     expect(screen.getByText("Hit rate")).toBeTruthy();
   });
@@ -234,12 +243,12 @@ describe("EmbeddingHealthSection", () => {
 
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(screen.getByText("2 / 8 entries embedded")).toBeTruthy();
+    expect(screen.getByText("2 / 8 indexed")).toBeTruthy();
 
     await vi.advanceTimersByTimeAsync(1600);
     await Promise.resolve();
 
-    expect(screen.getByText("5 / 8 entries embedded")).toBeTruthy();
+    expect(screen.getByText("5 / 8 indexed")).toBeTruthy();
     expect(bridge.getHealthStats).toHaveBeenCalledTimes(2);
   });
 });

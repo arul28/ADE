@@ -160,6 +160,12 @@ function setupWindowAde(options: BridgeOptions = {}) {
       downloadEmbeddingModel: vi.fn(async () => createHealthStats()),
       runSweep,
       runConsolidation,
+      getBudget: vi.fn(async () => []),
+      getCandidates: vi.fn(async () => []),
+      search: vi.fn(async () => []),
+      pin: vi.fn(async () => undefined),
+      archive: vi.fn(async () => undefined),
+      promote: vi.fn(async () => undefined),
       onSweepStatus: vi.fn((cb: (payload: MemorySweepStatusEventPayload) => void) => {
         sweepListener = cb;
         return () => {
@@ -210,12 +216,15 @@ describe("MemoryHealthTab", () => {
     render(<MemoryHealthTab />);
 
     expect(await screen.findByText("Project: 0 / 2,000")).toBeTruthy();
-    expect(screen.getAllByText("No sweeps yet").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("No consolidations yet").length).toBeGreaterThan(0);
     expect(screen.getByText("Project: 0 / 2,000")).toBeTruthy();
     expect(screen.getByText("Agent: 0 / 500")).toBeTruthy();
     expect(screen.getByText("Mission: 0 / 200")).toBeTruthy();
-    expect(screen.getByRole("progressbar", { name: /project hard limit usage/i }).getAttribute("aria-valuenow")).toBe("0");
+    expect(screen.getByRole("progressbar", { name: /project storage usage/i }).getAttribute("aria-valuenow")).toBe("0");
+
+    // "No sweeps yet" / "No consolidations yet" are inside the Advanced section
+    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+    expect(screen.getAllByText("No sweeps yet").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("No consolidations yet").length).toBeGreaterThan(0);
   });
 
   it("renders entry counts by scope and tier", async () => {
@@ -233,11 +242,13 @@ describe("MemoryHealthTab", () => {
 
     render(<MemoryHealthTab />);
 
-    const projectCard = await screen.findByLabelText("Project entry counts");
-    expect(within(projectCard).getByText("1")).toBeTruthy();
-    expect(within(projectCard).getByText("2")).toBeTruthy();
-    expect(within(projectCard).getByText("7")).toBeTruthy();
-    expect(within(projectCard).getByText("3")).toBeTruthy();
+    // Wait for data to load; tier counts are displayed as "T1: N" text under each scope
+    expect(await screen.findByText("Project: 10 / 2,000")).toBeTruthy();
+    expect(screen.getByText("T1: 1")).toBeTruthy();
+    expect(screen.getByText("T2: 2")).toBeTruthy();
+    expect(screen.getByText("T3: 7")).toBeTruthy();
+    // "3" appears as "Archived: 3"
+    expect(screen.getByText("Archived: 3")).toBeTruthy();
   });
 
   it("renders last sweep details", async () => {
@@ -263,7 +274,11 @@ describe("MemoryHealthTab", () => {
 
     render(<MemoryHealthTab />);
 
-    expect(await screen.findByText(/Decayed 4/i)).toBeTruthy();
+    // Wait for data to load, then expand Advanced to see sweep details
+    await screen.findByText("Project: 0 / 2,000");
+    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+
+    expect(screen.getByText(/Decayed 4/i)).toBeTruthy();
     expect(screen.getByText(/Demoted 1/i)).toBeTruthy();
     expect(screen.getByText(/Orphaned 1/i)).toBeTruthy();
   });
@@ -290,7 +305,11 @@ describe("MemoryHealthTab", () => {
 
     render(<MemoryHealthTab />);
 
-    expect(await screen.findByText(/Clusters 3/i)).toBeTruthy();
+    // Wait for data to load, then expand Advanced to see consolidation details
+    await screen.findByText("Project: 0 / 2,000");
+    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+
+    expect(screen.getByText(/Clusters 3/i)).toBeTruthy();
     expect(screen.getByText(/Merged 9/i)).toBeTruthy();
     expect(screen.getByText(/Created 3/i)).toBeTruthy();
   });
@@ -318,7 +337,9 @@ describe("MemoryHealthTab", () => {
     });
 
     render(<MemoryHealthTab />);
-    fireEvent.click(await screen.findByRole("button", { name: /run sweep now/i }));
+    await screen.findByText("Project: 0 / 2,000");
+    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+    fireEvent.click(screen.getByRole("button", { name: /run sweep now/i }));
 
     await waitFor(() => {
       expect(bridge.runSweep).toHaveBeenCalledTimes(1);
@@ -332,7 +353,9 @@ describe("MemoryHealthTab", () => {
     setupWindowAde({ runSweep: () => pendingSweep.promise });
 
     render(<MemoryHealthTab />);
-    const button = await screen.findByRole("button", { name: /run sweep now/i });
+    await screen.findByText("Project: 0 / 2,000");
+    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+    const button = screen.getByRole("button", { name: /run sweep now/i });
     fireEvent.click(button);
 
     await waitFor(() => {
@@ -353,7 +376,9 @@ describe("MemoryHealthTab", () => {
     });
 
     render(<MemoryHealthTab />);
-    fireEvent.click(await screen.findByRole("button", { name: /run sweep now/i }));
+    await screen.findByText("Project: 0 / 2,000");
+    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+    fireEvent.click(screen.getByRole("button", { name: /run sweep now/i }));
 
     expect(await screen.findByText("Sweep exploded.")).toBeTruthy();
     expect((screen.getByRole("button", { name: /run sweep now/i }) as HTMLButtonElement).disabled).toBe(false);
@@ -381,7 +406,9 @@ describe("MemoryHealthTab", () => {
     });
 
     render(<MemoryHealthTab />);
-    fireEvent.click(await screen.findByRole("button", { name: /run consolidation now/i }));
+    await screen.findByText("Project: 0 / 2,000");
+    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+    fireEvent.click(screen.getByRole("button", { name: /run consolidation now/i }));
 
     await waitFor(() => {
       expect(bridge.runConsolidation).toHaveBeenCalledTimes(1);
@@ -395,7 +422,9 @@ describe("MemoryHealthTab", () => {
     setupWindowAde({ runConsolidation: () => pending.promise });
 
     render(<MemoryHealthTab />);
-    fireEvent.click(await screen.findByRole("button", { name: /run consolidation now/i }));
+    await screen.findByText("Project: 0 / 2,000");
+    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+    fireEvent.click(screen.getByRole("button", { name: /run consolidation now/i }));
 
     await waitFor(() => {
       expect((screen.getByRole("button", { name: /running consolidation/i }) as HTMLButtonElement).disabled).toBe(true);
@@ -415,7 +444,9 @@ describe("MemoryHealthTab", () => {
     });
 
     render(<MemoryHealthTab />);
-    fireEvent.click(await screen.findByRole("button", { name: /run consolidation now/i }));
+    await screen.findByText("Project: 0 / 2,000");
+    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+    fireEvent.click(screen.getByRole("button", { name: /run consolidation now/i }));
 
     expect(await screen.findByText("Consolidation failed.")).toBeTruthy();
     expect((screen.getByRole("button", { name: /run consolidation now/i }) as HTMLButtonElement).disabled).toBe(false);
@@ -428,6 +459,7 @@ describe("MemoryHealthTab", () => {
 
     render(<MemoryHealthTab />);
     await screen.findByText("Project: 0 / 2,000");
+    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
 
     bridge.emitSweepStatus({
       type: "memory-sweep-started",
@@ -462,6 +494,7 @@ describe("MemoryHealthTab", () => {
     const bridge = setupWindowAde();
     render(<MemoryHealthTab />);
     await screen.findByText("Project: 0 / 2,000");
+    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
 
     bridge.emitConsolidationStatus({
       type: "memory-consolidation-failed",
@@ -485,6 +518,10 @@ describe("MemoryHealthTab", () => {
     });
 
     render(<MemoryHealthTab />);
+
+    // Wait for data to load, then expand Advanced to access the consolidation model select
+    await screen.findByText("Project: 0 / 2,000");
+    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
 
     const select = await screen.findByLabelText(/consolidation model/i);
     await waitFor(() => {
@@ -512,6 +549,6 @@ describe("MemoryHealthTab", () => {
     );
 
     expect(await screen.findByRole("button", { name: /memory/i })).toBeTruthy();
-    expect(screen.getByText("Memory Health")).toBeTruthy();
+    expect(screen.getByText("Memory")).toBeTruthy();
   });
 });
