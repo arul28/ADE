@@ -1,0 +1,40 @@
+{
+  "featureId": "planning-flow-and-handoffs",
+  "reviewedAt": "2026-03-10T06:41:00.274850Z",
+  "commitId": "70c66ad",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The prompt and downstream handoff updates look real, but the feature does not fully satisfy the planning-and-handoffs contract. Planning workers are told to use ask_user without actually receiving that tool in the read-only worker allowlist, plan outputs are still only wired into orchestrator artifacts instead of mission artifacts, and the ExitPlanMode handling only exempts ~/.claude/plans sandbox-block text rather than cleanly handling the broader ExitPlanMode/Zod failure mode described by the contract.",
+    "issues": [
+      {
+        "file": "apps/desktop/src/main/services/orchestrator/unifiedOrchestratorAdapter.ts",
+        "line": 155,
+        "severity": "blocking",
+        "description": "VAL-PLAN-003 is not met. Read-only planning workers use CLAUDE_READ_ONLY_WORKER_MCP_TOOLS/buildClaudeReadOnlyWorkerAllowedTools, and that allowlist omits mcp__ade__ask_user. The adapter then forces readOnlyExecution workers onto that allowlist at unifiedOrchestratorAdapter.ts:463-465, so planning workers are prompted to use ask_user but cannot actually call it. The test coverage only checks prompt text (planningFlowAndHandoffs.test.ts:267), not runtime tool availability."
+      },
+      {
+        "file": "apps/desktop/src/main/services/orchestrator/workerTracking.ts",
+        "line": 722,
+        "severity": "blocking",
+        "description": "VAL-ART-001 is not met. Worker-completion artifact registration still writes only to orchestratorService.registerArtifact (orchestrator_artifacts), while mission artifacts live behind missionService.addArtifact (missionService.ts:3407). No reviewed production path registers a mission artifact of type \"plan\", and the new test manually inserts an orchestrator artifact instead of verifying mission artifact visibility (planningFlowAndHandoffs.test.ts:465)."
+      },
+      {
+        "file": "apps/desktop/src/main/services/orchestrator/orchestratorQueries.ts",
+        "line": 827,
+        "severity": "blocking",
+        "description": "VAL-PLAN-002 is only partially handled. classifyBlockingWarnings now skips warnings that contain ~/.claude/plans, but there is still no ExitPlanMode- or Zod-specific handling. completeAttempt() applies this classifier to succeeded attempts (orchestratorService.ts:7288-7290), and the generic blocking patterns in orchestratorQueries.ts:781-789 still treat other ExitPlanMode tool-validation failures as blocking. The added tests cover only the sandbox-path string case (planningFlowAndHandoffs.test.ts:224-263), not the Zod error path required by the contract."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The current service-worker guidance was not enough to keep the worker's tests aligned with the runtime contract surfaces for this feature: it accepted prompt-text coverage for tool availability and registry-level coverage for mission artifact visibility.",
+      "evidence": "planningFlowAndHandoffs.test.ts:267 only asserts that the prompt mentions ask_user, while unifiedOrchestratorAdapter.ts:155-163 and 463-465 show the read-only worker allowlist still omits it. planningFlowAndHandoffs.test.ts:465 manually calls orchestratorService.registerArtifact(... kind: 'custom'), while missionService.ts:3407 is the actual mission-artifact API used for Evidence/Artifacts."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Fail. The feature improves planning prompts and handoff summary plumbing, but it still misses the actual planner ask_user tool wiring, does not register plan outputs as mission artifacts, and does not demonstrate clean handling of the broader ExitPlanMode/Zod error path."
+}
