@@ -216,6 +216,7 @@ function validatePhaseOrder(cards: PhaseCard[]): string[] {
     if (phaseKey === "development" && firstDevelopmentIndex < 0) firstDevelopmentIndex = index;
     if (phaseKey === "planning" && firstPlanningIndex < 0) firstPlanningIndex = index;
   });
+  if (!byKey.has("planning")) errors.push("Planning phase is required.");
   if (!byKey.has("development")) errors.push("Development phase is required.");
   if (firstPlanningIndex >= 0 && firstDevelopmentIndex >= 0 && firstPlanningIndex > firstDevelopmentIndex) {
     errors.push("Planning phase must appear before development.");
@@ -1431,7 +1432,9 @@ function CreateMissionDialogInner({
                     </div>
                   ) : null}
                   <div className="space-y-1.5">
-                    {draft.phaseOverride.map((phase, index) => (
+                    {draft.phaseOverride.map((phase, index) => {
+                      const isPlanningPhase = phase.phaseKey.trim().toLowerCase() === "planning";
+                      return (
                       <PhaseCardEditor
                         key={phase.id}
                         phase={phase}
@@ -1439,9 +1442,9 @@ function CreateMissionDialogInner({
                         totalCount={draft.phaseOverride.length}
                         expanded={expandedPhases[phase.id] === true}
                         readOnly={false}
-                        showToggle
-                        disabled={disabledPhases[phase.id] === true}
-                        onToggleDisabled={() => setDisabledPhases((prev) => ({ ...prev, [phase.id]: !prev[phase.id] }))}
+                        showToggle={!isPlanningPhase}
+                        disabled={isPlanningPhase ? false : disabledPhases[phase.id] === true}
+                        onToggleDisabled={isPlanningPhase ? undefined : () => setDisabledPhases((prev) => ({ ...prev, [phase.id]: !prev[phase.id] }))}
                         onToggleExpand={() => setExpandedPhases((prev) => ({ ...prev, [phase.id]: !prev[phase.id] }))}
                         onUpdate={(updated) => {
                           setDraft((prev) => ({
@@ -1491,7 +1494,8 @@ function CreateMissionDialogInner({
                           phases: draft.phaseOverride,
                         }}
                       />
-                    ))}
+                    );
+                    })}
                   </div>
                   {phaseValidationErrors.length > 0 ? (
                     <div className="space-y-1 px-2 py-1.5" style={{ background: `${COLORS.warning}15`, border: `1px solid ${COLORS.warning}30`, color: COLORS.warning }}>

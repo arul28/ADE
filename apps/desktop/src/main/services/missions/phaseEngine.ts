@@ -61,6 +61,7 @@ export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
         tier: "none",
         required: false,
       },
+      requiresApproval: true,
       isBuiltIn: true,
       isCustom: false,
       position: 0,

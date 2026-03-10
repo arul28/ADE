@@ -458,10 +458,13 @@ function normalizePhaseCards(phases: PhaseCard[]): PhaseCard[] {
               tier: phase.validationGate.tier === "none" ? "dedicated" : phase.validationGate.tier,
             }
           : phase.validationGate;
+      // Enforce requiresApproval: planning is always true, others default to false
+      const requiresApproval = planningPhase ? true : (phase.requiresApproval === true);
       return {
         ...phase,
         askQuestions,
         validationGate,
+        requiresApproval,
         position: index,
       };
     })

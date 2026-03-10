@@ -23,6 +23,8 @@ export type SmartBudgetConfig = {
   weeklyHardStopPercent?: number;
   /** Hard stop: max API-key spend in USD before pausing */
   apiKeyMaxSpendUsd?: number;
+  /** Usage % threshold at which the orchestrator downgrades workers to a cheaper model tier */
+  modelDowngradeThresholdPct?: number;
 };
 
 export type MissionBudgetPressure = "normal" | "warning" | "critical";

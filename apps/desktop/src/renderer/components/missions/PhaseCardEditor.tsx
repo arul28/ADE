@@ -1,5 +1,5 @@
 import React from "react";
-import { X } from "@phosphor-icons/react";
+import { X, Lock } from "@phosphor-icons/react";
 import type { PhaseCard, OrchestratorPromptInspector } from "../../../shared/types";
 import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { ModelSelector } from "./ModelSelector";
@@ -310,6 +310,30 @@ export function PhaseCardEditor({
               disabled={readOnly}
             />
           </label>
+
+          {/* Require manual approval toggle */}
+          <div className="flex items-center gap-2">
+            <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+              <input
+                type="checkbox"
+                checked={isPlanningPhase ? true : (phase.requiresApproval === true)}
+                onChange={(e) => {
+                  if (isPlanningPhase) return; // locked on for planning
+                  onUpdate({ ...phase, requiresApproval: e.target.checked });
+                }}
+                disabled={readOnly || isPlanningPhase}
+              />
+              Require manual approval
+            </label>
+            {isPlanningPhase && (
+              <span className="flex items-center gap-1" title="Planning phase always requires approval">
+                <Lock size={10} weight="bold" color={COLORS.textDim} />
+                <span style={{ fontSize: 9, fontFamily: MONO_FONT, color: COLORS.textDim }}>
+                  locked
+                </span>
+              </span>
+            )}
+          </div>
 
           {isPlanningPhase ? (
             <>

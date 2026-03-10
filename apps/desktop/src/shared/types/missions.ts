@@ -312,6 +312,8 @@ export type PhaseCard = {
   orderingConstraints: PhaseCardOrderingConstraints;
   askQuestions: PhaseCardAskQuestions;
   validationGate: PhaseCardValidationGate;
+  /** When true, transitioning away from this phase requires explicit user approval. */
+  requiresApproval?: boolean;
   isBuiltIn: boolean;
   isCustom: boolean;
   position: number;

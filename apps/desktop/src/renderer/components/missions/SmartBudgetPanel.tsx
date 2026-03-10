@@ -247,6 +247,15 @@ export function SmartBudgetPanel({
     [value, onChange]
   );
 
+  const handleDowngradeThresholdChange = useCallback(
+    (raw: string) => {
+      const num = parseInt(raw, 10);
+      if (isNaN(num) || num < 0 || num > 100) return;
+      onChange({ ...value, modelDowngradeThresholdPct: num });
+    },
+    [value, onChange]
+  );
+
   const dimmed = !value.enabled;
 
   return (
@@ -624,6 +633,42 @@ export function SmartBudgetPanel({
                 </div>
               </div>
             )}
+          </div>
+        </div>
+
+        {/* Model downgrade threshold */}
+        <div
+          className="pt-2"
+          style={{ borderTop: `1px solid ${COLORS.border}` }}
+        >
+          <div className="flex items-center gap-2 mb-2">
+            <SectionLabel>Model Downgrade</SectionLabel>
+            <Tooltip text="When subscription usage exceeds this threshold, the orchestrator will automatically switch new workers to a cheaper model tier. Set to 0 to disable.">
+              <span className="cursor-help">
+                <Info size={12} weight="bold" color={COLORS.textDim} />
+              </span>
+            </Tooltip>
+          </div>
+          <div className="flex items-center gap-3">
+            <FieldLabel className="w-28 shrink-0">Threshold</FieldLabel>
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={5}
+                style={smallInputStyle}
+                value={value.modelDowngradeThresholdPct ?? 0}
+                onChange={(e) => handleDowngradeThresholdChange(e.target.value)}
+              />
+              <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>%</span>
+            </div>
+            <span style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.textDim }}>
+              {(value.modelDowngradeThresholdPct ?? 0) > 0
+                ? `Switch to cheaper model at ${value.modelDowngradeThresholdPct}% usage`
+                : "Disabled — no automatic downgrade"
+              }
+            </span>
           </div>
         </div>
 

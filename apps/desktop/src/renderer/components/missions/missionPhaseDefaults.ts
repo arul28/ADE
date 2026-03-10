@@ -24,6 +24,7 @@ export function createBuiltInMissionPhaseCards(at: string = new Date().toISOStri
       orderingConstraints: { mustBeFirst: true },
       askQuestions: { enabled: true, mode: "auto_if_uncertain", maxQuestions: 5 },
       validationGate: { tier: "none", required: false },
+      requiresApproval: true,
       isBuiltIn: true,
       isCustom: false,
       position: 0,
