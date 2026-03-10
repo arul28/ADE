@@ -22,6 +22,15 @@ export type MemorySourceType = "agent" | "system" | "user" | "mission_promotion"
 
 type CreateUnifiedMemoryServiceOpts = {
   onMemoryMutated?: () => void;
+  onMemoryUpserted?: (event: MemoryUpsertEvent) => void;
+};
+
+export type MemoryUpsertEvent = {
+  memory: Memory;
+  created: boolean;
+  deduped: boolean;
+  mergedIntoId?: string;
+  contentChanged: boolean;
 };
 
 export type Memory = {
@@ -369,6 +378,14 @@ export function createUnifiedMemoryService(db: AdeDb, opts: CreateUnifiedMemoryS
     }
   };
 
+  const notifyMemoryUpserted = (event: MemoryUpsertEvent) => {
+    try {
+      opts.onMemoryUpserted?.(event);
+    } catch {
+      // Embedding / observer hooks are best-effort and must not break memory writes.
+    }
+  };
+
   function readById(id: string): Memory | null {
     const row = db.get<Record<string, unknown>>(
       `SELECT * FROM unified_memories WHERE id = ? LIMIT 1`,
@@ -646,6 +663,13 @@ export function createUnifiedMemoryService(db: AdeDb, opts: CreateUnifiedMemoryS
       }
 
       notifyMutation();
+      notifyMemoryUpserted({
+        memory: updated,
+        created: false,
+        deduped: true,
+        mergedIntoId: duplicateId,
+        contentChanged: updated.content !== existing.content,
+      });
 
       return {
         accepted: true,
@@ -733,6 +757,12 @@ export function createUnifiedMemoryService(db: AdeDb, opts: CreateUnifiedMemoryS
     }
 
     notifyMutation();
+    notifyMemoryUpserted({
+      memory: inserted,
+      created: true,
+      deduped: false,
+      contentChanged: true,
+    });
 
     return {
       accepted: true,

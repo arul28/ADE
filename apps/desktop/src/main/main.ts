@@ -58,6 +58,8 @@ import { createMissionService } from "./services/missions/missionService";
 import { createMissionPreflightService } from "./services/missions/missionPreflightService";
 import { createCompactionFlushService } from "./services/memory/compactionFlushService";
 import { createBatchConsolidationService } from "./services/memory/batchConsolidationService";
+import { createEmbeddingService } from "./services/memory/embeddingService";
+import { createEmbeddingWorkerService } from "./services/memory/embeddingWorkerService";
 import { createUnifiedMemoryService } from "./services/memory/unifiedMemoryService";
 import { createMemoryLifecycleService } from "./services/memory/memoryLifecycleService";
 import { createCtoStateService } from "./services/cto/ctoStateService";
@@ -831,15 +833,24 @@ app.whenReady().then(async () => {
       sessionService
     });
 
+    let batchConsolidationServiceRef: ReturnType<typeof createBatchConsolidationService> | null = null;
+    let embeddingWorkerServiceRef: ReturnType<typeof createEmbeddingWorkerService> | null = null;
+    const embeddingService = createEmbeddingService({
+      logger,
+      cacheDir: path.join(app.getPath("userData"), "transformers-cache"),
+    });
+    const memoryService = createUnifiedMemoryService(db, {
+      onMemoryMutated: () => {
+        batchConsolidationServiceRef?.scheduleAutoConsolidationCheck();
+      },
+      onMemoryUpserted: (event) => {
+        if (event.created || event.contentChanged) {
+          embeddingWorkerServiceRef?.queueMemory(event.memory.id);
+        }
+      },
+    });
     const compactionFlushService = createCompactionFlushService(undefined, { logger });
     aiIntegrationService.setCompactionFlushService(compactionFlushService);
-    const memoryService = createUnifiedMemoryService(db);
-    const memoryLifecycleService = createMemoryLifecycleService({
-      db,
-      logger,
-      projectId,
-      onStatus: (event) => emitProjectEvent(projectRoot, IPC.memorySweepStatus, event)
-    });
     const batchConsolidationService = createBatchConsolidationService({
       db,
       logger,
@@ -847,8 +858,23 @@ app.whenReady().then(async () => {
       projectConfigService,
       projectId,
       projectRoot,
-      onStatus: (event) => emitProjectEvent(projectRoot, IPC.memoryConsolidationStatus, event),
+      onStatus: (event) => emitProjectEvent(projectRoot, IPC.memoryConsolidationStatus, event)
     });
+    batchConsolidationServiceRef = batchConsolidationService;
+    const memoryLifecycleService = createMemoryLifecycleService({
+      db,
+      logger,
+      projectId,
+      onStatus: (event) => emitProjectEvent(projectRoot, IPC.memorySweepStatus, event)
+    });
+    const embeddingWorkerService = createEmbeddingWorkerService({
+      db,
+      logger,
+      projectId,
+      embeddingService,
+      sessionService,
+    });
+    embeddingWorkerServiceRef = embeddingWorkerService;
     const contextDocService = createContextDocService({
       db,
       logger,
@@ -1053,6 +1079,7 @@ app.whenReady().then(async () => {
       packService,
       conflictService,
       ptyService,
+      agentChatService,
       prService,
       projectConfigService,
       aiIntegrationService,
@@ -1142,6 +1169,12 @@ app.whenReady().then(async () => {
     });
     void batchConsolidationService.runAutoConsolidationIfNeeded().catch((error: unknown) => {
       logger.warn("memory.consolidation.startup_check_failed", {
+        projectId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
+    void embeddingWorkerService.start().catch((error) => {
+      logger.warn("memory.embedding_worker.start_failed", {
         projectId,
         error: error instanceof Error ? error.message : String(error)
       });
@@ -1378,6 +1411,8 @@ app.whenReady().then(async () => {
       memoryService,
       batchConsolidationService,
       memoryLifecycleService,
+      embeddingService,
+      embeddingWorkerService,
       ctoStateService,
       workerAgentService,
       workerRevisionService,
@@ -1451,6 +1486,8 @@ app.whenReady().then(async () => {
       processService: null,
       sessionDeltaService: null,
       testService: null,
+      embeddingService: null,
+      embeddingWorkerService: null,
       memoryService: null,
       batchConsolidationService: null,
       memoryLifecycleService: null,

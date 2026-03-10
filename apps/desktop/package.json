@@ -21,12 +21,13 @@
     "mcp:test": "npm --prefix ../mcp-server run test",
     "verify:ai-sdks": "node ./scripts/verify-ai-sdks.cjs",
     "lint": "echo \"(todo)\"",
-    "rebuild:native": "electron-rebuild -f -w node-pty"
+    "rebuild:native": "electron-rebuild -f -w node-pty -w onnxruntime-node"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^2.0.33",
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
     "@fontsource-variable/space-grotesk": "^5.2.10",
+    "@huggingface/transformers": "^3.8.1",
     "@openai/codex-sdk": "^0.104.0",
     "@phosphor-icons/react": "^2.1.10",
     "@radix-ui/react-dialog": "^1.1.15",
@@ -48,6 +49,7 @@
     "motion": "^12.34.2",
     "node-cron": "^3.0.3",
     "node-pty": "^1.1.0",
+    "onnxruntime-node": "^1.24.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
@@ -97,6 +99,9 @@
       "dist/**/*",
       "electron.cjs",
       "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/onnxruntime-node/**"
     ],
     "mac": {
       "target": [
