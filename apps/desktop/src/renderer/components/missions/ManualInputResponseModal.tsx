@@ -9,6 +9,7 @@ import {
   outlineButton,
   primaryButton,
 } from "../lanes/laneDesignTokens";
+import { getMissionInterventionOwnerLabel } from "./missionHelpers";
 
 export type ManualInputResponseModalProps = {
   intervention: MissionIntervention;
@@ -27,6 +28,7 @@ export function ManualInputResponseModal({
   const metadata = intervention.metadata ?? null;
   const canProceedWithoutAnswer = metadata?.canProceedWithoutAnswer === true;
   const workerDeliveryFailure = metadata?.workerDeliveryFailure === true;
+  const ownerLabel = getMissionInterventionOwnerLabel(intervention);
   const phaseLabel = typeof metadata?.phaseName === "string" && metadata.phaseName.trim().length > 0
     ? metadata.phaseName.trim()
     : typeof metadata?.phase === "string" && metadata.phase.trim().length > 0
@@ -57,9 +59,9 @@ export function ManualInputResponseModal({
       border: `${COLORS.warning}35`,
       background: `${COLORS.warning}12`,
       color: COLORS.warning,
-      copy: "Coordinator is waiting on this answer before it should keep going.",
+      copy: `${ownerLabel ?? "ADE"} is waiting on this answer before it should keep going.`,
     };
-  }, [canProceedWithoutAnswer, workerDeliveryFailure]);
+  }, [canProceedWithoutAnswer, ownerLabel, workerDeliveryFailure]);
 
   const handleSubmit = useCallback(async () => {
     const trimmed = answer.trim();
@@ -121,7 +123,7 @@ export function ManualInputResponseModal({
                 color: COLORS.accent,
               }}
             >
-              {workerDeliveryFailure ? "Worker Message Recovery" : "Coordinator Input"}
+              {workerDeliveryFailure ? "Worker Message Recovery" : ownerLabel ?? "Coordinator Input"}
             </span>
           </div>
           <button
@@ -134,6 +136,11 @@ export function ManualInputResponseModal({
 
         <div style={{ padding: 16, overflow: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {ownerLabel ? (
+              <span style={{ ...LABEL_STYLE, color: COLORS.accent }}>
+                OWNER: {ownerLabel.toUpperCase()}
+              </span>
+            ) : null}
             {phaseLabel ? (
               <span style={{ ...LABEL_STYLE, color: COLORS.textDim }}>
                 PHASE: {phaseLabel.toUpperCase()}

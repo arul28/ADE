@@ -185,11 +185,9 @@ export function deriveActivePhaseViewModel(args: {
     modeLabel,
     validationRequired: activePhase.validationGate.required,
     validationTier: activePhase.validationGate.tier,
-    clarificationLabel: activePhase.phaseKey === "planning"
-      ? activePhase.askQuestions.enabled
-        ? `required before finalizing${activePhase.askQuestions.maxQuestions ? `, max ${activePhase.askQuestions.maxQuestions}` : ""}`
-        : "Ask questions disabled"
-      : "Questions stay off outside Planning",
+    clarificationLabel: activePhase.askQuestions.enabled
+      ? `active phase owner may ask${activePhase.askQuestions.maxQuestions ? `, max ${activePhase.askQuestions.maxQuestions}` : ""}`
+      : "Ask questions disabled",
     whyActive: whyBits.join(" "),
     exitRequirements,
     blockedLaterWork: laterBlocked,

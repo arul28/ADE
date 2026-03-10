@@ -1118,7 +1118,7 @@ describe("coordinatorTools task planning", () => {
 });
 
 describe("coordinatorTools planning manual-input blocking", () => {
-  it("blocks ask_user outside the planning phase", async () => {
+  it("blocks ask_user when the current phase disables questions", async () => {
     const { tools } = createCoordinatorHarness({
       graph: {
         run: {
@@ -1187,6 +1187,129 @@ describe("coordinatorTools planning manual-input blocking", () => {
       ok: false,
       error: expect.stringContaining("Ask Questions is disabled for the current phase"),
     });
+  });
+
+  it("still allows coordinator request_user_input for orchestration questions when phase questions are disabled", async () => {
+    const { tools } = createCoordinatorHarness({
+      graph: {
+        run: {
+          metadata: {
+            phaseRuntime: {
+              currentPhaseKey: "development",
+              currentPhaseName: "Development",
+              currentPhaseModel: {
+                modelId: "openai/gpt-5.4-codex",
+                thinkingLevel: "medium",
+              },
+            },
+          },
+        },
+        steps: [],
+        attempts: [],
+      },
+      missionMetadata: {
+        phaseConfiguration: {
+          selectedPhases: [
+            {
+              id: "phase-development",
+              phaseKey: "development",
+              name: "Development",
+              description: "Ship the code.",
+              instructions: "Implement the work.",
+              model: { modelId: "openai/gpt-5.4-codex", provider: "openai", thinkingLevel: "medium" },
+              budget: {},
+              orderingConstraints: {},
+              askQuestions: { enabled: false },
+              validationGate: { tier: "none", required: false },
+              isBuiltIn: true,
+              isCustom: false,
+              position: 0,
+              createdAt: "2026-03-02T00:00:00.000Z",
+              updatedAt: "2026-03-02T00:00:00.000Z",
+            },
+          ],
+        },
+      },
+    });
+
+    const result = await (tools.request_user_input as any).execute({
+      question: "Should ADE continue in this workspace or switch to the integration lane?",
+      canProceedWithoutAnswer: false,
+      urgency: "high",
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      awaitingUserResponse: true,
+      blocking: true,
+    });
+  });
+
+  it("allows spawning the planning worker before any planning question is asked", async () => {
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph: {
+        run: {
+          metadata: {
+            phaseRuntime: {
+              currentPhaseKey: "planning",
+              currentPhaseName: "Planning",
+              currentPhaseModel: {
+                modelId: "anthropic/claude-sonnet-4-6",
+                thinkingLevel: "medium",
+              },
+            },
+          },
+        },
+        steps: [],
+        attempts: [],
+      },
+      missionMetadata: {
+        phaseConfiguration: {
+          selectedPhases: [
+            {
+              id: "phase-planning",
+              phaseKey: "planning",
+              name: "Planning",
+              description: "Plan the work.",
+              instructions: "Plan first.",
+              model: { modelId: "anthropic/claude-sonnet-4-6", provider: "claude", thinkingLevel: "medium" },
+              budget: {},
+              orderingConstraints: { mustBeFirst: true },
+              askQuestions: { enabled: true, maxQuestions: 3 },
+              validationGate: { tier: "none", required: false },
+              isBuiltIn: true,
+              isCustom: false,
+              position: 0,
+              createdAt: "2026-03-02T00:00:00.000Z",
+              updatedAt: "2026-03-02T00:00:00.000Z",
+            },
+          ],
+        },
+      },
+    });
+
+    const result = await (tools.spawn_worker as any).execute({
+      name: "planning-worker",
+      prompt: "Research the codebase and produce the plan.",
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      workerId: expect.any(String),
+    });
+    expect(orchestratorService.addSteps).toHaveBeenCalledWith(expect.objectContaining({
+      steps: [
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            phaseKey: "planning",
+            phaseAskQuestions: expect.objectContaining({
+              enabled: true,
+              maxQuestions: 3,
+            }),
+          }),
+        }),
+      ],
+    }));
   });
 
   it("blocks coordinator-side file reads during planning", async () => {
@@ -1290,7 +1413,11 @@ describe("coordinatorTools planning manual-input blocking", () => {
       canProceedWithoutAnswer: false,
       urgency: "normal",
     });
-    expect(request).toMatchObject({ ok: true });
+    expect(request).toMatchObject({
+      ok: true,
+      awaitingUserResponse: true,
+      blocking: true,
+    });
 
     const result = await (tools.spawn_worker as any).execute({
       name: "planning-worker",

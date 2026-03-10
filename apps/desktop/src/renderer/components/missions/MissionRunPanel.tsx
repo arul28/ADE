@@ -9,6 +9,7 @@ import type {
 } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 import { relativeWhen } from "../../lib/format";
+import { getMissionInterventionOwnerLabel } from "./missionHelpers";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -58,6 +59,7 @@ type RunPanelIntervention = {
   title: string;
   interventionType: string;
   status: "open";
+  ownerLabel: string | null;
   createdAt: string;
 };
 
@@ -103,6 +105,7 @@ export function selectOpenInterventions(args: {
       title: intervention.title,
       interventionType: intervention.interventionType,
       status: "open" as const,
+      ownerLabel: getMissionInterventionOwnerLabel(intervention),
       createdAt: intervention.updatedAt || intervention.createdAt,
     }));
 
@@ -116,6 +119,7 @@ export function selectOpenInterventions(args: {
       title: args.latestIntervention.title,
       interventionType: args.latestIntervention.interventionType,
       status: "open",
+      ownerLabel: args.latestIntervention.ownerLabel ?? null,
       createdAt: args.latestIntervention.createdAt,
     }];
   }
@@ -336,7 +340,7 @@ function InterventionBanner({
             marginBottom: 2,
           }}
         >
-          {intervention.interventionType.replace(/_/g, " ")}
+          {intervention.ownerLabel ?? intervention.interventionType.replace(/_/g, " ")}
         </div>
         <div
           style={{

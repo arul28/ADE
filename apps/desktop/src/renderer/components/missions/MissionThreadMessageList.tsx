@@ -5,6 +5,7 @@ import { AgentChatMessageList } from "../chat/AgentChatMessageList";
 import { AgentQuestionModal } from "../chat/AgentQuestionModal";
 import { looksLikeLowSignalNoise } from "./missionHelpers";
 import { adaptMissionThreadMessagesToAgentEvents } from "./missionThreadEventAdapter";
+import { looksLikeLowSignalNoise } from "./missionHelpers";
 import { useMissionPolling } from "./useMissionPolling";
 
 type MissionThreadMessageListProps = {
@@ -306,6 +307,16 @@ export function mergeMissionThreadEvents(
   });
 }
 
+function filterLowSignalStructuredEvents(events: AgentChatEventEnvelope[]): AgentChatEventEnvelope[] {
+  return events.filter((envelope) => {
+    const event = envelope.event;
+    if ((event.type === "text" || event.type === "reasoning") && looksLikeLowSignalNoise(event.text)) {
+      return false;
+    }
+    return true;
+  });
+}
+
 export const MissionThreadMessageList = React.memo(function MissionThreadMessageList({
   messages,
   sessionId = null,
@@ -351,7 +362,7 @@ export const MissionThreadMessageList = React.memo(function MissionThreadMessage
   useMissionPolling(refreshSessionTranscript, 4_000, Boolean(sessionId && transcriptPollingEnabled));
 
   const events = useMemo(() => {
-    return mergeMissionThreadEvents(fallbackEvents, sessionEvents);
+    return filterLowSignalStructuredEvents(mergeMissionThreadEvents(fallbackEvents, sessionEvents));
   }, [fallbackEvents, sessionEvents]);
   const pendingApproval = useMemo(() => derivePendingApprovals(events)[0] ?? null, [events]);
   const pendingQuestion = useMemo(() => extractAskUserQuestion(pendingApproval), [pendingApproval]);

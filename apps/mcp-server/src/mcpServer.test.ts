@@ -1838,6 +1838,8 @@ describe("mcpServer", () => {
         source: "ask_user",
         runId: "run-1",
         phase: "planning",
+        questionOwnerKind: "coordinator",
+        questionOwnerLabel: "Coordinator question",
         blocking: true,
         canProceedWithoutAnswer: false,
       }),
@@ -1850,6 +1852,110 @@ describe("mcpServer", () => {
     }));
     expect(response.structuredContent.awaitingUserResponse).toBe(true);
     expect(response.structuredContent.blocking).toBe(true);
+  });
+
+  it("stamps worker-owned ask_user provenance and enforces per-step phase policy", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+      run: { id: "run-1", missionId: "mission-1", status: "running" },
+      steps: [
+        {
+          id: "step-plan-1",
+          stepKey: "planning-worker",
+          laneId: "lane-1",
+          status: "running",
+          metadata: {
+            phaseKey: "planning",
+            phaseName: "Planning",
+            phaseAskQuestions: { enabled: true, maxQuestions: 2 },
+          },
+        },
+      ],
+      attempts: [{ id: "attempt-1", stepId: "step-plan-1", status: "running" }],
+      claims: [],
+      contextSnapshots: [],
+      handoffs: [],
+      timeline: [],
+      runtimeEvents: [],
+      completionEvaluation: { complete: false },
+    }));
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "attempt-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-plan-1",
+      attemptId: "attempt-1",
+    });
+    const response = await callTool(handler, "ask_user", {
+      missionId: "mission-1",
+      title: "Need product direction",
+      body: "Should the planner optimize for a lightweight patch or a more complete refactor?",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.missionService.addIntervention).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({
+        source: "ask_user",
+        runId: "run-1",
+        phase: "planning",
+        phaseName: "Planning",
+        stepId: "step-plan-1",
+        stepKey: "planning-worker",
+        questionOwnerKind: "planner",
+        questionOwnerLabel: "Planner question",
+      }),
+    }));
+    expect(response.structuredContent.awaitingUserResponse).toBe(true);
+    expect(response.structuredContent.blocking).toBe(true);
+  });
+
+  it("denies worker ask_user when the current phase disables questions", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+      run: { id: "run-1", missionId: "mission-1", status: "running" },
+      steps: [
+        {
+          id: "step-dev-1",
+          stepKey: "development-worker",
+          laneId: "lane-1",
+          status: "running",
+          metadata: {
+            phaseKey: "development",
+            phaseName: "Development",
+            phaseAskQuestions: { enabled: false },
+          },
+        },
+      ],
+      attempts: [{ id: "attempt-1", stepId: "step-dev-1", status: "running" }],
+      claims: [],
+      contextSnapshots: [],
+      handoffs: [],
+      timeline: [],
+      runtimeEvents: [],
+      completionEvaluation: { complete: false },
+    }));
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "attempt-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-dev-1",
+      attemptId: "attempt-1",
+    });
+    const response = await callTool(handler, "ask_user", {
+      missionId: "mission-1",
+      title: "Need guidance",
+      body: "Should I stop and ask a development question?",
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(JSON.stringify(response?.error ?? response?.structuredContent ?? {})).toContain("Ask Questions is disabled for this phase");
+    expect(fixture.runtime.missionService.addIntervention).not.toHaveBeenCalled();
   });
 
   it("allows mutations for any session", async () => {

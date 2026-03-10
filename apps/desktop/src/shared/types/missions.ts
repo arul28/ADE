@@ -764,6 +764,7 @@ export type MissionRunViewLatestIntervention = {
   interventionType: MissionInterventionType;
   status: MissionInterventionStatus;
   requestedAction: string | null;
+  ownerLabel?: string | null;
   createdAt: string;
 };
 

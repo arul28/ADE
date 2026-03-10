@@ -1760,6 +1760,110 @@ function resolveStepFromGraph(graph: Record<string, unknown>, stepId: string | n
   return null;
 }
 
+function titleCaseWords(raw: string): string {
+  return raw
+    .split(/[\s_-]+/)
+    .map((token) => token ? `${token.charAt(0).toUpperCase()}${token.slice(1).toLowerCase()}` : "")
+    .join(" ")
+    .trim();
+}
+
+function deriveQuestionOwnerFromPhase(args: {
+  phaseKey?: string | null;
+  phaseName?: string | null;
+}): { ownerKind: string; ownerLabel: string } {
+  const normalizedPhaseKey = asOptionalTrimmedString(args.phaseKey)?.toLowerCase() ?? "";
+  const normalizedPhaseName = asOptionalTrimmedString(args.phaseName)?.toLowerCase() ?? "";
+  const normalized = normalizedPhaseKey || normalizedPhaseName;
+  if (normalized === "planning") {
+    return { ownerKind: "planner", ownerLabel: "Planner question" };
+  }
+  if (normalized === "development") {
+    return { ownerKind: "developer", ownerLabel: "Developer question" };
+  }
+  if (normalized === "validation") {
+    return { ownerKind: "validator", ownerLabel: "Validator question" };
+  }
+  if (normalized === "testing") {
+    return { ownerKind: "tester", ownerLabel: "Tester question" };
+  }
+  const humanPhase = asOptionalTrimmedString(args.phaseName) ?? asOptionalTrimmedString(args.phaseKey);
+  if (humanPhase) {
+    return {
+      ownerKind: normalized || "phase_worker",
+      ownerLabel: `${titleCaseWords(humanPhase)} question`,
+    };
+  }
+  return { ownerKind: "worker", ownerLabel: "Worker question" };
+}
+
+function getAgentAskUserPolicy(args: {
+  runtime: AdeMcpRuntime;
+  callerCtx: CallerContext;
+}): {
+  stepId: string | null;
+  stepKey: string | null;
+  phase: string | null;
+  phaseName: string | null;
+  enabled: boolean;
+  maxQuestions: number | null;
+  ownerKind: string;
+  ownerLabel: string;
+  existingQuestions: number;
+} | null {
+  if (args.callerCtx.role !== "agent" || !args.callerCtx.runId) return null;
+  const graph = getRunGraphSafe(args.runtime, args.callerCtx.runId);
+  if (!graph) return null;
+
+  const inferredWorkerId = inferWorkerIdFromCaller(graph, args.callerCtx);
+  const step = resolveStepFromGraph(graph, args.callerCtx.stepId, inferredWorkerId);
+  if (!step) return null;
+
+  const metadata = safeObject(step.metadata);
+  const phase = asOptionalTrimmedString(metadata.phaseKey);
+  const phaseName = asOptionalTrimmedString(metadata.phaseName);
+  const phaseAskQuestions = safeObject(metadata.phaseAskQuestions);
+  const defaultEnabled = (phase?.toLowerCase() ?? phaseName?.toLowerCase() ?? "") === "planning";
+  const enabled = typeof phaseAskQuestions.enabled === "boolean"
+    ? phaseAskQuestions.enabled
+    : defaultEnabled;
+  const rawMaxQuestions = Number(phaseAskQuestions.maxQuestions ?? Number.NaN);
+  const maxQuestions = enabled
+    ? Number.isFinite(rawMaxQuestions)
+      ? Math.max(1, Math.min(10, Math.floor(rawMaxQuestions)))
+      : 5
+    : null;
+  const mission = args.callerCtx.missionId ? args.runtime.missionService.get(args.callerCtx.missionId) : null;
+  const stepId = asOptionalTrimmedString(step.id);
+  const stepKey = asOptionalTrimmedString(step.stepKey);
+  const existingQuestions = (mission?.interventions ?? []).filter((entry) => {
+    if (entry.interventionType !== "manual_input") return false;
+    const metadata = safeObject(entry.metadata);
+    if (asOptionalTrimmedString(metadata.source) !== "ask_user") return false;
+    if (asOptionalTrimmedString(metadata.runId) !== args.callerCtx.runId) return false;
+    const entryStepId = asOptionalTrimmedString(metadata.stepId);
+    const entryStepKey = asOptionalTrimmedString(metadata.stepKey);
+    if (stepId && entryStepId === stepId) return true;
+    if (stepKey && entryStepKey === stepKey) return true;
+    const entryPhase = asOptionalTrimmedString(metadata.phase)?.toLowerCase() ?? "";
+    const normalizedPhase = (phase ?? phaseName ?? "").toLowerCase();
+    return normalizedPhase.length > 0 && entryPhase === normalizedPhase;
+  }).length ?? 0;
+
+  const owner = deriveQuestionOwnerFromPhase({ phaseKey: phase, phaseName });
+  return {
+    stepId,
+    stepKey,
+    phase,
+    phaseName,
+    enabled,
+    maxQuestions,
+    ownerKind: owner.ownerKind,
+    ownerLabel: owner.ownerLabel,
+    existingQuestions,
+  };
+}
+
 function inferWorkerIdFromCaller(graph: Record<string, unknown>, callerCtx: CallerContext): string | null {
   const directStep = resolveStepFromGraph(graph, callerCtx.stepId, null);
   const directKey = asOptionalTrimmedString(directStep?.stepKey);
@@ -2410,6 +2514,33 @@ async function runTool(args: {
     const phase = asOptionalTrimmedString(toolArgs.phase);
     const waitForResolutionMs = Math.max(0, Math.floor(asNumber(toolArgs.waitForResolutionMs, 0)));
     const pollIntervalMs = Math.max(100, Math.floor(asNumber(toolArgs.pollIntervalMs, 1000)));
+    const askUserPolicy = getAgentAskUserPolicy({ runtime, callerCtx });
+
+    if (askUserPolicy && !askUserPolicy.enabled) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.policyDenied,
+        "Ask Questions is disabled for this phase. Proceed with the best grounded assumption instead.",
+      );
+    }
+    if (
+      askUserPolicy
+      && askUserPolicy.maxQuestions != null
+      && askUserPolicy.existingQuestions >= askUserPolicy.maxQuestions
+    ) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.policyDenied,
+        `This phase already reached its Ask Questions limit (${askUserPolicy.maxQuestions}) for the active worker.`,
+      );
+    }
+
+    const resolvedPhase = phase ?? askUserPolicy?.phase ?? null;
+    const resolvedPhaseName = askUserPolicy?.phaseName ?? null;
+    const ownerKind = callerCtx.role === "orchestrator"
+      ? "coordinator"
+      : askUserPolicy?.ownerKind ?? "worker";
+    const ownerLabel = callerCtx.role === "orchestrator"
+      ? "Coordinator question"
+      : askUserPolicy?.ownerLabel ?? "Worker question";
 
     const intervention = runtime.missionService.addIntervention({
       missionId,
@@ -2421,7 +2552,13 @@ async function runTool(args: {
       metadata: {
         source: "ask_user",
         ...(callerCtx.runId ? { runId: callerCtx.runId } : {}),
-        ...(phase ? { phase } : {}),
+        ...(resolvedPhase ? { phase: resolvedPhase } : {}),
+        ...(resolvedPhaseName ? { phaseName: resolvedPhaseName } : {}),
+        ...(askUserPolicy?.stepId ? { stepId: askUserPolicy.stepId } : {}),
+        ...(askUserPolicy?.stepKey ? { stepKey: askUserPolicy.stepKey } : {}),
+        questionOwnerKind: ownerKind,
+        questionOwnerLabel: ownerLabel,
+        ownerRole: callerCtx.role ?? "external",
         blocking: true,
         canProceedWithoutAnswer: false,
       }
