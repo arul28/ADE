@@ -1,0 +1,67 @@
+{
+  "milestone": "memory-hardening",
+  "round": 1,
+  "status": "fail",
+  "validatorsRun": {
+    "test": {
+      "passed": false,
+      "command": "cd apps/desktop && npx vitest run --reporter=verbose",
+      "exitCode": 1,
+      "notes": "4 test failures, all in missionsFix WIP code (not memory-hardening). Memory-hardening-specific tests: 55/55 pass (38 memory service tests + 17 MemoryHealthTab UI tests)."
+    },
+    "typecheck": {
+      "passed": false,
+      "command": "cd apps/desktop && npx tsc --noEmit",
+      "exitCode": 2,
+      "notes": "2 errors: batchConsolidationService redeclared in main.ts. This is from uncommitted WIP changes to main.ts on missionsFix branch, not from committed memory-hardening code."
+    },
+    "lint": {
+      "passed": true,
+      "command": "echo 'lint not configured (todo)'",
+      "exitCode": 0,
+      "notes": "Lint not configured."
+    }
+  },
+  "reviewsSummary": {
+    "total": 0,
+    "passed": 0,
+    "failed": 0,
+    "failedFeatures": [],
+    "notes": "No feature reviews spawned — validators failed, halting per skill procedure."
+  },
+  "blockingIssues": [
+    {
+      "featureId": "batch-consolidation-service",
+      "severity": "blocking",
+      "description": "Typecheck failure: batchConsolidationService declared twice in main.ts (lines 842 and 858). The working tree WIP changes to main.ts added a batchConsolidationServiceRef approach with a new batchConsolidationService const, but the OLD const (committed in d19ec00) was not removed. Fix: remove the second duplicate const batchConsolidationService declaration (lines 858-867 in the current working tree), keeping only the first one that sets batchConsolidationServiceRef.",
+      "location": "apps/desktop/src/main/main.ts",
+      "errorMessage": "error TS2451: Cannot redeclare block-scoped variable 'batchConsolidationService'."
+    },
+    {
+      "featureId": "missionsFix-wip",
+      "severity": "blocking",
+      "description": "Test failures in missionService.test.ts (2 failures): 'no such column: m.archived_at'. The WIP missionService.ts changes add archived_at references to the missions table queries but kvDb.ts does not have an archived_at column in the missions table CREATE statement. Not related to memory-hardening features. This is from the user's active missionsFix branch work.",
+      "location": "apps/desktop/src/main/services/missions/missionService.ts",
+      "errorMessage": "Error: no such column: m.archived_at"
+    },
+    {
+      "featureId": "orchestrator-wip",
+      "severity": "blocking",
+      "description": "Test failures in orchestratorService.test.ts (1 failure) and aiOrchestratorService.test.ts (1 failure). These are from the user's active missionsFix branch WIP — orchestrator code is listed as off-limits for memory-hardening workers. The mission.md notes known pre-existing issues in orchestrator tests.",
+      "location": "apps/desktop/src/main/services/orchestrator/",
+      "errorMessage": "Various orchestrator WIP test failures"
+    }
+  ],
+  "analysisNote": "IMPORTANT: All memory-hardening feature tests pass cleanly. The 4 test failures and 2 typecheck errors are from the user's UNCOMMITTED WIP changes to the missionsFix branch (missionService.ts and main.ts), NOT from the committed memory-hardening features (commits e80bf92 through b58ddeb). Running tests scoped to memory services and MemoryHealthTab gives 55/55 passing. The orchestrator recommends validating the committed memory-hardening features directly by stashing or checking out the committed state.",
+  "appliedUpdates": [],
+  "suggestedGuidanceUpdates": [
+    {
+      "target": "AGENTS.md",
+      "suggestion": "Add a note that when the missionsFix branch has uncommitted WIP changes, scrutiny validators should document whether failing tests come from the milestone under review or from pre-existing WIP changes, and should run milestone-scoped tests in addition to the full suite.",
+      "evidence": "The memory-hardening scrutiny validation found 4 test failures and 2 typecheck errors, all from the user's uncommitted missionsFix WIP (missionService.ts archived_at migration gap, main.ts duplicate batchConsolidationService), not from memory-hardening features. All 55 memory-hardening tests pass.",
+      "isSystemic": false
+    }
+  ],
+  "rejectedObservations": [],
+  "previousRound": null
+}
