@@ -302,6 +302,7 @@ export function normalizeErrorClass(value: string): OrchestratorErrorClass {
     value === "claim_conflict" ||
     value === "startup_failure" ||
     value === "executor_failure" ||
+    value === "configuration_error" ||
     value === "canceled" ||
     value === "resume_recovered" ||
     value === "soft_success_blocking_failure"

@@ -155,6 +155,18 @@ export function buildFullPrompt(
     );
   }
 
+  // A½. Worktree isolation constraint
+  {
+    const laneWorktreePath = typeof step.metadata?.laneWorktreePath === "string"
+      ? step.metadata.laneWorktreePath.trim()
+      : "";
+    if (laneWorktreePath.length > 0) {
+      systemParts.push(
+        `WORKTREE ISOLATION: You are working in: ${laneWorktreePath}. All file edits MUST be made within this path. Do not read or write files outside this worktree directory.`
+      );
+    }
+  }
+
   // B. Propulsion principle
   systemParts.push(
     "EXECUTION PROTOCOL: Execute immediately. Do not ask for confirmation or propose a plan and wait for approval. Do not summarize your instructions back. If you encounter a blocker you cannot work around, fail with a clear error message describing the blocker. Never wait for human input — make the best decision you can and document your reasoning."

@@ -6531,11 +6531,67 @@ export function createOrchestratorService({
             });
           }
 
+          // Resolve lane worktree path BEFORE building the prompt so the constraint
+          // can be injected into the worker prompt via step.metadata.laneWorktreePath.
+          const laneWorktreePath = (() => {
+            if (!step.laneId) return projectRoot;
+            const row = db.get<{ worktree_path: string | null }>(
+              `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
+              [step.laneId, projectId],
+            );
+            const worktree = typeof row?.worktree_path === "string" ? row.worktree_path.trim() : "";
+            return worktree.length > 0 ? worktree : null;
+          })();
+
+          if (step.laneId && !laneWorktreePath) {
+            const errorMsg = `Lane '${step.laneId}' has no worktree_path configured. Cannot start worker for step '${step.stepKey}' without a valid worktree.`;
+            appendTimelineEvent({
+              runId: run.id,
+              stepId: step.id,
+              attemptId: attempt.id,
+              eventType: "worker_failed",
+              reason: "worktree_configuration_error",
+              detail: {
+                executorKind,
+                modelId: descriptor.id,
+                executionPath,
+                laneId: step.laneId,
+                error: errorMsg,
+              }
+            });
+            return completeAndAdvance({
+              attemptId: attempt.id,
+              status: "failed",
+              errorClass: "configuration_error",
+              errorMessage: errorMsg,
+              metadata: {
+                executorKind,
+                modelId: descriptor.id,
+                executionPath,
+                adapterState: "worktree_path_missing",
+                laneId: step.laneId,
+              }
+            });
+          }
+
+          const resolvedCwd = laneWorktreePath ?? projectRoot;
+
+          // Inject laneWorktreePath into step metadata for the prompt builder
+          const stepWithWorktree: typeof step = step.laneId && laneWorktreePath
+            ? {
+                ...step,
+                metadata: {
+                  ...(step.metadata ?? {}),
+                  laneWorktreePath,
+                },
+              }
+            : step;
+
           const allSteps = listStepRows(run.id).map(toStep);
           const promptPack = buildFullPrompt(
             {
               run,
-              step,
+              step: stepWithWorktree,
               attempt,
               allSteps,
               contextProfile: contextPolicy,
@@ -6552,16 +6608,6 @@ export function createOrchestratorService({
               ? { memoryService, projectId, workerRuntime: "in_process" }
               : { projectId, workerRuntime: "in_process" },
           );
-
-          const laneWorktreePath = (() => {
-            if (!step.laneId) return projectRoot;
-            const row = db.get<{ worktree_path: string | null }>(
-              `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
-              [step.laneId, projectId],
-            );
-            const worktree = typeof row?.worktree_path === "string" ? row.worktree_path.trim() : "";
-            return worktree.length > 0 ? worktree : projectRoot;
-          })();
 
           const stepType = String(step.metadata?.stepType ?? step.metadata?.taskType ?? "").trim().toLowerCase();
           const taskType: import("../ai/aiIntegrationService").AiTaskType =
@@ -6627,7 +6673,7 @@ export function createOrchestratorService({
               feature: "orchestrator",
               taskType,
               prompt: promptPack.prompt,
-              cwd: laneWorktreePath,
+              cwd: resolvedCwd,
               model: descriptor.id,
               ...(reasoningEffort ? { reasoningEffort } : {}),
               timeoutMs,
@@ -6858,15 +6904,40 @@ export function createOrchestratorService({
         })();
 
         const allSteps = listStepRows(run.id).map(toStep);
-        const stepForExecutor = unifiedStepModelId && !(typeof step.metadata?.modelId === "string" && step.metadata.modelId.trim().length > 0)
-          ? ({
-              ...step,
+
+        // Resolve lane worktree path for CLI adapter prompt injection
+        const cliLaneWorktreePath = (() => {
+          if (!step.laneId) return null;
+          const row = db.get<{ worktree_path: string | null }>(
+            `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
+            [step.laneId, projectId],
+          );
+          const wt = typeof row?.worktree_path === "string" ? row.worktree_path.trim() : "";
+          return wt.length > 0 ? wt : null;
+        })();
+
+        const stepForExecutor = (() => {
+          let s = step;
+          if (unifiedStepModelId && !(typeof step.metadata?.modelId === "string" && step.metadata.modelId.trim().length > 0)) {
+            s = {
+              ...s,
               metadata: {
-                ...(step.metadata ?? {}),
+                ...(s.metadata ?? {}),
                 modelId: unifiedStepModelId,
               }
-            } satisfies OrchestratorStep)
-          : step;
+            } satisfies OrchestratorStep;
+          }
+          if (cliLaneWorktreePath) {
+            s = {
+              ...s,
+              metadata: {
+                ...(s.metadata ?? {}),
+                laneWorktreePath: cliLaneWorktreePath,
+              }
+            } satisfies OrchestratorStep;
+          }
+          return s;
+        })();
         const result = await adapter.start({
           run,
           step: stepForExecutor,

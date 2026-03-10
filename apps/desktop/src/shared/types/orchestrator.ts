@@ -106,6 +106,7 @@ export type OrchestratorErrorClass =
   | "claim_conflict"
   | "startup_failure"
   | "executor_failure"
+  | "configuration_error"
   | "canceled"
   | "resume_recovered"
   | "soft_success_blocking_failure";
