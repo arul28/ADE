@@ -1,0 +1,69 @@
+{
+  "featureId": "ui-overhaul-layout-interventions-usage",
+  "reviewedAt": "2026-03-10T09:10:46Z",
+  "commitId": "ad90759cee105574c322c74f1b08813d5d708d6f",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "I reviewed the feature handoff, transcript skeleton, commit `ad90759`, and the renderer files touched by the change. The feature does add useful building blocks (STATUS_CONFIG, error-source classification, progress computation, inline intervention cards, flatter tabs, and a compact usage widget), but several of the claimed assertions are still not satisfied in the shipped UI. The sidebar resize implementation uses percentage sizing and never persists writes, feed deduplication remains a tested helper rather than the behavior of the rendered activity feed, the usage meter omits visible reset countdowns and computes global rather than per-mission cost, the header-level ARCHIVE action only cleans lanes instead of archiving the mission, and the <10px font cleanup was knowingly left incomplete across the missions surface. Because the feature claims VAL-UX-002, VAL-UX-006, VAL-UX-009, VAL-UX-010, VAL-USAGE-004, and VAL-USAGE-005, this review fails.",
+    "issues": [
+      {
+        "file": "apps/desktop/src/renderer/components/missions/MissionsPage.tsx",
+        "line": 32,
+        "severity": "blocking",
+        "description": "VAL-UX-010 is not fully implemented. The code only reads `ade.missions.sidebarWidth` from localStorage and never writes updated sizes back, so sidebar width is not persisted across reloads. The resize bounds also use `minSize=\"15%\"` / `maxSize=\"35%\"` at lines 275-279 instead of the required 200-400px range, which means the sidebar can shrink below 200px on narrow windows and exceed 400px on wider windows."
+      },
+      {
+        "file": "apps/desktop/src/renderer/components/missions/OrchestratorActivityFeed.tsx",
+        "line": 132,
+        "severity": "blocking",
+        "description": "VAL-UX-002 is not wired into the rendered feed. The visible feed still uses `groupConsecutive()` to collapse only by `eventType`, ignoring `stepId`, and only flips into a collapsed group after 3+ identical types. The new `collapseFeedMessages()` helper added for the feature is never consumed by runtime UI code (only by `missionUxUtils.test.ts`), so the shipped feed does not provide the promised same-type/same-step coalescing with an `xN` badge."
+      },
+      {
+        "file": "apps/desktop/src/renderer/components/missions/MissionHeader.tsx",
+        "line": 430,
+        "severity": "blocking",
+        "description": "VAL-USAGE-005 is not satisfied. The header computes `missionCost` by summing `snapshot.costs[*].todayCostUsd`, which is just provider-wide daily usage from `UsageSnapshot`, not cost scoped to the selected mission. It also renders only a single aggregate dollar figure and no per-worker breakdown. The codebase already exposes mission-scoped aggregated usage (`window.ade.orchestrator.getAggregatedUsage({ missionId })` / `UsageMissionBreakdown`), but this feature does not use it."
+      },
+      {
+        "file": "apps/desktop/src/renderer/components/missions/MissionHeader.tsx",
+        "line": 475,
+        "severity": "blocking",
+        "description": "VAL-USAGE-004 is only implemented as a tooltip. `UsageWindowBadge` renders visible text like `C/5h 42%`, but the reset countdown is hidden in the `title` attribute instead of being shown inline next to each provider meter as required by the validation contract and feature description."
+      },
+      {
+        "file": "apps/desktop/src/renderer/components/missions/MissionHeader.tsx",
+        "line": 224,
+        "severity": "blocking",
+        "description": "The new header-level ARCHIVE action does not archive the mission. `handleCleanupLanes()` only calls `window.ade.orchestrator.cleanupTeamResources(...)`; it never calls `window.ade.missions.archive(...)`. As a result, clicking the gray `ARCHIVE` button at lines 373-386 cleans up lanes but leaves the terminal mission unarchived, which does not meet the claimed lifecycle-management behavior for VAL-UX-006."
+      },
+      {
+        "file": "apps/desktop/src/renderer/components/missions/ChatChannelList.tsx",
+        "line": 97,
+        "severity": "blocking",
+        "description": "VAL-UX-009 is over-claimed. Representative mission UI files still ship 8-9px text after this feature, e.g. `ChatChannelList.tsx:97,309,316`, `PhaseCardEditor.tsx:33,190,331`, `OrchestratorDAG.tsx:851`, and `MissionPhaseBadge.tsx:15`. The worker handoff also acknowledges this was left undone, so the feature does not actually deliver the asserted 'none <10px' missions UI cleanup."
+      },
+      {
+        "file": "apps/desktop/src/renderer/components/missions/MissionSidebar.tsx",
+        "line": 18,
+        "severity": "non_blocking",
+        "description": "The feature introduces `STATUS_CONFIG`, but the missions UI still keeps and consumes deprecated alias maps (`STATUS_BADGE_STYLES`, `STATUS_DOT_HEX`, `STATUS_LABELS`) plus custom color overrides instead of having every caller read directly from the canonical config. Because those aliases derive from `STATUS_CONFIG`, the visible status styling is likely coherent, but the claimed cleanup is incomplete."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The `ui-worker` skill still overstates procedure compliance for UI features. It explicitly requires reading `.factory/library/user-testing.md` and performing agent-browser verification, but this worker skipped those steps and still reported `skillFeedback.followedProcedure: true`.",
+      "evidence": "`/Users/admin/Projects/ADE/.factory/skills/ui-worker/SKILL.md:28,76-81` requires reading `.factory/library/user-testing.md` and running `npm run dev` plus `agent-browser connect 9222`. `/Users/admin/Projects/ADE/.factory/library/user-testing.md:11-21` and `/Users/admin/Projects/ADE/.factory/services.yaml:8-13` document the same flow. In the transcript skeleton for session `f665b6ad-a3dd-4db7-93e7-6c178a0d9cab`, the worker reads mission docs and `.factory/services.yaml` but never reads `.factory/library/user-testing.md`, never starts Electron, and never invokes agent-browser; the handoff `/Users/admin/.factory/missions/bec1a09c-aff3-43cd-8217-ed3013414884/handoffs/2026-03-10T08-55-14-272Z__ui-overhaul-layout-interventions-usage__f665b6ad-a3dd-4db7-93e7-6c178a0d9cab.json` still marks `followedProcedure` true while recording the skipped UI verification."
+    },
+    {
+      "area": "knowledge",
+      "observation": "There is an existing project-specific wrapper for `react-resizable-panels` (`SplitPane.tsx`) that documents the local API/convention (`Group`, `Panel`, `Separator`, `defaultLayout`, `onLayoutChanged`), but that reuse point is not surfaced in the missions shared-state docs. The worker spent time discovering the correct API only after a failed first import attempt.",
+      "evidence": "The transcript skeleton for session `f665b6ad-a3dd-4db7-93e7-6c178a0d9cab` shows the worker first implementing the sidebar with `PanelGroup`/`PanelResizeHandle`, then later reading `apps/desktop/src/renderer/components/ui/SplitPane.tsx` to learn the actual local pattern after typecheck failures. `apps/desktop/src/renderer/components/ui/SplitPane.tsx:1-35` is the canonical wrapper, but neither mission `AGENTS.md` nor `.factory/library/architecture.md` currently points UI workers at it when they need resizable panel layouts."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Fail. The feature lands part of the M4 missions UI overhaul, but it still misses key claimed behaviors: the sidebar resize behavior is not persisted or pixel-bounded, feed dedup is not actually used in the rendered activity feed, the usage meter does not show visible reset countdowns and does not provide per-mission/per-worker cost tracking, the header archive action does not archive the mission, and the <10px font cleanup remains incomplete across the missions surface."
+}

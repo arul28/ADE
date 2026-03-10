@@ -1,0 +1,101 @@
+{
+  "milestone": "ui-ux-overhaul",
+  "round": 1,
+  "status": "fail",
+  "validatorsRun": {
+    "test": {
+      "passed": true,
+      "command": "cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run --reporter=verbose",
+      "exitCode": 1,
+      "notes": "Full suite exited with only the 2 known pre-existing failures documented in AGENTS.md: aiOrchestratorService single-lane integration closing strategy and orchestratorService unified-attempt laneId handling. No additional failures were observed (1150 passed, 2 failed)."
+    },
+    "typecheck": {
+      "passed": true,
+      "command": "cd /Users/admin/Projects/ADE/apps/desktop && npx tsc --noEmit",
+      "exitCode": 0,
+      "notes": "Typecheck passed with no diagnostics."
+    },
+    "lint": {
+      "passed": true,
+      "command": "echo \"lint not configured (todo)\"",
+      "exitCode": 0,
+      "notes": "Lint is not configured in the project manifest."
+    }
+  },
+  "reviewsSummary": {
+    "total": 2,
+    "passed": 0,
+    "failed": 2,
+    "failedFeatures": [
+      "ui-overhaul-layout-interventions-usage",
+      "budget-planning-approval-ui"
+    ]
+  },
+  "blockingIssues": [
+    {
+      "featureId": "ui-overhaul-layout-interventions-usage",
+      "severity": "blocking",
+      "description": "VAL-UX-010 remains unmet: the sidebar resize implementation uses percentage bounds instead of the required 200-400px range and never persists width updates back to localStorage.",
+      "sourceReview": ".factory/validation/ui-ux-overhaul/scrutiny/reviews/ui-overhaul-layout-interventions-usage.json"
+    },
+    {
+      "featureId": "ui-overhaul-layout-interventions-usage",
+      "severity": "blocking",
+      "description": "VAL-UX-002 remains unmet: the rendered activity feed still groups with legacy `groupConsecutive()` logic, while the new `collapseFeedMessages()` helper is only covered by tests and is not wired into runtime UI rendering.",
+      "sourceReview": ".factory/validation/ui-ux-overhaul/scrutiny/reviews/ui-overhaul-layout-interventions-usage.json"
+    },
+    {
+      "featureId": "ui-overhaul-layout-interventions-usage",
+      "severity": "blocking",
+      "description": "VAL-USAGE-004 and VAL-USAGE-005 remain unmet: reset countdowns are hidden in tooltips rather than shown inline, and mission cost is derived from global provider totals with no per-worker breakdown.",
+      "sourceReview": ".factory/validation/ui-ux-overhaul/scrutiny/reviews/ui-overhaul-layout-interventions-usage.json"
+    },
+    {
+      "featureId": "ui-overhaul-layout-interventions-usage",
+      "severity": "blocking",
+      "description": "VAL-UX-006 and VAL-UX-009 remain unmet: the header ARCHIVE action only cleans lanes instead of archiving the mission, and multiple mission UI files still ship font sizes below 10px.",
+      "sourceReview": ".factory/validation/ui-ux-overhaul/scrutiny/reviews/ui-overhaul-layout-interventions-usage.json"
+    },
+    {
+      "featureId": "budget-planning-approval-ui",
+      "severity": "blocking",
+      "description": "VAL-USAGE-003 remains unmet: `modelDowngradeThresholdPct` is only wired into UI/types and is never consumed by orchestrator runtime to downgrade newly spawned workers or emit feed events.",
+      "sourceReview": ".factory/validation/ui-ux-overhaul/scrutiny/reviews/budget-planning-approval-ui.json"
+    },
+    {
+      "featureId": "budget-planning-approval-ui",
+      "severity": "blocking",
+      "description": "VAL-PLAN-007 remains unmet: phase transitions ignore `requiresApproval`, and no approval intervention is created when leaving a phase marked for manual approval.",
+      "sourceReview": ".factory/validation/ui-ux-overhaul/scrutiny/reviews/budget-planning-approval-ui.json"
+    },
+    {
+      "featureId": "budget-planning-approval-ui",
+      "severity": "blocking",
+      "description": "VAL-USAGE-002 remains incomplete: Mission Settings still does not expose the promised budget-cap controls because `MissionSettingsDialog` never mounts `SmartBudgetPanel`.",
+      "sourceReview": ".factory/validation/ui-ux-overhaul/scrutiny/reviews/budget-planning-approval-ui.json"
+    }
+  ],
+  "appliedUpdates": [
+    {
+      "target": "library",
+      "description": "Documented the local `SplitPane.tsx` wrapper as the preferred resizable mission layout pattern for UI workers using `react-resizable-panels`.",
+      "sourceFeature": "ui-overhaul-layout-interventions-usage"
+    }
+  ],
+  "suggestedGuidanceUpdates": [
+    {
+      "target": ".factory/skills/ui-worker/SKILL.md",
+      "suggestion": "Require UI workers to explicitly record missing agent-browser verification and required library reads as procedure deviations instead of marking `followedProcedure: true` when they skipped those mandated steps.",
+      "evidence": "The `ui-overhaul-layout-interventions-usage` review found that the worker skipped `.factory/library/user-testing.md` and agent-browser validation even though the ui-worker skill requires both, yet the handoff still reported `followedProcedure: true`.",
+      "isSystemic": true
+    },
+    {
+      "target": "AGENTS.md",
+      "suggestion": "Avoid assigning renderer-only ui-worker features to contracts that also require orchestrator runtime enforcement; split those assertions into a service-worker feature or explicitly flag the cross-layer scope up front.",
+      "evidence": "The `budget-planning-approval-ui` review found that the feature added UI/type plumbing but missed runtime requirements in `missionBudgetService.ts`, `coordinatorTools.ts`, and `orchestratorService.ts`, matching the narrower renderer-oriented ui-worker skill guidance.",
+      "isSystemic": true
+    }
+  ],
+  "rejectedObservations": [],
+  "previousRound": null
+}

@@ -79,6 +79,7 @@ export function createMyService({ dep1, dep2 }: { dep1: Dep1Type; dep2: Dep2Type
 - `MissionsPage.tsx` is no longer the mega-component; most missions UI state now lives in `useMissionsStore.ts` and page layout is split across focused child components.
 - Chat message virtualization already exists in the shared renderer path: `ChatMessageArea` → `MissionThreadMessageList` → `AgentChatMessageList`, so mission-chat work should reuse that path instead of re-implementing message windowing.
 - Mission sidebar virtualization is implemented separately in `MissionSidebar.tsx` via `@tanstack/react-virtual`.
+- Resizable mission layouts should reuse `apps/desktop/src/renderer/components/ui/SplitPane.tsx`, the local wrapper around `react-resizable-panels` that standardizes `Group`, `Panel`, `Separator`, `defaultLayout`, and `onLayoutChanged` usage.
 
 ### State Machine
 - `MissionStatus`: queued → planning → in_progress → intervention_required → completed/failed/canceled

@@ -1,0 +1,40 @@
+{
+  "featureId": "budget-planning-approval-ui",
+  "reviewedAt": "2026-03-10T09:10:58.937921Z",
+  "commitId": "04d3e73788b695b9595dc09d3c2fb95395481b7d",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The commit adds the UI/type surfaces for smart-budget caps and per-phase approval, but two of the claimed behaviors are still missing in runtime code. `modelDowngradeThresholdPct` is only wired into the panel/type layer and never drives cheaper model selection or feed logging, and `requiresApproval` is never enforced when phases transition. The claimed budget-cap assertion is also incomplete because Mission Settings still has no budget-cap controls.",
+    "issues": [
+      {
+        "file": "apps/desktop/src/main/services/orchestrator/missionBudgetService.ts",
+        "line": 1300,
+        "severity": "blocking",
+        "description": "VAL-USAGE-003 is not implemented. The runtime budget service only reads the hard-stop caps (`fiveHourHardStopPercent`, `weeklyHardStopPercent`, `apiKeyMaxSpendUsd`) and never consumes `modelDowngradeThresholdPct`, so the new threshold from `SmartBudgetPanel` cannot downgrade newly spawned workers or emit a feed event. The only references to `modelDowngradeThresholdPct` are in `shared/types/budget.ts` and `renderer/components/missions/SmartBudgetPanel.tsx`."
+      },
+      {
+        "file": "apps/desktop/src/main/services/orchestrator/coordinatorTools.ts",
+        "line": 4083,
+        "severity": "blocking",
+        "description": "VAL-PLAN-007 is still unmet. `set_current_phase` writes the next phase directly into run metadata without checking `currentPhase.requiresApproval` or creating an approval intervention, and there is no `phase_approval`/approval-gate handling anywhere in the orchestrator. The separate kernel auto-advance path in `orchestratorService.ts` (`resolveAutoAdvanceTarget` / `applyRunPhaseTransition`) also bypasses the new toggle, so 'Require manual approval' currently has no effect beyond UI state."
+      },
+      {
+        "file": "apps/desktop/src/renderer/components/missions/MissionSettingsDialog.tsx",
+        "line": 398,
+        "severity": "blocking",
+        "description": "VAL-USAGE-002 is not fully covered. The validation contract calls for budget-cap controls in Mission Settings, but `MissionSettingsDialog` still renders only defaults, permissions, and phase profiles; it never mounts `SmartBudgetPanel`. `SmartBudgetPanel` is only used in `CreateMissionDialog.tsx:1512`, so existing mission settings cannot configure/persist the new caps from the settings dialog."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The assigned `ui-worker` skill is renderer-focused, but this feature's contract also depended on orchestrator runtime behavior (model downgrade enforcement/feed logging and phase approval gating). That mismatch appears to have biased the implementation toward UI/types only.",
+      "evidence": "`.factory/skills/ui-worker/SKILL.md` frames the work around renderer components, Zustand, IPC, and UI verification. The transcript skeleton for session `b5ed73f6-9b51-4bd1-901e-5d4fc1ca6509` contains no mentions of `missionBudgetService.ts`, `coordinatorTools.ts`, `orchestratorService.ts`, or `MissionSettingsDialog.tsx`, and the diff correspondingly stops short of the runtime paths that actually enforce these assertions."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Review failed. The feature successfully adds UI/type plumbing for `requiresApproval` and the downgrade threshold, but it does not implement the claimed runtime behaviors: no downgrade logic/feed event exists, phase transitions ignore `requiresApproval`, and Mission Settings still lacks the promised budget-cap controls."
+}
