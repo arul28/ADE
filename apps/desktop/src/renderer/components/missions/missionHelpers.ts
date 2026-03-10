@@ -24,6 +24,7 @@ import type {
   MissionMetricToggle,
   MissionMetricSample,
   OrchestratorStepStatus,
+  SmartBudgetConfig,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { COLORS } from "../lanes/laneDesignTokens";
@@ -180,6 +181,8 @@ export type MissionSettingsDraft = {
   cliSandboxPermissions: MissionCliSandboxPermissions;
   /** @deprecated kept for backward-compat read/write */
   inProcessMode: MissionInProcessPermissionMode;
+  /** Smart token budget configuration (persisted as mission-level default) */
+  smartBudget: SmartBudgetConfig;
 };
 
 export const DEFAULT_ORCHESTRATOR_MODEL: ModelConfig = {
@@ -197,6 +200,12 @@ export const DEFAULT_PERMISSION_CONFIG: MissionPermissionConfig = {
   },
 };
 
+export const DEFAULT_SMART_BUDGET: SmartBudgetConfig = {
+  enabled: false,
+  fiveHourThresholdUsd: 10,
+  weeklyThresholdUsd: 50,
+};
+
 export const DEFAULT_MISSION_SETTINGS_DRAFT: MissionSettingsDraft = {
   defaultOrchestratorModel: { ...DEFAULT_ORCHESTRATOR_MODEL },
   teammatePlanMode: "auto",
@@ -205,6 +214,7 @@ export const DEFAULT_MISSION_SETTINGS_DRAFT: MissionSettingsDraft = {
   cliMode: "full-auto",
   cliSandboxPermissions: "workspace-write",
   inProcessMode: "full-auto",
+  smartBudget: { ...DEFAULT_SMART_BUDGET },
 };
 
 /* ════════════════════ PURE UTILITY FUNCTIONS ════════════════════ */

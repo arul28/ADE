@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import type { OrchestratorTimelineEvent } from "../../../shared/types";
 import { cn } from "../ui/cn";
-import { NOISY_EVENT_TYPES, classifyErrorSource, ERROR_SOURCE_COLORS } from "./missionHelpers";
+import { NOISY_EVENT_TYPES, classifyErrorSource, ERROR_SOURCE_COLORS, collapseFeedMessages, type CollapsedFeedMessage } from "./missionHelpers";
 
 type Props = {
   runId: string;
@@ -124,23 +124,11 @@ function eventSeverity(ev: OrchestratorTimelineEvent): "error" | "warning" | "in
   return "info";
 }
 
-type GroupedEvent = {
-  events: OrchestratorTimelineEvent[];
-  collapsed: boolean;
-};
-
-function groupConsecutive(events: OrchestratorTimelineEvent[]): GroupedEvent[] {
-  const groups: GroupedEvent[] = [];
-  for (const ev of events) {
-    const last = groups[groups.length - 1];
-    if (last && last.events[0].eventType === ev.eventType && last.events.length < 20) {
-      last.events.push(ev);
-      last.collapsed = last.events.length > 2;
-    } else {
-      groups.push({ events: [ev], collapsed: false });
-    }
-  }
-  return groups;
+/** Adapt OrchestratorTimelineEvent to the { eventType, stepId } shape required by collapseFeedMessages */
+function collapseTimelineEvents(events: OrchestratorTimelineEvent[]): CollapsedFeedMessage<OrchestratorTimelineEvent>[] {
+  return collapseFeedMessages(
+    events.map((ev) => ({ ...ev, eventType: ev.eventType, stepId: ev.stepId ?? null })),
+  );
 }
 
 export const OrchestratorActivityFeed = React.memo(function OrchestratorActivityFeed({ runId, initialTimeline }: Props) {
@@ -276,7 +264,7 @@ export const OrchestratorActivityFeed = React.memo(function OrchestratorActivity
     return result;
   }, [events, category, severity, searchText, showRawEvents]);
 
-  const grouped = useMemo(() => groupConsecutive(filteredEvents), [filteredEvents]);
+  const grouped = useMemo(() => collapseTimelineEvents(filteredEvents), [filteredEvents]);
 
   return (
     <div className="flex flex-col gap-2">
@@ -368,15 +356,16 @@ export const OrchestratorActivityFeed = React.memo(function OrchestratorActivity
         ) : (
           <div style={{ borderColor: "#1E1B26" }} className="divide-y">
             {grouped.map((group) => {
-              const first = group.events[0];
-              const config = EVENT_CONFIG[first.eventType] ?? DEFAULT_CONFIG;
+              const representative = group.item;
+              const config = EVENT_CONFIG[representative.eventType] ?? DEFAULT_CONFIG;
+              const isCollapsed = group.count > 1;
 
-              if (group.collapsed && expandedId !== first.id) {
-                // Show collapsed group
+              if (isCollapsed && expandedId !== representative.id) {
+                // Show collapsed group with count badge (VAL-UX-002)
                 return (
                   <button
-                    key={first.id}
-                    onClick={() => setExpandedId(first.id)}
+                    key={representative.id}
+                    onClick={() => setExpandedId(representative.id)}
                     className="w-full text-left px-3 py-1.5 transition-colors"
                     style={{ borderColor: "#1E1B26" }}
                     onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "#1A1720"; }}
@@ -392,23 +381,31 @@ export const OrchestratorActivityFeed = React.memo(function OrchestratorActivity
                       >
                         {config.label}
                       </span>
-                      <span className="text-xs" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace" }}>
-                        {group.events.length} {config.label.toLowerCase()} events
+                      {/* Count badge (VAL-UX-002) */}
+                      <span
+                        className="px-1.5 py-0.5 text-[10px] font-bold"
+                        style={{ background: "#A78BFA18", color: "#A78BFA", border: "1px solid #A78BFA30", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", letterSpacing: "0.5px", borderRadius: 0 }}
+                      >
+                        x{group.count}
+                      </span>
+                      <span className="text-xs truncate" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace" }}>
+                        {representative.reason}
                       </span>
                       <span
                         className="ml-auto shrink-0 text-[11px]"
-                        title={formatTimestamp(first.createdAt)}
+                        title={formatTimestamp(representative.createdAt)}
                         style={{ color: "#52525B", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}
                       >
-                        {relativeTime(first.createdAt)}
+                        {relativeTime(representative.createdAt)}
                       </span>
                     </div>
                   </button>
                 );
               }
 
-              // Expanded: render all events in group
-              return group.events.map((ev) => {
+              // Expanded or single-event: render all events in group
+              const eventsToRender = isCollapsed ? group.collapsed : [representative];
+              return eventsToRender.map((ev) => {
                 const evConfig = EVENT_CONFIG[ev.eventType] ?? DEFAULT_CONFIG;
                 const isExpanded = expandedId === ev.id;
                 const sev = eventSeverity(ev);

@@ -221,24 +221,29 @@ export function MissionHeader() {
     }
   }, []);
 
-  const handleCleanupLanes = useCallback(async () => {
+  const handleArchiveMission = useCallback(async () => {
     const s = useMissionsStore.getState();
     if (!s.selectedMission) return;
-    if (!window.confirm("Archive ADE-managed lanes created by this mission?")) return;
+    if (!TERMINAL_MISSION_STATUSES.has(s.selectedMission.status)) return;
+    if (!window.confirm("Archive this mission? This will remove it from the active list.")) return;
     s.setCleanupBusy(true);
     try {
-      const result = await window.ade.orchestrator.cleanupTeamResources({
-        missionId: s.selectedMission.id,
-        cleanupLanes: true,
-      });
-      if (result.laneErrors.length > 0) {
-        s.setError(
-          `Lane cleanup archived ${result.lanesArchived.length}/${result.laneIds.length}. ` +
-            `${result.laneErrors.length} lane(s) failed to archive.`,
-        );
-      } else {
-        s.setError(null);
-      }
+      // Clean up lanes first
+      let cleanupWarning: string | null = null;
+      try {
+        const result = await window.ade.orchestrator.cleanupTeamResources({
+          missionId: s.selectedMission.id,
+          cleanupLanes: true,
+        });
+        if (result.laneErrors.length > 0) {
+          cleanupWarning = `Mission archived, but lane cleanup archived ${result.lanesArchived.length}/${result.laneIds.length} lane(s). ${result.laneErrors.length} lane(s) failed.`;
+        }
+      } catch { /* lane cleanup is best-effort */ }
+      // Actually archive the mission via the mission service API
+      await window.ade.missions.archive({ missionId: s.selectedMission.id });
+      await s.refreshMissionList({ preserveSelection: true, silent: true });
+      await s.loadDashboard();
+      s.setError(cleanupWarning);
     } catch (err) {
       s.setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -377,7 +382,7 @@ export function MissionHeader() {
               border: `1px solid ${LIFECYCLE_ACTIONS.archive_mission.color}40`,
               background: `${LIFECYCLE_ACTIONS.archive_mission.color}12`,
             })}
-            onClick={() => void handleCleanupLanes()}
+            onClick={() => void handleArchiveMission()}
             disabled={cleanupBusy}
             title="Archive this mission and clean up lanes"
           >
@@ -405,6 +410,7 @@ export function MissionProgressBar({ pct }: { pct: number }) {
 function CompactUsageMeter() {
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
   const selectedMission = useMissionsStore((s) => s.selectedMission);
+  const [perMissionCost, setPerMissionCost] = useState<number>(0);
 
   useEffect(() => {
     if (!window.ade?.usage) return;
@@ -422,15 +428,29 @@ function CompactUsageMeter() {
     };
   }, []);
 
+  // Per-mission cost sourced from missionBudgetService (VAL-USAGE-005 scrutiny fix)
+  useEffect(() => {
+    if (!selectedMission?.id) { setPerMissionCost(0); return; }
+    let cancelled = false;
+    const fetchBudget = () => {
+      window.ade.orchestrator
+        .getMissionBudgetStatus({ missionId: selectedMission.id })
+        .then((budget) => {
+          if (!cancelled) setPerMissionCost(budget.mission.usedCostUsd ?? 0);
+        })
+        .catch(() => {
+          if (!cancelled) setPerMissionCost(0);
+        });
+    };
+    fetchBudget();
+    const timer = window.setInterval(fetchBudget, 120_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [selectedMission?.id]);
+
   if (!snapshot || snapshot.windows.length === 0) return null;
 
   const claudeWindows = snapshot.windows.filter((w) => w.provider === "claude");
   const codexWindows = snapshot.windows.filter((w) => w.provider === "codex");
-
-  // Per-mission cost (VAL-USAGE-005)
-  const missionCost = selectedMission
-    ? snapshot.costs.reduce((acc, c) => acc + c.todayCostUsd, 0)
-    : 0;
 
   return (
     <div
@@ -445,13 +465,14 @@ function CompactUsageMeter() {
       {codexWindows.map((w) => (
         <UsageWindowBadge key={`codex-${w.windowType}`} provider="Codex" windowType={w.windowType} pct={w.percentUsed} resetsInMs={w.resetsInMs} />
       ))}
-      {missionCost > 0 && (
+      {/* Per-mission cost from missionBudgetService (VAL-USAGE-005) */}
+      {perMissionCost > 0 && (
         <span
           className="text-[10px]"
           style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}
-          title="Estimated cost for this mission"
+          title={`Mission cost: $${perMissionCost.toFixed(4)}`}
         >
-          ${missionCost.toFixed(2)}
+          ${perMissionCost.toFixed(2)}
         </span>
       )}
     </div>
@@ -471,13 +492,20 @@ function UsageWindowBadge({
 }) {
   const color = usagePercentColor(pct);
   const windowLabel = windowType === "five_hour" ? "5h" : "wk";
+  const resetLabel = resetsInMs > 0 ? formatResetCountdown(resetsInMs) : null;
   return (
     <span
       className="text-[10px] whitespace-nowrap"
       style={{ color, fontFamily: MONO_FONT }}
-      title={`${provider} ${windowType === "five_hour" ? "5-hour" : "weekly"}: ${pct.toFixed(1)}% — ${formatResetCountdown(resetsInMs)}`}
+      title={`${provider} ${windowType === "five_hour" ? "5-hour" : "weekly"}: ${pct.toFixed(1)}%${resetLabel ? ` — ${resetLabel}` : ""}`}
     >
       {provider[0]}/{windowLabel} {Math.round(pct)}%
+      {/* Reset countdown shown inline (VAL-USAGE-004 scrutiny fix) */}
+      {resetLabel && (
+        <span style={{ color: COLORS.textDim, marginLeft: 2, fontSize: 9 }}>
+          ({resetLabel})
+        </span>
+      )}
     </span>
   );
 }

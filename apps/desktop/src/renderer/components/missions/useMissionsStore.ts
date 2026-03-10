@@ -481,6 +481,7 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
         cliMode: toCliMode(readString(localCli.mode, effectiveCli.mode, "full-auto")),
         cliSandboxPermissions: toCliSandboxPermissions(readString(localCli.sandboxPermissions, effectiveCli.sandboxPermissions, "workspace-write")),
         inProcessMode: toInProcessMode(readString(localInProcess.mode, effectiveInProcess.mode, "full-auto")),
+        smartBudget: get().missionSettingsDraft.smartBudget,
       },
     });
   },

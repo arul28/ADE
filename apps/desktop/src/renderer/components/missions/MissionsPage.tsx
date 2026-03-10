@@ -28,16 +28,23 @@ const SIDEBAR_MAX_PX = 400;
 const SIDEBAR_DEFAULT_PX = 248;
 const SIDEBAR_COLLAPSE_THRESHOLD = 900;
 
-/** Read persisted sidebar layout percentage from localStorage. */
-function readPersistedSidebarPct(): number {
+/** Read persisted sidebar width (in pixels) from localStorage. */
+function readPersistedSidebarPx(): number {
   try {
     const raw = localStorage.getItem(SIDEBAR_WIDTH_KEY);
     if (raw) {
       const n = Number(raw);
-      if (Number.isFinite(n) && n > 0) return n;
+      if (Number.isFinite(n) && n >= SIDEBAR_MIN_PX && n <= SIDEBAR_MAX_PX) return n;
     }
   } catch { /* ignore */ }
-  return Math.round((SIDEBAR_DEFAULT_PX / 1200) * 100);
+  return SIDEBAR_DEFAULT_PX;
+}
+
+/** Persist sidebar width (in pixels) to localStorage. */
+function persistSidebarPx(px: number): void {
+  try {
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(Math.round(px)));
+  } catch { /* ignore */ }
 }
 
 /* ── Fine-grained page-level selector (VAL-ARCH-008) ── */
@@ -258,7 +265,7 @@ export default function MissionsPage() {
     return () => mql.removeEventListener("change", handler as (e: MediaQueryListEvent) => void);
   }, []);
 
-  const defaultSidebarPct = useMemo(() => readPersistedSidebarPct(), []);
+  const defaultSidebarPx = useMemo(() => readPersistedSidebarPx(), []);
 
   /* ════════════════════ RENDER ════════════════════ */
   return (
@@ -274,9 +281,10 @@ export default function MissionsPage() {
           <>
             <Panel
               id="missions-sidebar"
-              defaultSize={`${defaultSidebarPct}%`}
-              minSize="15%"
-              maxSize="35%"
+              defaultSize={defaultSidebarPx}
+              minSize={SIDEBAR_MIN_PX}
+              maxSize={SIDEBAR_MAX_PX}
+              onResize={(size) => persistSidebarPx(size.inPixels)}
               style={{ overflow: "hidden" }}
             >
               <MissionSidebar />

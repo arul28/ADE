@@ -10,7 +10,9 @@ import { ConfirmDialog, PromptDialog, useConfirmDialog, usePromptDialog } from "
 import {
   type MissionSettingsDraft,
   toTeammatePlanMode,
+  DEFAULT_SMART_BUDGET,
 } from "./missionHelpers";
+import { SmartBudgetPanel } from "./SmartBudgetPanel";
 import { PhaseCardEditor } from "./PhaseCardEditor";
 import { WorkerPermissionsEditor } from "./WorkerPermissionsEditor";
 import { ModelSelector } from "./ModelSelector";
@@ -445,6 +447,14 @@ export function MissionSettingsDialog({
               phases={defaultProfile?.phases ?? []}
               permissionConfig={draft.permissionConfig}
               onPermissionChange={(next) => onDraftChange({ permissionConfig: next })}
+            />
+          </div>
+
+          {/* Smart Token Budget — configurable from mission settings (scrutiny fix) */}
+          <div className="p-3" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+            <SmartBudgetPanel
+              value={draft.smartBudget ?? DEFAULT_SMART_BUDGET}
+              onChange={(config) => onDraftChange({ smartBudget: config })}
             />
           </div>
 
