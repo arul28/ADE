@@ -155,7 +155,13 @@ export function WorkViewArea({
           />
         ) : (
           <div className="min-h-0 flex-1 overflow-auto p-2">
-            <div className="grid grid-cols-1 gap-2 xl:grid-cols-2 2xl:grid-cols-3">
+            <div className={`grid gap-2 ${
+              displaySessions.length === 1
+                ? "grid-cols-1"
+                : displaySessions.length === 2
+                  ? "grid-cols-1 xl:grid-cols-2"
+                  : "grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3"
+            }`}>
               {displaySessions.map((session) => {
                 const isActive = activeSession?.id === session.id;
                 const dot = sessionStatusDot(session);

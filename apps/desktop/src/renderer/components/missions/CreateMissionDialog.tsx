@@ -463,7 +463,7 @@ function CreateMissionDialogInner({
         for (const entry of auth) {
           if (!entry.authenticated) continue;
           if (entry.type === "cli-subscription" && entry.cli) {
-            const familyMap: Record<string, string> = { claude: "anthropic", codex: "openai", gemini: "google" };
+            const familyMap: Record<string, string> = { claude: "anthropic", codex: "openai" };
             const family = familyMap[entry.cli];
             if (family) {
               for (const model of MODEL_REGISTRY) {
@@ -680,7 +680,7 @@ function CreateMissionDialogInner({
     for (const auth of aiDetectedAuth) {
       if (!auth.authenticated) continue;
       if (auth.type === "cli-subscription" && auth.cli) {
-        const familyMap: Record<string, string> = { claude: "anthropic", codex: "openai", gemini: "google" };
+        const familyMap: Record<string, string> = { claude: "anthropic", codex: "openai" };
         if (familyMap[auth.cli]) subProviders.push(familyMap[auth.cli]!);
       }
       if (auth.type === "api-key" && auth.provider) {

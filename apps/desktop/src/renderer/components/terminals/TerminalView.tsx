@@ -245,9 +245,14 @@ function doFit(runtime: CachedRuntime, forcePtyResize = false) {
   if (!ensureOpen(runtime)) return;
   if (!runtime.host.isConnected || runtime.host.clientWidth <= 0 || runtime.host.clientHeight <= 0) return;
 
+  // Hide cursor before fit to prevent ghost cursor artifact at stale position
+  const cursorLayer = runtime.host.querySelector<HTMLElement>(".xterm-cursor-layer");
+  if (cursorLayer) cursorLayer.style.visibility = "hidden";
+
   try {
     runtime.fit.fit();
   } catch {
+    if (cursorLayer) cursorLayer.style.visibility = "";
     incrementHealth(runtime, "fitFailures");
     return;
   }
@@ -288,6 +293,13 @@ function doFit(runtime: CachedRuntime, forcePtyResize = false) {
     runtime.term.refresh(0, Math.max(0, runtime.term.rows - 1));
   } catch {
     // ignore refresh failures after dispose
+  }
+
+  // Restore cursor visibility after refresh completes on next frame
+  if (cursorLayer) {
+    requestAnimationFrame(() => {
+      cursorLayer.style.visibility = "";
+    });
   }
 }
 

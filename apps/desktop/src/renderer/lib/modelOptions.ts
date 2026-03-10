@@ -41,7 +41,6 @@ export function deriveConfiguredModelIds(status: AiSettingsStatus | null | undef
     if (auth.type === "cli-subscription" && auth.authenticated) {
       if (auth.cli === "claude") addKnownModelIds(ids, "anthropic", true);
       if (auth.cli === "codex") addKnownModelIds(ids, "openai", true);
-      if (auth.cli === "gemini") addKnownModelIds(ids, "google", true);
       continue;
     }
 
