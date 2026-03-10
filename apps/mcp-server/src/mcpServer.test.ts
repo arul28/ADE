@@ -268,6 +268,19 @@ function createRuntime() {
         recentSessions: []
       }))
     } as any,
+    workerAgentService: {
+      updateCoreMemory: vi.fn((patch: Record<string, unknown>) => ({
+        version: 4,
+        updatedAt: "2026-03-05T13:00:00.000Z",
+        projectSummary: String((patch as { projectSummary?: unknown }).projectSummary ?? "worker-summary"),
+        criticalConventions: [],
+        userPreferences: [],
+        activeFocus: Array.isArray((patch as { activeFocus?: unknown }).activeFocus)
+          ? (patch as { activeFocus: string[] }).activeFocus
+          : [],
+        notes: []
+      }))
+    } as any,
     orchestratorService: {
       listRuns: vi.fn(() => []),
       pauseRun: vi.fn(({ runId }: any) => ({ id: runId, status: "paused" })),
@@ -1702,6 +1715,37 @@ describe("mcpServer", () => {
     expect(response.structuredContent.updatedAt).toBe("2026-03-05T12:00:00.000Z");
   });
 
+  it("routes memory_update_core to worker core memory when agent ownerId is set", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      ownerId: "worker-agent-1",
+      missionId: "mission-1",
+      runId: "run-1"
+    });
+
+    const response = await callTool(handler, "memory_update_core", {
+      projectSummary: "Worker-specific checkout strategy",
+      activeFocus: ["checkout reliability"]
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.workerAgentService.updateCoreMemory).toHaveBeenCalledWith(
+      "worker-agent-1",
+      expect.objectContaining({
+        projectSummary: "Worker-specific checkout strategy",
+        activeFocus: ["checkout reliability"]
+      })
+    );
+    expect(fixture.runtime.ctoStateService.updateCoreMemory).not.toHaveBeenCalled();
+    expect(response.structuredContent.updated).toBe(true);
+    expect(response.structuredContent.version).toBe(4);
+    expect(response.structuredContent.updatedAt).toBe("2026-03-05T13:00:00.000Z");
+  });
+
   it("materializes compact context manifests for spawn_agent to keep prompts lightweight", async () => {
     const fixture = createRuntime();
     const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -1779,16 +1823,33 @@ describe("mcpServer", () => {
     const fixture = createRuntime();
     const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler);
+    await initialize(handler, { callerId: "coord-1", role: "orchestrator", missionId: "mission-1", runId: "run-1" });
     const response = await callTool(handler, "ask_user", {
       missionId: "mission-1",
       title: "Need decision",
-      body: "Choose the merge order"
+      body: "Choose the merge order",
+      phase: "planning"
     });
 
     expect(response?.isError).toBeUndefined();
     expect(fixture.runtime.missionService.addIntervention).toHaveBeenCalledTimes(1);
+    expect(fixture.runtime.missionService.addIntervention).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({
+        source: "ask_user",
+        runId: "run-1",
+        phase: "planning",
+        blocking: true,
+        canProceedWithoutAnswer: false,
+      }),
+    }));
+    expect(fixture.runtime.orchestratorService.pauseRun).toHaveBeenCalledWith(expect.objectContaining({
+      runId: "run-1",
+      metadata: expect.objectContaining({
+        interventionSource: "ask_user",
+      }),
+    }));
     expect(response.structuredContent.awaitingUserResponse).toBe(true);
+    expect(response.structuredContent.blocking).toBe(true);
   });
 
   it("allows mutations for any session", async () => {

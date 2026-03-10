@@ -718,7 +718,7 @@ function createMemoryUpdateCoreTool(
 ) {
   return tool({
     description:
-      "Update CTO core memory (Tier-1) with durable project context fields.",
+      "Update identity core memory (Tier-1) with durable project context fields.",
     inputSchema: z.object({
       projectSummary: z.string().optional(),
       criticalConventions: z.array(z.string()).optional(),

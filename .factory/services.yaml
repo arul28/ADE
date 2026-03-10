@@ -2,7 +2,7 @@ commands:
   install: cd /Users/admin/Projects/ADE/apps/desktop && npm install
   typecheck: cd /Users/admin/Projects/ADE/apps/desktop && npx tsc --noEmit
   build: cd /Users/admin/Projects/ADE/apps/desktop && npm run build
-  test: cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run --reporter=verbose --max-workers=6
+  test: cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run --reporter=verbose
   lint: echo "lint not configured (todo)"
 
 services:

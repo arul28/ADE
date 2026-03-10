@@ -44,6 +44,7 @@ import { readMissionStateDocument, updateMissionStateDocument } from "./missionS
 import { isWithinDir } from "../shared/utils";
 import { normalizeAgentRuntimeFlags } from "./teamRuntimeConfig";
 import { registerTeamMember } from "./teamRuntimeState";
+import type { createMemoryService } from "../memory/memoryService";
 import {
   classifyWorkerExecutionPath,
   resolveModelDescriptor,
@@ -152,6 +153,8 @@ export const COORDINATOR_TOOL_NAMES = [
   "read_mission_status",
   "read_mission_state",
   "update_mission_state",
+  "memory_search",
+  "memory_add",
   "revise_plan",
   "update_tool_profiles",
   "transfer_lane",
@@ -211,9 +214,11 @@ export type CoordinatorSendWorkerMessageFn = (args: {
 
 function resolveStep(
   graph: OrchestratorRunGraph,
-  stepKey: string,
+  stepRef: string,
 ): OrchestratorStep | null {
-  return graph.steps.find((s) => s.stepKey === stepKey) ?? null;
+  const normalizedRef = normalizeText(stepRef);
+  if (!normalizedRef.length) return null;
+  return graph.steps.find((s) => s.stepKey === normalizedRef || s.id === normalizedRef) ?? null;
 }
 
 function findRunningAttempt(
@@ -276,6 +281,33 @@ function dedupeKeys(keys: readonly unknown[] | null | undefined): string[] {
 
 function normalizeText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeDependencyReferences(args: {
+  graph: OrchestratorRunGraph;
+  refs: readonly unknown[] | null | undefined;
+  label: string;
+  additionalKnownKeys?: ReadonlySet<string>;
+}): string[] {
+  const normalizedRefs = dedupeKeys(args.refs);
+  const normalizedKeys: string[] = [];
+  const unknownRefs: string[] = [];
+  for (const ref of normalizedRefs) {
+    const resolvedStep = resolveStep(args.graph, ref);
+    if (resolvedStep) {
+      normalizedKeys.push(resolvedStep.stepKey);
+      continue;
+    }
+    if (args.additionalKnownKeys?.has(ref)) {
+      normalizedKeys.push(ref);
+      continue;
+    }
+    unknownRefs.push(ref);
+  }
+  if (unknownRefs.length > 0) {
+    throw new Error(`${args.label} references unknown dependency keys: ${unknownRefs.join(", ")}`);
+  }
+  return dedupeKeys(normalizedKeys);
 }
 
 function isTaskShellStep(step: OrchestratorStep | null | undefined): boolean {
@@ -486,9 +518,11 @@ function parseValidationFinding(value: unknown): ValidationResultReport["finding
 export function createCoordinatorToolSet(deps: {
   orchestratorService: ReturnType<typeof createOrchestratorService>;
   missionService: ReturnType<typeof createMissionService>;
+  memoryService?: ReturnType<typeof createMemoryService> | null;
   getMissionBudgetStatus?: () => Promise<MissionBudgetSnapshot | null>;
   runId: string;
   missionId: string;
+  projectId?: string;
   logger: Logger;
   db: AdeDb;
   projectRoot: string;
@@ -513,6 +547,10 @@ export function createCoordinatorToolSet(deps: {
     projectRoot,
     onDagMutation
   } = deps;
+  const projectId = typeof deps.projectId === "string" && deps.projectId.trim().length > 0
+    ? deps.projectId.trim()
+    : null;
+  const memoryService = deps.memoryService ?? null;
   const missionLaneId = typeof deps.missionLaneId === "string" && deps.missionLaneId.trim().length > 0
     ? deps.missionLaneId.trim()
     : null;
@@ -585,6 +623,28 @@ export function createCoordinatorToolSet(deps: {
     const title = typeof mission?.title === "string" ? mission.title.trim() : "";
     if (title.length > 0) return title;
     return `Mission ${missionId}`;
+  }
+
+  function mapMemoryCategoryToFactType(category: "fact" | "convention" | "pattern" | "decision" | "gotcha" | "preference") {
+    switch (category) {
+      case "pattern":
+        return "api_pattern" as const;
+      case "gotcha":
+        return "gotcha" as const;
+      case "convention":
+      case "preference":
+        return "config" as const;
+      default:
+        return "architectural" as const;
+    }
+  }
+
+  function resolveMemoryScopeOwnerId(scope: "project" | "agent" | "mission", explicit?: string | null): string | undefined {
+    const trimmed = typeof explicit === "string" ? explicit.trim() : "";
+    if (trimmed.length > 0) return trimmed;
+    if (scope === "agent") return `coordinator:${runId}`;
+    if (scope === "mission") return runId;
+    return undefined;
   }
 
   async function deliverToWorkerSession(
@@ -829,9 +889,21 @@ export function createCoordinatorToolSet(deps: {
     reusedExistingStep: boolean;
   } => {
     const g = graph();
-    const requestedDependencyStepKeys = dedupeKeys(args.requestedDependsOn ?? args.dependsOn);
-    const inferredDependencyStepKeys = dedupeKeys(args.inferredDependsOn);
-    const resolvedDependencyStepKeys = dedupeKeys(args.dependsOn);
+    const requestedDependencyStepKeys = normalizeDependencyReferences({
+      graph: g,
+      refs: args.requestedDependsOn ?? args.dependsOn,
+      label: `Worker '${args.name}'`,
+    });
+    const inferredDependencyStepKeys = normalizeDependencyReferences({
+      graph: g,
+      refs: args.inferredDependsOn,
+      label: `Worker '${args.name}'`,
+    });
+    const resolvedDependencyStepKeys = normalizeDependencyReferences({
+      graph: g,
+      refs: args.dependsOn,
+      label: `Worker '${args.name}'`,
+    });
     const executableDependencyStepKeys = resolveExecutableDependencyKeys(g, resolvedDependencyStepKeys);
     const taskShellDependencyKeys = requestedDependencyStepKeys.filter((dependencyKey) => {
       const dependencyStep = resolveStep(g, dependencyKey);
@@ -862,6 +934,30 @@ export function createCoordinatorToolSet(deps: {
     const replacementValidationReport = asRecord(replacementSourceMeta.lastValidationReport);
     const replacementAttempt = replacementSourceStep ? findLatestCompletedAttempt(g, replacementSourceStep.id) : null;
     const inheritedLaneId = normalizeLaneId(replacementSourceStep?.laneId ?? null);
+    const replacementReason = args.replacementReason?.trim() || "Replacement worker requested by coordinator.";
+    const replacementSourceSummary =
+      (typeof replacementResultReport.summary === "string" && replacementResultReport.summary.trim().length > 0
+        ? replacementResultReport.summary.trim()
+        : replacementAttempt?.resultEnvelope?.summary) ?? null;
+    const replacementChangedFiles = Array.isArray(replacementResultReport.filesChanged)
+      ? replacementResultReport.filesChanged
+          .map((entry) => String(entry ?? "").trim())
+          .filter((entry) => entry.length > 0)
+      : [];
+    const replacementFailedChecks =
+      replacementResultReport.testsRun &&
+      typeof replacementResultReport.testsRun === "object" &&
+      Number((replacementResultReport.testsRun as Record<string, unknown>).failed ?? 0) > 0
+        ? [
+            {
+              failed: Number((replacementResultReport.testsRun as Record<string, unknown>).failed ?? 0),
+              raw:
+                typeof (replacementResultReport.testsRun as Record<string, unknown>).raw === "string"
+                  ? (replacementResultReport.testsRun as Record<string, unknown>).raw
+                  : null
+            }
+          ]
+        : [];
     const explicitLaneId = normalizeLaneId(args.laneId ?? null);
     const effectiveLaneId = explicitLaneId ?? inheritedLaneId ?? missionLaneId;
     const maxIndex = g.steps.reduce(
@@ -965,30 +1061,10 @@ export function createCoordinatorToolSet(deps: {
                     replacedWorkerId: replacementSourceStep.stepKey,
                     replacedStepId: replacementSourceStep.id,
                     inheritedLaneId,
-                    reason: args.replacementReason?.trim() || "Replacement worker requested by coordinator.",
-                    sourceSummary:
-                      (typeof replacementResultReport.summary === "string" && replacementResultReport.summary.trim().length > 0
-                        ? replacementResultReport.summary.trim()
-                        : replacementAttempt?.resultEnvelope?.summary) ?? null,
-                    changedFiles: Array.isArray(replacementResultReport.filesChanged)
-                      ? replacementResultReport.filesChanged
-                          .map((entry) => String(entry ?? "").trim())
-                          .filter((entry) => entry.length > 0)
-                      : [],
-                    failedChecks:
-                      replacementResultReport.testsRun &&
-                      typeof replacementResultReport.testsRun === "object" &&
-                      Number((replacementResultReport.testsRun as Record<string, unknown>).failed ?? 0) > 0
-                        ? [
-                            {
-                              failed: Number((replacementResultReport.testsRun as Record<string, unknown>).failed ?? 0),
-                              raw:
-                                typeof (replacementResultReport.testsRun as Record<string, unknown>).raw === "string"
-                                  ? (replacementResultReport.testsRun as Record<string, unknown>).raw
-                                  : null
-                            }
-                          ]
-                        : [],
+                    reason: replacementReason,
+                    sourceSummary: replacementSourceSummary,
+                    changedFiles: replacementChangedFiles,
+                    failedChecks: replacementFailedChecks,
                     priorValidatorFeedback: replacementValidationReport ?? null
                   }
                 }
@@ -1006,46 +1082,25 @@ export function createCoordinatorToolSet(deps: {
       ],
     });
     if (replacementSourceStep && created[0]) {
-      const replacementPayload = {
-        replacedWorkerId: replacementSourceStep.stepKey,
-        replacedStepId: replacementSourceStep.id,
-        replacementWorkerId: created[0].stepKey,
-        replacementStepId: created[0].id,
-        laneId: effectiveLaneId,
-        reason: args.replacementReason?.trim() || "Replacement worker requested by coordinator.",
-        sourceSummary:
-          (typeof replacementResultReport.summary === "string" && replacementResultReport.summary.trim().length > 0
-            ? replacementResultReport.summary.trim()
-            : replacementAttempt?.resultEnvelope?.summary) ?? null,
-        changedFiles: Array.isArray(replacementResultReport.filesChanged)
-          ? replacementResultReport.filesChanged
-              .map((entry) => String(entry ?? "").trim())
-              .filter((entry) => entry.length > 0)
-          : [],
-        failedChecks:
-          replacementResultReport.testsRun &&
-          typeof replacementResultReport.testsRun === "object" &&
-          Number((replacementResultReport.testsRun as Record<string, unknown>).failed ?? 0) > 0
-            ? [
-                {
-                  failed: Number((replacementResultReport.testsRun as Record<string, unknown>).failed ?? 0),
-                  raw:
-                    typeof (replacementResultReport.testsRun as Record<string, unknown>).raw === "string"
-                      ? (replacementResultReport.testsRun as Record<string, unknown>).raw
-                      : null
-                }
-              ]
-            : [],
-        priorValidatorFeedback: replacementValidationReport ?? null,
-        priorStatusReport: replacementStatusReport ?? null
-      };
       orchestratorService.createHandoff({
         missionId,
         runId,
         stepId: created[0].id,
         handoffType: "worker_replacement_handoff",
         producer: "coordinator",
-        payload: replacementPayload
+        payload: {
+          replacedWorkerId: replacementSourceStep.stepKey,
+          replacedStepId: replacementSourceStep.id,
+          replacementWorkerId: created[0].stepKey,
+          replacementStepId: created[0].id,
+          laneId: effectiveLaneId,
+          reason: replacementReason,
+          sourceSummary: replacementSourceSummary,
+          changedFiles: replacementChangedFiles,
+          failedChecks: replacementFailedChecks,
+          priorValidatorFeedback: replacementValidationReport ?? null,
+          priorStatusReport: replacementStatusReport ?? null
+        },
       });
     }
     return {
@@ -1222,6 +1277,15 @@ export function createCoordinatorToolSet(deps: {
     };
   }
 
+  function getStepsForPhase(g: OrchestratorRunGraph, phase: PhaseCard): OrchestratorStep[] {
+    return g.steps.filter((step) => {
+      const stepMeta = asRecord(step.metadata);
+      const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim() : "";
+      const stepPhaseName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim() : "";
+      return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
+    });
+  }
+
   function stepBelongsToPhase(step: OrchestratorStep, phase: PhaseCard): boolean {
     const stepMeta = asRecord(step.metadata);
     const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
@@ -1292,7 +1356,6 @@ export function createCoordinatorToolSet(deps: {
     phase: PhaseCard | null;
     phaseKey: string;
     enabled: boolean;
-    mode: "always" | "auto_if_uncertain" | "never";
     maxQuestions: number;
   } {
     const phases = resolveMissionPhases(g);
@@ -1300,16 +1363,10 @@ export function createCoordinatorToolSet(deps: {
     const currentKey = current?.phaseKey.trim().toLowerCase() ?? "";
     const currentName = current?.name.trim().toLowerCase() ?? "";
     const inPlanning = currentKey === "planning" || currentName === "planning";
-    const rawMode = current?.askQuestions.mode;
-    const mode =
-      rawMode === "always" || rawMode === "auto_if_uncertain" || rawMode === "never"
-        ? rawMode
-        : "never";
     return {
       phase: current ?? null,
       phaseKey: current?.phaseKey ?? current?.name ?? "",
-      enabled: inPlanning && current?.askQuestions.enabled === true && mode !== "never",
-      mode: inPlanning ? mode : "never",
+      enabled: inPlanning && current?.askQuestions.enabled === true,
       maxQuestions: Math.max(1, Math.min(10, Number(current?.askQuestions.maxQuestions ?? 5) || 5)),
     };
   }
@@ -1330,14 +1387,14 @@ export function createCoordinatorToolSet(deps: {
 
   function getPlanningQuestionPolicyBlockReason(g: OrchestratorRunGraph): string | null {
     const policy = resolvePlanningQuestionPolicy(g);
-    if (policy.mode !== "always") return null;
+    if (!policy.enabled) return null;
     const interventions = listPlanningQuestionInterventions(g);
     const openQuestion = interventions.find((entry) => entry.status === "open") ?? null;
     if (openQuestion) {
       return "Planning questions are still open. Resolve them before spawning the planning worker.";
     }
     if (interventions.length === 0) {
-      return "Planning Ask Questions is set to Always. Use ask_user first, wait for the user's answers, then spawn the planning worker.";
+      return "Planning Ask Questions is enabled. Use ask_user first, wait for the user's answers, then spawn the planning worker.";
     }
     return null;
   }
@@ -1396,9 +1453,10 @@ export function createCoordinatorToolSet(deps: {
     const name = args.name.trim().toLowerCase();
     const roleName = args.roleName?.trim().toLowerCase() ?? "";
     const prompt = args.prompt.trim().toLowerCase();
+    const validationPattern = /\b(validat(?:e|ion|or))\b/;
     return (
-      /\b(validat(?:e|ion|or))\b/.test(name)
-      || /\b(validat(?:e|ion|or))\b/.test(roleName)
+      validationPattern.test(name)
+      || validationPattern.test(roleName)
       || prompt.includes("report_validation")
       || prompt.includes("validation checklist")
       || prompt.includes("verdict: \"pass\"")
@@ -1495,25 +1553,16 @@ export function createCoordinatorToolSet(deps: {
 
     const currentIndex = sorted.indexOf(currentPhase);
 
-    // Collect steps belonging to a given phase (matched by phaseKey or name)
-    const stepsForPhase = (phase: PhaseCard): OrchestratorStep[] =>
-      g.steps.filter((step) => {
-        const stepMeta = asRecord(step.metadata);
-        const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim() : "";
-        const stepPhaseName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim() : "";
-        return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
-      });
-
     const phaseHasSucceeded = (phase: PhaseCard): boolean =>
-      phaseHasSuccessfulCompletion(phase, stepsForPhase);
+      phaseHasSuccessfulCompletion(phase, (p) => getStepsForPhase(g, p));
 
     const phaseHasNonTerminalStep = (phase: PhaseCard): boolean =>
-      stepsForPhase(phase).some((step) => !TERMINAL_STEP_STATUSES.has(step.status));
+      getStepsForPhase(g, phase).some((step) => !TERMINAL_STEP_STATUSES.has(step.status));
 
     const currentPhaseKeyNormalized = currentPhase.phaseKey.trim().toLowerCase();
     const currentPhaseNameNormalized = currentPhase.name.trim().toLowerCase();
     if (currentPhaseKeyNormalized === "planning" || currentPhaseNameNormalized === "planning") {
-      const planningExecutionSteps = filterExecutionSteps(stepsForPhase(currentPhase));
+      const planningExecutionSteps = filterExecutionSteps(getStepsForPhase(g, currentPhase));
       if (planningExecutionSteps.some((step) => !TERMINAL_STEP_STATUSES.has(step.status))) {
         return {
           valid: false,
@@ -1604,18 +1653,10 @@ export function createCoordinatorToolSet(deps: {
     const currentPhase = phaseContext.currentPhase;
     const currentIndex = sorted.indexOf(currentPhase);
 
-    const stepsForPhase = (phase: PhaseCard): OrchestratorStep[] =>
-      g.steps.filter((step) => {
-        const stepMeta = asRecord(step.metadata);
-        const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim() : "";
-        const stepPhaseName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim() : "";
-        return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
-      });
-
     for (let i = 0; i < currentIndex; i += 1) {
       const earlier = sorted[i]!;
       if (!earlier.validationGate.required) continue;
-      const missingRequiredValidation = stepsForPhase(earlier)
+      const missingRequiredValidation = getStepsForPhase(g, earlier)
         .filter((step) => step.status === "succeeded")
         .filter((step) => !stepHasPassingRequiredValidation(step));
       if (missingRequiredValidation.length > 0) {
@@ -1669,7 +1710,11 @@ export function createCoordinatorToolSet(deps: {
         if (!normalizedPrompt.length) {
           return { ok: false, error: "Worker prompt is required." };
         }
-        const requestedDependsOn = dedupeKeys(dependsOn);
+        const requestedDependsOn = normalizeDependencyReferences({
+          graph: g,
+          refs: dependsOn,
+          label: `Worker '${normalizedName}'`,
+        });
         const teamRuntime = resolveTeamRuntimeConfig(g);
         const normalizedRole = typeof role === "string" ? role.trim() : "";
         if (normalizedRole.length > 0 && !resolveRoleDefinition(teamRuntime, normalizedRole)) {
@@ -2010,23 +2055,17 @@ export function createCoordinatorToolSet(deps: {
           return { ok: false, error: "validationCriteria is required for insert_milestone." };
         }
 
-        const normalizedDependsOn = dedupeKeys(dependsOn);
-        const unknownDependsOn = normalizedDependsOn.filter((entry) => !resolveStep(g, entry));
-        if (unknownDependsOn.length > 0) {
-          return {
-            ok: false,
-            error: `Unknown dependency step keys: ${unknownDependsOn.join(", ")}`
-          };
-        }
+        const normalizedDependsOn = normalizeDependencyReferences({
+          graph: g,
+          refs: dependsOn,
+          label: `Milestone '${normalizedName}'`,
+        });
 
-        const normalizedGatesSteps = dedupeKeys(gatesSteps);
-        const unknownGates = normalizedGatesSteps.filter((entry) => !resolveStep(g, entry));
-        if (unknownGates.length > 0) {
-          return {
-            ok: false,
-            error: `Unknown gatesSteps step keys: ${unknownGates.join(", ")}`
-          };
-        }
+        const normalizedGatesSteps = normalizeDependencyReferences({
+          graph: g,
+          refs: gatesSteps,
+          label: `Milestone '${normalizedName}' gates`,
+        });
 
         const maxIndex = g.steps.reduce(
           (max, step) => Math.max(max, step.stepIndex),
@@ -2182,8 +2221,12 @@ export function createCoordinatorToolSet(deps: {
         if (!normalizedObjective.length) {
           return { ok: false, error: "Specialist request requires a non-empty objective." };
         }
-        const normalizedDependsOn = dedupeKeys(dependsOn);
         const workerName = (normalizeText(name) || `${roleDef.name}-specialist`).slice(0, 80);
+        const normalizedDependsOn = normalizeDependencyReferences({
+          graph: g,
+          refs: dependsOn,
+          label: `Specialist '${workerName}'`,
+        });
         const parsedLaneId = laneId?.trim().length ? laneId.trim() : null;
         const replacementSourceWorkerId = replacementForWorkerId?.trim().length ? replacementForWorkerId.trim() : null;
         if (replacementSourceWorkerId && !resolveStep(g, replacementSourceWorkerId)) {
@@ -3489,6 +3532,124 @@ export function createCoordinatorToolSet(deps: {
     },
   });
 
+  const memory_search = tool({
+    description:
+      "Search project memory for relevant patterns, prior decisions, gotchas, or mission knowledge from earlier work.",
+    inputSchema: z.object({
+      query: z.string().describe("Search query for relevant memory"),
+      scope: z.enum(["project", "agent", "mission"]).optional().describe("Optional scope filter"),
+      scopeOwnerId: z.string().optional().describe("Optional explicit owner id for agent/mission scope"),
+      limit: z.number().int().min(1).max(20).optional().default(5).describe("Maximum number of memory hits to return"),
+    }),
+    execute: async ({ query, scope, scopeOwnerId, limit }) => {
+      try {
+        if (!memoryService || !projectId) {
+          return { ok: false, error: "Project memory is not configured for this coordinator." };
+        }
+        const effectiveLimit = limit ?? 5;
+        const memories = await memoryService.search({
+          projectId,
+          query,
+          ...(scope ? { scope } : {}),
+          ...(scope ? { scopeOwnerId: resolveMemoryScopeOwnerId(scope, scopeOwnerId) ?? null } : {}),
+          limit: effectiveLimit,
+        });
+        return {
+          ok: true,
+          memories: memories.map((memory) => ({
+            id: memory.id,
+            scope: memory.scope,
+            scopeOwnerId: memory.scopeOwnerId,
+            status: memory.status,
+            category: memory.category,
+            content: memory.content,
+            importance: memory.importance,
+            confidence: memory.confidence,
+            pinned: memory.pinned,
+            sourceRunId: memory.sourceRunId,
+            createdAt: memory.createdAt,
+          })),
+          count: memories.length,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error("coordinator.memory_search.error", { error: msg });
+        return { ok: false, error: msg };
+      }
+    },
+  });
+
+  const memory_add = tool({
+    description:
+      "Persist a durable discovery to project memory so future missions, coordinators, and workers can reuse it.",
+    inputSchema: z.object({
+      content: z.string().describe("The discovery, decision, pattern, or gotcha to remember"),
+      category: z.enum(["fact", "convention", "pattern", "decision", "gotcha", "preference"]).describe("Memory category"),
+      scope: z.enum(["project", "agent", "mission"]).optional().default("project").describe("Where to store the memory"),
+      scopeOwnerId: z.string().optional().describe("Optional explicit owner id for agent/mission scope"),
+      importance: z.enum(["low", "medium", "high"]).optional().default("medium").describe("Memory importance"),
+      pin: z.boolean().optional().default(false).describe("Pin this memory into Tier-1 context"),
+      writeMode: z.enum(["default", "strict"]).optional().default("default").describe("Write gate strictness"),
+    }),
+    execute: async ({ content, category, scope, scopeOwnerId, importance, pin, writeMode }) => {
+      try {
+        if (!memoryService || !projectId) {
+          return { ok: false, error: "Project memory is not configured for this coordinator." };
+        }
+        const effectiveScope = scope ?? "project";
+        const effectiveImportance = importance ?? "medium";
+        const effectivePin = pin ?? false;
+        const effectiveWriteMode = writeMode ?? "default";
+        const result = memoryService.writeMemory({
+          projectId,
+          scope: effectiveScope,
+          scopeOwnerId: resolveMemoryScopeOwnerId(effectiveScope, scopeOwnerId),
+          tier: effectivePin ? 1 : 2,
+          category,
+          content,
+          importance: effectiveImportance,
+          pinned: effectivePin,
+          status: "promoted",
+          confidence: 1,
+          sourceType: "system",
+          sourceRunId: runId,
+          sourceId: `coordinator:${runId}`,
+          writeGateMode: effectiveWriteMode,
+        });
+
+        if (!result.accepted || !result.memory) {
+          return {
+            ok: false,
+            error: result.reason ?? "Project memory write was rejected.",
+          };
+        }
+
+        try {
+          memoryService.addSharedFact({
+            runId,
+            factType: mapMemoryCategoryToFactType(category),
+            content,
+          });
+        } catch {
+          // Best-effort: durable memory write should succeed even if shared-fact propagation fails.
+        }
+
+        return {
+          ok: true,
+          saved: true,
+          id: result.memory.id,
+          tier: result.memory.tier,
+          deduped: result.deduped === true,
+          mergedIntoId: result.mergedIntoId ?? null,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error("coordinator.memory_add.error", { error: msg });
+        return { ok: false, error: msg };
+      }
+    },
+  });
+
   const revise_plan = tool({
     description:
       "Revise mission plan by partially or fully replacing steps. Replaced steps are marked superseded (not deleted).",
@@ -3638,7 +3799,12 @@ export function createCoordinatorToolSet(deps: {
           if (entry.validationContract && !parsedContract) {
             return { ok: false, error: `Invalid validation contract for step '${entry.key}'.` };
           }
-          const dependsOn = dedupeKeys(entry.dependsOn);
+          const dependsOn = normalizeDependencyReferences({
+            graph: initialGraph,
+            refs: entry.dependsOn,
+            label: `Revised step '${normalizedKey}'`,
+            additionalKnownKeys: knownStepKeysAfterCreation,
+          });
           const replacementSourceStep = replaces.length > 0 ? (stepByKey.get(replaces[0]) ?? null) : null;
           const modelOverride = normalizeText(entry.modelId);
           const spawnPolicy = authorizeWorkerSpawnPolicy({
@@ -3700,7 +3866,12 @@ export function createCoordinatorToolSet(deps: {
           if (!knownStepKeysAfterCreation.has(stepKey)) {
             return { ok: false, error: `dependencyPatches references unknown step '${stepKey}'.` };
           }
-          const nextDeps = dedupeKeys(patch.dependencyStepKeys);
+          const nextDeps = normalizeDependencyReferences({
+            graph: initialGraph,
+            refs: patch.dependencyStepKeys,
+            label: `Dependency patch '${stepKey}'`,
+            additionalKnownKeys: knownStepKeysAfterCreation,
+          });
           const unknownDeps = nextDeps.filter((depKey) => !knownStepKeysAfterCreation.has(depKey));
           if (unknownDeps.length > 0) {
             return {
@@ -4041,15 +4212,8 @@ export function createCoordinatorToolSet(deps: {
           };
         }
 
-        const stepsForPhase = (phase: PhaseCard): OrchestratorStep[] =>
-          g.steps.filter((step) => {
-            const meta = asRecord(step.metadata);
-            const stepPhaseKey = typeof meta?.phaseKey === "string" ? meta.phaseKey.trim() : "";
-            const stepPhaseName = typeof meta?.phaseName === "string" ? meta.phaseName.trim() : "";
-            return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
-          });
         const hasSuccessfulCompletion = (phase: PhaseCard): boolean =>
-          phaseHasSuccessfulCompletion(phase, stepsForPhase);
+          phaseHasSuccessfulCompletion(phase, (p) => getStepsForPhase(g, p));
 
         const targetIndex = missionPhases.findIndex((phase) => phase.phaseKey === targetPhase.phaseKey);
         if (targetIndex < 0) {
@@ -4099,7 +4263,12 @@ export function createCoordinatorToolSet(deps: {
             if (entry.interventionType !== "phase_approval") return false;
             const meta = asRecord(entry.metadata);
             const phase = typeof meta?.phaseKey === "string" ? meta.phaseKey.trim() : "";
-            return phase === currentPhase.phaseKey || phase === "";
+            const targetPhaseKey = typeof meta?.targetPhaseKey === "string" ? meta.targetPhaseKey.trim() : "";
+            const approvalRunId = typeof meta?.runId === "string" ? meta.runId.trim() : "";
+            if (approvalRunId && approvalRunId !== runId) return false;
+            if (phase !== currentPhase.phaseKey && phase !== "") return false;
+            if (targetPhaseKey && targetPhaseKey !== targetPhase.phaseKey) return false;
+            return true;
           });
           const hasResolvedApproval = approvalInterventions.some((entry: any) => entry.status === "resolved");
           if (!hasResolvedApproval) {
@@ -4114,6 +4283,7 @@ export function createCoordinatorToolSet(deps: {
                 requestedAction: `Approve the "${currentPhase.name}" output to proceed to "${targetPhase.name}".`,
                 pauseMission: true,
                 metadata: {
+                  runId,
                   phaseKey: currentPhase.phaseKey,
                   phaseName: currentPhase.name,
                   targetPhaseKey: targetPhase.phaseKey,
@@ -4261,7 +4431,11 @@ export function createCoordinatorToolSet(deps: {
         const normalizedKey = String(key ?? "").trim();
         const normalizedTitle = String(title ?? "").trim();
         const normalizedDescription = String(description ?? "").trim();
-        const requestedDependsOn = dedupeKeys(dependsOn);
+        const requestedDependsOn = normalizeDependencyReferences({
+          graph: g,
+          refs: dependsOn,
+          label: `Task '${normalizedKey}'`,
+        });
         if (!normalizedKey.length) {
           return { ok: false, error: "Task key is required." };
         }
@@ -4289,6 +4463,7 @@ export function createCoordinatorToolSet(deps: {
               stepKey: normalizedKey,
               title: normalizedTitle,
               stepIndex: maxIndex + 1,
+              laneId: missionLaneId ?? undefined,
               dependencyStepKeys: normalizedDependsOn,
               executorKind: "manual",
               metadata: {
@@ -5139,7 +5314,7 @@ export function createCoordinatorToolSet(deps: {
             deduped: true,
           };
         }
-        if (!policy.enabled || policy.mode === "never") {
+        if (!policy.enabled) {
           return { ok: false as const, error: "Ask Questions is disabled for this Planning phase." };
         }
         // VAL-PLAN-006: Multi-round deliberation — when phase has canLoop=true,
@@ -5919,6 +6094,8 @@ export function createCoordinatorToolSet(deps: {
     read_mission_status,
     read_mission_state,
     update_mission_state,
+    memory_search,
+    memory_add,
     revise_plan,
     update_tool_profiles,
     transfer_lane,

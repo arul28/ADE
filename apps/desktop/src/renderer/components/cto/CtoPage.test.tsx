@@ -63,6 +63,7 @@ const makeSnapshot = (memoryOverrides?: Partial<CtoCoreMemory>): CtoSnapshot => 
       createdAt: "2026-03-05T10:00:00.000Z",
     },
   ],
+  recentSubordinateActivity: [],
 });
 
 const makeSession = () => ({

@@ -104,7 +104,7 @@ export function deriveActivePhaseViewModel(args: {
   let modeLabel: ActivePhaseViewModel["modeLabel"] = "auto-assisted";
   if (runGraph.run.status === "paused" || openInterventions.length > 0) {
     modeLabel = "blocked";
-  } else if (activePhase.askQuestions.enabled && activePhase.askQuestions.mode === "always") {
+  } else if (activePhase.askQuestions.enabled) {
     modeLabel = "manual";
   } else if (activePhase.phaseKey === "planning" || activePhase.phaseKey === "validation") {
     modeLabel = "coordinator-driven";
@@ -187,7 +187,7 @@ export function deriveActivePhaseViewModel(args: {
     validationTier: activePhase.validationGate.tier,
     clarificationLabel: activePhase.phaseKey === "planning"
       ? activePhase.askQuestions.enabled
-        ? `${activePhase.askQuestions.mode.replace(/_/g, " ")}${activePhase.askQuestions.maxQuestions ? `, max ${activePhase.askQuestions.maxQuestions}` : ""}`
+        ? `required before finalizing${activePhase.askQuestions.maxQuestions ? `, max ${activePhase.askQuestions.maxQuestions}` : ""}`
         : "Ask questions disabled"
       : "Questions stay off outside Planning",
     whyActive: whyBits.join(" "),

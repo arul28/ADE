@@ -1255,7 +1255,7 @@ function CreateMissionDialogInner({
                               model: { provider: "claude", modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
                               budget: {},
                               orderingConstraints: {},
-                              askQuestions: { enabled: false, mode: "never" },
+                              askQuestions: { enabled: false },
                               validationGate: { tier: "none", required: false },
                               isBuiltIn: false,
                               isCustom: true,

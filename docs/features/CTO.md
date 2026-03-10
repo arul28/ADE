@@ -101,7 +101,7 @@ The CTO is modeled after a real-world Chief Technical Officer — someone who:
 
 ## Org Chart & Worker Agents
 
-The CTO is not a solo agent — it's the head of a configurable **technical org chart**. Users create specialized worker agents (Backend Dev, Mobile Dev, QA Engineer, etc.) that report to the CTO. All agents share the same three-tier memory model, have full ADE knowledge via MCP tools, and can be talked to directly.
+The CTO is not a solo agent — it's the head of a configurable **technical org chart**. Users create specialized worker agents (Backend Dev, Mobile Dev, QA Engineer, etc.) that report to the CTO. All agents have full ADE knowledge via MCP tools and can be talked to directly, but their memory is intentionally layered rather than fully merged.
 
 > **Prior art**: Org model from [Paperclip](https://github.com/paperclipai/paperclip). Heartbeat from Paperclip + [OpenClaw](https://github.com/openclaw/openclaw). Linear integration from [Symphony](https://github.com/openai/symphony).
 
@@ -424,15 +424,31 @@ Automations are authored in the Automations tab, but the CTO org is a primary ex
 
 ## Memory Architecture
 
-The CTO is the primary consumer of ADE's three-tier memory system. While all agents use the same memory infrastructure (documented in detail in `AGENTS.md`), the CTO's usage pattern is unique: it accumulates project-level knowledge over its entire lifetime rather than within a single mission or session.
+The CTO is the primary consumer of ADE's identity-scoped memory system. The implementation is intentionally split across four layers:
+
+- **CTO core memory**: the CTO's stable strategic memory (`projectSummary`, conventions, preferences, active focus, notes).
+- **Employee core memory**: each employee's own role-specific long-lived memory.
+- **Project memory**: shared durable knowledge reusable by CTO, employees, automations, coordinator, and mission workers.
+- **CTO subordinate activity feed**: a rolling manager-facing digest of what employees have been doing recently.
+
+This means the CTO does not literally share one mutable "brain file" with every employee. Employees keep their own identity memory, but the CTO now receives upward-propagated activity summaries so it stays informed without being flooded by raw worker transcripts.
 
 ### Three-Tier Memory Integration
 
 | Tier | CTO Usage |
 |---|---|
 | **Tier 1 — Core Memory** (~2-4K tokens, always loaded) | The CTO's essential working context: current project state summary, active missions, recent decisions, and critical constraints. Self-edited by the CTO via `memoryUpdateCore` as the project evolves. |
-| **Tier 2 — Hot Memory** (retrieved on demand) | The bulk of the CTO's accumulated project knowledge: architectural decisions, coding conventions, past mission outcomes, user preferences, and episodic/project facts. Current retrieval is lexical/composite ranking from `unifiedMemoryService.ts`; embedding-backed hybrid retrieval remains future work. |
+| **Tier 2 — Hot Memory** (retrieved on demand) | The bulk of the CTO's accumulated project knowledge: architectural decisions, coding conventions, past mission outcomes, user preferences, and episodic/project facts. Retrieval uses `unifiedMemoryService.ts`; when local embeddings are available it upgrades to hybrid lexical + vector search, otherwise it falls back to lexical/composite ranking. |
 | **Tier 3 — Cold Memory** (archival, never in context) | Historical records, old mission summaries, superseded decisions, and low-importance observations. Accessible via deep search but excluded from standard retrieval. |
+
+For employees, the same *categories* exist, but not as one globally shared tier file:
+
+- employee core memory is identity-local,
+- project memory is shared,
+- employee chat turns and employee background work can propagate upward into the CTO subordinate activity feed,
+- durable cross-agent facts should be promoted into project memory rather than copied into every identity memory file.
+
+For mission workers, the situation is different again: they use a generated `l0/l1/l2` run-scoped context hierarchy plus mission state and shared project memory. That hierarchy is part of the mission orchestrator runtime, not the CTO employee identity system.
 
 ### Auto-Compaction
 
@@ -459,6 +475,16 @@ Over time, the CTO's memory naturally stratifies:
 - **Ongoing**: Architectural decision history, mission outcome patterns, team workflow preferences, learned routing patterns, procedural knowledge about what works and what does not.
 
 This accumulation is what makes the CTO fundamentally different from a session-scoped assistant. Each interaction adds to a growing knowledge base that makes every future interaction more informed.
+
+### Upward and Downward Propagation
+
+To preserve the "persistent department" feel without creating a noisy shared notebook, ADE uses directional propagation:
+
+- **Downward propagation**: when the CTO routes work to an employee, the employee receives its own reconstruction context plus relevant shared project memory and task/session state.
+- **Upward propagation**: when an employee completes meaningful chat turns or background work, ADE appends a compact manager-facing summary into the CTO subordinate activity feed.
+- **Promotion to shared memory**: durable, reusable discoveries should be written into project memory so other employees, missions, and the CTO can reuse them later.
+
+The CTO reconstruction context now includes recent employee activity summaries, which keeps the CTO aware of subordinate work even when the user talks directly to an employee.
 
 ---
 

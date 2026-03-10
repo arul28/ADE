@@ -193,6 +193,18 @@ export default function MissionsPage() {
     return () => useMissionsStore.getState().cleanupToastTimers();
   }, []);
 
+  /* ── Responsive sidebar collapse (VAL-UX-010) ── */
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => {
+    const mql = window.matchMedia(`(max-width: ${SIDEBAR_COLLAPSE_THRESHOLD}px)`);
+    const handler = (e: MediaQueryListEvent | MediaQueryList) => setCollapsed(e.matches);
+    handler(mql);
+    mql.addEventListener("change", handler as (e: MediaQueryListEvent) => void);
+    return () => mql.removeEventListener("change", handler as (e: MediaQueryListEvent) => void);
+  }, []);
+
+  const defaultSidebarPx = useMemo(() => readPersistedSidebarPx(), []);
+
   /* ── Mission launch handler ── */
   const handleLaunchMission = useCallback(
     async (draft: CreateDraft) => {
@@ -254,18 +266,6 @@ export default function MissionsPage() {
       </div>
     );
   }
-
-  /* ── Responsive sidebar collapse (VAL-UX-010) ── */
-  const [collapsed, setCollapsed] = useState(false);
-  useEffect(() => {
-    const mql = window.matchMedia(`(max-width: ${SIDEBAR_COLLAPSE_THRESHOLD}px)`);
-    const handler = (e: MediaQueryListEvent | MediaQueryList) => setCollapsed(e.matches);
-    handler(mql);
-    mql.addEventListener("change", handler as (e: MediaQueryListEvent) => void);
-    return () => mql.removeEventListener("change", handler as (e: MediaQueryListEvent) => void);
-  }, []);
-
-  const defaultSidebarPx = useMemo(() => readPersistedSidebarPx(), []);
 
   /* ════════════════════ RENDER ════════════════════ */
   return (

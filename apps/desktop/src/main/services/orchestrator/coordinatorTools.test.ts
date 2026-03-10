@@ -11,6 +11,17 @@ function createTestDeps(args: {
     text: string;
     priority?: "normal" | "urgent";
   }) => Promise<CoordinatorWorkerDeliveryStatus>;
+  memoryService?: {
+    search: (opts: Record<string, unknown>) => Promise<any[]>;
+    writeMemory: (opts: Record<string, unknown>) => {
+      accepted: boolean;
+      reason?: string;
+      deduped?: boolean;
+      mergedIntoId?: string;
+      memory?: { id: string; tier: number };
+    };
+    addSharedFact: (opts: Record<string, unknown>) => unknown;
+  };
 }) {
   const orchestratorService = {
     getRunGraph: vi.fn(() => args.graph),
@@ -34,6 +45,8 @@ function createTestDeps(args: {
   const tools = createCoordinatorToolSet({
     orchestratorService,
     missionService: {} as any,
+    memoryService: args.memoryService as any,
+    projectId: "project-1",
     runId: "run-1",
     missionId: "mission-1",
     logger,
@@ -45,6 +58,91 @@ function createTestDeps(args: {
 
   return { tools, orchestratorService };
 }
+
+describe("coordinator memory tools", () => {
+  it("memory_search queries project memory with mission scope defaults", async () => {
+    const memoryService = {
+      search: vi.fn(async () => ([
+        {
+          id: "memory-1",
+          scope: "project",
+          scopeOwnerId: null,
+          status: "promoted",
+          category: "pattern",
+          content: "Use the lane resolver before creating integration PRs.",
+          importance: "high",
+          confidence: 0.9,
+          pinned: false,
+          sourceRunId: "run-old",
+          createdAt: "2026-03-01T00:00:00.000Z",
+        },
+      ])),
+      writeMemory: vi.fn(),
+      addSharedFact: vi.fn(),
+    };
+    const { tools } = createTestDeps({
+      graph: { run: { id: "run-1", metadata: {} }, steps: [], attempts: [] },
+      memoryService,
+    });
+
+    const result = await (tools.memory_search as any).execute({
+      query: "integration PR lane",
+      scope: "mission",
+    });
+
+    expect(memoryService.search).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: "project-1",
+      query: "integration PR lane",
+      scope: "mission",
+      scopeOwnerId: "run-1",
+      limit: 5,
+    }));
+    expect(result.ok).toBe(true);
+    expect(result.count).toBe(1);
+    expect(result.memories[0]?.id).toBe("memory-1");
+  });
+
+  it("memory_add writes durable memory and shares it with the active run", async () => {
+    const memoryService = {
+      search: vi.fn(),
+      writeMemory: vi.fn(() => ({
+        accepted: true,
+        deduped: false,
+        memory: { id: "memory-2", tier: 2 },
+      })),
+      addSharedFact: vi.fn(),
+    };
+    const { tools } = createTestDeps({
+      graph: { run: { id: "run-1", metadata: {} }, steps: [], attempts: [] },
+      memoryService,
+    });
+
+    const result = await (tools.memory_add as any).execute({
+      content: "The conflict resolver expects a lane id fallback from mission metadata.",
+      category: "gotcha",
+      scope: "project",
+      importance: "high",
+      pin: false,
+      writeMode: "default",
+    });
+
+    expect(memoryService.writeMemory).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: "project-1",
+      scope: "project",
+      category: "gotcha",
+      sourceRunId: "run-1",
+      sourceType: "system",
+      sourceId: "coordinator:run-1",
+    }));
+    expect(memoryService.addSharedFact).toHaveBeenCalledWith(expect.objectContaining({
+      runId: "run-1",
+      factType: "gotcha",
+    }));
+    expect(result.ok).toBe(true);
+    expect(result.saved).toBe(true);
+    expect(result.id).toBe("memory-2");
+  });
+});
 
 function createCoordinatorHarness(args: {
   graph: any;
@@ -467,7 +565,7 @@ describe("coordinatorTools task planning", () => {
                 model: { provider: "anthropic", modelId: "anthropic/claude-sonnet-4-6" },
                 budget: {},
                 orderingConstraints: { mustBeFirst: true },
-                askQuestions: { enabled: false, mode: "never" },
+                askQuestions: { enabled: false },
                 validationGate: { tier: "self", required: true },
                 isBuiltIn: true,
                 isCustom: false,
@@ -484,7 +582,7 @@ describe("coordinatorTools task planning", () => {
                 model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
                 budget: {},
                 orderingConstraints: { mustFollow: ["planning"] },
-                askQuestions: { enabled: false, mode: "never" },
+                askQuestions: { enabled: false },
                 validationGate: { tier: "dedicated", required: false },
                 isBuiltIn: true,
                 isCustom: false,
@@ -572,6 +670,7 @@ describe("coordinatorTools task planning", () => {
         expect.objectContaining({
           stepKey: "plan-sidebar",
           executorKind: "manual",
+          laneId: undefined,
           metadata: expect.objectContaining({
             stepType: "task",
           }),
@@ -603,7 +702,7 @@ describe("coordinatorTools task planning", () => {
                 model: { provider: "anthropic", modelId: "anthropic/claude-sonnet-4-6" },
                 budget: {},
                 orderingConstraints: { mustBeFirst: true },
-                askQuestions: { enabled: false, mode: "never" },
+                askQuestions: { enabled: false },
                 validationGate: { tier: "self", required: true },
                 isBuiltIn: true,
                 isCustom: false,
@@ -620,7 +719,7 @@ describe("coordinatorTools task planning", () => {
                 model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
                 budget: {},
                 orderingConstraints: { mustFollow: ["planning"] },
-                askQuestions: { enabled: false, mode: "never" },
+                askQuestions: { enabled: false },
                 validationGate: { tier: "dedicated", required: false },
                 isBuiltIn: true,
                 isCustom: false,
@@ -677,6 +776,7 @@ describe("coordinatorTools task planning", () => {
       steps: [
         expect.objectContaining({
           stepKey: "implement-sidebar",
+          laneId: "lane-mission",
           dependencyStepKeys: ["worker_plan-sidebar_1"],
           metadata: expect.objectContaining({
             requestedDependencyStepKeys: [],
@@ -1048,7 +1148,7 @@ describe("coordinatorTools planning manual-input blocking", () => {
               model: { modelId: "anthropic/claude-sonnet-4-6", provider: "claude", thinkingLevel: "medium" },
               budget: {},
               orderingConstraints: { mustBeFirst: true },
-              askQuestions: { enabled: true, mode: "auto_if_uncertain" },
+              askQuestions: { enabled: true },
               validationGate: { tier: "none", required: false },
               isBuiltIn: true,
               isCustom: false,
@@ -1065,7 +1165,7 @@ describe("coordinatorTools planning manual-input blocking", () => {
               model: { modelId: "openai/gpt-5.4-codex", provider: "openai", thinkingLevel: "medium" },
               budget: {},
               orderingConstraints: {},
-              askQuestions: { enabled: false, mode: "never" },
+              askQuestions: { enabled: false },
               validationGate: { tier: "none", required: false },
               isBuiltIn: true,
               isCustom: false,
@@ -1119,7 +1219,7 @@ describe("coordinatorTools planning manual-input blocking", () => {
               model: { modelId: "anthropic/claude-sonnet-4-6", provider: "claude", thinkingLevel: "medium" },
               budget: {},
               orderingConstraints: { mustBeFirst: true },
-              askQuestions: { enabled: true, mode: "auto_if_uncertain" },
+              askQuestions: { enabled: true },
               validationGate: { tier: "none", required: false },
               isBuiltIn: true,
               isCustom: false,
@@ -1172,7 +1272,7 @@ describe("coordinatorTools planning manual-input blocking", () => {
               model: { modelId: "anthropic/claude-sonnet-4-6", provider: "claude", thinkingLevel: "medium" },
               budget: {},
               orderingConstraints: {},
-              askQuestions: { enabled: true, mode: "auto_if_uncertain" },
+              askQuestions: { enabled: true },
               validationGate: { tier: "none", required: false },
               isBuiltIn: true,
               isCustom: false,
@@ -1205,7 +1305,7 @@ describe("coordinatorTools planning manual-input blocking", () => {
   });
 
   it("allows planning actions to continue when manual input is explicitly optional", async () => {
-    const { tools } = createCoordinatorHarness({
+    const { tools, mission } = createCoordinatorHarness({
       graph: {
         run: {
           metadata: {
@@ -1234,7 +1334,7 @@ describe("coordinatorTools planning manual-input blocking", () => {
               model: { modelId: "anthropic/claude-sonnet-4-6", provider: "claude", thinkingLevel: "medium" },
               budget: {},
               orderingConstraints: {},
-              askQuestions: { enabled: true, mode: "auto_if_uncertain" },
+              askQuestions: { enabled: false },
               validationGate: { tier: "none", required: false },
               isBuiltIn: true,
               isCustom: false,
@@ -1247,12 +1347,22 @@ describe("coordinatorTools planning manual-input blocking", () => {
       },
     });
 
-    const request = await (tools.request_user_input as any).execute({
-      question: "Any preference on naming?",
-      canProceedWithoutAnswer: true,
-      urgency: "low",
+    // Inject a non-blocking open intervention (canProceedWithoutAnswer=true)
+    mission.interventions.push({
+      id: "intervention-optional",
+      interventionType: "manual_input",
+      status: "open",
+      title: "Any preference on naming?",
+      body: "Any preference on naming?",
+      metadata: {
+        source: "request_user_input",
+        runId: "run-1",
+        question: "Any preference on naming?",
+        canProceedWithoutAnswer: true,
+        blocking: false,
+        phase: "planning",
+      },
     });
-    expect(request).toMatchObject({ ok: true });
 
     const result = await (tools.spawn_worker as any).execute({
       name: "planning-worker",
@@ -1314,7 +1424,7 @@ describe("coordinatorTools planning manual-input blocking", () => {
               model: { modelId: "anthropic/claude-sonnet-4-6", provider: "claude", thinkingLevel: "medium" },
               budget: {},
               orderingConstraints: {},
-              askQuestions: { enabled: false, mode: "never" },
+              askQuestions: { enabled: false },
               validationGate: { tier: "self", required: false },
               isBuiltIn: true,
               isCustom: false,
@@ -1331,7 +1441,7 @@ describe("coordinatorTools planning manual-input blocking", () => {
               model: { modelId: "openai/gpt-5.3-codex", provider: "codex", thinkingLevel: "medium" },
               budget: {},
               orderingConstraints: { mustFollow: ["planning"] },
-              askQuestions: { enabled: false, mode: "never" },
+              askQuestions: { enabled: false },
               validationGate: { tier: "self", required: false },
               isBuiltIn: true,
               isCustom: false,
@@ -1367,7 +1477,7 @@ describe("coordinatorTools planning manual-input blocking", () => {
       model: { modelId: "anthropic/claude-sonnet-4-6", provider: "claude", thinkingLevel: "medium" },
       budget: {},
       orderingConstraints: { mustBeFirst: true, mustBeLast: false, mustFollow: [], mustPrecede: [], canLoop: false, loopTarget: null },
-      askQuestions: { enabled: false, mode: "never" },
+      askQuestions: { enabled: false },
       validationGate: { tier: "self", required: false },
       isBuiltIn: true,
       isCustom: false,
@@ -1447,7 +1557,7 @@ describe("coordinatorTools planning manual-input blocking", () => {
       model: { modelId: "anthropic/claude-sonnet-4-6", provider: "claude", thinkingLevel: "medium" },
       budget: {},
       orderingConstraints: { mustBeFirst: true, mustBeLast: false, mustFollow: [], mustPrecede: [], canLoop: false, loopTarget: null },
-      askQuestions: { enabled: false, mode: "never" },
+      askQuestions: { enabled: false },
       validationGate: { tier: "self", required: false },
       isBuiltIn: true,
       isCustom: false,
@@ -1555,7 +1665,7 @@ describe("coordinatorTools planning manual-input blocking", () => {
       model: { modelId: "anthropic/claude-sonnet-4-6", provider: "claude", thinkingLevel: "medium" },
       budget: {},
       orderingConstraints: { mustBeFirst: true, mustBeLast: false, mustFollow: [], mustPrecede: [], canLoop: false, loopTarget: null },
-      askQuestions: { enabled: false, mode: "never" },
+      askQuestions: { enabled: false },
       validationGate: { tier: "self", required: false },
       isBuiltIn: true,
       isCustom: false,
@@ -1572,7 +1682,7 @@ describe("coordinatorTools planning manual-input blocking", () => {
       model: { modelId: "openai/gpt-5.3-codex", provider: "codex", thinkingLevel: "medium" },
       budget: {},
       orderingConstraints: { mustBeFirst: false, mustBeLast: false, mustFollow: ["planning"], mustPrecede: [], canLoop: false, loopTarget: null },
-      askQuestions: { enabled: false, mode: "never" },
+      askQuestions: { enabled: false },
       validationGate: { tier: "self", required: false },
       isBuiltIn: true,
       isCustom: false,
@@ -1627,7 +1737,7 @@ describe("coordinatorTools planning manual-input blocking", () => {
       model: { modelId: "anthropic/claude-sonnet-4-6", provider: "claude", thinkingLevel: "medium" },
       budget: {},
       orderingConstraints: { mustBeFirst: true, mustBeLast: false, mustFollow: [], mustPrecede: [], canLoop: false, loopTarget: null },
-      askQuestions: { enabled: false, mode: "never" },
+      askQuestions: { enabled: false },
       validationGate: { tier: "self", required: false },
       isBuiltIn: true,
       isCustom: false,
@@ -1709,7 +1819,7 @@ describe("coordinatorTools planning manual-input blocking", () => {
               model: { modelId: "openai/gpt-5.3-codex", provider: "codex", thinkingLevel: "medium" },
               budget: {},
               orderingConstraints: {},
-              askQuestions: { enabled: false, mode: "never" },
+              askQuestions: { enabled: false },
               validationGate: { tier: "self", required: false },
               isBuiltIn: true,
               isCustom: false,
@@ -1726,7 +1836,7 @@ describe("coordinatorTools planning manual-input blocking", () => {
               model: { modelId: "anthropic/claude-sonnet-4-6", provider: "claude", thinkingLevel: "medium" },
               budget: {},
               orderingConstraints: {},
-              askQuestions: { enabled: false, mode: "never" },
+              askQuestions: { enabled: false },
               validationGate: { tier: "dedicated", required: true },
               isBuiltIn: true,
               isCustom: false,
@@ -2727,7 +2837,7 @@ describe("coordinatorTools validation enforcement", () => {
         model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
         budget: {},
         orderingConstraints: {},
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "dedicated", required: true, criteria: "Validator must pass" },
         isBuiltIn: true,
         isCustom: false,
@@ -2744,7 +2854,7 @@ describe("coordinatorTools validation enforcement", () => {
         model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
         budget: {},
         orderingConstraints: { mustFollow: ["implementation"] },
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "self", required: false },
         isBuiltIn: true,
         isCustom: false,
@@ -2846,7 +2956,7 @@ describe("coordinatorTools validation enforcement", () => {
         model: { provider: "anthropic", modelId: "anthropic/claude-sonnet-4-6" },
         budget: {},
         orderingConstraints: { mustBeFirst: true },
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "self", required: true },
         isBuiltIn: true,
         isCustom: false,
@@ -2863,7 +2973,7 @@ describe("coordinatorTools validation enforcement", () => {
         model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
         budget: {},
         orderingConstraints: { mustFollow: ["planning"] },
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "dedicated", required: false },
         isBuiltIn: true,
         isCustom: false,
@@ -2880,7 +2990,7 @@ describe("coordinatorTools validation enforcement", () => {
         model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
         budget: {},
         orderingConstraints: { mustFollow: ["development"] },
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "self", required: false },
         isBuiltIn: true,
         isCustom: false,
@@ -2935,7 +3045,7 @@ describe("coordinatorTools validation enforcement", () => {
         model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
         budget: {},
         orderingConstraints: {},
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "dedicated", required: false },
         isBuiltIn: true,
         isCustom: false,
@@ -2952,7 +3062,7 @@ describe("coordinatorTools validation enforcement", () => {
         model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
         budget: {},
         orderingConstraints: { mustFollow: ["development"] },
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "self", required: false },
         isBuiltIn: true,
         isCustom: false,
@@ -3005,7 +3115,7 @@ describe("coordinatorTools validation enforcement", () => {
         model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
         budget: {},
         orderingConstraints: {},
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "dedicated", required: false },
         isBuiltIn: true,
         isCustom: false,
@@ -3064,7 +3174,7 @@ describe("coordinatorTools validation enforcement", () => {
         model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
         budget: {},
         orderingConstraints: {},
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "dedicated", required: false },
         isBuiltIn: true,
         isCustom: false,
@@ -3133,7 +3243,7 @@ describe("coordinatorTools validation enforcement", () => {
         model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
         budget: {},
         orderingConstraints: {},
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "dedicated", required: false },
         isBuiltIn: true,
         isCustom: false,
@@ -3202,7 +3312,7 @@ describe("coordinatorTools validation enforcement", () => {
         model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
         budget: {},
         orderingConstraints: {},
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "dedicated", required: false },
         isBuiltIn: true,
         isCustom: false,

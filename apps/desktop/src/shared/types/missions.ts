@@ -290,7 +290,6 @@ export type PhaseCardBudget = {
 
 export type PhaseCardAskQuestions = {
   enabled: boolean;
-  mode: "always" | "auto_if_uncertain" | "never";
   maxQuestions?: number;
 };
 
@@ -741,6 +740,7 @@ export type MissionRunViewDisplayStatus =
   | "not_started"
   | "starting"
   | "running"
+  | "paused"
   | "blocked"
   | "completed"
   | "failed"
@@ -882,6 +882,8 @@ export type AddMissionArtifactArgs = {
   uri?: string | null;
   laneId?: string | null;
   metadata?: Record<string, unknown> | null;
+  createdBy?: string;
+  actor?: string;
 };
 
 export type AddMissionInterventionArgs = {

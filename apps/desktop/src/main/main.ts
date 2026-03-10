@@ -931,6 +931,8 @@ app.whenReady().then(async () => {
       workerAdapterRuntimeService,
       workerTaskSessionService,
       workerBudgetService,
+      memoryService,
+      ctoStateService,
       logger,
     });
 
@@ -974,6 +976,7 @@ app.whenReady().then(async () => {
       projectId,
       memoryService,
       packService,
+      workerAgentService,
       laneService,
       sessionService,
       projectConfigService,
@@ -1322,6 +1325,7 @@ app.whenReady().then(async () => {
       prService,
       memoryService,
       ctoStateService,
+      workerAgentService,
       orchestratorService,
       aiOrchestratorService,
       eventBuffer: mcpEventBuffer,

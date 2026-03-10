@@ -145,7 +145,7 @@ Phase 4 should enable a "tech department" loop: one persistent agent per employe
   - Artifact bundle is attached/linked to Linear (final comment + attachments) and kept under `.ade/` for audit.
 
 - **Human-only work (user works without agents)** (W6):
-  - ADE generates a "project change digest" (git commits + working tree deltas) and writes it into CTO memory.
+  - ADE generates a "project change digest" (git commits + working tree deltas) and writes it into shared project memory plus the CTO awareness path.
   - Before starting a mission, workers run a freshness check against the last observed project snapshot; if diverged, request/auto-generate a digest and ingest it.
 
 - **First-run CTO onboarding (OpenClaw-style)**:
@@ -161,10 +161,10 @@ Phase 4 should enable a "tech department" loop: one persistent agent per employe
 ### Exit Criteria
 
 **Completed (W1-W4, W5a, W6):**
-- ✅ CTO tab provides persistent project-aware agent interface with three-tier memory model and org chart sidebar.
+- ✅ CTO tab provides a persistent project-aware agent interface with layered memory (CTO core memory, employee core memory, shared project memory, subordinate activity feed) and org chart sidebar.
 - ✅ CTO agent has access to all ADE MCP tools.
 - ✅ Worker agents can be created, configured, and managed under the CTO in an org hierarchy.
-- ✅ Each worker has its own identity, memory tiers, adapter config, heartbeat policy, and budget.
+- ✅ Each worker has its own identity, core memory, adapter config, heartbeat policy, and budget while sharing durable project memory with the CTO.
 - ✅ Heartbeat system activates agents on schedule or demand, with coalescing, deferred promotion, and orphan reaping.
 - ✅ Bidirectional Linear sync: CTO polls Linear for issues, auto-dispatches missions via templates, and posts results back.
 - ✅ Reconciliation validates running missions against Linear state on every heartbeat.
@@ -199,7 +199,7 @@ Phase 4 should enable a "tech department" loop: one persistent agent per employe
 **W7b — Orchestrator ↔ Memory Integration:**
 - Mission memory lifecycle: scope creation → accumulation → promotion on success / archival on failure.
 - `orchestrator_shared_facts` migrated to mission-scoped `unified_memories` entries.
-- Worker briefing assembly pulls from unified memory (L0/L1/L2/mission) instead of packs.
+- Worker briefing assembly pulls from unified memory plus the run-scoped `L0/L1/L2` mission-worker context assembly instead of pack exports.
 - Episodic summaries generated async on mission/session completion.
 - Human work ingestion: change digests generated when repo diverges outside agent runs.
 - Continuation vs failure retry memory: clean exit preserves context, crash injects gotcha.

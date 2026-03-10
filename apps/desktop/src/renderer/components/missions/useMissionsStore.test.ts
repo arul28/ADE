@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { useMissionsStore, initialMissionsState, type MissionsStore } from "./useMissionsStore";
 
 /* ── Mock window.ade ── */
@@ -30,6 +30,8 @@ const mockProjectConfigSave = vi.fn().mockResolvedValue({
 });
 
 vi.stubGlobal("window", {
+  setTimeout: globalThis.setTimeout.bind(globalThis),
+  clearTimeout: globalThis.clearTimeout.bind(globalThis),
   ade: {
     missions: {
       list: mockMissionsList,
@@ -56,6 +58,10 @@ describe("useMissionsStore", () => {
   beforeEach(() => {
     useMissionsStore.setState(initialMissionsState);
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   describe("initial state", () => {
@@ -362,6 +368,31 @@ describe("useMissionsStore", () => {
       expect(state.logsFocusInterventionId).toBeNull();
       expect(state.coordinatorPromptInspector).toBeNull();
     });
+
+    it("resets transient state when selectedMissionId changes before hydration", async () => {
+      useMissionsStore.setState({
+        selectedMissionId: "m1",
+        selectedMission: { id: "m1", title: "One" } as any,
+        chatJumpTarget: { kind: "coordinator", runId: "r1" } as any,
+        logsFocusInterventionId: "intv-1",
+        coordinatorPromptInspector: { sections: [] } as any,
+      });
+      mockGetFullMissionView.mockResolvedValueOnce({
+        mission: { id: "m2", title: "Two" },
+        runGraph: null,
+        artifacts: [],
+        checkpoints: [],
+        dashboard: null,
+      });
+
+      await useMissionsStore.getState().selectMission("m2");
+
+      const state = useMissionsStore.getState();
+      expect(state.selectedMissionId).toBe("m2");
+      expect(state.chatJumpTarget).toBeNull();
+      expect(state.logsFocusInterventionId).toBeNull();
+      expect(state.coordinatorPromptInspector).toBeNull();
+    });
   });
 
   describe("initEventSubscriptions (VAL-ARCH-007)", () => {
@@ -386,6 +417,37 @@ describe("useMissionsStore", () => {
 
       expect(unsubMissions).toHaveBeenCalledTimes(1);
       expect(unsubOrchestrator).toHaveBeenCalledTimes(1);
+    });
+
+    it("refreshes the latest selected mission instead of snapping back to a stale one", async () => {
+      vi.useFakeTimers();
+      let orchestratorHandler: ((event: { runId?: string | null }) => void) | undefined;
+      mockOrchestratorOnEvent.mockImplementationOnce((handler) => {
+        orchestratorHandler = handler;
+        return () => {};
+      });
+
+      const cleanup = useMissionsStore.getState().initEventSubscriptions();
+      useMissionsStore.setState({
+        selectedMissionId: "m1",
+        selectedMission: { id: "m1", title: "One" } as any,
+        runGraph: { run: { id: "r1" } } as any,
+      });
+
+      if (!orchestratorHandler) {
+        throw new Error("Expected orchestrator handler to be registered");
+      }
+      orchestratorHandler({ runId: "r1" });
+      useMissionsStore.setState({
+        selectedMissionId: "m2",
+        selectedMission: { id: "m2", title: "Two" } as any,
+        runGraph: { run: { id: "r2" } } as any,
+      });
+
+      await vi.advanceTimersByTimeAsync(300);
+
+      expect(mockGetFullMissionView).not.toHaveBeenCalled();
+      cleanup();
     });
   });
 });

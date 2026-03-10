@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import type {
   AgentIdentity,
   AgentSessionLogEntry,
-  AgentStatus,
   AgentCoreMemory,
   CtoTriggerAgentWakeupArgs,
   CtoTriggerAgentWakeupResult,
@@ -17,6 +16,8 @@ import type { WorkerAdapterRuntimeService } from "./workerAdapterRuntimeService"
 import type { WorkerAgentService } from "./workerAgentService";
 import type { WorkerBudgetService } from "./workerBudgetService";
 import type { WorkerTaskSessionService } from "./workerTaskSessionService";
+import type { createUnifiedMemoryService } from "../memory/unifiedMemoryService";
+import type { createCtoStateService } from "./ctoStateService";
 
 const RUN_STATUSES = new Set<WorkerAgentRunStatus>([
   "queued",
@@ -45,6 +46,8 @@ type WorkerHeartbeatServiceArgs = {
   workerAdapterRuntimeService: WorkerAdapterRuntimeService;
   workerTaskSessionService: WorkerTaskSessionService;
   workerBudgetService?: WorkerBudgetService | null;
+  memoryService?: ReturnType<typeof createUnifiedMemoryService> | null;
+  ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   logger?: Logger | null;
   staleLockMs?: number;
   maintenanceIntervalMs?: number;
@@ -208,6 +211,12 @@ function outputPreview(outputText: string): string {
   const trimmed = outputText.trim();
   if (!trimmed.length) return "";
   return trimmed.length <= 600 ? trimmed : `${trimmed.slice(0, 600)}…`;
+}
+
+function clipText(value: string, maxChars: number): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= maxChars) return trimmed;
+  return `${trimmed.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
 }
 
 function getErrorMessage(error: unknown): string {
@@ -395,18 +404,73 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
     return false;
   };
 
-  const buildPrompt = (agent: AgentIdentity, run: WorkerRunRow): string => {
+  const buildProjectMemoryHighlights = (): string[] => {
+    if (!args.memoryService) return [];
+    try {
+      return args.memoryService
+        .getMemoryBudget(args.projectId, "standard", { includeCandidates: true })
+        .map((memory) => {
+          const category = String(memory.category ?? "fact").trim() || "fact";
+          const content = String(memory.content ?? "").replace(/\s+/g, " ").trim();
+          if (!content.length) return "";
+          return `[${category}] ${clipText(content, 220)}`;
+        })
+        .filter((entry): entry is string => entry.length > 0)
+        .slice(0, 8);
+    } catch {
+      return [];
+    }
+  };
+
+  const buildPrompt = (
+    agent: AgentIdentity,
+    run: WorkerRunRow,
+    taskSession: ReturnType<WorkerTaskSessionService["ensureTaskSession"]> | null
+  ): string => {
     const context = safeJsonParse<Record<string, unknown>>(run.context_json, {});
     const explicitPrompt = typeof context.prompt === "string" ? context.prompt.trim() : "";
-    if (explicitPrompt.length) return explicitPrompt;
-    const lines = [
+    const basePromptLines = explicitPrompt.length
+      ? [explicitPrompt]
+      : [
       `Worker heartbeat activation for ${agent.name}.`,
       `Reason: ${run.wakeup_reason}.`,
     ];
-    if (run.issue_key) lines.push(`Issue key: ${run.issue_key}.`);
-    if (run.task_key) lines.push(`Task key: ${run.task_key}.`);
-    lines.push("Respond with HEARTBEAT_OK when no action is required.");
-    return lines.join("\n");
+    if (run.issue_key) basePromptLines.push(`Issue key: ${run.issue_key}.`);
+    if (run.task_key) basePromptLines.push(`Task key: ${run.task_key}.`);
+    basePromptLines.push("Respond with HEARTBEAT_OK when no action is required.");
+
+    const sections: string[] = [];
+    const reconstruction = args.workerAgentService.buildReconstructionContext(agent.id, 8).trim();
+    if (reconstruction.length > 0) {
+      sections.push([
+        "System context (worker reconstruction, do not echo verbatim):",
+        reconstruction,
+      ].join("\n"));
+    }
+
+    const projectMemories = buildProjectMemoryHighlights();
+    if (projectMemories.length > 0) {
+      sections.push([
+        "Project memory highlights:",
+        ...projectMemories.map((entry) => `- ${entry}`),
+      ].join("\n"));
+    }
+
+    if (taskSession) {
+      const payloadText = clipText(JSON.stringify(taskSession.payload ?? {}, null, 2), 1_200);
+      sections.push([
+        "Task session state:",
+        `- Task key: ${taskSession.taskKey}`,
+        payloadText.length > 0 ? `- Payload: ${payloadText}` : "- Payload: {}",
+      ].join("\n"));
+    }
+
+    sections.push([
+      "Current wakeup request:",
+      ...basePromptLines,
+    ].join("\n"));
+
+    return sections.join("\n\n");
   };
 
   const finalizeAgentAfterRun = (agentId: string): void => {
@@ -433,7 +497,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
       updateRunFields(run.id, { task_key: taskKey });
     }
 
-    args.workerTaskSessionService.ensureTaskSession({
+    const taskSession = args.workerTaskSessionService.ensureTaskSession({
       agentId: agent.id,
       adapterType: agent.adapterType,
       taskKey,
@@ -465,7 +529,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
       return;
     }
 
-    const prompt = buildPrompt(agent, run);
+    const prompt = buildPrompt(agent, run, taskSession);
     const runtimeResult = await args.workerAdapterRuntimeService.run({
       agent,
       prompt,
@@ -474,6 +538,9 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
 
     const heartbeatOk = runtimeResult.outputText.trim().toUpperCase() === "HEARTBEAT_OK";
     const finishedAt = nowIso();
+    const adapterModelId = typeof (agent.adapterConfig as Record<string, unknown>).modelId === "string"
+      ? String((agent.adapterConfig as Record<string, unknown>).modelId)
+      : null;
     const runStatus: WorkerAgentRunStatus = runtimeResult.ok ? "completed" : "failed";
     updateRunFields(run.id, {
       status: runStatus,
@@ -489,14 +556,48 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
       }),
     });
 
+    args.workerAgentService.appendSessionLog(agent.id, {
+      sessionId: executionRunId,
+      summary: clipText(
+        [
+          `Wake reason: ${run.wakeup_reason}.`,
+          run.task_key ? `Task: ${run.task_key}.` : "",
+          run.issue_key ? `Issue: ${run.issue_key}.` : "",
+          runtimeResult.ok ? "Adapter run completed." : "Adapter run failed.",
+          heartbeatOk ? "No action required." : outputPreview(runtimeResult.outputText) || "No output.",
+        ]
+          .filter((entry) => entry.length > 0)
+          .join(" "),
+        400
+      ),
+      startedAt,
+      endedAt: finishedAt,
+      provider: agent.adapterType,
+      modelId: adapterModelId,
+      capabilityMode: "fallback",
+    });
+    args.ctoStateService?.appendSubordinateActivity({
+      agentId: agent.id,
+      agentName: agent.name,
+      activityType: "worker_run",
+      summary: clipText(
+        [
+          runtimeResult.ok ? "Worker run completed." : "Worker run failed.",
+          heartbeatOk ? "No action required." : outputPreview(runtimeResult.outputText) || "No output.",
+        ].join(" "),
+        360
+      ),
+      sessionId: executionRunId,
+      taskKey: run.task_key,
+      issueKey: run.issue_key,
+    });
+
     if (runtimeResult.usage?.costCents != null && args.workerBudgetService) {
       args.workerBudgetService.recordCostEvent({
         agentId: agent.id,
         runId: run.id,
         provider: agent.adapterType,
-        modelId: typeof (agent.adapterConfig as Record<string, unknown>).modelId === "string"
-          ? String((agent.adapterConfig as Record<string, unknown>).modelId)
-          : null,
+        modelId: adapterModelId,
         inputTokens: runtimeResult.usage.inputTokens ?? null,
         outputTokens: runtimeResult.usage.outputTokens ?? null,
         costCents: Math.max(0, Math.floor(Number(runtimeResult.usage.costCents ?? 0))),

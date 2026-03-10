@@ -58,6 +58,7 @@ import { buildCodingAgentSystemPrompt, composeSystemPrompt } from "../ai/tools/s
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
 import type { createMemoryService } from "../memory/memoryService";
 import type { createCtoStateService } from "../cto/ctoStateService";
+import type { createWorkerAgentService } from "../cto/workerAgentService";
 import { resolveAdeMcpServerLaunch } from "../orchestrator/unifiedOrchestratorAdapter";
 
 type JsonRpcEnvelope = {
@@ -521,10 +522,8 @@ function fallbackModelForProvider(provider: AgentChatProvider): string {
 
 function inferAttachmentMediaType(attachment: AgentChatFileRef): string {
   const ext = path.extname(attachment.path).toLowerCase();
-  if (ATTACHMENT_MEDIA_TYPES[ext]) {
-    return ATTACHMENT_MEDIA_TYPES[ext]!;
-  }
-  return attachment.type === "image" ? "image/png" : "application/octet-stream";
+  return ATTACHMENT_MEDIA_TYPES[ext]
+    ?? (attachment.type === "image" ? "image/png" : "application/octet-stream");
 }
 
 function readProviderParentItemId(value: unknown): string | undefined {
@@ -686,6 +685,18 @@ function codexPolicyArgs(policy: ReturnType<typeof mapPermissionToCodex>): Recor
   return policy ? { approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox } : {};
 }
 
+function mapToUnifiedPermissionMode(mode: string | undefined): PermissionMode | undefined {
+  if (mode === "default" || mode === "config-toml") return "edit";
+  if (mode === "plan" || mode === "edit" || mode === "full-auto") return mode;
+  return undefined;
+}
+
+const PLAN_STEP_STATUS_MAP: Record<string, "pending" | "in_progress" | "completed" | "failed"> = {
+  completed: "completed",
+  inProgress: "in_progress",
+  failed: "failed",
+};
+
 const VALID_PERMISSION_MODES = new Set(["default", "plan", "edit", "full-auto", "config-toml"]);
 const VALID_EXECUTION_MODES = new Set(["focused", "parallel", "subagents", "teams"]);
 
@@ -702,7 +713,19 @@ function normalizePersistedExecutionMode(value: unknown): AgentChatExecutionMode
 }
 
 function normalizeIdentityKey(value: unknown): AgentChatIdentityKey | undefined {
-  return value === "cto" ? "cto" : undefined;
+  if (value === "cto") return "cto";
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("agent:")) return undefined;
+  const agentId = trimmed.slice("agent:".length).trim();
+  return agentId.length > 0 ? `agent:${agentId}` : undefined;
+}
+
+function resolveWorkerIdentityAgentId(identityKey: AgentChatIdentityKey | undefined): string | null {
+  if (!identityKey || identityKey === "cto") return null;
+  const match = /^agent:(.+)$/.exec(identityKey);
+  const agentId = match?.[1]?.trim() ?? "";
+  return agentId.length > 0 ? agentId : null;
 }
 
 function normalizeCapabilityMode(value: unknown): CtoCapabilityMode | undefined {
@@ -745,6 +768,7 @@ export function createAgentChatService(args: {
   memoryService?: ReturnType<typeof createMemoryService> | null;
   packService?: ReturnType<typeof createPackService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
+  workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
@@ -761,6 +785,7 @@ export function createAgentChatService(args: {
     memoryService,
     packService,
     ctoStateService,
+    workerAgentService,
     laneService,
     sessionService,
     projectConfigService,
@@ -782,11 +807,13 @@ export function createAgentChatService(args: {
   const buildAdeMcpServers = (
     provider: "claude" | "codex",
     defaultRole: "agent" | "cto",
+    ownerId?: string | null,
   ): Record<string, Record<string, unknown>> => {
     const launch = resolveAdeMcpServerLaunch({
       workspaceRoot: projectRoot,
       runtimeRoot: resolveMcpRuntimeRoot(),
-      defaultRole
+      defaultRole,
+      ownerId: ownerId ?? undefined,
     });
     return normalizeCliMcpServers(provider, {
       ade: {
@@ -798,11 +825,16 @@ export function createAgentChatService(args: {
   };
 
   const refreshReconstructionContext = (managed: ManagedChatSession): void => {
-    if (managed.session.identityKey !== "cto" || !ctoStateService) {
-      managed.pendingReconstructionContext = null;
+    if (managed.session.identityKey === "cto" && ctoStateService) {
+      managed.pendingReconstructionContext = ctoStateService.buildReconstructionContext(8);
       return;
     }
-    managed.pendingReconstructionContext = ctoStateService.buildReconstructionContext(8);
+    const workerAgentId = resolveWorkerIdentityAgentId(managed.session.identityKey);
+    if (workerAgentId && workerAgentService) {
+      managed.pendingReconstructionContext = workerAgentService.buildReconstructionContext(workerAgentId, 8);
+      return;
+    }
+    managed.pendingReconstructionContext = null;
   };
 
   const applyReconstructionContextToStreamingRuntime = (
@@ -814,7 +846,7 @@ export function createAgentChatService(args: {
     runtime.messages.push({
       role: "user",
       content: [
-        "System context (CTO reconstruction, do not echo verbatim):",
+        "System context (identity reconstruction, do not echo verbatim):",
         context
       ].join("\n")
     });
@@ -957,13 +989,8 @@ export function createAgentChatService(args: {
     });
 
     const chatConfig = resolveChatConfig();
-    // Map AgentChatPermissionMode to PermissionMode ("default" → "edit" for unified models)
-    const sessionPermMode = managed.session.permissionMode;
-    const mappedSessionPermMode: PermissionMode | undefined =
-      sessionPermMode === "default" ? "edit"
-      : sessionPermMode === "plan" || sessionPermMode === "edit" || sessionPermMode === "full-auto" ? sessionPermMode
-      : undefined;
-    const permMode: PermissionMode = mappedSessionPermMode ?? chatConfig.unifiedPermissionMode;
+    const permMode: PermissionMode = mapToUnifiedPermissionMode(managed.session.permissionMode)
+      ?? chatConfig.unifiedPermissionMode;
 
     const runtime: UnifiedRuntime = {
       kind: "unified",
@@ -1192,6 +1219,40 @@ export function createAgentChatService(args: {
     sessionService.setLastOutputPreview(managed.session.id, next);
   };
 
+  const clipText = (value: string, maxChars: number): string => {
+    const trimmed = value.trim();
+    if (trimmed.length <= maxChars) return trimmed;
+    return `${trimmed.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+  };
+
+  const appendWorkerActivityToCto = (managed: ManagedChatSession, input: {
+    activityType: "chat_turn" | "worker_run";
+    summary: string;
+    taskKey?: string | null;
+    issueKey?: string | null;
+  }): void => {
+    const workerAgentId = resolveWorkerIdentityAgentId(managed.session.identityKey);
+    if (!workerAgentId || !workerAgentService || !ctoStateService) return;
+    try {
+      const worker = workerAgentService.getAgent(workerAgentId, { includeDeleted: true });
+      ctoStateService.appendSubordinateActivity({
+        agentId: workerAgentId,
+        agentName: worker?.name?.trim() || workerAgentId,
+        activityType: input.activityType,
+        summary: clipText(input.summary, 360),
+        sessionId: managed.session.id,
+        taskKey: input.taskKey ?? null,
+        issueKey: input.issueKey ?? null,
+      });
+    } catch (error) {
+      logger.warn("agent_chat.worker_activity_append_failed", {
+        sessionId: managed.session.id,
+        workerAgentId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   const updatePreviewFromText = (
     managed: ManagedChatSession,
     event: Extract<AgentChatEvent, { type: "text" }>,
@@ -1380,23 +1441,42 @@ export function createAgentChatService(args: {
       status
     });
 
+    const explicitSummary = typeof options?.summary === "string" ? options.summary.trim() : "";
+    const fallbackSummary = managed.preview?.trim() ?? "";
+    const sessionLogArgs = {
+      sessionId: managed.session.id,
+      endedAt,
+      provider: managed.session.provider,
+      modelId: managed.session.modelId ?? managed.session.model,
+      capabilityMode: managed.session.capabilityMode ?? inferCapabilityMode(managed.session.provider),
+    };
+
     if (managed.session.identityKey === "cto" && ctoStateService) {
       try {
-        const explicitSummary = typeof options?.summary === "string" ? options.summary.trim() : "";
-        const fallbackSummary = managed.preview?.trim() ?? "";
-        const summary = explicitSummary || fallbackSummary || "CTO session ended.";
         ctoStateService.appendSessionLog({
-          sessionId: managed.session.id,
-          summary,
+          ...sessionLogArgs,
+          summary: explicitSummary || fallbackSummary || "CTO session ended.",
           startedAt: managed.ctoSessionStartedAt ?? managed.session.createdAt,
-          endedAt,
-          provider: managed.session.provider,
-          modelId: managed.session.modelId ?? managed.session.model,
-          capabilityMode: managed.session.capabilityMode ?? inferCapabilityMode(managed.session.provider)
         });
       } catch (error) {
         logger.warn("agent_chat.cto_log_append_failed", {
           sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+    const workerAgentId = resolveWorkerIdentityAgentId(managed.session.identityKey);
+    if (workerAgentId && workerAgentService) {
+      try {
+        workerAgentService.appendSessionLog(workerAgentId, {
+          ...sessionLogArgs,
+          summary: explicitSummary || fallbackSummary || "Worker session ended.",
+          startedAt: managed.session.createdAt,
+        });
+      } catch (error) {
+        logger.warn("agent_chat.worker_log_append_failed", {
+          sessionId: managed.session.id,
+          workerAgentId,
           error: error instanceof Error ? error.message : String(error)
         });
       }
@@ -1703,17 +1783,32 @@ export function createAgentChatService(args: {
           permissionMode: unifiedRt.permissionMode,
           ...(memoryService && projectId ? { memoryService, projectId } : {}),
           agentScopeOwnerId: managed.session.identityKey ?? managed.session.id,
-          ...(managed.session.identityKey === "cto" && ctoStateService
-            ? {
-                onMemoryUpdateCore: (patch) => {
+          ...(() => {
+            if (managed.session.identityKey === "cto" && ctoStateService) {
+              return {
+                onMemoryUpdateCore: (patch: any) => {
                   const snapshot = ctoStateService.updateCoreMemory(patch);
                   return {
                     version: snapshot.coreMemory.version,
                     updatedAt: snapshot.coreMemory.updatedAt
                   };
                 }
-              }
-            : {}),
+              };
+            }
+            const workerAgentId = resolveWorkerIdentityAgentId(managed.session.identityKey);
+            if (workerAgentId && workerAgentService) {
+              return {
+                onMemoryUpdateCore: (patch: any) => {
+                  const snapshot = workerAgentService.updateCoreMemory(workerAgentId, patch);
+                  return {
+                    version: snapshot.version,
+                    updatedAt: snapshot.updatedAt
+                  };
+                }
+              };
+            }
+            return {};
+          })(),
           onApprovalRequest: async ({ category, description, detail }) => {
             if (unifiedRt.approvalOverrides.has(category)) {
               return {
@@ -1844,7 +1939,11 @@ export function createAgentChatService(args: {
           systemPrompt: { type: "preset", preset: "claude_code" },
           settingSources: ["user", "project", "local"],
           streamingInput: "always",
-          mcpServers: buildAdeMcpServers("claude", managed.session.identityKey === "cto" ? "cto" : "agent"),
+          mcpServers: buildAdeMcpServers(
+            "claude",
+            managed.session.identityKey === "cto" ? "cto" : "agent",
+            resolveWorkerIdentityAgentId(managed.session.identityKey)
+          ),
           maxBudgetUsd: chatConfig.sessionBudgetUsd ?? undefined,
           canUseTool
         };
@@ -2041,6 +2140,13 @@ export function createAgentChatService(args: {
         ...(usage ? { usage } : {})
       });
 
+      if (assistantText.trim().length > 0) {
+        appendWorkerActivityToCto(managed, {
+          activityType: "chat_turn",
+          summary: assistantText,
+        });
+      }
+
       const endSha = await computeHeadShaBestEffort(managed.session.laneId).catch(() => null);
       if (endSha) {
         sessionService.setHeadShaEnd(managed.session.id, endSha);
@@ -2103,6 +2209,13 @@ export function createAgentChatService(args: {
           status: "failed",
           model: managed.session.model,
           ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        });
+
+        appendWorkerActivityToCto(managed, {
+          activityType: "chat_turn",
+          summary: error instanceof Error
+            ? `Turn failed: ${error.message}`
+            : `Turn failed: ${String(error)}`,
         });
       }
 
@@ -2426,13 +2539,7 @@ export function createAgentChatService(args: {
           const text = typeof record.step === "string" ? record.step : "";
           if (!text) return null;
           const rawStatus = typeof record.status === "string" ? record.status : "pending";
-          const mappedStatus = rawStatus === "completed"
-            ? "completed"
-            : rawStatus === "inProgress"
-              ? "in_progress"
-              : rawStatus === "failed"
-                ? "failed"
-              : "pending";
+          const mappedStatus = PLAN_STEP_STATUS_MAP[rawStatus] ?? "pending";
           return {
             text,
             status: mappedStatus
@@ -2638,7 +2745,11 @@ export function createAgentChatService(args: {
     const codexPolicy = managed.session.permissionMode
       ? mapPermissionToCodex(managed.session.permissionMode)
       : { approvalPolicy: config.codexApprovalPolicy, sandbox: config.codexSandboxMode };
-    const mcpServers = buildAdeMcpServers("codex", managed.session.identityKey === "cto" ? "cto" : "agent");
+    const mcpServers = buildAdeMcpServers(
+      "codex",
+      managed.session.identityKey === "cto" ? "cto" : "agent",
+      resolveWorkerIdentityAgentId(managed.session.identityKey)
+    );
     return { codexPolicy, mcpServers };
   };
 
@@ -3324,10 +3435,20 @@ export function createAgentChatService(args: {
       return ensureManagedSession(managed.session.id).session;
     }
 
-    const identity = ctoStateService?.getIdentity();
-    const pref = identity?.modelPreferences;
+    const ctoIdentity = ctoStateService?.getIdentity();
+    const workerAgentId = resolveWorkerIdentityAgentId(args.identityKey);
+    const workerIdentity = workerAgentId && workerAgentService
+      ? workerAgentService.getAgent(workerAgentId, { includeDeleted: true })
+      : null;
+    const workerAdapterConfig = workerIdentity?.adapterConfig && typeof workerIdentity.adapterConfig === "object"
+      ? workerIdentity.adapterConfig as Record<string, unknown>
+      : null;
+    const pref = args.identityKey === "cto" ? ctoIdentity?.modelPreferences : null;
     const preferredProviderRaw = (pref?.provider ?? "").trim().toLowerCase();
     const providerFromPreference: AgentChatProvider = (() => {
+      if (workerIdentity?.adapterType === "claude-local") return "claude";
+      if (workerIdentity?.adapterType === "codex-local") return "codex";
+      if (workerIdentity?.adapterType === "openclaw-webhook" || workerIdentity?.adapterType === "process") return "unified";
       if (preferredProviderRaw.includes("codex") || preferredProviderRaw.includes("openai")) return "codex";
       if (preferredProviderRaw.includes("claude") || preferredProviderRaw.includes("anthropic")) return "claude";
       return "unified";
@@ -3338,7 +3459,9 @@ export function createAgentChatService(args: {
       : null;
     const preferredModelId = typeof pref?.modelId === "string" && pref.modelId.trim().length
       ? pref.modelId.trim()
-      : null;
+      : typeof workerAdapterConfig?.modelId === "string" && workerAdapterConfig.modelId.trim().length
+        ? workerAdapterConfig.modelId.trim()
+        : null;
     const resolvedModelId = explicitModelId ?? preferredModelId;
     const resolvedDescriptor = resolvedModelId ? getModelById(resolvedModelId) : undefined;
 
@@ -3352,7 +3475,9 @@ export function createAgentChatService(args: {
 
     const preferredModel = typeof pref?.model === "string" && pref.model.trim().length
       ? pref.model.trim()
-      : fallbackModelForProvider(provider);
+      : typeof workerAdapterConfig?.model === "string" && workerAdapterConfig.model.trim().length
+        ? workerAdapterConfig.model.trim()
+        : fallbackModelForProvider(provider);
 
     const created = await createSession({
       laneId,
@@ -3479,10 +3604,7 @@ export function createAgentChatService(args: {
     }
 
     // Mark streaming runtimes as interrupted so the catch block handles gracefully
-    if (managed.runtime?.kind === "claude") {
-      managed.runtime.interrupted = true;
-    }
-    if (managed.runtime?.kind === "unified") {
+    if (managed.runtime?.kind === "claude" || managed.runtime?.kind === "unified") {
       managed.runtime.interrupted = true;
     }
 
@@ -3527,14 +3649,16 @@ export function createAgentChatService(args: {
         return managed.session.provider;
       })();
       const nextModel = descriptor.isCliWrapped ? descriptor.shortId : descriptor.id;
-      const compatible =
-        managed.runtime == null
-          ? true
-          : managed.session.provider === "codex"
-            ? descriptor.family === "openai" && descriptor.isCliWrapped
-            : managed.session.provider === "claude"
-              ? descriptor.family === "anthropic" && descriptor.isCliWrapped
-              : !descriptor.isCliWrapped;
+      let compatible = true;
+      if (managed.runtime != null) {
+        if (managed.session.provider === "codex") {
+          compatible = descriptor.family === "openai" && descriptor.isCliWrapped;
+        } else if (managed.session.provider === "claude") {
+          compatible = descriptor.family === "anthropic" && descriptor.isCliWrapped;
+        } else {
+          compatible = !descriptor.isCliWrapped;
+        }
+      }
 
       if (!compatible) {
         throw new Error("This session can only switch to models compatible with its current runtime.");
@@ -3563,11 +3687,7 @@ export function createAgentChatService(args: {
     if (permissionMode !== undefined) {
       managed.session.permissionMode = permissionMode;
       if (managed.runtime?.kind === "unified") {
-        managed.runtime.permissionMode = permissionMode === "default" || permissionMode === "config-toml"
-          ? "edit"
-          : permissionMode === "plan" || permissionMode === "edit" || permissionMode === "full-auto"
-            ? permissionMode
-            : "edit";
+        managed.runtime.permissionMode = mapToUnifiedPermissionMode(permissionMode) ?? "edit";
       }
     }
 
@@ -3651,11 +3771,7 @@ export function createAgentChatService(args: {
     const managed = ensureManagedSession(sessionId);
 
     if (managed.runtime?.kind === "unified") {
-      // Map to unified PermissionMode (which doesn't include "default" or "config-toml")
-      const unifiedMode: PermissionMode = permissionMode === "default" || permissionMode === "config-toml" ? "edit"
-        : permissionMode === "plan" || permissionMode === "edit" || permissionMode === "full-auto" ? permissionMode
-        : "edit";
-      managed.runtime.permissionMode = unifiedMode;
+      managed.runtime.permissionMode = mapToUnifiedPermissionMode(permissionMode) ?? "edit";
     }
 
     managed.session.permissionMode = permissionMode;

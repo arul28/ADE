@@ -11,32 +11,23 @@ import {
   UsersThree,
   Wrench,
   Globe,
-  Robot,
-  TerminalWindow,
-  CaretDown,
-  CaretRight,
-  ChatCircle,
 } from "@phosphor-icons/react";
 import type {
   MissionAgentRuntimeConfig,
+  MissionIntervention,
   OrchestratorChatMessage,
-  TeamRuntimeConfig,
 } from "../../../shared/types";
-import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
 import { MissionThreadMessageList } from "./MissionThreadMessageList";
 import type { Channel } from "./ChatChannelList";
-import { readRecord, readString, formatStructuredValue } from "./chatFilters";
 
 // ── Design tokens ──
 const MONO = MONO_FONT;
-const BG_MAIN = COLORS.cardBg;
-const BG_PAGE = COLORS.pageBg;
 const ACCENT = COLORS.accent;
 const BORDER = "#2a2535";
 const TEXT_PRIMARY = COLORS.textPrimary;
 const TEXT_SECONDARY = COLORS.textSecondary;
 const TEXT_MUTED = COLORS.textMuted;
-const TEXT_DIM = COLORS.textDim;
 const STATUS_GREEN = COLORS.success;
 const STATUS_GRAY = "#6b7280";
 const STATUS_RED = COLORS.danger;
@@ -45,11 +36,6 @@ const WARNING = COLORS.warning;
 const STATUS_DOT: Record<string, string> = {
   active: STATUS_GREEN,
   closed: STATUS_GRAY,
-  failed: STATUS_RED,
-};
-
-const DELIVERY_STATE_COLOR: Record<string, string> = {
-  delivered: STATUS_GREEN,
   failed: STATUS_RED,
 };
 
@@ -63,6 +49,8 @@ export type ChatMessageAreaProps = {
   jumpNotice: string | null;
   chatNotice: ChatNotice;
   chatBlocked: ChatNotice;
+  threadIntervention: MissionIntervention | null;
+  onOpenIntervention: (interventionId: string) => void;
   showStreamingIndicator: boolean;
   runtimeSummary: { title: string; detail: string } | null;
   agentRuntimeConfig: MissionAgentRuntimeConfig | null;
@@ -82,6 +70,8 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
   jumpNotice,
   chatNotice,
   chatBlocked,
+  threadIntervention,
+  onOpenIntervention,
   showStreamingIndicator,
   runtimeSummary,
   agentRuntimeConfig,
@@ -160,6 +150,36 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
         </div>
       )}
 
+      {threadIntervention && (
+        <div
+          className="flex items-start justify-between gap-3 px-3 py-2"
+          style={{ borderBottom: `1px solid ${WARNING}30`, background: `${WARNING}10` }}
+        >
+          <div className="min-w-0">
+            <div
+              className="text-[10px] font-bold uppercase tracking-[0.12em]"
+              style={{ color: WARNING, fontFamily: MONO }}
+            >
+              This conversation needs attention
+            </div>
+            <div className="mt-1 text-[11px] font-semibold" style={{ color: TEXT_PRIMARY }}>
+              {threadIntervention.title}
+            </div>
+            <div className="mt-1 text-[11px] leading-[1.45]" style={{ color: TEXT_SECONDARY }}>
+              {threadIntervention.requestedAction?.trim() || threadIntervention.body}
+            </div>
+          </div>
+          <button
+            type="button"
+            className="shrink-0 border px-2 py-1 font-mono text-[9px] font-bold uppercase tracking-[0.12em]"
+            style={{ color: WARNING, borderColor: `${WARNING}35`, background: `${WARNING}10` }}
+            onClick={() => onOpenIntervention(threadIntervention.id)}
+          >
+            Open
+          </button>
+        </div>
+      )}
+
       {/* Runtime availability banner */}
       {(chatNotice || chatBlocked) && (
         <div
@@ -189,6 +209,7 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
         showStreamingIndicator={
           selectedChannel?.kind === "global" ? false : showStreamingIndicator
         }
+        transcriptPollingEnabled={selectedChannel?.kind !== "global" && selectedChannel?.status === "active"}
         className="flex-1"
         onApproval={onApproval}
       />

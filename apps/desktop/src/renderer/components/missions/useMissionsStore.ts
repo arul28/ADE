@@ -8,25 +8,16 @@ import type {
   GetModelCapabilitiesResult,
   OrchestratorArtifact,
   OrchestratorChatTarget,
-  OrchestratorExecutorKind,
   OrchestratorPromptInspector,
   OrchestratorRunGraph,
   OrchestratorWorkerCheckpoint,
-  OrchestratorAttempt,
-  OrchestratorStep,
   ProjectConfigSnapshot,
-  StartOrchestratorRunFromMissionArgs,
-  MissionRunView,
-  MissionIntervention,
-  ClarificationQuestion,
-  ClarificationQuiz,
 } from "../../../shared/types";
 import {
   DEFAULT_MISSION_SETTINGS_DRAFT,
   DEFAULT_ORCHESTRATOR_MODEL,
   DEFAULT_PERMISSION_CONFIG,
   TERMINAL_MISSION_STATUSES,
-  filterExecutionSteps,
   isRecord,
   readString,
   toPlannerProvider,
@@ -270,6 +261,7 @@ export const initialMissionsState: MissionsState = {
 
 /* ── Toast timer registry (module-scoped, not per-render) ── */
 const toastTimers = new Map<string, number>();
+let missionSelectionRequestSeq = 0;
 
 /* ════════════════════ STORE CREATION ════════════════════ */
 
@@ -563,25 +555,38 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
 
   /* ── Consolidated mission selection (VAL-ARCH-004) ── */
   selectMission: async (missionId: string | null) => {
-    // Update selected ID immediately for responsive UI
-    set({ selectedMissionId: missionId });
+    const currentSelectedId = get().selectedMissionId;
+    const currentHydratedMissionId = get().selectedMission?.id ?? null;
+    const selectedIdChanged = missionId !== currentSelectedId;
+    const hydratedMissionChanged = missionId !== currentHydratedMissionId;
+
+    // Update selected ID immediately for responsive UI when the selection actually changes.
+    if (selectedIdChanged) {
+      set({ selectedMissionId: missionId });
+    }
 
     if (!missionId) {
       get().clearSelection();
       return;
     }
 
-    // Reset transient state for new selection
-    set({
-      chatJumpTarget: null,
-      logsFocusInterventionId: null,
-      activityPanelMode: "signal",
-      coordinatorPromptInspector: null,
-      workerPromptInspector: null,
-    });
+    if (hydratedMissionChanged) {
+      // Reset transient state only when the user actually switches missions.
+      set({
+        chatJumpTarget: null,
+        logsFocusInterventionId: null,
+        activityPanelMode: "signal",
+        coordinatorPromptInspector: null,
+        workerPromptInspector: null,
+      });
+    }
 
+    const requestSeq = ++missionSelectionRequestSeq;
     try {
       const view = await window.ade.missions.getFullMissionView({ missionId });
+      if (requestSeq !== missionSelectionRequestSeq || get().selectedMissionId !== missionId) {
+        return;
+      }
       set((state) => ({
         selectedMission: view.mission,
         runGraph: view.runGraph,
@@ -595,23 +600,17 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
         error: null,
       }));
     } catch (err) {
+      if (requestSeq !== missionSelectionRequestSeq || get().selectedMissionId !== missionId) {
+        return;
+      }
       set({ error: err instanceof Error ? err.message : String(err) });
     }
   },
 
   /* ── Event subscriptions (VAL-ARCH-007) ── */
   initEventSubscriptions: () => {
-    let graphRefreshTimer: number | null = null;
     let missionEventTimer: number | null = null;
     let orchestratorEventTimer: number | null = null;
-
-    const scheduleGraphRefresh = (missionId: string, delayMs = 180) => {
-      if (graphRefreshTimer !== null) window.clearTimeout(graphRefreshTimer);
-      graphRefreshTimer = window.setTimeout(() => {
-        graphRefreshTimer = null;
-        void get().loadOrchestratorGraph(missionId);
-      }, delayMs);
-    };
 
     const unsubMissions = window.ade.missions.onEvent((payload) => {
       if (missionEventTimer !== null) window.clearTimeout(missionEventTimer);
@@ -621,29 +620,27 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
         void get().loadDashboard();
         const currentSelectedId = get().selectedMissionId;
         if (payload.missionId && payload.missionId === currentSelectedId) {
-          void get().loadMissionDetail(payload.missionId);
-          scheduleGraphRefresh(payload.missionId, 120);
-          void get().loadRunArtifacts(payload.missionId, get().runGraph?.run.id ?? null);
+          void get().selectMission(payload.missionId);
         }
       }, 300);
     });
 
     const unsubOrchestrator = window.ade.orchestrator.onEvent((event) => {
-      const currentSelectedId = get().selectedMissionId;
-      if (!currentSelectedId) return;
       const selectedRunId = get().runGraph?.run.id ?? null;
       if (selectedRunId && event.runId && event.runId !== selectedRunId) return;
       if (orchestratorEventTimer !== null) window.clearTimeout(orchestratorEventTimer);
       orchestratorEventTimer = window.setTimeout(() => {
         orchestratorEventTimer = null;
-        scheduleGraphRefresh(currentSelectedId);
+        const latestSelectedId = get().selectedMissionId;
+        if (!latestSelectedId) return;
+        const latestSelectedRunId = get().runGraph?.run.id ?? null;
+        if (latestSelectedRunId && event.runId && event.runId !== latestSelectedRunId) return;
+        void get().selectMission(latestSelectedId);
         void get().loadDashboard();
-        void get().loadRunArtifacts(currentSelectedId, selectedRunId);
       }, 300);
     });
 
     return () => {
-      if (graphRefreshTimer !== null) window.clearTimeout(graphRefreshTimer);
       if (missionEventTimer !== null) window.clearTimeout(missionEventTimer);
       if (orchestratorEventTimer !== null) window.clearTimeout(orchestratorEventTimer);
       unsubMissions();

@@ -44,10 +44,23 @@ export type CtoSessionLogEntry = {
   createdAt: string;
 };
 
+export type CtoSubordinateActivityEntry = {
+  id: string;
+  agentId: string;
+  agentName: string;
+  activityType: "chat_turn" | "worker_run";
+  summary: string;
+  sessionId?: string | null;
+  taskKey?: string | null;
+  issueKey?: string | null;
+  createdAt: string;
+};
+
 export type CtoSnapshot = {
   identity: CtoIdentity;
   coreMemory: CtoCoreMemory;
   recentSessions: CtoSessionLogEntry[];
+  recentSubordinateActivity: CtoSubordinateActivityEntry[];
 };
 
 export type CtoGetStateArgs = {

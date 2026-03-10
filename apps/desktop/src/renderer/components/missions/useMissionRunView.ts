@@ -7,29 +7,51 @@ export function useMissionRunView(missionId: string | null, runId: string | null
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const refreshTimerRef = useRef<number | null>(null);
+  const activeRequestKeyRef = useRef("");
+  const requestSeqRef = useRef(0);
+
+  const resolvedMissionId = String(missionId ?? "").trim();
+  const resolvedRunId = String(runId ?? "").trim();
+  const requestKey = `${resolvedMissionId}::${resolvedRunId}`;
+
+  useEffect(() => {
+    activeRequestKeyRef.current = requestKey;
+    setRunView(null);
+    setError(null);
+    setLoading(Boolean(resolvedMissionId.length));
+  }, [requestKey, resolvedMissionId]);
 
   const refresh = useCallback(async () => {
-    const resolvedMissionId = String(missionId ?? "").trim();
     if (!resolvedMissionId.length) {
       setRunView(null);
       setLoading(false);
       setError(null);
       return;
     }
+    const requestSeq = ++requestSeqRef.current;
+    const currentRequestKey = requestKey;
     try {
       setLoading(true);
       const next = await window.ade.missions.getRunView({
         missionId: resolvedMissionId,
         runId: runId ?? null,
       });
+      if (requestSeq !== requestSeqRef.current || activeRequestKeyRef.current !== currentRequestKey) {
+        return;
+      }
       setRunView(next);
       setError(null);
     } catch (err) {
+      if (requestSeq !== requestSeqRef.current || activeRequestKeyRef.current !== currentRequestKey) {
+        return;
+      }
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (requestSeq === requestSeqRef.current && activeRequestKeyRef.current === currentRequestKey) {
+        setLoading(false);
+      }
     }
-  }, [missionId, runId]);
+  }, [requestKey, resolvedMissionId, runId]);
 
   useEffect(() => {
     void refresh();
@@ -39,11 +61,12 @@ export function useMissionRunView(missionId: string | null, runId: string | null
   const { fireNow } = useMissionPollingImmediate(pollRefresh, 10_000, Boolean(missionId));
 
   useEffect(() => {
-    const resolvedMissionId = String(missionId ?? "").trim();
     if (!resolvedMissionId.length) return;
+    const subscriptionKey = requestKey;
     const unsubscribe = window.ade.missions.subscribeRunView(
       { missionId: resolvedMissionId, runId: runId ?? null },
       (next) => {
+        if (activeRequestKeyRef.current !== subscriptionKey) return;
         setRunView(next);
         setError(null);
       },
@@ -58,7 +81,6 @@ export function useMissionRunView(missionId: string | null, runId: string | null
   }, [missionId, runId]);
 
   useEffect(() => {
-    const resolvedMissionId = String(missionId ?? "").trim();
     if (!resolvedMissionId.length) return;
     const scheduleRefresh = (delayMs = 250) => {
       if (refreshTimerRef.current !== null) {
@@ -80,7 +102,7 @@ export function useMissionRunView(missionId: string | null, runId: string | null
       }
       unsubMission();
     };
-  }, [fireNow, missionId]);
+  }, [fireNow, requestKey, resolvedMissionId]);
 
   return { runView, loading, error, refresh };
 }

@@ -6,6 +6,7 @@ import type {
   CtoCoreMemory,
   CtoIdentity,
   CtoSessionLogEntry,
+  CtoSubordinateActivityEntry,
   CtoSnapshot,
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
@@ -27,6 +28,16 @@ type AppendCtoSessionLogArgs = {
   provider: string;
   modelId: string | null;
   capabilityMode: "full_mcp" | "fallback";
+};
+
+type AppendCtoSubordinateActivityArgs = {
+  agentId: string;
+  agentName: string;
+  activityType: "chat_turn" | "worker_run";
+  summary: string;
+  sessionId?: string | null;
+  taskKey?: string | null;
+  issueKey?: string | null;
 };
 
 type PersistedDoc<T> = {
@@ -151,6 +162,28 @@ function normalizeSessionLogEntry(input: unknown): CtoSessionLogEntry | null {
   };
 }
 
+function normalizeSubordinateActivityEntry(input: unknown): CtoSubordinateActivityEntry | null {
+  if (!input || typeof input !== "object") return null;
+  const source = input as Record<string, unknown>;
+  const agentId = typeof source.agentId === "string" ? source.agentId.trim() : "";
+  const agentName = typeof source.agentName === "string" ? source.agentName.trim() : "";
+  const summary = typeof source.summary === "string" ? source.summary.trim() : "";
+  const createdAt = typeof source.createdAt === "string" ? source.createdAt.trim() : "";
+  if (!agentId || !agentName || !summary || !createdAt) return null;
+  const activityType = source.activityType === "worker_run" ? "worker_run" : "chat_turn";
+  return {
+    id: typeof source.id === "string" && source.id.trim().length ? source.id.trim() : randomUUID(),
+    agentId,
+    agentName,
+    activityType,
+    summary,
+    sessionId: typeof source.sessionId === "string" && source.sessionId.trim().length ? source.sessionId.trim() : null,
+    taskKey: typeof source.taskKey === "string" && source.taskKey.trim().length ? source.taskKey.trim() : null,
+    issueKey: typeof source.issueKey === "string" && source.issueKey.trim().length ? source.issueKey.trim() : null,
+    createdAt,
+  };
+}
+
 function makeDefaultIdentity(): CtoIdentity {
   const timestamp = nowIso();
   return {
@@ -186,15 +219,12 @@ function makeDefaultCoreMemory(): CtoCoreMemory {
   };
 }
 
-function toStableJson(value: unknown): string {
-  return JSON.stringify(value, Object.keys(value as Record<string, unknown>).sort());
-}
-
 export function createCtoStateService(args: CtoStateServiceArgs) {
   const ctoDir = path.join(args.adeDir, "cto");
   const identityPath = path.join(ctoDir, "identity.yaml");
   const coreMemoryPath = path.join(ctoDir, "core-memory.json");
   const sessionsPath = path.join(ctoDir, "sessions.jsonl");
+  const subordinateActivityPath = path.join(ctoDir, "subordinate-activity.jsonl");
 
   fs.mkdirSync(ctoDir, { recursive: true });
 
@@ -295,10 +325,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       return fromDb!.payload;
     }
 
-    // Tied timestamps or invalid values: prefer file source.
-    const fileStable = toStableJson(fromFile!.payload);
-    const dbStable = toStableJson(fromDb!.payload);
-    if (fileStable === dbStable) return fromFile!.payload;
+    // Tied timestamps or both invalid: prefer file source.
     return fromFile!.payload;
   };
 
@@ -346,6 +373,25 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
   const appendSessionLogToFile = (entry: CtoSessionLogEntry): void => {
     fs.mkdirSync(path.dirname(sessionsPath), { recursive: true });
     fs.appendFileSync(sessionsPath, `${JSON.stringify(entry)}\n`, "utf8");
+  };
+
+  const listSubordinateActivityFromFile = (): CtoSubordinateActivityEntry[] => {
+    if (!fs.existsSync(subordinateActivityPath)) return [];
+    const raw = fs.readFileSync(subordinateActivityPath, "utf8");
+    const entries: CtoSubordinateActivityEntry[] = [];
+    for (const line of raw.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed.length) continue;
+      const parsed = safeJsonParse<unknown>(trimmed, null);
+      const normalized = normalizeSubordinateActivityEntry(parsed);
+      if (normalized) entries.push(normalized);
+    }
+    return entries;
+  };
+
+  const appendSubordinateActivityToFile = (entry: CtoSubordinateActivityEntry): void => {
+    fs.mkdirSync(path.dirname(subordinateActivityPath), { recursive: true });
+    fs.appendFileSync(subordinateActivityPath, `${JSON.stringify(entry)}\n`, "utf8");
   };
 
   const insertSessionLogToDb = (entry: CtoSessionLogEntry): void => {
@@ -450,6 +496,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       identity: docs.identity,
       coreMemory: docs.coreMemory,
       recentSessions: getSessionLogs(recentLimit),
+      recentSubordinateActivity: getSubordinateActivityLogs(recentLimit),
     };
   };
 
@@ -489,6 +536,31 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     return next;
   };
 
+  const getSubordinateActivityLogs = (limit = 20): CtoSubordinateActivityEntry[] => {
+    reconcileAll();
+    const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+    return listSubordinateActivityFromFile()
+      .sort((a, b) => parseIsoToEpoch(b.createdAt) - parseIsoToEpoch(a.createdAt))
+      .slice(0, safeLimit);
+  };
+
+  const appendSubordinateActivity = (entry: AppendCtoSubordinateActivityArgs): CtoSubordinateActivityEntry => {
+    reconcileAll();
+    const next: CtoSubordinateActivityEntry = {
+      id: randomUUID(),
+      agentId: entry.agentId.trim(),
+      agentName: entry.agentName.trim() || entry.agentId.trim(),
+      activityType: entry.activityType,
+      summary: entry.summary.trim() || "Worker activity recorded.",
+      sessionId: typeof entry.sessionId === "string" && entry.sessionId.trim().length ? entry.sessionId.trim() : null,
+      taskKey: typeof entry.taskKey === "string" && entry.taskKey.trim().length ? entry.taskKey.trim() : null,
+      issueKey: typeof entry.issueKey === "string" && entry.issueKey.trim().length ? entry.issueKey.trim() : null,
+      createdAt: nowIso(),
+    };
+    appendSubordinateActivityToFile(next);
+    return next;
+  };
+
   const buildReconstructionContext = (recentLimit = 8): string => {
     const snapshot = getSnapshot(recentLimit);
     const sections: string[] = [];
@@ -518,6 +590,19 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
         sections.push(`- [${entry.createdAt}] ${entry.summary}`);
       }
     }
+    if (snapshot.recentSubordinateActivity.length) {
+      sections.push("");
+      sections.push("Recent Employee Activity");
+      for (const entry of snapshot.recentSubordinateActivity) {
+        const detailParts = [
+          entry.taskKey ? `task ${entry.taskKey}` : "",
+          entry.issueKey ? `issue ${entry.issueKey}` : "",
+        ].filter((part) => part.length > 0);
+        sections.push(
+          `- [${entry.createdAt}] ${entry.agentName} (${entry.activityType}${detailParts.length ? `; ${detailParts.join(", ")}` : ""}): ${entry.summary}`
+        );
+      }
+    }
     return sections.join("\n").trim();
   };
 
@@ -528,9 +613,11 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     getIdentity,
     getCoreMemory,
     getSessionLogs,
+    getSubordinateActivityLogs,
     getSnapshot,
     updateCoreMemory,
     appendSessionLog,
+    appendSubordinateActivity,
     buildReconstructionContext,
   };
 }

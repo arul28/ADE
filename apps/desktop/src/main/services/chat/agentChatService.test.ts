@@ -109,6 +109,13 @@ type CreatedFixture = {
     buildReconstructionContext: ReturnType<typeof vi.fn>;
     updateCoreMemory: ReturnType<typeof vi.fn>;
     appendSessionLog: ReturnType<typeof vi.fn>;
+    appendSubordinateActivity: ReturnType<typeof vi.fn>;
+  };
+  workerAgentService: {
+    getAgent: ReturnType<typeof vi.fn>;
+    buildReconstructionContext: ReturnType<typeof vi.fn>;
+    updateCoreMemory: ReturnType<typeof vi.fn>;
+    appendSessionLog: ReturnType<typeof vi.fn>;
   };
   sessionService: MockSessionService;
   emitted: AgentChatEventEnvelope[];
@@ -408,7 +415,30 @@ function createFixture(_provider: AgentChatProvider): CreatedFixture {
       },
       recentSessions: []
     })),
-    appendSessionLog: vi.fn(() => ({ id: "log-1" }))
+    appendSessionLog: vi.fn(() => ({ id: "log-1" })),
+    appendSubordinateActivity: vi.fn(() => ({ id: "subordinate-1" }))
+  };
+  const workerAgentService = {
+    getAgent: vi.fn((agentId: string) => ({
+      id: agentId,
+      name: "Worker Agent",
+      adapterType: "codex-local",
+      adapterConfig: {
+        model: "gpt-5.3-codex",
+        modelId: "openai/gpt-5.3-codex"
+      }
+    })),
+    buildReconstructionContext: vi.fn((agentId: string) => `Worker Identity\n- Id: ${agentId}\nCore Memory\n- Project summary: worker test`),
+    updateCoreMemory: vi.fn(() => ({
+      version: 2,
+      updatedAt: "2026-03-05T01:00:00.000Z",
+      projectSummary: "worker test",
+      criticalConventions: [],
+      userPreferences: [],
+      activeFocus: [],
+      notes: []
+    })),
+    appendSessionLog: vi.fn(() => ({ id: "worker-log-1" }))
   };
   const emitted: AgentChatEventEnvelope[] = [];
   const ended: Array<{ laneId: string; sessionId: string; exitCode: number | null }> = [];
@@ -421,6 +451,7 @@ function createFixture(_provider: AgentChatProvider): CreatedFixture {
     memoryService: memoryService as any,
     packService: packService as any,
     ctoStateService: ctoStateService as any,
+    workerAgentService: workerAgentService as any,
     laneService: laneService as any,
     sessionService: sessionService as any,
     projectConfigService: projectConfigService as any,
@@ -445,6 +476,7 @@ function createFixture(_provider: AgentChatProvider): CreatedFixture {
     projectConfigService,
     memoryService,
     ctoStateService,
+    workerAgentService,
     sessionService,
     emitted,
     ended,
@@ -1568,6 +1600,23 @@ describe("agentChatService", () => {
       expect(listed.find((entry) => entry.sessionId === first.id)?.identityKey).toBe("cto");
     });
 
+    it("creates stable worker identity sessions keyed by agent id", async () => {
+      const fixture = createFixture("claude");
+
+      const first = await fixture.service.ensureIdentitySession({
+        identityKey: "agent:worker-1",
+        laneId: "lane-1"
+      });
+      const second = await fixture.service.ensureIdentitySession({
+        identityKey: "agent:worker-1",
+        laneId: "lane-1"
+      });
+
+      expect(second.id).toBe(first.id);
+      expect(first.identityKey).toBe("agent:worker-1");
+      expect(fixture.workerAgentService.getAgent).toHaveBeenCalledWith("worker-1", { includeDeleted: true });
+    });
+
     it("injects reconstruction context on resumed CTO session startup", async () => {
       const fixture = createFixture("claude");
       streamTextMock.mockImplementationOnce(() => ({
@@ -1588,7 +1637,58 @@ describe("agentChatService", () => {
 
       expect(fixture.ctoStateService.buildReconstructionContext).toHaveBeenCalled();
       const streamInput = streamTextMock.mock.calls[0]?.[0] as any;
-      expect(streamInput.messages[0]?.content).toContain("System context (CTO reconstruction");
+      expect(streamInput.messages[0]?.content).toContain("System context (identity reconstruction");
+    });
+
+    it("injects reconstruction context on resumed worker identity session startup", async () => {
+      const fixture = createFixture("claude");
+      streamTextMock.mockImplementationOnce(() => ({
+        fullStream: makeFullStream([{ type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } }])
+      }) as any);
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "agent:worker-2"
+      });
+      await fixture.service.dispose({ sessionId: session.id });
+
+      fixture.workerAgentService.buildReconstructionContext.mockClear();
+      await fixture.service.resumeSession({ sessionId: session.id });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "worker status check" });
+
+      expect(fixture.workerAgentService.buildReconstructionContext).toHaveBeenCalledWith("worker-2", 8);
+      const streamInput = streamTextMock.mock.calls[0]?.[0] as any;
+      expect(streamInput.messages[0]?.content).toContain("System context (identity reconstruction");
+      expect(streamInput.messages[0]?.content).toContain("worker test");
+    });
+
+    it("propagates direct worker chat completions into CTO subordinate activity", async () => {
+      const fixture = createFixture("claude");
+      streamTextMock.mockImplementationOnce(() => ({
+        fullStream: makeFullStream([
+          { type: "text-delta", text: "I reviewed the mobile bug and the fix should land in the navigation stack." },
+          { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } }
+        ])
+      }) as any);
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "agent:mobile-dev"
+      });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "please inspect the bug" });
+
+      expect(fixture.ctoStateService.appendSubordinateActivity).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: "mobile-dev",
+          agentName: "Worker Agent",
+          activityType: "chat_turn",
+          sessionId: session.id,
+        })
+      );
     });
 
     it("writes CTO session logs when a CTO session is disposed", async () => {
@@ -1604,6 +1704,28 @@ describe("agentChatService", () => {
       await fixture.service.dispose({ sessionId: session.id });
 
       expect(fixture.ctoStateService.appendSessionLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: session.id,
+          capabilityMode: "full_mcp",
+          provider: "claude"
+        })
+      );
+    });
+
+    it("writes worker session logs when a worker identity session is disposed", async () => {
+      const fixture = createFixture("claude");
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "agent:worker-3"
+      });
+
+      await fixture.service.dispose({ sessionId: session.id });
+
+      expect(fixture.workerAgentService.appendSessionLog).toHaveBeenCalledWith(
+        "worker-3",
         expect.objectContaining({
           sessionId: session.id,
           capabilityMode: "full_mcp",
@@ -1639,6 +1761,33 @@ describe("agentChatService", () => {
       expect(mcpServers?.ade?.transport).toBe("stdio");
       expect(mcpServers?.ade?.env?.ADE_PROJECT_ROOT).toBe(fixture.projectRoot);
       expect(mcpServers?.ade?.env?.ADE_DEFAULT_ROLE).toBe("cto");
+    });
+
+    it("injects worker owner identity into ADE MCP config for Codex worker sessions", async () => {
+      const fixture = createFixture("codex");
+      const codex = createMockCodexProcess();
+      spawnMock.mockReturnValue(codex.proc as any);
+      let threadStart: SentMessage | null = null;
+
+      codex.onRequest("initialize", (msg) => codex.respond(msg.id!, {}));
+      codex.onRequest("thread/start", (msg) => {
+        threadStart = msg;
+        codex.respond(msg.id!, { thread: { id: "thread-worker-codex" } });
+      });
+      codex.onRequest("turn/start", (msg) => codex.respond(msg.id!, { turn: { id: "turn-worker-codex" } }));
+      codex.onRequest("turn/interrupt", (msg) => codex.respond(msg.id!, {}));
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.3-codex",
+        identityKey: "agent:worker-4"
+      });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "boot" });
+
+      const mcpServers = ((threadStart as any)?.params)?.mcpServers;
+      expect(mcpServers?.ade?.env?.ADE_DEFAULT_ROLE).toBe("agent");
+      expect(mcpServers?.ade?.env?.ADE_OWNER_ID).toBe("worker-4");
     });
 
     it("injects ADE MCP server config for Claude CTO sessions", async () => {
@@ -1688,6 +1837,36 @@ describe("agentChatService", () => {
       });
       expect(fixture.ctoStateService.updateCoreMemory).toHaveBeenCalledWith(
         expect.objectContaining({ projectSummary: "Unified path update" })
+      );
+      expect(updateResult.updated).toBe(true);
+      resolveModelSpy.mockRestore();
+    });
+
+    it("routes memoryUpdateCore to worker core memory for unified worker sessions", async () => {
+      const fixture = createFixture("unified");
+      const resolveModelSpy = vi.spyOn(providerResolver, "resolveModel").mockResolvedValue({ id: "mock-model" } as any);
+      streamTextMock.mockImplementationOnce(() => ({
+        fullStream: makeFullStream([{ type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } }])
+      }) as any);
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "anthropic/claude-sonnet-4-6-api",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+        identityKey: "agent:worker-9"
+      });
+      expect(session.capabilityMode).toBe("fallback");
+
+      await fixture.service.sendMessage({ sessionId: session.id, text: "boot unified worker" });
+
+      const streamInput = streamTextMock.mock.calls[0]?.[0] as any;
+      const updateResult = await streamInput.tools.memoryUpdateCore.execute({
+        projectSummary: "Worker unified path update"
+      });
+      expect(fixture.workerAgentService.updateCoreMemory).toHaveBeenCalledWith(
+        "worker-9",
+        expect.objectContaining({ projectSummary: "Worker unified path update" })
       );
       expect(updateResult.updated).toBe(true);
       resolveModelSpy.mockRestore();

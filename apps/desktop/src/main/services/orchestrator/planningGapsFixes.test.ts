@@ -15,19 +15,27 @@ describe("VAL-PLAN-003: ask_user in planning worker allowlist", () => {
   it("mcp__ade__ask_user is included in the read-only worker allowed tools", () => {
     const tools = buildClaudeReadOnlyWorkerAllowedTools();
     expect(tools).toContain("mcp__ade__ask_user");
+    expect(tools).toContain("mcp__ade__memory_search");
+    expect(tools).toContain("mcp__ade__memory_add");
   });
 
   it("ask_user respects custom server name", () => {
     const tools = buildClaudeReadOnlyWorkerAllowedTools("custom_server");
     expect(tools).toContain("mcp__custom_server__ask_user");
+    expect(tools).toContain("mcp__custom_server__memory_search");
+    expect(tools).toContain("mcp__custom_server__memory_add");
   });
 
-  it("ask_user is listed after report_result (ordering preserved)", () => {
+  it("memory tools are listed after ask_user (ordering preserved)", () => {
     const tools = buildClaudeReadOnlyWorkerAllowedTools();
     const reportResultIndex = tools.indexOf("mcp__ade__report_result");
     const askUserIndex = tools.indexOf("mcp__ade__ask_user");
+    const memorySearchIndex = tools.indexOf("mcp__ade__memory_search");
+    const memoryAddIndex = tools.indexOf("mcp__ade__memory_add");
     expect(reportResultIndex).toBeGreaterThanOrEqual(0);
     expect(askUserIndex).toBeGreaterThan(reportResultIndex);
+    expect(memorySearchIndex).toBeGreaterThan(askUserIndex);
+    expect(memoryAddIndex).toBeGreaterThan(memorySearchIndex);
   });
 });
 
@@ -36,34 +44,36 @@ describe("VAL-PLAN-003: ask_user in planning worker allowlist", () => {
 // ─────────────────────────────────────────────────────────────────
 
 describe("VAL-PLAN-002: ExitPlanMode Zod errors handled cleanly", () => {
-  it("treats ExitPlanMode Zod validation error as non-blocking (benign)", () => {
+  it("treats ExitPlanMode Zod validation error as blocking", () => {
     const result = classifyBlockingWarnings({
       warnings: [
         "Tool 'ExitPlanMode' failed: Zod validation error: Expected string, received number at path 'planDescription'",
       ],
       summary: "Planning completed with some tool errors.",
     });
-    expect(result.hasBlockingFailure).toBe(false);
+    expect(result.hasBlockingFailure).toBe(true);
+    expect(result.category).toBe("tool_failure");
   });
 
-  it("treats ExitPlanMode schema parse error as non-blocking", () => {
+  it("treats ExitPlanMode schema parse error as blocking", () => {
     const result = classifyBlockingWarnings({
       warnings: [
         "Tool 'ExitPlanMode' failed: schema parse error: invalid input",
       ],
       summary: null,
     });
-    expect(result.hasBlockingFailure).toBe(false);
+    expect(result.hasBlockingFailure).toBe(true);
+    expect(result.category).toBe("tool_failure");
   });
 
-  it("treats Zod validation with ExitPlanMode context as non-blocking", () => {
+  it("treats Zod validation with ExitPlanMode context as blocking", () => {
     const result = classifyBlockingWarnings({
       warnings: [
         "Zod validation failed for tool ExitPlanMode: Required field missing",
       ],
       summary: null,
     });
-    expect(result.hasBlockingFailure).toBe(false);
+    expect(result.hasBlockingFailure).toBe(true);
   });
 
   it("still blocks genuine tool failures unrelated to ExitPlanMode", () => {
@@ -77,27 +87,26 @@ describe("VAL-PLAN-002: ExitPlanMode Zod errors handled cleanly", () => {
     expect(result.category).toBe("sandbox_block");
   });
 
-  it("still treats ~/.claude/plans/ sandbox blocks as non-blocking", () => {
+  it("treats ~/.claude/plans/ sandbox blocks as blocking", () => {
     const result = classifyBlockingWarnings({
       warnings: [
         "Tool 'ExitPlanMode' failed: PreToolUse:Write hook error: SANDBOX BLOCKED: File path outside sandbox: /Users/admin/.claude/plans/foo.md",
       ],
       summary: null,
     });
-    expect(result.hasBlockingFailure).toBe(false);
+    expect(result.hasBlockingFailure).toBe(true);
+    expect(result.category).toBe("sandbox_block");
   });
 
-  it("ExitPlanMode validation errors do not cause retries (soft_success_blocking_failure is not retryable)", () => {
-    // When a warning is benign, classifyBlockingWarnings returns hasBlockingFailure=false.
-    // This means the attempt stays "succeeded" — no failure, no retry.
+  it("ExitPlanMode validation errors stay classified as blocking failures", () => {
     const result = classifyBlockingWarnings({
       warnings: [
         "Tool 'ExitPlanMode' failed: Zod validation error: Invalid input",
       ],
       summary: "Plan written successfully.",
     });
-    expect(result.hasBlockingFailure).toBe(false);
-    // No failure override means the attempt succeeds cleanly — no retry loop
+    expect(result.hasBlockingFailure).toBe(true);
+    expect(result.category).toBe("tool_failure");
   });
 });
 
@@ -108,14 +117,39 @@ describe("VAL-PLAN-002: ExitPlanMode Zod errors handled cleanly", () => {
 describe("VAL-ART-001: Planning step registers plan artifact", () => {
   function buildMockCtx() {
     const registeredArtifacts: Array<Record<string, unknown>> = [];
+    const missionArtifacts: Array<Record<string, unknown>> = [];
+    const worktreePath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-plan-artifacts-"));
+    fs.mkdirSync(path.join(worktreePath, ".ade", "plans"), { recursive: true });
     return {
       ctx: {
+        projectRoot: worktreePath,
+        db: {
+          get: vi.fn(() => ({ worktree_path: worktreePath })),
+        },
+        missionService: {
+          addArtifact: vi.fn((artifact: Record<string, unknown>) => {
+            missionArtifacts.push(artifact);
+            return artifact;
+          }),
+          addIntervention: vi.fn((intervention: Record<string, unknown>) => ({
+            id: "intervention-1",
+            missionId: "mission-1",
+            status: "open",
+            createdAt: "2026-03-10T00:05:00.000Z",
+            updatedAt: "2026-03-10T00:05:00.000Z",
+            resolvedAt: null,
+            resolutionNote: null,
+            laneId: null,
+            ...intervention,
+          })),
+        },
         orchestratorService: {
           registerArtifact: vi.fn((artifact: Record<string, unknown>) => {
             registeredArtifacts.push(artifact);
             return artifact;
           }),
           appendTimelineEvent: vi.fn(),
+          appendRuntimeEvent: vi.fn(),
         },
         logger: {
           debug: vi.fn(),
@@ -125,7 +159,16 @@ describe("VAL-ART-001: Planning step registers plan artifact", () => {
         },
       } as any,
       registeredArtifacts,
+      missionArtifacts,
+      worktreePath,
     };
+  }
+
+  function ensurePlanFile(worktreePath: string, relativePlanPath = ".ade/plans/mission-plan.md") {
+    const absolutePlanPath = path.join(worktreePath, relativePlanPath);
+    fs.mkdirSync(path.dirname(absolutePlanPath), { recursive: true });
+    fs.writeFileSync(absolutePlanPath, "# Mission plan\n", "utf8");
+    return absolutePlanPath;
   }
 
   function buildPlanningAttempt(overrides?: {
@@ -189,8 +232,9 @@ describe("VAL-ART-001: Planning step registers plan artifact", () => {
   }
 
   it("registers a 'plan' artifact for planning steps on success", () => {
-    const { ctx, registeredArtifacts } = buildMockCtx();
+    const { ctx, registeredArtifacts, worktreePath } = buildMockCtx();
     const { graph, attempt } = buildPlanningAttempt();
+    ensurePlanFile(worktreePath);
 
     extractAndRegisterArtifacts(ctx, { graph, attempt });
 
@@ -206,8 +250,9 @@ describe("VAL-ART-001: Planning step registers plan artifact", () => {
   });
 
   it("plan artifact has valid value path", () => {
-    const { ctx, registeredArtifacts } = buildMockCtx();
+    const { ctx, registeredArtifacts, worktreePath } = buildMockCtx();
     const { graph, attempt } = buildPlanningAttempt();
+    ensurePlanFile(worktreePath);
 
     extractAndRegisterArtifacts(ctx, { graph, attempt });
 
@@ -220,10 +265,11 @@ describe("VAL-ART-001: Planning step registers plan artifact", () => {
   });
 
   it("uses custom planPath from outputs when provided", () => {
-    const { ctx, registeredArtifacts } = buildMockCtx();
+    const { ctx, registeredArtifacts, worktreePath } = buildMockCtx();
     const { graph, attempt } = buildPlanningAttempt({
       outputs: { planPath: ".ade/plans/custom-plan.md" },
     });
+    ensurePlanFile(worktreePath, ".ade/plans/custom-plan.md");
 
     extractAndRegisterArtifacts(ctx, { graph, attempt });
 
@@ -235,10 +281,11 @@ describe("VAL-ART-001: Planning step registers plan artifact", () => {
   });
 
   it("falls back to default plan path when outputs.planPath is absent", () => {
-    const { ctx, registeredArtifacts } = buildMockCtx();
+    const { ctx, registeredArtifacts, worktreePath } = buildMockCtx();
     const { graph, attempt } = buildPlanningAttempt({
       outputs: {},
     });
+    ensurePlanFile(worktreePath);
 
     extractAndRegisterArtifacts(ctx, { graph, attempt });
 
@@ -264,10 +311,11 @@ describe("VAL-ART-001: Planning step registers plan artifact", () => {
   });
 
   it("registers plan artifact for readOnlyExecution steps", () => {
-    const { ctx, registeredArtifacts } = buildMockCtx();
+    const { ctx, registeredArtifacts, worktreePath } = buildMockCtx();
     const { graph, attempt } = buildPlanningAttempt({
       stepMeta: { readOnlyExecution: true },
     });
+    ensurePlanFile(worktreePath);
 
     extractAndRegisterArtifacts(ctx, { graph, attempt });
 
@@ -278,10 +326,11 @@ describe("VAL-ART-001: Planning step registers plan artifact", () => {
   });
 
   it("registers plan artifact for phaseKey=planning steps", () => {
-    const { ctx, registeredArtifacts } = buildMockCtx();
+    const { ctx, registeredArtifacts, worktreePath } = buildMockCtx();
     const { graph, attempt } = buildPlanningAttempt({
       stepMeta: { phaseKey: "Planning" },
     });
+    ensurePlanFile(worktreePath);
 
     extractAndRegisterArtifacts(ctx, { graph, attempt });
 
@@ -292,10 +341,11 @@ describe("VAL-ART-001: Planning step registers plan artifact", () => {
   });
 
   it("plan artifact metadata includes envelope summary", () => {
-    const { ctx, registeredArtifacts } = buildMockCtx();
+    const { ctx, registeredArtifacts, worktreePath } = buildMockCtx();
     const { graph, attempt } = buildPlanningAttempt({
       envelopeSummary: "Designed API for auth module with 3 endpoints.",
     });
+    ensurePlanFile(worktreePath);
 
     extractAndRegisterArtifacts(ctx, { graph, attempt });
 
@@ -309,8 +359,9 @@ describe("VAL-ART-001: Planning step registers plan artifact", () => {
   });
 
   it("plan artifact is queryable (registered via registerArtifact on orchestratorService)", () => {
-    const { ctx, registeredArtifacts } = buildMockCtx();
+    const { ctx, worktreePath } = buildMockCtx();
     const { graph, attempt } = buildPlanningAttempt();
+    ensurePlanFile(worktreePath);
 
     extractAndRegisterArtifacts(ctx, { graph, attempt });
 

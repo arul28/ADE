@@ -21,7 +21,7 @@ function makePhase(overrides: Partial<PhaseCard> = {}): PhaseCard {
     model: { modelId: "anthropic/claude-sonnet-4-6", provider: "claude" },
     budget: {},
     orderingConstraints: {},
-    askQuestions: { enabled: false, mode: "never" },
+    askQuestions: { enabled: false },
     validationGate: { tier: "none", required: false },
     isBuiltIn: true,
     isCustom: false,

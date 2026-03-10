@@ -207,7 +207,7 @@ function PhaseProfileSettingsCard({
                     model: { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: "medium" },
                     budget: {},
                     orderingConstraints: {},
-                    askQuestions: { enabled: false, mode: "never" },
+                    askQuestions: { enabled: false },
                     validationGate: { tier: "none", required: false },
                     isBuiltIn: false,
                     isCustom: true,

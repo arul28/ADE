@@ -1,5 +1,5 @@
 import React from "react";
-import { X, Lock } from "@phosphor-icons/react";
+import { X } from "@phosphor-icons/react";
 import type { PhaseCard, OrchestratorPromptInspector } from "../../../shared/types";
 import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { ModelSelector } from "./ModelSelector";
@@ -89,10 +89,9 @@ export function PhaseCardEditor({
       phaseInstructions: phase.instructions,
       phaseModel: phase.model.modelId,
       askQuestionsEnabled: phase.askQuestions.enabled,
-      askQuestionsMode: phase.askQuestions.mode,
       phases: planningPromptPreview.phases.map((p) => p.phaseKey),
     });
-  }, [isPlanningPhase, expanded, planningPromptPreview, phase.instructions, phase.model.modelId, phase.askQuestions.enabled, phase.askQuestions.mode]);
+  }, [isPlanningPhase, expanded, planningPromptPreview, phase.instructions, phase.model.modelId, phase.askQuestions.enabled]);
 
   // Keep a ref to the latest values so the debounced callback always uses fresh data.
   const previewArgsRef = React.useRef({ phase, planningPromptPreview });
@@ -316,23 +315,14 @@ export function PhaseCardEditor({
             <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
               <input
                 type="checkbox"
-                checked={isPlanningPhase ? true : (phase.requiresApproval === true)}
+                checked={phase.requiresApproval === true}
                 onChange={(e) => {
-                  if (isPlanningPhase) return; // locked on for planning
                   onUpdate({ ...phase, requiresApproval: e.target.checked });
                 }}
-                disabled={readOnly || isPlanningPhase}
+                disabled={readOnly}
               />
               Require manual approval
             </label>
-            {isPlanningPhase && (
-              <span className="flex items-center gap-1" title="Planning phase always requires approval">
-                <Lock size={10} weight="bold" color={COLORS.textDim} />
-                <span style={{ fontSize: 9, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-                  locked
-                </span>
-              </span>
-            )}
           </div>
 
           {isPlanningPhase ? (
@@ -355,40 +345,15 @@ export function PhaseCardEditor({
                       type="checkbox"
                       checked={phase.askQuestions.enabled}
                       onChange={(e) => {
-                        const enabled = e.target.checked;
-                        updateField("askQuestions", {
-                          ...phase.askQuestions,
-                          enabled,
-                          mode: enabled
-                            ? (phase.askQuestions.mode === "never" ? "auto_if_uncertain" : phase.askQuestions.mode)
-                            : "never",
-                        });
+                        updateField("askQuestions", { ...phase.askQuestions, enabled: e.target.checked });
                       }}
                       disabled={readOnly}
                     />
                     Enabled
                   </label>
-                  <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                    <span style={{ fontSize: 9 }}>Mode</span>
-                    <select
-                      value={phase.askQuestions.mode}
-                      onChange={(e) => {
-                        const mode = e.target.value as "always" | "auto_if_uncertain" | "never";
-                        updateField("askQuestions", {
-                          ...phase.askQuestions,
-                          mode,
-                          enabled: mode === "never" ? false : phase.askQuestions.enabled,
-                        });
-                      }}
-                      className="h-6 px-1 outline-none"
-                      style={{ ...inputStyle, width: "auto", minWidth: 130 }}
-                      disabled={readOnly}
-                    >
-                      <option value="auto_if_uncertain">Auto (if uncertain)</option>
-                      <option value="always">Always</option>
-                      <option value="never">Never</option>
-                    </select>
-                  </label>
+                  <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                    {phase.askQuestions.enabled ? "Planner must ask at least one question before finalizing." : "Planner will proceed without asking questions."}
+                  </div>
                   <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                     <span style={{ fontSize: 9 }}>Max questions</span>
                     <input

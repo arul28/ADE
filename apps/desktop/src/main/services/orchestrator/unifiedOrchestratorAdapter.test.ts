@@ -41,7 +41,7 @@ describe("buildCodexMcpConfigFlags", () => {
 });
 
 describe("buildClaudeReadOnlyWorkerAllowedTools", () => {
-  it("includes only safe native read tools plus ADE reporting/status tools and ask_user", () => {
+  it("includes only safe native read tools plus ADE reporting/status tools and memory tools", () => {
     expect(buildClaudeReadOnlyWorkerAllowedTools()).toEqual([
       "Read",
       "Glob",
@@ -54,12 +54,16 @@ describe("buildClaudeReadOnlyWorkerAllowedTools", () => {
       "mcp__ade__report_status",
       "mcp__ade__report_result",
       "mcp__ade__ask_user",
+      "mcp__ade__memory_search",
+      "mcp__ade__memory_add",
     ]);
   });
 
   it("VAL-PLAN-003: planning worker allowlist includes mcp__ade__ask_user for runtime clarifications", () => {
     const tools = buildClaudeReadOnlyWorkerAllowedTools();
     expect(tools).toContain("mcp__ade__ask_user");
+    expect(tools).toContain("mcp__ade__memory_search");
+    expect(tools).toContain("mcp__ade__memory_add");
   });
 });
 
@@ -193,7 +197,7 @@ describe("createUnifiedOrchestratorAdapter", () => {
     expect(startupCommand).not.toContain("\n");
   });
 
-  it("forces Claude planning steps into plan mode even when worker permissions are full-auto", async () => {
+  it("keeps Claude planning steps in read-only default mode instead of native plan mode", async () => {
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-unified-claude-"));
     const adapter = createUnifiedOrchestratorAdapter({
       workspaceRoot,
@@ -238,9 +242,9 @@ describe("createUnifiedOrchestratorAdapter", () => {
     } as any);
 
     expect(result.status).toBe("accepted");
-    expect(startupCommand).toContain("--permission-mode 'plan'");
+    expect(startupCommand).toContain("--permission-mode 'default'");
     expect(startupCommand).not.toContain("--dangerously-skip-permissions");
-    expect(startupCommand).toContain("--allowedTools 'Read,Glob,Grep,mcp__ade__get_mission,mcp__ade__get_run_graph,mcp__ade__stream_events,mcp__ade__get_timeline,mcp__ade__get_pending_messages,mcp__ade__report_status,mcp__ade__report_result,mcp__ade__ask_user'");
+    expect(startupCommand).toContain("--allowedTools 'Read,Glob,Grep,mcp__ade__get_mission,mcp__ade__get_run_graph,mcp__ade__stream_events,mcp__ade__get_timeline,mcp__ade__get_pending_messages,mcp__ade__report_status,mcp__ade__report_result,mcp__ade__ask_user,mcp__ade__memory_search,mcp__ade__memory_add'");
     expect(startupCommand).not.toContain("Bash");
     expect(startupCommand).toContain(`-p "$(cat '`);
     expect(startupCommand).toContain(".ade/orchestrator/worker-prompts/worker-attempt-1.txt");

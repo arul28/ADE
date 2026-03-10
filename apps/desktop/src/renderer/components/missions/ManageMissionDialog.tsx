@@ -1,5 +1,5 @@
 import { useCallback, useEffect } from "react";
-import { X, Stop, Trash, SpinnerGap } from "@phosphor-icons/react";
+import { X, Stop, Trash, SpinnerGap, Play, Pause } from "@phosphor-icons/react";
 import { motion, AnimatePresence } from "motion/react";
 import type { MissionSummary } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
@@ -81,6 +81,42 @@ export function ManageMissionDialog() {
     }
   }, [closeDialog, loadDashboard, manageMission, refreshMissionList, setManageMissionBusy, setManageMissionError]);
 
+  const handlePause = useCallback(async () => {
+    if (!manageMission) return;
+    setManageMissionBusy(true);
+    setManageMissionError(null);
+    try {
+      const runs = await window.ade.orchestrator.listRuns({ missionId: manageMission.id, limit: 5 });
+      const activeRun = runs.find((r) => r.status === "active" || r.status === "bootstrapping");
+      if (!activeRun) throw new Error("No active run is available to pause.");
+      await window.ade.orchestrator.pauseRun({ runId: activeRun.id, reason: "Paused from Manage Mission dialog." });
+      closeDialog(true);
+      await Promise.all([refreshMissionList({ preserveSelection: true, silent: true }), loadDashboard()]);
+    } catch (err) {
+      setManageMissionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setManageMissionBusy(false);
+    }
+  }, [closeDialog, loadDashboard, manageMission, refreshMissionList, setManageMissionBusy, setManageMissionError]);
+
+  const handleResume = useCallback(async () => {
+    if (!manageMission) return;
+    setManageMissionBusy(true);
+    setManageMissionError(null);
+    try {
+      const runs = await window.ade.orchestrator.listRuns({ missionId: manageMission.id, limit: 5 });
+      const pausedRun = runs.find((r) => r.status === "paused");
+      if (!pausedRun) throw new Error("No paused run is available to resume.");
+      await window.ade.orchestrator.resumeRun({ runId: pausedRun.id });
+      closeDialog(true);
+      await Promise.all([refreshMissionList({ preserveSelection: true, silent: true }), loadDashboard()]);
+    } catch (err) {
+      setManageMissionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setManageMissionBusy(false);
+    }
+  }, [closeDialog, loadDashboard, manageMission, refreshMissionList, setManageMissionBusy, setManageMissionError]);
+
   return (
     <AnimatePresence>
       {manageMissionOpen && manageMission ? (
@@ -109,7 +145,9 @@ export function ManageMissionDialog() {
                 </>
               ) : (
                 <div className="p-3 text-[12px]" style={{ background: COLORS.pageBg, border: `1px solid ${COLORS.border}`, color: COLORS.textSecondary }}>
-                  {manageMission.status === "intervention_required" ? "This mission is waiting for intervention. You can cancel it to stop all active work." : "This mission is currently active. You can cancel it to stop all active work."}
+                  {manageMission.status === "intervention_required"
+                    ? "This mission is waiting for intervention. You can pause, resume, or cancel the current run from here."
+                    : "This mission is currently active. You can pause, resume, or cancel the current run from here."}
                 </div>
               )}
               {manageMissionError ? <div className="p-3 text-[11px]" style={{ background: `${COLORS.danger}10`, border: `1px solid ${COLORS.danger}35`, color: COLORS.danger }}>{manageMissionError}</div> : null}
@@ -119,7 +157,17 @@ export function ManageMissionDialog() {
               {TERMINAL_MISSION_STATUSES.has(manageMission.status) ? (
                 <button type="button" style={dangerButton()} onClick={() => void handleArchive()} disabled={manageMissionBusy}>{manageMissionBusy ? <SpinnerGap className="h-3 w-3 animate-spin" /> : <Trash className="h-3 w-3" />}ARCHIVE MISSION</button>
               ) : (
-                <button type="button" style={dangerButton()} onClick={() => void handleCancel()} disabled={manageMissionBusy}>{manageMissionBusy ? <SpinnerGap className="h-3 w-3 animate-spin" /> : <Stop className="h-3 w-3" />}CANCEL MISSION</button>
+                <>
+                  <button type="button" style={outlineButton()} onClick={() => void handleResume()} disabled={manageMissionBusy}>
+                    {manageMissionBusy ? <SpinnerGap className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
+                    RESUME RUN
+                  </button>
+                  <button type="button" style={outlineButton()} onClick={() => void handlePause()} disabled={manageMissionBusy}>
+                    {manageMissionBusy ? <SpinnerGap className="h-3 w-3 animate-spin" /> : <Pause className="h-3 w-3" />}
+                    PAUSE RUN
+                  </button>
+                  <button type="button" style={dangerButton()} onClick={() => void handleCancel()} disabled={manageMissionBusy}>{manageMissionBusy ? <SpinnerGap className="h-3 w-3 animate-spin" /> : <Stop className="h-3 w-3" />}CANCEL MISSION</button>
+                </>
               )}
             </div>
           </motion.div>

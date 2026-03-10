@@ -589,7 +589,7 @@ describe("missionService lifecycle", () => {
         ...phase,
         position: index,
         askQuestions: phase.phaseKey === "development"
-          ? { enabled: true, mode: "always", maxQuestions: 9 }
+          ? { enabled: true, maxQuestions: 9 }
           : phase.askQuestions,
         validationGate: phase.phaseKey === "planning"
           ? { tier: "self", required: true, criteria: "Should be removed" }
@@ -602,7 +602,7 @@ describe("missionService lifecycle", () => {
     expect(planning?.validationGate.tier).toBe("none");
     expect(planning?.validationGate.required).toBe(false);
     expect(development?.askQuestions.enabled).toBe(false);
-    expect(development?.askQuestions.mode).toBe("never");
+    expect(development?.askQuestions.maxQuestions).toBeUndefined();
 
     dispose();
   });

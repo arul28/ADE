@@ -6,7 +6,6 @@ import {
   Stop,
   GearSix,
   GitBranch,
-  Trash,
   Archive,
   XCircle,
   Gauge,
@@ -25,8 +24,6 @@ import {
   TERMINAL_MISSION_STATUSES,
   ElapsedTime,
   computeProgress,
-  isRecord,
-  getAvailableLifecycleActions,
   LIFECYCLE_ACTIONS,
   formatResetCountdown,
   usagePercentColor,
@@ -102,8 +99,6 @@ export function MissionHeader() {
   const canPauseRun = Boolean(
     runGraph && (runGraph.run.status === "active" || runGraph.run.status === "bootstrapping"),
   );
-  const hasNonTerminalRun = Boolean(runGraph && !TERMINAL_RUN_STATUSES.has(runGraph.run.status));
-
   const missionElapsedEndedAt = useMemo(() => {
     if (!selectedMission) return null;
     const runStatus = runGraph?.run.status ?? null;
@@ -342,7 +337,7 @@ export function MissionHeader() {
             RESUME
           </button>
         )}
-        {/* Stop Run — amber (VAL-UX-006) */}
+        {/* Pause Run — amber */}
         {canPauseRun && (
           <button
             style={outlineButton({
@@ -352,10 +347,10 @@ export function MissionHeader() {
             })}
             onClick={() => void handlePauseRun()}
             disabled={runBusy}
-            title="Stop the current run"
+            title="Pause the current run"
           >
             <Stop className="h-3 w-3" />
-            STOP RUN
+            PAUSE
           </button>
         )}
         {/* Cancel Mission — red with confirmation (VAL-UX-006) */}

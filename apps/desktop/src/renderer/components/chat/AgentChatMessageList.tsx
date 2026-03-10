@@ -171,6 +171,12 @@ type RenderEnvelope = {
   };
 };
 
+/** Returns " " when two non-empty strings would otherwise butt together without whitespace. */
+function textJoinSeparator(a: string, b: string): string {
+  if (a.length > 0 && b.length > 0 && !/\s$/.test(a) && !/^\s/.test(b)) return " ";
+  return "";
+}
+
 function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnvelope, sequence: number): void {
   const { event } = envelope;
 
@@ -179,9 +185,12 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
   }
 
   // Activity events are useful for the live streaming indicator, but too noisy
-  // to render inline because providers emit them between tiny reasoning deltas.
+  // to render inline when they carry no useful detail.
   if (event.type === "activity") {
-    return;
+    const detail = summarizeInlineText(event.detail ?? "", 120);
+    if (!detail.length && event.activity === "thinking") {
+      return;
+    }
   }
 
   if (event.type === "status") {
@@ -217,19 +226,13 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
       const actualIndex = out.length - 1 - matchIndex;
       const existing = out[actualIndex];
       if (existing?.event.type === "reasoning") {
-        const separator =
-          existing.event.text.length > 0
-          && event.text.length > 0
-          && !/\s$/.test(existing.event.text)
-          && !/^\s/.test(event.text)
-            ? " "
-            : "";
+        const sep = textJoinSeparator(existing.event.text, event.text);
         out[actualIndex] = {
           ...existing,
           timestamp: envelope.timestamp,
           event: {
             ...existing.event,
-            text: `${existing.event.text}${separator}${event.text}`
+            text: `${existing.event.text}${sep}${event.text}`
           }
         };
         return;
@@ -243,12 +246,13 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
     const prevItem = prev.event.itemId ?? null;
     const nextItem = event.itemId ?? null;
     if (prevTurn === nextTurn && prevItem === nextItem) {
+      const sep = textJoinSeparator(prev.event.text, event.text);
       out[out.length - 1] = {
         ...prev,
         timestamp: envelope.timestamp,
         event: {
           ...prev.event,
-          text: `${prev.event.text}${event.text}`
+          text: `${prev.event.text}${sep}${event.text}`
         }
       };
       return;
@@ -769,10 +773,7 @@ function renderEvent(
   /* ── Reasoning ── */
   if (event.type === "reasoning") {
     const reasoningText = event.text.trim();
-    const displayReasoning =
-      reasoningText.length > 0 && (reasoningText.length >= 12 || /\s|[.?!:;]/.test(reasoningText))
-        ? event.text
-        : "Thinking...";
+    const displayReasoning = reasoningText.length > 0 ? event.text : "Thinking...";
     return (
       <CollapsibleCard
         defaultOpen

@@ -10,6 +10,7 @@ type MissionThreadMessageListProps = {
   messages: OrchestratorChatMessage[];
   sessionId?: string | null;
   showStreamingIndicator?: boolean;
+  transcriptPollingEnabled?: boolean;
   className?: string;
   onApproval?: (
     sessionId: string,
@@ -77,7 +78,14 @@ function buildEventSignature(envelope: AgentChatEventEnvelope): string {
   ];
   if ("itemId" in event && typeof event.itemId === "string") baseParts.push(event.itemId);
   if ("turnId" in event && typeof event.turnId === "string") baseParts.push(event.turnId);
-  if (event.type === "text" || event.type === "reasoning") baseParts.push(event.text);
+  if (event.type === "reasoning" && typeof event.summaryIndex === "number") baseParts.push(String(event.summaryIndex));
+  if (
+    (event.type === "text" || event.type === "reasoning")
+    && !("itemId" in event && typeof event.itemId === "string")
+    && !("turnId" in event && typeof event.turnId === "string")
+  ) {
+    baseParts.push(event.text);
+  }
   if (event.type === "tool_call" || event.type === "tool_result") baseParts.push(event.tool);
   if (event.type === "command") baseParts.push(event.command, event.cwd);
   if (event.type === "file_change") baseParts.push(event.path);
@@ -106,27 +114,33 @@ export const MissionThreadMessageList = React.memo(function MissionThreadMessage
   messages,
   sessionId = null,
   showStreamingIndicator = false,
+  transcriptPollingEnabled = true,
   className,
   onApproval,
 }: MissionThreadMessageListProps) {
   const [sessionEvents, setSessionEvents] = useState<AgentChatEventEnvelope[] | null>(null);
   const fallbackEvents = useMemo(() => adaptMissionThreadMessagesToAgentEvents(messages), [messages]);
+  const lastTranscriptRawRef = React.useRef<string | null>(null);
 
   useEffect(() => {
     setSessionEvents(null);
+    lastTranscriptRawRef.current = null;
   }, [sessionId]);
 
   const refreshSessionTranscript = useCallback(() => {
     if (!sessionId) {
       setSessionEvents(null);
+      lastTranscriptRawRef.current = null;
       return;
     }
     window.ade.sessions.readTranscriptTail({
       sessionId,
-      maxBytes: 1_800_000,
+      maxBytes: 320_000,
       raw: true,
     }).then(
       (raw) => {
+        if (raw === lastTranscriptRawRef.current) return;
+        lastTranscriptRawRef.current = raw;
         const parsed = parseAgentChatTranscript(raw).filter((entry) => entry.sessionId === sessionId);
         setSessionEvents(parsed);
       },
@@ -138,7 +152,7 @@ export const MissionThreadMessageList = React.memo(function MissionThreadMessage
     refreshSessionTranscript();
   }, [refreshSessionTranscript]);
 
-  useMissionPolling(refreshSessionTranscript, 2_000, Boolean(sessionId));
+  useMissionPolling(refreshSessionTranscript, 4_000, Boolean(sessionId && transcriptPollingEnabled));
 
   const events = useMemo(() => {
     return mergeMissionThreadEvents(fallbackEvents, sessionEvents);

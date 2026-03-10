@@ -54,14 +54,13 @@ export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
       },
       askQuestions: {
         enabled: true,
-        mode: "auto_if_uncertain",
         maxQuestions: 5,
       },
       validationGate: {
         tier: "none",
         required: false,
       },
-      requiresApproval: true,
+      requiresApproval: false,
       isBuiltIn: true,
       isCustom: false,
       position: 0,
@@ -79,7 +78,6 @@ export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
       orderingConstraints: {},
       askQuestions: {
         enabled: false,
-        mode: "never",
       },
       validationGate: {
         tier: "none",
@@ -102,7 +100,6 @@ export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
       orderingConstraints: {},
       askQuestions: {
         enabled: false,
-        mode: "never",
       },
       validationGate: {
         tier: "dedicated",
@@ -125,7 +122,6 @@ export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
       orderingConstraints: {},
       askQuestions: {
         enabled: false,
-        mode: "never",
       },
       validationGate: {
         tier: "dedicated",

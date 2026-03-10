@@ -39,6 +39,7 @@ import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { Tool } from "ai";
 import type { createMissionService } from "../missions/missionService";
+import type { createMemoryService } from "../memory/memoryService";
 import type { ResolveModelOpts } from "../ai/providerResolver";
 
 // ---------------------------------------------------------------------------
@@ -89,6 +90,7 @@ export type CoordinatorAgentDeps = {
   projectId: string;
   projectRoot: string;
   missionService: ReturnType<typeof createMissionService>;
+  memoryService?: ReturnType<typeof createMemoryService> | null;
   getMissionBudgetStatus?: () => Promise<MissionBudgetSnapshot | null>;
   onDagMutation: (event: DagMutationEvent) => void;
   onCoordinatorMessage?: (message: string) => void;
@@ -290,9 +292,9 @@ export class CoordinatorAgent {
           model: { modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
           budget: {},
           orderingConstraints: { mustBeFirst: true },
-          askQuestions: { enabled: true, mode: "auto_if_uncertain", maxQuestions: 5 },
+          askQuestions: { enabled: true, maxQuestions: 5 },
           validationGate: { tier: "none", required: false },
-          requiresApproval: true,
+          requiresApproval: false,
           isBuiltIn: true,
           isCustom: false,
           position: 0,
@@ -319,6 +321,8 @@ export class CoordinatorAgent {
       db: deps.db,
       projectRoot: deps.projectRoot,
       missionService: deps.missionService,
+      memoryService: deps.memoryService,
+      projectId: deps.projectId,
       getMissionBudgetStatus: deps.getMissionBudgetStatus,
       onDagMutation: deps.onDagMutation,
       onRunFinalize: deps.onRunFinalize,
@@ -356,6 +360,9 @@ export class CoordinatorAgent {
     if (this.dead) return;
     // Guard: skip event injection if the run is paused
     if (this.isRunPaused()) return;
+    // While planning is blocked on a clarification, ignore runtime polling/noise
+    // and wait for the user's answer to re-enter the coordinator loop.
+    if (this.hasOpenPlanningClarification()) return;
     const receivedAt = Date.now();
     const message =
       formattedMessage ?? formatRuntimeEvent(event).summary;
@@ -556,13 +563,41 @@ export class CoordinatorAgent {
   }
 
   private hasOpenPlanningClarification(): boolean {
-    const mission = this.deps.missionService.get(this.deps.missionId);
-    return (mission?.interventions ?? []).some((intervention) => {
-      if (intervention.status !== "open" || intervention.interventionType !== "manual_input") return false;
-      const metadata = asRecord(intervention.metadata);
+    const matchesPlanningClarification = (metadata: Record<string, unknown> | null | undefined): boolean => {
       const source = typeof metadata?.source === "string" ? metadata.source.trim().toLowerCase() : "";
       const phase = typeof metadata?.phase === "string" ? metadata.phase.trim().toLowerCase() : "";
       return source === "ask_user" || phase === "planning";
+    };
+
+    try {
+      const rows = this.deps.db.all<{ metadata_json: string | null }>(
+        `
+          select metadata_json
+          from mission_interventions
+          where mission_id = ?
+            and project_id = ?
+            and status = 'open'
+            and intervention_type = 'manual_input'
+        `,
+        [this.deps.missionId, this.deps.projectId],
+      );
+      if (rows.some((row) => {
+        try {
+          return matchesPlanningClarification(asRecord(JSON.parse(row.metadata_json ?? "null")));
+        } catch {
+          return false;
+        }
+      })) {
+        return true;
+      }
+    } catch {
+      // Fall back to mission service cache below.
+    }
+
+    const mission = this.deps.missionService.get(this.deps.missionId);
+    return (mission?.interventions ?? []).some((intervention) => {
+      if (intervention.status !== "open" || intervention.interventionType !== "manual_input") return false;
+      return matchesPlanningClarification(asRecord(intervention.metadata));
     });
   }
 
@@ -647,6 +682,7 @@ export class CoordinatorAgent {
     const useSdkTools = shouldUseSdkTools(this.deps.modelId);
     const abortController = new AbortController();
     const timeoutHandle = setTimeout(() => abortController.abort(), COORDINATOR_TURN_TIMEOUT_MS);
+    let awaitingBlockingUserInput = false;
 
     this.deps.logger.info("coordinator_agent.turn_started", {
       runId: this.deps.runId,
@@ -734,20 +770,23 @@ export class CoordinatorAgent {
         }
         if (part.type === "tool-call") {
           const toolName = String(part.toolName ?? "tool");
-          const nextActivity =
-            toolName.toLowerCase().includes("search")
-              ? { activity: "searching" as const, detail: toolName }
-              : toolName.toLowerCase().includes("read")
-                ? { activity: "reading" as const, detail: toolName }
-                : toolName.toLowerCase().includes("write") || toolName.toLowerCase().includes("edit")
-                  ? { activity: "editing_file" as const, detail: toolName }
-                  : toolName.toLowerCase().includes("bash") || toolName.toLowerCase().includes("exec")
-                    ? { activity: "running_command" as const, detail: toolName }
-                    : { activity: "tool_calling" as const, detail: toolName };
+          const lowerToolName = toolName.toLowerCase();
+          let activity: "searching" | "reading" | "editing_file" | "running_command" | "tool_calling";
+          if (lowerToolName.includes("search")) {
+            activity = "searching";
+          } else if (lowerToolName.includes("read")) {
+            activity = "reading";
+          } else if (lowerToolName.includes("write") || lowerToolName.includes("edit")) {
+            activity = "editing_file";
+          } else if (lowerToolName.includes("bash") || lowerToolName.includes("exec")) {
+            activity = "running_command";
+          } else {
+            activity = "tool_calling";
+          }
           this.deps.onCoordinatorEvent?.({
             type: "activity",
-            activity: nextActivity.activity,
-            detail: nextActivity.detail,
+            activity,
+            detail: toolName,
             turnId,
           });
           this.deps.onCoordinatorEvent?.({
@@ -760,14 +799,23 @@ export class CoordinatorAgent {
           continue;
         }
         if (part.type === "tool-result") {
+          const toolName = String(part.toolName ?? "tool");
+          const toolOutput = asRecord(part.output);
           this.deps.onCoordinatorEvent?.({
             type: "tool_result",
-            tool: String(part.toolName ?? "tool"),
+            tool: toolName,
             result: part.output,
             itemId: String(part.toolCallId ?? `${turnId}-tool`),
             turnId,
             status: part.preliminary ? "running" : "completed",
           });
+          if (
+            toolName.toLowerCase().endsWith("ask_user")
+            && toolOutput?.awaitingUserResponse === true
+          ) {
+            awaitingBlockingUserInput = true;
+            abortController.abort();
+          }
           continue;
         }
         if (part.type === "tool-error") {
@@ -834,6 +882,19 @@ export class CoordinatorAgent {
       });
     } catch (error) {
       const aborted = abortController.signal.aborted;
+      if (aborted && awaitingBlockingUserInput) {
+        this.deps.onCoordinatorEvent?.({
+          type: "status",
+          turnStatus: "interrupted",
+          turnId,
+        });
+        this.deps.logger.info("coordinator_agent.turn_waiting_on_user", {
+          runId: this.deps.runId,
+          modelId: this.deps.modelId,
+          turnId,
+        });
+        return;
+      }
       this.deps.onCoordinatorEvent?.({
         type: "status",
         turnStatus: aborted ? "interrupted" : "failed",
@@ -977,17 +1038,11 @@ export class CoordinatorAgent {
           if (p.instructions) parts.push(`   Instructions: ${p.instructions}`);
           if (p.validationGate.tier !== "none") parts.push(`   Validation: ${p.validationGate.tier.replace("-", " ")} ${p.validationGate.required ? "(required)" : "(optional)"}`);
           if (p.askQuestions.enabled) {
-            const modeLabel =
-              p.askQuestions.mode === "always"
-                ? "always"
-                : p.askQuestions.mode === "auto_if_uncertain"
-                  ? "auto if uncertain"
-                  : "never";
             parts.push(
-              `   Ask Questions: enabled (${modeLabel}, max ${Math.max(1, Math.min(10, Number(p.askQuestions.maxQuestions ?? 5) || 5))} questions)`
+              `   Ask Questions: enabled (must ask at least one clarification or confirmation question before finalizing this phase, max ${Math.max(1, Math.min(10, Number(p.askQuestions.maxQuestions ?? 5) || 5))} questions)`
             );
           } else {
-            parts.push("   Ask Questions: disabled (never)");
+            parts.push("   Ask Questions: disabled");
           }
           if (p.orderingConstraints.mustBeFirst) parts.push(`   Ordering: must be first`);
           if (p.orderingConstraints.mustBeLast) parts.push(`   Ordering: must be last`);
@@ -995,10 +1050,10 @@ export class CoordinatorAgent {
           return parts.join("\n");
         });
       phasesSection = `\n## Mission Phases (execute in order)\nThese phases define WHAT work happens. You decide HOW — how many workers, what prompts, what approach.\nQuestion rules per phase govern when you may use the ask_user tool:
-- "auto_if_uncertain": You MAY use ask_user if you encounter genuine ambiguity that could cause significant rework. Do not ask for trivial things.
-- "always": You MUST use ask_user to gather clarifying questions from the user BEFORE spawning any workers or building the task DAG for that phase. This is mandatory.
-- "never": Do not ask questions in that phase; proceed with reasonable assumptions.
-- Respect each phase max question limit. Avoid obvious or low-value questions.\n- When using ask_user, bundle ALL your questions into a single call. The tool accepts an array of structured questions with optional multiple-choice options, context, default assumptions, and impact descriptions.\n${phaseLines.join("\n")}`;
+- If Ask Questions is enabled for a planning phase, you MUST use ask_user for at least one clarification or confirmation round before you finalize the plan or spawn the planning worker.
+- Additional ask_user rounds are allowed up to the phase max question limit. Avoid trivial or low-value questions.
+- If Ask Questions is disabled, do not ask questions in that phase; proceed with reasonable assumptions.
+- When using ask_user, bundle ALL your questions into a single call. The tool accepts an array of structured questions with optional multiple-choice options, context, default assumptions, and impact descriptions.\n${phaseLines.join("\n")}`;
     }
 
     // Build planning phase guidance
@@ -1006,7 +1061,7 @@ export class CoordinatorAgent {
     if (phases?.some(p => p.phaseKey === "planning")) {
       planningPhaseSection = `\n## Planning Phase Protocol
 When you enter the Planning phase (your first phase), follow this protocol:
-1. IF the Planning phase has askQuestions enabled (mode "always" or "auto_if_uncertain"):
+1. IF the Planning phase has askQuestions enabled:
    - You MUST use ask_user FIRST to gather clarifying questions from the user BEFORE spawning the planning worker or building the task DAG.
    - Bundle all questions into one ask_user call. Wait for the user to respond before proceeding.
    - Once the user has answered, incorporate their responses into your planning.
@@ -1253,8 +1308,10 @@ Your initial plan is a hypothesis. Adjust it as you learn:
 - When using revise_plan, always provide explicit dependencyPatches — the runtime will NOT auto-rewire dependencies
 
 ### 6.5 Persist Mission Memory
-- Use update_mission_state after significant coordinator decisions so rationale survives context compaction
-- Use read_mission_state before major plan changes or mission completion to refresh durable facts
+- Use memory_search when prior missions or earlier discoveries may contain reusable patterns, gotchas, or decisions
+- Use memory_add when you discover durable project knowledge future missions should remember
+- Use update_mission_state after significant coordinator decisions so run-local rationale survives context compaction
+- Use read_mission_state before major plan changes or mission completion to refresh this run's durable state
 - Keep mission-state summaries concise: short outcomes, short decisions, actionable issue descriptions
 
 ### 6.6 Reflection Protocol Discipline
@@ -1319,8 +1376,10 @@ Your initial plan is a hypothesis. Adjust it as you learn:
 | Transfer step to lane | transfer_lane |
 | Non-critical and failing | skip_step |
 | Restructure the plan | revise_plan (with dependencyPatches) |
-| Persist durable memory | update_mission_state |
-| Reload durable memory | read_mission_state |
+| Search project memory | memory_search |
+| Persist project memory | memory_add |
+| Persist run-local durable state | update_mission_state |
+| Reload run-local durable state | read_mission_state |
 | Log structured reflection signal | reflection_add |
 | Insert milestone | insert_milestone |
 | Request specialist | request_specialist |

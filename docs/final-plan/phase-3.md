@@ -162,7 +162,7 @@ These are configurable per-phase-card — different phases can enforce different
 
 | Flag | Values | Default |
 |---|---|---|
-| `clarification_mode` | `always`, `auto_if_uncertain`, `off` | `auto_if_uncertain` |
+| `planning_questions_enabled` | boolean | `true` |
 | `max_clarification_questions` | number | 5 |
 | `strict_tdd` | boolean | false |
 | `require_validator_pass` | boolean | true |
@@ -231,7 +231,6 @@ interface PhaseCard {
   };
   askQuestions: {
     enabled: boolean;
-    mode: 'always' | 'auto_if_uncertain' | 'never';
     maxQuestions?: number;
   };
   validationGate: {
@@ -887,7 +886,7 @@ Human provides guidance → Coordinator resumes affected worker
 
 #### 5D: Human-in-Loop Upgrade
 
-- **Clarifying-question phase**: before plan approval, orchestrator can ask the user clarifying questions. Controlled by `clarification_mode` policy flag (`always`, `auto_if_uncertain`, `off`).
+- **Clarifying-question phase**: before finalizing planning, orchestrator can ask the user clarifying questions. Controlled by the `planning_questions_enabled` toggle plus `max_clarification_questions`.
 - **Risk-based approval**: high-impact actions (destructive git operations, mass file deletion, external API calls) trigger approval dialogs. Controlled by `risk_approval_mode` policy flag.
 - **Worker `request_user_input`**: workers can request human input, routed through the coordinator. Coordinator decides whether to relay, answer from context, or skip.
 - **Pause/resume parity**: consistent pause/resume controls across UI and runtime. Pause applies at worker or mission level.
@@ -1190,7 +1189,7 @@ Phase 3 is complete when:
 ## What Moves to Phase 4
 
 After Phase 3 is complete, Phase 4 focuses on:
-- CTO agent (persistent project-aware assistant with three-tier memory model)
+- CTO agent (persistent project-aware assistant with layered identity memory + shared project memory)
 - Night Shift mode in Automations (overnight execution, morning briefing)
 - Memory architecture upgrade (vector search, composite scoring, consolidation, episodic/procedural memory)
 - Learning packs (auto-curated project knowledge from agent interactions)

@@ -396,9 +396,6 @@ function toPhaseCard(value: unknown, fallbackPosition = 0): PhaseCard | null {
     },
     askQuestions: {
       enabled: coerceBoolean(askQuestions.enabled),
-      mode: askQuestions.mode === "always" || askQuestions.mode === "auto_if_uncertain" || askQuestions.mode === "never"
-        ? askQuestions.mode
-        : "auto_if_uncertain",
       maxQuestions: coerceNumber(askQuestions.maxQuestions),
     },
     validationGate: {
@@ -428,21 +425,16 @@ function normalizePhaseCards(phases: PhaseCard[]): PhaseCard[] {
       const phaseKey = String(phase.phaseKey ?? "").trim().toLowerCase();
       const planningPhase = phaseKey === "planning";
       const testingOrValidation = phaseKey === "testing" || phaseKey === "validation";
-      const planningMode =
-        phase.askQuestions.mode === "always" || phase.askQuestions.mode === "auto_if_uncertain"
-          ? phase.askQuestions.mode
-          : "auto_if_uncertain";
       const askQuestions: PhaseCard["askQuestions"] = planningPhase
         ? {
             ...phase.askQuestions,
-            enabled: phase.askQuestions.mode === "never" ? false : phase.askQuestions.enabled !== false,
-            mode: phase.askQuestions.mode === "never" ? "never" : planningMode,
+            enabled: phase.askQuestions.enabled !== false,
             maxQuestions: Math.max(1, Math.min(10, Number(phase.askQuestions.maxQuestions ?? 5) || 5)),
           }
         : {
             ...phase.askQuestions,
             enabled: false,
-            mode: "never",
+            maxQuestions: undefined,
           };
       const validationGate: PhaseCard["validationGate"] = planningPhase || phaseKey === "development"
         ? {
@@ -458,8 +450,7 @@ function normalizePhaseCards(phases: PhaseCard[]): PhaseCard[] {
               tier: phase.validationGate.tier === "none" ? "dedicated" : phase.validationGate.tier,
             }
           : phase.validationGate;
-      // Enforce requiresApproval: planning is always true, others default to false
-      const requiresApproval = planningPhase ? true : (phase.requiresApproval === true);
+      const requiresApproval = phase.requiresApproval === true;
       return {
         ...phase,
         askQuestions,
@@ -467,9 +458,7 @@ function normalizePhaseCards(phases: PhaseCard[]): PhaseCard[] {
         requiresApproval,
         position: index,
       };
-    })
-    .sort((a, b) => a.position - b.position)
-    .map((phase, index) => ({ ...phase, position: index }));
+    });
 }
 
 function toPhaseProfile(row: PhaseProfileRow): PhaseProfile {
@@ -3421,13 +3410,13 @@ export function createMissionService({
         uri: args.uri,
         laneId: args.laneId,
         metadata: args.metadata,
-        createdBy: "user"
+        createdBy: typeof args.createdBy === "string" && args.createdBy.trim().length > 0 ? args.createdBy.trim() : "user"
       });
 
       recordEvent({
         missionId,
         eventType: "mission_artifact_added",
-        actor: "user",
+        actor: typeof args.actor === "string" && args.actor.trim().length > 0 ? args.actor.trim() : "user",
         summary: `Artifact added: ${artifact.title}`,
         payload: {
           artifactId: artifact.id,

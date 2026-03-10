@@ -50,9 +50,6 @@ const CtoPage = React.lazy(() =>
 const TestPage = React.lazy(() =>
   import("../test/TestPage").then((m) => ({ default: m.TestPage }))
 );
-const DeetsPage = React.lazy(() =>
-  import("../deets/DeetsPage").then((m) => ({ default: m.DeetsPage }))
-);
 
 import { useAppStore } from "../../state/appStore";
 
@@ -190,7 +187,6 @@ export function App() {
             <Route path="/missions" element={guardedLazy(<MissionsPage />)} />
             <Route path="/cto" element={guardedLazy(<CtoPage />)} />
             <Route path="/test" element={guardedLazy(<TestPage />)} />
-            <Route path="/deets" element={guardedLazy(<DeetsPage />)} />
             <Route path="/settings" element={guardedLazy(<SettingsPage />)} />
             <Route path="*" element={<Navigate to="/project" replace />} />
           </Route>

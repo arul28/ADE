@@ -19,11 +19,11 @@ Current baseline:
 
 ### Planning (Mandatory)
 
-Planning is a mandatory phase that cannot be disabled. If a mission's phase configuration omits a planning phase, the coordinator agent automatically injects a built-in planning card at position 0 with `requiresApproval: true`, `mustBeFirst: true`, and `askQuestions: { enabled: true, mode: "auto_if_uncertain" }`. This injection is logged as `coordinator_agent.mandatory_planning_injected`.
+Planning is a mandatory phase that cannot be disabled. If a mission's phase configuration omits a planning phase, the coordinator agent automatically injects a built-in planning card at position 0 with `requiresApproval: false`, `mustBeFirst: true`, and `askQuestions: { enabled: true, maxQuestions: 5 }`. This injection is logged as `coordinator_agent.mandatory_planning_injected`.
 
 When the run starts, the coordinator enters the `planning` phase. It should gather context via `get_project_context`, hand off quickly to a single read-only planning worker, require a usable planner result, and then transition explicitly to `development` via `set_current_phase`.
 
-The planning worker must stay read-only — it researches the codebase and produces a plan. It must not write code, run write operations, or use provider-native plan approval flows. If the planning phase has `askQuestions` enabled, the coordinator must use `ask_user` to gather clarifying questions before spawning the planning worker.
+The planning worker must stay read-only — it researches the codebase and produces a plan. It must not write code, run write operations, or use provider-native plan approval flows. If the planning phase has `askQuestions.enabled === true`, the coordinator must use `ask_user` to gather at least one clarification or confirmation round before spawning or finalizing the planning worker.
 
 A first-turn watchdog (`enforcePlanningFirstTurnDelegation`) ensures the coordinator spawns the planner on its first turn. If the coordinator's first turn fails to create a planning worker, the watchdog force-spawns a recovery planning worker to prevent the mission from stalling.
 
@@ -47,7 +47,7 @@ Validation is strict runtime behavior:
 
 ## Mission Detail Tabs
 
-- **Plan**: phase cards with step overview, active phase panel showing phase-gate status and advancement reasoning. Phase cards support `requiresApproval` (boolean toggle that blocks phase transition until user approves) and an optional `capabilities` field (e.g., `"agent-browser"`) to enable per-phase tooling.
+- **Plan**: phase cards with step overview, active phase panel showing phase-gate status and advancement reasoning. Phase cards support `requiresApproval` (boolean toggle that blocks phase transition until user approves), `askQuestions.enabled` with optional `maxQuestions`, and an optional `capabilities` field (e.g., `"agent-browser"`) to enable per-phase tooling.
 - **Chat**: Global summary thread plus detailed worker/orchestrator threads.
 - **Artifacts**: mission artifacts and evidence closeout items.
 - **History**: activity timeline for runtime transitions, interventions, and worker lifecycle events.
@@ -77,6 +77,14 @@ Mission persistence includes:
 - worker session lineage and transcripts,
 - mission artifacts,
 - mission-pack updates under `.ade/packs/missions/<missionId>/mission_pack.md`.
+
+Mission memory is intentionally task-centric rather than identity-centric:
+
+- **Mission state**: coordinator-managed durable mission/run state via `read_mission_state` and `update_mission_state`.
+- **Project memory**: shared durable knowledge the coordinator and workers can search/write with `memory_search` and `memory_add`.
+- **Worker context hierarchy**: mission workers receive a generated `l0/l1/l2` context bundle assembled from frontier state, handoffs, checkpoints, and pack references.
+
+That `l0/l1/l2` hierarchy is not the CTO/employee identity memory system and it is not a single persistent "memory file" shared by all workers. It is a run/attempt-scoped context assembly optimized for cold-starting mission workers quickly with the right local context.
 
 ## Chat Signal Filtering (2026-03-09)
 
@@ -175,9 +183,9 @@ When the coordinator calls `set_current_phase` to leave a phase with `requiresAp
 4. The `set_current_phase` call returns `{ ok: false, pendingApproval: true }` and the coordinator must wait.
 5. Once the user resolves the intervention, the coordinator can retry the phase transition.
 
-### Planning Has Approval Locked On
+### Planning Approval Is Optional
 
-The built-in planning phase card always sets `requiresApproval: true`. This means every mission pauses after planning for the user to review and approve the plan before development begins. This is enforced by the mandatory planning injection in `coordinatorAgent.ts`.
+The built-in planning phase card now defaults to `requiresApproval: false`. Missions only pause for a planning approval gate when a user or profile explicitly enables `requiresApproval` on that phase card.
 
 ## Multi-Round Deliberation (2026-03-10)
 

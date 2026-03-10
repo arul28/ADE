@@ -151,7 +151,7 @@ export type AgentChatEventEnvelope = {
 
 export type AgentChatPermissionMode = "default" | "plan" | "edit" | "full-auto" | "config-toml";
 export type AgentChatExecutionMode = "focused" | "parallel" | "subagents" | "teams";
-export type AgentChatIdentityKey = "cto";
+export type AgentChatIdentityKey = "cto" | `agent:${string}`;
 
 export type AgentChatSession = {
   id: string;

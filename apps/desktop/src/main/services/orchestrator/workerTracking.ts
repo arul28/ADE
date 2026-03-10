@@ -8,6 +8,8 @@
  * Extracted from aiOrchestratorService.ts — pure refactor, no behavior changes.
  */
 
+import fs from "node:fs";
+import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
   OrchestratorContext,
@@ -147,6 +149,47 @@ function buildWorkerLifecycleFailureMessage(attempt: {
   return `I hit an issue while working on this task and reported it back: ${errorText.slice(0, 180)}`;
 }
 
+function resolveRetryExhaustedIntervention(args: {
+  attempt: OrchestratorRunGraph["attempts"][number];
+  step: OrchestratorRunGraph["steps"][number];
+  stepTitle: string;
+}): {
+  interventionType: "failed_step" | "provider_unreachable";
+  title: string;
+  body: string;
+  requestedAction: string;
+  reasonCode: string;
+} {
+  const attemptMeta = isRecord(args.attempt.metadata) ? args.attempt.metadata : {};
+  const softFailureOverride = isRecord(attemptMeta.softFailureOverride) ? attemptMeta.softFailureOverride : {};
+  const softCategory = typeof softFailureOverride.category === "string" ? softFailureOverride.category.trim().toLowerCase() : "";
+  const providerHint = typeof args.attempt.executorKind === "string" ? args.attempt.executorKind.trim().toLowerCase() : "provider";
+  const errorText = typeof args.attempt.errorMessage === "string" ? args.attempt.errorMessage.trim() : "";
+  const lowerError = errorText.toLowerCase();
+  const providerUnavailable =
+    softCategory === "missing_auth"
+    || /needs-auth|authentication required|authentication failed|unauthorized|forbidden|invalid api key|refresh_token_reused|refresh token|sign in again|log out and sign in/i.test(lowerError);
+
+  if (providerUnavailable) {
+    const providerLabel = providerHint.length > 0 ? providerHint : "provider";
+    return {
+      interventionType: "provider_unreachable",
+      title: `${providerLabel} needs attention`,
+      body: `Step ${args.step.stepKey} (${args.stepTitle}) could not continue because ${providerLabel} is unavailable or unauthenticated. Last error: ${errorText || "unknown"}`,
+      requestedAction: `Restore ${providerLabel} access/authentication, then resume the mission run to retry this worker.`,
+      reasonCode: "provider_auth_unavailable",
+    };
+  }
+
+  return {
+    interventionType: "failed_step",
+    title: `Step "${args.stepTitle}" failed after ${args.step.retryCount} retries`,
+    body: `Step ${args.step.stepKey} (${args.stepTitle}) exhausted all ${args.step.retryLimit} retries. Last error: ${errorText || "unknown"}`,
+    requestedAction: "Review and decide whether to retry, skip, or add a workaround.",
+    reasonCode: "retry_exhausted",
+  };
+}
+
 function resolveRecoveredFailedStepInterventions(args: {
   ctx: OrchestratorContext;
   deps: UpdateWorkerStateDeps;
@@ -167,7 +210,7 @@ function resolveRecoveredFailedStepInterventions(args: {
   const resolvedAt = nowIso();
 
   for (const intervention of mission.interventions) {
-    if (intervention.status !== "open" || intervention.interventionType !== "failed_step") continue;
+    if (intervention.status !== "open" || (intervention.interventionType !== "failed_step" && intervention.interventionType !== "provider_unreachable")) continue;
 
     const meta = isRecord(intervention.metadata) ? intervention.metadata : {};
     const interventionRunId = typeof meta.runId === "string" ? meta.runId.trim() : "";
@@ -741,6 +784,44 @@ export function extractAndRegisterArtifacts(
       });
     };
 
+    const registerMissionArtifact = (args: {
+      artifactType: "plan" | "summary" | "note" | "patch" | "link" | "pr";
+      title: string;
+      description?: string | null;
+      uri?: string | null;
+      metadata?: Record<string, unknown>;
+    }) => {
+      try {
+        ctx.missionService.addArtifact({
+          missionId: graph.run.missionId,
+          artifactType: args.artifactType,
+          title: args.title,
+          description: args.description,
+          uri: args.uri,
+          laneId: step?.laneId ?? null,
+          metadata: {
+            runId: attempt.runId,
+            stepId: attempt.stepId,
+            stepKey: step?.stepKey ?? null,
+            attemptId: attempt.id,
+            source: "orchestrator_worker_tracking",
+            ...(args.metadata ?? {}),
+          },
+          createdBy: "system",
+          actor: "system",
+        });
+      } catch (error) {
+        ctx.logger.debug("ai_orchestrator.mission_artifact_register_failed", {
+          missionId: graph.run.missionId,
+          runId: attempt.runId,
+          stepId: attempt.stepId,
+          attemptId: attempt.id,
+          title: args.title,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+
     const reportedSummary =
       typeof lastResultReport?.summary === "string" ? lastResultReport.summary.trim() : "";
     const stepSummary = reportedSummary || (typeof envelope.summary === "string" ? envelope.summary.trim() : "");
@@ -846,11 +927,89 @@ export function extractAndRegisterArtifacts(
         typeof outputs.planPath === "string" && outputs.planPath.trim().length > 0
           ? outputs.planPath.trim()
           : ".ade/plans/mission-plan.md";
-      register("plan", "custom", planValue, {
-        planType: "mission_plan",
-        source: "planning_worker",
-        summary: planSummary,
-      });
+      const laneWorktreeRow = step?.laneId
+        ? ctx.db.get<{ worktree_path: string | null }>(
+            `select worktree_path from lanes where id = ? limit 1`,
+            [step.laneId]
+          )
+        : null;
+      const worktreePath = typeof laneWorktreeRow?.worktree_path === "string" && laneWorktreeRow.worktree_path.trim().length > 0
+        ? laneWorktreeRow.worktree_path.trim()
+        : ctx.projectRoot ?? null;
+      const absolutePlanPath = worktreePath
+        ? (path.isAbsolute(planValue) ? planValue : path.join(worktreePath, planValue))
+        : (path.isAbsolute(planValue) ? planValue : null);
+      const planExists = absolutePlanPath ? fs.existsSync(absolutePlanPath) : false;
+      if (planExists) {
+        register("plan", "custom", planValue, {
+          planType: "mission_plan",
+          source: "planning_worker",
+          summary: planSummary,
+          absolutePath: absolutePlanPath,
+        });
+        registerMissionArtifact({
+          artifactType: "plan",
+          title: "Mission plan",
+          description: planSummary,
+          uri: planValue,
+          metadata: {
+            planType: "mission_plan",
+            absolutePath: absolutePlanPath,
+          },
+        });
+      } else {
+        const missingPlanDetail = `Planning worker completed without writing a usable plan file under .ade/plans/. Expected ${planValue}.`;
+        ctx.logger.warn("ai_orchestrator.plan_artifact_missing", {
+          missionId: graph.run.missionId,
+          runId: attempt.runId,
+          stepId: attempt.stepId,
+          attemptId: attempt.id,
+          expectedPlanPath: planValue,
+          absolutePlanPath,
+        });
+        ctx.orchestratorService.appendTimelineEvent({
+          runId: attempt.runId,
+          stepId: attempt.stepId,
+          attemptId: attempt.id,
+          eventType: "planning_artifact_missing",
+          reason: "plan_file_missing",
+          detail: {
+            expectedPlanPath: planValue,
+            absolutePlanPath,
+            summary: planSummary,
+          },
+        });
+        const intervention = ctx.missionService.addIntervention({
+          missionId: graph.run.missionId,
+          interventionType: "failed_step",
+          title: "Planning artifact missing",
+          body: missingPlanDetail,
+          requestedAction: "Re-run planning and ensure the final plan file is written inside .ade/plans/ before completing the worker.",
+          metadata: {
+            runId: attempt.runId,
+            stepId: step?.id ?? attempt.stepId,
+            stepKey: step?.stepKey ?? null,
+            ...(phaseKey.length > 0 ? { phaseKey } : {}),
+            ...(stepType.length > 0 ? { stepType } : {}),
+            reasonCode: "plan_artifact_missing",
+            expectedPlanPath: planValue,
+          },
+        });
+        ctx.orchestratorService.appendRuntimeEvent({
+          runId: attempt.runId,
+          stepId: attempt.stepId,
+          attemptId: attempt.id,
+          sessionId: attempt.executorSessionId ?? null,
+          eventType: "intervention_opened",
+          eventKey: `intervention_opened:${intervention.id}`,
+          payload: {
+            interventionId: intervention.id,
+            interventionType: intervention.interventionType,
+            reason: "plan_artifact_missing",
+            expectedPlanPath: planValue,
+          },
+        });
+      }
     }
 
     // Validate: warn for any declared hints that were not produced
@@ -1209,18 +1368,24 @@ export function updateWorkerStateFromEventCtx(
               lastError: attempt.errorMessage ?? "unknown"
             }
           });
+          const interventionSpec = resolveRetryExhaustedIntervention({
+            attempt,
+            step,
+            stepTitle: stepTitleForMessage(step),
+          });
           const intervention = ctx.missionService.addIntervention({
             missionId: graph.run.missionId,
-            interventionType: "failed_step",
-            title: `Step "${stepTitleForMessage(step)}" failed after ${step.retryCount} retries`,
-            body: `Step ${step.stepKey} (${stepTitleForMessage(step)}) exhausted all ${step.retryLimit} retries. Last error: ${attempt.errorMessage ?? "unknown"}`,
-            requestedAction: "Review and decide whether to retry, skip, or add a workaround.",
+            interventionType: interventionSpec.interventionType,
+            title: interventionSpec.title,
+            body: interventionSpec.body,
+            requestedAction: interventionSpec.requestedAction,
             metadata: {
               runId: attempt.runId,
               stepId: step.id,
               stepKey: step.stepKey,
               ...(phaseKey.length > 0 ? { phaseKey } : {}),
               ...(stepType.length > 0 ? { stepType } : {}),
+              reasonCode: interventionSpec.reasonCode,
             }
           });
           deps.recordRuntimeEvent({
@@ -1233,7 +1398,7 @@ export function updateWorkerStateFromEventCtx(
             payload: {
               interventionId: intervention.id,
               interventionType: intervention.interventionType,
-              reason: "retry_exhausted"
+              reason: interventionSpec.reasonCode,
             }
           });
 

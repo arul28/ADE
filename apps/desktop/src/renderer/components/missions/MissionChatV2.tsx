@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import type {
   MissionAgentRuntimeConfig,
+  MissionIntervention,
   OrchestratorChatThread,
   OrchestratorChatMessage,
   OrchestratorMetadata,
@@ -16,7 +17,7 @@ import type {
 import type { MentionParticipant } from "../shared/MentionInput";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { useMissionPolling } from "./useMissionPolling";
-import { formatMissionWorkerPresentation } from "./missionHelpers";
+import { formatMissionWorkerPresentation, looksLikeLowSignalNoise } from "./missionHelpers";
 import {
   isSignalMessage,
   readRecord,
@@ -31,6 +32,68 @@ import { ChatInput, type QuickTarget } from "./ChatInput";
 
 const BG_PAGE = COLORS.pageBg;
 
+function isDismissiveSteerMessage(value: string): boolean {
+  return /^(acknowledged\.?|dismissed by user\b.*proceed without action\.?)$/i.test(value.trim());
+}
+
+function buildMissionFeedSignature(item: { kind: string; title: string; detail: string; stepKey?: string | null; attemptId?: string | null }): string {
+  return [
+    item.kind,
+    item.stepKey ?? "",
+    item.attemptId ?? "",
+    item.title.trim().toLowerCase(),
+    item.detail.trim().toLowerCase(),
+  ].join("::");
+}
+
+function shouldIncludeMissionFeedItem(item: MissionRunView["progressLog"][number]): boolean {
+  const title = item.title.trim();
+  const detail = item.detail.trim();
+  if (!title.length && !detail.length) return false;
+  if (isDismissiveSteerMessage(title) || isDismissiveSteerMessage(detail)) return false;
+  if (item.kind === "user" && isDismissiveSteerMessage(detail || title)) return false;
+  if (looksLikeLowSignalNoise(title) && (!detail.length || looksLikeLowSignalNoise(detail))) return false;
+  return true;
+}
+
+function findThreadIntervention(args: {
+  interventions: MissionIntervention[];
+  selectedChannel: Channel | undefined;
+  runId: string | null;
+}): MissionIntervention | null {
+  const { interventions, selectedChannel, runId } = args;
+  if (!selectedChannel || selectedChannel.kind === "global") return null;
+  const openInterventions = interventions
+    .filter((intervention) => intervention.status === "open")
+    .slice()
+    .sort((left, right) => Date.parse(right.updatedAt || right.createdAt) - Date.parse(left.updatedAt || left.createdAt));
+
+  return openInterventions.find((intervention) => {
+    const metadata = readRecord(intervention.metadata);
+    const interventionRunId = typeof metadata?.runId === "string" ? metadata.runId.trim() : "";
+    if (interventionRunId.length > 0 && runId && interventionRunId !== runId) return false;
+    const attemptId = typeof metadata?.attemptId === "string" ? metadata.attemptId.trim() : "";
+    const stepId = typeof metadata?.stepId === "string" ? metadata.stepId.trim() : "";
+    const stepKey = typeof metadata?.stepKey === "string" ? metadata.stepKey.trim() : "";
+    const reasonCode = typeof metadata?.reasonCode === "string" ? metadata.reasonCode.trim() : "";
+
+    if (selectedChannel.kind === "orchestrator") {
+      return reasonCode === "coordinator_unavailable"
+        || reasonCode === "coordinator_recovery_failed"
+        || (!attemptId && !stepId && !stepKey);
+    }
+
+    if (selectedChannel.kind === "worker") {
+      return (
+        (attemptId.length > 0 && attemptId === selectedChannel.attemptId)
+        || (stepKey.length > 0 && stepKey === selectedChannel.stepKey)
+      );
+    }
+
+    return false;
+  }) ?? null;
+}
+
 type MissionChatV2Props = {
   missionId: string;
   missionStatus: MissionStatus | null;
@@ -38,12 +101,14 @@ type MissionChatV2Props = {
   runStatus: OrchestratorRunStatus | null;
   runMetadata: OrchestratorMetadata | null;
   runView?: MissionRunView | null;
+  interventions: MissionIntervention[];
   jumpTarget: OrchestratorChatTarget | null;
   onJumpHandled: () => void;
+  onOpenIntervention: (interventionId: string) => void;
 };
 
 export const MissionChatV2 = React.memo(function MissionChatV2({
-  missionId, missionStatus, runId, runStatus, runMetadata, runView = null, jumpTarget, onJumpHandled,
+  missionId, missionStatus, runId, runStatus, runMetadata, runView = null, interventions, jumpTarget, onJumpHandled, onOpenIntervention,
 }: MissionChatV2Props) {
   // ── State ──
   const [threads, setThreads] = useState<OrchestratorChatThread[]>([]);
@@ -88,6 +153,10 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   const completedWorkerChannels = useMemo(() => channels.filter((c) => c.kind === "worker" && c.status !== "active"), [channels]);
   const orchestratorChannel = useMemo(() => channels.find((c) => c.kind === "orchestrator") ?? null, [channels]);
   const selectedChannel = useMemo(() => channels.find((c) => c.id === selectedChannelId) ?? channels[0], [channels, selectedChannelId]);
+  const shouldHydrateGlobalMessages = useMemo(
+    () => selectedChannel?.kind === "global" && (globalViewMode === "raw" || !(runView?.progressLog?.length)),
+    [globalViewMode, runView?.progressLog, selectedChannel?.kind],
+  );
 
   // ── Build mention targets ──
   const mentionTargets = useMemo<MentionTargetOption[]>(() => {
@@ -124,14 +193,48 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
 
   // ── Data fetching ──
   const refreshThreads = useCallback(async () => { try { setThreads(await window.ade.orchestrator.listChatThreads({ missionId, includeClosed: true })); } catch { /* ignore */ } }, [missionId]);
-  const refreshGlobalMessages = useCallback(async () => { try { setGlobalMessages(await window.ade.orchestrator.getGlobalChat({ missionId, limit: 200 })); } catch { /* ignore */ } }, [missionId]);
+  const refreshGlobalMessages = useCallback(async () => {
+    if (!shouldHydrateGlobalMessages) return;
+    try {
+      setGlobalMessages(await window.ade.orchestrator.getGlobalChat({ missionId, limit: 200 }));
+    } catch {
+      /* ignore */
+    }
+  }, [missionId, shouldHydrateGlobalMessages]);
   const refreshThreadMessages = useCallback(async (threadId?: string | null) => { if (!threadId) { setThreadMessages([]); return; } try { setThreadMessages(await window.ade.orchestrator.getThreadMessages({ missionId, threadId, limit: 200 })); } catch { /* ignore */ } }, [missionId]);
   const refreshWorkers = useCallback(async () => { try { const [st, ag, rt] = await Promise.all([runId ? window.ade.orchestrator.getWorkerStates({ runId }) : Promise.resolve([] as OrchestratorWorkerState[]), window.ade.orchestrator.getActiveAgents({ missionId }), runId ? window.ade.orchestrator.getTeamRuntimeState({ runId }).catch(() => null) : Promise.resolve(null)]); setWorkerStates(st); setActiveAgents(ag); setTeamRuntimeState(rt); } catch { /* ignore */ } }, [missionId, runId]);
+  const refreshSelectedMessages = useCallback(async () => {
+    if (!selectedChannel) return;
+    if (selectedChannel.kind === "global") {
+      if (!shouldHydrateGlobalMessages) return;
+      await refreshGlobalMessages();
+      return;
+    }
+    await refreshThreadMessages(selectedChannel.threadId);
+  }, [refreshGlobalMessages, refreshThreadMessages, selectedChannel, shouldHydrateGlobalMessages]);
 
-  useEffect(() => { void refreshThreads(); void refreshGlobalMessages(); void refreshWorkers(); }, [refreshThreads, refreshGlobalMessages, refreshWorkers]);
-  useMissionPolling(useCallback(() => { void refreshThreads(); void refreshGlobalMessages(); void refreshWorkers(); }, [refreshThreads, refreshGlobalMessages, refreshWorkers]), 10_000);
-
-  useEffect(() => { if (selectedChannel?.kind === "global") void refreshGlobalMessages(); else if (selectedChannel?.threadId) void refreshThreadMessages(selectedChannel.threadId); }, [selectedChannel, refreshGlobalMessages, refreshThreadMessages]);
+  useEffect(() => {
+    void refreshThreads();
+    void refreshWorkers();
+  }, [refreshThreads, refreshWorkers]);
+  useEffect(() => {
+    void refreshSelectedMessages();
+  }, [refreshSelectedMessages]);
+  useMissionPolling(
+    useCallback(() => {
+      void refreshThreads();
+      void refreshWorkers();
+    }, [refreshThreads, refreshWorkers]),
+    15_000,
+    true,
+  );
+  useMissionPolling(
+    useCallback(() => {
+      void refreshSelectedMessages();
+    }, [refreshSelectedMessages]),
+    12_000,
+    Boolean(selectedChannel && (selectedChannel.kind !== "global" || shouldHydrateGlobalMessages)),
+  );
 
   // ── Real-time events ──
   const refreshThreadsRef = useRef(refreshThreads);
@@ -148,11 +251,22 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
         if (threadRefreshTimerRef.current !== null) window.clearTimeout(threadRefreshTimerRef.current);
         threadRefreshTimerRef.current = window.setTimeout(() => { threadRefreshTimerRef.current = null; void refreshThreadsRef.current(); }, 120);
         if (messageRefreshTimerRef.current !== null) window.clearTimeout(messageRefreshTimerRef.current);
-        messageRefreshTimerRef.current = window.setTimeout(() => { messageRefreshTimerRef.current = null; const cur = selectedChannelIdRef.current; if (cur === "global") void refreshGlobalMessagesRef.current(); else { const ch = channelsRef.current.find((c) => c.id === cur); if (ch?.threadId && (!event.threadId || event.threadId === ch.threadId)) void refreshThreadMessagesRef.current(ch.threadId); } }, 100);
+        messageRefreshTimerRef.current = window.setTimeout(() => {
+          messageRefreshTimerRef.current = null;
+          const cur = selectedChannelIdRef.current;
+          if (cur === "global") {
+            if (shouldHydrateGlobalMessages) void refreshGlobalMessagesRef.current();
+            return;
+          }
+          const ch = channelsRef.current.find((c) => c.id === cur);
+          if (ch?.threadId && (!event.threadId || event.threadId === ch.threadId)) {
+            void refreshThreadMessagesRef.current(ch.threadId);
+          }
+        }, 100);
       }
     });
     return () => { unsub(); if (threadRefreshTimerRef.current !== null) window.clearTimeout(threadRefreshTimerRef.current); if (messageRefreshTimerRef.current !== null) window.clearTimeout(messageRefreshTimerRef.current); };
-  }, [missionId]);
+  }, [missionId, shouldHydrateGlobalMessages]);
 
   // ── Jump target handling ──
   useEffect(() => {
@@ -175,7 +289,27 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   const displayMessages = useMemo(() => {
     if (selectedChannel?.kind === "global") {
       if (globalViewMode === "signal" && runView?.progressLog?.length) {
-        return [...runView.progressLog].sort((a, b) => Date.parse(a.at) - Date.parse(b.at)).map((item) => ({ id: `mission-feed:${item.id}`, missionId, role: item.kind === "worker" ? "worker" : item.kind === "user" ? "user" : "orchestrator", content: item.detail.trim().length > 0 ? `${item.title}\n${item.detail}` : item.title, timestamp: item.at, stepKey: item.stepKey ?? null, attemptId: item.attemptId ?? null, runId: runId ?? null, metadata: { missionFeed: true, structuredStream: { kind: "text", itemId: item.id }, title: item.title, severity: item.severity, feedKind: item.kind } } satisfies OrchestratorChatMessage));
+        const deduped = [...runView.progressLog]
+          .sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+          .filter(shouldIncludeMissionFeedItem)
+          .filter((item, index, items) => index === 0 || buildMissionFeedSignature(item) !== buildMissionFeedSignature(items[index - 1]!));
+        return deduped.map((item) => ({
+          id: `mission-feed:${item.id}`,
+          missionId,
+          role: item.kind === "worker" ? "worker" : item.kind === "user" ? "user" : "orchestrator",
+          content: item.detail.trim().length > 0 ? `${item.title}\n${item.detail}` : item.title,
+          timestamp: item.at,
+          stepKey: item.stepKey ?? null,
+          attemptId: item.attemptId ?? null,
+          runId: runId ?? null,
+          metadata: {
+            missionFeed: true,
+            structuredStream: { kind: "text", itemId: item.id },
+            title: item.title,
+            severity: item.severity,
+            feedKind: item.kind,
+          },
+        } satisfies OrchestratorChatMessage));
       }
       let msgs = [...globalMessages].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
       msgs = msgs.filter((msg) => { const md = readRecord(msg.metadata); if (md?.missionChatMode !== "thread_only") return true; return msg.target?.kind === "coordinator" || msg.threadId === `mission:${missionId}`; });
@@ -186,8 +320,26 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   }, [selectedChannel, globalMessages, threadMessages, missionId, globalViewMode, runId, runView]);
 
   const attemptNameMap = useMemo(() => { const m = new Map<string, string>(); for (const t of threads) if (t.attemptId) m.set(t.attemptId, t.title || (t.threadType === "coordinator" ? "Orchestrator" : "Worker")); return m; }, [threads]);
+  const threadIntervention = useMemo(
+    () => findThreadIntervention({ interventions, selectedChannel, runId }),
+    [interventions, runId, selectedChannel],
+  );
 
-  const chatNotice = useMemo(() => (runStatus === "paused" || missionStatus === "intervention_required") ? { reason: "Mission is waiting on an intervention.", action: "You can still message the coordinator or an active worker here while you decide how to recover." } : null, [missionStatus, runStatus]);
+  const chatNotice = useMemo(() => {
+    if (runStatus === "paused") {
+      return {
+        reason: "Run is paused.",
+        action: "You can still message the coordinator or an active worker here while you decide whether to resume.",
+      };
+    }
+    if (missionStatus === "intervention_required") {
+      return {
+        reason: "Mission is waiting on an intervention.",
+        action: "You can still message the coordinator or an active worker here while you decide how to recover.",
+      };
+    }
+    return null;
+  }, [missionStatus, runStatus]);
 
   const chatBlocked = useMemo(() => {
     if (missionStatus === "completed" || missionStatus === "failed" || missionStatus === "canceled") return { reason: "Mission run is closed.", action: "Start or rerun the mission to continue chat." };
@@ -261,6 +413,8 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
           jumpNotice={jumpNotice}
           chatNotice={chatNotice}
           chatBlocked={chatBlocked}
+          threadIntervention={threadIntervention}
+          onOpenIntervention={onOpenIntervention}
           showStreamingIndicator={showStreaming}
           runtimeSummary={runtimeSummary}
           agentRuntimeConfig={agentRuntimeConfig}

@@ -125,12 +125,13 @@ describe("classifyBlockingWarnings", () => {
     expect(result.category).toBe("sandbox_block");
   });
 
-  it("treats sandbox blocks to ~/.claude/plans/ as non-blocking (ExitPlanMode is benign)", () => {
+  it("treats sandbox blocks to ~/.claude/plans/ as blocking", () => {
     const result = classifyBlockingWarnings({
       warnings: ["Tool 'Write' failed: PreToolUse:Write hook error ... SANDBOX BLOCKED: File path outside sandbox: /Users/admin/.claude/plans/foo"],
       summary: null,
     });
-    expect(result.hasBlockingFailure).toBe(false);
+    expect(result.hasBlockingFailure).toBe(true);
+    expect(result.category).toBe("sandbox_block");
   });
 
   it("detects tool startup failures as blocking", () => {
@@ -207,7 +208,7 @@ describe("classifyBlockingWarnings", () => {
     expect(result.category).toBe("sandbox_block");
   });
 
-  it("does not block when mixed noise includes only ~/.claude/plans/ sandbox blocks", () => {
+  it("blocks when mixed noise includes ~/.claude/plans/ sandbox blocks", () => {
     const result = classifyBlockingWarnings({
       warnings: [
         "claude.ai Gmail:needs-auth",
@@ -216,7 +217,8 @@ describe("classifyBlockingWarnings", () => {
       ],
       summary: null,
     });
-    expect(result.hasBlockingFailure).toBe(false);
+    expect(result.hasBlockingFailure).toBe(true);
+    expect(result.category).toBe("sandbox_block");
   });
 
   it("detects PreToolUse hook errors with sandbox content as sandbox_block", () => {

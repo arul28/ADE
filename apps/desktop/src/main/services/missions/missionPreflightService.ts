@@ -26,8 +26,7 @@ function normalizePhaseCards(phases: PhaseCard[]): PhaseCard[] {
   return [...phases]
     .sort((a, b) => a.position - b.position)
     .map((phase, index) => {
-      const phaseKey = String(phase.phaseKey ?? "").trim().toLowerCase();
-      const requiresApproval = phaseKey === "planning" ? true : (phase.requiresApproval === true);
+      const requiresApproval = phase.requiresApproval === true;
       return { ...phase, requiresApproval, position: index };
     });
 }

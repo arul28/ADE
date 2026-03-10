@@ -941,9 +941,16 @@ export function deriveMissionStatusFromRun(graph: OrchestratorRunGraph, mission:
     const metadata = isRecord(entry.metadata) ? entry.metadata : null;
     return metadata?.canProceedWithoutAnswer !== true;
   });
-  if (graph.run.status === "paused") return "intervention_required";
   if (hasBlockingIntervention) return "intervention_required";
-  if (graph.run.status === "active" || graph.run.status === "bootstrapping" || graph.run.status === "queued" || graph.run.status === "completing") return "in_progress";
+  if (
+    graph.run.status === "active"
+    || graph.run.status === "bootstrapping"
+    || graph.run.status === "queued"
+    || graph.run.status === "completing"
+    || graph.run.status === "paused"
+  ) {
+    return "in_progress";
+  }
   if (graph.run.status === "succeeded") {
     return "completed";
   }

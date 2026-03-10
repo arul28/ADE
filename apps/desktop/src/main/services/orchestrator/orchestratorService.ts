@@ -793,6 +793,24 @@ export function createOrchestratorService({
   adapters.set("unified", createUnifiedOrchestratorAdapter({ workspaceRoot: projectRoot, agentChatService }));
   const autopilotRunLocks = new Set<string>();
   const recoveryLoopStates = new Map<string, RecoveryLoopState>();
+  const toOptionalNonEmptyString = (value: unknown): string | null => {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  };
+  const resolveRunMissionLaneId = (metadata: Record<string, unknown> | null | undefined): string | null => {
+    const metadataRecord = metadata ? asRecord(metadata) : null;
+    if (!metadataRecord) return null;
+    const directLaneId = toOptionalNonEmptyString(metadataRecord.missionLaneId);
+    if (directLaneId) return directLaneId;
+
+    const coordinatorMeta = asRecord(metadataRecord.coordinator);
+    const coordinatorLaneId = toOptionalNonEmptyString(coordinatorMeta?.missionLaneId);
+    if (coordinatorLaneId) return coordinatorLaneId;
+
+    const teamRuntimeMeta = asRecord(metadataRecord.teamRuntime);
+    return toOptionalNonEmptyString(teamRuntimeMeta?.missionLaneId);
+  };
   const getRuntimeConfig = (): ResolvedOrchestratorRuntimeConfig => {
     const snapshot = projectConfigService?.get();
     const ai = asRecord(snapshot?.effective?.ai);
@@ -6074,15 +6092,23 @@ export function createOrchestratorService({
       const executorKind = normalizeExecutorKind(
         String(args.executorKind ?? step.metadata?.executorKind ?? "manual"),
       );
+      const runMissionLaneId = run.missionId ? resolveRunMissionLaneId(run.metadata) : null;
       const registeredAdapter = adapters.get(executorKind) ?? null;
       const defaultAdapter = registeredAdapter ? null : defaultAdapterFor(executorKind);
       const requiresLaneId =
         executorKind !== "manual"
         && (registeredAdapter?.requiresLaneId === true || defaultAdapter?.requiresLaneId === true);
-      if (requiresLaneId && !step.laneId) {
-        throw new Error(
-          `Step '${step.stepKey}' cannot start with executor '${executorKind}' because laneId is missing.`,
-        );
+      if (!step.laneId) {
+        if (runMissionLaneId && executorKind !== "manual") {
+          throw new Error(
+            `Mission step '${step.stepKey}' cannot start with executor '${executorKind}' because the dedicated mission lane is missing.`,
+          );
+        }
+        if (requiresLaneId) {
+          throw new Error(
+            `Step '${step.stepKey}' cannot start with executor '${executorKind}' because laneId is missing.`,
+          );
+        }
       }
       const stepPolicy = resolveStepPolicy(step);
       const contextPolicy = resolveContextPolicy({ runProfileId: run.contextProfile, stepPolicy });
@@ -6541,7 +6567,7 @@ export function createOrchestratorService({
           // Resolve lane worktree path BEFORE building the prompt so the constraint
           // can be injected into the worker prompt via step.metadata.laneWorktreePath.
           const laneWorktreePath = (() => {
-            if (!step.laneId) return projectRoot;
+            if (!step.laneId) return runMissionLaneId ? null : projectRoot;
             const row = db.get<{ worktree_path: string | null }>(
               `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
               [step.laneId, projectId],
@@ -6550,8 +6576,10 @@ export function createOrchestratorService({
             return worktree.length > 0 ? worktree : null;
           })();
 
-          if (step.laneId && !laneWorktreePath) {
-            const errorMsg = `Lane '${step.laneId}' has no worktree_path configured. Cannot start worker for step '${step.stepKey}' without a valid worktree.`;
+          if (!laneWorktreePath) {
+            const errorMsg = runMissionLaneId
+              ? `Mission step '${step.stepKey}' cannot start without the dedicated mission lane/worktree.`
+              : `Lane '${step.laneId}' has no worktree_path configured. Cannot start worker for step '${step.stepKey}' without a valid worktree.`;
             appendTimelineEvent({
               runId: run.id,
               stepId: step.id,
@@ -6562,7 +6590,7 @@ export function createOrchestratorService({
                 executorKind,
                 modelId: descriptor.id,
                 executionPath,
-                laneId: step.laneId,
+                laneId: step.laneId ?? null,
                 error: errorMsg,
               }
             });
@@ -6922,6 +6950,16 @@ export function createOrchestratorService({
           const wt = typeof row?.worktree_path === "string" ? row.worktree_path.trim() : "";
           return wt.length > 0 ? wt : null;
         })();
+
+        if (cliLaneWorktreePath) {
+          try {
+            fs.mkdirSync(path.join(cliLaneWorktreePath, ".ade", "plans"), { recursive: true });
+            fs.mkdirSync(path.join(cliLaneWorktreePath, ".ade", "checkpoints"), { recursive: true });
+          } catch {
+            // Directory creation is best-effort. Worker prompts still instruct
+            // the model to create the directories if needed.
+          }
+        }
 
         const stepForExecutor = (() => {
           let s = step;
@@ -8452,6 +8490,7 @@ export function createOrchestratorService({
         throw new Error(`Cannot add steps to a terminal run (status: ${run.status}).`);
       }
       if (!args.steps.length) return [];
+      const missionLaneId = run.missionId ? resolveRunMissionLaneId(run.metadata) : null;
 
       // Get existing steps to compute next step_index and resolve dependency keys
       const existingStepRows = listStepRows(runId);
@@ -8512,6 +8551,8 @@ export function createOrchestratorService({
 
       // Insert step rows
       for (const { id, input, stepIndex, stepKey } of stepEntries) {
+        const explicitLaneId = toOptionalNonEmptyString(input.laneId);
+        const effectiveLaneId = explicitLaneId ?? missionLaneId;
         const policy: Record<string, unknown> = {
           includeNarrative: input.policy?.includeNarrative === true,
           includeFullDocs: input.policy?.includeFullDocs === true,
@@ -8563,7 +8604,7 @@ export function createOrchestratorService({
             stepKey,
             stepIndex,
             input.title.trim() || stepKey,
-            input.laneId ?? null,
+            effectiveLaneId,
             input.joinPolicy ?? "all_success",
             input.quorumCount ?? null,
             Math.max(0, Math.floor(input.retryLimit ?? 0)),
@@ -8582,7 +8623,8 @@ export function createOrchestratorService({
             stepKey,
             stepIndex,
             joinPolicy: input.joinPolicy ?? "all_success",
-            retryLimit: Math.max(0, Math.floor(input.retryLimit ?? 0))
+            retryLimit: Math.max(0, Math.floor(input.retryLimit ?? 0)),
+            laneId: effectiveLaneId,
           }
         });
       }

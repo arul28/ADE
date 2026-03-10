@@ -30,8 +30,7 @@ export function MissionDetailView() {
   const setActiveInterventionId = useMissionsStore((s) => s.setActiveInterventionId);
   const setSteerBusy = useMissionsStore((s) => s.setSteerBusy);
   const refreshMissionList = useMissionsStore((s) => s.refreshMissionList);
-  const loadMissionDetail = useMissionsStore((s) => s.loadMissionDetail);
-  const loadOrchestratorGraph = useMissionsStore((s) => s.loadOrchestratorGraph);
+  const selectMission = useMissionsStore((s) => s.selectMission);
 
   const chatFocused = activeTab === "chat";
   const compactPhaseChrome = chatFocused;
@@ -46,15 +45,14 @@ export function MissionDetailView() {
         });
         setActiveInterventionId(null);
         await refreshMissionList({ preserveSelection: true, silent: true });
-        await loadMissionDetail(selectedMission.id);
-        await loadOrchestratorGraph(selectedMission.id);
+        await selectMission(selectedMission.id);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
         setSteerBusy(false);
       }
     },
-    [loadMissionDetail, loadOrchestratorGraph, refreshMissionList, selectedMission, setActiveInterventionId, setError, setSteerBusy],
+    [refreshMissionList, selectMission, selectedMission, setActiveInterventionId, setError, setSteerBusy],
   );
 
   if (!selectedMissionId) {

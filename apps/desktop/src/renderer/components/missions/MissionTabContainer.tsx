@@ -4,14 +4,13 @@ import {
   ChatCircle,
   Pulse,
 } from "@phosphor-icons/react";
+import { Group, Panel } from "react-resizable-panels";
 import type {
   OrchestratorAttempt,
-  OrchestratorChatTarget,
-  OrchestratorRunGraph,
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
-import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
-import { type WorkspaceTab, filterExecutionSteps, isRecord } from "./missionHelpers";
+import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
+import { type WorkspaceTab, isRecord } from "./missionHelpers";
 import { useMissionsStore, type MissionsStore } from "./useMissionsStore";
 import { useShallow } from "zustand/react/shallow";
 
@@ -30,6 +29,7 @@ import { MissionActivePhasePanel } from "./MissionActivePhasePanel";
 import { PromptInspectorCard } from "./PromptInspectorCard";
 import { buildMissionArtifactGroups, deriveActivePhaseViewModel } from "./missionControlViewModel";
 import { useMissionRunView } from "./useMissionRunView";
+import { ResizeGutter } from "../ui/SplitPane";
 
 /* ════════════════════ TAB NAVIGATION ════════════════════ */
 
@@ -134,10 +134,8 @@ export function MissionTabContent() {
   } = useMissionsStore(useShallow(selectPromptInspectorData));
 
   const runSteps = useMemo(() => runGraph?.steps ?? [], [runGraph?.steps]);
-  const runAttempts = useMemo(() => runGraph?.attempts ?? [], [runGraph?.attempts]);
   const runClaims = useMemo(() => runGraph?.claims ?? [], [runGraph?.claims]);
   const runTimeline = useMemo(() => runGraph?.timeline ?? [], [runGraph?.timeline]);
-  const executionSteps = useMemo(() => filterExecutionSteps(runSteps), [runSteps]);
 
   const { runView } = useMissionRunView(selectedMissionId, runGraph?.run.id ?? null);
 
@@ -161,11 +159,6 @@ export function MissionTabContent() {
     if (!selectedStep) return [];
     return attemptsByStep.get(selectedStep.id) ?? [];
   }, [attemptsByStep, selectedStep]);
-
-  const failedExecutionSteps = useMemo(
-    () => executionSteps.filter((step) => step.status === "failed"),
-    [executionSteps],
-  );
 
   const steeringLog = useMemo<Array<{ directive: string; appliedAt: string }>>(() => [], []);
 
@@ -276,13 +269,16 @@ export function MissionTabContent() {
       if (resolvedStepId) {
         s.setSelectedStepId(resolvedStepId);
         s.setPlanSubview("board");
+        s.setLogsFocusInterventionId(intervention.id);
+        s.setActiveTab("plan");
+        return;
       }
-      if (sameRun && (interventionAttemptId || resolvedStepId || interventionStepKey)) {
+      if (sameRun && (interventionAttemptId || interventionStepKey)) {
         s.setLogsFocusInterventionId(null);
         s.setChatJumpTarget({
           kind: "worker",
           runId: interventionRunId ?? currentRunId,
-          stepId: resolvedStepId,
+          stepId: null,
           stepKey: interventionStepKey,
           attemptId: interventionAttemptId,
         });
@@ -311,8 +307,7 @@ export function MissionTabContent() {
       });
       s.setActiveInterventionId(null);
       await s.refreshMissionList({ preserveSelection: true, silent: true });
-      await s.loadMissionDetail(s.selectedMission.id);
-      await s.loadOrchestratorGraph(s.selectedMission.id);
+      await s.selectMission(s.selectedMission.id);
     } catch (err) {
       s.setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -328,14 +323,6 @@ export function MissionTabContent() {
 
       {/* Completion Banner */}
       {runGraph && showCompletionBanner && (<div className="px-4 pt-3 space-y-2"><CompletionBanner status={runGraph.run.status} evaluation={runGraph.completionEvaluation} runId={runGraph.run.id} /></div>)}
-
-      {/* Halt reason */}
-      {runView?.haltReason ? (<div className="px-4 pt-3"><div className="space-y-1 p-3" style={{ background: runView.haltReason.severity === "error" ? `${COLORS.danger}12` : `${COLORS.warning}12`, border: `1px solid ${runView.haltReason.severity === "error" ? `${COLORS.danger}35` : `${COLORS.warning}35`}` }}>
-        <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Why did this stop?</div>
-        <div className="text-[12px] font-semibold" style={{ color: COLORS.textPrimary }}>{runView.haltReason.title}</div>
-        <div className="text-[11px]" style={{ color: COLORS.textSecondary }}>{runView.haltReason.detail}</div>
-      </div></div>) : null}
-
       {/* Tab Content */}
       <div
         className={cn(
@@ -353,22 +340,13 @@ export function MissionTabContent() {
                 {selectedMission.prompt}
               </div>
             </div>
-            <MissionRunPanel runView={runView} interventions={selectedMission.interventions} onOpenIntervention={handleOpenIntervention} />
-            {failedExecutionSteps.length > 0 && (
-              <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-                <div className="text-[10px] font-semibold" style={{ color: COLORS.danger, fontFamily: MONO_FONT }}>
-                  {failedExecutionSteps.length} failed step{failedExecutionSteps.length !== 1 ? "s" : ""}
-                </div>
-                <div className="mt-1.5 space-y-1">
-                  {failedExecutionSteps.map((step) => (
-                    <div key={step.id} className="flex items-center gap-2 text-[11px]">
-                      <span style={{ color: COLORS.danger }}>{"\u2717"}</span>
-                      <span style={{ color: COLORS.textPrimary }}>{step.title}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+            <MissionRunPanel
+              runView={runView}
+              interventions={selectedMission.interventions}
+              onOpenIntervention={handleOpenIntervention}
+              showInterventions={false}
+              hideInterventionHaltReason
+            />
           </div>
         )}
 
@@ -408,12 +386,57 @@ export function MissionTabContent() {
         )}
 
         {activeTab === "chat" && selectedMissionId && (
-          <div className="flex flex-1 min-h-0 overflow-hidden">
-            <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-              <MissionChatV2 missionId={selectedMissionId} missionStatus={selectedMission?.status ?? null} runId={runGraph?.run.id ?? null} runStatus={runGraph?.run.status ?? null} runMetadata={runGraph?.run.metadata ?? null} runView={runView} jumpTarget={chatJumpTarget} onJumpHandled={() => useMissionsStore.getState().setChatJumpTarget(null)} />
+          runView ? (
+            <Group
+              id="missions-chat-layout"
+              orientation="horizontal"
+              className="flex min-h-0 flex-1 overflow-hidden bg-transparent"
+            >
+              <Panel minSize={46} className="min-w-0">
+                <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+                  <MissionChatV2
+                    missionId={selectedMissionId}
+                    missionStatus={selectedMission?.status ?? null}
+                    runId={runGraph?.run.id ?? null}
+                    runStatus={runGraph?.run.status ?? null}
+                    runMetadata={runGraph?.run.metadata ?? null}
+                    runView={runView}
+                    interventions={selectedMission?.interventions ?? []}
+                    jumpTarget={chatJumpTarget}
+                    onJumpHandled={() => useMissionsStore.getState().setChatJumpTarget(null)}
+                    onOpenIntervention={handleOpenIntervention}
+                  />
+                </div>
+              </Panel>
+              <ResizeGutter orientation="vertical" thin />
+              <Panel minSize={22} className="min-w-0">
+                <div className="h-full min-h-0 overflow-y-auto p-2" style={{ background: COLORS.pageBg }}>
+                  <MissionRunPanel
+                    runView={runView}
+                    interventions={selectedMission?.interventions}
+                    onOpenIntervention={handleOpenIntervention}
+                    showInterventions={false}
+                    hideInterventionHaltReason
+                  />
+                </div>
+              </Panel>
+            </Group>
+          ) : (
+            <div className="flex flex-1 min-h-0 min-w-0 overflow-hidden">
+              <MissionChatV2
+                missionId={selectedMissionId}
+                missionStatus={selectedMission?.status ?? null}
+                runId={runGraph?.run.id ?? null}
+                runStatus={runGraph?.run.status ?? null}
+                runMetadata={runGraph?.run.metadata ?? null}
+                runView={runView}
+                interventions={selectedMission?.interventions ?? []}
+                jumpTarget={chatJumpTarget}
+                onJumpHandled={() => useMissionsStore.getState().setChatJumpTarget(null)}
+                onOpenIntervention={handleOpenIntervention}
+              />
             </div>
-            {runView && (<div className="w-[280px] shrink-0 overflow-y-auto p-2" style={{ borderLeft: `1px solid ${COLORS.border}`, background: COLORS.pageBg }}><MissionRunPanel runView={runView} interventions={selectedMission?.interventions} onOpenIntervention={handleOpenIntervention} /></div>)}
-          </div>
+          )
         )}
 
         {activeTab === "artifacts" && (
@@ -423,5 +446,3 @@ export function MissionTabContent() {
     </>
   );
 }
-
-

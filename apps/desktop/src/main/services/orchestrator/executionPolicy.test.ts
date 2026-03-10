@@ -254,7 +254,7 @@ function makePhaseCard(overrides: Partial<Omit<PhaseCard, "phaseKey">> & { phase
     model: { provider: "codex", modelId: "gpt-5.3-codex" },
     budget: {},
     orderingConstraints: {},
-    askQuestions: { enabled: false, mode: "never" },
+    askQuestions: { enabled: false },
     validationGate: { tier: "none", required: false },
     isBuiltIn: true,
     isCustom: false,

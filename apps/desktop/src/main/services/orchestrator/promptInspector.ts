@@ -475,15 +475,9 @@ function buildCoordinatorPhasesSection(phases: PhaseCard[] | undefined): string 
         lines.push(`   Validation: ${phase.validationGate.tier.replace("-", " ")} ${phase.validationGate.required ? "(required)" : "(optional)"}`);
       }
       if (phase.askQuestions.enabled) {
-        const modeLabel =
-          phase.askQuestions.mode === "always"
-            ? "always"
-            : phase.askQuestions.mode === "auto_if_uncertain"
-              ? "auto if uncertain"
-              : "never";
-        lines.push(`   Ask Questions: enabled (${modeLabel}, max ${Math.max(1, Math.min(10, Number(phase.askQuestions.maxQuestions ?? 5) || 5))} questions)`);
+        lines.push(`   Ask Questions: enabled (ask at least one question before finalizing this phase, max ${Math.max(1, Math.min(10, Number(phase.askQuestions.maxQuestions ?? 5) || 5))} questions)`);
       } else {
-        lines.push("   Ask Questions: disabled (never)");
+        lines.push("   Ask Questions: disabled");
       }
       return lines.join("\n");
     })

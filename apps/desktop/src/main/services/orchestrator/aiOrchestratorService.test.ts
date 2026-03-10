@@ -3116,7 +3116,7 @@ describe("aiOrchestratorService", () => {
         "-p \"$(cat '/Users/admin/Projects/ADE/.ade/orchestrator/worker-prompts/worker-123.txt')\"",
         "cp '/tmp/worker-123.json' '.ade-worker-mcp-123.json' && exec codex --model gpt-5.3-codex",
         "12f2b.txt')\"",
-        "ADE_MISSION_ID='mission-1' exec claude --model 'sonnet' --permission-mode 'plan'",
+        "ADE_MISSION_ID='mission-1' exec claude --model 'sonnet' --permission-mode 'default'",
         "orchestrator/worker-prompts/worker-ce33e94c-b964-42c9-9127-dfdeb6853d36",
         "/Users/admin/.zshrc:3: no such file or directory: /Users/admin/.openclaw/get-codex-token.sh",
         "/Users/admin/.openclaw/completions/openclaw.zsh:3803: command not found: compdef",
@@ -6910,6 +6910,95 @@ describe("aiOrchestratorService", () => {
       expect(runView?.haltReason?.source).toBe("intervention");
       expect(runView?.coordinator.available).toBe(false);
       expect(runView?.haltReason?.title).toMatch(/coordinator unavailable/i);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("prefers the active reopened run over the newest terminal run", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Resume the older run if it becomes active again.",
+        laneId: fixture.laneId,
+      });
+      const firstRun = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [],
+      });
+      fixture.orchestratorService.cancelRun({ runId: firstRun.run.id, reason: "paused for later" });
+
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      const secondRun = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [],
+      });
+      fixture.orchestratorService.cancelRun({ runId: secondRun.run.id, reason: "superseded" });
+      fixture.orchestratorService.addPostCompletionSteps({
+        runId: firstRun.run.id,
+        steps: [
+          {
+            stepKey: "resume-work",
+            title: "Resume work",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "manual",
+          },
+        ],
+      });
+
+      const runView = await fixture.aiOrchestratorService.getRunView({ missionId: mission.id });
+
+      expect(runView?.runId).toBe(firstRun.run.id);
+      expect(runView?.lifecycle.runStatus).toBe("active");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("ignores open interventions from older runs when a newer run is healthy", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Keep the current run healthy.",
+        laneId: fixture.laneId,
+      });
+      const oldRun = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [],
+      });
+      fixture.missionService.addIntervention({
+        missionId: mission.id,
+        interventionType: "unrecoverable_error",
+        title: "Old run blocked",
+        body: "A previous run needs attention.",
+        requestedAction: "Ignore for current run.",
+        metadata: { runId: oldRun.run.id, reasonCode: "coordinator_unavailable" },
+        pauseMission: false,
+      });
+      fixture.orchestratorService.cancelRun({ runId: oldRun.run.id, reason: "old run closed" });
+
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      const currentRun = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [],
+      });
+      fixture.missionService.update({
+        missionId: mission.id,
+        status: "in_progress",
+      });
+
+      const runView = await fixture.aiOrchestratorService.getRunView({
+        missionId: mission.id,
+        runId: currentRun.run.id,
+      });
+
+      expect(runView?.runId).toBe(currentRun.run.id);
+      expect(runView?.lifecycle.displayStatus).not.toBe("blocked");
+      expect(runView?.coordinator.available).not.toBe(false);
+      expect(runView?.haltReason).toBeNull();
     } finally {
       fixture.dispose();
     }

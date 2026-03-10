@@ -44,13 +44,13 @@ Every mission run follows a deterministic memory lifecycle: create scope → acc
 
 ##### Worker Memory Injection
 
-Worker briefing assembly now pulls from unified memory instead of pack exports. The existing L0/L1/L2 structure stays — it is a good tiered context assembly pattern — but the data source changes from packs to memory queries.
+Worker briefing assembly now pulls from unified memory instead of pack exports. The existing `L0/L1/L2` structure stays, but it should be understood as a mission-worker context assembly, not the same thing as CTO/employee identity memory. It is the cold-start briefing shape for disposable mission workers; persistent CTO employees continue to have their own identity memory in addition to any mission context injected for delegated work.
 
 - **L0 (always injected, ~2-4K tokens)**: Tier 1 project memory — pinned conventions, user preferences, active project focus. Retrieved via `memorySearch(scope: "project", tier: 1, budget: "deep")`. These are the entries the user and CTO have pinned as always-relevant.
 
 - **L1 (per-phase, searched on demand)**: Tier 2 project memory filtered by relevance to the current phase and task description. Retrieved via `memorySearch(scope: "project", tier: 2, query: taskDescription + phaseContext, budget: "standard")`. Returns patterns, gotchas, and decisions relevant to the work at hand.
 
-- **L2 (per-worker, for persistent employees only)**: If the worker is a persistent CTO employee (not a disposable mission worker), inject their agent memory. Retrieved via `memorySearch(scope: "agent", scopeOwnerId: agentId, tier: [1, 2], budget: "lite")`. This gives the worker its own identity, domain knowledge, and past run context.
+- **L2 (identity-local, only when briefing a persistent employee rather than a disposable mission worker)**: If the worker is a persistent CTO employee, inject their agent memory. Retrieved via `memorySearch(scope: "agent", scopeOwnerId: agentId, tier: [1, 2], budget: "lite")`. This gives the employee its own identity, domain knowledge, and past run context without implying that all mission workers share one durable `L0/L1/L2` memory store.
 
 - **Mission context (always, during active mission)**: Tier 2 mission memory — peer discoveries, coordinator decisions, upstream handoffs. Retrieved via `memorySearch(scope: "mission", scopeOwnerId: missionId, budget: "standard")`. Workers see what their peers have learned and what the coordinator has decided.
 

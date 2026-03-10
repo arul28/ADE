@@ -537,7 +537,10 @@ export function toContextSnapshot(row: ContextSnapshotRow): OrchestratorContextS
     runId: row.run_id,
     stepId: row.step_id,
     attemptId: row.attempt_id,
-    snapshotType: row.snapshot_type === "step" ? "step" : row.snapshot_type === "attempt" ? "attempt" : "run",
+    snapshotType:
+      row.snapshot_type === "step" ? "step"
+      : row.snapshot_type === "attempt" ? "attempt"
+      : "run",
     contextProfile: normalizeProfileId(row.context_profile),
     cursor,
     createdAt: row.created_at
@@ -785,6 +788,8 @@ const BLOCKING_WARNING_PATTERNS: Array<{ pattern: RegExp; category: BlockingWarn
   { pattern: /PreToolUse:\w+ hook error/i, category: 'tool_failure' },
   { pattern: /permission denied/i, category: 'permission_denied' },
   { pattern: /EPERM|EACCES/i, category: 'permission_denied' },
+  { pattern: /validation failed for tool/i, category: 'tool_failure' },
+  { pattern: /zod validation.*tool/i, category: 'tool_failure' },
   { pattern: /tool .+ failed/i, category: 'tool_failure' },
   { pattern: /tool startup fail/i, category: 'tool_failure' },
   { pattern: /needs-auth/i, category: 'missing_auth' },
@@ -801,19 +806,6 @@ const EXTERNAL_MCP_NOISE_PATTERNS: RegExp[] = [
   /claude\.ai\s+Slack/i,
 ];
 
-// Benign sandbox blocks from provider-native planning features (ExitPlanMode).
-// These are expected when the sandbox prevents writes to ~/.claude/plans/ — the
-// planner prompt directs artifacts to .ade/plans/ instead, so blocking the
-// provider-native path is intentional and should not fail the attempt.
-// Also benign: Zod validation errors from ExitPlanMode — the worker is instructed
-// not to use ExitPlanMode, but if it tries anyway, the Zod schema mismatch should
-// not fail or retry the attempt.
-const BENIGN_SANDBOX_BLOCK_PATTERNS: RegExp[] = [
-  /\.claude\/plans\//i,
-  /ExitPlanMode.*(?:Zod|validation|schema|parse)/i,
-  /(?:Zod|validation|schema|parse).*ExitPlanMode/i,
-];
-
 export function classifyBlockingWarnings(args: {
   warnings: string[];
   summary: string | null;
@@ -828,10 +820,6 @@ export function classifyBlockingWarnings(args: {
     // Skip external MCP noise
     const isExternalNoise = EXTERNAL_MCP_NOISE_PATTERNS.some(p => p.test(text));
     if (isExternalNoise) continue;
-
-    // Skip benign sandbox blocks (e.g. ExitPlanMode writing to ~/.claude/plans/)
-    const isBenignSandboxBlock = BENIGN_SANDBOX_BLOCK_PATTERNS.some(p => p.test(text));
-    if (isBenignSandboxBlock) continue;
 
     for (const { pattern, category } of BLOCKING_WARNING_PATTERNS) {
       if (pattern.test(text)) {

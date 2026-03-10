@@ -12,9 +12,9 @@ See [phase-4/README.md](phase-4/README.md) for the overview, execution order, de
 | [phase-4/W1-W4.md](phase-4/W1-W4.md) | W1-W4: CTO Core, Workers, Heartbeat, Linear Sync | ✅ Complete |
 | [phase-4/W5.md](phase-4/W5.md) | W5: Automations Platform + Night Shift | W5a ✅ / W5b not started |
 | [phase-4/W6.md](phase-4/W6.md) | W6: Unified Memory System | ✅ Complete |
-| [phase-4/W6-half.md](phase-4/W6-half.md) | W6½: Memory Engine Hardening | Not started |
+| [phase-4/W6-half.md](phase-4/W6-half.md) | W6½: Memory Engine Hardening | ✅ Complete |
 | [phase-4/W-UX.md](phase-4/W-UX.md) | W-UX: CTO + Org Experience Overhaul | Not started |
-| [phase-4/W7a.md](phase-4/W7a.md) | W7a: Embeddings Pipeline | Not started |
+| [phase-4/W7a.md](phase-4/W7a.md) | W7a: Embeddings Pipeline | ✅ Complete |
 | [phase-4/W7b.md](phase-4/W7b.md) | W7b: Orchestrator ↔ Memory Integration | Not started |
 | [phase-4/W7c.md](phase-4/W7c.md) | W7c: Skills + Learning Pipeline | Not started |
 | [phase-4/W8.md](phase-4/W8.md) | W8: External MCP Consumption | Not started |

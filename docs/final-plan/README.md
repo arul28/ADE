@@ -25,7 +25,7 @@ The following phase files are superseded by the new roadmap and should be consid
 
 ---
 
-Last updated: 2026-03-05
+Last updated: 2026-03-10
 Owner: ADE
 Status: Active
 
@@ -162,7 +162,7 @@ ADE becomes the execution control plane for parallel agentic development:
 5. Desktop, VPS, and iOS share one mission/audit state model via cr-sqlite real-time sync.
 6. All core features work in `guest` mode (no AI) -- AI orchestration is additive, never mandatory.
 7. ADE state syncs across devices in real-time via cr-sqlite CRDTs -- no cloud backend needed. Git tracks code, cr-sqlite syncs app state.
-8. CTO agent leads a configurable org of worker agents (Backend Dev, QA, etc.), each with persistent memory and identity. Bidirectional Linear sync enables autonomous work intake. External agent systems connect via MCP server and OpenClaw bridge.
+8. CTO agent leads a configurable org of worker agents (Backend Dev, QA, etc.), each with persistent identity memory plus access to shared project memory. Bidirectional Linear sync enables autonomous work intake. External agent systems connect via MCP server and OpenClaw bridge.
 9. Any machine (except phones) can be the "brain" that runs agents; all other devices are real-time viewers/controllers.
 
 ---
@@ -196,8 +196,8 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | CTO Agent (persistent project-aware assistant) | Phase 4 | Phase 3 | Complete (W1) |
 | Automations Platform + Night Shift | Phase 4 | Phase 3 | Planned |
 | Learning Packs (auto-curated knowledge) | Phase 4 | Phase 3 | Planned |
-| Memory Architecture Upgrade (vector search, tiers) | Phase 4 | Phase 3 | Planned |
-| Candidate Memory Triage Automation (auto-promote + stale archive sweep) | Phase 4 | Phase 3 memory lifecycle baseline | Planned (covered in Phase 4 W6) |
+| Memory Architecture Upgrade (vector search, tiers) | Phase 4 | Phase 3 | Complete (W6, W6½, W7a shipped; W7b/W7c remain for higher-level learning flows) |
+| Candidate Memory Triage Automation (auto-promote + stale archive sweep) | Phase 4 | Phase 3 memory lifecycle baseline | Complete (W6 + W6½) |
 | Mem0 Sidecar Integration (optional semantic index) | Post-Phase 4 | Phase 4 memory foundation | Deferred (evaluate after native memory upgrade + CTO baseline) |
 | Skill Library (recipe extraction + `.claude/skills/` materialization) | Phase 4 | Phase 4 Learning Packs + PROJ-039 viewer baseline | Planned (covered in Phase 4 W7) |
 | .ade/ Portable State (git-tracked configs) | Phase 4 | Phase 3 | Planned |
@@ -213,8 +213,8 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Agent Config Versioning (revision tracking, rollback) | Phase 4 | Phase 4 W2 | Complete (W2) |
 | Task Session Persistence (per-task context across invocations) | Phase 4 | Phase 4 W2 | Complete (W2) |
 | Issue Tracker Abstraction (Linear first, GitHub Issues planned) | Phase 4 | Phase 4 W4 | Planned |
-| Pre-compaction Memory Flush | Phase 4 | Phase 3 (HW6) | Planned |
-| Memory Consolidation | Phase 4 | Phase 3 | Planned |
+| Pre-compaction Memory Flush | Phase 4 | Phase 3 (HW6) | Complete (W6½) |
+| Memory Consolidation | Phase 4 | Phase 3 | Complete (W6½) |
 | Episodic + Procedural Memory | Phase 4 | Phase 3 | Planned |
 | Play runtime isolation | Phase 5 | Phase 3 (parallel with Phase 4) | Complete |
 | cr-sqlite multi-device sync | Phase 6 | Phase 4 | Planned |

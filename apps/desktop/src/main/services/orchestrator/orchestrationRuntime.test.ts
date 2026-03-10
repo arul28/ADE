@@ -24,7 +24,7 @@ function makePlanningPhase(overrides?: Partial<PhaseCard>): PhaseCard {
     model: { modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
     budget: {},
     orderingConstraints: { mustBeFirst: true },
-    askQuestions: { enabled: true, mode: "auto_if_uncertain", maxQuestions: 5 },
+    askQuestions: { enabled: true, maxQuestions: 5 },
     validationGate: { tier: "none", required: false },
     requiresApproval: true,
     isBuiltIn: true,
@@ -46,7 +46,7 @@ function makeDevPhase(overrides?: Partial<PhaseCard>): PhaseCard {
     model: { modelId: "openai/gpt-5.4-codex", thinkingLevel: "medium" },
     budget: {},
     orderingConstraints: {},
-    askQuestions: { enabled: false, mode: "never" },
+    askQuestions: { enabled: false },
     validationGate: { tier: "none", required: false },
     isBuiltIn: true,
     isCustom: false,
@@ -406,7 +406,12 @@ describe("approval gate on phase transition", () => {
           id: "approval-1",
           interventionType: "phase_approval",
           status: "resolved",
-          metadata: { phaseKey: "planning", source: "phase_approval_gate" },
+          metadata: {
+            runId: "run-1",
+            phaseKey: "planning",
+            targetPhaseKey: "development",
+            source: "phase_approval_gate",
+          },
         },
       ],
     });
@@ -420,6 +425,71 @@ describe("approval gate on phase transition", () => {
     expect(result.currentPhaseKey).toBe("development");
   });
 
+  it("does not reuse approvals from a different run", async () => {
+    const planningPhase = makePlanningPhase({ requiresApproval: true });
+    const devPhase = makeDevPhase();
+
+    const graph = {
+      run: {
+        id: "run-1",
+        metadata: {
+          phaseRuntime: {
+            currentPhaseKey: "planning",
+            currentPhaseName: "Planning",
+            currentPhaseModel: planningPhase.model,
+          },
+          phases: [planningPhase, devPhase],
+        },
+      },
+      steps: [
+        {
+          id: "step-plan",
+          stepKey: "planner",
+          title: "Planning Worker",
+          status: "succeeded",
+          metadata: { phaseKey: "planning", phaseName: "Planning", stepType: "analysis" },
+        },
+      ],
+      attempts: [
+        {
+          id: "attempt-1",
+          stepId: "step-plan",
+          status: "succeeded",
+        },
+      ],
+    };
+
+    const { tools, mission } = createHarness({
+      graph,
+      missionInterventions: [
+        {
+          id: "approval-1",
+          interventionType: "phase_approval",
+          status: "resolved",
+          metadata: {
+            runId: "run-old",
+            phaseKey: "planning",
+            targetPhaseKey: "development",
+            source: "phase_approval_gate",
+          },
+        },
+      ],
+    });
+
+    const result = await (tools.set_current_phase as any).execute({
+      phaseKey: "development",
+      reason: "Planning done again",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.pendingApproval).toBe(true);
+    expect(mission.interventions.some((entry: any) =>
+      entry.interventionType === "phase_approval"
+      && entry.status === "open"
+      && entry.metadata?.runId === "run-1"
+    )).toBe(true);
+  });
+
   it("applies approval gate to any phase with requiresApproval=true", async () => {
     const devPhase = makeDevPhase({ requiresApproval: true });
     const testPhase: PhaseCard = {
@@ -431,7 +501,7 @@ describe("approval gate on phase transition", () => {
       model: { modelId: "openai/gpt-5.4-codex", thinkingLevel: "low" },
       budget: {},
       orderingConstraints: {},
-      askQuestions: { enabled: false, mode: "never" },
+      askQuestions: { enabled: false },
       validationGate: { tier: "none", required: false },
       isBuiltIn: true,
       isCustom: false,
@@ -493,7 +563,7 @@ describe("approval gate on phase transition", () => {
 describe("multi-round deliberation", () => {
   it("allows more questions than maxQuestions in planning phase with canLoop", async () => {
     const planningPhase = makePlanningPhase({
-      askQuestions: { enabled: true, mode: "always", maxQuestions: 3 },
+      askQuestions: { enabled: true, maxQuestions: 3 },
       orderingConstraints: { mustBeFirst: true, canLoop: true, loopTarget: "planning" },
     });
 
@@ -634,7 +704,7 @@ describe("mandatory planning enforcement", () => {
     const builtIn = createBuiltInPhaseCards();
     const planningCard = builtIn.find((c: any) => c.phaseKey === "planning");
     expect(planningCard).toBeDefined();
-    expect(planningCard!.requiresApproval).toBe(true);
+    expect(planningCard!.requiresApproval).toBe(false);
     expect(planningCard!.orderingConstraints.mustBeFirst).toBe(true);
   });
 });

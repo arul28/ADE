@@ -1604,6 +1604,7 @@ export function createAiOrchestratorService(args: {
         db,
         projectId: coordinatorProjectId,
         projectRoot,
+        memoryService: plannerMemoryService,
         getMissionBudgetStatus: missionBudgetService
           ? async () => {
               try {
@@ -6037,7 +6038,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         const { settings: runPhaseSettings } = resolveActivePhaseSettings(mission.id);
         const integrationPrPolicy = runPhaseSettings.integrationPr ?? DEFAULT_INTEGRATION_PR_POLICY;
         const laneIdArrayBase = [...new Set(graph.steps.map((s) => s.laneId).filter(Boolean))] as string[];
-        const missionLaneId = resolvePersistedMissionLaneIdForRun(runId);
+        const missionLaneId = resolvePersistedMissionLaneIdForRun(runId) ?? toOptionalString(mission.laneId);
         if (laneIdArrayBase.length === 0 && missionLaneId) laneIdArrayBase.push(missionLaneId);
         const prStrategy: PrStrategy =
           runPhaseSettings.prStrategy
@@ -7961,6 +7962,39 @@ Check all worker statuses and continue managing the mission from here. Read work
     return "info";
   };
 
+  const ACTIVE_RUN_VIEW_STATUSES = new Set<OrchestratorRunStatus>(["active", "bootstrapping", "queued", "paused"]);
+
+  const pickPreferredMissionRun = (
+    runs: OrchestratorRun[],
+    requestedRunId?: string | null,
+  ): OrchestratorRun | null => {
+    const explicitRunId = toOptionalString(requestedRunId);
+    if (explicitRunId) {
+      return runs.find((entry) => entry.id === explicitRunId) ?? null;
+    }
+    return runs.find((entry) => ACTIVE_RUN_VIEW_STATUSES.has(entry.status)) ?? runs[0] ?? null;
+  };
+
+  const getScopedOpenIntervention = (args: {
+    mission: MissionDetail;
+    run: OrchestratorRun | null;
+  }) => {
+    const sortByUpdatedAtDesc = (left: MissionDetail["interventions"][number], right: MissionDetail["interventions"][number]) =>
+      Date.parse(right.updatedAt || right.createdAt) - Date.parse(left.updatedAt || left.createdAt);
+    const openEntries = args.mission.interventions.filter((entry) => entry.status === "open");
+    if (!args.run) return [...openEntries].sort(sortByUpdatedAtDesc)[0] ?? null;
+    const runScoped = openEntries
+      .filter((entry) => toOptionalString(asRecord(entry.metadata)?.runId) === args.run?.id)
+      .sort(sortByUpdatedAtDesc)[0] ?? null;
+    if (runScoped) return runScoped;
+    if (args.mission.status === "intervention_required") {
+      return [...openEntries]
+        .filter((entry) => !toOptionalString(asRecord(entry.metadata)?.runId))
+        .sort(sortByUpdatedAtDesc)[0] ?? null;
+    }
+    return null;
+  };
+
   const toRunViewLatestIntervention = (mission: MissionDetail): MissionRunViewLatestIntervention | null => {
     const latest = [...mission.interventions].sort((left, right) => {
       const leftAt = Date.parse(left.updatedAt || left.createdAt);
@@ -8011,10 +8045,9 @@ Check all worker statuses and continue managing the mission from here. Read work
     runStatus: OrchestratorRunStatus | null;
     coordinatorAvailability: MissionCoordinatorAvailability | null;
     latestIntervention: MissionRunViewLatestIntervention | null;
+    openIntervention: MissionDetail["interventions"][number] | null;
   }): MissionRunViewHaltReason | null => {
-    const openIntervention = [...args.mission.interventions]
-      .filter((entry) => entry.status === "open")
-      .sort((left, right) => Date.parse(right.updatedAt || right.createdAt) - Date.parse(left.updatedAt || left.createdAt))[0];
+    const openIntervention = args.openIntervention;
     if (openIntervention) {
       return {
         source: "intervention",
@@ -8293,18 +8326,13 @@ Check all worker statuses and continue managing the mission from here. Read work
     const mission = missionService.get(missionId);
     if (!mission) return null;
 
-    const requestedRunId = String(viewArgs.runId ?? "").trim();
     const runs = orchestratorService.listRuns({ missionId, limit: 200 });
-    const run = requestedRunId.length > 0
-      ? runs.find((entry) => entry.id === requestedRunId) ?? null
-      : runs[0] ?? null;
+    const run = pickPreferredMissionRun(runs, viewArgs.runId);
     const graph = run ? orchestratorService.getRunGraph({ runId: run.id, timelineLimit: 200 }) : null;
     const stateDoc = run ? await getMissionStateDocument({ runId: run.id }) : null;
     const workerStates = run ? getWorkerStates({ runId: run.id }) : [];
     const latestIntervention = toRunViewLatestIntervention(mission);
-    const openIntervention = mission.interventions
-      .filter((entry) => entry.status === "open")
-      .sort((left, right) => Date.parse(right.updatedAt || right.createdAt) - Date.parse(left.updatedAt || left.createdAt))[0] ?? null;
+    const openIntervention = getScopedOpenIntervention({ mission, run });
     const openInterventionReasonCode = toOptionalString(asRecord(openIntervention?.metadata)?.reasonCode);
     const coordinatorAvailability = stateDoc?.coordinatorAvailability
       ?? (
@@ -8335,6 +8363,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       runStatus: run?.status ?? null,
       coordinatorAvailability,
       latestIntervention,
+      openIntervention,
     });
 
     const activeStep = (() => {
@@ -8356,7 +8385,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       if (run?.status === "canceled" || mission.status === "canceled") return "canceled" satisfies MissionRunViewDisplayStatus;
       if (run?.status === "succeeded" || mission.status === "completed") return "completed" satisfies MissionRunViewDisplayStatus;
       if (run?.status === "queued" || run?.status === "bootstrapping" || mission.status === "planning") return "starting" satisfies MissionRunViewDisplayStatus;
-      if (run?.status === "paused") return "blocked" satisfies MissionRunViewDisplayStatus;
+      if (run?.status === "paused") return "paused" satisfies MissionRunViewDisplayStatus;
       if (run?.status === "active" || mission.status === "in_progress") return "running" satisfies MissionRunViewDisplayStatus;
       return "not_started" satisfies MissionRunViewDisplayStatus;
     })();
@@ -8423,6 +8452,8 @@ Check all worker statuses and continue managing the mission from here. Read work
                     ? (mission.lastError?.trim() || "Mission failed.")
                     : displayStatus === "canceled"
                       ? "Mission was canceled."
+                      : displayStatus === "paused"
+                        ? "Mission is paused."
                       : "Mission has not started yet."
           ),
         startedAt: run?.startedAt ?? mission.startedAt ?? null,
@@ -8682,10 +8713,8 @@ Check all worker statuses and continue managing the mission from here. Read work
   };
 
   const pickMissionLogRunId = (missionId: string, requestedRunId?: string | null): string | null => {
-    const explicit = toOptionalString(requestedRunId);
-    if (explicit) return explicit;
     const runs = orchestratorService.listRuns({ missionId, limit: 200 });
-    return runs[0]?.id ?? null;
+    return pickPreferredMissionRun(runs, requestedRunId)?.id ?? null;
   };
 
   const getMissionLogs = async (args: GetMissionLogsArgs): Promise<GetMissionLogsResult> => {

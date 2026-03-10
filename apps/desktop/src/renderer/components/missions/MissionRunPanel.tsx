@@ -19,6 +19,8 @@ type MissionRunPanelProps = {
   interventions?: MissionIntervention[] | null;
   loading?: boolean;
   onOpenIntervention?: (interventionId: string) => void;
+  showInterventions?: boolean;
+  hideInterventionHaltReason?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -29,6 +31,7 @@ const STATUS_COLOR: Record<string, string> = {
   running: "#3B82F6",
   completed: "#22C55E",
   failed: "#EF4444",
+  paused: "#F59E0B",
   blocked: "#F59E0B",
   not_started: "#6B7280",
   canceled: "#6B7280",
@@ -293,9 +296,8 @@ function ProgressEntry({ item }: { item: MissionRunViewProgressItem }) {
       <span
         style={{
           color: COLORS.textSecondary,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
+          whiteSpace: "normal",
+          wordBreak: "break-word",
         }}
       >
         {item.title}
@@ -341,9 +343,8 @@ function InterventionBanner({
             fontSize: 11,
             fontFamily: SANS_FONT,
             color: COLORS.textPrimary,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
+            whiteSpace: "normal",
+            wordBreak: "break-word",
           }}
         >
           {intervention.title}
@@ -383,6 +384,8 @@ export function MissionRunPanel({
   interventions = null,
   loading = false,
   onOpenIntervention,
+  showInterventions = true,
+  hideInterventionHaltReason = false,
 }: MissionRunPanelProps) {
   const sortedWorkers = useMemo(
     () => (runView ? sortWorkers(runView.workers) : []),
@@ -413,6 +416,7 @@ export function MissionRunPanel({
 
   const { lifecycle, active, coordinator, haltReason } = runView;
   const statusColor = STATUS_COLOR[lifecycle.displayStatus] ?? COLORS.textMuted;
+  const shouldRenderHaltReason = !(hideInterventionHaltReason && haltReason?.source === "intervention");
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -473,7 +477,7 @@ export function MissionRunPanel({
       </div>
 
       {/* ── 2. Halt / Blocker Banner ── */}
-      {haltReason && <HaltBanner halt={haltReason} />}
+      {haltReason && shouldRenderHaltReason && <HaltBanner halt={haltReason} />}
       {!haltReason && lifecycle.displayStatus === "blocked" && (
         <HaltBanner
           halt={{
@@ -484,7 +488,7 @@ export function MissionRunPanel({
           }}
         />
       )}
-      {!haltReason && lifecycle.runStatus === "paused" && lifecycle.displayStatus !== "blocked" && (
+      {!haltReason && lifecycle.displayStatus === "paused" && (
         <HaltBanner
           halt={{
             title: "Run paused",
@@ -496,7 +500,8 @@ export function MissionRunPanel({
       )}
       {!haltReason
         && lifecycle.displayStatus !== "blocked"
-        && lifecycle.runStatus !== "paused"
+        && lifecycle.displayStatus !== "paused"
+        && showInterventions
         && openInterventions.length > 0
         && (
         <HaltBanner
@@ -618,7 +623,7 @@ export function MissionRunPanel({
       )}
 
       {/* ── 6. Open Interventions ── */}
-      {openInterventions.length > 0 && (
+      {showInterventions && openInterventions.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {openInterventions.map((intervention) => (
             <InterventionBanner

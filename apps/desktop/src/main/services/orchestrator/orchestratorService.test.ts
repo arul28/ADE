@@ -858,6 +858,36 @@ describe("orchestratorService", () => {
     }
   });
 
+  it("defaults added mission steps to the persisted mission lane", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          missionLaneId: fixture.laneId,
+        },
+        steps: [],
+      });
+
+      const created = fixture.service.addSteps({
+        runId: started.run.id,
+        steps: [
+          {
+            stepKey: "mission-task",
+            title: "Mission task",
+            stepIndex: 0,
+            executorKind: "manual",
+          },
+        ],
+      });
+
+      expect(created[0]?.laneId).toBe(fixture.laneId);
+      expect(fixture.service.listSteps(started.run.id)[0]?.laneId).toBe(fixture.laneId);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("still launches ready workers even when manual task steps are present", async () => {
     const fixture = await createFixture();
     try {
@@ -925,7 +955,7 @@ describe("orchestratorService", () => {
         model: { provider: "anthropic", modelId: "anthropic/claude-sonnet-4-6" },
         budget: {},
         orderingConstraints: { mustBeFirst: true },
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "none", required: false, criteria: "" },
         isBuiltIn: true,
         isCustom: false,
@@ -942,7 +972,7 @@ describe("orchestratorService", () => {
         model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
         budget: {},
         orderingConstraints: { mustFollow: ["planning"] },
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "none", required: false, criteria: "" },
         isBuiltIn: true,
         isCustom: false,
@@ -1030,7 +1060,7 @@ describe("orchestratorService", () => {
         model: { provider: "anthropic", modelId: "anthropic/claude-sonnet-4-6" },
         budget: {},
         orderingConstraints: { mustBeFirst: true },
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "none", required: false, criteria: "" },
         isBuiltIn: true,
         isCustom: false,
@@ -1047,7 +1077,7 @@ describe("orchestratorService", () => {
         model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
         budget: {},
         orderingConstraints: { mustFollow: ["planning"] },
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "none", required: false, criteria: "" },
         isBuiltIn: true,
         isCustom: false,
@@ -1145,7 +1175,7 @@ describe("orchestratorService", () => {
         model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
         budget: {},
         orderingConstraints: {},
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "self", required: true, criteria: "Reviewer must confirm the change." },
         isBuiltIn: true,
         isCustom: false,
@@ -2080,7 +2110,7 @@ describe("orchestratorService", () => {
         model: { provider: "anthropic", modelId: "anthropic/claude-sonnet-4-6" },
         budget: {},
         orderingConstraints: { mustBeFirst: true },
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "none", required: false, criteria: "" },
         isBuiltIn: true,
         isCustom: false,
@@ -2097,7 +2127,7 @@ describe("orchestratorService", () => {
         model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
         budget: {},
         orderingConstraints: { mustFollow: ["planning"] },
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "self", required: true, criteria: "Release checklist must pass." },
         isBuiltIn: false,
         isCustom: true,
@@ -2572,7 +2602,7 @@ describe("orchestratorService", () => {
               model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
               budget: {},
               orderingConstraints: {},
-              askQuestions: { enabled: false, mode: "never" },
+              askQuestions: { enabled: false },
               validationGate: { tier: "none", required: false },
               isBuiltIn: true,
               isCustom: false,
@@ -2589,7 +2619,7 @@ describe("orchestratorService", () => {
               model: { provider: "anthropic", modelId: "anthropic/claude-sonnet-4-6" },
               budget: {},
               orderingConstraints: {},
-              askQuestions: { enabled: false, mode: "never" },
+              askQuestions: { enabled: false },
               validationGate: { tier: "dedicated", required: false },
               isBuiltIn: true,
               isCustom: false,
@@ -2736,7 +2766,7 @@ describe("orchestratorService", () => {
         model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
         budget: {},
         orderingConstraints: {},
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "dedicated", required: true, criteria: "Implementation must actually succeed" },
         isBuiltIn: true,
         isCustom: false,
@@ -3098,7 +3128,7 @@ describe("orchestratorService", () => {
       fs.writeFileSync(
         transcriptPath,
         [
-          "ADE_MISSION_ID='mission-1' ADE_RUN_ID='run-1' exec claude --model 'sonnet' --permission-mode 'plan'",
+          "ADE_MISSION_ID='mission-1' ADE_RUN_ID='run-1' exec claude --model 'sonnet' --permission-mode 'default'",
           "/Users/admin/.zshrc:3: no such file or directory: /Users/admin/.openclaw/get-codex-token.sh",
           "/Users/admin/.openclaw/completions/openclaw.zsh:3803: command not found: compdef",
           "admin@Mac test-10-f4bb12de %",
@@ -3581,6 +3611,7 @@ describe("orchestratorService", () => {
             stepKey: "api-worker",
             title: "API worker",
             stepIndex: 0,
+            laneId: fixture.laneId,
             executorKind: "unified",
             metadata: {
               modelId: "openai/gpt-4.1"
@@ -4130,7 +4161,7 @@ describe("orchestratorService", () => {
         model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
         budget: {},
         orderingConstraints: {},
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "dedicated", required: true, criteria: "Validator must pass before moving on" },
         isBuiltIn: true,
         isCustom: false,
@@ -4238,7 +4269,7 @@ describe("orchestratorService", () => {
         model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
         budget: {},
         orderingConstraints: {},
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "dedicated", required: true, criteria: "Validator must pass before moving on" },
         isBuiltIn: true,
         isCustom: false,
@@ -4346,7 +4377,7 @@ describe("orchestratorService", () => {
         model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
         budget: {},
         orderingConstraints: {},
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "self", required: true, criteria: "Coordinator must validate test results" },
         isBuiltIn: true,
         isCustom: false,

@@ -1696,12 +1696,13 @@ export function registerIpc({
       let checkpoints: import("../../../shared/types").OrchestratorWorkerCheckpoint[] = [];
 
       const runs = await ctx.orchestratorService.listRuns({ missionId, limit: 20 });
-      const latestRun = runs[0];
-      if (latestRun) {
+      const activeStatuses = new Set(["active", "bootstrapping", "queued", "paused"]);
+      const preferredRun = runs.find((entry) => activeStatuses.has(entry.status)) ?? runs[0];
+      if (preferredRun) {
         const [graph, arts, cps] = await Promise.all([
-          ctx.orchestratorService.getRunGraph({ runId: latestRun.id, timelineLimit: 120 }),
-          Promise.resolve().then(() => ctx.aiOrchestratorService.listArtifacts({ missionId, runId: latestRun.id })).catch(() => []),
-          Promise.resolve().then(() => ctx.aiOrchestratorService.listWorkerCheckpoints({ missionId, runId: latestRun.id })).catch(() => []),
+          ctx.orchestratorService.getRunGraph({ runId: preferredRun.id, timelineLimit: 120 }),
+          Promise.resolve().then(() => ctx.aiOrchestratorService.listArtifacts({ missionId, runId: preferredRun.id })).catch(() => []),
+          Promise.resolve().then(() => ctx.aiOrchestratorService.listWorkerCheckpoints({ missionId, runId: preferredRun.id })).catch(() => []),
         ]);
         runGraph = graph;
         artifacts = Array.isArray(arts) ? arts : [];
@@ -1927,27 +1928,10 @@ export function registerIpc({
 
   ipcMain.handle(IPC.orchestratorPauseRun, async (_event, arg: PauseOrchestratorRunArgs): Promise<OrchestratorRun> => {
     const ctx = getCtx();
-    const pausedRun = ctx.orchestratorService.pauseRun({
+    return ctx.orchestratorService.pauseRun({
       runId: arg.runId,
       reason: arg.reason ?? "Paused from Missions UI.",
     });
-    // Also update the mission status to reflect the pause
-    if (pausedRun.status === "paused" && pausedRun.missionId) {
-      try {
-        ctx.missionService.addIntervention({
-          missionId: pausedRun.missionId,
-          interventionType: "orchestrator_escalation",
-          title: "Run paused",
-          body: arg.reason ?? "Paused from Missions UI.",
-          requestedAction: "resume",
-          pauseMission: true,
-          metadata: { runId: pausedRun.id, source: "ui_pause" },
-        });
-      } catch {
-        // Mission may already be in intervention_required or a terminal state
-      }
-    }
-    return pausedRun;
   });
 
   ipcMain.handle(IPC.orchestratorResumeRun, async (_event, arg: ResumeOrchestratorRunArgs): Promise<OrchestratorRun> => {
@@ -4377,7 +4361,7 @@ export function registerIpc({
     const laneId = await resolveFirstAvailableLaneId(ctx, arg.laneId);
     if (!laneId) throw new Error("No lane available for agent session.");
     return ctx.agentChatService.ensureIdentitySession({
-      identityKey: "cto",
+      identityKey: `agent:${arg.agentId}`,
       laneId,
       modelId: arg.modelId ?? null,
       reasoningEffort: arg.reasoningEffort ?? null,

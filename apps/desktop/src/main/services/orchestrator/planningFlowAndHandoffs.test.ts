@@ -221,8 +221,8 @@ describe("VAL-PLAN-001: Planning artifacts written to .ade/plans/", () => {
 // VAL-PLAN-002: ExitPlanMode errors handled gracefully
 // ─────────────────────────────────────────────────────────────────
 
-describe("VAL-PLAN-002: ExitPlanMode errors handled gracefully", () => {
-  it("classifyBlockingWarnings treats ~/.claude/plans/ sandbox block as non-blocking", () => {
+describe("VAL-PLAN-002: planning worker tool failures stay blocking", () => {
+  it("classifyBlockingWarnings treats ~/.claude/plans/ sandbox block as blocking", () => {
     const result = classifyBlockingWarnings({
       warnings: [
         "Tool 'ExitPlanMode' failed: PreToolUse:Write hook error: SANDBOX BLOCKED: File path outside sandbox: /Users/admin/.claude/plans/temporal-kindling-platypus.md",
@@ -230,8 +230,8 @@ describe("VAL-PLAN-002: ExitPlanMode errors handled gracefully", () => {
       summary: "Planning completed successfully.",
     });
 
-    // ~/.claude/plans/ sandbox blocks are expected and should NOT be treated as blocking
-    expect(result.hasBlockingFailure).toBe(false);
+    expect(result.hasBlockingFailure).toBe(true);
+    expect(result.category).toBe("sandbox_block");
   });
 
   it("still blocks real sandbox violations for non-plan paths", () => {
@@ -246,7 +246,7 @@ describe("VAL-PLAN-002: ExitPlanMode errors handled gracefully", () => {
     expect(result.category).toBe("sandbox_block");
   });
 
-  it("treats ~/.claude/plans/ sandbox blocks as non-blocking regardless of tool name", () => {
+  it("treats ~/.claude/plans/ sandbox blocks as blocking regardless of tool name", () => {
     const result = classifyBlockingWarnings({
       warnings: [
         "Tool 'Write' failed: SANDBOX BLOCKED: File path outside sandbox: /Users/admin/.claude/plans/foo.md",
@@ -254,8 +254,8 @@ describe("VAL-PLAN-002: ExitPlanMode errors handled gracefully", () => {
       summary: null,
     });
 
-    // Blocks to ~/.claude/plans/ are benign ExitPlanMode side-effects
-    expect(result.hasBlockingFailure).toBe(false);
+    expect(result.hasBlockingFailure).toBe(true);
+    expect(result.category).toBe("sandbox_block");
   });
 });
 
