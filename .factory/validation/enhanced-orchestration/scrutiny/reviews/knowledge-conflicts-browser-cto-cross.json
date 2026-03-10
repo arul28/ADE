@@ -1,0 +1,45 @@
+{
+  "featureId": "knowledge-conflicts-browser-cto-cross",
+  "reviewedAt": "2026-03-10T10:04:48Z",
+  "commitId": "2d96a2e3f31f2f9d51587e3a54d5867abccac1d3",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "Fail. The commit mainly adds a PhaseCard type field plus a broad test file, but two required runtime paths are still missing: phase-level agent-browser capabilities are never propagated to spawned workers, and worker-reported screenshot/video artifacts are not preserved in the artifact pipeline used by closeout requirements.",
+    "issues": [
+      {
+        "file": "apps/desktop/src/main/services/orchestrator/coordinatorTools.ts",
+        "line": 1204,
+        "severity": "blocking",
+        "description": "`buildPhaseMetadataForNewStep()` copies phase model/validation/budget into new step metadata but never includes the new `PhaseCard.capabilities` field (`coordinatorTools.ts:1211-1221`). Spawned worker metadata then only carries `roleCapabilities` from the team role (`coordinatorTools.ts:905` and `:958`). So setting `capabilities: [\"agent-browser\"]` on a phase has no runtime effect on spawned workers, which means VAL-ENH-050/052 and the runtime half of VAL-CROSS-002 are not actually enforced."
+      },
+      {
+        "file": "apps/desktop/src/main/services/orchestrator/workerTracking.ts",
+        "line": 792,
+        "severity": "blocking",
+        "description": "The artifact extraction path still drops the new media semantics. `ARTIFACT_TYPE_TO_KIND` omits `screenshot` and `video`, so reported media fall back to kind `file`/`custom`, and the artifact key is derived from the title (`workerTracking.ts:792-810`). Closeout later looks up required evidence by exact requirement key (`aiOrchestratorService.ts:2288-2293`), while mission artifact reads still whitelist only the old kinds (`orchestratorQueries.ts:564-572`). A normal agent-browser artifact like \"Login page screenshot\" therefore will not reliably satisfy the `screenshot` / `browser_verification` closeout requirements, so VAL-ENH-061/062/063 and VAL-CROSS-002 remain unmet."
+      },
+      {
+        "file": "apps/desktop/src/main/services/orchestrator/knowledgeConflictsBrowserCto.test.ts",
+        "line": 272,
+        "severity": "non_blocking",
+        "description": "The new coverage is largely type-level or manual-DB setup instead of exercising the real orchestration paths: the agent-browser test only instantiates a `PhaseCard` (`knowledgeConflictsBrowserCto.test.ts:272-285`), the report_result media test only builds a plain object (`:337-352`), and the artifact/closeout tests insert rows directly into `orchestrator_artifacts` (`:374-425`). Those tests can pass even when the actual runtime propagation and artifact registration paths are still broken, which is why the blocking gaps above escaped."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "knowledge",
+      "observation": "The shared library/skill guidance does not document the kvDb schema naming quirks that matter for service tests (for example `projects.display_name`, `orchestrator_steps.step_index`, `orchestrator_attempts.executor_kind`). The worker spent multiple transcript steps reverse-engineering those columns, and the handoff explicitly asked for this to be documented.",
+      "evidence": "`handoffs/2026-03-10T09-55-24-787Z__knowledge-conflicts-browser-cto-cross__d59b8457-09ae-4d65-8ecb-8aaf09ac715d.json` → `handoff.skillFeedback.suggestedChanges[0]`; transcript skeleton shows repeated `Grep`/`Edit` cycles against `kvDb.ts` to fix seed helpers; `.factory/library/architecture.md` contains no mention of these schema-name mismatches."
+    },
+    {
+      "area": "skills",
+      "observation": "`service-worker` procedure compliance is being overstated. The skill requires reading `.factory/library/architecture.md`, but this worker transcript contains no such read while the handoff still reports `followedProcedure: true`.",
+      "evidence": "`.factory/skills/service-worker/SKILL.md` Step 1 requires reading `.factory/library/architecture.md`; the transcript skeleton for worker session `d59b8457-09ae-4d65-8ecb-8aaf09ac715d` includes mission/contract/AGENTS/services reads plus many source-file reads, but no read of `.factory/library/architecture.md`; `handoff.skillFeedback.followedProcedure` is `true`."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Fail: the feature adds types/tests, but the runtime still does not propagate phase `agent-browser` capabilities and still cannot preserve/match screenshot-video artifacts through the artifact→closeout pipeline. The added tests are too shallow to catch those enforcement gaps."
+}

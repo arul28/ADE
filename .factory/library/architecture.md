@@ -91,3 +91,12 @@ export function createMyService({ dep1, dep2 }: { dep1: Dep1Type; dep2: Dep2Type
 - Schema in `kvDb.ts` → `migrate()` function
 - UUID TEXT primary keys
 - Manual flush strategy (125ms debounce)
+
+### Service-Test Schema Quirks
+- When seeding SQLite fixtures, use the exact column names from `apps/desktop/src/main/services/state/kvDb.ts` rather than the camelCase fields used by runtime objects.
+- Common mismatches that have already tripped service workers:
+  - `projects.display_name`
+  - `mission_steps.step_index`
+  - `orchestrator_steps.step_index`
+  - `orchestrator_attempts.executor_kind`
+- If a service test fails during fixture setup, verify the schema names in `kvDb.ts` before assuming the runtime logic is wrong.
