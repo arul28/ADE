@@ -42,22 +42,13 @@ Use for features that involve renderer-side UI work:
 5. For styling: use TailwindCSS classes. Follow the 4px spacing grid. Max 4 font sizes.
 6. Plan empty states, loading states, and error states for every interactive element.
 
-### Step 3: Write Component Tests First (TDD)
+### Step 3: Write Tests (Zustand stores only — skip component tests)
 
-1. Create the test file FIRST (e.g., `MissionSidebar.test.tsx`).
-2. Use `@testing-library/react` with vitest:
-   ```typescript
-   import { render, screen, fireEvent } from '@testing-library/react';
-   import { describe, it, expect, vi } from 'vitest';
-   ```
-3. Mock `window.ade` methods used by the component.
-4. For zustand stores: test the store directly (actions, selectors, derived state).
-5. Write test cases for:
-   - Initial render with various data states (empty, populated, loading)
-   - User interactions (button clicks, tab switches, drag)
-   - Error states and recovery
-   - Store integration (component reads from store, updates on action)
-6. Run tests — they should FAIL (red phase).
+**For zustand stores:** Write unit tests for the store (actions, selectors, derived state) using vitest. These are pure logic tests and high-value.
+
+**For React components:** Do NOT write @testing-library/react component tests unless the feature explicitly requires them. UI correctness is verified via agent-browser (Step 5) which is more reliable than mocking window.ade. Focus your effort on making the code correct, not on test scaffolding for UI components.
+
+**For pure utility functions** (e.g., collapseFeedMessages, computeProgress, classifyErrorSource): Write unit tests — these are high-value, fast tests.
 
 ### Step 4: Implement
 
@@ -76,16 +67,18 @@ Use for features that involve renderer-side UI work:
 
 ### Step 5: Verify
 
-1. Run your component tests: `cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run <testfile> --reporter=verbose`
+1. Run any tests you wrote: `cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run <testfile> --reporter=verbose`
 2. Run the full test suite: `cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run`
    - Your new tests must pass.
    - 2 pre-existing failures are expected (see AGENTS.md).
 3. Run typecheck: `cd /Users/admin/Projects/ADE/apps/desktop && npx tsc --noEmit`
    - Must produce no NEW errors.
-4. If the feature is visual, try to verify with agent-browser:
+4. **IMPORTANT — agent-browser verification is the PRIMARY UI validation method:**
    - Start the app: `cd /Users/admin/Projects/ADE/apps/desktop && npm run dev`
    - Connect: `agent-browser connect 9222`
-   - Navigate to Missions tab and verify rendering
+   - Navigate to Missions tab and verify your changes render correctly
+   - Take screenshots as evidence
+   - This is MORE important than unit tests for UI features
 
 ### Step 6: Commit
 
