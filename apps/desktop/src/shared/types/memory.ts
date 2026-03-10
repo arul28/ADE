@@ -18,6 +18,33 @@ export type MemoryHealthScopeStats = {
   counts: MemoryHealthTierCounts;
 };
 
+export type MemorySearchMode = "lexical" | "hybrid";
+
+export type MemoryEmbeddingModelState = "idle" | "loading" | "ready" | "unavailable";
+
+export type MemoryEmbeddingModelStatus = {
+  modelId: string;
+  state: MemoryEmbeddingModelState;
+  progress: number | null;
+  loaded: number | null;
+  total: number | null;
+  file: string | null;
+  error: string | null;
+};
+
+export type MemoryEmbeddingHealthStats = {
+  entriesEmbedded: number;
+  entriesTotal: number;
+  queueDepth: number;
+  processing: boolean;
+  lastBatchProcessedAt: string | null;
+  cacheEntries: number;
+  cacheHits: number;
+  cacheMisses: number;
+  cacheHitRate: number;
+  model: MemoryEmbeddingModelStatus;
+};
+
 export type MemorySweepLogSummary = {
   sweepId: string;
   projectId: string;
@@ -49,6 +76,7 @@ export type MemoryHealthStats = {
   scopes: MemoryHealthScopeStats[];
   lastSweep: MemorySweepLogSummary | null;
   lastConsolidation: MemoryConsolidationLogSummary | null;
+  embeddings: MemoryEmbeddingHealthStats;
 };
 
 export type MemoryLifecycleSweepResult = {

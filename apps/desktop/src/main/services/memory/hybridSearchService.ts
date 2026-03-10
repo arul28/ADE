@@ -129,6 +129,7 @@ function mapMemoryRow(row: Record<string, unknown>): Memory {
     accessScore: Number(row.access_score ?? row.composite_score ?? 0),
     compositeScore: Number(row.composite_score ?? 0),
     writeGateReason: row.write_gate_reason ? String(row.write_gate_reason) : null,
+    embedded: row.embedding_blob != null,
   };
 }
 

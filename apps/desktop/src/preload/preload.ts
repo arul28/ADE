@@ -353,6 +353,9 @@ import type {
   MissionDashboardSnapshot,
   MissionPreflightRequest,
   MissionPreflightResult,
+  GetMissionRunViewArgs,
+  MissionRunView,
+  ArchiveMissionArgs,
   DeleteMissionArgs,
   MissionArtifact,
   MissionDetail,
@@ -577,6 +580,7 @@ contextBridge.exposeInMainWorld("ade", {
     get: async (missionId: string): Promise<MissionDetail | null> => ipcRenderer.invoke(IPC.missionsGet, { missionId }),
     create: async (args: CreateMissionArgs): Promise<MissionDetail> => ipcRenderer.invoke(IPC.missionsCreate, args),
     update: async (args: UpdateMissionArgs): Promise<MissionDetail> => ipcRenderer.invoke(IPC.missionsUpdate, args),
+    archive: async (args: ArchiveMissionArgs): Promise<void> => ipcRenderer.invoke(IPC.missionsArchive, args),
     delete: async (args: DeleteMissionArgs): Promise<void> => ipcRenderer.invoke(IPC.missionsDelete, args),
     updateStep: async (args: UpdateMissionStepArgs): Promise<MissionStep> => ipcRenderer.invoke(IPC.missionsUpdateStep, args),
     addArtifact: async (args: AddMissionArtifactArgs): Promise<MissionArtifact> => ipcRenderer.invoke(IPC.missionsAddArtifact, args),
@@ -612,6 +616,59 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.missionsGetDashboard),
     preflight: async (args: MissionPreflightRequest): Promise<MissionPreflightResult> =>
       ipcRenderer.invoke(IPC.missionsPreflight, args),
+    getRunView: async (args: GetMissionRunViewArgs): Promise<MissionRunView | null> =>
+      ipcRenderer.invoke(IPC.missionsGetRunView, args),
+    subscribeRunView: (args: GetMissionRunViewArgs, cb: (view: MissionRunView | null) => void) => {
+      let disposed = false;
+      let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+      const refresh = () => {
+        if (disposed) return;
+        void ipcRenderer.invoke(IPC.missionsGetRunView, args).then(
+          (view: MissionRunView | null) => {
+            if (!disposed) cb(view);
+          },
+          () => {}
+        );
+      };
+      const scheduleRefresh = (delayMs = 160) => {
+        if (disposed) return;
+        if (refreshTimer) clearTimeout(refreshTimer);
+        refreshTimer = setTimeout(() => {
+          refreshTimer = null;
+          refresh();
+        }, delayMs);
+      };
+      const missionListener = (_event: Electron.IpcRendererEvent, payload: MissionsEventPayload) => {
+        if (payload.missionId !== args.missionId) return;
+        scheduleRefresh();
+      };
+      const runtimeListener = (_event: Electron.IpcRendererEvent, payload: OrchestratorRuntimeEvent) => {
+        if (args.runId && payload.runId !== args.runId) return;
+        scheduleRefresh();
+      };
+      const threadListener = (_event: Electron.IpcRendererEvent, payload: OrchestratorThreadEvent) => {
+        if (payload.missionId !== args.missionId) return;
+        if (args.runId && payload.runId !== args.runId) return;
+        scheduleRefresh(120);
+      };
+      const dagListener = (_event: Electron.IpcRendererEvent, payload: DagMutationEvent) => {
+        if (args.runId && payload.runId !== args.runId) return;
+        scheduleRefresh(120);
+      };
+      ipcRenderer.on(IPC.missionsEvent, missionListener);
+      ipcRenderer.on(IPC.orchestratorEvent, runtimeListener);
+      ipcRenderer.on(IPC.orchestratorThreadEvent, threadListener);
+      ipcRenderer.on(IPC.orchestratorDagMutation, dagListener);
+      refresh();
+      return () => {
+        disposed = true;
+        if (refreshTimer) clearTimeout(refreshTimer);
+        ipcRenderer.removeListener(IPC.missionsEvent, missionListener);
+        ipcRenderer.removeListener(IPC.orchestratorEvent, runtimeListener);
+        ipcRenderer.removeListener(IPC.orchestratorThreadEvent, threadListener);
+        ipcRenderer.removeListener(IPC.orchestratorDagMutation, dagListener);
+      };
+    },
     onEvent: (cb: (ev: MissionsEventPayload) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: MissionsEventPayload) => cb(payload);
       ipcRenderer.on(IPC.missionsEvent, listener);
@@ -1280,11 +1337,14 @@ contextBridge.exposeInMainWorld("ade", {
       scope?: "user" | "project" | "lane" | "mission" | "agent";
       scopeOwnerId?: string;
       limit?: number;
+      mode?: "lexical" | "hybrid";
       status?: "promoted" | "candidate" | "archived" | "all";
     }): Promise<unknown[]> =>
       ipcRenderer.invoke(IPC.memorySearch, args),
     getHealthStats: async (): Promise<MemoryHealthStats> =>
       ipcRenderer.invoke(IPC.memoryHealthStats),
+    downloadEmbeddingModel: async (): Promise<MemoryHealthStats> =>
+      ipcRenderer.invoke(IPC.memoryDownloadEmbeddingModel),
     runSweep: async (): Promise<MemoryLifecycleSweepResult> =>
       ipcRenderer.invoke(IPC.memoryRunSweep),
     onSweepStatus: (cb: (payload: MemorySweepStatusEventPayload) => void) => {

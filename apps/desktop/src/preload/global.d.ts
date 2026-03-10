@@ -323,6 +323,8 @@ import type {
   MissionDashboardSnapshot,
   MissionPreflightRequest,
   MissionPreflightResult,
+  GetMissionRunViewArgs,
+  MissionRunView,
   GetMissionLogsArgs,
   GetMissionLogsResult,
   ExportMissionLogsArgs,
@@ -332,6 +334,7 @@ import type {
   ListOrchestratorRunsArgs,
   ListOrchestratorTimelineArgs,
   CreateMissionArgs,
+  ArchiveMissionArgs,
   CancelOrchestratorRunArgs,
   CleanupOrchestratorTeamResourcesArgs,
   CleanupOrchestratorTeamResourcesResult,
@@ -525,6 +528,7 @@ declare global {
         get: (missionId: string) => Promise<MissionDetail | null>;
         create: (args: CreateMissionArgs) => Promise<MissionDetail>;
         update: (args: UpdateMissionArgs) => Promise<MissionDetail>;
+        archive: (args: ArchiveMissionArgs) => Promise<void>;
         delete: (args: DeleteMissionArgs) => Promise<void>;
         updateStep: (args: UpdateMissionStepArgs) => Promise<MissionStep>;
         addArtifact: (args: AddMissionArtifactArgs) => Promise<MissionArtifact>;
@@ -544,6 +548,8 @@ declare global {
         getPhaseConfiguration: (missionId: string) => Promise<MissionPhaseConfiguration | null>;
         getDashboard: () => Promise<MissionDashboardSnapshot>;
         preflight: (args: MissionPreflightRequest) => Promise<MissionPreflightResult>;
+        getRunView: (args: GetMissionRunViewArgs) => Promise<MissionRunView | null>;
+        subscribeRunView: (args: GetMissionRunViewArgs, cb: (view: MissionRunView | null) => void) => () => void;
         onEvent: (cb: (ev: MissionsEventPayload) => void) => () => void;
       };
       orchestrator: {
@@ -923,9 +929,11 @@ declare global {
           scope?: "user" | "project" | "lane" | "mission" | "agent";
           scopeOwnerId?: string;
           limit?: number;
+          mode?: "lexical" | "hybrid";
           status?: "promoted" | "candidate" | "archived" | "all";
         }) => Promise<unknown[]>;
         getHealthStats: () => Promise<MemoryHealthStats>;
+        downloadEmbeddingModel: () => Promise<MemoryHealthStats>;
         runSweep: () => Promise<MemoryLifecycleSweepResult>;
         onSweepStatus: (cb: (payload: MemorySweepStatusEventPayload) => void) => () => void;
         runConsolidation: () => Promise<MemoryConsolidationResult>;

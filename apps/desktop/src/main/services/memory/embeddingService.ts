@@ -186,9 +186,17 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
     emitStatus();
   }
 
-  async function ensureExtractor(): Promise<EmbeddingExtractor> {
+  async function ensureExtractor(forceRetry = false): Promise<EmbeddingExtractor> {
     if (extractor) return extractor;
     if (extractorPromise) return extractorPromise;
+    if (forceRetry) {
+      state = "idle";
+      lastError = null;
+      progress = null;
+      loaded = null;
+      total = null;
+      file = null;
+    }
     if (state === "unavailable" && lastError) {
       throw new EmbeddingUnavailableError(lastError);
     }
@@ -279,9 +287,14 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
     }
   }
 
+  async function preload(opts: { forceRetry?: boolean } = {}): Promise<void> {
+    await ensureExtractor(opts.forceRetry === true);
+  }
+
   return {
     embed,
     dispose,
+    preload,
     getModelId: () => modelId,
     getStatus,
     hashContent: hashEmbeddingContent,

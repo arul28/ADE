@@ -5,6 +5,7 @@ import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 import { COLORS, MONO_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 
 const DEFAULT_CONSOLIDATION_MODEL = "anthropic/claude-haiku-4-5";
+const EMBEDDING_POLL_MS = 1500;
 const SECTION_LABEL_STYLE: React.CSSProperties = {
   ...LABEL_STYLE,
   fontSize: 11,
@@ -35,6 +36,26 @@ function createEmptyHealthStats(): MemoryHealthStats {
     ],
     lastSweep: null,
     lastConsolidation: null,
+    embeddings: {
+      entriesEmbedded: 0,
+      entriesTotal: 0,
+      queueDepth: 0,
+      processing: false,
+      lastBatchProcessedAt: null,
+      cacheEntries: 0,
+      cacheHits: 0,
+      cacheMisses: 0,
+      cacheHitRate: 0,
+      model: {
+        modelId: "Xenova/all-MiniLM-L6-v2",
+        state: "idle",
+        progress: null,
+        loaded: null,
+        total: null,
+        file: null,
+        error: null,
+      },
+    },
   };
 }
 
@@ -69,6 +90,40 @@ function scopeLabel(scope: MemoryHealthStats["scopes"][number]["scope"]): string
 function clampPercent(current: number, max: number): number {
   if (!Number.isFinite(current) || !Number.isFinite(max) || max <= 0) return 0;
   return Math.max(0, Math.min(100, Math.round((current / max) * 100)));
+}
+
+function formatPercent(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0%";
+  if (value >= 1) return "100%";
+  return `${Math.round(value * 100)}%`;
+}
+
+function getEmbeddingProgress(stats: MemoryHealthStats): number {
+  return clampPercent(stats.embeddings.entriesEmbedded, Math.max(stats.embeddings.entriesTotal, 1));
+}
+
+function getModelDownloadProgress(stats: MemoryHealthStats): number {
+  const { progress, loaded, total } = stats.embeddings.model;
+  if (typeof progress === "number" && Number.isFinite(progress)) {
+    return Math.max(0, Math.min(100, Math.round(progress)));
+  }
+  if (typeof loaded === "number" && typeof total === "number" && total > 0) {
+    return clampPercent(loaded, total);
+  }
+  return 0;
+}
+
+function getModelLabel(stats: MemoryHealthStats): string {
+  const modelId = stats.embeddings.model.modelId.split("/").pop() ?? stats.embeddings.model.modelId;
+  if (stats.embeddings.model.state === "ready") return `${modelId} loaded`;
+  if (stats.embeddings.model.state === "loading") return "Downloading...";
+  return "Model unavailable";
+}
+
+function shouldPollEmbeddings(stats: MemoryHealthStats): boolean {
+  if (stats.embeddings.model.state === "loading") return true;
+  if (stats.embeddings.processing) return true;
+  return stats.embeddings.entriesTotal > 0 && stats.embeddings.entriesEmbedded < stats.embeddings.entriesTotal;
 }
 
 function sweepSummary(stats: MemoryHealthStats): string {
@@ -114,11 +169,15 @@ export function MemoryHealthTab() {
   const [modelValue, setModelValue] = React.useState(DEFAULT_CONSOLIDATION_MODEL);
   const [modelOptions, setModelOptions] = React.useState<Array<{ id: string; label: string }>>([]);
 
-  const loadDashboard = React.useCallback(async () => {
+  const loadDashboard = React.useCallback(async (opts?: { quiet?: boolean }) => {
     if (!memoryApi?.getHealthStats) {
       setLoadError("Memory health is not available in this build.");
       setLoading(false);
       return;
+    }
+
+    if (!opts?.quiet) {
+      setLoading(true);
     }
 
     try {
@@ -132,10 +191,15 @@ export function MemoryHealthTab() {
       const effectiveAiConfig = effectiveAiRaw && typeof effectiveAiRaw === "object" ? (effectiveAiRaw as AiConfig) : null;
       const nextModelValue = normalizeModelSetting(effectiveAiConfig?.featureModelOverrides?.memory_consolidation)
         || DEFAULT_CONSOLIDATION_MODEL;
-      const configuredModelOptions = includeSelectedModelOption(
-        deriveConfiguredModelOptions(aiStatus),
-        nextModelValue,
-      ).map((entry) => ({ id: entry.id, label: entry.label }));
+      let configuredModelOptions: Array<{ id: string; label: string }> = [{ id: nextModelValue, label: nextModelValue }];
+      try {
+        configuredModelOptions = includeSelectedModelOption(
+          deriveConfiguredModelOptions(aiStatus),
+          nextModelValue,
+        ).map((entry) => ({ id: entry.id, label: entry.label }));
+      } catch {
+        configuredModelOptions = [{ id: nextModelValue, label: nextModelValue }];
+      }
 
       setStats(nextStats);
       setModelOptions(configuredModelOptions);
@@ -151,6 +215,14 @@ export function MemoryHealthTab() {
   React.useEffect(() => {
     void loadDashboard();
   }, [loadDashboard]);
+
+  React.useEffect(() => {
+    if (!memoryApi?.getHealthStats || loadError || !shouldPollEmbeddings(stats)) return undefined;
+    const timer = window.setTimeout(() => {
+      void loadDashboard({ quiet: true });
+    }, EMBEDDING_POLL_MS);
+    return () => window.clearTimeout(timer);
+  }, [loadDashboard, loadError, memoryApi, stats]);
 
   React.useEffect(() => {
     if (!memoryApi) return undefined;
@@ -238,12 +310,29 @@ export function MemoryHealthTab() {
     }
   }, [modelValue]);
 
+  const handleDownloadModel = React.useCallback(async () => {
+    if (!memoryApi?.downloadEmbeddingModel || stats.embeddings.model.state === "loading") return;
+    setActionError(null);
+    try {
+      const nextStats = await memoryApi.downloadEmbeddingModel();
+      setStats(nextStats);
+      setLoadError(null);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    }
+  }, [memoryApi, stats.embeddings.model.state]);
+
+  const embeddingProgress = getEmbeddingProgress(stats);
+  const modelDownloadProgress = getModelDownloadProgress(stats);
+  const modelLabel = getModelLabel(stats);
+  const showDownloadButton = stats.embeddings.model.state !== "loading" && stats.embeddings.model.state !== "ready";
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18, maxWidth: 980 }}>
       <div>
         <h2 style={{ margin: 0, fontSize: 20, color: COLORS.textPrimary }}>Memory Health</h2>
         <p style={{ marginTop: 6, marginBottom: 0, fontSize: 12, color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-          Monitor memory usage, recent maintenance activity, and manual sweep or consolidation controls.
+          Monitor memory usage, embedding coverage, and recent maintenance activity from one place.
         </p>
       </div>
 
@@ -330,6 +419,89 @@ export function MemoryHealthTab() {
             </div>
           );
         })}
+      </section>
+
+      <section style={cardStyle({ padding: 16, display: "grid", gap: 14 })}>
+        <div style={SECTION_LABEL_STYLE}>EMBEDDINGS</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 }}>
+          <section style={{ border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, padding: 12, display: "grid", gap: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+              <div style={{ fontSize: 12, fontFamily: MONO_FONT, color: COLORS.textPrimary, fontWeight: 700 }}>
+                {`${formatNumber(stats.embeddings.entriesEmbedded)} / ${formatNumber(stats.embeddings.entriesTotal)} entries embedded`}
+              </div>
+              <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textSecondary }}>{embeddingProgress}%</div>
+            </div>
+            <div
+              role="progressbar"
+              aria-label="Embedding backfill progress"
+              aria-valuemin={0}
+              aria-valuemax={Math.max(stats.embeddings.entriesTotal, 1)}
+              aria-valuenow={stats.embeddings.entriesEmbedded}
+              style={{ height: 10, background: COLORS.pageBg, border: `1px solid ${COLORS.border}`, overflow: "hidden" }}
+            >
+              <div style={{ width: `${embeddingProgress}%`, height: "100%", background: COLORS.success, transition: "width 180ms ease" }} />
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+              <span>{stats.embeddings.processing ? `Backfill active • ${formatNumber(stats.embeddings.queueDepth)} queued` : "Backfill idle"}</span>
+              <span>{stats.embeddings.lastBatchProcessedAt ? `Last batch ${formatTimestamp(stats.embeddings.lastBatchProcessedAt)}` : "No batches yet"}</span>
+            </div>
+          </section>
+
+          <section style={{ border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, padding: 12, display: "grid", gap: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontSize: 12, fontFamily: MONO_FONT, color: COLORS.textPrimary, fontWeight: 700 }}>{modelLabel}</div>
+                <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, marginTop: 4 }}>
+                  {stats.embeddings.model.file ?? stats.embeddings.model.modelId}
+                </div>
+              </div>
+              {showDownloadButton ? (
+                <button type="button" onClick={() => void handleDownloadModel()} style={outlineButton({ height: 30, padding: "0 10px", fontSize: 10 })}>
+                  Download Model
+                </button>
+              ) : null}
+            </div>
+
+            {stats.embeddings.model.state === "loading" ? (
+              <>
+                <div
+                  role="progressbar"
+                  aria-label="Embedding model download progress"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={modelDownloadProgress}
+                  style={{ height: 10, background: COLORS.pageBg, border: `1px solid ${COLORS.border}`, overflow: "hidden" }}
+                >
+                  <div style={{ width: `${modelDownloadProgress}%`, height: "100%", background: COLORS.info, transition: "width 180ms ease" }} />
+                </div>
+                <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary }}>
+                  {`${modelDownloadProgress}%${stats.embeddings.model.loaded != null && stats.embeddings.model.total != null ? ` • ${formatNumber(stats.embeddings.model.loaded)} / ${formatNumber(stats.embeddings.model.total)}` : ""}`}
+                </div>
+              </>
+            ) : stats.embeddings.model.error ? (
+              <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.warning }}>{stats.embeddings.model.error}</div>
+            ) : null}
+          </section>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
+          <section style={{ border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, padding: 12, display: "grid", gap: 4 }}>
+            <span style={{ ...LABEL_STYLE, fontSize: 9 }}>Cache size</span>
+            <span style={{ fontSize: 16, fontFamily: MONO_FONT, color: COLORS.textPrimary }}>{formatNumber(stats.embeddings.cacheEntries)}</span>
+          </section>
+          <section style={{ border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, padding: 12, display: "grid", gap: 4 }}>
+            <span style={{ ...LABEL_STYLE, fontSize: 9 }}>Hit rate</span>
+            <span style={{ fontSize: 16, fontFamily: MONO_FONT, color: COLORS.textPrimary }}>{formatPercent(stats.embeddings.cacheHitRate)}</span>
+          </section>
+          <section style={{ border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, padding: 12, display: "grid", gap: 4 }}>
+            <span style={{ ...LABEL_STYLE, fontSize: 9 }}>Cache hits</span>
+            <span style={{ fontSize: 16, fontFamily: MONO_FONT, color: COLORS.textPrimary }}>{formatNumber(stats.embeddings.cacheHits)}</span>
+          </section>
+          <section style={{ border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, padding: 12, display: "grid", gap: 4 }}>
+            <span style={{ ...LABEL_STYLE, fontSize: 9 }}>Cache misses</span>
+            <span style={{ fontSize: 16, fontFamily: MONO_FONT, color: COLORS.textPrimary }}>{formatNumber(stats.embeddings.cacheMisses)}</span>
+          </section>
+        </div>
       </section>
 
       <section style={cardStyle({ padding: 16, display: "grid", gap: 14 })}>

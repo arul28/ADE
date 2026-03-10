@@ -254,8 +254,11 @@ import type {
   MissionDashboardSnapshot,
   MissionPreflightRequest,
   MissionPreflightResult,
+  GetMissionRunViewArgs,
+  MissionRunView,
   ResolveMissionInterventionArgs,
   CreateMissionArgs,
+  ArchiveMissionArgs,
   DeleteMissionArgs,
   CancelOrchestratorRunArgs,
   CleanupOrchestratorTeamResourcesArgs,
@@ -434,6 +437,8 @@ import { readCoordinatorCheckpoint } from "../orchestrator/missionStateDoc";
 import type { createMemoryService } from "../memory/memoryService";
 import type { createBatchConsolidationService } from "../memory/batchConsolidationService";
 import type { createMemoryLifecycleService } from "../memory/memoryLifecycleService";
+import type { createEmbeddingService } from "../memory/embeddingService";
+import type { createEmbeddingWorkerService } from "../memory/embeddingWorkerService";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { createWorkerAgentService } from "../cto/workerAgentService";
 import type { createWorkerRevisionService } from "../cto/workerRevisionService";
@@ -502,6 +507,8 @@ export type AppContext = {
   memoryService?: ReturnType<typeof createMemoryService> | null;
   batchConsolidationService?: ReturnType<typeof createBatchConsolidationService> | null;
   memoryLifecycleService?: ReturnType<typeof createMemoryLifecycleService> | null;
+  embeddingService?: ReturnType<typeof createEmbeddingService> | null;
+  embeddingWorkerService?: ReturnType<typeof createEmbeddingWorkerService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
   workerRevisionService?: ReturnType<typeof createWorkerRevisionService> | null;
@@ -650,6 +657,26 @@ function createEmptyMemoryHealthStats() {
     })),
     lastSweep: null,
     lastConsolidation: null,
+    embeddings: {
+      entriesEmbedded: 0,
+      entriesTotal: 0,
+      queueDepth: 0,
+      processing: false,
+      lastBatchProcessedAt: null,
+      cacheEntries: 0,
+      cacheHits: 0,
+      cacheMisses: 0,
+      cacheHitRate: 0,
+      model: {
+        modelId: "Xenova/all-MiniLM-L6-v2",
+        state: "idle" as const,
+        progress: null,
+        loaded: null,
+        total: null,
+        file: null,
+        error: null,
+      },
+    },
   } as {
     scopes: Array<{
       scope: MemoryHealthScope;
@@ -687,6 +714,26 @@ function createEmptyMemoryHealthStats() {
       tokensUsed: number;
       durationMs: number;
     } | null;
+    embeddings: {
+      entriesEmbedded: number;
+      entriesTotal: number;
+      queueDepth: number;
+      processing: boolean;
+      lastBatchProcessedAt: string | null;
+      cacheEntries: number;
+      cacheHits: number;
+      cacheMisses: number;
+      cacheHitRate: number;
+      model: {
+        modelId: string;
+        state: "idle" | "loading" | "ready" | "unavailable";
+        progress: number | null;
+        loaded: number | null;
+        total: number | null;
+        file: string | null;
+        error: string | null;
+      };
+    };
   };
 }
 
@@ -726,6 +773,49 @@ function getMemoryHealthStats(ctx: AppContext) {
   for (const scope of stats.scopes) {
     scope.current = scope.counts.tier1 + scope.counts.tier2 + scope.counts.tier3;
   }
+
+  const embeddingStatus = ctx.embeddingService?.getStatus();
+  const embeddingWorkerStatus = ctx.embeddingWorkerService?.getStatus();
+  const embeddedCountRow = ctx.db.get<{ count: number | null }>(
+    `
+      SELECT COUNT(*) AS count
+      FROM unified_memories m
+      WHERE m.project_id = ?
+        AND m.status != 'archived'
+        AND EXISTS (
+          SELECT 1
+          FROM unified_memory_embeddings e
+          WHERE e.memory_id = m.id
+        )
+    `,
+    [ctx.projectId],
+  );
+  const entriesEmbedded = Number(embeddedCountRow?.count ?? 0);
+  const entriesTotal = stats.scopes.reduce((total, scope) => total + scope.current, 0);
+  const cacheHits = Number(embeddingStatus?.cacheHits ?? 0);
+  const cacheMisses = Number(embeddingStatus?.cacheMisses ?? 0);
+  const cacheTotal = cacheHits + cacheMisses;
+
+  stats.embeddings = {
+    entriesEmbedded: Number.isFinite(entriesEmbedded) ? entriesEmbedded : 0,
+    entriesTotal,
+    queueDepth: Number(embeddingWorkerStatus?.queueDepth ?? 0),
+    processing: embeddingWorkerStatus?.processing === true,
+    lastBatchProcessedAt: embeddingWorkerStatus?.lastProcessedAt ?? null,
+    cacheEntries: Number(embeddingStatus?.cacheEntries ?? 0),
+    cacheHits,
+    cacheMisses,
+    cacheHitRate: cacheTotal > 0 ? cacheHits / cacheTotal : 0,
+    model: {
+      modelId: embeddingStatus?.modelId ?? "Xenova/all-MiniLM-L6-v2",
+      state: embeddingStatus?.state ?? "idle",
+      progress: embeddingStatus?.progress ?? null,
+      loaded: embeddingStatus?.loaded ?? null,
+      total: embeddingStatus?.total ?? null,
+      file: embeddingStatus?.file ?? null,
+      error: embeddingStatus?.error ?? null,
+    },
+  };
 
   const lastSweep = ctx.db.get<MemorySweepLogRow>(
     `
@@ -1594,6 +1684,11 @@ export function registerIpc({
     return await ctx.missionPreflightService.runPreflight(arg);
   });
 
+  ipcMain.handle(IPC.missionsGetRunView, async (_event, arg: GetMissionRunViewArgs): Promise<MissionRunView | null> => {
+    const ctx = getCtx();
+    return await ctx.aiOrchestratorService.getRunView(arg);
+  });
+
   ipcMain.handle(IPC.missionsCreate, async (_event, arg: CreateMissionArgs): Promise<MissionDetail> => {
     const ctx = getCtx();
     const prompt = typeof arg?.prompt === "string" ? arg.prompt.trim() : "";
@@ -1688,6 +1783,11 @@ export function registerIpc({
     const updated = ctx.missionService.update(arg);
     await safeRefreshMissionPack(ctx, updated.id, "mission_updated");
     return updated;
+  });
+
+  ipcMain.handle(IPC.missionsArchive, async (_event, arg: ArchiveMissionArgs): Promise<void> => {
+    const ctx = getCtx();
+    ctx.missionService.archive(arg);
   });
 
   ipcMain.handle(IPC.missionsDelete, async (_event, arg: DeleteMissionArgs): Promise<void> => {
@@ -4087,6 +4187,7 @@ export function registerIpc({
         scope?: "user" | "project" | "lane" | "mission" | "agent";
         scopeOwnerId?: string;
         limit?: number;
+        mode?: "lexical" | "hybrid";
         status?: "promoted" | "candidate" | "archived" | "all";
       }
     ) => {
@@ -4102,12 +4203,31 @@ export function registerIpc({
       : (arg?.status === "promoted" || arg?.status === "candidate" || arg?.status === "archived")
         ? arg.status
         : "promoted";
-    return ctx.memoryService.searchMemories(arg.query, pid, scope, arg?.limit ?? 10, status, scopeOwnerId);
+    return ctx.memoryService.searchMemories(
+      arg.query,
+      pid,
+      scope,
+      arg?.limit ?? 10,
+      status,
+      scopeOwnerId,
+      arg?.mode === "lexical" ? "lexical" : "hybrid",
+    );
     }
   );
 
   ipcMain.handle(IPC.memoryHealthStats, async () => {
     const ctx = getCtx();
+    return getMemoryHealthStats(ctx);
+  });
+
+  ipcMain.handle(IPC.memoryDownloadEmbeddingModel, async () => {
+    const ctx = getCtx();
+    if (!ctx.embeddingService?.preload) {
+      throw new Error("Embedding service is not available.");
+    }
+    void ctx.embeddingService.preload({ forceRetry: true }).catch(() => {
+      // Health polling will pick up the unavailable state; the click itself should remain responsive.
+    });
     return getMemoryHealthStats(ctx);
   });
 

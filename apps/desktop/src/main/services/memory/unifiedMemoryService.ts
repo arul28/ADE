@@ -20,6 +20,7 @@ export type MemoryCategory =
 export type MemoryImportance = "low" | "medium" | "high";
 export type MemoryStatus = "candidate" | "promoted" | "archived";
 export type MemorySourceType = "agent" | "system" | "user" | "mission_promotion" | "consolidation";
+export type MemorySearchMode = "lexical" | "hybrid";
 
 type CreateUnifiedMemoryServiceOpts = {
   onMemoryMutated?: () => void;
@@ -63,6 +64,7 @@ export type Memory = {
   accessScore: number;
   compositeScore: number;
   writeGateReason: string | null;
+  embedded?: boolean;
 };
 
 export type SharedFact = {
@@ -104,6 +106,7 @@ export type SearchMemoryOpts = {
   scope?: UnifiedMemoryScope;
   scopeOwnerId?: string | null;
   limit?: number;
+  mode?: MemorySearchMode;
   status?: MemoryStatus | ReadonlyArray<MemoryStatus>;
   tiers?: MemoryTier[];
 };
@@ -355,6 +358,7 @@ function mapMemoryRow(row: Record<string, unknown>): Memory {
     accessScore: Number(row.access_score ?? row.composite_score ?? 0),
     compositeScore: Number(row.composite_score ?? 0),
     writeGateReason: row.write_gate_reason ? String(row.write_gate_reason) : null,
+    embedded: row.embedded === true || Number(row.embedded ?? 0) === 1 || row.embedding_blob != null,
   };
 }
 
@@ -910,10 +914,14 @@ export function createUnifiedMemoryService(db: AdeDb, serviceOpts: CreateUnified
   function getCandidateMemories(projectId: string, limit = 20): Memory[] {
     const rows = db.all<Record<string, unknown>>(
       `
-        SELECT *
-        FROM unified_memories
-        WHERE project_id = ?
-          AND status = 'candidate'
+        SELECT m.*, EXISTS(
+          SELECT 1
+          FROM unified_memory_embeddings e
+          WHERE e.memory_id = m.id
+        ) AS embedded
+        FROM unified_memories m
+        WHERE m.project_id = ?
+          AND m.status = 'candidate'
         ORDER BY confidence DESC, observation_count DESC, created_at DESC
         LIMIT ?
       `,
@@ -933,30 +941,38 @@ export function createUnifiedMemoryService(db: AdeDb, serviceOpts: CreateUnified
     const words = normalizeMemoryForDedup(opts.query).split(/\s+/).filter(Boolean);
     const params: Array<string | number | null> = [opts.projectId];
 
-    let sql = `SELECT * FROM unified_memories WHERE project_id = ?`;
+    let sql = `
+      SELECT m.*, EXISTS(
+        SELECT 1
+        FROM unified_memory_embeddings e
+        WHERE e.memory_id = m.id
+      ) AS embedded
+      FROM unified_memories m
+      WHERE m.project_id = ?
+    `;
 
     if (opts.scope) {
-      sql += ` AND scope = ?`;
+      sql += ` AND m.scope = ?`;
       params.push(opts.scope);
     }
 
     if (opts.scopeOwnerId !== undefined) {
-      sql += ` AND COALESCE(scope_owner_id, '') = ?`;
+      sql += ` AND COALESCE(m.scope_owner_id, '') = ?`;
       params.push(String(opts.scopeOwnerId ?? ""));
     }
 
     if (statusList.length > 0) {
-      sql += ` AND status IN (${statusList.map(() => "?").join(",")})`;
+      sql += ` AND m.status IN (${statusList.map(() => "?").join(",")})`;
       params.push(...statusList);
     }
 
     if (opts.tiers?.length) {
-      sql += ` AND tier IN (${opts.tiers.map(() => "?").join(",")})`;
+      sql += ` AND m.tier IN (${opts.tiers.map(() => "?").join(",")})`;
       params.push(...opts.tiers);
     }
 
     if (words.length > 0) {
-      const contentFilters = words.map(() => `LOWER(content) LIKE ?`).join(" AND ");
+      const contentFilters = words.map(() => `LOWER(m.content) LIKE ?`).join(" AND ");
       sql += ` AND ${contentFilters}`;
       for (const word of words) {
         params.push(`%${word}%`);
@@ -964,7 +980,7 @@ export function createUnifiedMemoryService(db: AdeDb, serviceOpts: CreateUnified
     }
 
     const fetchLimit = limit * 4;
-    sql += ` ORDER BY pinned DESC, tier ASC, updated_at DESC LIMIT ?`;
+    sql += ` ORDER BY m.pinned DESC, m.tier ASC, m.updated_at DESC LIMIT ?`;
     params.push(fetchLimit);
 
     const rows = db.all<Record<string, unknown>>(sql, params);
@@ -1021,8 +1037,9 @@ export function createUnifiedMemoryService(db: AdeDb, serviceOpts: CreateUnified
   }
 
   async function search(opts: SearchMemoryOpts): Promise<Memory[]> {
-    const hybrid = await searchHybrid(opts);
-    const scored = hybrid ?? searchLexical(opts);
+    const scored = opts.mode === "lexical"
+      ? searchLexical(opts)
+      : (await searchHybrid(opts)) ?? searchLexical(opts);
 
     for (const entry of scored) {
       updateAccessStats(entry.id, entry.compositeScore);
@@ -1037,13 +1054,15 @@ export function createUnifiedMemoryService(db: AdeDb, serviceOpts: CreateUnified
     scope?: MemoryScope,
     limit = 10,
     status: MemoryStatus | ReadonlyArray<MemoryStatus> = "promoted",
-    scopeOwnerId?: string | null
+    scopeOwnerId?: string | null,
+    mode: MemorySearchMode = "hybrid"
   ): Promise<Memory[]> {
     return await search({
       query,
       projectId,
       scope: scope ? normalizeScope(scope) : undefined,
       limit,
+      mode,
       status,
       ...(scopeOwnerId !== undefined ? { scopeOwnerId } : {}),
     });

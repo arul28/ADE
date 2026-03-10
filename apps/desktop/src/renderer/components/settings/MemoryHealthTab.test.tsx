@@ -48,6 +48,26 @@ function createHealthStats(overrides: Partial<MemoryHealthStats> = {}): MemoryHe
     ],
     lastSweep: null,
     lastConsolidation: null,
+    embeddings: {
+      entriesEmbedded: 0,
+      entriesTotal: 0,
+      queueDepth: 0,
+      processing: false,
+      lastBatchProcessedAt: null,
+      cacheEntries: 0,
+      cacheHits: 0,
+      cacheMisses: 0,
+      cacheHitRate: 0,
+      model: {
+        modelId: "Xenova/all-MiniLM-L6-v2",
+        state: "idle",
+        progress: null,
+        loaded: null,
+        total: null,
+        file: null,
+        error: null,
+      },
+    },
     ...overrides,
   };
 }
@@ -137,6 +157,7 @@ function setupWindowAde(options: BridgeOptions = {}) {
   (window as any).ade = {
     memory: {
       getHealthStats,
+      downloadEmbeddingModel: vi.fn(async () => createHealthStats()),
       runSweep,
       runConsolidation,
       onSweepStatus: vi.fn((cb: (payload: MemorySweepStatusEventPayload) => void) => {
