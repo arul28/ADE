@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
-import { GearSix, GitBranch, BookOpenText, Robot, Terminal, Keyboard, Lightning, Plugs, SquaresFour, Stack, Globe, Plus, X } from "@phosphor-icons/react";
+import { GearSix, GitBranch, BookOpenText, Robot, Terminal, Keyboard, Lightning, Plugs, SquaresFour, Stack, Globe, Database, Plus, X } from "@phosphor-icons/react";
 import { GeneralSection } from "../settings/GeneralSection";
 import { ProvidersSection } from "../settings/ProvidersSection";
 import { GitHubSection } from "../settings/GitHubSection";
@@ -12,6 +12,7 @@ import { KeybindingsSection } from "../settings/KeybindingsSection";
 import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
 import { ProxyAndPreviewSection } from "../settings/ProxyAndPreviewSection";
 import { DiagnosticsDashboardSection } from "../settings/DiagnosticsDashboardSection";
+import { MemoryHealthTab } from "../settings/MemoryHealthTab";
 import { COLORS, MONO_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton, dangerButton } from "../lanes/laneDesignTokens";
 import { ConfirmDialog, PromptDialog, useConfirmDialog, usePromptDialog } from "../shared/InlineDialogs";
 import type { PhaseProfile, PhaseCard } from "../../../shared/types";
@@ -21,6 +22,7 @@ const SECTIONS = [
   { id: "general", label: "General", icon: GearSix },
   { id: "providers", label: "Providers", icon: Plugs },
   { id: "github", label: "GitHub", icon: GitBranch },
+  { id: "memory", label: "Memory", icon: Database },
   { id: "context", label: "Context & Docs", icon: BookOpenText },
   { id: "automations", label: "Automations", icon: Robot },
   { id: "terminals", label: "Terminals", icon: Terminal },
@@ -205,8 +207,8 @@ function PhaseProfileSettingsCard({
                     model: { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: "medium" },
                     budget: {},
                     orderingConstraints: {},
-                    askQuestions: { enabled: false, mode: "never" },
-                    validationGate: { tier: "self", required: false },
+                    askQuestions: { enabled: false },
+                    validationGate: { tier: "none", required: false },
                     isBuiltIn: false,
                     isCustom: true,
                     position: prev.length,
@@ -339,7 +341,7 @@ function PhaseProfilesSection() {
       <div style={SECTION_LABEL}>PHASE PROFILES</div>
 
       <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: MONO_FONT, marginBottom: 12 }}>
-        Phase profiles define the sequence of work phases for missions (development, testing, validation, PR). Built-in profiles can be viewed but not edited. Clone or create custom profiles to customize phase descriptions, instructions, models, validation gates, and clarification settings.
+        Phase profiles define the sequence of work phases for missions. Built-in profiles can be viewed but not edited. Clone or create custom profiles to customize phase descriptions, custom instructions, models, and Planning question behavior.
       </div>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
@@ -520,6 +522,7 @@ export function SettingsPage() {
         {section === "general" && <GeneralSection />}
         {section === "providers" && <ProvidersSection />}
         {section === "github" && <GitHubSection />}
+        {section === "memory" && <MemoryHealthTab />}
         {section === "context" && <ContextSection />}
         {section === "automations" && <AutomationsSection />}
         {section === "terminals" && <TerminalProfilesSection />}

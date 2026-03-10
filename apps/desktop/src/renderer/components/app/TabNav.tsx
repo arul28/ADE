@@ -12,6 +12,7 @@ import {
   Robot,
   Strategy,
   Brain,
+  Flask,
   GearSix,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
@@ -30,6 +31,7 @@ const mainItems = [
   { to: "/automations", label: "Automations", icon: Robot },
   { to: "/missions", label: "Missions", icon: Strategy },
   { to: "/cto", label: "CTO", icon: Brain },
+  { to: "/test", label: "Test", icon: Flask },
 ] as const;
 
 const settingsItem = { to: "/settings", label: "Settings", icon: GearSix } as const;

@@ -90,6 +90,12 @@ function insertRunRow(
 
 async function createFixture(options: {
   runtimeRun?: ReturnType<typeof vi.fn>;
+  memoryService?: {
+    getMemoryBudget: ReturnType<typeof vi.fn>;
+  };
+  ctoStateService?: {
+    appendSubordinateActivity: ReturnType<typeof vi.fn>;
+  };
   autoStart?: boolean;
   staleLockMs?: number;
   maintenanceIntervalMs?: number;
@@ -123,6 +129,8 @@ async function createFixture(options: {
     workerTaskSessionService,
     workerAdapterRuntimeService: { run: runtimeRun } as any,
     workerBudgetService: { recordCostEvent } as any,
+    memoryService: options.memoryService as any,
+    ctoStateService: options.ctoStateService as any,
     logger: createLogger(),
     autoStart: options.autoStart ?? false,
     staleLockMs: options.staleLockMs,
@@ -292,6 +300,111 @@ describe("workerHeartbeatService", () => {
     expect(run?.status).toBe("completed");
     expect((run?.result as Record<string, unknown>)?.heartbeatOk).toBe(true);
     expect((run?.result as Record<string, unknown>)?.outputPreview).toBe("HEARTBEAT_OK");
+    fixture.dispose();
+  });
+
+  it("injects worker reconstruction, task session, and project memory into runtime prompts", async () => {
+    const runtimeRun = vi.fn(async () => ({
+      ok: true,
+      adapterType: "codex-local",
+      statusCode: 200,
+      outputText: "looked good",
+      usage: null,
+    }));
+    const memoryService = {
+      getMemoryBudget: vi.fn(() => ([
+        {
+          category: "pattern",
+          content: "Reuse the issue lock before starting a second worker on the same issue.",
+        },
+      ])),
+    };
+    const fixture = await createFixture({ runtimeRun, memoryService });
+    const worker = fixture.createWorker({ name: "Memory Rich Worker" });
+    fixture.workerAgentService.updateCoreMemory(worker.id, {
+      projectSummary: "Owns worker-side issue triage and escalation.",
+      criticalConventions: ["Prefer HEARTBEAT_OK when there is no actionable work."],
+      activeFocus: ["Issue triage"],
+    });
+
+    await fixture.heartbeat.triggerWakeup({
+      agentId: worker.id,
+      reason: "manual",
+      taskKey: "task:memory-rich",
+      issueKey: "ISSUE-900",
+      prompt: "Inspect the issue queue and decide whether escalation is needed.",
+      context: { queue: "bugs", severity: "high" },
+    });
+
+    expect(runtimeRun).toHaveBeenCalledTimes(1);
+    const firstCall = (runtimeRun.mock.calls as Array<any[]>)[0]?.[0] as { prompt?: string } | undefined;
+    const prompt = String(firstCall?.prompt ?? "");
+    expect(prompt).toContain("System context (worker reconstruction, do not echo verbatim):");
+    expect(prompt).toContain("Owns worker-side issue triage and escalation.");
+    expect(prompt).toContain("Project memory highlights:");
+    expect(prompt).toContain("Reuse the issue lock before starting a second worker on the same issue.");
+    expect(prompt).toContain("Task session state:");
+    expect(prompt).toContain("task:memory-rich");
+    expect(prompt).toContain("Current wakeup request:");
+    fixture.dispose();
+  });
+
+  it("appends worker session logs after escalated runs so reconstruction memory compounds", async () => {
+    const runtimeRun = vi.fn(async () => ({
+      ok: true,
+      adapterType: "codex-local",
+      statusCode: 200,
+      outputText: "Reviewed alerts and found no actionable follow-up.",
+      usage: null,
+    }));
+    const fixture = await createFixture({ runtimeRun });
+    const worker = fixture.createWorker({ name: "Session Log Worker" });
+
+    await fixture.heartbeat.triggerWakeup({
+      agentId: worker.id,
+      reason: "manual",
+      taskKey: "task:session-log",
+      prompt: "Review the alert backlog.",
+    });
+
+    const sessions = fixture.workerAgentService.listSessionLogs(worker.id, 10);
+    expect(sessions.length).toBe(1);
+    expect(sessions[0]?.summary).toContain("Wake reason: manual.");
+    expect(sessions[0]?.summary).toContain("task:session-log");
+    fixture.dispose();
+  });
+
+  it("propagates meaningful worker runs into CTO subordinate activity", async () => {
+    const runtimeRun = vi.fn(async () => ({
+      ok: true,
+      adapterType: "codex-local",
+      statusCode: 200,
+      outputText: "Reviewed alerts and found no actionable follow-up.",
+      usage: null,
+    }));
+    const ctoStateService = {
+      appendSubordinateActivity: vi.fn(),
+    };
+    const fixture = await createFixture({ runtimeRun, ctoStateService });
+    const worker = fixture.createWorker({ name: "Digest Worker" });
+
+    await fixture.heartbeat.triggerWakeup({
+      agentId: worker.id,
+      reason: "manual",
+      taskKey: "task:cto-digest",
+      issueKey: "ISSUE-42",
+      prompt: "Review the alert backlog.",
+    });
+
+    expect(ctoStateService.appendSubordinateActivity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: worker.id,
+        agentName: "Digest Worker",
+        activityType: "worker_run",
+        taskKey: "task:cto-digest",
+        issueKey: "ISSUE-42",
+      })
+    );
     fixture.dispose();
   });
 

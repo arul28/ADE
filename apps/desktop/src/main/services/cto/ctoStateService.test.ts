@@ -274,4 +274,35 @@ describe("ctoStateService", () => {
 
     fixture.db.close();
   });
+
+  it("tracks subordinate activity and exposes it in CTO reconstruction context", async () => {
+    const fixture = await createFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    const entry = service.appendSubordinateActivity({
+      agentId: "mobile-dev",
+      agentName: "Mobile Dev",
+      activityType: "chat_turn",
+      summary: "Investigated navigation regressions and proposed a stack-level fix.",
+      sessionId: "session-mobile",
+      taskKey: "task:navigation-fix",
+      issueKey: "ISSUE-77",
+    });
+
+    expect(entry.agentId).toBe("mobile-dev");
+    const snapshot = service.getSnapshot(10);
+    expect(snapshot.recentSubordinateActivity.length).toBe(1);
+    expect(snapshot.recentSubordinateActivity[0]?.summary).toContain("navigation regressions");
+
+    const reconstruction = service.buildReconstructionContext(10);
+    expect(reconstruction).toContain("Recent Employee Activity");
+    expect(reconstruction).toContain("Mobile Dev");
+    expect(reconstruction).toContain("task:navigation-fix");
+
+    fixture.db.close();
+  });
 });

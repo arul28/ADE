@@ -26,14 +26,27 @@ function mockSession(overrides: Partial<AgentChatSessionSummary> = {}): AgentCha
 
 let eventCallback: ((envelope: AgentChatEventEnvelope) => void) | null = null;
 
+function clickEnabledModelOption(name: RegExp | string) {
+  const option = screen
+    .getAllByRole("option", { name })
+    .find((candidate) => candidate.getAttribute("aria-disabled") !== "true");
+  expect(option).toBeTruthy();
+  fireEvent.click(option!);
+}
+
 function setupWindowAde(overrides: {
   sessions?: AgentChatSessionSummary[];
   codexAvailable?: boolean;
   claudeAvailable?: boolean;
+  availableModelIds?: string[];
 } = {}) {
   const sessions = overrides.sessions ?? [];
   const codexAvailable = overrides.codexAvailable ?? true;
   const claudeAvailable = overrides.claudeAvailable ?? true;
+  const availableModelIds = overrides.availableModelIds ?? [
+    ...(codexAvailable ? ["openai/gpt-5.3-codex"] : []),
+    ...(claudeAvailable ? ["anthropic/claude-sonnet-4-6"] : []),
+  ];
 
   (window as any).ade = {
     ai: {
@@ -47,10 +60,7 @@ function setupWindowAde(overrides: {
           codex: codexAvailable ? [{ id: "gpt-5.3-codex", label: "GPT-5.3 Codex" }] : [],
           claude: claudeAvailable ? [{ id: "sonnet", label: "Claude Sonnet" }] : [],
         },
-        availableModelIds: [
-          ...(codexAvailable ? ["openai/gpt-5.3-codex"] : []),
-          ...(claudeAvailable ? ["anthropic/claude-sonnet-4-6"] : []),
-        ],
+        availableModelIds,
         detectedAuth: [
           ...(codexAvailable ? [{ type: "cli-subscription", cli: "codex", authenticated: true, verified: true }] : []),
           ...(claudeAvailable ? [{ type: "cli-subscription", cli: "claude", authenticated: true, verified: true }] : []),
@@ -249,7 +259,7 @@ describe("AgentChatPane", () => {
     });
 
     await act(async () => {
-      fireEvent.click(screen.getByRole("option", { name: /Claude Sonnet 4\.6/i }));
+      clickEnabledModelOption(/Claude Sonnet 4\.6/i);
     });
 
     await act(async () => {
@@ -340,7 +350,40 @@ describe("AgentChatPane", () => {
     render(<AgentChatPane laneId="lane-1" />);
 
     await waitFor(() => {
-      expect(screen.getByText("Start a conversation")).toBeTruthy();
+      expect(screen.getByText("Start typing below")).toBeTruthy();
+    });
+  });
+
+  it("renders the minimal empty state when embedded in the work launcher", async () => {
+    setupWindowAde({ sessions: [] });
+    render(<AgentChatPane laneId="lane-1" forceDraftMode hideSessionTabs draftLayout="embedded" />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Start typing below")).toBeTruthy();
+      // Quick start suggestions are available
+      expect(screen.getByText("Explain the project structure")).toBeTruthy();
+    });
+  });
+
+  it("sends with default execution mode when no selector is present", async () => {
+    setupWindowAde({ sessions: [] });
+    render(<AgentChatPane laneId="lane-1" forceDraftMode hideSessionTabs draftLayout="embedded" />);
+
+    await act(async () => {
+      fireEvent.change(screen.getByPlaceholderText("Message the agent..."), {
+        target: { value: "Use the configured agents to review the repo" },
+      });
+      fireEvent.click(screen.getByTitle("Send"));
+    });
+
+    await waitFor(() => {
+      const ade = (window as any).ade;
+      expect(ade.agentChat.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          displayText: "Use the configured agents to review the repo",
+          executionMode: "focused",
+        }),
+      );
     });
   });
 
@@ -461,8 +504,7 @@ describe("AgentChatPane", () => {
       expect(screen.getByRole("listbox")).toBeTruthy();
     });
     await act(async () => {
-      const claudeOption = screen.getByRole("option", { name: /Claude Sonnet 4\.6/ });
-      fireEvent.click(claudeOption);
+      clickEnabledModelOption(/Claude Sonnet 4\.6/i);
     });
     await waitFor(() => {
       expect(modelButton.textContent).toContain("Claude Sonnet 4.6");
@@ -511,7 +553,7 @@ describe("AgentChatPane", () => {
       expect(screen.getByRole("listbox")).toBeTruthy();
     });
     await act(async () => {
-      fireEvent.click(screen.getByRole("option", { name: /Claude Sonnet 4\.6/i }));
+      clickEnabledModelOption(/Claude Sonnet 4\.6/i);
     });
 
     await waitFor(() => {
@@ -524,6 +566,29 @@ describe("AgentChatPane", () => {
 
     await waitFor(() => {
       expect(modelButton.textContent).toContain("GPT-5.3 Codex");
+    });
+  });
+
+  it("keeps an active session model selected even when it is not currently configured", async () => {
+    const session = mockSession({
+      sessionId: "latest-session",
+      provider: "unified",
+      model: "gpt-5-chat-latest",
+      modelId: "openai/gpt-5-chat-latest",
+      title: "Latest model thread",
+    });
+    setupWindowAde({
+      sessions: [session],
+      availableModelIds: ["anthropic/claude-sonnet-4-6"],
+      codexAvailable: false,
+      claudeAvailable: true,
+    });
+
+    render(<AgentChatPane laneId="lane-1" />);
+
+    const modelButton = await screen.findByLabelText("Select model");
+    await waitFor(() => {
+      expect(modelButton.textContent).toContain("GPT-5 Chat Latest");
     });
   });
 
@@ -570,7 +635,7 @@ describe("AgentChatPane", () => {
       expect(screen.getByRole("listbox")).toBeTruthy();
     });
     await act(async () => {
-      fireEvent.click(screen.getByRole("option", { name: /Claude Sonnet 4\.6/ }));
+      clickEnabledModelOption(/Claude Sonnet 4\.6/i);
     });
 
     await act(async () => {
@@ -619,7 +684,7 @@ describe("AgentChatPane", () => {
       expect(screen.getByRole("listbox")).toBeTruthy();
     });
     await act(async () => {
-      fireEvent.click(screen.getByRole("option", { name: /Claude Sonnet 4\.6/ }));
+      clickEnabledModelOption(/Claude Sonnet 4\.6/i);
     });
 
     await act(async () => {

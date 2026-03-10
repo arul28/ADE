@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowsDownUp, Trash, GithubLogo, CheckCircle, XCircle, Circle } from "@phosphor-icons/react";
+import { ArrowsDownUp, Trash, GithubLogo, CheckCircle, XCircle, Circle, Sparkle } from "@phosphor-icons/react";
 import type {
   LandResult,
   LaneSummary,
@@ -8,12 +8,15 @@ import type {
   PrSummary,
   PrWithConflicts,
   QueueLandingState,
+  QueueRehearsalState,
 } from "../../../../shared/types";
 import { EmptyState } from "../../ui/EmptyState";
 import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { PrRebaseBanner } from "../PrRebaseBanner";
 import { usePrs } from "../state/PrsContext";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
+import { ResolverTerminalModal } from "../../shared/conflictResolver/ResolverTerminalModal";
+import { normalizeBranchName, type BackgroundResolverSession } from "../shared/prHelpers";
 
 type QueueGroup = {
   groupId: string;
@@ -21,6 +24,7 @@ type QueueGroup = {
   targetBranch: string | null;
   members: Array<{ prId: string; laneId: string; laneName: string; position: number; pr: PrWithConflicts | null }>;
   landingState: QueueLandingState | null;
+  rehearsalState: QueueRehearsalState | null;
 };
 
 /* ---------- Status badge for queue group list items ---------- */
@@ -91,44 +95,136 @@ type QueueTabProps = {
 
 export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selectedGroupId, onSelectGroup, onRefresh }: QueueTabProps) {
   const laneById = React.useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
-  const { rebaseNeeds, autoRebaseStatuses, setActiveTab } = usePrs();
+  const {
+    rebaseNeeds,
+    autoRebaseStatuses,
+    queueStates,
+    queueRehearsals,
+    setActiveTab,
+    resolverModel,
+    resolverReasoningLevel,
+    setResolverModel,
+    setResolverReasoningLevel
+  } = usePrs();
 
   const [landBusy, setLandBusy] = React.useState(false);
   const [landError, setLandError] = React.useState<string | null>(null);
   const [landResult, setLandResult] = React.useState<LandResult | null>(null);
   const [archiveOnLand, setArchiveOnLand] = React.useState(false);
+  const [queueCiGating, setQueueCiGating] = React.useState(true);
+  const [autoResolveAll, setAutoResolveAll] = React.useState(false);
+  const [queueActionBusy, setQueueActionBusy] = React.useState(false);
   const [deleteTarget, setDeleteTarget] = React.useState<string | null>(null);
   const [deleteBusy, setDeleteBusy] = React.useState(false);
   const [deleteCloseGh, setDeleteCloseGh] = React.useState(false);
+  const [resolverOpen, setResolverOpen] = React.useState(false);
+  const [backgroundSession, setBackgroundSession] = React.useState<BackgroundResolverSession | null>(null);
+  const [resolverConfig, setResolverConfig] = React.useState<{ sourceLaneId: string; targetLaneId: string } | null>(null);
 
   // Build queue groups from merge contexts
   const queueGroups = React.useMemo(() => {
     const groupMap = new Map<string, QueueGroup>();
+    const prById = new Map(prs.map((pr) => [pr.id, pr] as const));
+
+    for (const queueState of Object.values(queueStates)) {
+      groupMap.set(queueState.groupId, {
+        groupId: queueState.groupId,
+        name: queueState.groupName,
+        targetBranch: queueState.targetBranch,
+        landingState: queueState,
+        rehearsalState: queueRehearsals[queueState.groupId] ?? null,
+        members: queueState.entries.map((entry) => ({
+          prId: entry.prId,
+          laneId: entry.laneId,
+          laneName: laneById.get(entry.laneId)?.name ?? entry.laneName,
+          position: entry.position,
+          pr: prById.get(entry.prId) ?? null,
+        })),
+      });
+    }
+
+    for (const rehearsalState of Object.values(queueRehearsals)) {
+      const existing = groupMap.get(rehearsalState.groupId);
+      if (existing) {
+        existing.rehearsalState = rehearsalState;
+        existing.targetBranch = existing.targetBranch ?? rehearsalState.targetBranch;
+        continue;
+      }
+      groupMap.set(rehearsalState.groupId, {
+        groupId: rehearsalState.groupId,
+        name: rehearsalState.groupName,
+        targetBranch: rehearsalState.targetBranch,
+        landingState: queueStates[rehearsalState.groupId] ?? null,
+        rehearsalState,
+        members: rehearsalState.entries.map((entry) => ({
+          prId: entry.prId,
+          laneId: entry.laneId,
+          laneName: laneById.get(entry.laneId)?.name ?? entry.laneName,
+          position: entry.position,
+          pr: prById.get(entry.prId) ?? null,
+        })),
+      });
+    }
+
     for (const pr of prs) {
       const ctx = mergeContextByPrId[pr.id];
       if (!ctx?.groupId || ctx.groupType !== "queue") continue;
       let group = groupMap.get(ctx.groupId);
       if (!group) {
-        group = { groupId: ctx.groupId, name: null, targetBranch: null, members: [], landingState: null };
+        group = {
+          groupId: ctx.groupId,
+          name: null,
+          targetBranch: pr.baseBranch ?? null,
+          members: [],
+          landingState: queueStates[ctx.groupId] ?? null,
+          rehearsalState: queueRehearsals[ctx.groupId] ?? null,
+        };
         groupMap.set(ctx.groupId, group);
       }
-      const member = ctx.members?.find((m) => m.prId === pr.id);
-      group.members.push({
-        prId: pr.id,
-        laneId: pr.laneId,
-        laneName: laneById.get(pr.laneId)?.name ?? pr.laneId,
-        position: member?.position ?? group.members.length,
-        pr,
-      });
+      group.targetBranch = group.targetBranch ?? pr.baseBranch ?? null;
+      if (!group.members.some((member) => member.prId === pr.id)) {
+        const member = ctx.members?.find((m) => m.prId === pr.id);
+        group.members.push({
+          prId: pr.id,
+          laneId: pr.laneId,
+          laneName: laneById.get(pr.laneId)?.name ?? pr.laneId,
+          position: member?.position ?? group.members.length,
+          pr,
+        });
+      }
     }
     // Sort members by position within each group
     for (const group of groupMap.values()) {
       group.members.sort((a, b) => a.position - b.position);
     }
     return [...groupMap.values()];
-  }, [prs, mergeContextByPrId, laneById]);
+  }, [prs, mergeContextByPrId, laneById, queueStates, queueRehearsals]);
 
   const selectedGroup = React.useMemo(() => queueGroups.find((g) => g.groupId === selectedGroupId) ?? null, [queueGroups, selectedGroupId]);
+
+  React.useEffect(() => {
+    if (!backgroundSession?.ptyId) return;
+    const unsubscribe = window.ade.pty.onExit((event) => {
+      if (event.ptyId !== backgroundSession.ptyId) return;
+      setBackgroundSession((prev) => {
+        if (!prev || prev.ptyId !== event.ptyId) return prev;
+        return { ...prev, exitCode: event.exitCode ?? -1 };
+      });
+    });
+    return unsubscribe;
+  }, [backgroundSession?.ptyId]);
+
+  React.useEffect(() => {
+    if (selectedGroup?.landingState) {
+      setArchiveOnLand(selectedGroup.landingState.config.archiveLane);
+      setQueueCiGating(selectedGroup.landingState.config.ciGating);
+      setAutoResolveAll(selectedGroup.landingState.config.autoResolve);
+      return;
+    }
+    if (selectedGroup?.rehearsalState) {
+      setAutoResolveAll(selectedGroup.rehearsalState.config.autoResolve);
+    }
+  }, [selectedGroup?.landingState, selectedGroup?.rehearsalState]);
 
   // Auto-select first group (guard against no-op updates when list is empty and nothing selected)
   React.useEffect(() => {
@@ -149,6 +245,122 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
     } finally { setLandBusy(false); }
   };
 
+  const handleStartQueueAutomation = async (autoResolve: boolean) => {
+    if (!selectedGroup) return;
+    setQueueActionBusy(true);
+    setLandError(null);
+    try {
+      await window.ade.prs.startQueueAutomation({
+        groupId: selectedGroup.groupId,
+        method: mergeMethod,
+        archiveLane: archiveOnLand,
+        autoResolve,
+        ciGating: queueCiGating,
+        resolverModel,
+        reasoningEffort: resolverReasoningLevel,
+        permissionMode: "guarded_edit",
+        originSurface: "queue",
+        originLabel: selectedGroup.name ?? selectedGroup.groupId,
+      });
+      setAutoResolveAll(autoResolve);
+      await onRefresh();
+    } catch (err: unknown) {
+      setLandError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setQueueActionBusy(false);
+    }
+  };
+
+  const handleResumeQueueAutomation = async (autoResolve: boolean) => {
+    if (!selectedGroup?.landingState) return;
+    setQueueActionBusy(true);
+    setLandError(null);
+    try {
+      await window.ade.prs.resumeQueueAutomation({
+        queueId: selectedGroup.landingState.queueId,
+        method: mergeMethod,
+        archiveLane: archiveOnLand,
+        autoResolve,
+        ciGating: queueCiGating,
+        resolverModel,
+        reasoningEffort: resolverReasoningLevel,
+        permissionMode: "guarded_edit",
+      });
+      setAutoResolveAll(autoResolve);
+      await onRefresh();
+    } catch (err: unknown) {
+      setLandError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setQueueActionBusy(false);
+    }
+  };
+
+  const handlePauseQueueAutomation = async () => {
+    if (!selectedGroup?.landingState) return;
+    setQueueActionBusy(true);
+    setLandError(null);
+    try {
+      await window.ade.prs.pauseQueueAutomation(selectedGroup.landingState.queueId);
+      await onRefresh();
+    } catch (err: unknown) {
+      setLandError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setQueueActionBusy(false);
+    }
+  };
+
+  const handleCancelQueueAutomation = async () => {
+    if (!selectedGroup?.landingState) return;
+    setQueueActionBusy(true);
+    setLandError(null);
+    try {
+      await window.ade.prs.cancelQueueAutomation(selectedGroup.landingState.queueId);
+      await onRefresh();
+    } catch (err: unknown) {
+      setLandError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setQueueActionBusy(false);
+    }
+  };
+
+  const handleStartQueueRehearsal = async () => {
+    if (!selectedGroup) return;
+    setQueueActionBusy(true);
+    setLandError(null);
+    try {
+      await window.ade.prs.startQueueRehearsal({
+        groupId: selectedGroup.groupId,
+        method: mergeMethod,
+        autoResolve: autoResolveAll,
+        resolverModel,
+        reasoningEffort: resolverReasoningLevel,
+        permissionMode: "guarded_edit",
+        preserveScratchLane: true,
+        originSurface: "queue",
+        originLabel: selectedGroup.name ?? selectedGroup.groupId,
+      });
+      await onRefresh();
+    } catch (err: unknown) {
+      setLandError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setQueueActionBusy(false);
+    }
+  };
+
+  const handleCancelQueueRehearsal = async () => {
+    if (!selectedGroup?.rehearsalState) return;
+    setQueueActionBusy(true);
+    setLandError(null);
+    try {
+      await window.ade.prs.cancelQueueRehearsal(selectedGroup.rehearsalState.rehearsalId);
+      await onRefresh();
+    } catch (err: unknown) {
+      setLandError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setQueueActionBusy(false);
+    }
+  };
+
   const handleDeletePr = async (prId: string) => {
     setDeleteBusy(true); setLandError(null);
     try {
@@ -164,6 +376,30 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
   const stats = React.useMemo(() => {
     if (!selectedGroup) return { landed: 0, pending: 0, failed: 0, processing: false };
     let landed = 0, pending = 0, failed = 0, processing = false;
+    const entries = selectedGroup.landingState?.entries ?? [];
+    if (entries.length > 0) {
+      for (const entry of entries) {
+        if (entry.state === "landed") landed++;
+        else if (entry.state === "failed") failed++;
+        else {
+          pending++;
+          if (entry.state === "landing" || entry.state === "resolving") processing = true;
+        }
+      }
+      return { landed, pending, failed, processing };
+    }
+    const rehearsalEntries = selectedGroup.rehearsalState?.entries ?? [];
+    if (rehearsalEntries.length > 0) {
+      for (const entry of rehearsalEntries) {
+        if (entry.state === "ready" || entry.state === "resolved") landed++;
+        else if (entry.state === "failed" || entry.state === "blocked") failed++;
+        else {
+          pending++;
+          if (entry.state === "rehearsing" || entry.state === "resolving") processing = true;
+        }
+      }
+      return { landed, pending, failed, processing };
+    }
     for (const m of selectedGroup.members) {
       const st = m.pr?.state;
       if (st === "merged") landed++;
@@ -174,6 +410,13 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
   }, [selectedGroup]);
 
   const pad2 = (n: number) => String(n).padStart(2, "0");
+
+  const resolveTargetLaneId = React.useCallback((member: QueueGroup["members"][number]): string | null => {
+    const targetBranch = normalizeBranchName(member.pr?.baseBranch ?? selectedGroup?.targetBranch ?? "");
+    if (!targetBranch) return null;
+    const lane = lanes.find((entry) => normalizeBranchName(entry.branchRef) === targetBranch);
+    return lane?.id ?? null;
+  }, [lanes, selectedGroup?.targetBranch]);
 
   const paneConfigs: Record<string, PaneConfig> = React.useMemo(() => ({
     list: {
@@ -265,6 +508,8 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
               </div>
               <div className="font-mono" style={{ fontSize: 11, color: "#71717A", marginTop: 4 }}>
                 {selectedGroup.members.length} PRs in pipeline
+                {selectedGroup.landingState ? ` · land ${selectedGroup.landingState.state.replace(/_/g, " ")}` : ""}
+                {selectedGroup.rehearsalState ? ` · rehearse ${selectedGroup.rehearsalState.state.replace(/_/g, " ")}` : ""}
               </div>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -301,6 +546,112 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
                 <ArrowsDownUp size={13} weight="bold" />
                 {landBusy ? "LANDING..." : "LAND NEXT"}
               </button>
+              {selectedGroup.landingState?.state === "landing" ? (
+                <>
+                  <button
+                    type="button"
+                    disabled={queueActionBusy}
+                    onClick={() => void handlePauseQueueAutomation()}
+                    className="font-mono font-bold uppercase tracking-[1px]"
+                    style={{
+                      fontSize: 11,
+                      background: "transparent",
+                      color: "#F59E0B",
+                      border: "1px solid rgba(245,158,11,0.35)",
+                      padding: "8px 12px",
+                      cursor: queueActionBusy ? "not-allowed" : "pointer",
+                      opacity: queueActionBusy ? 0.4 : 1,
+                    }}
+                  >
+                    Pause
+                  </button>
+                  <button
+                    type="button"
+                    disabled={queueActionBusy}
+                    onClick={() => void handleCancelQueueAutomation()}
+                    className="font-mono font-bold uppercase tracking-[1px]"
+                    style={{
+                      fontSize: 11,
+                      background: "transparent",
+                      color: "#EF4444",
+                      border: "1px solid rgba(239,68,68,0.35)",
+                      padding: "8px 12px",
+                      cursor: queueActionBusy ? "not-allowed" : "pointer",
+                      opacity: queueActionBusy ? 0.4 : 1,
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    disabled={queueActionBusy}
+                    onClick={() => void (
+                      selectedGroup.rehearsalState?.state === "running"
+                        ? handleCancelQueueRehearsal()
+                        : handleStartQueueRehearsal()
+                    )}
+                    className="font-mono font-bold uppercase tracking-[1px]"
+                    style={{
+                      fontSize: 11,
+                      background: selectedGroup.rehearsalState?.state === "running" ? "rgba(239,68,68,0.12)" : "rgba(34,197,94,0.12)",
+                      color: selectedGroup.rehearsalState?.state === "running" ? "#FCA5A5" : "#4ADE80",
+                      border: selectedGroup.rehearsalState?.state === "running"
+                        ? "1px solid rgba(248,113,113,0.28)"
+                        : "1px solid rgba(74,222,128,0.28)",
+                      padding: "8px 12px",
+                      cursor: queueActionBusy ? "not-allowed" : "pointer",
+                      opacity: queueActionBusy ? 0.4 : 1,
+                    }}
+                  >
+                    {selectedGroup.rehearsalState?.state === "running" ? "Cancel Rehearsal" : "Rehearse Queue"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={queueActionBusy}
+                    onClick={() => void (
+                      selectedGroup.landingState?.state === "paused"
+                        ? handleResumeQueueAutomation(false)
+                        : handleStartQueueAutomation(false)
+                    )}
+                    className="font-mono font-bold uppercase tracking-[1px]"
+                    style={{
+                      fontSize: 11,
+                      background: "rgba(59,130,246,0.12)",
+                      color: "#60A5FA",
+                      border: "1px solid rgba(96,165,250,0.28)",
+                      padding: "8px 12px",
+                      cursor: queueActionBusy ? "not-allowed" : "pointer",
+                      opacity: queueActionBusy ? 0.4 : 1,
+                    }}
+                  >
+                    {selectedGroup.landingState?.state === "paused" ? "Resume Auto-land" : "Auto-land"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={queueActionBusy}
+                    onClick={() => void (
+                      selectedGroup.landingState?.state === "paused"
+                        ? handleResumeQueueAutomation(true)
+                        : handleStartQueueAutomation(true)
+                    )}
+                    className="font-mono font-bold uppercase tracking-[1px]"
+                    style={{
+                      fontSize: 11,
+                      background: "rgba(167,139,250,0.12)",
+                      color: "#A78BFA",
+                      border: "1px solid rgba(167,139,250,0.28)",
+                      padding: "8px 12px",
+                      cursor: queueActionBusy ? "not-allowed" : "pointer",
+                      opacity: queueActionBusy ? 0.4 : 1,
+                    }}
+                  >
+                    {selectedGroup.landingState?.state === "paused" ? "Resume + Resolve" : "Auto-land + Resolve"}
+                  </button>
+                </>
+              )}
             </div>
           </div>
 
@@ -321,7 +672,21 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
             >
               {/* Processing indicator */}
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
-                {stats.processing ? (
+                {selectedGroup.landingState?.state === "paused" || selectedGroup.rehearsalState?.state === "paused" ? (
+                  <>
+                    <span
+                      style={{
+                        width: 8,
+                        height: 8,
+                        background: "#F59E0B",
+                        display: "inline-block",
+                      }}
+                    />
+                    <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 11, color: "#F59E0B" }}>
+                      PAUSED
+                    </span>
+                  </>
+                ) : stats.processing || selectedGroup.rehearsalState?.state === "running" ? (
                   <>
                     <span
                       style={{
@@ -346,6 +711,67 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
                 )}
               </div>
 
+              <div className="grid gap-2 md:grid-cols-2" style={{ marginBottom: 16 }}>
+                <div className="font-mono text-[10px]" style={{ color: "#A1A1AA" }}>
+                  <div>mode: {selectedGroup.landingState?.config.method ?? mergeMethod}</div>
+                  <div>archive lane: {(selectedGroup.landingState?.config.archiveLane ?? archiveOnLand) ? "yes" : "no"}</div>
+                  <div>ci gating: {(selectedGroup.landingState?.config.ciGating ?? queueCiGating) ? "on" : "off"}</div>
+                </div>
+                <div className="font-mono text-[10px]" style={{ color: "#A1A1AA" }}>
+                  <div>auto resolve: {(selectedGroup.landingState?.config.autoResolve ?? autoResolveAll) ? "on" : "off"}</div>
+                  <div>resolver model: {selectedGroup.landingState?.config.resolverModel ?? resolverModel}</div>
+                  <div>reasoning: {selectedGroup.landingState?.config.reasoningEffort ?? resolverReasoningLevel}</div>
+                </div>
+              </div>
+
+              {selectedGroup.rehearsalState ? (
+                <div className="font-mono text-[10px]" style={{ color: "#A1A1AA", marginBottom: 16 }}>
+                  <div>rehearsal: {selectedGroup.rehearsalState.state.replace(/_/g, " ")}</div>
+                  <div>scratch lane: {selectedGroup.rehearsalState.scratchLaneId ?? "allocating"}</div>
+                  <div>rehearsal id: {selectedGroup.rehearsalState.rehearsalId}</div>
+                </div>
+              ) : null}
+
+              {selectedGroup.landingState?.lastError ? (
+                <div
+                  className="font-mono"
+                  style={{
+                    marginBottom: 16,
+                    fontSize: 10,
+                    color: selectedGroup.landingState.waitReason === "ci" || selectedGroup.landingState.waitReason === "review" ? "#F59E0B" : "#EF4444",
+                    background: selectedGroup.landingState.waitReason === "ci" || selectedGroup.landingState.waitReason === "review"
+                      ? "rgba(245,158,11,0.08)"
+                      : "rgba(239,68,68,0.08)",
+                    border: selectedGroup.landingState.waitReason === "ci" || selectedGroup.landingState.waitReason === "review"
+                      ? "1px solid rgba(245,158,11,0.20)"
+                      : "1px solid rgba(239,68,68,0.20)",
+                    padding: "8px 10px",
+                  }}
+                >
+                  {selectedGroup.landingState.lastError}
+                </div>
+              ) : null}
+
+              {selectedGroup.rehearsalState?.lastError ? (
+                <div
+                  className="font-mono"
+                  style={{
+                    marginBottom: 16,
+                    fontSize: 10,
+                    color: selectedGroup.rehearsalState.state === "paused" ? "#F59E0B" : "#EF4444",
+                    background: selectedGroup.rehearsalState.state === "paused"
+                      ? "rgba(245,158,11,0.08)"
+                      : "rgba(239,68,68,0.08)",
+                    border: selectedGroup.rehearsalState.state === "paused"
+                      ? "1px solid rgba(245,158,11,0.20)"
+                      : "1px solid rgba(239,68,68,0.20)",
+                    padding: "8px 10px",
+                  }}
+                >
+                  {selectedGroup.rehearsalState.lastError}
+                </div>
+              ) : null}
+
               {/* Stat counters */}
               <div style={{ display: "flex", gap: 24 }}>
                 {/* LANDED */}
@@ -357,7 +783,7 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
                     className="font-mono font-bold uppercase tracking-[1px]"
                     style={{ fontSize: 10, color: "#71717A", marginTop: 6 }}
                   >
-                    LANDED
+                    COMPLETE
                   </span>
                 </div>
                 {/* PENDING */}
@@ -381,7 +807,7 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
                     className="font-mono font-bold uppercase tracking-[1px]"
                     style={{ fontSize: 10, color: "#71717A", marginTop: 6 }}
                   >
-                    FAILED
+                    BLOCKED
                   </span>
                 </div>
               </div>
@@ -405,13 +831,16 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
             >
               {selectedGroup.members.map((member, idx) => {
                 const isLast = idx === selectedGroup.members.length - 1;
-                const prState = member.pr?.state ?? "unknown";
-                const isLanded = prState === "merged";
-                const isActive = prState === "open";
-                const isFailed = prState === "closed";
+                const queueEntry = selectedGroup.landingState?.entries.find((entry) => entry.prId === member.prId) ?? null;
+                const rehearsalEntry = selectedGroup.rehearsalState?.entries.find((entry) => entry.prId === member.prId) ?? null;
+                const entryState = queueEntry?.state ?? (member.pr?.state === "merged" ? "landed" : member.pr?.state === "closed" ? "failed" : "pending");
+                const isLanded = entryState === "landed";
+                const isActive = entryState === "landing" || entryState === "resolving";
+                const isFailed = entryState === "failed";
+                const isPaused = entryState === "paused";
 
                 // Dot color
-                const dotColor = isLanded ? "#22C55E" : isActive ? "#3B82F6" : isFailed ? "#EF4444" : "#52525B";
+                const dotColor = isLanded ? "#22C55E" : isActive ? "#3B82F6" : isPaused ? "#F59E0B" : isFailed ? "#EF4444" : "#52525B";
 
                 // Status badge text + colors
                 let badgeLabel = "PENDING";
@@ -424,10 +853,15 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
                   badgeBg = "rgba(34,197,94,0.08)";
                   badgeBorder = "rgba(34,197,94,0.25)";
                 } else if (isActive) {
-                  badgeLabel = "OPEN";
+                  badgeLabel = entryState === "resolving" ? "RESOLVING" : "LANDING";
                   badgeColor = "#3B82F6";
                   badgeBg = "rgba(59,130,246,0.08)";
                   badgeBorder = "rgba(59,130,246,0.25)";
+                } else if (isPaused) {
+                  badgeLabel = "PAUSED";
+                  badgeColor = "#F59E0B";
+                  badgeBg = "rgba(245,158,11,0.08)";
+                  badgeBorder = "rgba(245,158,11,0.25)";
                 } else if (isFailed) {
                   badgeLabel = "FAILED";
                   badgeColor = "#EF4444";
@@ -541,6 +975,39 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
                             {!isLanded && (
                               <button
                                 type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const targetLaneId = resolveTargetLaneId(member);
+                                  if (!targetLaneId) {
+                                    setLandError(`Cannot find a lane matching base branch "${member.pr?.baseBranch ?? selectedGroup?.targetBranch ?? "unknown"}".`);
+                                    return;
+                                  }
+                                  setResolverConfig({ sourceLaneId: member.laneId, targetLaneId });
+                                  setResolverOpen(true);
+                                }}
+                                style={{
+                                  padding: "2px 6px",
+                                  background: "rgba(167,139,250,0.12)",
+                                  border: "1px solid rgba(167,139,250,0.28)",
+                                  color: "#A78BFA",
+                                  cursor: "pointer",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 4,
+                                  fontSize: 10,
+                                  fontFamily: "monospace",
+                                  textTransform: "uppercase",
+                                  letterSpacing: "1px",
+                                }}
+                                title="Resolve this queue member against its base branch with AI"
+                              >
+                                <Sparkle size={11} />
+                                Resolve
+                              </button>
+                            )}
+                            {!isLanded && (
+                              <button
+                                type="button"
                                 onClick={(e) => { e.stopPropagation(); setDeleteTarget(deleteTarget === member.prId ? null : member.prId); }}
                                 style={{
                                   padding: 2,
@@ -579,6 +1046,28 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
                             <span>{member.pr.title}</span>
                           </div>
                         )}
+                        {queueEntry?.error ? (
+                          <div className="font-mono" style={{ marginTop: 4, fontSize: 10, color: isPaused ? "#F59E0B" : "#EF4444" }}>
+                            {queueEntry.error}
+                          </div>
+                        ) : null}
+                        {queueEntry?.resolvedByAi ? (
+                          <div className="font-mono" style={{ marginTop: 4, fontSize: 10, color: "#A78BFA" }}>
+                            Resolved with AI{queueEntry.resolverRunId ? ` · job ${queueEntry.resolverRunId.slice(0, 8)}` : ""}
+                          </div>
+                        ) : null}
+                        {rehearsalEntry ? (
+                          <div className="font-mono" style={{ marginTop: 4, fontSize: 10, color: rehearsalEntry.state === "failed" || rehearsalEntry.state === "blocked" ? "#F59E0B" : "#4ADE80" }}>
+                            Rehearsal: {rehearsalEntry.state.replace(/_/g, " ")}
+                            {rehearsalEntry.resolvedByAi ? ` · AI fixed` : ""}
+                            {rehearsalEntry.changedFiles?.length ? ` · ${rehearsalEntry.changedFiles.length} files` : ""}
+                          </div>
+                        ) : null}
+                        {rehearsalEntry?.error ? (
+                          <div className="font-mono" style={{ marginTop: 4, fontSize: 10, color: rehearsalEntry.state === "blocked" ? "#F59E0B" : "#EF4444" }}>
+                            {rehearsalEntry.error}
+                          </div>
+                        ) : null}
 
                         {/* Delete confirmation inline */}
                         {deleteTarget === member.prId && (
@@ -685,7 +1174,58 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
         </div>
       ),
     },
-  }), [queueGroups, selectedGroup, selectedGroupId, landBusy, landError, landResult, archiveOnLand, mergeMethod, deleteTarget, deleteBusy, deleteCloseGh, rebaseNeeds, autoRebaseStatuses, setActiveTab, onSelectGroup, onRefresh]);
+  }), [
+    queueGroups,
+    selectedGroup,
+    selectedGroupId,
+    landBusy,
+    landError,
+    landResult,
+    archiveOnLand,
+    queueCiGating,
+    autoResolveAll,
+    queueActionBusy,
+    mergeMethod,
+    resolverModel,
+    resolverReasoningLevel,
+    deleteTarget,
+    deleteBusy,
+    deleteCloseGh,
+    rebaseNeeds,
+    autoRebaseStatuses,
+    setActiveTab,
+    onSelectGroup,
+    onRefresh,
+  ]);
 
-  return <PaneTilingLayout layoutId="prs:queue:v1" tree={PR_TAB_TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
+  return (
+    <>
+      <PaneTilingLayout layoutId="prs:queue:v1" tree={PR_TAB_TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />
+      {resolverConfig ? (
+        <ResolverTerminalModal
+          open={resolverOpen}
+          onOpenChange={setResolverOpen}
+          sourceLaneId={resolverConfig.sourceLaneId}
+          targetLaneId={resolverConfig.targetLaneId}
+          cwdLaneId={resolverConfig.sourceLaneId}
+          scenario="single-merge"
+          sourceTab="queue"
+          initialModel={resolverModel}
+          initialReasoningEffort={resolverReasoningLevel}
+          onModelChange={(model, effort) => {
+            setResolverModel(model);
+            setResolverReasoningLevel(effort ?? "medium");
+          }}
+          onBackgroundSession={(session) => {
+            setBackgroundSession({ ...session, exitCode: null });
+            setResolverOpen(false);
+          }}
+          onCompleted={() => {
+            void onRefresh();
+            setResolverConfig(null);
+          }}
+        />
+      ) : null}
+    </>
+  );
 }

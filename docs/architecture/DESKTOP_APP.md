@@ -76,7 +76,7 @@ Core service groups:
 - **Agent Chat**: agent chat service (CodexChatBackend via App Server JSON-RPC, ClaudeChatBackend via community provider multi-turn, unified runtime for API-key/local models with permission modes, persisted as `codex-chat` / `claude-chat` / `ai-chat` sessions)
 - **Agents / Automations (current runtime)**: automation service + automation planner service (automation, Night Shift, watcher, review flows under the current Automations domain model)
 - **Missions**: mission service (mission lifecycle CRUD + eventing)
-- **Shared types**: `src/shared/types/` directory (17 domain modules with barrel `index.ts` -- replaces former monolithic `types.ts`)
+- **Shared types**: `src/shared/types/` directory (19 domain modules with barrel `index.ts` -- replaces former monolithic `types.ts`)
 - **Shared utilities**: backend utils (`src/main/services/shared/utils.ts`), renderer formatting/shell/session libs (`src/renderer/lib/`), shared React hooks (`src/renderer/hooks/`)
 
 Additional runtime loops:
@@ -155,20 +155,30 @@ Desktop architecture is mature and production-oriented for current scope:
 - Head-change and session-end pipelines keep memory/conflicts/compat exports synchronized.
 - AI integration service provides local AI execution via AgentExecutor interface (dual SDK) and MCP server.
 - Agent chat service provides native interactive chat with Codex (via App Server) and Claude (via community provider) with full session tracking.
-- Type system modularized: 17 domain-scoped type modules in `src/shared/types/` replace the former monolithic `types.ts`.
+- Type system modularized: 19 domain-scoped type modules in `src/shared/types/` replace the former monolithic `types.ts`.
 - Large services decomposed: AI orchestrator (8 extracted modules), orchestrator service (2 extracted modules), pack service (4 extracted modules) all follow a core-plus-modules pattern with shared context objects.
 - Shared utilities consolidated: backend `utils.ts`, renderer `format.ts`/`shell.ts`/`sessions.ts`, and shared React hooks eliminate cross-service duplication.
 - Model system unified: `modelRegistry.ts` includes pricing fields directly; `modelProfiles.ts` derives from the registry instead of maintaining parallel lists.
+
+### Shipped Phase 5 Services
+
+| Service | Purpose | Status |
+|---------|---------|--------|
+| `laneEnvironmentService` | Lane environment initialization (env files, port allocation, Docker startup, dependency installation) | Done |
+| `laneProxyService` | Per-lane *.localhost hostname proxy with Host-header routing; preview launch embedded here | Done |
 
 ### Planned Services
 
 | Service | Purpose | Phase |
 |---------|---------|-------|
-| `laneEnvironmentService` | Lane environment initialization (env files, port allocation, Docker startup, dependency installation) | 5 |
-| `laneProxyService` | Per-lane *.localhost hostname proxy with Host-header routing | 5 |
-| `previewLaunchService` | Preview URL generation, browser launch, share links | 5 |
-| `browserProfileService` | Chrome profile isolation per lane for cookie/auth separation | 5 |
-| `computeBackendService` | Compute backend abstraction (Local/VPS/Daytona selection and lifecycle) | 5.5 |
-| `daytonaService` | Daytona SDK integration for opt-in cloud sandbox environments | 5.5 |
+| `browserProfileService` | Chrome profile isolation per lane for cookie/auth separation | 5 (not yet implemented) |
+
+### Dropped Services
+
+| Service | Reason |
+|---------|--------|
+| `previewLaunchService` | Embedded in `laneProxyService` (not a standalone service) |
+| `computeBackendService` | Phase 5.5 dropped — VPS is just another machine running ADE |
+| `daytonaService` | Phase 5.5 dropped — sandboxing removed from scope |
 
 Future architecture expansion (Machines, relay transport, core extraction) is tracked in `docs/final-plan/README.md`.

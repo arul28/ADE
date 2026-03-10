@@ -22,7 +22,7 @@ import {
   type CompactionMonitor,
   type TranscriptEntry,
 } from "../ai/compactionEngine";
-import { buildCodingAgentSystemPrompt, composeSystemPrompt } from "../ai/tools/systemPrompt";
+import { asRecord, filterExecutionSteps } from "./orchestratorContext";
 import { readMissionStateDocument, writeCoordinatorCheckpoint } from "./missionStateDoc";
 import { resolveModel } from "../ai/providerResolver";
 import { detectAllAuth } from "../ai/authDetector";
@@ -39,6 +39,7 @@ import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { Tool } from "ai";
 import type { createMissionService } from "../missions/missionService";
+import type { createMemoryService } from "../memory/memoryService";
 import type { ResolveModelOpts } from "../ai/providerResolver";
 
 // ---------------------------------------------------------------------------
@@ -89,6 +90,7 @@ export type CoordinatorAgentDeps = {
   projectId: string;
   projectRoot: string;
   missionService: ReturnType<typeof createMissionService>;
+  memoryService?: ReturnType<typeof createMemoryService> | null;
   getMissionBudgetStatus?: () => Promise<MissionBudgetSnapshot | null>;
   onDagMutation: (event: DagMutationEvent) => void;
   onCoordinatorMessage?: (message: string) => void;
@@ -170,7 +172,7 @@ export function buildCoordinatorCliOptions(args: {
       ? "ade"
       : (mcpServerNames[0] ?? "ade");
     cli.claude = {
-      permissionMode: "plan",
+      permissionMode: "acceptEdits",
       allowedTools: buildCoordinatorMcpAllowedTools(coordinatorMcpServerName),
       settingSources: [],
       debugFile: path.join(logDir, `coordinator-${args.runId}.claude.log`),
@@ -240,6 +242,16 @@ ${capabilities}
 ${identity.inheritedRules ? `\n## Rules\n${identity.inheritedRules}` : ""}`;
 }
 
+function formatStreamError(error: unknown): string {
+  if (typeof error === "string" && error.trim().length > 0) return error;
+  if (error instanceof Error && error.message.trim().length > 0) return error.message;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error ?? "unknown error");
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Coordinator Agent
 // ---------------------------------------------------------------------------
@@ -261,6 +273,45 @@ export class CoordinatorAgent {
   private lastEventTimestampMs: number | null = null;
 
   constructor(deps: CoordinatorAgentDeps) {
+    // ── VAL-PLAN-005 / Mandatory planning enforcement ──
+    // If phases are provided but don't include planning, inject it.
+    // This ensures the coordinator always starts with a planning phase.
+    if (deps.phases && deps.phases.length > 0) {
+      const hasPlanningPhase = deps.phases.some(
+        (p) => p.phaseKey.trim().toLowerCase() === "planning"
+      );
+      if (!hasPlanningPhase) {
+        const now = new Date().toISOString();
+        const planningCard: PhaseCard = {
+          id: `builtin:planning`,
+          phaseKey: "planning",
+          name: "Planning",
+          description: "Research, clarify requirements, and design the execution DAG.",
+          instructions:
+            "Investigate the codebase, identify dependencies/risks, and produce a concrete execution plan before implementation.",
+          model: { modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
+          budget: {},
+          orderingConstraints: { mustBeFirst: true },
+          askQuestions: { enabled: true, maxQuestions: 5 },
+          validationGate: { tier: "none", required: false },
+          requiresApproval: false,
+          isBuiltIn: true,
+          isCustom: false,
+          position: 0,
+          createdAt: now,
+          updatedAt: now,
+        };
+        // Insert planning as the first phase, shift others down
+        deps.phases = [
+          planningCard,
+          ...deps.phases.map((p) => ({ ...p, position: p.position + 1 })),
+        ];
+        deps.logger.warn("coordinator_agent.mandatory_planning_injected", {
+          runId: deps.runId,
+          reason: "phases_missing_planning",
+        });
+      }
+    }
     this.deps = deps;
     this.tools = createCoordinatorToolSet({
       orchestratorService: deps.orchestratorService,
@@ -270,6 +321,8 @@ export class CoordinatorAgent {
       db: deps.db,
       projectRoot: deps.projectRoot,
       missionService: deps.missionService,
+      memoryService: deps.memoryService,
+      projectId: deps.projectId,
       getMissionBudgetStatus: deps.getMissionBudgetStatus,
       onDagMutation: deps.onDagMutation,
       onRunFinalize: deps.onRunFinalize,
@@ -305,6 +358,11 @@ export class CoordinatorAgent {
     formattedMessage?: string,
   ): void {
     if (this.dead) return;
+    // Guard: skip event injection if the run is paused
+    if (this.isRunPaused()) return;
+    // While planning is blocked on a clarification, ignore runtime polling/noise
+    // and wait for the user's answer to re-enter the coordinator loop.
+    if (this.hasOpenPlanningClarification()) return;
     const receivedAt = Date.now();
     const message =
       formattedMessage ?? formatRuntimeEvent(event).summary;
@@ -345,6 +403,25 @@ export class CoordinatorAgent {
     return this.conversationHistory.length;
   }
 
+  // ─── Pause Guard ─────────────────────────────────────────────────
+
+  /**
+   * Check if the associated run is currently paused.
+   * Uses a lightweight DB query to avoid loading the full run graph.
+   */
+  private isRunPaused(): boolean {
+    try {
+      const row = this.deps.db.get<{ status: string }>(
+        `SELECT status FROM orchestrator_runs WHERE id = ? AND project_id = ?`,
+        [this.deps.runId, this.deps.projectId],
+      );
+      return row?.status === "paused";
+    } catch {
+      // If the run can't be queried, treat as not paused (let other guards handle it)
+      return false;
+    }
+  }
+
   // ─── Batch Scheduling ────────────────────────────────────────────
 
   private scheduleBatch(): void {
@@ -358,6 +435,8 @@ export class CoordinatorAgent {
   private async processBatch(): Promise<void> {
     if (this.processing || this.dead || this.eventQueue.length === 0)
       return;
+    // Guard: do not process batches while the run is paused
+    if (this.isRunPaused()) return;
     this.processing = true;
 
     // Take a snapshot of events before removing from queue
@@ -477,11 +556,133 @@ export class CoordinatorAgent {
     });
   }
 
+  private isPlanningFirstPhaseRun(): boolean {
+    if (!Array.isArray(this.deps.phases) || this.deps.phases.length === 0) return false;
+    const firstPhase = [...this.deps.phases].sort((a, b) => a.position - b.position)[0];
+    return firstPhase?.phaseKey.trim().toLowerCase() === "planning";
+  }
+
+  private hasOpenPlanningClarification(): boolean {
+    const matchesPlanningClarification = (metadata: Record<string, unknown> | null | undefined): boolean => {
+      const source = typeof metadata?.source === "string" ? metadata.source.trim().toLowerCase() : "";
+      const phase = typeof metadata?.phase === "string" ? metadata.phase.trim().toLowerCase() : "";
+      return source === "ask_user" || phase === "planning";
+    };
+
+    try {
+      const rows = this.deps.db.all<{ metadata_json: string | null }>(
+        `
+          select metadata_json
+          from mission_interventions
+          where mission_id = ?
+            and project_id = ?
+            and status = 'open'
+            and intervention_type = 'manual_input'
+        `,
+        [this.deps.missionId, this.deps.projectId],
+      );
+      if (rows.some((row) => {
+        try {
+          return matchesPlanningClarification(asRecord(JSON.parse(row.metadata_json ?? "null")));
+        } catch {
+          return false;
+        }
+      })) {
+        return true;
+      }
+    } catch {
+      // Fall back to mission service cache below.
+    }
+
+    const mission = this.deps.missionService.get(this.deps.missionId);
+    return (mission?.interventions ?? []).some((intervention) => {
+      if (intervention.status !== "open" || intervention.interventionType !== "manual_input") return false;
+      return matchesPlanningClarification(asRecord(intervention.metadata));
+    });
+  }
+
+  private hasPlanningExecutionRecord(): boolean {
+    try {
+      const graph = this.deps.orchestratorService.getRunGraph({
+        runId: this.deps.runId,
+        timelineLimit: 0,
+      });
+      return filterExecutionSteps(graph.steps).some((step) => {
+        const metadata = asRecord(step.metadata);
+        const phaseKey = typeof metadata?.phaseKey === "string" ? metadata.phaseKey.trim().toLowerCase() : "";
+        const phaseName = typeof metadata?.phaseName === "string" ? metadata.phaseName.trim().toLowerCase() : "";
+        const stepType = typeof metadata?.stepType === "string" ? metadata.stepType.trim().toLowerCase() : "";
+        return phaseKey === "planning" || phaseName === "planning" || stepType === "planning";
+      });
+    } catch {
+      return false;
+    }
+  }
+
+  private buildPlanningRecoveryPrompt(): { name: string; prompt: string; modelId?: string } {
+    const phases = Array.isArray(this.deps.phases) ? [...this.deps.phases] : [];
+    const planningPhase = phases
+      .sort((a, b) => a.position - b.position)
+      .find((phase) => phase.phaseKey.trim().toLowerCase() === "planning") ?? null;
+    const sections = [
+      `Mission goal:\n${this.deps.missionGoal}`,
+      planningPhase?.instructions?.trim().length
+        ? `Planning phase instructions:\n${planningPhase.instructions.trim()}`
+        : null,
+      [
+        "Read-only planning pass:",
+        "- Research the codebase and discover the implementation plan.",
+        "- Identify dependencies, risks, sequencing, and the best execution DAG.",
+        "- Do not modify files, run write operations, or ask for plan-exit approval.",
+        "- Do NOT use ExitPlanMode or any provider-native plan approval flow.",
+        "- Write your plan output to `.ade/plans/` in your working directory, NOT to `~/.claude/plans/`.",
+        "- If you need clarification, use `ask_user` to surface structured questions.",
+        "- Return a concrete plan the coordinator can use to enter Development automatically.",
+      ].join("\n"),
+    ].filter((entry): entry is string => Boolean(entry));
+
+    return {
+      name: "planning-worker",
+      prompt: sections.join("\n\n"),
+      ...(planningPhase?.model?.modelId ? { modelId: planningPhase.model.modelId } : {}),
+    };
+  }
+
+  private async enforcePlanningFirstTurnDelegation(turnId: string): Promise<void> {
+    if (this.turnCount !== 0) return;
+    if (!this.isPlanningFirstPhaseRun()) return;
+    if (this.hasPlanningExecutionRecord()) return;
+    if (this.hasOpenPlanningClarification()) return;
+
+    const spawnWorkerTool = this.tools.spawn_worker as { execute?: (args: unknown) => Promise<any> } | undefined;
+    if (typeof spawnWorkerTool?.execute !== "function") {
+      throw new Error("Planning watchdog could not recover because spawn_worker is unavailable.");
+    }
+
+    this.deps.logger.warn("coordinator_agent.planning_watchdog_triggered", {
+      runId: this.deps.runId,
+      turnId,
+      reason: "first_turn_did_not_spawn_planner",
+    });
+    this.deps.onCoordinatorEvent?.({
+      type: "error",
+      turnId,
+      message:
+        "Coordinator first turn did not create the planning worker. ADE recovered by forcing a read-only planning worker so the mission can continue.",
+    });
+
+    const recoveryResult = await spawnWorkerTool.execute(this.buildPlanningRecoveryPrompt());
+    if (!recoveryResult?.ok) {
+      throw new Error(`Planning watchdog recovery failed: ${recoveryResult?.error ?? "unknown recovery failure"}`);
+    }
+  }
+
   private async runTurn(): Promise<void> {
     const sdkModel = await this.resolveModel();
     const useSdkTools = shouldUseSdkTools(this.deps.modelId);
     const abortController = new AbortController();
     const timeoutHandle = setTimeout(() => abortController.abort(), COORDINATOR_TURN_TIMEOUT_MS);
+    let awaitingBlockingUserInput = false;
 
     this.deps.logger.info("coordinator_agent.turn_started", {
       runId: this.deps.runId,
@@ -498,19 +699,9 @@ export class CoordinatorAgent {
     });
 
     try {
-      const harnessedSystemPrompt = composeSystemPrompt(
-        this.systemPrompt,
-        buildCodingAgentSystemPrompt({
-          cwd: this.deps.projectRoot,
-          mode: "planning",
-          permissionMode: "plan",
-          toolNames: Object.keys(this.tools),
-          interactive: false,
-        }),
-      );
       const result = streamText({
         model: sdkModel,
-        system: harnessedSystemPrompt,
+        system: this.systemPrompt,
         messages: this.conversationHistory,
         ...(useSdkTools ? { tools: this.tools as any } : {}),
         stopWhen: stepCountIs(MAX_TOOL_STEPS_PER_TURN),
@@ -579,20 +770,23 @@ export class CoordinatorAgent {
         }
         if (part.type === "tool-call") {
           const toolName = String(part.toolName ?? "tool");
-          const nextActivity =
-            toolName.toLowerCase().includes("search")
-              ? { activity: "searching" as const, detail: toolName }
-              : toolName.toLowerCase().includes("read")
-                ? { activity: "reading" as const, detail: toolName }
-                : toolName.toLowerCase().includes("write") || toolName.toLowerCase().includes("edit")
-                  ? { activity: "editing_file" as const, detail: toolName }
-                  : toolName.toLowerCase().includes("bash") || toolName.toLowerCase().includes("exec")
-                    ? { activity: "running_command" as const, detail: toolName }
-                    : { activity: "tool_calling" as const, detail: toolName };
+          const lowerToolName = toolName.toLowerCase();
+          let activity: "searching" | "reading" | "editing_file" | "running_command" | "tool_calling";
+          if (lowerToolName.includes("search")) {
+            activity = "searching";
+          } else if (lowerToolName.includes("read")) {
+            activity = "reading";
+          } else if (lowerToolName.includes("write") || lowerToolName.includes("edit")) {
+            activity = "editing_file";
+          } else if (lowerToolName.includes("bash") || lowerToolName.includes("exec")) {
+            activity = "running_command";
+          } else {
+            activity = "tool_calling";
+          }
           this.deps.onCoordinatorEvent?.({
             type: "activity",
-            activity: nextActivity.activity,
-            detail: nextActivity.detail,
+            activity,
+            detail: toolName,
             turnId,
           });
           this.deps.onCoordinatorEvent?.({
@@ -605,25 +799,36 @@ export class CoordinatorAgent {
           continue;
         }
         if (part.type === "tool-result") {
+          const toolName = String(part.toolName ?? "tool");
+          const toolOutput = asRecord(part.output);
           this.deps.onCoordinatorEvent?.({
             type: "tool_result",
-            tool: String(part.toolName ?? "tool"),
+            tool: toolName,
             result: part.output,
             itemId: String(part.toolCallId ?? `${turnId}-tool`),
             turnId,
             status: part.preliminary ? "running" : "completed",
           });
+          if (
+            toolName.toLowerCase().endsWith("ask_user")
+            && toolOutput?.awaitingUserResponse === true
+          ) {
+            awaitingBlockingUserInput = true;
+            abortController.abort();
+          }
           continue;
         }
         if (part.type === "tool-error") {
           this.deps.onCoordinatorEvent?.({
             type: "error",
-            message: `Tool '${String(part.toolName ?? "tool")}' failed: ${String(part.error ?? "unknown error")}`,
+            message: `Tool '${String(part.toolName ?? "tool")}' failed: ${formatStreamError(part.error)}`,
             itemId: String(part.toolCallId ?? `${turnId}-tool`),
             turnId,
           });
         }
       }
+
+      await this.enforcePlanningFirstTurnDelegation(turnId);
 
       // Record token usage for compaction monitoring
       if (this.compactionMonitor) {
@@ -677,6 +882,19 @@ export class CoordinatorAgent {
       });
     } catch (error) {
       const aborted = abortController.signal.aborted;
+      if (aborted && awaitingBlockingUserInput) {
+        this.deps.onCoordinatorEvent?.({
+          type: "status",
+          turnStatus: "interrupted",
+          turnId,
+        });
+        this.deps.logger.info("coordinator_agent.turn_waiting_on_user", {
+          runId: this.deps.runId,
+          modelId: this.deps.modelId,
+          turnId,
+        });
+        return;
+      }
       this.deps.onCoordinatorEvent?.({
         type: "status",
         turnStatus: aborted ? "interrupted" : "failed",
@@ -820,28 +1038,22 @@ export class CoordinatorAgent {
           if (p.instructions) parts.push(`   Instructions: ${p.instructions}`);
           if (p.validationGate.tier !== "none") parts.push(`   Validation: ${p.validationGate.tier.replace("-", " ")} ${p.validationGate.required ? "(required)" : "(optional)"}`);
           if (p.askQuestions.enabled) {
-            const modeLabel =
-              p.askQuestions.mode === "always"
-                ? "always"
-                : p.askQuestions.mode === "auto_if_uncertain"
-                  ? "auto if uncertain"
-                  : "never";
             parts.push(
-              `   Clarification: enabled (${modeLabel}, max ${Math.max(1, Math.min(10, Number(p.askQuestions.maxQuestions ?? 5) || 5))} questions)`
+              `   Ask Questions: enabled (must ask at least one clarification or confirmation question before finalizing this phase, max ${Math.max(1, Math.min(10, Number(p.askQuestions.maxQuestions ?? 5) || 5))} questions)`
             );
           } else {
-            parts.push("   Clarification: disabled (never)");
+            parts.push("   Ask Questions: disabled");
           }
           if (p.orderingConstraints.mustBeFirst) parts.push(`   Ordering: must be first`);
           if (p.orderingConstraints.mustBeLast) parts.push(`   Ordering: must be last`);
           if (p.orderingConstraints.canLoop) parts.push(`   Loop: can repeat${p.orderingConstraints.loopTarget ? ` (back to ${p.orderingConstraints.loopTarget})` : ""}`);
           return parts.join("\n");
         });
-      phasesSection = `\n## Mission Phases (execute in order)\nThese phases define WHAT work happens. You decide HOW — how many workers, what prompts, what approach.\nClarification rules per phase govern when you may use the ask_user tool:
-- "auto_if_uncertain": You MAY use ask_user if you encounter genuine ambiguity that could cause significant rework. Do not ask for trivial things.
-- "always": You MUST use ask_user to gather clarifying questions from the user BEFORE spawning any workers or building the task DAG for that phase. This is mandatory.
-- "never": Do not ask questions in that phase; proceed with reasonable assumptions.
-- Respect each phase max question limit. Avoid obvious or low-value questions.\n- When using ask_user, bundle ALL your questions into a single call. The tool accepts an array of structured questions with optional multiple-choice options, context, default assumptions, and impact descriptions.\n${phaseLines.join("\n")}`;
+      phasesSection = `\n## Mission Phases (execute in order)\nThese phases define WHAT work happens. You decide HOW — how many workers, what prompts, what approach.\nQuestion rules per phase govern when you may use the ask_user tool:
+- If Ask Questions is enabled for a planning phase, you MUST use ask_user for at least one clarification or confirmation round before you finalize the plan or spawn the planning worker.
+- Additional ask_user rounds are allowed up to the phase max question limit. Avoid trivial or low-value questions.
+- If Ask Questions is disabled, do not ask questions in that phase; proceed with reasonable assumptions.
+- When using ask_user, bundle ALL your questions into a single call. The tool accepts an array of structured questions with optional multiple-choice options, context, default assumptions, and impact descriptions.\n${phaseLines.join("\n")}`;
     }
 
     // Build planning phase guidance
@@ -849,12 +1061,12 @@ export class CoordinatorAgent {
     if (phases?.some(p => p.phaseKey === "planning")) {
       planningPhaseSection = `\n## Planning Phase Protocol
 When you enter the Planning phase (your first phase), follow this protocol:
-1. IF the Planning phase has askQuestions enabled (mode "always" or "auto_if_uncertain"):
+1. IF the Planning phase has askQuestions enabled:
    - You MUST use ask_user FIRST to gather clarifying questions from the user BEFORE spawning the planning worker or building the task DAG.
    - Bundle all questions into one ask_user call. Wait for the user to respond before proceeding.
    - Once the user has answered, incorporate their responses into your planning.
 2. Start the Planning phase immediately:
-   - If clarification is not required, your first turn should usually be: get_project_context, then spawn ONE planning worker.
+   - If no planning questions are needed, your first turn should usually be: get_project_context, then spawn ONE planning worker.
    - Do NOT spend the first turn doing coordinator-side repo exploration, shell work, or file-by-file analysis.
    - Before the planner starts, avoid read_file/search_files unless the mission explicitly names a specific file or integration point that materially changes the planner brief.
 3. Spawn ONE planning worker with a rich research prompt that includes the full mission goal and the planning phase instructions
@@ -880,7 +1092,9 @@ If the Planning phase is NOT in your phase list, skip straight to building tasks
     // Build available workers section
     let workersSection = `\n## Available Workers
 You can spawn these types of workers:
-- Unified worker (tool: spawn_worker) — choose model per worker with \`modelId\`; CLI models run as subprocess sessions and API/local models run in-process.`;
+- Unified worker (tool: spawn_worker) — choose model per worker with \`modelId\`; CLI models run as tracked subprocess sessions and API/local models run as bounded in-process workers.
+- Prefer CLI workers when you expect follow-up steering, mid-flight messaging, or iterative back-and-forth.
+- Prefer API/local workers for bounded one-shot tasks that can succeed from a single prompt without live coordination.`;
     if (providers?.length) {
       const available = providers.filter((p) => p.available).map((p) => p.name);
       if (available.length > 0) {
@@ -909,7 +1123,7 @@ You can spawn these types of workers:
       }
     }
 
-    return `You are the team lead for a software engineering mission. You have a team of AI coding agents (workers) you can spawn, steer, and shut down. You receive a mission from the user. You deliver the completed mission. Everything in between is your job.
+    return `You are ADE's mission lead for a software engineering mission. You have a team of AI workers you can spawn, steer, and shut down through ADE's mission-control tools. You receive a mission from the user. You deliver the completed mission. Everything in between is your job.
 
 ## Your Role
 
@@ -917,7 +1131,7 @@ You are the persistent brain. Workers are disposable hands.
 
 Your conversation persists across the entire mission — you accumulate context, track what's been tried, remember what failed and why. Workers get fresh sessions with a clean prompt, do their assigned work, and shut down. You are the continuity. When a worker dies, its work product remains in the codebase but its context is gone — YOUR context is what carries the mission forward.
 
-You are NOT a task router or dispatcher. You are a thinking, reasoning team lead who reads code, understands architecture, makes judgment calls, and owns the outcome. The difference between you and a dumb orchestrator is that you THINK before you act and EVALUATE after each step.
+You are NOT a repo-editing worker. You are the mission lead who owns phase state, worker spawning, runtime judgment, and final completion. In normal operation, workers inspect the repo, edit code, and run commands. You keep the mission aligned and delegated. The difference between you and a dumb orchestrator is that you THINK before you act and EVALUATE after each step.
 
 ## Your Mission
 ${this.deps.missionGoal}
@@ -948,6 +1162,10 @@ These flags are enforced deterministically by the tools — violations are rejec
 - **allowParallelAgents**: When false, spawn workers sequentially (one at a time).
 - **allowSubAgents**: When false, delegate_to_subagent is disabled. Use spawn_worker instead.
 - **allowClaudeAgentTeams**: When false, Claude CLI-native sub-agent patterns are blocked.
+
+### Approval Model
+- Mission runs do NOT use provider-native approval prompts. Do not rely on ExitPlanMode or any out-of-band provider approval flow.
+- If you need user input, use ask_user during Planning only. Outside Planning, continue with the best reasonable assumption unless runtime opens its own intervention.
 ${phasesSection}${planningPhaseSection}
 ${workersSection}
 ${projectSection}
@@ -1090,8 +1308,10 @@ Your initial plan is a hypothesis. Adjust it as you learn:
 - When using revise_plan, always provide explicit dependencyPatches — the runtime will NOT auto-rewire dependencies
 
 ### 6.5 Persist Mission Memory
-- Use update_mission_state after significant coordinator decisions so rationale survives context compaction
-- Use read_mission_state before major plan changes or mission completion to refresh durable facts
+- Use memory_search when prior missions or earlier discoveries may contain reusable patterns, gotchas, or decisions
+- Use memory_add when you discover durable project knowledge future missions should remember
+- Use update_mission_state after significant coordinator decisions so run-local rationale survives context compaction
+- Use read_mission_state before major plan changes or mission completion to refresh this run's durable state
 - Keep mission-state summaries concise: short outcomes, short decisions, actionable issue descriptions
 
 ### 6.6 Reflection Protocol Discipline
@@ -1156,8 +1376,10 @@ Your initial plan is a hypothesis. Adjust it as you learn:
 | Transfer step to lane | transfer_lane |
 | Non-critical and failing | skip_step |
 | Restructure the plan | revise_plan (with dependencyPatches) |
-| Persist durable memory | update_mission_state |
-| Reload durable memory | read_mission_state |
+| Search project memory | memory_search |
+| Persist project memory | memory_add |
+| Persist run-local durable state | update_mission_state |
+| Reload run-local durable state | read_mission_state |
 | Log structured reflection signal | reflection_add |
 | Insert milestone | insert_milestone |
 | Request specialist | request_specialist |

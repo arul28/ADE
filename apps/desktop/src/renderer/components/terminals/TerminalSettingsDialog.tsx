@@ -124,7 +124,7 @@ export function TerminalSettingsDialog({
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/5 backdrop-blur-md" />
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-[radial-gradient(circle_at_top,rgba(167,139,250,0.12),rgba(8,7,12,0.56))] backdrop-blur-md" />
         <Dialog.Content className="fixed left-1/2 top-[12%] z-50 w-[min(880px,calc(100vw-24px))] -translate-x-1/2 rounded-lg border border-border/30 bg-card p-4 shadow-2xl focus:outline-none">
           <div className="mb-3 flex items-center justify-between gap-3">
             <Dialog.Title className="text-sm font-semibold">Terminal Settings</Dialog.Title>

@@ -4,7 +4,7 @@ import { Button } from "../../ui/Button";
 import { TerminalView } from "../../terminals/TerminalView";
 import { PostResolutionActions } from "./PostResolutionActions";
 import { UnifiedModelSelector } from "../UnifiedModelSelector";
-import { MODEL_REGISTRY, getModelById, type ModelDescriptor } from "../../../../shared/modelRegistry";
+import { getDefaultModelDescriptor, MODEL_REGISTRY, getModelById, type ModelDescriptor } from "../../../../shared/modelRegistry";
 import type {
   AiDetectedAuth,
   AiConfig,
@@ -12,6 +12,7 @@ import type {
   PrepareResolverSessionResult,
   ResolverSessionScenario,
   ConflictExternalResolverRunSummary,
+  ConflictResolverPostActionState,
 } from "../../../../shared/types";
 
 type ResolverModalPhase = "configure" | "preparing" | "running" | "done";
@@ -124,6 +125,8 @@ function deriveConfiguredCliModelIdsFromStatus(status: {
   detectedAuth?: AiDetectedAuth[];
 }): string[] {
   const available = new Set<string>();
+  const defaultClaudeModelId = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
+  const defaultCodexModelId = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.3-codex";
 
   if (status.availableProviders.codex) {
     for (const model of status.models.codex ?? []) {
@@ -145,8 +148,8 @@ function deriveConfiguredCliModelIdsFromStatus(status: {
       if (model.deprecated || model.isCliWrapped) continue;
       if (!hasConfiguredNonCliAuth(model, detectedAuth)) continue;
       // Resolver modal is currently terminal-based; map non-CLI configured models to closest CLI family defaults.
-      if (model.family === "anthropic") available.add("anthropic/claude-sonnet-4-6");
-      if (model.family === "openai") available.add("openai/gpt-5.3-codex");
+      if (model.family === "anthropic") available.add(defaultClaudeModelId);
+      if (model.family === "openai") available.add(defaultCodexModelId);
     }
   }
 
@@ -179,9 +182,27 @@ async function prepareResolverSessionDirect(args: {
   sourceLaneIds: string[];
   cwdLaneId?: string;
   scenario: ResolverSessionScenario;
+  model?: string;
+  reasoningEffort?: string | null;
+  permissionMode?: AiPermissionMode;
+  originSurface?: "mission" | "integration" | "rebase" | "queue" | "graph" | "manual";
 }): Promise<{ result: PrepareResolverSessionResult | null; error: string | null }> {
   try {
-    const result = await window.ade.conflicts.prepareResolverSession(args);
+    const result = await window.ade.conflicts.prepareResolverSession({
+      provider: args.provider,
+      targetLaneId: args.targetLaneId,
+      sourceLaneIds: args.sourceLaneIds,
+      cwdLaneId: args.cwdLaneId,
+      scenario: args.scenario,
+      model: args.model,
+      reasoningEffort: args.reasoningEffort ?? null,
+      permissionMode: args.permissionMode === "read_only"
+        ? "read_only"
+        : args.permissionMode === "full_edit"
+          ? "full_edit"
+          : "guarded_edit",
+      originSurface: args.originSurface ?? "manual",
+    });
     if (result.status === "blocked") {
       const reason = result.contextGaps.length
         ? result.contextGaps.map((gap) => gap.message).join(", ")
@@ -197,6 +218,7 @@ async function prepareResolverSessionDirect(args: {
 async function finalizeResolverSessionDirect(args: {
   runId: string;
   exitCode: number;
+  postActions?: Partial<ConflictResolverPostActionState> | null;
 }): Promise<{ summary: ConflictExternalResolverRunSummary | null; error: string | null }> {
   try {
     const summary = await window.ade.conflicts.finalizeResolverSession(args);
@@ -235,7 +257,7 @@ export function ResolverTerminalModal({
   initialReasoningEffort?: string | null;
   availableModelIds?: string[];
   onModelChange?: (model: string, reasoningEffort: string | null) => void;
-  sourceTab?: "rebase" | "normal" | "integration" | "graph";
+  sourceTab?: "rebase" | "normal" | "integration" | "queue" | "graph" | "mission";
   onBackgroundSession?: (session: {
     ptyId: string;
     sessionId: string;
@@ -364,9 +386,23 @@ export function ResolverTerminalModal({
   }, [keptRunningInBackground, open]);
 
   const runPostResolutionActions = React.useCallback(
-    async (laneId: string): Promise<{ autoCommitted: boolean; autoPushed: boolean; error: string | null }> => {
+    async (laneId: string): Promise<{ autoCommitted: boolean; autoPushed: boolean; error: string | null; postActions: Partial<ConflictResolverPostActionState> | null }> => {
       if (!postResolution.autoCommit) {
-        return { autoCommitted: false, autoPushed: false, error: null };
+        return {
+          autoCommitted: false,
+          autoPushed: false,
+          error: null,
+          postActions: {
+            autoCommit: false,
+            autoPush: false,
+            commitMessage: null,
+            committedAt: null,
+            commitSha: null,
+            pushAt: null,
+            pushSucceeded: null,
+            error: null,
+          }
+        };
       }
 
       setPostActionBusy(true);
@@ -374,18 +410,51 @@ export function ResolverTerminalModal({
       setPostActionError(null);
       try {
         const message = postResolution.commitMessage.trim() || "Resolve conflicts via AI";
-        await window.ade.git.commit({ laneId, message });
+        const commitResult = await window.ade.git.commit({ laneId, message });
+        const committedAt = new Date().toISOString();
         let info = "Committed resolved changes.";
+        let pushAt: string | null = null;
+        let pushSucceeded: boolean | null = null;
         if (postResolution.autoPush) {
           await window.ade.git.push({ laneId });
+          pushAt = new Date().toISOString();
+          pushSucceeded = true;
           info = "Committed and pushed resolved changes.";
         }
         setPostActionInfo(info);
-        return { autoCommitted: true, autoPushed: postResolution.autoPush, error: null };
+        return {
+          autoCommitted: true,
+          autoPushed: postResolution.autoPush,
+          error: null,
+          postActions: {
+            autoCommit: true,
+            autoPush: postResolution.autoPush,
+            commitMessage: message,
+            committedAt,
+            commitSha: commitResult.postHeadSha,
+            pushAt,
+            pushSucceeded,
+            error: null,
+          }
+        };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         setPostActionError(message);
-        return { autoCommitted: false, autoPushed: false, error: message };
+        return {
+          autoCommitted: false,
+          autoPushed: false,
+          error: message,
+          postActions: {
+            autoCommit: postResolution.autoCommit,
+            autoPush: postResolution.autoPush,
+            commitMessage: postResolution.commitMessage.trim() || "Resolve conflicts via AI",
+            committedAt: null,
+            commitSha: null,
+            pushAt: null,
+            pushSucceeded: false,
+            error: message,
+          }
+        };
       } finally {
         setPostActionBusy(false);
       }
@@ -424,33 +493,35 @@ export function ResolverTerminalModal({
   // Listen for PTY exit
   React.useEffect(() => {
     if (!ptyId) return;
-    const unsub = window.ade.pty.onExit((ev) => {
+    const unsub = window.ade.pty.onExit(async (ev) => {
       if (ev.ptyId !== ptyId) return;
       const code = ev.exitCode ?? -1;
       setExitCode(code);
 
       const currentPrepResult = prepResultRef.current;
       if (currentPrepResult) {
-        finalizeResolverSessionDirect({ runId: currentPrepResult.runId, exitCode: code }).then(async ({ summary, error }) => {
+        const laneIdForPost = currentPrepResult.cwdLaneId ?? null;
+        let autoCommitted = false;
+        let autoPushed = false;
+        let postError: string | null = null;
+        let postActions: Partial<ConflictResolverPostActionState> | null = null;
+        if (code === 0 && laneIdForPost) {
+          const post = await runPostResolutionActions(laneIdForPost);
+          autoCommitted = post.autoCommitted;
+          autoPushed = post.autoPushed;
+          postError = post.error;
+          postActions = post.postActions;
+        }
+
+        finalizeResolverSessionDirect({ runId: currentPrepResult.runId, exitCode: code, postActions }).then(({ summary, error }) => {
           const status: DoneStatus = code === 0 ? "completed" : "failed";
           setDoneStatus(status);
 
-          if (summary?.summary) {
-            setModifiedFiles(summary.summary.split("\n").map((line) => line.trim()).filter(Boolean));
+          if (summary?.changedFiles && summary.changedFiles.length > 0) {
+            setModifiedFiles(summary.changedFiles);
           }
           if (error) {
             setErrorMsg(error);
-          }
-
-          const laneIdForPost = currentPrepResult.cwdLaneId ?? null;
-          let autoCommitted = false;
-          let autoPushed = false;
-          let postError: string | null = null;
-          if (status === "completed" && laneIdForPost) {
-            const post = await runPostResolutionActions(laneIdForPost);
-            autoCommitted = post.autoCommitted;
-            autoPushed = post.autoPushed;
-            postError = post.error;
           }
 
           setPhase("done");
@@ -494,6 +565,16 @@ export function ResolverTerminalModal({
       sourceLaneIds: sources,
       cwdLaneId: cwdLaneId ?? undefined,
       scenario: scenarioToUse,
+      model: resolverModel || undefined,
+      reasoningEffort: resolverReasoningEffort,
+      permissionMode,
+      originSurface:
+        sourceTab === "integration" ? "integration" :
+        sourceTab === "rebase" ? "rebase" :
+        sourceTab === "queue" ? "queue" :
+        sourceTab === "graph" ? "graph" :
+        sourceTab === "mission" ? "mission" :
+        "manual",
     });
 
     if (!result) {
@@ -526,6 +607,12 @@ export function ResolverTerminalModal({
         model: resolverModel || undefined,
         reasoningEffort: resolverReasoningEffort,
       });
+      await window.ade.conflicts.attachResolverSession({
+        runId: result.runId,
+        ptyId: pty.ptyId,
+        sessionId: pty.sessionId,
+        command: [cmd],
+      });
       await window.ade.pty.write({ ptyId: pty.ptyId, data: cmd + "\r" });
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
@@ -545,6 +632,13 @@ export function ResolverTerminalModal({
 
   const handleCancel = async () => {
     await disposePty();
+    if (prepResult?.runId) {
+      try {
+        await window.ade.conflicts.cancelResolverSession({ runId: prepResult.runId, reason: "Canceled from resolver modal." });
+      } catch {
+        // ignore cancellation persistence failures
+      }
+    }
     setDoneStatus("cancelled");
     setPhase("done");
     onCompleted?.({ status: "cancelled", laneId: prepResult?.cwdLaneId ?? null, autoCommitted: false, autoPushed: false, error: null });
@@ -615,7 +709,7 @@ export function ResolverTerminalModal({
           </Dialog.Title>
           <Dialog.Description className="mt-1 text-xs text-muted-fg">
             {phase === "configure" && "Configure an AI CLI to resolve merge conflicts."}
-            {phase === "preparing" && "Preparing session — gathering pack context..."}
+            {phase === "preparing" && "Preparing resolver job — freezing runtime context and writing the effective prompt."}
             {phase === "running" && "Running — watch the terminal output below."}
             {phase === "done" && "Resolution finished."}
           </Dialog.Description>
@@ -741,7 +835,7 @@ export function ResolverTerminalModal({
           {phase === "preparing" && (
             <div className="mt-4 flex items-center gap-3 py-8">
               <Spinner className="h-5 w-5 text-accent" />
-              <span className="text-sm text-muted-fg">Gathering pack context and writing prompt...</span>
+              <span className="text-sm text-muted-fg">Freezing context and writing resolver instructions...</span>
             </div>
           )}
 

@@ -52,6 +52,7 @@ export type ModelDescriptor = {
 };
 
 export type WorkerExecutionPath = "cli" | "api" | "local";
+export type ModelProviderGroup = "claude" | "codex" | "unified";
 
 // ---------------------------------------------------------------------------
 // Registry data
@@ -180,22 +181,40 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   // Codex reasoning tiers: minimal | low | medium | high | xhigh (per config.toml reference)
   // xhigh is model-dependent (gpt-5.1+ support it)
   {
+    id: "openai/gpt-5.4-codex",
+    shortId: "gpt-5.4",
+    aliases: ["gpt-5.4-codex"],
+    displayName: "GPT-5.4 Codex",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 400_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["minimal", "low", "medium", "high", "xhigh"],
+    color: "#10A37F",
+    sdkProvider: "ai-sdk-provider-codex-cli",
+    sdkModelId: "gpt-5.4",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    costTier: "high",
+  },
+  {
     id: "openai/gpt-5.3-codex",
     shortId: "gpt-5.3-codex",
     displayName: "GPT-5.3 Codex",
     family: "openai",
     authTypes: ["cli-subscription"],
-    contextWindow: 192_000,
-    maxOutputTokens: 16_384,
+    contextWindow: 400_000,
+    maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["minimal", "low", "medium", "high", "xhigh"],
+    reasoningTiers: ["low", "medium", "high", "xhigh"],
     color: "#10B981",
     sdkProvider: "ai-sdk-provider-codex-cli",
     sdkModelId: "gpt-5.3-codex",
     cliCommand: "codex",
     isCliWrapped: true,
-    inputPricePer1M: 2,
-    outputPricePer1M: 8,
+    inputPricePer1M: 1.5,
+    outputPricePer1M: 6,
     costTier: "high",
   },
   {
@@ -223,10 +242,10 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     displayName: "GPT-5.2 Codex",
     family: "openai",
     authTypes: ["cli-subscription"],
-    contextWindow: 192_000,
-    maxOutputTokens: 16_384,
+    contextWindow: 400_000,
+    maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["minimal", "low", "medium", "high", "xhigh"],
+    reasoningTiers: ["low", "medium", "high", "xhigh"],
     color: "#10B981",
     sdkProvider: "ai-sdk-provider-codex-cli",
     sdkModelId: "gpt-5.2-codex",
@@ -256,21 +275,79 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     costTier: "high",
   },
   {
+    id: "openai/gpt-5.1-codex",
+    shortId: "gpt-5.1-codex",
+    displayName: "GPT-5.1 Codex",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 400_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh"],
+    color: "#14B8A6",
+    sdkProvider: "ai-sdk-provider-codex-cli",
+    sdkModelId: "gpt-5.1-codex",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    inputPricePer1M: 1.25,
+    outputPricePer1M: 10,
+    costTier: "medium",
+  },
+  {
+    id: "openai/gpt-5.1-codex-mini",
+    shortId: "gpt-5.1-codex-mini",
+    displayName: "GPT-5.1 Codex Mini",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 400_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high"],
+    color: "#2DD4BF",
+    sdkProvider: "ai-sdk-provider-codex-cli",
+    sdkModelId: "gpt-5.1-codex-mini",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    inputPricePer1M: 0.25,
+    outputPricePer1M: 2,
+    costTier: "low",
+  },
+  {
+    id: "openai/gpt-5-codex",
+    shortId: "gpt-5-codex",
+    displayName: "GPT-5 Codex",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 400_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["minimal", "low", "medium", "high"],
+    color: "#059669",
+    sdkProvider: "ai-sdk-provider-codex-cli",
+    sdkModelId: "gpt-5-codex",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    inputPricePer1M: 1.25,
+    outputPricePer1M: 10,
+    costTier: "medium",
+  },
+  {
     id: "openai/codex-mini-latest",
     shortId: "codex-mini",
     displayName: "Codex Mini",
     family: "openai",
     authTypes: ["cli-subscription"],
-    contextWindow: 192_000,
-    maxOutputTokens: 16_384,
-    capabilities: NO_REASONING,
+    contextWindow: 200_000,
+    maxOutputTokens: 100_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high"],
     color: "#34D399",
     sdkProvider: "ai-sdk-provider-codex-cli",
     sdkModelId: "codex-mini-latest",
     cliCommand: "codex",
     isCliWrapped: true,
-    inputPricePer1M: 0.3,
-    outputPricePer1M: 1.2,
+    inputPricePer1M: 1.5,
+    outputPricePer1M: 6,
     costTier: "low",
   },
   {
@@ -333,6 +410,23 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     costTier: "high",
   },
   {
+    id: "openai/gpt-5-chat-latest",
+    shortId: "gpt-5-chat-latest",
+    aliases: ["gpt-5-latest"],
+    displayName: "GPT-5 Chat Latest",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 1_050_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["none", "low", "medium", "high", "xhigh"],
+    color: "#22C55E",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "gpt-5-chat-latest",
+    isCliWrapped: false,
+    costTier: "high",
+  },
+  {
     id: "openai/gpt-5.4-pro",
     shortId: "gpt-5.4-pro",
     aliases: ["gpt-5.4-pro-2026-03-05"],
@@ -350,6 +444,215 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     inputPricePer1M: 30,
     outputPricePer1M: 180,
     costTier: "very_high",
+  },
+  {
+    id: "openai/gpt-5.3-codex-api",
+    shortId: "gpt-5.3-codex-api",
+    aliases: ["gpt-5.3-codex"],
+    displayName: "GPT-5.3 Codex (API)",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 400_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh"],
+    color: "#10B981",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "gpt-5.3-codex",
+    isCliWrapped: false,
+    inputPricePer1M: 1.75,
+    outputPricePer1M: 14,
+    costTier: "high",
+  },
+  {
+    id: "openai/gpt-5.2-codex-api",
+    shortId: "gpt-5.2-codex-api",
+    aliases: ["gpt-5.2-codex"],
+    displayName: "GPT-5.2 Codex (API)",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 400_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh"],
+    color: "#0EA5A4",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "gpt-5.2-codex",
+    isCliWrapped: false,
+    inputPricePer1M: 1.75,
+    outputPricePer1M: 14,
+    costTier: "high",
+  },
+  {
+    id: "openai/gpt-5.1-codex-api",
+    shortId: "gpt-5.1-codex-api",
+    aliases: ["gpt-5.1-codex"],
+    displayName: "GPT-5.1 Codex (API)",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 400_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh"],
+    color: "#14B8A6",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "gpt-5.1-codex",
+    isCliWrapped: false,
+    inputPricePer1M: 1.25,
+    outputPricePer1M: 10,
+    costTier: "medium",
+  },
+  {
+    id: "openai/gpt-5-codex-api",
+    shortId: "gpt-5-codex-api",
+    aliases: ["gpt-5-codex"],
+    displayName: "GPT-5 Codex (API)",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 400_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["minimal", "low", "medium", "high"],
+    color: "#059669",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "gpt-5-codex",
+    isCliWrapped: false,
+    inputPricePer1M: 1.25,
+    outputPricePer1M: 10,
+    costTier: "medium",
+  },
+  {
+    id: "openai/gpt-5.2",
+    shortId: "gpt-5.2",
+    aliases: ["gpt-5.2-2025-12-11"],
+    displayName: "GPT-5.2",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 400_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["none", "low", "medium", "high", "xhigh"],
+    color: "#0EA5A4",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "gpt-5.2",
+    isCliWrapped: false,
+    inputPricePer1M: 1.75,
+    outputPricePer1M: 14,
+    costTier: "high",
+  },
+  {
+    id: "openai/gpt-5.2-pro",
+    shortId: "gpt-5.2-pro",
+    aliases: ["gpt-5.2-pro-2025-12-11"],
+    displayName: "GPT-5.2 Pro",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 400_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["medium", "high", "xhigh"],
+    color: "#0F766E",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "gpt-5.2-pro",
+    isCliWrapped: false,
+    inputPricePer1M: 21,
+    outputPricePer1M: 168,
+    costTier: "very_high",
+  },
+  {
+    id: "openai/gpt-5.1",
+    shortId: "gpt-5.1",
+    aliases: ["gpt-5.1-2025-10-06"],
+    displayName: "GPT-5.1",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 400_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["none", "low", "medium", "high"],
+    color: "#14B8A6",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "gpt-5.1",
+    isCliWrapped: false,
+    inputPricePer1M: 1.25,
+    outputPricePer1M: 10,
+    costTier: "medium",
+  },
+  {
+    id: "openai/gpt-5-pro",
+    shortId: "gpt-5-pro",
+    aliases: ["gpt-5-pro-2025-10-06"],
+    displayName: "GPT-5 Pro",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 400_000,
+    maxOutputTokens: 272_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["high"],
+    color: "#115E59",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "gpt-5-pro",
+    isCliWrapped: false,
+    inputPricePer1M: 15,
+    outputPricePer1M: 120,
+    costTier: "very_high",
+  },
+  {
+    id: "openai/gpt-5",
+    shortId: "gpt-5",
+    aliases: ["gpt-5-2025-08-07"],
+    displayName: "GPT-5",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 400_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["minimal", "low", "medium", "high"],
+    color: "#10B981",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "gpt-5",
+    isCliWrapped: false,
+    inputPricePer1M: 1.25,
+    outputPricePer1M: 10,
+    costTier: "medium",
+  },
+  {
+    id: "openai/gpt-5-mini",
+    shortId: "gpt-5-mini",
+    aliases: ["gpt-5-mini-2025-08-07"],
+    displayName: "GPT-5 Mini",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 400_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["minimal", "low", "medium", "high"],
+    color: "#34D399",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "gpt-5-mini",
+    isCliWrapped: false,
+    inputPricePer1M: 0.25,
+    outputPricePer1M: 2,
+    costTier: "low",
+  },
+  {
+    id: "openai/gpt-5-nano",
+    shortId: "gpt-5-nano",
+    aliases: ["gpt-5-nano-2025-08-07"],
+    displayName: "GPT-5 Nano",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 400_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["minimal", "low", "medium", "high"],
+    color: "#6EE7B7",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "gpt-5-nano",
+    isCliWrapped: false,
+    inputPricePer1M: 0.05,
+    outputPricePer1M: 0.4,
+    costTier: "low",
   },
   {
     id: "openai/gpt-4.1",
@@ -676,6 +979,105 @@ export function classifyWorkerExecutionPath(
   if (resolveCliProviderForModel(descriptor)) return "cli";
   if (descriptor.authTypes.includes("local")) return "local";
   return "api";
+}
+
+function listProviderModelsInternal(provider: ModelProviderGroup): ModelDescriptor[] {
+  return MODEL_REGISTRY.filter((descriptor) => {
+    if (descriptor.deprecated) return false;
+    if (provider === "claude") return descriptor.isCliWrapped && descriptor.family === "anthropic";
+    if (provider === "codex") return descriptor.isCliWrapped && descriptor.family === "openai";
+    return !descriptor.isCliWrapped;
+  });
+}
+
+function parseVersionSegments(value: string): number[] {
+  const match = value.match(/gpt-(\d+(?:\.\d+)*)-codex$/i);
+  if (!match?.[1]) return [];
+  return match[1]
+    .split(".")
+    .map((part) => Number(part))
+    .filter((part) => Number.isFinite(part));
+}
+
+function compareVersionSegmentsDesc(left: number[], right: number[]): number {
+  const maxLength = Math.max(left.length, right.length);
+  for (let index = 0; index < maxLength; index += 1) {
+    const leftValue = left[index] ?? 0;
+    const rightValue = right[index] ?? 0;
+    if (leftValue !== rightValue) return rightValue - leftValue;
+  }
+  return 0;
+}
+
+function pickPreferredModel(
+  models: ModelDescriptor[],
+  predicates: Array<(model: ModelDescriptor) => boolean>,
+): ModelDescriptor | undefined {
+  for (const predicate of predicates) {
+    const match = models.find(predicate);
+    if (match) return match;
+  }
+  return models[0];
+}
+
+function pickDefaultClaudeModel(models: ModelDescriptor[]): ModelDescriptor | undefined {
+  return pickPreferredModel(models, [
+    (model) => /\bsonnet\b/i.test(model.displayName) || /\bsonnet\b/i.test(model.sdkModelId),
+    (model) => /\bopus\b/i.test(model.displayName) || /\bopus\b/i.test(model.sdkModelId),
+    (model) => /\bhaiku\b/i.test(model.displayName) || /\bhaiku\b/i.test(model.sdkModelId),
+  ]);
+}
+
+function pickDefaultCodexModel(models: ModelDescriptor[]): ModelDescriptor | undefined {
+  const standard = models
+    .filter((model) => /gpt-\d+(?:\.\d+)*-codex$/i.test(model.sdkModelId))
+    .sort((left, right) => {
+      const versionCompare = compareVersionSegmentsDesc(
+        parseVersionSegments(left.sdkModelId),
+        parseVersionSegments(right.sdkModelId),
+      );
+      if (versionCompare !== 0) return versionCompare;
+      return left.displayName.localeCompare(right.displayName);
+    });
+  if (standard[0]) return standard[0];
+  return pickPreferredModel(models, [
+    (model) => /codex-mini/i.test(model.sdkModelId),
+    (model) => /spark/i.test(model.sdkModelId),
+  ]);
+}
+
+function pickDefaultUnifiedModel(models: ModelDescriptor[]): ModelDescriptor | undefined {
+  return pickPreferredModel(models, [
+    (model) => model.family === "openai" && /\bgpt-5\.4\b/i.test(`${model.displayName} ${model.sdkModelId}`),
+    (model) => model.id === "anthropic/claude-sonnet-4-6-api",
+    (model) => model.family === "anthropic" && /\bsonnet\b/i.test(model.displayName),
+    (model) => model.family === "anthropic",
+    (model) => model.family === "openai",
+  ]);
+}
+
+function pickDefaultModelForProvider(
+  provider: ModelProviderGroup,
+  models: ModelDescriptor[],
+): ModelDescriptor | undefined {
+  if (provider === "claude") return pickDefaultClaudeModel(models);
+  if (provider === "codex") return pickDefaultCodexModel(models);
+  return pickDefaultUnifiedModel(models);
+}
+
+export function getDefaultModelDescriptor(
+  provider: ModelProviderGroup,
+): ModelDescriptor | undefined {
+  return pickDefaultModelForProvider(provider, listProviderModelsInternal(provider));
+}
+
+export function listModelDescriptorsForProvider(
+  provider: ModelProviderGroup,
+): ModelDescriptor[] {
+  const models = listProviderModelsInternal(provider);
+  const preferred = pickDefaultModelForProvider(provider, models);
+  if (!preferred) return models;
+  return [preferred, ...models.filter((model) => model.id !== preferred.id)];
 }
 
 // ---------------------------------------------------------------------------

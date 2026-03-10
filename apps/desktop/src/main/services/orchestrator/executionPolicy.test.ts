@@ -92,7 +92,7 @@ describe("executionPolicy", () => {
       expect(stepTypeToPhase("code")).toBe("implementation");
       expect(stepTypeToPhase("implementation")).toBe("implementation");
       expect(stepTypeToPhase("test")).toBe("testing");
-      expect(stepTypeToPhase("validation")).toBe("testing");
+      expect(stepTypeToPhase("validation")).toBe("validation");
       expect(stepTypeToPhase("review")).toBe("codeReview");
       expect(stepTypeToPhase("integration")).toBe("integration");
       expect(stepTypeToPhase("merge")).toBeNull(); // merge phase removed — always off
@@ -254,7 +254,7 @@ function makePhaseCard(overrides: Partial<Omit<PhaseCard, "phaseKey">> & { phase
     model: { provider: "codex", modelId: "gpt-5.3-codex" },
     budget: {},
     orderingConstraints: {},
-    askQuestions: { enabled: false, mode: "never" },
+    askQuestions: { enabled: false },
     validationGate: { tier: "none", required: false },
     isBuiltIn: true,
     isCustom: false,
@@ -338,6 +338,73 @@ describe("evaluateRunCompletionFromPhases", () => {
     // Testing phase not in cards, so it should be skipped not required
     const testingDiag = result.diagnostics.find((d) => d.phase === "testing");
     expect(testingDiag?.code).toBe("phase_skipped_by_policy");
+  });
+
+  it("treats required custom phases as first-class completion gates", () => {
+    const phases = [
+      makePhaseCard({ phaseKey: "implementation", validationGate: { tier: "none", required: true } }),
+      makePhaseCard({
+        phaseKey: "security",
+        name: "Security Review",
+        validationGate: { tier: "dedicated", required: true },
+        isBuiltIn: false,
+        isCustom: true
+      })
+    ];
+    const steps = [
+      makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "code" } })
+    ];
+
+    const result = evaluateRunCompletionFromPhases(steps, phases, defaultSettings);
+
+    expect(result.status).toBe("active");
+    expect(result.completionReady).toBe(false);
+    expect(result.riskFactors).toContain("security_required_but_missing");
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          phase: "security",
+          code: "phase_required_missing",
+          blocking: true
+        })
+      ])
+    );
+  });
+
+  it("keeps custom phases separate from built-in validation buckets", () => {
+    const phases = [
+      makePhaseCard({ phaseKey: "implementation", validationGate: { tier: "none", required: true } }),
+      makePhaseCard({ phaseKey: "validation", validationGate: { tier: "dedicated", required: true } }),
+      makePhaseCard({
+        phaseKey: "release",
+        name: "Release Readiness",
+        validationGate: { tier: "dedicated", required: true },
+        isBuiltIn: false,
+        isCustom: true
+      })
+    ];
+    const steps = [
+      makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "code" } }),
+      makeStep({
+        id: "s2",
+        status: "succeeded",
+        metadata: {
+          stepType: "validation",
+          phaseKey: "release",
+          phaseName: "Release Readiness"
+        }
+      })
+    ];
+
+    const result = evaluateRunCompletionFromPhases(steps, phases, defaultSettings);
+    const validationDiag = result.diagnostics.find((d) => d.phase === "validation");
+    const releaseDiag = result.diagnostics.find((d) => d.phase === "release");
+
+    expect(result.status).toBe("active");
+    expect(result.completionReady).toBe(false);
+    expect(result.riskFactors).toContain("validation_required_but_missing");
+    expect(validationDiag?.code).toBe("phase_required_missing");
+    expect(releaseDiag?.code).toBe("phase_succeeded");
   });
 });
 

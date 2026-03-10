@@ -21,7 +21,27 @@ import {
 } from "./orchestratorContext";
 import type { MetaReasonerRunState } from "./metaReasoner";
 
+type ReplayQueuedWorkerMessagesResult = {
+  delivered: number;
+  failed: number;
+  queued: number;
+};
+
 // ── Session Runtime Signal Processing ────────────────────────────
+
+function trackSessionQueue(
+  ctx: OrchestratorContext,
+  sessionId: string,
+  work: Promise<void>,
+): void {
+  let tracked: Promise<void>;
+  tracked = work.finally(() => {
+    if (ctx.sessionSignalQueues.get(sessionId) === tracked) {
+      ctx.sessionSignalQueues.delete(sessionId);
+    }
+  });
+  ctx.sessionSignalQueues.set(sessionId, tracked);
+}
 
 /**
  * Queue a session runtime signal for serial processing.
@@ -32,6 +52,9 @@ export function onSessionRuntimeSignal(
   signal: SessionRuntimeSignal,
   deps: {
     processSessionRuntimeSignal: (signal: SessionRuntimeSignal) => Promise<void>;
+    replayQueuedWorkerMessages?: (
+      args: { reason: string; sessionId?: string | null; missionId?: string | null }
+    ) => Promise<void | ReplayQueuedWorkerMessagesResult>;
   }
 ): void {
   const sessionId = String(signal.sessionId ?? "").trim();
@@ -52,7 +75,14 @@ export function onSessionRuntimeSignal(
     .catch(() => {})
     .then(() => {
       if (ctx.disposed.current) return;
-      return deps.processSessionRuntimeSignal(normalizedSignal);
+      return deps.processSessionRuntimeSignal(normalizedSignal)
+        .then(() => {
+          if (ctx.disposed.current || !deps.replayQueuedWorkerMessages) return;
+          return deps.replayQueuedWorkerMessages({
+            reason: "runtime_signal",
+            sessionId,
+          }).then(() => undefined);
+        });
     })
     .catch((error) => {
       ctx.logger.debug("ai_orchestrator.session_signal_processing_failed", {
@@ -60,7 +90,7 @@ export function onSessionRuntimeSignal(
         error: error instanceof Error ? error.message : String(error)
       });
     });
-  ctx.sessionSignalQueues.set(sessionId, next);
+  trackSessionQueue(ctx, sessionId, next);
 }
 
 /**
@@ -70,16 +100,29 @@ export function onAgentChatEvent(
   ctx: OrchestratorContext,
   envelope: AgentChatEventEnvelope,
   deps: {
-    replayQueuedWorkerMessages: (args: { reason: string; missionId?: string | null }) => Promise<void>;
+    replayQueuedWorkerMessages: (
+      args: { reason: string; missionId?: string | null; sessionId?: string | null }
+    ) => Promise<void | ReplayQueuedWorkerMessagesResult>;
   }
 ): void {
   const sessionId = String(envelope.sessionId ?? "").trim();
   if (!sessionId.length) return;
 
   const event = envelope.event;
+  const turnStatus = typeof (event as any).turnStatus === "string" ? (event as any).turnStatus.trim().toLowerCase() : "";
   const shouldReplay =
     event.type === "done" ||
-    (event.type === "status" && (event as any).turnStatus === "completed");
+    event.type === "error" ||
+    (event.type === "status" && (
+      turnStatus === "completed"
+      || turnStatus === "failed"
+      || turnStatus === "error"
+      || turnStatus === "errored"
+      || turnStatus === "interrupted"
+      || turnStatus === "cancelled"
+      || turnStatus === "canceled"
+      || turnStatus === "stopped"
+    ));
 
   const previous = ctx.sessionSignalQueues.get(sessionId) ?? Promise.resolve();
   const next = previous
@@ -87,13 +130,16 @@ export function onAgentChatEvent(
     .then(() => {
       if (ctx.disposed.current) return;
       if (shouldReplay) {
-        return deps.replayQueuedWorkerMessages({ reason: `agent_chat_event:${event.type}` }).catch((error: unknown) => {
+        return deps.replayQueuedWorkerMessages({
+          reason: `agent_chat_event:${event.type}`,
+          sessionId,
+        }).catch((error: unknown) => {
           ctx.logger.debug("ai_orchestrator.worker_delivery_chat_event_replay_failed", {
             sessionId,
             eventType: event.type,
             error: error instanceof Error ? error.message : String(error)
           });
-        });
+        }).then(() => undefined);
       }
     })
     .catch((error) => {
@@ -102,7 +148,7 @@ export function onAgentChatEvent(
         error: error instanceof Error ? error.message : String(error)
       });
     });
-  ctx.sessionSignalQueues.set(sessionId, next);
+  trackSessionQueue(ctx, sessionId, next);
 }
 
 /**
@@ -179,6 +225,7 @@ const COORDINATOR_IMPORTANT_RUNTIME_REASONS = new Set([
   "manual_step_requires_operator",
   "milestone_ready_validation_required",
   "no_output_after_startup",
+  "phase_transition",
   "question_answered_resume",
   "required_validation_gate_blocked",
   "required_validation_missing",
@@ -189,8 +236,11 @@ const COORDINATOR_IMPORTANT_RUNTIME_REASONS = new Set([
   "validation_auto_spawned",
   "validation_contract_unfulfilled",
   "validation_gate_blocked",
+  "validation_report",
   "validation_retry_exhausted",
   "validation_self_check_reminder",
+  "worker_result_report",
+  "worker_status_report",
 ]);
 
 type CoordinatorRouteGuardState = {

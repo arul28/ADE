@@ -53,7 +53,7 @@ describe("unifiedMemoryService", () => {
       sourceRunId: "run-2",
     });
 
-    const runOne = memoryService.searchMemories(
+    const runOne = await memoryService.searchMemories(
       "mission",
       "project-1",
       "mission",
@@ -61,7 +61,7 @@ describe("unifiedMemoryService", () => {
       "promoted",
       "run-1"
     );
-    const runTwo = memoryService.searchMemories(
+    const runTwo = await memoryService.searchMemories(
       "mission",
       "project-1",
       "mission",

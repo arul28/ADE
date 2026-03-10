@@ -167,7 +167,7 @@ export function ClarificationQuizModal({
                 color: COLORS.accent,
               }}
             >
-              Coordinator Clarification
+              Planning Questions
             </span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>

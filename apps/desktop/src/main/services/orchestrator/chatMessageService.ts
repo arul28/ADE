@@ -70,6 +70,52 @@ import type {
   OrchestratorThreadEvent,
 } from "../../../shared/types";
 
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function looksLikeLowSignalMissionNoise(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed.length) return true;
+  if (/^streaming(?:\.\.\.)?$/i.test(trimmed)) return true;
+  if (/^usage$/i.test(trimmed)) return true;
+  if (/^mcp:/i.test(trimmed)) return true;
+  if (/^[\-dlcbps][rwx\-@+]{8,}/i.test(trimmed)) return true;
+  if (/^[A-Z0-9 .:_()/-]{24,}$/.test(trimmed)) return true;
+  // Single-token strings under 24 chars that look like identifiers or noise
+  // tokens rather than prose. Allow strings with sentence-ending punctuation
+  // (e.g. "Done.", "Error!") since those are genuine assistant responses.
+  if (!/\s/.test(trimmed) && trimmed.length < 24 && !/[.!?]/.test(trimmed)) return true;
+  if (/^[A-Za-z]+$/.test(trimmed) && trimmed.length < 24) return true;
+  return false;
+}
+
+function shouldCountAsMissionAttentionMessage(message: OrchestratorChatMessage): boolean {
+  if (message.role === "user" || message.visibility === "metadata_only") return false;
+  const metadata = isRecord(message.metadata) ? message.metadata : null;
+  if (metadata?.missionChatMode === "thread_only") return false;
+
+  const structured = isRecord(metadata?.structuredStream) ? metadata.structuredStream : null;
+  const kind = readString(structured?.kind);
+  const content = typeof message.content === "string" ? message.content : "";
+
+  if (kind === "plan" || kind === "approval_request" || kind === "user_message") return true;
+  if (kind === "text" || kind === "reasoning") return !looksLikeLowSignalMissionNoise(content);
+  if (kind === "status") {
+    const status = readString(structured?.status)?.toLowerCase() ?? "";
+    const statusMessage = readString(structured?.message) ?? "";
+    if (status === "failed" || status === "interrupted") return true;
+    return statusMessage.length > 0 && !looksLikeLowSignalMissionNoise(statusMessage);
+  }
+  if (kind === "error") {
+    const errorMessage = readString(structured?.message) ?? content;
+    return errorMessage.length > 0 && !looksLikeLowSignalMissionNoise(errorMessage);
+  }
+  if (kind) return false;
+
+  return !looksLikeLowSignalMissionNoise(content);
+}
+
 // ── Thread Event Emission ────────────────────────────────────────
 
 export function emitThreadEvent(
@@ -638,6 +684,78 @@ export function ensureThreadForTarget(
   });
 }
 
+function deriveTargetFromThread(thread: OrchestratorChatThread): OrchestratorChatTarget | null {
+  if (thread.threadType === "worker") {
+    return {
+      kind: "worker",
+      runId: thread.runId ?? null,
+      stepId: thread.stepId ?? null,
+      stepKey: thread.stepKey ?? null,
+      attemptId: thread.attemptId ?? null,
+      sessionId: thread.sessionId ?? null,
+      laneId: thread.laneId ?? null,
+    };
+  }
+  if (thread.threadType === "teammate") {
+    const metadata = isRecord(thread.metadata) ? thread.metadata : {};
+    return {
+      kind: "teammate",
+      runId: thread.runId ?? null,
+      teamMemberId: typeof metadata.teamMemberId === "string" ? metadata.teamMemberId : null,
+      sessionId: thread.sessionId ?? null,
+    };
+  }
+  return {
+    kind: "coordinator",
+    runId: thread.runId ?? null,
+  };
+}
+
+function mergeThreadResolvedTarget(
+  thread: OrchestratorChatThread,
+  explicitTarget: OrchestratorChatTarget | null,
+): OrchestratorChatTarget | null {
+  const threadTarget = deriveTargetFromThread(thread);
+  if (!threadTarget) return explicitTarget;
+  if (!explicitTarget) return threadTarget;
+  if (threadTarget.kind !== explicitTarget.kind) return explicitTarget;
+  // threadTarget.kind === explicitTarget.kind is guaranteed by the guard above,
+  // so we can safely narrow threadTarget inside each case branch.
+  switch (explicitTarget.kind) {
+    case "worker": {
+      const tt = threadTarget as Extract<typeof threadTarget, { kind: "worker" }>;
+      return {
+        kind: "worker",
+        runId: explicitTarget.runId ?? tt.runId ?? null,
+        stepId: explicitTarget.stepId ?? tt.stepId ?? null,
+        stepKey: explicitTarget.stepKey ?? tt.stepKey ?? null,
+        attemptId: explicitTarget.attemptId ?? tt.attemptId ?? null,
+        sessionId: explicitTarget.sessionId ?? tt.sessionId ?? null,
+        laneId: explicitTarget.laneId ?? tt.laneId ?? null,
+      };
+    }
+    case "teammate": {
+      const tt = threadTarget as Extract<typeof threadTarget, { kind: "teammate" }>;
+      return {
+        kind: "teammate",
+        runId: explicitTarget.runId ?? tt.runId ?? null,
+        teamMemberId: explicitTarget.teamMemberId ?? tt.teamMemberId ?? null,
+        sessionId: explicitTarget.sessionId ?? tt.sessionId ?? null,
+      };
+    }
+    case "workers":
+    case "agent":
+      return explicitTarget;
+    case "coordinator":
+      return {
+        kind: "coordinator",
+        runId: explicitTarget.runId ?? threadTarget.runId ?? null,
+      };
+    default:
+      return explicitTarget;
+  }
+}
+
 // ── Chat Message Row Parsing ─────────────────────────────────────
 
 export type ChatMessageRow = {
@@ -997,7 +1115,7 @@ export function appendChatMessageCtx(
         createdAt
       ]
     );
-    const unreadIncrement = normalized.role === "user" ? 0 : 1;
+    const unreadIncrement = shouldCountAsMissionAttentionMessage(normalized) ? 1 : 0;
     ctx.db.run(
       `
         update orchestrator_chat_threads
@@ -1237,15 +1355,16 @@ export function sendThreadMessageCtx(
   threadArgs: SendOrchestratorThreadMessageArgs,
   deps: ChatRoutingDeps
 ): OrchestratorChatMessage {
-  const target = sanitizeChatTarget(threadArgs.target);
-  if (target?.kind === "workers") {
-    return sendWorkersBroadcastMessageCtx(ctx, threadArgs, target, deps);
+  const explicitTarget = sanitizeChatTarget(threadArgs.target);
+  if (explicitTarget?.kind === "workers") {
+    return sendWorkersBroadcastMessageCtx(ctx, threadArgs, explicitTarget, deps);
   }
   const thread = ensureThreadForTarget(ctx, {
     missionId: threadArgs.missionId,
     threadId: threadArgs.threadId ?? null,
-    target
+    target: explicitTarget
   });
+  const target = mergeThreadResolvedTarget(thread, explicitTarget);
   const isWorkerTarget = target?.kind === "worker";
   const isTeammateTarget = target?.kind === "teammate";
   const visibilityFallback = isWorkerTarget ? DEFAULT_WORKER_CHAT_VISIBILITY : DEFAULT_CHAT_VISIBILITY;
@@ -1335,11 +1454,14 @@ export function sendChatCtx(
   chatArgs: SendOrchestratorChatArgs,
   deps: ChatRoutingDeps
 ): OrchestratorChatMessage {
+  const resolvedTarget =
+    chatArgs.target
+    ?? (chatArgs.threadId ? undefined : { kind: "coordinator", runId: null } satisfies OrchestratorChatTarget);
   return sendThreadMessageCtx(ctx, {
     missionId: chatArgs.missionId,
     content: chatArgs.content,
     threadId: chatArgs.threadId ?? missionThreadId(chatArgs.missionId),
-    target: chatArgs.target ?? { kind: "coordinator", runId: null },
+    ...(resolvedTarget ? { target: resolvedTarget } : {}),
     visibilityMode: chatArgs.visibilityMode ?? DEFAULT_CHAT_VISIBILITY,
     metadata: chatArgs.metadata ?? null
   }, deps);
@@ -1460,6 +1582,12 @@ export function routeMessageCtx(
         targetAttemptId: ws.attemptId,
         content: message.content,
         priority: "normal"
+      }).catch((error: unknown) => {
+        ctx.logger.debug("ai_orchestrator.route_message_delivery_failed", {
+          missionId,
+          targetAttemptId: ws.attemptId,
+          error: error instanceof Error ? error.message : String(error)
+        });
       });
     }
     return;
@@ -1483,9 +1611,59 @@ export function routeMessageCtx(
         targetAttemptId: targetWorker[1].attemptId,
         content: message.content,
         priority: "normal"
+      }).catch((error: unknown) => {
+        ctx.logger.debug("ai_orchestrator.route_message_delivery_failed", {
+          missionId,
+          targetAttemptId: targetWorker[1].attemptId,
+          error: error instanceof Error ? error.message : String(error)
+        });
       });
     }
   }
+}
+
+function queueRecoverableAgentDeliveryCtx(
+  ctx: OrchestratorContext,
+  args: {
+    missionId: string;
+    targetAttemptId: string;
+    content: string;
+    fromAttemptId?: string | null;
+  }
+): void {
+  const targetThread = ensureThreadForTarget(ctx, {
+    missionId: args.missionId,
+    threadId: null,
+    target: { kind: "worker", attemptId: args.targetAttemptId } as OrchestratorChatTarget
+  });
+  const queued = appendChatMessageCtx(ctx, {
+    id: randomUUID(),
+    missionId: args.missionId,
+    role: "user",
+    content: args.content,
+    timestamp: nowIso(),
+    threadId: targetThread.id,
+    target: { kind: "worker", attemptId: args.targetAttemptId } as OrchestratorChatTarget,
+    visibility: "full" as OrchestratorChatVisibilityMode,
+    deliveryState: "queued" as OrchestratorChatDeliveryState,
+    sourceSessionId: null,
+    attemptId: args.targetAttemptId,
+    laneId: null,
+    runId: targetThread.runId ?? null,
+    stepKey: null,
+    metadata: {
+      interAgentDelivery: true,
+      queuedFallback: true,
+      fromAttemptId: args.fromAttemptId ?? null,
+    }
+  });
+  emitThreadEvent(ctx, {
+    type: "message_appended",
+    missionId: args.missionId,
+    threadId: queued.threadId ?? targetThread.id,
+    messageId: queued.id,
+    reason: "agent_message_delivery_queued"
+  });
 }
 
 // ── Inter-agent messaging: deliver message to a running agent ──
@@ -1502,7 +1680,13 @@ export async function deliverMessageToAgentCtx(
 ): Promise<{ delivered: boolean; method: string }> {
   const ws = ctx.workerStates.get(args.targetAttemptId);
   if (!ws) {
-    return { delivered: false, method: "not_found" };
+    queueRecoverableAgentDeliveryCtx(ctx, {
+      missionId: args.missionId,
+      targetAttemptId: args.targetAttemptId,
+      content: args.content,
+      fromAttemptId: args.fromAttemptId ?? null,
+    });
+    return { delivered: false, method: "queued" };
   }
 
   const priority = args.priority ?? "normal";
@@ -1533,7 +1717,13 @@ export async function deliverMessageToAgentCtx(
     }
   }
 
-  return { delivered: false, method: "no_active_session" };
+  queueRecoverableAgentDeliveryCtx(ctx, {
+    missionId: args.missionId,
+    targetAttemptId: args.targetAttemptId,
+    content: formattedContent,
+    fromAttemptId: args.fromAttemptId ?? null,
+  });
+  return { delivered: false, method: "queued" };
 }
 
 // ── Global chat: all messages for a mission across all threads ──

@@ -210,8 +210,10 @@ import type {
   ListExternalConflictResolverRunsArgs,
   CommitExternalConflictResolverRunArgs,
   CommitExternalConflictResolverRunResult,
+  AttachResolverSessionArgs,
   RunConflictPredictionArgs,
   UndoConflictProposalArgs,
+  CancelResolverSessionArgs,
   RunTestSuiteArgs,
   SessionDeltaSummary,
   StackChainItem,
@@ -252,8 +254,11 @@ import type {
   MissionDashboardSnapshot,
   MissionPreflightRequest,
   MissionPreflightResult,
+  GetMissionRunViewArgs,
+  MissionRunView,
   ResolveMissionInterventionArgs,
   CreateMissionArgs,
+  ArchiveMissionArgs,
   DeleteMissionArgs,
   CancelOrchestratorRunArgs,
   CleanupOrchestratorTeamResourcesArgs,
@@ -315,12 +320,19 @@ import type {
   GetOrchestratorWorkerDigestArgs,
   ListOrchestratorWorkerDigestsArgs,
   ListOrchestratorLaneDecisionsArgs,
+  ListOrchestratorArtifactsArgs,
+  ListOrchestratorWorkerCheckpointsArgs,
   MissionMetricsConfig,
   MissionMetricSample,
   SetMissionMetricsConfigArgs,
   ExecutionPlanPreview,
   GetMissionStateDocumentArgs,
   MissionStateDocument,
+  OrchestratorArtifact,
+  OrchestratorWorkerCheckpoint,
+  GetOrchestratorPromptInspectorArgs,
+  GetPlanningPromptPreviewArgs,
+  OrchestratorPromptInspector,
   GetMissionLogsArgs,
   GetMissionLogsResult,
   ExportMissionLogsArgs,
@@ -405,6 +417,7 @@ import type { createGithubService } from "../github/githubService";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
+import type { createQueueRehearsalService } from "../prs/queueRehearsalService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import { readGlobalState, writeGlobalState } from "../state/globalState";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
@@ -422,6 +435,10 @@ import type { createOrchestratorService } from "../orchestrator/orchestratorServ
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
 import { readCoordinatorCheckpoint } from "../orchestrator/missionStateDoc";
 import type { createMemoryService } from "../memory/memoryService";
+import type { createBatchConsolidationService } from "../memory/batchConsolidationService";
+import type { createMemoryLifecycleService } from "../memory/memoryLifecycleService";
+import type { createEmbeddingService } from "../memory/embeddingService";
+import type { createEmbeddingWorkerService } from "../memory/embeddingWorkerService";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { createWorkerAgentService } from "../cto/workerAgentService";
 import type { createWorkerRevisionService } from "../cto/workerRevisionService";
@@ -472,6 +489,7 @@ export type AppContext = {
   prService: ReturnType<typeof createPrService>;
   prPollingService: ReturnType<typeof createPrPollingService>;
   queueLandingService: ReturnType<typeof createQueueLandingService>;
+  queueRehearsalService: ReturnType<typeof createQueueRehearsalService>;
   jobEngine: ReturnType<typeof createJobEngine>;
   automationService: ReturnType<typeof createAutomationService>;
   automationPlannerService: ReturnType<typeof createAutomationPlannerService>;
@@ -487,6 +505,10 @@ export type AppContext = {
   testService: ReturnType<typeof createTestService>;
   sessionDeltaService?: SessionDeltaService | null;
   memoryService?: ReturnType<typeof createMemoryService> | null;
+  batchConsolidationService?: ReturnType<typeof createBatchConsolidationService> | null;
+  memoryLifecycleService?: ReturnType<typeof createMemoryLifecycleService> | null;
+  embeddingService?: ReturnType<typeof createEmbeddingService> | null;
+  embeddingWorkerService?: ReturnType<typeof createEmbeddingWorkerService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
   workerRevisionService?: ReturnType<typeof createWorkerRevisionService> | null;
@@ -523,6 +545,7 @@ const AI_USAGE_FEATURE_KEYS: AiFeatureKey[] = [
   "conflict_proposals",
   "pr_descriptions",
   "terminal_summaries",
+  "memory_consolidation",
   "mission_planning",
   "orchestrator",
   "initial_context"
@@ -561,12 +584,294 @@ function toRecentProjectSummary(entry: { rootPath: string; displayName: string; 
 }
 
 type MemoryScope = "user" | "project" | "lane" | "mission";
+type MemoryHealthScope = "project" | "agent" | "mission";
+
+type MemoryHealthCountRow = {
+  scope: string | null;
+  tier: number | null;
+  status: string | null;
+  count: number | null;
+};
+
+type MemorySweepLogRow = {
+  sweep_id: string;
+  project_id: string;
+  trigger_reason: string | null;
+  started_at: string;
+  completed_at: string;
+  entries_decayed: number | null;
+  entries_demoted: number | null;
+  entries_promoted: number | null;
+  entries_archived: number | null;
+  entries_orphaned: number | null;
+  duration_ms: number | null;
+};
+
+type MemoryConsolidationLogRow = {
+  consolidation_id: string;
+  project_id: string;
+  trigger_reason: string | null;
+  started_at: string;
+  completed_at: string;
+  clusters_found: number | null;
+  entries_merged: number | null;
+  entries_created: number | null;
+  tokens_used: number | null;
+  duration_ms: number | null;
+};
+
+const MEMORY_HEALTH_SCOPES = ["project", "agent", "mission"] as const;
+const MEMORY_HEALTH_LIMITS: Record<MemoryHealthScope, number> = {
+  project: 2000,
+  agent: 500,
+  mission: 200,
+};
 
 function normalizeMemoryScope(rawScope: string): MemoryScope | undefined {
   const trimmed = rawScope.trim();
   if (trimmed === "agent") return "user";
   if (trimmed === "user" || trimmed === "project" || trimmed === "lane" || trimmed === "mission") return trimmed;
   return undefined;
+}
+
+function normalizeMemoryHealthScope(rawScope: unknown): MemoryHealthScope | null {
+  const trimmed = typeof rawScope === "string" ? rawScope.trim() : "";
+  if (trimmed === "project") return "project";
+  if (trimmed === "agent" || trimmed === "user") return "agent";
+  if (trimmed === "mission" || trimmed === "lane") return "mission";
+  return null;
+}
+
+function createEmptyMemoryHealthStats() {
+  return {
+    scopes: MEMORY_HEALTH_SCOPES.map((scope) => ({
+      scope,
+      current: 0,
+      max: MEMORY_HEALTH_LIMITS[scope],
+      counts: {
+        tier1: 0,
+        tier2: 0,
+        tier3: 0,
+        archived: 0,
+      },
+    })),
+    lastSweep: null,
+    lastConsolidation: null,
+    embeddings: {
+      entriesEmbedded: 0,
+      entriesTotal: 0,
+      queueDepth: 0,
+      processing: false,
+      lastBatchProcessedAt: null,
+      cacheEntries: 0,
+      cacheHits: 0,
+      cacheMisses: 0,
+      cacheHitRate: 0,
+      model: {
+        modelId: "Xenova/all-MiniLM-L6-v2",
+        state: "idle" as const,
+        progress: null,
+        loaded: null,
+        total: null,
+        file: null,
+        error: null,
+      },
+    },
+  } as {
+    scopes: Array<{
+      scope: MemoryHealthScope;
+      current: number;
+      max: number;
+      counts: {
+        tier1: number;
+        tier2: number;
+        tier3: number;
+        archived: number;
+      };
+    }>;
+    lastSweep: {
+      sweepId: string;
+      projectId: string;
+      reason: "manual" | "startup";
+      startedAt: string;
+      completedAt: string;
+      entriesDecayed: number;
+      entriesDemoted: number;
+      entriesPromoted: number;
+      entriesArchived: number;
+      entriesOrphaned: number;
+      durationMs: number;
+    } | null;
+    lastConsolidation: {
+      consolidationId: string;
+      projectId: string;
+      reason: "manual" | "auto";
+      startedAt: string;
+      completedAt: string;
+      clustersFound: number;
+      entriesMerged: number;
+      entriesCreated: number;
+      tokensUsed: number;
+      durationMs: number;
+    } | null;
+    embeddings: {
+      entriesEmbedded: number;
+      entriesTotal: number;
+      queueDepth: number;
+      processing: boolean;
+      lastBatchProcessedAt: string | null;
+      cacheEntries: number;
+      cacheHits: number;
+      cacheMisses: number;
+      cacheHitRate: number;
+      model: {
+        modelId: string;
+        state: "idle" | "loading" | "ready" | "unavailable";
+        progress: number | null;
+        loaded: number | null;
+        total: number | null;
+        file: string | null;
+        error: string | null;
+      };
+    };
+  };
+}
+
+function getMemoryHealthStats(ctx: AppContext) {
+  const stats = createEmptyMemoryHealthStats();
+  const scopes = new Map(stats.scopes.map((entry) => [entry.scope, entry] as const));
+
+  const rows = ctx.db.all<MemoryHealthCountRow>(
+    `
+      SELECT scope, tier, status, COUNT(*) AS count
+      FROM unified_memories
+      WHERE project_id = ?
+      GROUP BY scope, tier, status
+    `,
+    [ctx.projectId],
+  );
+
+  for (const row of rows) {
+    const scope = normalizeMemoryHealthScope(row.scope);
+    if (!scope) continue;
+    const target = scopes.get(scope);
+    if (!target) continue;
+    const count = Number(row.count ?? 0);
+    if (!Number.isFinite(count) || count <= 0) continue;
+
+    if (String(row.status ?? "").trim() === "archived") {
+      target.counts.archived += count;
+      continue;
+    }
+
+    const tier = Number(row.tier ?? 0);
+    if (tier === 1) target.counts.tier1 += count;
+    else if (tier === 2) target.counts.tier2 += count;
+    else target.counts.tier3 += count;
+  }
+
+  for (const scope of stats.scopes) {
+    scope.current = scope.counts.tier1 + scope.counts.tier2 + scope.counts.tier3;
+  }
+
+  const embeddingStatus = ctx.embeddingService?.getStatus();
+  const embeddingWorkerStatus = ctx.embeddingWorkerService?.getStatus();
+  const embeddedCountRow = ctx.db.get<{ count: number | null }>(
+    `
+      SELECT COUNT(*) AS count
+      FROM unified_memories m
+      WHERE m.project_id = ?
+        AND m.status != 'archived'
+        AND EXISTS (
+          SELECT 1
+          FROM unified_memory_embeddings e
+          WHERE e.memory_id = m.id
+        )
+    `,
+    [ctx.projectId],
+  );
+  const entriesEmbedded = Number(embeddedCountRow?.count ?? 0);
+  const entriesTotal = stats.scopes.reduce((total, scope) => total + scope.current, 0);
+  const cacheHits = Number(embeddingStatus?.cacheHits ?? 0);
+  const cacheMisses = Number(embeddingStatus?.cacheMisses ?? 0);
+  const cacheTotal = cacheHits + cacheMisses;
+
+  stats.embeddings = {
+    entriesEmbedded: Number.isFinite(entriesEmbedded) ? entriesEmbedded : 0,
+    entriesTotal,
+    queueDepth: Number(embeddingWorkerStatus?.queueDepth ?? 0),
+    processing: embeddingWorkerStatus?.processing === true,
+    lastBatchProcessedAt: embeddingWorkerStatus?.lastProcessedAt ?? null,
+    cacheEntries: Number(embeddingStatus?.cacheEntries ?? 0),
+    cacheHits,
+    cacheMisses,
+    cacheHitRate: cacheTotal > 0 ? cacheHits / cacheTotal : 0,
+    model: {
+      modelId: embeddingStatus?.modelId ?? "Xenova/all-MiniLM-L6-v2",
+      state: embeddingStatus?.state ?? "idle",
+      progress: embeddingStatus?.progress ?? null,
+      loaded: embeddingStatus?.loaded ?? null,
+      total: embeddingStatus?.total ?? null,
+      file: embeddingStatus?.file ?? null,
+      error: embeddingStatus?.error ?? null,
+    },
+  };
+
+  const lastSweep = ctx.db.get<MemorySweepLogRow>(
+    `
+      SELECT sweep_id, project_id, trigger_reason, started_at, completed_at,
+             entries_decayed, entries_demoted, entries_promoted, entries_archived,
+             entries_orphaned, duration_ms
+      FROM memory_sweep_log
+      WHERE project_id = ?
+      ORDER BY completed_at DESC
+      LIMIT 1
+    `,
+    [ctx.projectId],
+  );
+  if (lastSweep) {
+    stats.lastSweep = {
+      sweepId: lastSweep.sweep_id,
+      projectId: lastSweep.project_id,
+      reason: lastSweep.trigger_reason === "startup" ? "startup" : "manual",
+      startedAt: lastSweep.started_at,
+      completedAt: lastSweep.completed_at,
+      entriesDecayed: Number(lastSweep.entries_decayed ?? 0),
+      entriesDemoted: Number(lastSweep.entries_demoted ?? 0),
+      entriesPromoted: Number(lastSweep.entries_promoted ?? 0),
+      entriesArchived: Number(lastSweep.entries_archived ?? 0),
+      entriesOrphaned: Number(lastSweep.entries_orphaned ?? 0),
+      durationMs: Number(lastSweep.duration_ms ?? 0),
+    };
+  }
+
+  const lastConsolidation = ctx.db.get<MemoryConsolidationLogRow>(
+    `
+      SELECT consolidation_id, project_id, trigger_reason, started_at, completed_at,
+             clusters_found, entries_merged, entries_created, tokens_used, duration_ms
+      FROM memory_consolidation_log
+      WHERE project_id = ?
+      ORDER BY completed_at DESC
+      LIMIT 1
+    `,
+    [ctx.projectId],
+  );
+  if (lastConsolidation) {
+    stats.lastConsolidation = {
+      consolidationId: lastConsolidation.consolidation_id,
+      projectId: lastConsolidation.project_id,
+      reason: lastConsolidation.trigger_reason === "auto" ? "auto" : "manual",
+      startedAt: lastConsolidation.started_at,
+      completedAt: lastConsolidation.completed_at,
+      clustersFound: Number(lastConsolidation.clusters_found ?? 0),
+      entriesMerged: Number(lastConsolidation.entries_merged ?? 0),
+      entriesCreated: Number(lastConsolidation.entries_created ?? 0),
+      tokensUsed: Number(lastConsolidation.tokens_used ?? 0),
+      durationMs: Number(lastConsolidation.duration_ms ?? 0),
+    };
+  }
+
+  return stats;
 }
 
 async function resolveFirstAvailableLaneId(
@@ -745,7 +1050,7 @@ function buildPrAiResolverCommand(
     } else if (opts.permissionMode === "guarded_edit") {
       parts.push("--permission-mode", "acceptEdits");
     } else {
-      parts.push("--permission-mode", "manual");
+      parts.push("--permission-mode", "plan");
     }
     parts.push("--model", opts.model);
     if (opts.reasoning) {
@@ -759,9 +1064,9 @@ function buildPrAiResolverCommand(
   if (opts.permissionMode === "full_edit") {
     parts.push("--full-auto");
   } else if (opts.permissionMode === "guarded_edit") {
-    parts.push("--ask-for-approval", "on-failure", "--sandbox", "workspace-write");
+    parts.push("-c", "approval_policy=on-failure", "-c", "sandbox_mode=workspace-write");
   } else {
-    parts.push("--ask-for-approval", "untrusted", "--sandbox", "read-only");
+    parts.push("-c", "approval_policy=untrusted", "-c", "sandbox_mode=read-only");
   }
   parts.push("--model", opts.model);
   if (opts.reasoning) {
@@ -1374,9 +1679,48 @@ export function registerIpc({
     return ctx.missionService.getDashboard();
   });
 
+  ipcMain.handle(
+    IPC.missionsGetFullMissionView,
+    async (_event, arg: import("../../../shared/types").GetFullMissionViewArgs): Promise<import("../../../shared/types").FullMissionViewResult> => {
+      const ctx = getCtx();
+      const missionId = typeof arg?.missionId === "string" ? arg.missionId.trim() : "";
+      if (!missionId) return { mission: null, runGraph: null, artifacts: [], checkpoints: [], dashboard: null };
+
+      let dashboard: import("../../../shared/types").MissionDashboardSnapshot | null = null;
+      try { dashboard = ctx.missionService.getDashboard(); } catch { /* best-effort */ }
+
+      const mission = await ctx.missionService.get(missionId);
+
+      let runGraph: import("../../../shared/types").OrchestratorRunGraph | null = null;
+      let artifacts: import("../../../shared/types").OrchestratorArtifact[] = [];
+      let checkpoints: import("../../../shared/types").OrchestratorWorkerCheckpoint[] = [];
+
+      const runs = await ctx.orchestratorService.listRuns({ missionId, limit: 20 });
+      const activeStatuses = new Set(["active", "bootstrapping", "queued", "paused"]);
+      const preferredRun = runs.find((entry) => activeStatuses.has(entry.status)) ?? runs[0];
+      if (preferredRun) {
+        const [graph, arts, cps] = await Promise.all([
+          ctx.orchestratorService.getRunGraph({ runId: preferredRun.id, timelineLimit: 120 }),
+          Promise.resolve().then(() => ctx.aiOrchestratorService.listArtifacts({ missionId, runId: preferredRun.id })).catch(() => []),
+          Promise.resolve().then(() => ctx.aiOrchestratorService.listWorkerCheckpoints({ missionId, runId: preferredRun.id })).catch(() => []),
+        ]);
+        runGraph = graph;
+        artifacts = Array.isArray(arts) ? arts : [];
+        checkpoints = Array.isArray(cps) ? cps : [];
+      }
+
+      return { mission, runGraph, artifacts, checkpoints, dashboard };
+    },
+  );
+
   ipcMain.handle(IPC.missionsPreflight, async (_event, arg: MissionPreflightRequest): Promise<MissionPreflightResult> => {
     const ctx = getCtx();
     return await ctx.missionPreflightService.runPreflight(arg);
+  });
+
+  ipcMain.handle(IPC.missionsGetRunView, async (_event, arg: GetMissionRunViewArgs): Promise<MissionRunView | null> => {
+    const ctx = getCtx();
+    return await ctx.aiOrchestratorService.getRunView(arg);
   });
 
   ipcMain.handle(IPC.missionsCreate, async (_event, arg: CreateMissionArgs): Promise<MissionDetail> => {
@@ -1473,6 +1817,11 @@ export function registerIpc({
     const updated = ctx.missionService.update(arg);
     await safeRefreshMissionPack(ctx, updated.id, "mission_updated");
     return updated;
+  });
+
+  ipcMain.handle(IPC.missionsArchive, async (_event, arg: ArchiveMissionArgs): Promise<void> => {
+    const ctx = getCtx();
+    ctx.missionService.archive(arg);
   });
 
   ipcMain.handle(IPC.missionsDelete, async (_event, arg: DeleteMissionArgs): Promise<void> => {
@@ -1783,6 +2132,38 @@ export function registerIpc({
     async (_event, arg: ListOrchestratorLaneDecisionsArgs): Promise<OrchestratorLaneDecision[]> => {
       const ctx = getCtx();
       return ctx.aiOrchestratorService.listLaneDecisions(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorListArtifacts,
+    async (_event, arg: ListOrchestratorArtifactsArgs): Promise<OrchestratorArtifact[]> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.listArtifacts(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorListWorkerCheckpoints,
+    async (_event, arg: ListOrchestratorWorkerCheckpointsArgs): Promise<OrchestratorWorkerCheckpoint[]> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.listWorkerCheckpoints(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorGetPromptInspector,
+    async (_event, arg: GetOrchestratorPromptInspectorArgs): Promise<OrchestratorPromptInspector> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.getPromptInspector(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorGetPlanningPromptPreview,
+    async (_event, arg: GetPlanningPromptPreviewArgs): Promise<OrchestratorPromptInspector> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.getPlanningPromptPreview(arg);
     }
   );
 
@@ -2977,7 +3358,15 @@ export function registerIpc({
 
   ipcMain.handle(IPC.conflictsPrepareResolverSession, async (_event, arg) => getCtx().conflictService.prepareResolverSession(arg));
 
+  ipcMain.handle(IPC.conflictsAttachResolverSession, async (_event, arg: AttachResolverSessionArgs) =>
+    getCtx().conflictService.attachResolverSession(arg)
+  );
+
   ipcMain.handle(IPC.conflictsFinalizeResolverSession, async (_event, arg) => getCtx().conflictService.finalizeResolverSession(arg));
+
+  ipcMain.handle(IPC.conflictsCancelResolverSession, async (_event, arg: CancelResolverSessionArgs) =>
+    getCtx().conflictService.cancelResolverSession(arg)
+  );
 
   ipcMain.handle(IPC.conflictsSuggestResolverTarget, async (_event, arg) => getCtx().conflictService.suggestResolverTarget(arg));
 
@@ -3219,9 +3608,55 @@ export function registerIpc({
     return landed;
   });
 
+  ipcMain.handle(IPC.prsStartQueueAutomation, async (_event, arg) => {
+    const ctx = getCtx();
+    const state = await ctx.queueLandingService.startQueue(arg);
+    triggerAutoContextDocs(ctx, {
+      trigger: "per_pr",
+      reason: `prs_start_queue_automation:${arg.groupId}`,
+    });
+    return state;
+  });
+
+  ipcMain.handle(IPC.prsPauseQueueAutomation, async (_event, arg) => getCtx().queueLandingService.pauseQueue(arg.queueId));
+
+  ipcMain.handle(IPC.prsResumeQueueAutomation, async (_event, arg) => {
+    const ctx = getCtx();
+    const state = ctx.queueLandingService.resumeQueue(arg);
+    triggerAutoContextDocs(ctx, {
+      trigger: "per_pr",
+      reason: `prs_resume_queue_automation:${arg.queueId}`,
+    });
+    return state;
+  });
+
+  ipcMain.handle(IPC.prsCancelQueueAutomation, async (_event, arg) => getCtx().queueLandingService.cancelQueue(arg.queueId));
+
+  ipcMain.handle(IPC.prsStartQueueRehearsal, async (_event, arg) => {
+    const ctx = getCtx();
+    const state = await ctx.queueRehearsalService.startQueueRehearsal(arg);
+    triggerAutoContextDocs(ctx, {
+      trigger: "per_pr",
+      reason: `prs_start_queue_rehearsal:${arg.groupId}`,
+    });
+    return state;
+  });
+
+  ipcMain.handle(IPC.prsCancelQueueRehearsal, async (_event, arg) => getCtx().queueRehearsalService.cancelQueueRehearsal(arg.rehearsalId));
+
   ipcMain.handle(IPC.prsGetHealth, async (_event, arg: { prId: string }): Promise<PrHealth> => getCtx().prService.getPrHealth(arg.prId));
 
-  ipcMain.handle(IPC.prsGetQueueState, async (_event, arg: { groupId: string }): Promise<QueueLandingState | null> => getCtx().prService.getQueueState(arg.groupId));
+  ipcMain.handle(IPC.prsGetQueueState, async (_event, arg: { groupId: string }): Promise<QueueLandingState | null> =>
+    getCtx().queueLandingService.getQueueStateByGroup(arg.groupId)
+  );
+
+  ipcMain.handle(IPC.prsListQueueStates, async (_event, arg = {}) => getCtx().queueLandingService.listQueueStates(arg));
+
+  ipcMain.handle(IPC.prsGetQueueRehearsalState, async (_event, arg: { groupId: string }) =>
+    getCtx().queueRehearsalService.getQueueRehearsalStateByGroup(arg.groupId)
+  );
+
+  ipcMain.handle(IPC.prsListQueueRehearsals, async (_event, arg = {}) => getCtx().queueRehearsalService.listQueueRehearsals(arg));
 
   ipcMain.handle(IPC.prsCreateIntegrationLaneForProposal, async (_event, arg: CreateIntegrationLaneForProposalArgs): Promise<CreateIntegrationLaneForProposalResult> =>
     getCtx().prService.createIntegrationLaneForProposal(arg));
@@ -3786,6 +4221,7 @@ export function registerIpc({
         scope?: "user" | "project" | "lane" | "mission" | "agent";
         scopeOwnerId?: string;
         limit?: number;
+        mode?: "lexical" | "hybrid";
         status?: "promoted" | "candidate" | "archived" | "all";
       }
     ) => {
@@ -3801,9 +4237,49 @@ export function registerIpc({
       : (arg?.status === "promoted" || arg?.status === "candidate" || arg?.status === "archived")
         ? arg.status
         : "promoted";
-    return ctx.memoryService.searchMemories(arg.query, pid, scope, arg?.limit ?? 10, status, scopeOwnerId);
+    return ctx.memoryService.searchMemories(
+      arg.query,
+      pid,
+      scope,
+      arg?.limit ?? 10,
+      status,
+      scopeOwnerId,
+      arg?.mode === "lexical" ? "lexical" : "hybrid",
+    );
     }
   );
+
+  ipcMain.handle(IPC.memoryHealthStats, async () => {
+    const ctx = getCtx();
+    return getMemoryHealthStats(ctx);
+  });
+
+  ipcMain.handle(IPC.memoryDownloadEmbeddingModel, async () => {
+    const ctx = getCtx();
+    if (!ctx.embeddingService?.preload) {
+      throw new Error("Embedding service is not available.");
+    }
+    void ctx.embeddingService.preload({ forceRetry: true }).catch(() => {
+      // Health polling will pick up the unavailable state; the click itself should remain responsive.
+    });
+    return getMemoryHealthStats(ctx);
+  });
+
+  ipcMain.handle(IPC.memoryRunSweep, async () => {
+    const ctx = getCtx();
+    if (!ctx.memoryLifecycleService) {
+      throw new Error("Memory lifecycle service is not available.");
+    }
+    return ctx.memoryLifecycleService.runSweep({ reason: "manual" });
+  });
+
+  ipcMain.handle(IPC.memoryRunConsolidation, async () => {
+    const ctx = getCtx();
+    if (!ctx.batchConsolidationService) {
+      throw new Error("Batch consolidation service is not available.");
+    }
+    return ctx.batchConsolidationService.runConsolidation({ reason: "manual" });
+  });
 
   // ── CTO state IPC ─────────────────────────────────────────────────
 
@@ -3885,7 +4361,7 @@ export function registerIpc({
     const laneId = await resolveFirstAvailableLaneId(ctx, arg.laneId);
     if (!laneId) throw new Error("No lane available for agent session.");
     return ctx.agentChatService.ensureIdentitySession({
-      identityKey: "cto",
+      identityKey: `agent:${arg.agentId}`,
       laneId,
       modelId: arg.modelId ?? null,
       reasoningEffort: arg.reasoningEffort ?? null,

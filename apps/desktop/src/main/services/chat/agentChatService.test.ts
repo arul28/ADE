@@ -109,6 +109,13 @@ type CreatedFixture = {
     buildReconstructionContext: ReturnType<typeof vi.fn>;
     updateCoreMemory: ReturnType<typeof vi.fn>;
     appendSessionLog: ReturnType<typeof vi.fn>;
+    appendSubordinateActivity: ReturnType<typeof vi.fn>;
+  };
+  workerAgentService: {
+    getAgent: ReturnType<typeof vi.fn>;
+    buildReconstructionContext: ReturnType<typeof vi.fn>;
+    updateCoreMemory: ReturnType<typeof vi.fn>;
+    appendSessionLog: ReturnType<typeof vi.fn>;
   };
   sessionService: MockSessionService;
   emitted: AgentChatEventEnvelope[];
@@ -408,7 +415,30 @@ function createFixture(_provider: AgentChatProvider): CreatedFixture {
       },
       recentSessions: []
     })),
-    appendSessionLog: vi.fn(() => ({ id: "log-1" }))
+    appendSessionLog: vi.fn(() => ({ id: "log-1" })),
+    appendSubordinateActivity: vi.fn(() => ({ id: "subordinate-1" }))
+  };
+  const workerAgentService = {
+    getAgent: vi.fn((agentId: string) => ({
+      id: agentId,
+      name: "Worker Agent",
+      adapterType: "codex-local",
+      adapterConfig: {
+        model: "gpt-5.3-codex",
+        modelId: "openai/gpt-5.3-codex"
+      }
+    })),
+    buildReconstructionContext: vi.fn((agentId: string) => `Worker Identity\n- Id: ${agentId}\nCore Memory\n- Project summary: worker test`),
+    updateCoreMemory: vi.fn(() => ({
+      version: 2,
+      updatedAt: "2026-03-05T01:00:00.000Z",
+      projectSummary: "worker test",
+      criticalConventions: [],
+      userPreferences: [],
+      activeFocus: [],
+      notes: []
+    })),
+    appendSessionLog: vi.fn(() => ({ id: "worker-log-1" }))
   };
   const emitted: AgentChatEventEnvelope[] = [];
   const ended: Array<{ laneId: string; sessionId: string; exitCode: number | null }> = [];
@@ -421,6 +451,7 @@ function createFixture(_provider: AgentChatProvider): CreatedFixture {
     memoryService: memoryService as any,
     packService: packService as any,
     ctoStateService: ctoStateService as any,
+    workerAgentService: workerAgentService as any,
     laneService: laneService as any,
     sessionService: sessionService as any,
     projectConfigService: projectConfigService as any,
@@ -445,6 +476,7 @@ function createFixture(_provider: AgentChatProvider): CreatedFixture {
     projectConfigService,
     memoryService,
     ctoStateService,
+    workerAgentService,
     sessionService,
     emitted,
     ended,
@@ -679,6 +711,125 @@ describe("agentChatService", () => {
       await fixture.service.disposeAll();
     });
 
+    it("coalesces codex reasoning deltas into one activity and one reasoning event", async () => {
+      const fixture = createFixture("codex");
+      const codex = createMockCodexProcess();
+      spawnMock.mockReturnValue(codex.proc as any);
+
+      codex.onRequest("initialize", (msg) => codex.respond(msg.id!, {}));
+      codex.onRequest("thread/start", (msg) => codex.respond(msg.id!, { thread: { id: "thread-1" } }));
+      codex.onRequest("turn/start", (msg) => {
+        codex.respond(msg.id!, { turn: { id: "turn-reasoning" } });
+        codex.notify("item/reasoning/textDelta", {
+          turnId: "turn-reasoning",
+          itemId: "reason-1",
+          delta: "Plan ",
+        });
+        codex.notify("item/reasoning/textDelta", {
+          turnId: "turn-reasoning",
+          itemId: "reason-1",
+          delta: "the fix",
+        });
+        codex.notify("turn/completed", {
+          turn: {
+            id: "turn-reasoning",
+            status: "completed",
+          }
+        });
+      });
+      codex.onRequest("turn/interrupt", (msg) => codex.respond(msg.id!, {}));
+
+      const session = await fixture.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.3-codex" });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "Think it through" });
+
+      const thinkingEvents = fixture.emitted.filter(
+        (entry) => entry.event.type === "activity" && entry.event.activity === "thinking",
+      );
+      const reasoningEvents = fixture.emitted.filter((entry) => entry.event.type === "reasoning");
+
+      expect(thinkingEvents).toHaveLength(1);
+      expect(reasoningEvents).toHaveLength(1);
+      expect((reasoningEvents[0]?.event as any)?.text).toBe("Plan the fix");
+
+      await fixture.service.disposeAll();
+    });
+
+    it("keeps codex reasoning collapsed when the runtime rotates reasoning item ids inside one turn", async () => {
+      const fixture = createFixture("codex");
+      const codex = createMockCodexProcess();
+      spawnMock.mockReturnValue(codex.proc as any);
+
+      codex.onRequest("initialize", (msg) => codex.respond(msg.id!, {}));
+      codex.onRequest("thread/start", (msg) => codex.respond(msg.id!, { thread: { id: "thread-1" } }));
+      codex.onRequest("turn/start", (msg) => {
+        codex.respond(msg.id!, { turn: { id: "turn-rotating-reasoning" } });
+        codex.notify("item/reasoning/textDelta", {
+          turnId: "turn-rotating-reasoning",
+          itemId: "reason-1",
+          delta: "Map ",
+        });
+        codex.notify("item/reasoning/textDelta", {
+          turnId: "turn-rotating-reasoning",
+          itemId: "reason-2",
+          delta: "the runtime",
+        });
+        codex.notify("turn/completed", {
+          turn: {
+            id: "turn-rotating-reasoning",
+            status: "completed",
+          }
+        });
+      });
+      codex.onRequest("turn/interrupt", (msg) => codex.respond(msg.id!, {}));
+
+      const session = await fixture.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.3-codex" });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "Think it through" });
+
+      const thinkingEvents = fixture.emitted.filter(
+        (entry) => entry.event.type === "activity" && entry.event.activity === "thinking",
+      );
+      const reasoningEvents = fixture.emitted.filter((entry) => entry.event.type === "reasoning");
+
+      expect(thinkingEvents).toHaveLength(1);
+      expect(reasoningEvents).toHaveLength(1);
+      expect((reasoningEvents[0]?.event as any)?.text).toBe("Map the runtime");
+
+      await fixture.service.disposeAll();
+    });
+
+    it("injects the codex parallel launch directive without changing the visible user message", async () => {
+      const fixture = createFixture("codex");
+      const codex = createMockCodexProcess();
+      spawnMock.mockReturnValue(codex.proc as any);
+
+      let turnStart: SentMessage | null = null;
+
+      codex.onRequest("initialize", (msg) => codex.respond(msg.id!, {}));
+      codex.onRequest("thread/start", (msg) => codex.respond(msg.id!, { thread: { id: "thread-1" } }));
+      codex.onRequest("turn/start", (msg) => {
+        turnStart = msg;
+        codex.respond(msg.id!, { turn: { id: "turn-parallel" } });
+      });
+      codex.onRequest("turn/interrupt", (msg) => codex.respond(msg.id!, {}));
+
+      const session = await fixture.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.3-codex" });
+      await fixture.service.sendMessage({
+        sessionId: session.id,
+        text: "Review the repo and fix the failing tests",
+        displayText: "Review the repo and fix the failing tests",
+        executionMode: "parallel",
+      });
+
+      const userMessage = fixture.emitted.find((entry) => entry.event.type === "user_message");
+      const turnStartParams = (turnStart as { params?: { input?: Array<{ text?: string }> } } | null)?.params;
+      expect(userMessage?.event.type).toBe("user_message");
+      expect(userMessage?.event.type === "user_message" ? userMessage.event.text : "").toBe("Review the repo and fix the failing tests");
+      expect(turnStartParams?.input?.[0]?.text).toContain("Use Codex parallel delegation");
+      expect(turnStartParams?.input?.[0]?.text).toContain("User request:\nReview the repo and fix the failing tests");
+
+      await fixture.service.disposeAll();
+    });
+
     it("emits approval_request and sends accept decision response", async () => {
       const fixture = createFixture("codex");
       const codex = createMockCodexProcess();
@@ -847,6 +998,63 @@ describe("agentChatService", () => {
 
       const textEvents = fixture.emitted.filter((entry) => entry.event.type === "text");
       expect(textEvents.map((entry) => (entry.event.type === "text" ? entry.event.text : "")).join("")).toContain("AB");
+      expect(fixture.sessionService.get(session.id)?.summary).toBe("AB");
+
+      await fixture.service.disposeAll();
+    });
+
+    it("coalesces Claude reasoning deltas into one activity and one reasoning event", async () => {
+      const fixture = createFixture("claude");
+
+      streamTextMock.mockImplementationOnce(() => ({
+        fullStream: makeFullStream([
+          { type: "reasoning-delta", text: "Plan " },
+          { type: "reasoning-delta", text: "the fix" },
+          { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 2 } }
+        ])
+      }) as any);
+
+      const session = await fixture.service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "Think it through" });
+
+      const thinkingEvents = fixture.emitted.filter(
+        (entry) => entry.event.type === "activity" && entry.event.activity === "thinking",
+      );
+      const reasoningEvents = fixture.emitted.filter((entry) => entry.event.type === "reasoning");
+
+      expect(thinkingEvents).toHaveLength(1);
+      expect(reasoningEvents).toHaveLength(1);
+      expect((reasoningEvents[0]?.event as any)?.text).toBe("Plan the fix");
+
+      await fixture.service.disposeAll();
+    });
+
+    it("injects the Claude teams launch directive without changing the visible user message", async () => {
+      const fixture = createFixture("claude");
+
+      streamTextMock.mockImplementationOnce(() => ({
+        fullStream: makeFullStream([
+          { type: "text-delta", textDelta: "Ok" },
+          { type: "finish", totalUsage: { inputTokens: 4, outputTokens: 2 } }
+        ])
+      }) as any);
+
+      const session = await fixture.service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await fixture.service.sendMessage({
+        sessionId: session.id,
+        text: "Map the current architecture and suggest team-owned follow-ups",
+        displayText: "Map the current architecture and suggest team-owned follow-ups",
+        executionMode: "teams",
+      });
+
+      const call = streamTextMock.mock.calls[0]?.[0] as { messages?: Array<{ role?: string; content?: unknown }> } | undefined;
+      const lastMessage = call?.messages?.[call.messages.length - 1];
+      expect(typeof lastMessage?.content).toBe("string");
+      expect(String(lastMessage?.content)).toContain("prefer coordinating through them for specialized work");
+
+      const userMessage = fixture.emitted.find((entry) => entry.event.type === "user_message");
+      expect(userMessage?.event.type).toBe("user_message");
+      expect(userMessage?.event.type === "user_message" ? userMessage.event.text : "").toBe("Map the current architecture and suggest team-owned follow-ups");
 
       await fixture.service.disposeAll();
     });
@@ -1238,9 +1446,11 @@ describe("agentChatService", () => {
       expect(streamTextMock).toHaveBeenCalledTimes(1);
       const callArg = streamTextMock.mock.calls[0]?.[0] as any;
       // The model is created via claudeProvider(resolvedModel, claudeOpts)
-      // claudeOpts should contain maxThinkingTokens
+      // claudeOpts should contain maxThinkingTokens and the Claude Code preset
       const modelOpts = callArg.model?.__options;
       expect(modelOpts?.maxThinkingTokens).toBe(16384); // high = 16384
+      expect(modelOpts?.systemPrompt).toEqual({ type: "preset", preset: "claude_code" });
+      expect(modelOpts?.settingSources).toEqual(["user", "project", "local"]);
 
       await fixture.service.disposeAll();
     });
@@ -1390,6 +1600,23 @@ describe("agentChatService", () => {
       expect(listed.find((entry) => entry.sessionId === first.id)?.identityKey).toBe("cto");
     });
 
+    it("creates stable worker identity sessions keyed by agent id", async () => {
+      const fixture = createFixture("claude");
+
+      const first = await fixture.service.ensureIdentitySession({
+        identityKey: "agent:worker-1",
+        laneId: "lane-1"
+      });
+      const second = await fixture.service.ensureIdentitySession({
+        identityKey: "agent:worker-1",
+        laneId: "lane-1"
+      });
+
+      expect(second.id).toBe(first.id);
+      expect(first.identityKey).toBe("agent:worker-1");
+      expect(fixture.workerAgentService.getAgent).toHaveBeenCalledWith("worker-1", { includeDeleted: true });
+    });
+
     it("injects reconstruction context on resumed CTO session startup", async () => {
       const fixture = createFixture("claude");
       streamTextMock.mockImplementationOnce(() => ({
@@ -1410,7 +1637,58 @@ describe("agentChatService", () => {
 
       expect(fixture.ctoStateService.buildReconstructionContext).toHaveBeenCalled();
       const streamInput = streamTextMock.mock.calls[0]?.[0] as any;
-      expect(streamInput.messages[0]?.content).toContain("System context (CTO reconstruction");
+      expect(streamInput.messages[0]?.content).toContain("System context (identity reconstruction");
+    });
+
+    it("injects reconstruction context on resumed worker identity session startup", async () => {
+      const fixture = createFixture("claude");
+      streamTextMock.mockImplementationOnce(() => ({
+        fullStream: makeFullStream([{ type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } }])
+      }) as any);
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "agent:worker-2"
+      });
+      await fixture.service.dispose({ sessionId: session.id });
+
+      fixture.workerAgentService.buildReconstructionContext.mockClear();
+      await fixture.service.resumeSession({ sessionId: session.id });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "worker status check" });
+
+      expect(fixture.workerAgentService.buildReconstructionContext).toHaveBeenCalledWith("worker-2", 8);
+      const streamInput = streamTextMock.mock.calls[0]?.[0] as any;
+      expect(streamInput.messages[0]?.content).toContain("System context (identity reconstruction");
+      expect(streamInput.messages[0]?.content).toContain("worker test");
+    });
+
+    it("propagates direct worker chat completions into CTO subordinate activity", async () => {
+      const fixture = createFixture("claude");
+      streamTextMock.mockImplementationOnce(() => ({
+        fullStream: makeFullStream([
+          { type: "text-delta", text: "I reviewed the mobile bug and the fix should land in the navigation stack." },
+          { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } }
+        ])
+      }) as any);
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "agent:mobile-dev"
+      });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "please inspect the bug" });
+
+      expect(fixture.ctoStateService.appendSubordinateActivity).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: "mobile-dev",
+          agentName: "Worker Agent",
+          activityType: "chat_turn",
+          sessionId: session.id,
+        })
+      );
     });
 
     it("writes CTO session logs when a CTO session is disposed", async () => {
@@ -1426,6 +1704,28 @@ describe("agentChatService", () => {
       await fixture.service.dispose({ sessionId: session.id });
 
       expect(fixture.ctoStateService.appendSessionLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: session.id,
+          capabilityMode: "full_mcp",
+          provider: "claude"
+        })
+      );
+    });
+
+    it("writes worker session logs when a worker identity session is disposed", async () => {
+      const fixture = createFixture("claude");
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "agent:worker-3"
+      });
+
+      await fixture.service.dispose({ sessionId: session.id });
+
+      expect(fixture.workerAgentService.appendSessionLog).toHaveBeenCalledWith(
+        "worker-3",
         expect.objectContaining({
           sessionId: session.id,
           capabilityMode: "full_mcp",
@@ -1461,6 +1761,33 @@ describe("agentChatService", () => {
       expect(mcpServers?.ade?.transport).toBe("stdio");
       expect(mcpServers?.ade?.env?.ADE_PROJECT_ROOT).toBe(fixture.projectRoot);
       expect(mcpServers?.ade?.env?.ADE_DEFAULT_ROLE).toBe("cto");
+    });
+
+    it("injects worker owner identity into ADE MCP config for Codex worker sessions", async () => {
+      const fixture = createFixture("codex");
+      const codex = createMockCodexProcess();
+      spawnMock.mockReturnValue(codex.proc as any);
+      let threadStart: SentMessage | null = null;
+
+      codex.onRequest("initialize", (msg) => codex.respond(msg.id!, {}));
+      codex.onRequest("thread/start", (msg) => {
+        threadStart = msg;
+        codex.respond(msg.id!, { thread: { id: "thread-worker-codex" } });
+      });
+      codex.onRequest("turn/start", (msg) => codex.respond(msg.id!, { turn: { id: "turn-worker-codex" } }));
+      codex.onRequest("turn/interrupt", (msg) => codex.respond(msg.id!, {}));
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.3-codex",
+        identityKey: "agent:worker-4"
+      });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "boot" });
+
+      const mcpServers = ((threadStart as any)?.params)?.mcpServers;
+      expect(mcpServers?.ade?.env?.ADE_DEFAULT_ROLE).toBe("agent");
+      expect(mcpServers?.ade?.env?.ADE_OWNER_ID).toBe("worker-4");
     });
 
     it("injects ADE MCP server config for Claude CTO sessions", async () => {
@@ -1515,6 +1842,36 @@ describe("agentChatService", () => {
       resolveModelSpy.mockRestore();
     });
 
+    it("routes memoryUpdateCore to worker core memory for unified worker sessions", async () => {
+      const fixture = createFixture("unified");
+      const resolveModelSpy = vi.spyOn(providerResolver, "resolveModel").mockResolvedValue({ id: "mock-model" } as any);
+      streamTextMock.mockImplementationOnce(() => ({
+        fullStream: makeFullStream([{ type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } }])
+      }) as any);
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "anthropic/claude-sonnet-4-6-api",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+        identityKey: "agent:worker-9"
+      });
+      expect(session.capabilityMode).toBe("fallback");
+
+      await fixture.service.sendMessage({ sessionId: session.id, text: "boot unified worker" });
+
+      const streamInput = streamTextMock.mock.calls[0]?.[0] as any;
+      const updateResult = await streamInput.tools.memoryUpdateCore.execute({
+        projectSummary: "Worker unified path update"
+      });
+      expect(fixture.workerAgentService.updateCoreMemory).toHaveBeenCalledWith(
+        "worker-9",
+        expect.objectContaining({ projectSummary: "Worker unified path update" })
+      );
+      expect(updateResult.updated).toBe(true);
+      resolveModelSpy.mockRestore();
+    });
+
     it("routes askUser responses through the unified approval queue", async () => {
       const fixture = createFixture("unified");
       const resolveModelSpy = vi.spyOn(providerResolver, "resolveModel").mockResolvedValue({ id: "mock-model" } as any);
@@ -1560,6 +1917,144 @@ describe("agentChatService", () => {
       );
       expect(textEvent).toBeTruthy();
       resolveModelSpy.mockRestore();
+    });
+
+    it("routes unified bash approvals through ADE-managed approval flow", async () => {
+      const fixture = createFixture("unified");
+      const resolveModelSpy = vi.spyOn(providerResolver, "resolveModel").mockResolvedValue({ id: "mock-model" } as any);
+      spawnMock.mockImplementation(() => {
+        const proc = new EventEmitter() as any;
+        proc.stdout = new PassThrough();
+        proc.stderr = new PassThrough();
+        proc.kill = vi.fn(() => true);
+        queueMicrotask(() => {
+          proc.stdout.write("approved");
+          proc.stdout.end();
+          proc.stderr.end();
+          proc.emit("close", 0);
+        });
+        return proc;
+      });
+
+      streamTextMock.mockImplementation((input: any) => ({
+        fullStream: {
+          async *[Symbol.asyncIterator]() {
+            const result = await input.tools.bash.execute({ command: "printf approved", timeout: 1_000 });
+            yield { type: "text-delta", text: `bash:${result.exitCode}:${String(result.stdout ?? "").trim()}` };
+            yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+          }
+        }
+      }) as any);
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "openai/gpt-5.4",
+        modelId: "openai/gpt-5.4",
+        permissionMode: "plan",
+      });
+
+      const firstSend = fixture.service.sendMessage({ sessionId: session.id, text: "Run a guarded command" });
+
+      const approval = await waitForEvent(
+        fixture.emitted,
+        (entry) => entry.event.type === "approval_request" && entry.event.description.includes("Run command: printf approved")
+      );
+      expect(approval?.event.type).toBe("approval_request");
+
+      if (approval?.event.type === "approval_request") {
+        await fixture.service.approveToolUse({
+          sessionId: session.id,
+          itemId: approval.event.itemId,
+          decision: "accept_for_session",
+        });
+      }
+
+      await firstSend;
+
+      const completedTurnsAfterFirstSend = fixture.emitted.filter(
+        (entry) => entry.event.type === "done" && entry.event.status === "completed"
+      ).length;
+      expect(completedTurnsAfterFirstSend).toBeGreaterThan(0);
+
+      const approvalCountAfterFirstSend = fixture.emitted.filter(
+        (entry) => entry.event.type === "approval_request" && entry.event.description.includes("Run command: printf approved")
+      ).length;
+      expect(approvalCountAfterFirstSend).toBe(1);
+      resolveModelSpy.mockRestore();
+    });
+
+    it("sends native file and image parts for unified streaming input", async () => {
+      const fixture = createFixture("unified");
+      const resolveModelSpy = vi.spyOn(providerResolver, "resolveModel").mockResolvedValue({ id: "mock-model" } as any);
+      const imagePath = path.join(fixture.projectRoot, "diagram.png");
+      const filePath = path.join(fixture.projectRoot, "notes.txt");
+      fs.writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+      fs.writeFileSync(filePath, "project notes");
+
+      streamTextMock.mockImplementationOnce(() => ({
+        fullStream: makeFullStream([
+          { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } }
+        ])
+      }) as any);
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "openai/gpt-5.4",
+        modelId: "openai/gpt-5.4",
+      });
+
+      await fixture.service.sendMessage({
+        sessionId: session.id,
+        text: "Use these attachments",
+        attachments: [
+          { path: imagePath, type: "image" },
+          { path: filePath, type: "file" },
+        ],
+      });
+
+      const input = streamTextMock.mock.calls[0]?.[0] as any;
+      const content = input.messages[0]?.content;
+      expect(Array.isArray(content)).toBe(true);
+      expect(content[0]?.type).toBe("text");
+      expect(content[0]?.text).toContain("Use these attachments");
+      expect(content.some((part: any) => part.type === "image" && part.mediaType === "image/png")).toBe(true);
+      expect(content.some((part: any) => part.type === "file" && part.filename === "notes.txt")).toBe(true);
+      resolveModelSpy.mockRestore();
+    });
+  });
+
+  describe("Streaming attachments", () => {
+    it("sends native image parts for Claude while keeping file attachments visible as text context", async () => {
+      const fixture = createFixture("claude");
+      const imagePath = path.join(fixture.projectRoot, "diagram.png");
+      const filePath = path.join(fixture.projectRoot, "notes.txt");
+      fs.writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+      fs.writeFileSync(filePath, "project notes");
+
+      streamTextMock.mockImplementationOnce(() => ({
+        fullStream: makeFullStream([
+          { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } }
+        ])
+      }) as any);
+
+      const session = await fixture.service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await fixture.service.sendMessage({
+        sessionId: session.id,
+        text: "Review these assets",
+        attachments: [
+          { path: imagePath, type: "image" },
+          { path: filePath, type: "file" },
+        ],
+      });
+
+      const input = streamTextMock.mock.calls[0]?.[0] as any;
+      const content = input.messages[0]?.content;
+      expect(Array.isArray(content)).toBe(true);
+      expect(content.some((part: any) => part.type === "image" && part.mediaType === "image/png")).toBe(true);
+      expect(content.some((part: any) => part.type === "text" && String(part.text ?? "").includes(`Attached file: ${filePath}`))).toBe(true);
+      expect(input.model?.__options?.streamingInput).toBe("always");
     });
   });
 

@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildRunStateSnapshot, routeEventToCoordinator } from "./runtimeEventRouter";
+import {
+  buildRunStateSnapshot,
+  onAgentChatEvent,
+  onSessionRuntimeSignal,
+  routeEventToCoordinator,
+} from "./runtimeEventRouter";
 
 describe("runtimeEventRouter", () => {
   it("buildRunStateSnapshot falls back to default parallelism cap when metadata is NaN", () => {
@@ -146,6 +151,46 @@ describe("runtimeEventRouter", () => {
     expect(coordinator.injectEvent).toHaveBeenCalledTimes(1);
     const message = coordinator.injectEvent.mock.calls[0]?.[1] as string;
     expect(message).toContain("attempt_completed");
+  });
+
+  it("routes worker report and phase transition reasons onto the coordinator live path", () => {
+    const coordinator = {
+      injectEvent: vi.fn(),
+    } as any;
+
+    routeEventToCoordinator(coordinator, {
+      type: "orchestrator-step-updated",
+      runId: "run-1",
+      stepId: "step-1",
+      at: "2026-03-03T00:00:00.000Z",
+      reason: "worker_status_report",
+    } as any);
+    routeEventToCoordinator(coordinator, {
+      type: "orchestrator-step-updated",
+      runId: "run-1",
+      stepId: "step-1",
+      at: "2026-03-03T00:00:00.050Z",
+      reason: "worker_result_report",
+    } as any);
+    routeEventToCoordinator(coordinator, {
+      type: "orchestrator-step-updated",
+      runId: "run-1",
+      stepId: "step-1",
+      at: "2026-03-03T00:00:00.100Z",
+      reason: "validation_report",
+    } as any);
+    routeEventToCoordinator(coordinator, {
+      type: "orchestrator-step-updated",
+      runId: "run-1",
+      at: "2026-03-03T00:00:00.150Z",
+      reason: "phase_transition",
+    } as any);
+
+    expect(coordinator.injectEvent).toHaveBeenCalledTimes(4);
+    expect(String(coordinator.injectEvent.mock.calls[0]?.[1] ?? "")).toContain("worker_status_report");
+    expect(String(coordinator.injectEvent.mock.calls[1]?.[1] ?? "")).toContain("worker_result_report");
+    expect(String(coordinator.injectEvent.mock.calls[2]?.[1] ?? "")).toContain("validation_report");
+    expect(String(coordinator.injectEvent.mock.calls[3]?.[1] ?? "")).toContain("phase_transition");
   });
 
   it("clips oversized routed messages and emits suppression summaries after rate limiting", () => {
@@ -374,5 +419,96 @@ describe("runtimeEventRouter", () => {
     const message = coordinator.injectEvent.mock.calls[0]?.[1] as string;
     expect(message).toContain("complete_mission");
     expect(message).toContain("all tracked steps are terminal");
+  });
+
+  it("replays queued worker messages when agent chat reports a terminal failure state", async () => {
+    const replayQueuedWorkerMessages = vi.fn().mockResolvedValue(undefined);
+    const ctx = {
+      disposed: { current: false },
+      logger: { debug: vi.fn() },
+      sessionSignalQueues: new Map(),
+    } as any;
+
+    onAgentChatEvent(
+      ctx,
+      {
+        sessionId: "session-1",
+        event: {
+          type: "status",
+          turnStatus: "failed",
+        },
+      } as any,
+      { replayQueuedWorkerMessages },
+    );
+
+    const queued = ctx.sessionSignalQueues.get("session-1");
+    await queued;
+
+    expect(replayQueuedWorkerMessages).toHaveBeenCalledWith(expect.objectContaining({
+      reason: "agent_chat_event:status",
+      sessionId: "session-1",
+    }));
+    expect(ctx.sessionSignalQueues.size).toBe(0);
+  });
+
+  it("cleans up session queue entries after runtime signal processing settles", async () => {
+    const processSessionRuntimeSignal = vi.fn().mockResolvedValue(undefined);
+    const replayQueuedWorkerMessages = vi.fn().mockResolvedValue(undefined);
+    const ctx = {
+      disposed: { current: false },
+      logger: { debug: vi.fn() },
+      sessionRuntimeSignals: new Map(),
+      sessionSignalQueues: new Map(),
+    } as any;
+
+    onSessionRuntimeSignal(
+      ctx,
+      {
+        sessionId: "session-2",
+        runtimeState: "running",
+      } as any,
+      { processSessionRuntimeSignal, replayQueuedWorkerMessages },
+    );
+
+    const queued = ctx.sessionSignalQueues.get("session-2");
+    await queued;
+
+    expect(processSessionRuntimeSignal).toHaveBeenCalledTimes(1);
+    expect(replayQueuedWorkerMessages).toHaveBeenCalledWith(expect.objectContaining({
+      reason: "runtime_signal",
+      sessionId: "session-2",
+    }));
+    expect(ctx.sessionSignalQueues.size).toBe(0);
+    expect(ctx.sessionRuntimeSignals.get("session-2")?.runtimeState).toBe("running");
+  });
+
+  it("replays queued worker messages when agent chat reports an error event", async () => {
+    const replayQueuedWorkerMessages = vi.fn().mockResolvedValue(undefined);
+    const ctx = {
+      disposed: { current: false },
+      logger: { debug: vi.fn() },
+      sessionSignalQueues: new Map(),
+    } as any;
+
+    onAgentChatEvent(
+      ctx,
+      {
+        sessionId: "session-err",
+        event: {
+          type: "error",
+          message: "worker crashed",
+        },
+      } as any,
+      { replayQueuedWorkerMessages },
+    );
+
+    const queued = ctx.sessionSignalQueues.get("session-err");
+    await queued;
+
+    expect(replayQueuedWorkerMessages).toHaveBeenCalledWith(expect.objectContaining({
+      reason: "agent_chat_event:error",
+      sessionId: "session-err",
+    }));
+    expect(ctx.sessionSignalQueues.size).toBe(0);
   });
 });

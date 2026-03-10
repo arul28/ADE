@@ -237,7 +237,9 @@ import type {
   UndoConflictProposalArgs,
   PrepareResolverSessionArgs,
   PrepareResolverSessionResult,
+  AttachResolverSessionArgs,
   FinalizeResolverSessionArgs,
+  CancelResolverSessionArgs,
   SuggestResolverTargetArgs,
   SuggestResolverTargetResult,
   CreateQueuePrsArgs,
@@ -261,7 +263,11 @@ import type {
   CommitIntegrationArgs,
   LandStackEnhancedArgs,
   LandQueueNextArgs,
+  ResumeQueueAutomationArgs,
+  StartQueueAutomationArgs,
+  StartQueueRehearsalArgs,
   QueueLandingState,
+  QueueRehearsalState,
   PrConflictAnalysis,
   PrMergeContext,
   PrHealth,
@@ -347,6 +353,9 @@ import type {
   MissionDashboardSnapshot,
   MissionPreflightRequest,
   MissionPreflightResult,
+  GetMissionRunViewArgs,
+  MissionRunView,
+  ArchiveMissionArgs,
   DeleteMissionArgs,
   MissionArtifact,
   MissionDetail,
@@ -419,6 +428,13 @@ import type {
   ExecutionPlanPreview,
   GetMissionStateDocumentArgs,
   MissionStateDocument,
+  ListOrchestratorArtifactsArgs,
+  ListOrchestratorWorkerCheckpointsArgs,
+  GetOrchestratorPromptInspectorArgs,
+  GetPlanningPromptPreviewArgs,
+  OrchestratorArtifact,
+  OrchestratorWorkerCheckpoint,
+  OrchestratorPromptInspector,
   GetMissionLogsArgs,
   GetMissionLogsResult,
   ExportMissionLogsArgs,
@@ -430,6 +446,11 @@ import type {
   BudgetCapScope,
   BudgetCapProvider,
   BudgetCapConfig,
+  MemoryHealthStats,
+  MemoryConsolidationResult,
+  MemoryConsolidationStatusEventPayload,
+  MemoryLifecycleSweepResult,
+  MemorySweepStatusEventPayload,
   GetMissionBudgetTelemetryArgs,
   GetMissionBudgetStatusArgs,
   MissionBudgetTelemetrySnapshot,
@@ -559,6 +580,7 @@ contextBridge.exposeInMainWorld("ade", {
     get: async (missionId: string): Promise<MissionDetail | null> => ipcRenderer.invoke(IPC.missionsGet, { missionId }),
     create: async (args: CreateMissionArgs): Promise<MissionDetail> => ipcRenderer.invoke(IPC.missionsCreate, args),
     update: async (args: UpdateMissionArgs): Promise<MissionDetail> => ipcRenderer.invoke(IPC.missionsUpdate, args),
+    archive: async (args: ArchiveMissionArgs): Promise<void> => ipcRenderer.invoke(IPC.missionsArchive, args),
     delete: async (args: DeleteMissionArgs): Promise<void> => ipcRenderer.invoke(IPC.missionsDelete, args),
     updateStep: async (args: UpdateMissionStepArgs): Promise<MissionStep> => ipcRenderer.invoke(IPC.missionsUpdateStep, args),
     addArtifact: async (args: AddMissionArtifactArgs): Promise<MissionArtifact> => ipcRenderer.invoke(IPC.missionsAddArtifact, args),
@@ -592,8 +614,63 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.missionsGetPhaseConfiguration, { missionId }),
     getDashboard: async (): Promise<MissionDashboardSnapshot> =>
       ipcRenderer.invoke(IPC.missionsGetDashboard),
+    getFullMissionView: async (args: import("../shared/types").GetFullMissionViewArgs): Promise<import("../shared/types").FullMissionViewResult> =>
+      ipcRenderer.invoke(IPC.missionsGetFullMissionView, args),
     preflight: async (args: MissionPreflightRequest): Promise<MissionPreflightResult> =>
       ipcRenderer.invoke(IPC.missionsPreflight, args),
+    getRunView: async (args: GetMissionRunViewArgs): Promise<MissionRunView | null> =>
+      ipcRenderer.invoke(IPC.missionsGetRunView, args),
+    subscribeRunView: (args: GetMissionRunViewArgs, cb: (view: MissionRunView | null) => void) => {
+      let disposed = false;
+      let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+      const refresh = () => {
+        if (disposed) return;
+        void ipcRenderer.invoke(IPC.missionsGetRunView, args).then(
+          (view: MissionRunView | null) => {
+            if (!disposed) cb(view);
+          },
+          () => {}
+        );
+      };
+      const scheduleRefresh = (delayMs = 160) => {
+        if (disposed) return;
+        if (refreshTimer) clearTimeout(refreshTimer);
+        refreshTimer = setTimeout(() => {
+          refreshTimer = null;
+          refresh();
+        }, delayMs);
+      };
+      const missionListener = (_event: Electron.IpcRendererEvent, payload: MissionsEventPayload) => {
+        if (payload.missionId !== args.missionId) return;
+        scheduleRefresh();
+      };
+      const runtimeListener = (_event: Electron.IpcRendererEvent, payload: OrchestratorRuntimeEvent) => {
+        if (args.runId && payload.runId !== args.runId) return;
+        scheduleRefresh();
+      };
+      const threadListener = (_event: Electron.IpcRendererEvent, payload: OrchestratorThreadEvent) => {
+        if (payload.missionId !== args.missionId) return;
+        if (args.runId && payload.runId !== args.runId) return;
+        scheduleRefresh(120);
+      };
+      const dagListener = (_event: Electron.IpcRendererEvent, payload: DagMutationEvent) => {
+        if (args.runId && payload.runId !== args.runId) return;
+        scheduleRefresh(120);
+      };
+      ipcRenderer.on(IPC.missionsEvent, missionListener);
+      ipcRenderer.on(IPC.orchestratorEvent, runtimeListener);
+      ipcRenderer.on(IPC.orchestratorThreadEvent, threadListener);
+      ipcRenderer.on(IPC.orchestratorDagMutation, dagListener);
+      refresh();
+      return () => {
+        disposed = true;
+        if (refreshTimer) clearTimeout(refreshTimer);
+        ipcRenderer.removeListener(IPC.missionsEvent, missionListener);
+        ipcRenderer.removeListener(IPC.orchestratorEvent, runtimeListener);
+        ipcRenderer.removeListener(IPC.orchestratorThreadEvent, threadListener);
+        ipcRenderer.removeListener(IPC.orchestratorDagMutation, dagListener);
+      };
+    },
     onEvent: (cb: (ev: MissionsEventPayload) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: MissionsEventPayload) => cb(payload);
       ipcRenderer.on(IPC.missionsEvent, listener);
@@ -675,6 +752,20 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.orchestratorGetExecutionPlanPreview, args),
     getMissionStateDocument: async (args: GetMissionStateDocumentArgs): Promise<MissionStateDocument | null> =>
       ipcRenderer.invoke(IPC.orchestratorGetMissionStateDocument, args),
+    listArtifacts: async (args: ListOrchestratorArtifactsArgs): Promise<OrchestratorArtifact[]> =>
+      ipcRenderer.invoke(IPC.orchestratorListArtifacts, args),
+    listWorkerCheckpoints: async (
+      args: ListOrchestratorWorkerCheckpointsArgs
+    ): Promise<OrchestratorWorkerCheckpoint[]> =>
+      ipcRenderer.invoke(IPC.orchestratorListWorkerCheckpoints, args),
+    getPromptInspector: async (
+      args: GetOrchestratorPromptInspectorArgs
+    ): Promise<OrchestratorPromptInspector | null> =>
+      ipcRenderer.invoke(IPC.orchestratorGetPromptInspector, args),
+    getPlanningPromptPreview: async (
+      args: GetPlanningPromptPreviewArgs
+    ): Promise<OrchestratorPromptInspector | null> =>
+      ipcRenderer.invoke(IPC.orchestratorGetPlanningPromptPreview, args),
     getCheckpointStatus: async (
       args: { runId: string }
     ): Promise<{ savedAt: string; turnCount: number; compactionCount: number } | null> =>
@@ -1008,8 +1099,12 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.conflictsCommitExternalResolverRun, args),
     prepareResolverSession: (args: PrepareResolverSessionArgs): Promise<PrepareResolverSessionResult> =>
       ipcRenderer.invoke(IPC.conflictsPrepareResolverSession, args),
+    attachResolverSession: (args: AttachResolverSessionArgs): Promise<ConflictExternalResolverRunSummary> =>
+      ipcRenderer.invoke(IPC.conflictsAttachResolverSession, args),
     finalizeResolverSession: (args: FinalizeResolverSessionArgs): Promise<ConflictExternalResolverRunSummary> =>
       ipcRenderer.invoke(IPC.conflictsFinalizeResolverSession, args),
+    cancelResolverSession: (args: CancelResolverSessionArgs): Promise<ConflictExternalResolverRunSummary> =>
+      ipcRenderer.invoke(IPC.conflictsCancelResolverSession, args),
     suggestResolverTarget: (args: SuggestResolverTargetArgs): Promise<SuggestResolverTargetResult> =>
       ipcRenderer.invoke(IPC.conflictsSuggestResolverTarget, args),
     onEvent: (cb: (ev: ConflictEventPayload) => void) => {
@@ -1064,10 +1159,28 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.prsLandStackEnhanced, args),
     landQueueNext: (args: LandQueueNextArgs): Promise<LandResult> =>
       ipcRenderer.invoke(IPC.prsLandQueueNext, args),
+    startQueueAutomation: (args: StartQueueAutomationArgs): Promise<QueueLandingState> =>
+      ipcRenderer.invoke(IPC.prsStartQueueAutomation, args),
+    pauseQueueAutomation: (queueId: string): Promise<QueueLandingState | null> =>
+      ipcRenderer.invoke(IPC.prsPauseQueueAutomation, { queueId }),
+    resumeQueueAutomation: (args: ResumeQueueAutomationArgs): Promise<QueueLandingState | null> =>
+      ipcRenderer.invoke(IPC.prsResumeQueueAutomation, args),
+    cancelQueueAutomation: (queueId: string): Promise<QueueLandingState | null> =>
+      ipcRenderer.invoke(IPC.prsCancelQueueAutomation, { queueId }),
+    startQueueRehearsal: (args: StartQueueRehearsalArgs): Promise<QueueRehearsalState> =>
+      ipcRenderer.invoke(IPC.prsStartQueueRehearsal, args),
+    cancelQueueRehearsal: (rehearsalId: string): Promise<QueueRehearsalState | null> =>
+      ipcRenderer.invoke(IPC.prsCancelQueueRehearsal, { rehearsalId }),
     getHealth: (prId: string): Promise<PrHealth> =>
       ipcRenderer.invoke(IPC.prsGetHealth, { prId }),
     getQueueState: (groupId: string): Promise<QueueLandingState | null> =>
       ipcRenderer.invoke(IPC.prsGetQueueState, { groupId }),
+    listQueueStates: (args?: { includeCompleted?: boolean; limit?: number }): Promise<QueueLandingState[]> =>
+      ipcRenderer.invoke(IPC.prsListQueueStates, args ?? {}),
+    getQueueRehearsalState: (groupId: string): Promise<QueueRehearsalState | null> =>
+      ipcRenderer.invoke(IPC.prsGetQueueRehearsalState, { groupId }),
+    listQueueRehearsals: (args?: { includeCompleted?: boolean; limit?: number }): Promise<QueueRehearsalState[]> =>
+      ipcRenderer.invoke(IPC.prsListQueueRehearsals, args ?? {}),
     getConflictAnalysis: (prId: string): Promise<PrConflictAnalysis> =>
       ipcRenderer.invoke(IPC.prsGetConflictAnalysis, { prId }),
     getMergeContext: (prId: string): Promise<PrMergeContext> =>
@@ -1226,9 +1339,28 @@ contextBridge.exposeInMainWorld("ade", {
       scope?: "user" | "project" | "lane" | "mission" | "agent";
       scopeOwnerId?: string;
       limit?: number;
+      mode?: "lexical" | "hybrid";
       status?: "promoted" | "candidate" | "archived" | "all";
     }): Promise<unknown[]> =>
-      ipcRenderer.invoke(IPC.memorySearch, args)
+      ipcRenderer.invoke(IPC.memorySearch, args),
+    getHealthStats: async (): Promise<MemoryHealthStats> =>
+      ipcRenderer.invoke(IPC.memoryHealthStats),
+    downloadEmbeddingModel: async (): Promise<MemoryHealthStats> =>
+      ipcRenderer.invoke(IPC.memoryDownloadEmbeddingModel),
+    runSweep: async (): Promise<MemoryLifecycleSweepResult> =>
+      ipcRenderer.invoke(IPC.memoryRunSweep),
+    onSweepStatus: (cb: (payload: MemorySweepStatusEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: MemorySweepStatusEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.memorySweepStatus, listener);
+      return () => ipcRenderer.removeListener(IPC.memorySweepStatus, listener);
+    },
+    runConsolidation: async (): Promise<MemoryConsolidationResult> =>
+      ipcRenderer.invoke(IPC.memoryRunConsolidation),
+    onConsolidationStatus: (cb: (payload: MemoryConsolidationStatusEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: MemoryConsolidationStatusEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.memoryConsolidationStatus, listener);
+      return () => ipcRenderer.removeListener(IPC.memoryConsolidationStatus, listener);
+    }
   },
   cto: {
     getState: async (args: CtoGetStateArgs = {}): Promise<CtoSnapshot> =>

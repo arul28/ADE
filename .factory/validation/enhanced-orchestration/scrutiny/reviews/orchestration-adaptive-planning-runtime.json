@@ -1,0 +1,51 @@
+{
+  "featureId": "orchestration-adaptive-planning-runtime",
+  "reviewedAt": "2026-03-10T10:07:42Z",
+  "commitId": "7952d3e95980df319ee368ba1b6478a905cab73c",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "I reviewed the feature metadata, worker handoff, transcript skeleton, commit `7952d3e`, and the touched orchestration files. The change does land real pieces of the milestone: budget hard-cap gating is wired into worker spawn, `complete_mission` delegates to runtime finalization gates, `phase_approval` interventions are created when leaving approval-guarded phases, and model downgrade evaluation is hooked into `spawn_worker`. However, the feature still misses two core promised behaviors. The new adaptive-runtime helpers are not connected to the actual run-launch/fan-out path, so the orchestrator never uses task complexity to choose simple/sequential/parallel execution. And the claimed multi-round planning loop is still blocked in production because successful planning runs force an immediate transition to development and `loopTarget` is never used in phase transitions. Because those are central M5 requirements and directly affect VAL-ENH-002/003 and VAL-PLAN-006, this review fails.",
+    "issues": [
+      {
+        "file": "apps/desktop/src/main/services/orchestrator/orchestratorService.ts",
+        "line": 4684,
+        "severity": "blocking",
+        "description": "Adaptive execution is not wired into the runtime. Run launch still derives `plannerParallelismCap` only from planner metadata / launch metadata (`plannerSummary.parallelismCap`) and clamps that into `autopilotParallelismCap`; the new `classifyTaskComplexity()` and `scaleParallelismCap()` helpers added in `adaptiveRuntime.ts` have no production call sites outside tests. As shipped, the orchestrator does not classify a mission into simple/medium/complex execution modes or change worker strategy from that classification, so the claimed adaptive behavior and VAL-ENH-002/003 are not actually enforced." 
+      },
+      {
+        "file": "apps/desktop/src/main/services/orchestrator/coordinatorTools.ts",
+        "line": 5145,
+        "severity": "blocking",
+        "description": "`canLoop` is only used to bypass the planning `maxQuestions` cap. There is no corresponding `loopTarget` handling in `set_current_phase` or any other transition-time logic, so phase cards still cannot formally loop back for another planning round. That means the implementation does not actually 'wire canLoop/loopTarget into phase transitions' as required by the feature description." 
+      },
+      {
+        "file": "apps/desktop/src/main/services/orchestrator/coordinatorTools.ts",
+        "line": 1882,
+        "severity": "blocking",
+        "description": "Multi-round deliberation is still blocked after the first successful planner run. During Planning, `spawn_worker` refuses to create another planning worker as soon as any planning step has `status === \"succeeded\"` and tells the coordinator to call `set_current_phase(\"development\")` instead. That directly contradicts VAL-PLAN-006's required ask_user -> plan -> review -> ask_user -> re-plan cycle." 
+      },
+      {
+        "file": "apps/desktop/src/main/services/orchestrator/coordinatorTools.ts",
+        "line": 1838,
+        "severity": "non_blocking",
+        "description": "Model downgrade is only written to the structured logger. The milestone description says downgrades should be logged in the mission feed, but this code never appends a runtime/timeline event when a downgrade occurs, so the UI has no user-visible feed evidence that the model changed." 
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The `service-worker` skill currently allows TDD compliance to be reported even when implementation starts before the first test file is created.",
+      "evidence": "`/Users/admin/Projects/ADE/.factory/skills/service-worker/SKILL.md:44-53` requires creating the test file first and running a red phase. In the transcript skeleton for session `d56f94a6-1976-4a38-bc32-413a434d3a00`, `adaptiveRuntime.ts` appears before `adaptiveRuntime.test.ts` (`adaptiveRuntime.ts_index` 8807 vs `adaptiveRuntime.test.ts_index` 9052), but the handoff still reports `skillFeedback.followedProcedure: true`."
+    },
+    {
+      "area": "skills",
+      "observation": "The current service-worker guidance is too easy to satisfy with assertion-light tests that never exercise the production runtime path for a validation-contract item.",
+      "evidence": "`apps/desktop/src/main/services/orchestrator/orchestrationRuntime.test.ts:631-656` marks mandatory-planning and fan-out assertions as covered, but those tests only check `createBuiltInPhaseCards()` and literal `decision` objects; they never instantiate `CoordinatorAgent`, `aiOrchestratorService`, or the real fan-out/runtime path. Those shallow tests missed the dead adaptive-runtime wiring and blocked re-plan path found in this review."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Fail. Budget gating, completion gating, and basic approval-gate plumbing landed, but the feature still does not deliver true adaptive execution or true multi-round planning loops: task-complexity helpers are not wired into production runtime decisions, `loopTarget` is unused in phase transitions, and successful planning runs still block any follow-up re-plan worker."
+}

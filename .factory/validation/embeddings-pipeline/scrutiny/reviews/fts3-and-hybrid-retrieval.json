@@ -1,0 +1,50 @@
+{
+  "featureId": "fts3-and-hybrid-retrieval",
+  "reviewedAt": "2026-03-10T02:30:00.000Z",
+  "commitId": "b6baa305a306dd00aa4e0af68b42c27a0000137a",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "The implementation delivers a complete, well-structured hybrid search service that satisfies all the specified requirements. FTS4 (not FTS3) was used for the virtual table with triggers and matchinfo() BM25 scoring — a justified and documented deviation because sql.js rejected external-content FTS3 syntax. The BM25 formula, cosine similarity, hybrid fusion weights (0.30/0.70), composite weights (0.40/0.20/0.15/0.15/0.10), MMR re-ranking (λ=0.7), scope isolation, archived exclusion, fallback to lexical, and query-time embedding are all implemented and tested. The 15-test suite covers every required behavior from the feature spec. Integration with unifiedMemoryService.ts is clean: hybridSearchService is injected as an optional dependency and searchHybrid() catches all errors (including HybridSearchUnavailableError) and falls back to lexical, ensuring no regression. main.ts wiring is correct. TypeScript compiles cleanly.\n\nA few non-blocking observations:\n\n1. FTS4 vs FTS3: The feature spec says 'FTS3' but the implementation uses FTS4 external-content virtual table. The worker documents this in discoveredIssues — sql.js rejected external-content FTS3 syntax. FTS4 provides the same matchinfo() API and is included in the same sql.js WASM build. The deviation is pragmatic and correct.\n\n2. MMR scoring uses `hybridScore` for relevance term and `compositeScore` as the initial fallback (when no embedding vector exists). This is a minor semantic mixing — the MMR formula should ideally use composite score consistently as the relevance measure for non-vectored items (currently it does: `let score = candidate.compositeScore` before the vector branch overrides it). The result is correct: vectored candidates use hybridScore in MMR, vector-less candidates use compositeScore. This is defensible but slightly inconsistent with the lambda=0.7 spec intent (which implies the relevance term should be the same for all candidates).\n\n3. Vector candidates without lexical hits (pure semantic matches, found only via readVectorCandidates) have bm25Score=0 and bm25Normalized=0 after normalizeBm25Scores — their hybrid score is correctly set to 0.70 * cosine. This is consistent with the 'entries without embeddings use BM25-only' requirement in inverse: entries with embeddings but without lexical hits still get meaningful hybrid scores. No issue here.\n\n4. The lexical candidate SQL does NOT pre-filter by status or scope in the SQL WHERE clause — filtering happens in matchesSearchFilters() in JS. For large corpora this could be slow, but for the current in-process embedded use case it is acceptable.\n\n5. The `computeBm25Score` test case uses a hardcoded expected value (2.8693...). If BM25_K1 or BM25_B constants change, this test will break without being obviously wrong. Minor brittleness.",
+    "issues": [
+      {
+        "file": "apps/desktop/src/main/services/memory/hybridSearchService.ts",
+        "line": 305,
+        "severity": "non_blocking",
+        "description": "MMR scoring inconsistency: candidates without embedding vectors use `compositeScore` as the MMR relevance term while candidates with vectors use `hybridScore`. The lambda=0.7 spec implies a uniform relevance measure. In practice this is benign because vector-less items will not appear in most result sets after hybrid scoring, but it could produce unexpected ordering in edge cases where many entries lack embeddings."
+      },
+      {
+        "file": "apps/desktop/src/main/services/memory/hybridSearchService.ts",
+        "line": 360,
+        "severity": "non_blocking",
+        "description": "readLexicalCandidates() does not add SQL WHERE predicates for project_id, scope, status, or tier — all isolation is done post-fetch in JS via matchesSearchFilters(). For large datasets this scans the full FTS index. Acceptable for current embedded in-process scale but worth noting for future optimization."
+      },
+      {
+        "file": "apps/desktop/src/main/services/state/kvDb.ts",
+        "line": 1426,
+        "severity": "non_blocking",
+        "description": "The implementation creates `unified_memories_fts` using FTS4 (not FTS3 as specified). The worker documents this as a discovered issue — sql.js rejected external-content FTS3 syntax but accepts FTS4. The matchinfo() API is identical in both. The deviation is justified and functionally correct."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "conventions",
+      "observation": "AGENTS.md documents 'FTS3 (not FTS5)' as the requirement, but does not mention that sql.js also supports FTS4 external-content tables (which provide the same matchinfo interface). Future workers need to know FTS4 is available and may be necessary for external-content tables.",
+      "evidence": "kvDb.ts line 1426 uses 'fts4'. AGENTS.md section 'FTS3 (not FTS5)' says 'Use FTS3 with matchinfo()'. The hybridSearchService handoff discoveredIssues notes 'sql.js accepted plain FTS3 tables but rejected external-content FTS3 virtual-table syntax; the implementation uses an external-content FTS4 table'."
+    },
+    {
+      "area": "knowledge",
+      "observation": "The library/memory-engine.md BM25 section documents the matchinfo format and formula but does not mention that external-content FTS4 (not just FTS3) is needed to join FTS index rows with base table rows via rowid. Workers implementing FTS will benefit from knowing FTS4 is the correct mechanism for external-content tables with rowid joins in sql.js.",
+      "evidence": "hybridSearchService.ts uses 'using fts4(content, content=unified_memories)' with trigger-based sync; AGENTS.md only mentions FTS3."
+    },
+    {
+      "area": "skills",
+      "observation": "Worker deviated from skill step 1.3 (Baseline Validation) by not failing fast on pre-existing test failures, citing AGENTS.md baseline documentation. This is the correct behavior given AGENTS.md explicitly instructs workers to proceed when pre-existing failures match the documented list. The skill's step 1.3 procedure conflicts with AGENTS.md guidance — the skill should clarify that documented branch-level pre-existing failures should not trigger an abort.",
+      "evidence": "skillFeedback.followedProcedure=false, deviations[0].step='1.3 Baseline Validation'. AGENTS.md 'Known Pre-Existing Issues' section explicitly lists the failures as expected on missionsFix."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "PASS. The hybridSearchService implementation is complete and correct. All 15 test cases pass, TypeScript compiles cleanly, and no regressions were introduced in the full suite beyond the pre-existing branch failures documented in AGENTS.md. The FTS4 deviation from the FTS3 spec is justified (sql.js limitation), documented in the handoff, and functionally equivalent. The fallback chain (hybrid → lexical) works correctly and is verified by tests. Scope isolation, archived exclusion, and query-time embedding are all implemented and tested. The only non-blocking issues are: MMR uses slightly inconsistent relevance terms for vector-less vs vectored candidates, the lexical SQL candidate fetch lacks SQL-level filtering (JS post-filter instead), and a minor test brittleness on a hardcoded BM25 value. None of these are blocking."
+}

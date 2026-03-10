@@ -78,7 +78,7 @@ import type { createConflictService } from "../conflicts/conflictService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import { runGit, runGitOrThrow } from "../git/git";
 import { extractFirstJsonObject } from "../ai/utils";
-import { asNumber, asString, nowIso, parseDiffNameOnly } from "../shared/utils";
+import { asNumber, asString, normalizeBranchName, nowIso, parseDiffNameOnly } from "../shared/utils";
 
 type PullRequestRow = {
   id: string;
@@ -121,12 +121,6 @@ function branchNameFromRef(ref: string): string {
   const trimmed = ref.trim();
   if (trimmed.startsWith("refs/heads/")) return trimmed.slice("refs/heads/".length);
   return trimmed;
-}
-
-function normalizeBranchName(ref: string): string {
-  const branch = branchNameFromRef(ref);
-  if (branch.startsWith("origin/")) return branch.slice("origin/".length);
-  return branch;
 }
 
 function normalizeGroupMemberRole(raw: string): PrGroupMemberRole {
@@ -2217,6 +2211,12 @@ export function createPrService({
       id: string; group_id: string; state: string;
       entries_json: string; current_position: number;
       started_at: string; completed_at: string | null;
+      config_json?: string | null;
+      active_pr_id?: string | null;
+      active_resolver_run_id?: string | null;
+      last_error?: string | null;
+      wait_reason?: string | null;
+      updated_at?: string | null;
     }>(
       `select * from queue_landing_state where group_id = ? order by started_at desc limit 1`,
       [groupId]
@@ -2225,11 +2225,33 @@ export function createPrService({
     return {
       queueId: String(row.id),
       groupId: String(row.group_id),
+      groupName: null,
+      targetBranch: null,
       state: String(row.state) as QueueLandingState["state"],
       entries: JSON.parse(String(row.entries_json)),
       currentPosition: Number(row.current_position),
+      activePrId: row.active_pr_id ? String(row.active_pr_id) : null,
+      activeResolverRunId: row.active_resolver_run_id ? String(row.active_resolver_run_id) : null,
+      lastError: row.last_error ? String(row.last_error) : null,
+      waitReason: row.wait_reason ? String(row.wait_reason) as QueueLandingState["waitReason"] : null,
+      config: row.config_json ? JSON.parse(String(row.config_json)) : {
+        method: "squash",
+        archiveLane: false,
+        autoResolve: false,
+        ciGating: true,
+        resolverProvider: null,
+        resolverModel: null,
+        reasoningEffort: null,
+        permissionMode: "guarded_edit",
+        confidenceThreshold: null,
+        originSurface: "manual",
+        originMissionId: null,
+        originRunId: null,
+        originLabel: null,
+      },
       startedAt: String(row.started_at),
-      completedAt: row.completed_at ? String(row.completed_at) : null
+      completedAt: row.completed_at ? String(row.completed_at) : null,
+      updatedAt: row.updated_at ? String(row.updated_at) : String(row.started_at),
     };
   };
 

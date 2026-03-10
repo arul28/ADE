@@ -57,6 +57,11 @@ export function normalizeSessionLabel(raw: string | null | undefined): string | 
   return normalized.length ? normalized : null;
 }
 
+function stripOutcomePrefix(raw: string): string {
+  const stripped = raw.replace(/^(completed?|done|finished|resolved|success|interrupted|failed|error)\b[\s:.-]*/iu, "").trim();
+  return stripped.length ? stripped : raw;
+}
+
 export function isLowSignalSessionLabel(raw: string | null | undefined): boolean {
   const normalized = normalizeSessionLabel(raw);
   if (!normalized) return false;
@@ -86,7 +91,7 @@ export function isLowSignalSessionLabel(raw: string | null | undefined): boolean
 export function preferredSessionLabel(raw: string | null | undefined): string | null {
   const normalized = normalizeSessionLabel(raw);
   if (!normalized || isLowSignalSessionLabel(normalized)) return null;
-  return normalized;
+  return stripOutcomePrefix(normalized);
 }
 
 export function isGenericSessionTitle(session: TerminalSessionSummary, value: string): boolean {

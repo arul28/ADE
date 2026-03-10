@@ -1,0 +1,1507 @@
+diff --git a/apps/desktop/src/preload/global.d.ts b/apps/desktop/src/preload/global.d.ts
+index a8fc52d..e499b1f 100644
+--- a/apps/desktop/src/preload/global.d.ts
++++ b/apps/desktop/src/preload/global.d.ts
+@@ -172,6 +172,7 @@ import type {
+   CommitIntegrationArgs,
+   LandQueueNextArgs,
+   QueueLandingState,
++  QueueRehearsalState,
+   PrHealth,
+   RebaseNeed,
+   RebaseLaneArgs,
+@@ -373,12 +374,18 @@ import type {
+   ListOrchestratorWorkerDigestsArgs,
+   GetOrchestratorContextCheckpointArgs,
+   ListOrchestratorLaneDecisionsArgs,
++  ListOrchestratorArtifactsArgs,
++  ListOrchestratorWorkerCheckpointsArgs,
+   MissionMetricsConfig,
+   MissionMetricSample,
+   SetMissionMetricsConfigArgs,
+   ExecutionPlanPreview,
+   GetMissionStateDocumentArgs,
+   MissionStateDocument,
++  OrchestratorArtifact,
++  OrchestratorWorkerCheckpoint,
++  GetOrchestratorPromptInspectorArgs,
++  OrchestratorPromptInspector,
+   GetMissionBudgetTelemetryArgs,
+   GetMissionBudgetStatusArgs,
+   MissionBudgetTelemetrySnapshot,
+@@ -568,6 +575,9 @@ declare global {
+         listWorkerDigests: (args: ListOrchestratorWorkerDigestsArgs) => Promise<OrchestratorWorkerDigest[]>;
+         getContextCheckpoint: (args: GetOrchestratorContextCheckpointArgs) => Promise<OrchestratorContextCheckpoint | null>;
+         listLaneDecisions: (args: ListOrchestratorLaneDecisionsArgs) => Promise<OrchestratorLaneDecision[]>;
++        listArtifacts: (args: ListOrchestratorArtifactsArgs) => Promise<OrchestratorArtifact[]>;
++        listWorkerCheckpoints: (args: ListOrchestratorWorkerCheckpointsArgs) => Promise<OrchestratorWorkerCheckpoint[]>;
++        getPromptInspector: (args: GetOrchestratorPromptInspectorArgs) => Promise<OrchestratorPromptInspector>;
+         getMissionMetrics: (args: GetMissionMetricsArgs) => Promise<{ config: MissionMetricsConfig | null; samples: MissionMetricSample[] }>;
+         setMissionMetricsConfig: (args: SetMissionMetricsConfigArgs) => Promise<MissionMetricsConfig>;
+         getExecutionPlanPreview: (args: { runId: string }) => Promise<ExecutionPlanPreview | null>;
+@@ -746,7 +756,9 @@ declare global {
+         listExternalResolverRuns: (args?: ListExternalConflictResolverRunsArgs) => Promise<ConflictExternalResolverRunSummary[]>;
+         commitExternalResolverRun: (args: CommitExternalConflictResolverRunArgs) => Promise<CommitExternalConflictResolverRunResult>;
+         prepareResolverSession: (args: import("../shared/types").PrepareResolverSessionArgs) => Promise<import("../shared/types").PrepareResolverSessionResult>;
++        attachResolverSession: (args: import("../shared/types").AttachResolverSessionArgs) => Promise<import("../shared/types").ConflictExternalResolverRunSummary>;
+         finalizeResolverSession: (args: import("../shared/types").FinalizeResolverSessionArgs) => Promise<import("../shared/types").ConflictExternalResolverRunSummary>;
++        cancelResolverSession: (args: import("../shared/types").CancelResolverSessionArgs) => Promise<import("../shared/types").ConflictExternalResolverRunSummary>;
+         suggestResolverTarget: (args: import("../shared/types").SuggestResolverTargetArgs) => Promise<import("../shared/types").SuggestResolverTargetResult>;
+         onEvent: (cb: (ev: ConflictEventPayload) => void) => () => void;
+       };
+@@ -793,8 +805,17 @@ declare global {
+         onAiResolutionEvent: (cb: (ev: PrAiResolutionEventPayload) => void) => () => void;
+         landStackEnhanced: (args: import("../shared/types").LandStackEnhancedArgs) => Promise<import("../shared/types").LandResult[]>;
+         landQueueNext: (args: LandQueueNextArgs) => Promise<LandResult>;
++        startQueueAutomation: (args: import("../shared/types").StartQueueAutomationArgs) => Promise<QueueLandingState>;
++        pauseQueueAutomation: (queueId: string) => Promise<QueueLandingState | null>;
++        resumeQueueAutomation: (args: import("../shared/types").ResumeQueueAutomationArgs) => Promise<QueueLandingState | null>;
++        cancelQueueAutomation: (queueId: string) => Promise<QueueLandingState | null>;
++        startQueueRehearsal: (args: import("../shared/types").StartQueueRehearsalArgs) => Promise<QueueRehearsalState>;
++        cancelQueueRehearsal: (rehearsalId: string) => Promise<QueueRehearsalState | null>;
+         getHealth: (prId: string) => Promise<PrHealth>;
+         getQueueState: (groupId: string) => Promise<QueueLandingState | null>;
++        listQueueStates: (args?: { includeCompleted?: boolean; limit?: number }) => Promise<QueueLandingState[]>;
++        getQueueRehearsalState: (groupId: string) => Promise<QueueRehearsalState | null>;
++        listQueueRehearsals: (args?: { includeCompleted?: boolean; limit?: number }) => Promise<QueueRehearsalState[]>;
+         getConflictAnalysis: (prId: string) => Promise<import("../shared/types").PrConflictAnalysis>;
+         getMergeContext: (prId: string) => Promise<PrMergeContext>;
+         listWithConflicts: () => Promise<import("../shared/types").PrWithConflicts[]>;
+diff --git a/apps/desktop/src/preload/preload.ts b/apps/desktop/src/preload/preload.ts
+index 71cf5aa..9fa8a78 100644
+--- a/apps/desktop/src/preload/preload.ts
++++ b/apps/desktop/src/preload/preload.ts
+@@ -237,7 +237,9 @@ import type {
+   UndoConflictProposalArgs,
+   PrepareResolverSessionArgs,
+   PrepareResolverSessionResult,
++  AttachResolverSessionArgs,
+   FinalizeResolverSessionArgs,
++  CancelResolverSessionArgs,
+   SuggestResolverTargetArgs,
+   SuggestResolverTargetResult,
+   CreateQueuePrsArgs,
+@@ -261,7 +263,11 @@ import type {
+   CommitIntegrationArgs,
+   LandStackEnhancedArgs,
+   LandQueueNextArgs,
++  ResumeQueueAutomationArgs,
++  StartQueueAutomationArgs,
++  StartQueueRehearsalArgs,
+   QueueLandingState,
++  QueueRehearsalState,
+   PrConflictAnalysis,
+   PrMergeContext,
+   PrHealth,
+@@ -419,6 +425,12 @@ import type {
+   ExecutionPlanPreview,
+   GetMissionStateDocumentArgs,
+   MissionStateDocument,
++  ListOrchestratorArtifactsArgs,
++  ListOrchestratorWorkerCheckpointsArgs,
++  GetOrchestratorPromptInspectorArgs,
++  OrchestratorArtifact,
++  OrchestratorWorkerCheckpoint,
++  OrchestratorPromptInspector,
+   GetMissionLogsArgs,
+   GetMissionLogsResult,
+   ExportMissionLogsArgs,
+@@ -675,6 +687,16 @@ contextBridge.exposeInMainWorld("ade", {
+       ipcRenderer.invoke(IPC.orchestratorGetExecutionPlanPreview, args),
+     getMissionStateDocument: async (args: GetMissionStateDocumentArgs): Promise<MissionStateDocument | null> =>
+       ipcRenderer.invoke(IPC.orchestratorGetMissionStateDocument, args),
++    listArtifacts: async (args: ListOrchestratorArtifactsArgs): Promise<OrchestratorArtifact[]> =>
++      ipcRenderer.invoke(IPC.orchestratorListArtifacts, args),
++    listWorkerCheckpoints: async (
++      args: ListOrchestratorWorkerCheckpointsArgs
++    ): Promise<OrchestratorWorkerCheckpoint[]> =>
++      ipcRenderer.invoke(IPC.orchestratorListWorkerCheckpoints, args),
++    getPromptInspector: async (
++      args: GetOrchestratorPromptInspectorArgs
++    ): Promise<OrchestratorPromptInspector | null> =>
++      ipcRenderer.invoke(IPC.orchestratorGetPromptInspector, args),
+     getCheckpointStatus: async (
+       args: { runId: string }
+     ): Promise<{ savedAt: string; turnCount: number; compactionCount: number } | null> =>
+@@ -1008,8 +1030,12 @@ contextBridge.exposeInMainWorld("ade", {
+       ipcRenderer.invoke(IPC.conflictsCommitExternalResolverRun, args),
+     prepareResolverSession: (args: PrepareResolverSessionArgs): Promise<PrepareResolverSessionResult> =>
+       ipcRenderer.invoke(IPC.conflictsPrepareResolverSession, args),
++    attachResolverSession: (args: AttachResolverSessionArgs): Promise<ConflictExternalResolverRunSummary> =>
++      ipcRenderer.invoke(IPC.conflictsAttachResolverSession, args),
+     finalizeResolverSession: (args: FinalizeResolverSessionArgs): Promise<ConflictExternalResolverRunSummary> =>
+       ipcRenderer.invoke(IPC.conflictsFinalizeResolverSession, args),
++    cancelResolverSession: (args: CancelResolverSessionArgs): Promise<ConflictExternalResolverRunSummary> =>
++      ipcRenderer.invoke(IPC.conflictsCancelResolverSession, args),
+     suggestResolverTarget: (args: SuggestResolverTargetArgs): Promise<SuggestResolverTargetResult> =>
+       ipcRenderer.invoke(IPC.conflictsSuggestResolverTarget, args),
+     onEvent: (cb: (ev: ConflictEventPayload) => void) => {
+@@ -1064,10 +1090,28 @@ contextBridge.exposeInMainWorld("ade", {
+       ipcRenderer.invoke(IPC.prsLandStackEnhanced, args),
+     landQueueNext: (args: LandQueueNextArgs): Promise<LandResult> =>
+       ipcRenderer.invoke(IPC.prsLandQueueNext, args),
++    startQueueAutomation: (args: StartQueueAutomationArgs): Promise<QueueLandingState> =>
++      ipcRenderer.invoke(IPC.prsStartQueueAutomation, args),
++    pauseQueueAutomation: (queueId: string): Promise<QueueLandingState | null> =>
++      ipcRenderer.invoke(IPC.prsPauseQueueAutomation, { queueId }),
++    resumeQueueAutomation: (args: ResumeQueueAutomationArgs): Promise<QueueLandingState | null> =>
++      ipcRenderer.invoke(IPC.prsResumeQueueAutomation, args),
++    cancelQueueAutomation: (queueId: string): Promise<QueueLandingState | null> =>
++      ipcRenderer.invoke(IPC.prsCancelQueueAutomation, { queueId }),
++    startQueueRehearsal: (args: StartQueueRehearsalArgs): Promise<QueueRehearsalState> =>
++      ipcRenderer.invoke(IPC.prsStartQueueRehearsal, args),
++    cancelQueueRehearsal: (rehearsalId: string): Promise<QueueRehearsalState | null> =>
++      ipcRenderer.invoke(IPC.prsCancelQueueRehearsal, { rehearsalId }),
+     getHealth: (prId: string): Promise<PrHealth> =>
+       ipcRenderer.invoke(IPC.prsGetHealth, { prId }),
+     getQueueState: (groupId: string): Promise<QueueLandingState | null> =>
+       ipcRenderer.invoke(IPC.prsGetQueueState, { groupId }),
++    listQueueStates: (args?: { includeCompleted?: boolean; limit?: number }): Promise<QueueLandingState[]> =>
++      ipcRenderer.invoke(IPC.prsListQueueStates, args ?? {}),
++    getQueueRehearsalState: (groupId: string): Promise<QueueRehearsalState | null> =>
++      ipcRenderer.invoke(IPC.prsGetQueueRehearsalState, { groupId }),
++    listQueueRehearsals: (args?: { includeCompleted?: boolean; limit?: number }): Promise<QueueRehearsalState[]> =>
++      ipcRenderer.invoke(IPC.prsListQueueRehearsals, args ?? {}),
+     getConflictAnalysis: (prId: string): Promise<PrConflictAnalysis> =>
+       ipcRenderer.invoke(IPC.prsGetConflictAnalysis, { prId }),
+     getMergeContext: (prId: string): Promise<PrMergeContext> =>
+diff --git a/apps/desktop/src/shared/ipc.ts b/apps/desktop/src/shared/ipc.ts
+index 1b4f3f3..d5f1d45 100644
+--- a/apps/desktop/src/shared/ipc.ts
++++ b/apps/desktop/src/shared/ipc.ts
+@@ -167,7 +167,9 @@ export const IPC = {
+   conflictsListExternalResolverRuns: "ade.conflicts.listExternalResolverRuns",
+   conflictsCommitExternalResolverRun: "ade.conflicts.commitExternalResolverRun",
+   conflictsPrepareResolverSession: "ade.conflicts.prepareResolverSession",
++  conflictsAttachResolverSession: "ade.conflicts.attachResolverSession",
+   conflictsFinalizeResolverSession: "ade.conflicts.finalizeResolverSession",
++  conflictsCancelResolverSession: "ade.conflicts.cancelResolverSession",
+   conflictsSuggestResolverTarget: "ade.conflicts.suggestResolverTarget",
+   conflictsEvent: "ade.conflicts.event",
+   contextGetStatus: "ade.context.getStatus",
+@@ -267,8 +269,17 @@ export const IPC = {
+   prsUpdateProposal: "ade.prs.updateProposal",
+   prsDeleteProposal: "ade.prs.deleteProposal",
+   prsLandQueueNext: "ade.prs.landQueueNext",
++  prsStartQueueAutomation: "ade.prs.startQueueAutomation",
++  prsPauseQueueAutomation: "ade.prs.pauseQueueAutomation",
++  prsResumeQueueAutomation: "ade.prs.resumeQueueAutomation",
++  prsCancelQueueAutomation: "ade.prs.cancelQueueAutomation",
++  prsStartQueueRehearsal: "ade.prs.startQueueRehearsal",
++  prsCancelQueueRehearsal: "ade.prs.cancelQueueRehearsal",
+   prsGetHealth: "ade.prs.getHealth",
+   prsGetQueueState: "ade.prs.getQueueState",
++  prsListQueueStates: "ade.prs.listQueueStates",
++  prsGetQueueRehearsalState: "ade.prs.getQueueRehearsalState",
++  prsListQueueRehearsals: "ade.prs.listQueueRehearsals",
+   prsCreateIntegrationLaneForProposal: "ade.prs.createIntegrationLaneForProposal",
+   prsStartIntegrationResolution: "ade.prs.startIntegrationResolution",
+   prsGetIntegrationResolutionState: "ade.prs.getIntegrationResolutionState",
+@@ -351,6 +362,9 @@ export const IPC = {
+   orchestratorSetMissionMetricsConfig: "ade.orchestrator.setMissionMetricsConfig",
+   orchestratorGetExecutionPlanPreview: "ade.orchestrator.getExecutionPlanPreview",
+   orchestratorGetMissionStateDocument: "ade.orchestrator.getMissionStateDocument",
++  orchestratorListArtifacts: "ade.orchestrator.listArtifacts",
++  orchestratorListWorkerCheckpoints: "ade.orchestrator.listWorkerCheckpoints",
++  orchestratorGetPromptInspector: "ade.orchestrator.getPromptInspector",
+   orchestratorGetCheckpointStatus: "ade.orchestrator.getCheckpointStatus",
+   orchestratorGetMissionBudgetStatus: "ade.orchestrator.getMissionBudgetStatus",
+   orchestratorGetMissionBudgetTelemetry: "ade.orchestrator.getMissionBudgetTelemetry",
+diff --git a/apps/desktop/src/shared/modelProfiles.ts b/apps/desktop/src/shared/modelProfiles.ts
+index cf94cba..3eb9367 100644
+--- a/apps/desktop/src/shared/modelProfiles.ts
++++ b/apps/desktop/src/shared/modelProfiles.ts
+@@ -7,8 +7,10 @@ import type {
+   ThinkingLevel
+ } from "./types";
+ import {
++  getDefaultModelDescriptor,
+   MODEL_REGISTRY,
+   getModelPricing,
++  listModelDescriptorsForProvider,
+   updateModelPricingInRegistry,
+   type ModelDescriptor,
+ } from "./modelRegistry";
+@@ -43,18 +45,20 @@ function descriptorToEntry(d: ModelDescriptor, overrides?: { recommended?: boole
+   };
+ }
+ 
++const DEFAULT_CLAUDE_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
++const DEFAULT_CODEX_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4-codex";
++
+ // CLI-wrapped Anthropic models (claude provider)
+ export const CLAUDE_MODELS: ModelEntry[] = MODEL_REGISTRY
+   .filter((m) => m.family === "anthropic" && m.isCliWrapped && !m.deprecated)
+   .map((d) => descriptorToEntry(d, {
+-    recommended: d.sdkModelId.includes("sonnet"),
++    recommended: d.id === DEFAULT_CLAUDE_MODEL_ID,
+   }));
+ 
+ // CLI-wrapped OpenAI models (codex provider)
+-export const CODEX_MODELS: ModelEntry[] = MODEL_REGISTRY
+-  .filter((m) => m.family === "openai" && m.isCliWrapped && !m.deprecated)
++export const CODEX_MODELS: ModelEntry[] = listModelDescriptorsForProvider("codex")
+   .map((d) => descriptorToEntry(d, {
+-    recommended: d.sdkModelId === "gpt-5.3-codex",
++    recommended: d.id === DEFAULT_CODEX_MODEL_ID,
+   }));
+ 
+ export const ALL_MODELS: ModelEntry[] = MODEL_REGISTRY
+@@ -135,7 +139,7 @@ export const ORCHESTRATOR_CALL_TYPES: CallTypeInfo[] = [
+ const CLAUDE_SONNET: ModelConfig = { provider: "claude", modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" };
+ const CLAUDE_HAIKU: ModelConfig = { provider: "claude", modelId: "anthropic/claude-haiku-4-5", thinkingLevel: "low" };
+ const CLAUDE_OPUS: ModelConfig = { provider: "claude", modelId: "anthropic/claude-opus-4-6", thinkingLevel: "high" };
+-const CODEX_53: ModelConfig = { provider: "codex", modelId: "openai/gpt-5.3-codex", thinkingLevel: "medium" };
++const CODEX_STANDARD: ModelConfig = { provider: "codex", modelId: DEFAULT_CODEX_MODEL_ID, thinkingLevel: "medium" };
+ const CODEX_MINI: ModelConfig = { provider: "codex", modelId: "openai/codex-mini-latest", thinkingLevel: "low" };
+ 
+ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
+@@ -148,12 +152,12 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
+     decisionTimeoutCapHours: 24,
+     phaseDefaults: {
+       planning: CLAUDE_SONNET,
+-      implementation: CODEX_53,
+-      testing: CODEX_53,
+-      validation: CODEX_53,
++      implementation: CODEX_STANDARD,
++      testing: CODEX_STANDARD,
++      validation: CODEX_STANDARD,
+       codeReview: CLAUDE_SONNET,
+-      testReview: CODEX_53,
+-      prReview: CODEX_53,
++      testReview: CODEX_STANDARD,
++      prReview: CODEX_STANDARD,
+     },
+     intelligenceConfig: {
+       coordinator: CLAUDE_SONNET,
+@@ -196,11 +200,11 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
+     phaseDefaults: {
+       planning: CLAUDE_OPUS,
+       implementation: { provider: "codex", modelId: "openai/gpt-5.1-codex-max", thinkingLevel: "high" },
+-      testing: CODEX_53,
++      testing: CODEX_STANDARD,
+       validation: CLAUDE_OPUS,
+       codeReview: CLAUDE_OPUS,
+       testReview: CLAUDE_SONNET,
+-      prReview: CODEX_53,
++      prReview: CODEX_STANDARD,
+     },
+     intelligenceConfig: {
+       coordinator: CLAUDE_OPUS,
+@@ -212,20 +216,20 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
+     name: "Codex Only",
+     description: "Uses Codex (OpenAI) for everything. No Claude API calls. Good if you only have OpenAI access.",
+     isBuiltIn: true,
+-    orchestratorModel: CODEX_53,
++    orchestratorModel: CODEX_STANDARD,
+     decisionTimeoutCapHours: 24,
+     phaseDefaults: {
+-      planning: CODEX_53,
+-      implementation: CODEX_53,
+-      testing: CODEX_53,
+-      validation: CODEX_53,
+-      codeReview: CODEX_53,
+-      testReview: CODEX_53,
+-      prReview: CODEX_53,
++      planning: CODEX_STANDARD,
++      implementation: CODEX_STANDARD,
++      testing: CODEX_STANDARD,
++      validation: CODEX_STANDARD,
++      codeReview: CODEX_STANDARD,
++      testReview: CODEX_STANDARD,
++      prReview: CODEX_STANDARD,
+     },
+     intelligenceConfig: {
+-      coordinator: CODEX_53,
+-      chat_response: CODEX_53,
++      coordinator: CODEX_STANDARD,
++      chat_response: CODEX_STANDARD,
+     }
+   },
+   {
+@@ -276,7 +280,7 @@ export function resolveCallTypeModel(
+ export function modelConfigToServiceModel(config: ModelConfig): string {
+   const modelId = config.modelId?.trim();
+   if (modelId && modelId.length > 0) return modelId;
+-  if (config.provider === "codex") return "openai/gpt-5.3-codex";
++  if (config.provider === "codex") return DEFAULT_CODEX_MODEL_ID;
+   return "anthropic/claude-sonnet-4-6";
+ }
+ 
+diff --git a/apps/desktop/src/shared/modelRegistry.ts b/apps/desktop/src/shared/modelRegistry.ts
+index c52664f..4d86129 100644
+--- a/apps/desktop/src/shared/modelRegistry.ts
++++ b/apps/desktop/src/shared/modelRegistry.ts
+@@ -52,6 +52,7 @@ export type ModelDescriptor = {
+ };
+ 
+ export type WorkerExecutionPath = "cli" | "api" | "local";
++export type ModelProviderGroup = "claude" | "codex" | "unified";
+ 
+ // ---------------------------------------------------------------------------
+ // Registry data
+@@ -179,23 +180,41 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
+   // ---- OpenAI (CLI-wrapped via codex) ----
+   // Codex reasoning tiers: minimal | low | medium | high | xhigh (per config.toml reference)
+   // xhigh is model-dependent (gpt-5.1+ support it)
++  {
++    id: "openai/gpt-5.4-codex",
++    shortId: "gpt-5.4",
++    aliases: ["gpt-5.4-codex"],
++    displayName: "GPT-5.4 Codex",
++    family: "openai",
++    authTypes: ["cli-subscription"],
++    contextWindow: 400_000,
++    maxOutputTokens: 128_000,
++    capabilities: ALL_CAPS,
++    reasoningTiers: ["minimal", "low", "medium", "high", "xhigh"],
++    color: "#10A37F",
++    sdkProvider: "ai-sdk-provider-codex-cli",
++    sdkModelId: "gpt-5.4",
++    cliCommand: "codex",
++    isCliWrapped: true,
++    costTier: "high",
++  },
+   {
+     id: "openai/gpt-5.3-codex",
+     shortId: "gpt-5.3-codex",
+     displayName: "GPT-5.3 Codex",
+     family: "openai",
+     authTypes: ["cli-subscription"],
+-    contextWindow: 192_000,
+-    maxOutputTokens: 16_384,
++    contextWindow: 400_000,
++    maxOutputTokens: 128_000,
+     capabilities: ALL_CAPS,
+-    reasoningTiers: ["minimal", "low", "medium", "high", "xhigh"],
++    reasoningTiers: ["low", "medium", "high", "xhigh"],
+     color: "#10B981",
+     sdkProvider: "ai-sdk-provider-codex-cli",
+     sdkModelId: "gpt-5.3-codex",
+     cliCommand: "codex",
+     isCliWrapped: true,
+-    inputPricePer1M: 2,
+-    outputPricePer1M: 8,
++    inputPricePer1M: 1.5,
++    outputPricePer1M: 6,
+     costTier: "high",
+   },
+   {
+@@ -223,10 +242,10 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
+     displayName: "GPT-5.2 Codex",
+     family: "openai",
+     authTypes: ["cli-subscription"],
+-    contextWindow: 192_000,
+-    maxOutputTokens: 16_384,
++    contextWindow: 400_000,
++    maxOutputTokens: 128_000,
+     capabilities: ALL_CAPS,
+-    reasoningTiers: ["minimal", "low", "medium", "high", "xhigh"],
++    reasoningTiers: ["low", "medium", "high", "xhigh"],
+     color: "#10B981",
+     sdkProvider: "ai-sdk-provider-codex-cli",
+     sdkModelId: "gpt-5.2-codex",
+@@ -255,22 +274,80 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
+     outputPricePer1M: 12,
+     costTier: "high",
+   },
++  {
++    id: "openai/gpt-5.1-codex",
++    shortId: "gpt-5.1-codex",
++    displayName: "GPT-5.1 Codex",
++    family: "openai",
++    authTypes: ["cli-subscription"],
++    contextWindow: 400_000,
++    maxOutputTokens: 128_000,
++    capabilities: ALL_CAPS,
++    reasoningTiers: ["low", "medium", "high", "xhigh"],
++    color: "#14B8A6",
++    sdkProvider: "ai-sdk-provider-codex-cli",
++    sdkModelId: "gpt-5.1-codex",
++    cliCommand: "codex",
++    isCliWrapped: true,
++    inputPricePer1M: 1.25,
++    outputPricePer1M: 10,
++    costTier: "medium",
++  },
++  {
++    id: "openai/gpt-5.1-codex-mini",
++    shortId: "gpt-5.1-codex-mini",
++    displayName: "GPT-5.1 Codex Mini",
++    family: "openai",
++    authTypes: ["cli-subscription"],
++    contextWindow: 400_000,
++    maxOutputTokens: 128_000,
++    capabilities: ALL_CAPS,
++    reasoningTiers: ["low", "medium", "high"],
++    color: "#2DD4BF",
++    sdkProvider: "ai-sdk-provider-codex-cli",
++    sdkModelId: "gpt-5.1-codex-mini",
++    cliCommand: "codex",
++    isCliWrapped: true,
++    inputPricePer1M: 0.25,
++    outputPricePer1M: 2,
++    costTier: "low",
++  },
++  {
++    id: "openai/gpt-5-codex",
++    shortId: "gpt-5-codex",
++    displayName: "GPT-5 Codex",
++    family: "openai",
++    authTypes: ["cli-subscription"],
++    contextWindow: 400_000,
++    maxOutputTokens: 128_000,
++    capabilities: ALL_CAPS,
++    reasoningTiers: ["minimal", "low", "medium", "high"],
++    color: "#059669",
++    sdkProvider: "ai-sdk-provider-codex-cli",
++    sdkModelId: "gpt-5-codex",
++    cliCommand: "codex",
++    isCliWrapped: true,
++    inputPricePer1M: 1.25,
++    outputPricePer1M: 10,
++    costTier: "medium",
++  },
+   {
+     id: "openai/codex-mini-latest",
+     shortId: "codex-mini",
+     displayName: "Codex Mini",
+     family: "openai",
+     authTypes: ["cli-subscription"],
+-    contextWindow: 192_000,
+-    maxOutputTokens: 16_384,
+-    capabilities: NO_REASONING,
++    contextWindow: 200_000,
++    maxOutputTokens: 100_000,
++    capabilities: ALL_CAPS,
++    reasoningTiers: ["low", "medium", "high"],
+     color: "#34D399",
+     sdkProvider: "ai-sdk-provider-codex-cli",
+     sdkModelId: "codex-mini-latest",
+     cliCommand: "codex",
+     isCliWrapped: true,
+-    inputPricePer1M: 0.3,
+-    outputPricePer1M: 1.2,
++    inputPricePer1M: 1.5,
++    outputPricePer1M: 6,
+     costTier: "low",
+   },
+   {
+@@ -332,6 +409,23 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
+     outputPricePer1M: 15,
+     costTier: "high",
+   },
++  {
++    id: "openai/gpt-5-chat-latest",
++    shortId: "gpt-5-chat-latest",
++    aliases: ["gpt-5-latest"],
++    displayName: "GPT-5 Chat Latest",
++    family: "openai",
++    authTypes: ["api-key"],
++    contextWindow: 1_050_000,
++    maxOutputTokens: 128_000,
++    capabilities: ALL_CAPS,
++    reasoningTiers: ["none", "low", "medium", "high", "xhigh"],
++    color: "#22C55E",
++    sdkProvider: "@ai-sdk/openai",
++    sdkModelId: "gpt-5-chat-latest",
++    isCliWrapped: false,
++    costTier: "high",
++  },
+   {
+     id: "openai/gpt-5.4-pro",
+     shortId: "gpt-5.4-pro",
+@@ -351,6 +445,215 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
+     outputPricePer1M: 180,
+     costTier: "very_high",
+   },
++  {
++    id: "openai/gpt-5.3-codex-api",
++    shortId: "gpt-5.3-codex-api",
++    aliases: ["gpt-5.3-codex"],
++    displayName: "GPT-5.3 Codex (API)",
++    family: "openai",
++    authTypes: ["api-key"],
++    contextWindow: 400_000,
++    maxOutputTokens: 128_000,
++    capabilities: ALL_CAPS,
++    reasoningTiers: ["low", "medium", "high", "xhigh"],
++    color: "#10B981",
++    sdkProvider: "@ai-sdk/openai",
++    sdkModelId: "gpt-5.3-codex",
++    isCliWrapped: false,
++    inputPricePer1M: 1.75,
++    outputPricePer1M: 14,
++    costTier: "high",
++  },
++  {
++    id: "openai/gpt-5.2-codex-api",
++    shortId: "gpt-5.2-codex-api",
++    aliases: ["gpt-5.2-codex"],
++    displayName: "GPT-5.2 Codex (API)",
++    family: "openai",
++    authTypes: ["api-key"],
++    contextWindow: 400_000,
++    maxOutputTokens: 128_000,
++    capabilities: ALL_CAPS,
++    reasoningTiers: ["low", "medium", "high", "xhigh"],
++    color: "#0EA5A4",
++    sdkProvider: "@ai-sdk/openai",
++    sdkModelId: "gpt-5.2-codex",
++    isCliWrapped: false,
++    inputPricePer1M: 1.75,
++    outputPricePer1M: 14,
++    costTier: "high",
++  },
++  {
++    id: "openai/gpt-5.1-codex-api",
++    shortId: "gpt-5.1-codex-api",
++    aliases: ["gpt-5.1-codex"],
++    displayName: "GPT-5.1 Codex (API)",
++    family: "openai",
++    authTypes: ["api-key"],
++    contextWindow: 400_000,
++    maxOutputTokens: 128_000,
++    capabilities: ALL_CAPS,
++    reasoningTiers: ["low", "medium", "high", "xhigh"],
++    color: "#14B8A6",
++    sdkProvider: "@ai-sdk/openai",
++    sdkModelId: "gpt-5.1-codex",
++    isCliWrapped: false,
++    inputPricePer1M: 1.25,
++    outputPricePer1M: 10,
++    costTier: "medium",
++  },
++  {
++    id: "openai/gpt-5-codex-api",
++    shortId: "gpt-5-codex-api",
++    aliases: ["gpt-5-codex"],
++    displayName: "GPT-5 Codex (API)",
++    family: "openai",
++    authTypes: ["api-key"],
++    contextWindow: 400_000,
++    maxOutputTokens: 128_000,
++    capabilities: ALL_CAPS,
++    reasoningTiers: ["minimal", "low", "medium", "high"],
++    color: "#059669",
++    sdkProvider: "@ai-sdk/openai",
++    sdkModelId: "gpt-5-codex",
++    isCliWrapped: false,
++    inputPricePer1M: 1.25,
++    outputPricePer1M: 10,
++    costTier: "medium",
++  },
++  {
++    id: "openai/gpt-5.2",
++    shortId: "gpt-5.2",
++    aliases: ["gpt-5.2-2025-12-11"],
++    displayName: "GPT-5.2",
++    family: "openai",
++    authTypes: ["api-key"],
++    contextWindow: 400_000,
++    maxOutputTokens: 128_000,
++    capabilities: ALL_CAPS,
++    reasoningTiers: ["none", "low", "medium", "high", "xhigh"],
++    color: "#0EA5A4",
++    sdkProvider: "@ai-sdk/openai",
++    sdkModelId: "gpt-5.2",
++    isCliWrapped: false,
++    inputPricePer1M: 1.75,
++    outputPricePer1M: 14,
++    costTier: "high",
++  },
++  {
++    id: "openai/gpt-5.2-pro",
++    shortId: "gpt-5.2-pro",
++    aliases: ["gpt-5.2-pro-2025-12-11"],
++    displayName: "GPT-5.2 Pro",
++    family: "openai",
++    authTypes: ["api-key"],
++    contextWindow: 400_000,
++    maxOutputTokens: 128_000,
++    capabilities: ALL_CAPS,
++    reasoningTiers: ["medium", "high", "xhigh"],
++    color: "#0F766E",
++    sdkProvider: "@ai-sdk/openai",
++    sdkModelId: "gpt-5.2-pro",
++    isCliWrapped: false,
++    inputPricePer1M: 21,
++    outputPricePer1M: 168,
++    costTier: "very_high",
++  },
++  {
++    id: "openai/gpt-5.1",
++    shortId: "gpt-5.1",
++    aliases: ["gpt-5.1-2025-10-06"],
++    displayName: "GPT-5.1",
++    family: "openai",
++    authTypes: ["api-key"],
++    contextWindow: 400_000,
++    maxOutputTokens: 128_000,
++    capabilities: ALL_CAPS,
++    reasoningTiers: ["none", "low", "medium", "high"],
++    color: "#14B8A6",
++    sdkProvider: "@ai-sdk/openai",
++    sdkModelId: "gpt-5.1",
++    isCliWrapped: false,
++    inputPricePer1M: 1.25,
++    outputPricePer1M: 10,
++    costTier: "medium",
++  },
++  {
++    id: "openai/gpt-5-pro",
++    shortId: "gpt-5-pro",
++    aliases: ["gpt-5-pro-2025-10-06"],
++    displayName: "GPT-5 Pro",
++    family: "openai",
++    authTypes: ["api-key"],
++    contextWindow: 400_000,
++    maxOutputTokens: 272_000,
++    capabilities: ALL_CAPS,
++    reasoningTiers: ["high"],
++    color: "#115E59",
++    sdkProvider: "@ai-sdk/openai",
++    sdkModelId: "gpt-5-pro",
++    isCliWrapped: false,
++    inputPricePer1M: 15,
++    outputPricePer1M: 120,
++    costTier: "very_high",
++  },
++  {
++    id: "openai/gpt-5",
++    shortId: "gpt-5",
++    aliases: ["gpt-5-2025-08-07"],
++    displayName: "GPT-5",
++    family: "openai",
++    authTypes: ["api-key"],
++    contextWindow: 400_000,
++    maxOutputTokens: 128_000,
++    capabilities: ALL_CAPS,
++    reasoningTiers: ["minimal", "low", "medium", "high"],
++    color: "#10B981",
++    sdkProvider: "@ai-sdk/openai",
++    sdkModelId: "gpt-5",
++    isCliWrapped: false,
++    inputPricePer1M: 1.25,
++    outputPricePer1M: 10,
++    costTier: "medium",
++  },
++  {
++    id: "openai/gpt-5-mini",
++    shortId: "gpt-5-mini",
++    aliases: ["gpt-5-mini-2025-08-07"],
++    displayName: "GPT-5 Mini",
++    family: "openai",
++    authTypes: ["api-key"],
++    contextWindow: 400_000,
++    maxOutputTokens: 128_000,
++    capabilities: ALL_CAPS,
++    reasoningTiers: ["minimal", "low", "medium", "high"],
++    color: "#34D399",
++    sdkProvider: "@ai-sdk/openai",
++    sdkModelId: "gpt-5-mini",
++    isCliWrapped: false,
++    inputPricePer1M: 0.25,
++    outputPricePer1M: 2,
++    costTier: "low",
++  },
++  {
++    id: "openai/gpt-5-nano",
++    shortId: "gpt-5-nano",
++    aliases: ["gpt-5-nano-2025-08-07"],
++    displayName: "GPT-5 Nano",
++    family: "openai",
++    authTypes: ["api-key"],
++    contextWindow: 400_000,
++    maxOutputTokens: 128_000,
++    capabilities: ALL_CAPS,
++    reasoningTiers: ["minimal", "low", "medium", "high"],
++    color: "#6EE7B7",
++    sdkProvider: "@ai-sdk/openai",
++    sdkModelId: "gpt-5-nano",
++    isCliWrapped: false,
++    inputPricePer1M: 0.05,
++    outputPricePer1M: 0.4,
++    costTier: "low",
++  },
+   {
+     id: "openai/gpt-4.1",
+     shortId: "gpt-4.1",
+@@ -678,6 +981,105 @@ export function classifyWorkerExecutionPath(
+   return "api";
+ }
+ 
++function listProviderModelsInternal(provider: ModelProviderGroup): ModelDescriptor[] {
++  return MODEL_REGISTRY.filter((descriptor) => {
++    if (descriptor.deprecated) return false;
++    if (provider === "claude") return descriptor.isCliWrapped && descriptor.family === "anthropic";
++    if (provider === "codex") return descriptor.isCliWrapped && descriptor.family === "openai";
++    return !descriptor.isCliWrapped;
++  });
++}
++
++function parseVersionSegments(value: string): number[] {
++  const match = value.match(/gpt-(\d+(?:\.\d+)*)-codex$/i);
++  if (!match?.[1]) return [];
++  return match[1]
++    .split(".")
++    .map((part) => Number(part))
++    .filter((part) => Number.isFinite(part));
++}
++
++function compareVersionSegmentsDesc(left: number[], right: number[]): number {
++  const maxLength = Math.max(left.length, right.length);
++  for (let index = 0; index < maxLength; index += 1) {
++    const leftValue = left[index] ?? 0;
++    const rightValue = right[index] ?? 0;
++    if (leftValue !== rightValue) return rightValue - leftValue;
++  }
++  return 0;
++}
++
++function pickPreferredModel(
++  models: ModelDescriptor[],
++  predicates: Array<(model: ModelDescriptor) => boolean>,
++): ModelDescriptor | undefined {
++  for (const predicate of predicates) {
++    const match = models.find(predicate);
++    if (match) return match;
++  }
++  return models[0];
++}
++
++function pickDefaultClaudeModel(models: ModelDescriptor[]): ModelDescriptor | undefined {
++  return pickPreferredModel(models, [
++    (model) => /\bsonnet\b/i.test(model.displayName) || /\bsonnet\b/i.test(model.sdkModelId),
++    (model) => /\bopus\b/i.test(model.displayName) || /\bopus\b/i.test(model.sdkModelId),
++    (model) => /\bhaiku\b/i.test(model.displayName) || /\bhaiku\b/i.test(model.sdkModelId),
++  ]);
++}
++
++function pickDefaultCodexModel(models: ModelDescriptor[]): ModelDescriptor | undefined {
++  const standard = models
++    .filter((model) => /gpt-\d+(?:\.\d+)*-codex$/i.test(model.sdkModelId))
++    .sort((left, right) => {
++      const versionCompare = compareVersionSegmentsDesc(
++        parseVersionSegments(left.sdkModelId),
++        parseVersionSegments(right.sdkModelId),
++      );
++      if (versionCompare !== 0) return versionCompare;
++      return left.displayName.localeCompare(right.displayName);
++    });
++  if (standard[0]) return standard[0];
++  return pickPreferredModel(models, [
++    (model) => /codex-mini/i.test(model.sdkModelId),
++    (model) => /spark/i.test(model.sdkModelId),
++  ]);
++}
++
++function pickDefaultUnifiedModel(models: ModelDescriptor[]): ModelDescriptor | undefined {
++  return pickPreferredModel(models, [
++    (model) => model.family === "openai" && /\bgpt-5\.4\b/i.test(`${model.displayName} ${model.sdkModelId}`),
++    (model) => model.id === "anthropic/claude-sonnet-4-6-api",
++    (model) => model.family === "anthropic" && /\bsonnet\b/i.test(model.displayName),
++    (model) => model.family === "anthropic",
++    (model) => model.family === "openai",
++  ]);
++}
++
++function pickDefaultModelForProvider(
++  provider: ModelProviderGroup,
++  models: ModelDescriptor[],
++): ModelDescriptor | undefined {
++  if (provider === "claude") return pickDefaultClaudeModel(models);
++  if (provider === "codex") return pickDefaultCodexModel(models);
++  return pickDefaultUnifiedModel(models);
++}
++
++export function getDefaultModelDescriptor(
++  provider: ModelProviderGroup,
++): ModelDescriptor | undefined {
++  return pickDefaultModelForProvider(provider, listProviderModelsInternal(provider));
++}
++
++export function listModelDescriptorsForProvider(
++  provider: ModelProviderGroup,
++): ModelDescriptor[] {
++  const models = listProviderModelsInternal(provider);
++  const preferred = pickDefaultModelForProvider(provider, models);
++  if (!preferred) return models;
++  return [preferred, ...models.filter((model) => model.id !== preferred.id)];
++}
++
+ // ---------------------------------------------------------------------------
+ // Runtime enrichment — mutate existing entries in-place with fresh data
+ // ---------------------------------------------------------------------------
+diff --git a/apps/desktop/src/shared/types/chat.ts b/apps/desktop/src/shared/types/chat.ts
+index 1496476..0199d7b 100644
+--- a/apps/desktop/src/shared/types/chat.ts
++++ b/apps/desktop/src/shared/types/chat.ts
+@@ -39,6 +39,7 @@ export type AgentChatEvent =
+       tool: string;
+       args: unknown;
+       itemId: string;
++      parentItemId?: string;
+       turnId?: string;
+     }
+   | {
+@@ -46,6 +47,7 @@ export type AgentChatEvent =
+       tool: string;
+       result: unknown;
+       itemId: string;
++      parentItemId?: string;
+       turnId?: string;
+       status?: "running" | "completed" | "failed";
+     }
+@@ -137,6 +139,7 @@ export type AgentChatEventEnvelope = {
+ };
+ 
+ export type AgentChatPermissionMode = "default" | "plan" | "edit" | "full-auto" | "config-toml";
++export type AgentChatExecutionMode = "focused" | "parallel" | "subagents" | "teams";
+ export type AgentChatIdentityKey = "cto";
+ 
+ export type AgentChatSession = {
+@@ -146,6 +149,7 @@ export type AgentChatSession = {
+   model: string;
+   modelId?: ModelId;
+   reasoningEffort?: string | null;
++  executionMode?: AgentChatExecutionMode | null;
+   permissionMode?: AgentChatPermissionMode;
+   identityKey?: AgentChatIdentityKey;
+   capabilityMode?: CtoCapabilityMode;
+@@ -164,6 +168,7 @@ export type AgentChatSessionSummary = {
+   title?: string | null;
+   goal?: string | null;
+   reasoningEffort?: string | null;
++  executionMode?: AgentChatExecutionMode | null;
+   permissionMode?: AgentChatPermissionMode;
+   identityKey?: AgentChatIdentityKey;
+   capabilityMode?: CtoCapabilityMode;
+@@ -208,8 +213,10 @@ export type AgentChatListArgs = {
+ export type AgentChatSendArgs = {
+   sessionId: string;
+   text: string;
++  displayText?: string;
+   attachments?: AgentChatFileRef[];
+   reasoningEffort?: string | null;
++  executionMode?: AgentChatExecutionMode | null;
+ };
+ 
+ export type AgentChatSteerArgs = {
+diff --git a/apps/desktop/src/shared/types/conflicts.ts b/apps/desktop/src/shared/types/conflicts.ts
+index 09e74a6..695657e 100644
+--- a/apps/desktop/src/shared/types/conflicts.ts
++++ b/apps/desktop/src/shared/types/conflicts.ts
+@@ -159,7 +159,22 @@ export type ConflictProposalProvider = "subscription";
+ 
+ export type ExternalConflictResolverProvider = "codex" | "claude";
+ 
+-export type ConflictExternalResolverRunStatus = "running" | "completed" | "failed" | "blocked";
++export type ConflictResolverOriginSurface = "mission" | "integration" | "rebase" | "queue" | "graph" | "manual";
++
++export type ConflictResolverPermissionMode = "read_only" | "guarded_edit" | "full_edit";
++
++export type ConflictResolverPostActionState = {
++  autoCommit: boolean;
++  autoPush: boolean;
++  commitMessage: string | null;
++  committedAt: string | null;
++  commitSha: string | null;
++  pushAt: string | null;
++  pushSucceeded: boolean | null;
++  error: string | null;
++};
++
++export type ConflictExternalResolverRunStatus = "pending" | "running" | "completed" | "failed" | "blocked" | "canceled";
+ 
+ export type ConflictExternalResolverContextGap = {
+   code: string;
+@@ -179,12 +194,25 @@ export type ConflictExternalResolverRunSummary = {
+   summary: string | null;
+   patchPath: string | null;
+   logPath: string | null;
++  changedFiles: string[];
+   insufficientContext: boolean;
+   contextGaps: ConflictExternalResolverContextGap[];
+   warnings: string[];
++  scenario: ResolverSessionScenario;
++  model: string | null;
++  reasoningEffort: string | null;
++  permissionMode: ConflictResolverPermissionMode | null;
++  command: string[];
++  originSurface: ConflictResolverOriginSurface;
++  originMissionId: string | null;
++  originRunId: string | null;
++  originLabel: string | null;
++  ptyId: string | null;
++  sessionId: string | null;
+   committedAt?: string | null;
+   commitSha?: string | null;
+   commitMessage?: string | null;
++  postActions?: ConflictResolverPostActionState | null;
+   error: string | null;
+ };
+ 
+@@ -192,7 +220,15 @@ export type RunExternalConflictResolverArgs = {
+   provider: ExternalConflictResolverProvider;
+   targetLaneId: string;
+   sourceLaneIds: string[];
++  cwdLaneId?: string;
+   integrationLaneName?: string;
++  model?: string | null;
++  reasoningEffort?: string | null;
++  permissionMode?: ConflictResolverPermissionMode | null;
++  originSurface?: ConflictResolverOriginSurface;
++  originMissionId?: string | null;
++  originRunId?: string | null;
++  originLabel?: string | null;
+ };
+ 
+ export type ListExternalConflictResolverRunsArgs = {
+@@ -332,6 +368,13 @@ export type PrepareResolverSessionArgs = {
+   cwdLaneId?: string;
+   integrationLaneName?: string;
+   scenario?: ResolverSessionScenario;
++  model?: string | null;
++  reasoningEffort?: string | null;
++  permissionMode?: ConflictResolverPermissionMode | null;
++  originSurface?: ConflictResolverOriginSurface;
++  originMissionId?: string | null;
++  originRunId?: string | null;
++  originLabel?: string | null;
+ };
+ 
+ export type PrepareResolverSessionResult = {
+@@ -348,6 +391,19 @@ export type PrepareResolverSessionResult = {
+ export type FinalizeResolverSessionArgs = {
+   runId: string;
+   exitCode: number;
++  postActions?: Partial<ConflictResolverPostActionState> | null;
++};
++
++export type AttachResolverSessionArgs = {
++  runId: string;
++  ptyId: string;
++  sessionId: string;
++  command?: string[];
++};
++
++export type CancelResolverSessionArgs = {
++  runId: string;
++  reason?: string | null;
+ };
+ 
+ export type SuggestResolverTargetArgs = {
+diff --git a/apps/desktop/src/shared/types/missions.ts b/apps/desktop/src/shared/types/missions.ts
+index 0037899..0cd7257 100644
+--- a/apps/desktop/src/shared/types/missions.ts
++++ b/apps/desktop/src/shared/types/missions.ts
+@@ -249,6 +249,22 @@ export type MissionPlannerRun = {
+ 
+ export type MissionPhaseValidationTier = "none" | "self" | "dedicated";
+ 
++export type ValidationEvidenceRequirement =
++  | "planning_document"
++  | "research_summary"
++  | "changed_files_summary"
++  | "test_report"
++  | "review_summary"
++  | "risk_notes"
++  | "final_outcome_summary"
++  | "screenshot"
++  | "browser_verification"
++  | "video_recording"
++  | "browser_trace"
++  | "console_logs";
++
++export type ValidationCapabilityFallbackPolicy = "block" | "warn";
++
+ export type PhaseCardOrderingConstraints = {
+   mustBeFirst?: boolean;
+   mustBeLast?: boolean;
+@@ -274,6 +290,8 @@ export type PhaseCardValidationGate = {
+   tier: MissionPhaseValidationTier;
+   required: boolean;
+   criteria?: string;
++  evidenceRequirements?: ValidationEvidenceRequirement[];
++  capabilityFallback?: ValidationCapabilityFallbackPolicy;
+ };
+ 
+ export type PhaseCard = {
+@@ -621,6 +639,7 @@ export type CreateMissionArgs = {
+ 
+ export type MissionPreflightCheckId =
+   | "models"
++  | "capabilities"
+   | "permissions"
+   | "worktrees"
+   | "phase_structural"
+diff --git a/apps/desktop/src/shared/types/orchestrator.ts b/apps/desktop/src/shared/types/orchestrator.ts
+index afb426e..c682f38 100644
+--- a/apps/desktop/src/shared/types/orchestrator.ts
++++ b/apps/desktop/src/shared/types/orchestrator.ts
+@@ -4,7 +4,7 @@
+ 
+ import type { ModelId } from "./core";
+ import type { ModelConfig } from "./models";
+-import type { PrDepth } from "./prs";
++import type { PrDepth, QueueWaitReason } from "./prs";
+ import type { MissionDetail, MissionStepHandoff } from "./missions";
+ import type {
+   OrchestratorContextProfileId,
+@@ -632,6 +632,111 @@ export type OrchestratorRetrospectivePatternStat = {
+   updatedAt: string;
+ };
+ 
++export type MissionCloseoutRequirementKey =
++  | "planning_document"
++  | "research_summary"
++  | "changed_files_summary"
++  | "test_report"
++  | "implementation_summary"
++  | "validation_verdict"
++  | "screenshot"
++  | "browser_verification"
++  | "browser_trace"
++  | "video_recording"
++  | "console_logs"
++  | "risk_notes"
++  | "pr_url"
++  | "proposal_url"
++  | "review_summary"
++  | "final_outcome_summary";
++
++export type MissionCloseoutRequirementStatus =
++  | "present"
++  | "missing"
++  | "incomplete"
++  | "waived"
++  | "blocked_by_capability";
++
++export type MissionCloseoutRequirement = {
++  key: MissionCloseoutRequirementKey;
++  label: string;
++  required: boolean;
++  status: MissionCloseoutRequirementStatus;
++  detail: string | null;
++  artifactId: string | null;
++  uri: string | null;
++  source: "declared" | "discovered" | "runtime" | "waiver";
++};
++
++export type MissionFinalizationPolicyKind = "disabled" | "manual" | "integration" | "per-lane" | "queue";
++
++export type MissionFinalizationStatus =
++  | "idle"
++  | "finalizing"
++  | "creating_pr"
++  | "rehearsing_queue"
++  | "landing_queue"
++  | "resolving_integration_conflicts"
++  | "resolving_queue_conflicts"
++  | "waiting_for_green"
++  | "awaiting_operator_review"
++  | "posting_review_comment"
++  | "finalization_failed"
++  | "completed";
++
++export type MissionFinalizationPolicy = {
++  kind: MissionFinalizationPolicyKind;
++  targetBranch: string | null;
++  draft: boolean | null;
++  prDepth: PrDepth | null;
++  autoRebase: boolean | null;
++  ciGating: boolean | null;
++  autoLand: boolean | null;
++  rehearseQueue: boolean | null;
++  autoResolveConflicts: boolean | null;
++  archiveLaneOnLand: boolean | null;
++  mergeMethod: "merge" | "squash" | "rebase" | null;
++  conflictResolverModel: string | null;
++  reasoningEffort: string | null;
++  description: string | null;
++};
++
++export type MissionFinalizationState = {
++  policy: MissionFinalizationPolicy;
++  status: MissionFinalizationStatus;
++  executionComplete: boolean;
++  contractSatisfied: boolean;
++  blocked: boolean;
++  blockedReason: string | null;
++  summary: string | null;
++  detail: string | null;
++  resolverJobId: string | null;
++  integrationLaneId: string | null;
++  queueGroupId: string | null;
++  queueId: string | null;
++  queueRehearsalId: string | null;
++  scratchLaneId: string | null;
++  activePrId: string | null;
++  waitReason: QueueWaitReason | null;
++  proposalUrl: string | null;
++  prUrls: string[];
++  reviewStatus: string | null;
++  mergeReadiness: string | null;
++  requirements: MissionCloseoutRequirement[];
++  warnings: string[];
++  updatedAt: string;
++  startedAt: string | null;
++  completedAt: string | null;
++};
++
++export type MissionCoordinatorAvailability = {
++  available: boolean;
++  mode: "offline" | "consult_only" | "continuation_required";
++  summary: string;
++  detail: string | null;
++  updatedAt: string;
++};
++
+ export type MissionStateDocument = {
+   schemaVersion: 1;
+   missionId: string;
+@@ -644,6 +749,8 @@ export type MissionStateDocument = {
+   activeIssues: MissionStateIssue[];
+   modifiedFiles: string[];
+   pendingInterventions: MissionStatePendingIntervention[];
++  finalization?: MissionFinalizationState | null;
++  coordinatorAvailability?: MissionCoordinatorAvailability | null;
+   reflections?: OrchestratorReflectionEntry[];
+   latestRetrospective?: MissionRetrospective | null;
+ };
+@@ -659,6 +766,8 @@ export type MissionStateDocumentPatch = {
+   resolveIssue?: { id: string; resolution: string };
+   updateProgress?: Partial<MissionStateProgress>;
+   pendingInterventions?: MissionStatePendingIntervention[];
++  finalization?: MissionFinalizationState | null;
++  coordinatorAvailability?: MissionCoordinatorAvailability | null;
+   reflections?: OrchestratorReflectionEntry[];
+   latestRetrospective?: MissionRetrospective | null;
+ };
+@@ -667,6 +776,18 @@ export type GetMissionStateDocumentArgs = {
+   runId: string;
+ };
+ 
++export type ListOrchestratorArtifactsArgs = {
++  missionId?: string;
++  runId?: string | null;
++  stepId?: string | null;
++};
++
++export type ListOrchestratorWorkerCheckpointsArgs = {
++  missionId?: string;
++  runId?: string | null;
++  stepId?: string | null;
++};
++
+ export type OrchestratorContextSnapshot = {
+   id: string;
+   runId: string;
+@@ -1441,6 +1562,51 @@ export type OrchestratorWorkerCheckpoint = {
+   updatedAt: string;
+ };
+ 
++export type OrchestratorPromptLayerSource =
++  | "system_owned"
++  | "mission_goal"
++  | "phase_snapshot"
++  | "step_runtime"
++  | "runtime_overlay"
++  | "user_steering"
++  | "runtime_context";
++
++export type OrchestratorPromptSourceKind =
++  | "default_template"
++  | "mission_override"
++  | "run_snapshot"
++  | "live_effective_prompt"
++  | "system_owned";
++
++export type OrchestratorPromptLayer = {
++  id: string;
++  label: string;
++  source: OrchestratorPromptLayerSource;
++  sourceKind: OrchestratorPromptSourceKind;
++  editable: boolean;
++  text: string;
++  description?: string | null;
++};
++
++export type GetOrchestratorPromptInspectorArgs = {
++  runId: string;
++  target: "coordinator" | "worker";
++  stepId?: string | null;
++};
++
++export type OrchestratorPromptInspector = {
++  target: "coordinator" | "worker";
++  runId: string;
++  missionId: string;
++  stepId: string | null;
++  phaseKey: string | null;
++  phaseName: string | null;
++  title: string;
++  notes: string[];
++  layers: OrchestratorPromptLayer[];
++  fullPrompt: string;
++};
++
+ export type OrchestratorArtifactKind = "file" | "branch" | "pr" | "test_report" | "checkpoint" | "custom";
+ 
+ export type OrchestratorArtifact = {
+diff --git a/apps/desktop/src/shared/types/prs.ts b/apps/desktop/src/shared/types/prs.ts
+index 80e45e6..2fcfabd 100644
+--- a/apps/desktop/src/shared/types/prs.ts
++++ b/apps/desktop/src/shared/types/prs.ts
+@@ -2,7 +2,12 @@
+ // PR types
+ // ---------------------------------------------------------------------------
+ 
+-import type { ConflictRiskLevel } from "./conflicts";
++import type {
++  ConflictResolverOriginSurface,
++  ConflictResolverPermissionMode,
++  ConflictRiskLevel,
++  ExternalConflictResolverProvider,
++} from "./conflicts";
+ 
+ export type PrState = "draft" | "open" | "merged" | "closed";
+ export type PrChecksStatus = "pending" | "passing" | "failing" | "none";
+@@ -105,6 +110,23 @@ export type PrEventPayload =
+       currentPosition: number;
+       timestamp: string;
+     }
++  | {
++      type: "queue-rehearsal-step";
++      groupId: string;
++      rehearsalId: string;
++      prId: string;
++      entryState: QueueRehearsalEntryState;
++      position: number;
++      timestamp: string;
++    }
++  | {
++      type: "queue-rehearsal-state";
++      groupId: string;
++      rehearsalId: string;
++      state: QueueRehearsalStateStatus;
++      currentPosition: number;
++      timestamp: string;
++    }
+   | {
+       type: "integration-step";
+       groupId: string;
+@@ -472,6 +494,119 @@ export type RebaseNeed = {
+ export type QueueEntryState = "pending" | "landing" | "rebasing" | "resolving" | "landed" | "failed" | "paused" | "skipped";
+ export type QueueState = "idle" | "landing" | "paused" | "completed" | "cancelled";
+ export type IntegrationFlowState = "proposal" | "creating" | "merging" | "conflict" | "resolving" | "completed" | "failed";
++export type QueueWaitReason =
++  | "ci"
++  | "review"
++  | "merge_conflict"
++  | "resolver_failed"
++  | "merge_blocked"
++  | "manual"
++  | "canceled";
++
++export type QueueRehearsalEntryState =
++  | "pending"
++  | "rehearsing"
++  | "resolving"
++  | "ready"
++  | "resolved"
++  | "failed"
++  | "blocked"
++  | "cancelled";
++
++export type QueueRehearsalStateStatus = "running" | "paused" | "completed" | "failed" | "cancelled";
++
++export type QueueRehearsalWaitReason =
++  | "manual"
++  | "resolver_failed"
++  | "capability_gap"
++  | "canceled";
++
++export type QueueAutomationConfig = {
++  method: MergeMethod;
++  archiveLane: boolean;
++  autoResolve: boolean;
++  ciGating: boolean;
++  resolverProvider: ExternalConflictResolverProvider | null;
++  resolverModel: string | null;
++  reasoningEffort: string | null;
++  permissionMode: ConflictResolverPermissionMode | null;
++  confidenceThreshold: number | null;
++  originSurface: ConflictResolverOriginSurface;
++  originMissionId: string | null;
++  originRunId: string | null;
++  originLabel: string | null;
++};
++
++export type QueueRehearsalConfig = {
++  method: MergeMethod;
++  autoResolve: boolean;
++  resolverProvider: ExternalConflictResolverProvider | null;
++  resolverModel: string | null;
++  reasoningEffort: string | null;
++  permissionMode: ConflictResolverPermissionMode | null;
++  preserveScratchLane: boolean;
++  originSurface: ConflictResolverOriginSurface;
++  originMissionId: string | null;
++  originRunId: string | null;
++  originLabel: string | null;
++};
++
++export type StartQueueAutomationArgs = {
++  groupId: string;
++  method: MergeMethod;
++  archiveLane?: boolean;
++  autoResolve?: boolean;
++  ciGating?: boolean;
++  resolverProvider?: ExternalConflictResolverProvider | null;
++  resolverModel?: string | null;
++  reasoningEffort?: string | null;
++  permissionMode?: ConflictResolverPermissionMode | null;
++  confidenceThreshold?: number | null;
++  originSurface?: ConflictResolverOriginSurface;
++  originMissionId?: string | null;
++  originRunId?: string | null;
++  originLabel?: string | null;
++};
++
++export type StartQueueRehearsalArgs = {
++  groupId: string;
++  method: MergeMethod;
++  autoResolve?: boolean;
++  resolverProvider?: ExternalConflictResolverProvider | null;
++  resolverModel?: string | null;
++  reasoningEffort?: string | null;
++  permissionMode?: ConflictResolverPermissionMode | null;
++  preserveScratchLane?: boolean;
++  originSurface?: ConflictResolverOriginSurface;
++  originMissionId?: string | null;
++  originRunId?: string | null;
++  originLabel?: string | null;
++};
++
++export type ResumeQueueAutomationArgs = {
++  queueId: string;
++  method?: MergeMethod;
++  archiveLane?: boolean;
++  autoResolve?: boolean;
++  ciGating?: boolean;
++  resolverProvider?: ExternalConflictResolverProvider | null;
++  resolverModel?: string | null;
++  reasoningEffort?: string | null;
++  permissionMode?: ConflictResolverPermissionMode | null;
++  confidenceThreshold?: number | null;
++  originSurface?: ConflictResolverOriginSurface;
++  originMissionId?: string | null;
++  originRunId?: string | null;
++  originLabel?: string | null;
++};
++
++export type PauseQueueAutomationArgs = {
++  queueId: string;
++};
++
++export type CancelQueueAutomationArgs = {
++  queueId: string;
++};
+ 
+ export type LandQueueNextArgs = {
+   groupId: string;
+@@ -487,17 +622,68 @@ export type QueueLandingEntry = {
+   laneName: string;
+   position: number;
+   state: QueueEntryState;
++  prNumber?: number | null;
++  githubUrl?: string | null;
++  resolvedByAi?: boolean;
++  resolverRunId?: string | null;
++  mergeCommitSha?: string | null;
++  waitingOn?: QueueWaitReason | null;
++  updatedAt?: string | null;
+   error?: string;
+ };
+ 
+ export type QueueLandingState = {
+   queueId: string;
+   groupId: string;
++  groupName: string | null;
++  targetBranch: string | null;
+   state: QueueState;
+   entries: QueueLandingEntry[];
+   currentPosition: number;
++  activePrId: string | null;
++  activeResolverRunId: string | null;
++  lastError: string | null;
++  waitReason: QueueWaitReason | null;
++  config: QueueAutomationConfig;
+   startedAt: string;
+   completedAt: string | null;
++  updatedAt: string;
++};
++
++export type QueueRehearsalEntry = {
++  prId: string;
++  laneId: string;
++  laneName: string;
++  position: number;
++  state: QueueRehearsalEntryState;
++  prNumber?: number | null;
++  githubUrl?: string | null;
++  resolvedByAi?: boolean;
++  resolverRunId?: string | null;
++  simulatedCommitSha?: string | null;
++  changedFiles?: string[];
++  conflictPaths?: string[];
++  updatedAt?: string | null;
++  error?: string;
++};
++
++export type QueueRehearsalState = {
++  rehearsalId: string;
++  groupId: string;
++  groupName: string | null;
++  targetBranch: string | null;
++  state: QueueRehearsalStateStatus;
++  entries: QueueRehearsalEntry[];
++  currentPosition: number;
++  scratchLaneId: string | null;
++  activePrId: string | null;
++  activeResolverRunId: string | null;
++  lastError: string | null;
++  waitReason: QueueRehearsalWaitReason | null;
++  config: QueueRehearsalConfig;
++  startedAt: string;
++  completedAt: string | null;
++  updatedAt: string;
+ };
+ 
+ // --------------------------------
+@@ -544,7 +730,22 @@ export type PrDepth =
+ export type PrStrategy =
+   | { kind: "integration"; targetBranch?: string; draft?: boolean; prDepth?: PrDepth }
+   | { kind: "per-lane"; targetBranch?: string; draft?: boolean; prDepth?: PrDepth }
+-  | { kind: "queue"; targetBranch?: string; draft?: boolean; autoRebase?: boolean; ciGating?: boolean; prDepth?: PrDepth }
++  | {
++      kind: "queue";
++      targetBranch?: string;
++      draft?: boolean;
++      autoRebase?: boolean;
++      ciGating?: boolean;
++      prDepth?: PrDepth;
++      autoLand?: boolean;
++      rehearseQueue?: boolean;
++      autoResolveConflicts?: boolean;
++      archiveLaneOnLand?: boolean;
++      mergeMethod?: MergeMethod;
++      conflictResolverModel?: string;
++      reasoningEffort?: string;
++      permissionMode?: ConflictResolverPermissionMode;
++    }
+   | { kind: "manual" };
+ 
+ // --------------------------------

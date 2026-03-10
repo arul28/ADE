@@ -143,14 +143,14 @@ describe("deriveMissionStatusFromRun", () => {
   });
 });
 
-describe("display-only task helpers", () => {
-  it("recognizes display-only task nodes and filters them from execution lists", () => {
+describe("task step helpers", () => {
+  it("filters legacy task shell steps without reviving display-only rendering", () => {
     const steps = [
-      { id: "task-1", stepKey: "plan", metadata: { isTask: true, displayOnlyTask: true } },
+      { id: "task-1", stepKey: "plan", metadata: { isTask: true, stepType: "task" } },
       { id: "step-1", stepKey: "impl", metadata: { stepType: "implementation" } },
     ] as any[];
 
-    expect(isDisplayOnlyTaskStep(steps[0])).toBe(true);
+    expect(isDisplayOnlyTaskStep(steps[0])).toBe(false);
     expect(isDisplayOnlyTaskStep(steps[1])).toBe(false);
     expect(filterExecutionSteps(steps).map((step) => step.stepKey)).toEqual(["impl"]);
   });

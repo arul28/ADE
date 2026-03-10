@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-06
+> Last updated: 2026-03-09
 >
 > Roadmap note: future sequencing and planned architecture expansion (orchestrator, MCP, relay, iOS, machine hub) are maintained in `docs/final-plan/README.md`.
 
@@ -55,9 +55,11 @@ ADE exposes its internal capabilities to AI processes through a Model Context Pr
 
 Electron's process model provides a natural trust boundary. The main process (Node.js) is trusted and has full filesystem and process access. The renderer process (Chromium) is untrusted and communicates exclusively through a typed IPC bridge. This prevents any renderer-side vulnerability from directly accessing the filesystem or spawning processes.
 
-### Pluggable Compute Backends
+### Pluggable Compute Backends (Dropped)
 
-ADE supports pluggable compute backends for lane and mission execution. The `ComputeBackend` interface abstracts environment lifecycle (create, destroy, exec, preview URL) across Local (default), VPS (remote relay), and Daytona (opt-in cloud sandbox) backends. This allows agents to execute in isolated environments without changing orchestration logic.
+> **Note**: Phase 5.5 (Compute Backend Abstraction) was dropped. VPS is just another machine running ADE; sandboxing was removed from scope. This section is retained for historical context.
+
+ADE originally planned pluggable compute backends for lane and mission execution. The `ComputeBackend` interface would have abstracted environment lifecycle (create, destroy, exec, preview URL) across Local (default), VPS (remote relay), and Daytona (opt-in cloud sandbox) backends.
 
 ### Git Worktrees as the Isolation Primitive
 
@@ -112,7 +114,7 @@ Key UI subsystems:
 | PRs | PR creation/linking, checks/reviews, stacked + integration flows |
 | History | Operation/checkpoint/event timeline |
 | Agents | Autonomous agent system: automation, Night Shift, watcher, and review agents with identity/policy profiles |
-| Missions | AI orchestrator control center: mission intake, lifecycle board, phase-aware mission detail tabs (Plan, Work, DAG, Chat, Activity, Details), global summary chat, detailed worker/orchestrator threads, interventions, artifacts, outcomes |
+| Missions | AI orchestrator control center: mission intake, lifecycle board, phase-aware mission detail tabs (Plan, Work, DAG, Chat, Activity, Details), global summary chat, detailed worker/orchestrator threads, interventions (including `phase_approval`), artifacts, outcomes, usage meters (`CompactUsageMeter`), intervention panel, consolidated IPC (`getFullMissionView`) |
 | Settings | Provider config (CLI/API/local/OpenRouter), trust levels, keybindings, terminal profiles, and data controls |
 
 ### 2. Local Core Engine
@@ -123,7 +125,7 @@ The Local Core Engine is the brain of ADE. It runs exclusively in Electron's mai
 
 #### Type System
 
-Shared types live in `src/shared/types/`, a directory of 17 domain-scoped modules re-exported through a barrel `index.ts`. Each module owns the types for one domain:
+Shared types live in `src/shared/types/`, a directory of 19 domain-scoped modules re-exported through a barrel `index.ts`. Each module owns the types for one domain:
 
 | Module | Domain |
 |--------|--------|
@@ -143,6 +145,9 @@ Shared types live in `src/shared/types/`, a directory of 17 domain-scoped module
 | `budget.ts` | Budget caps, usage accounting, subscription tracking |
 | `models.ts` | Model descriptors, provider families, pricing, registry types |
 | `usage.ts` | Token usage, cost aggregation, billing events |
+| `agents.ts` | Agent identity, capability, and worker org chart types |
+| `cto.ts` | CTO agent state, config, and org management types |
+| `linearSync.ts` | Linear sync state, issue mapping, dispatch types |
 
 Runtime constants (status maps and default isolation rules) live in `src/main/services/orchestrator/orchestratorConstants.ts`, separate from the type definitions.
 
@@ -184,17 +189,16 @@ Common utility code is consolidated into shared modules to eliminate duplication
 | `aiOrchestratorService` | `aiOrchestratorService.ts` (~7.7K lines) + 8 extracted modules (see below) | AI orchestrator coordination layer. Decomposed from a 13.2K-line monolith into a focused core plus domain-specific modules. |
 | `agentChatService` | `agentChatService.ts` | Agent chat session lifecycle, Codex App Server JSON-RPC client, Claude multi-turn backend, unified API/local backend, ChatEvent streaming |
 | `metaReasoner` | `metaReasoner.ts` | AI-driven fan-out dispatch analysis, dynamic step injection, fan-out strategy selection |
-| `compactionEngine` | `compactionEngine.ts` | Token monitoring, self-summarization at 70% threshold, shared-fact/summarization writeback, conversation replacement. Full silent memory-flush integration remains future work. |
-| `memoryService` | `memoryService.ts` | Unified durable memory backend backed by `unified_memories`: project/agent/mission scopes, pinned/hot/cold tiers, lexical/composite ranking, pin/promote/archive flows, and DB-backed persistence in `.ade/ade.db`. Embedding-backed retrieval, consolidation, and full pre-compaction flush remain future work. |
-| `ctoAgent` | *Planned* | MCP entry point for external agent systems — intent classification, routing to mission/task/review/query handlers, identity-based learned routing |
+| `compactionEngine` | `compactionEngine.ts` | Token monitoring, self-summarization at 70% threshold, shared-fact/summarization writeback, conversation replacement. Pre-compaction memory flush (W6½) injects a silent agentic turn before compaction to persist in-context discoveries. |
+| `memoryService` | `memoryService.ts` | Unified durable memory backend backed by `unified_memories`: project/agent/mission scopes, pinned/hot/cold tiers, hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking), pin/promote/archive flows, lifecycle sweeps (temporal decay, tier demotion, hard limits, orphan cleanup), batch consolidation (Jaccard trigram clustering + LLM merge), and DB-backed persistence in `.ade/ade.db`. Local embeddings via `@huggingface/transformers` (all-MiniLM-L6-v2) with background worker and graceful lexical fallback. |
+| `ctoAgent` | `ctoStateService.ts` | CTO/employee subsystem — persistent identities, layered memory (CTO core memory, employee core memory, shared project memory, subordinate activity feed), org chart, heartbeat, Linear sync, budget enforcement |
 | `externalMcpClient` | *Planned* | Connects to external MCP servers for extended agent capabilities — lazy connect, permission integration, tool manifest merging |
 | `adeStateManager` | *Planned* | Manages `.ade/` portable state directory — cross-machine sync via git, embedding regeneration on clone, state integrity checks |
-| `laneEnvironmentService` | *Planned* | Lane environment initialization (env files, ports, Docker, deps) |
-| `laneProxyService` | *Planned* | Per-lane hostname proxy (*.localhost routing) |
-| `previewLaunchService` | *Planned* | Preview URL generation and browser launch |
+| `laneEnvironmentService` | `laneEnvironmentService.ts` | Lane environment initialization (env files, ports, Docker, deps) |
+| `laneProxyService` | `laneProxyService.ts` | Per-lane hostname proxy (*.localhost routing); preview launch is embedded here (not a standalone service) |
 | `browserProfileService` | *Planned* | Chrome profile isolation per lane |
-| `computeBackendService` | *Planned* | Compute backend abstraction and selection |
-| `daytonaService` | *Planned* | Daytona SDK integration (opt-in cloud sandbox) |
+| `computeBackendService` | *Dropped* | Compute backend abstraction — dropped with Phase 5.5 (VPS is just another machine running ADE) |
+| `daytonaService` | *Dropped* | Daytona SDK integration — dropped with Phase 5.5 |
 
 #### AI Orchestrator Module Decomposition
 
@@ -277,6 +281,10 @@ Key orchestrator responsibilities:
 - Delivers inter-agent messages via `workerDeliveryService.ts` (PTY write for terminal agents, conversation injection for SDK agents).
 - Routes @mention-based messaging through `chatMessageService.ts` with `parseMentions()` and `routeMessage()`.
 - Resolves model configuration per call type with 30s TTL caching via `modelConfigResolver.ts`.
+- **Adaptive runtime**: `classifyTaskComplexity` evaluates task characteristics to select appropriate model tier. Model downgrade automatically falls back to cheaper/faster models for routine sub-tasks while preserving high-capability models for complex reasoning.
+- **Approval gates**: Phase transitions can require explicit human approval via `phase_approval` intervention events, preventing the orchestrator from advancing past critical checkpoints without user sign-off.
+- **Multi-round deliberation**: The orchestrator supports iterative refinement cycles where planning and validation phases can loop multiple rounds before proceeding, improving output quality for complex missions.
+- **Completion gates**: Structured criteria that must be satisfied before a phase or mission can be marked complete, preventing premature advancement.
 - Stays mostly event-driven after delegation, waking back up for actionable worker/runtime signals rather than continuous idle reasoning.
 
 #### Per-Task-Type Routing
@@ -416,6 +424,13 @@ Mission created --> missionService
             --> appendRunNarrative() generates rolling narrative after step completion
               --> deliverMessageToAgent() routes inter-agent @mention messages
 
+Phase transition with approval gate --> orchestratorService
+  --> phase_approval intervention created
+    --> ade.missions.event broadcast to renderer
+      --> InterventionPanel surfaces approval request to user
+        --> User approves/rejects via IPC
+          --> orchestratorService advances or halts phase transition
+
 Agent step completed --> orchestratorService
   --> appendRunNarrative() updates run narrative
   --> shared facts extracted and stored in orchestrator_shared_facts
@@ -429,7 +444,7 @@ Real-time events (PTY data, process status changes, test run updates, AI streami
 
 | Dependency | Usage | Required |
 |------------|-------|----------|
-| Daytona SDK | Opt-in cloud sandbox compute for lane/mission execution | No (opt-in) |
+| Daytona SDK | Dropped with Phase 5.5 | No (removed) |
 | Docker | Lane environment initialization (optional containerized deps) | No (optional) |
 
 ### Cross-Machine Architecture
@@ -452,7 +467,7 @@ ADE is designed to be fully portable across developer machines without requiring
 
 **No hub needed**: Unlike systems that require a central server for state sync, ADE relies entirely on git. When a developer pushes their `.ade/` changes, other machines receive the state on the next pull. This is intentionally simple and works with any git hosting provider.
 
-**Embedding storage**: Memory embeddings are stored in `unified_memory_embeddings` inside `.ade/ade.db`, but they are not yet used by active retrieval. Native sqlite-vec virtual-table integration is deferred; the current runtime uses lexical/composite scoring in `unifiedMemoryService.ts`.
+**Embedding storage**: Memory embeddings are generated locally by `@huggingface/transformers` (all-MiniLM-L6-v2, 384-dim) and stored in `unified_memory_embeddings` inside `.ade/ade.db`. Hybrid retrieval (FTS4 BM25 30% + cosine similarity 70% + MMR re-ranking) is the active search path, with graceful fallback to lexical/composite scoring when embeddings are unavailable.
 
 **Phase 8 relay is NOT state sync**: The planned Phase 8 relay server enables real-time remote control of a running ADE instance (e.g., from an iOS app). This is an operational bridge — it streams live events and accepts commands from a remote client to a running desktop instance. It does not participate in state synchronization, which remains purely git-based.
 
@@ -481,14 +496,16 @@ Current codebase status is feature-rich across lanes, files, terminals, conflict
 | MCP server (`apps/mcp-server`) — dual-mode (headless + embedded) | Complete |
 | MCP permission/policy layer | Complete |
 | MCP call audit logging | Complete |
-| AI orchestrator (Claude session + MCP) | ~90% Complete (Phase 3) — orchestrator evolution shipped |
+| AI orchestrator (Claude session + MCP) | Complete (Phase 3–5) — orchestrator evolution, adaptive runtime, approval gates, multi-round deliberation shipped |
 | Meta-reasoner + smart fan-out | Complete |
 | Context compaction engine | Complete |
 | Session persistence + resume | Complete |
 | Inter-agent messaging | Complete |
 | Memory architecture (scoped namespaces + candidate/promoted lifecycle) | Complete |
 | Shared facts + run narrative | Complete |
-| Unified Memory System (W6) — replaces pack-first renderer surfaces and unifies retrieval | Baseline shipped (Phase 4); native sqlite-vec deferred |
+| Unified Memory System (W6) — replaces pack-first renderer surfaces and unifies retrieval | Complete (Phase 4) |
+| Memory Engine Hardening (W6½) — lifecycle sweeps, batch consolidation, pre-compaction flush | Complete (Phase 4) |
+| Embeddings Pipeline (W7a) — local all-MiniLM-L6-v2, hybrid FTS+cosine retrieval, MMR re-ranking | Complete (Phase 4) |
 | Skills + Learning Pipeline (W7) — procedural extraction, skill materialization to `.claude/skills/` | Planned (Phase 4) |
 | CTO Agent — core identity, memory, persistent chat (W1) | Complete (Phase 4) |
 | Worker Agents — org chart, multi-adapter, config versioning, budget, task sessions (W2) | Complete (Phase 4) |
@@ -496,8 +513,9 @@ Current codebase status is feature-rich across lanes, files, terminals, conflict
 | Bidirectional Linear Sync (W4) | Complete (Phase 4) |
 | External MCP consumption (agents connect to external MCP servers) | Planned (Phase 4) |
 | `.ade/` portable state (cross-machine git sync) | Planned (Phase 4) |
-| Compute backend abstraction (Phase 5.5) | Planned |
+| Play Runtime Isolation (Phase 5) — laneEnvironmentService, laneProxyService, portAllocationService, laneTemplateService, oauthRedirectService, runtimeDiagnosticsService | Complete |
+| Compute backend abstraction (Phase 5.5) | Dropped (VPS is just another machine running ADE) |
 
-Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is ~90% complete — orchestrator evolution shipped (meta-reasoner, compaction engine, session persistence, inter-agent messaging, mission chat workspace, scoped memory architecture, shared facts, run narrative, phase-based planning runtime, PR strategies). MCP dual-mode architecture shipped: transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding at `.ade/mcp.sock`, smart entry point auto-detection, 35 tools available in both modes. Phase 4 W1-W4 and W6 are complete. Remaining Phase 4 workstreams execute in order W7→W5. Native sqlite-vec integration is deferred; current shipped retrieval is lexical/composite scoring, with embedding-backed retrieval still future work. Phase 5.5 (Compute Backend Abstraction) is planned. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
+Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is complete — orchestrator evolution shipped (meta-reasoner, compaction engine, session persistence, inter-agent messaging, mission chat workspace, scoped memory architecture, shared facts, run narrative, phase-based planning runtime, PR strategies, adaptive runtime with `classifyTaskComplexity` and model downgrade, approval gates with `phase_approval` events, multi-round deliberation, completion gates). MCP dual-mode architecture shipped: transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding at `.ade/mcp.sock`, smart entry point auto-detection, 35 tools available in both modes. Phase 4 W1-W4, W6, W6½, and W7a are complete. Memory engine now includes lifecycle sweeps (temporal decay, tier demotion, hard limits, orphan cleanup), batch consolidation (Jaccard trigram clustering + LLM merge), pre-compaction flush, local embedding pipeline (`@huggingface/transformers` all-MiniLM-L6-v2), and hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking) with graceful lexical fallback. Memory Health dashboard in Settings provides visibility into entry counts, sweep/consolidation logs, embedding progress, and hard limit usage. Remaining Phase 4 workstreams: W-UX, W7b, W7c, W5b, W8, W9, W10. Phase 5 (Play Runtime Isolation) is complete. Phase 5.5 (Compute Backend Abstraction) was dropped — VPS is just another machine running ADE. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
 
 - `docs/final-plan/README.md`

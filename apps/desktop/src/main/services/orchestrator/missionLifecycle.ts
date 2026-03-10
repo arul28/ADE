@@ -333,6 +333,30 @@ export function transitionMissionStatus(
   const mission = ctx.missionService.get(missionId);
   if (!mission) return;
   if (mission.status === next && args?.outcomeSummary == null && args?.lastError == null) return;
+
+  // VAL-STATE-001: Before transitioning to intervention_required, pause all
+  // active runs for this mission so we never have an active run while the
+  // mission is in the intervention_required state.
+  if (next === "intervention_required") {
+    const runs = ctx.orchestratorService.listRuns({ missionId });
+    for (const run of runs) {
+      if (run.status === "active" || run.status === "bootstrapping") {
+        try {
+          ctx.orchestratorService.pauseRun({
+            runId: run.id,
+            reason: "Mission transitioning to intervention_required",
+          });
+        } catch (pauseError) {
+          ctx.logger.debug("ai_orchestrator.pause_run_before_intervention_failed", {
+            missionId,
+            runId: run.id,
+            error: pauseError instanceof Error ? pauseError.message : String(pauseError),
+          });
+        }
+      }
+    }
+  }
+
   try {
     ctx.missionService.update({
       missionId,

@@ -1,0 +1,52 @@
+{
+  "milestone": "ui-architecture",
+  "round": 2,
+  "status": "fail",
+  "validatorsRun": {
+    "test": {
+      "passed": true,
+      "command": "cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run --reporter=verbose",
+      "exitCode": 1,
+      "notes": "Full suite exited with only the 2 known pre-existing failures documented in AGENTS.md: aiOrchestratorService single-lane integration closing strategy and orchestratorService unified-attempt laneId handling. No additional failures were observed (1125 passed, 2 failed)."
+    },
+    "typecheck": {
+      "passed": true,
+      "command": "cd /Users/admin/Projects/ADE/apps/desktop && npx tsc --noEmit",
+      "exitCode": 0,
+      "notes": "Typecheck passed with no diagnostics."
+    },
+    "lint": {
+      "passed": true,
+      "command": "echo \"lint not configured (todo)\"",
+      "exitCode": 0,
+      "notes": "Lint is not configured in the project manifest."
+    }
+  },
+  "reviewsSummary": {
+    "total": 1,
+    "passed": 0,
+    "failed": 1,
+    "failedFeatures": [
+      "fix-ui-arch-scrutiny-gaps"
+    ]
+  },
+  "blockingIssues": [
+    {
+      "featureId": "fix-ui-arch-scrutiny-gaps",
+      "severity": "blocking",
+      "description": "VAL-ARCH-008 remains unmet on re-review. `MissionsPage.tsx` still subscribes to broad `runGraph` and `selectedMission` objects instead of minimal derived slices, so unrelated mission/run-graph updates can still rerender the page shell.",
+      "sourceReview": ".factory/validation/ui-architecture/scrutiny/reviews/fix-ui-arch-scrutiny-gaps.json"
+    }
+  ],
+  "appliedUpdates": [],
+  "suggestedGuidanceUpdates": [
+    {
+      "target": ".factory/skills/ui-worker/SKILL.md",
+      "suggestion": "Require workers to record agent-browser startup/interaction evidence explicitly in handoffs, and mark missing browser validation as a procedure deviation instead of allowing `followedProcedure: true` with only test/typecheck/grep verification.",
+      "evidence": "This mismatch was observed in both the original `missions-store-and-decomposition` review and the re-review of `fix-ui-arch-scrutiny-gaps`: the ui-worker skill requires reading `.factory/library/user-testing.md` plus agent-browser verification, but the worker transcript skeletons/handoffs lacked those steps while still marking `followedProcedure: true`.",
+      "isSystemic": true
+    }
+  ],
+  "rejectedObservations": [],
+  "previousRound": ".factory/validation/ui-architecture/scrutiny/synthesis.round-1.json"
+}

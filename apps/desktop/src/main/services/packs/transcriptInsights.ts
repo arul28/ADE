@@ -85,6 +85,8 @@ function parseExplicitFinalBlock(text: string): ParsedTranscriptSummary | null {
     if (!line) continue;
     if (
       /^(done\.?|all done\.?|completed\.?)\b/i.test(line) ||
+      /^accomplished\s*:/i.test(line) ||
+      /^research is complete\b/i.test(line) ||
       /here'?s what (?:i|we) (?:changed|did|updated|fixed)/i.test(line) ||
       /^summary\s*:/i.test(line) ||
       /^final summary\s*:?/i.test(line)

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import type { MissionLogChannel, MissionLogEntry } from "../../../shared/types";
 import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
+import { useMissionPolling } from "./useMissionPolling";
 
 type MissionLogsTabProps = {
   missionId: string;
@@ -97,6 +98,14 @@ export const MissionLogsTab = React.memo(function MissionLogsTab({
   useEffect(() => {
     void loadLogs(null);
   }, [loadLogs, channelKey, missionId, runId]);
+
+  useMissionPolling(
+    () => {
+      void loadLogs(null);
+    },
+    3_000,
+    Boolean(missionId),
+  );
 
   useEffect(() => {
     if (!focusInterventionId) return;

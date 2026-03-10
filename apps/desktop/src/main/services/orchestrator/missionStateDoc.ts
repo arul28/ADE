@@ -2,9 +2,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type {
   CoordinatorCheckpoint,
+  MissionCloseoutRequirement,
+  MissionCoordinatorAvailability,
   MissionStateDecision,
   MissionStateDocument,
   MissionStateDocumentPatch,
+  MissionFinalizationPolicy,
+  MissionFinalizationState,
   MissionStateIssue,
   MissionStatePendingIntervention,
   MissionRetrospective,
@@ -30,6 +34,12 @@ export type CoordinatorCheckpointDocument = CoordinatorCheckpoint;
 
 const stringOr = (value: unknown, fallback = ""): string =>
   typeof value === "string" ? value : fallback;
+
+const nullableString = (value: unknown): string | null =>
+  value === null ? null : stringOr(value).trim() || null;
+
+const nullableBool = (value: unknown): boolean | null =>
+  typeof value === "boolean" ? value : null;
 
 const clampNonNegativeInt = (value: unknown, fallback = 0): number => {
   const parsed = Number(value);
@@ -161,6 +171,131 @@ function normalizePendingIntervention(value: unknown): MissionStatePendingInterv
   };
 }
 
+function normalizeCloseoutRequirement(value: unknown): MissionCloseoutRequirement | null {
+  const raw = isRecord(value) ? value : null;
+  if (!raw) return null;
+  const key = stringOr(raw.key).trim();
+  const label = stringOr(raw.label).trim();
+  if (!key.length || !label.length) return null;
+  return {
+    key: key as MissionCloseoutRequirement["key"],
+    label,
+    required: raw.required === true,
+    status:
+      raw.status === "present" || raw.status === "missing" || raw.status === "waived"
+        ? raw.status
+        : "missing",
+    detail: nullableString(raw.detail),
+    artifactId: nullableString(raw.artifactId),
+    uri: nullableString(raw.uri),
+    source:
+      raw.source === "declared" || raw.source === "discovered" || raw.source === "runtime" || raw.source === "waiver"
+        ? raw.source
+        : "runtime",
+  };
+}
+
+function normalizeFinalizationPolicy(value: unknown): MissionFinalizationPolicy | null {
+  const raw = isRecord(value) ? value : null;
+  if (!raw) return null;
+  const kind =
+    raw.kind === "disabled" || raw.kind === "manual" || raw.kind === "integration" || raw.kind === "per-lane" || raw.kind === "queue"
+      ? raw.kind
+      : null;
+  if (!kind) return null;
+  const prDepth =
+    raw.prDepth === "propose-only" || raw.prDepth === "resolve-conflicts" || raw.prDepth === "open-and-comment"
+      ? raw.prDepth
+      : null;
+  return {
+    kind,
+    targetBranch: nullableString(raw.targetBranch),
+    draft: nullableBool(raw.draft),
+    prDepth,
+    autoRebase: nullableBool(raw.autoRebase),
+    ciGating: nullableBool(raw.ciGating),
+    autoLand: nullableBool(raw.autoLand),
+    rehearseQueue: nullableBool(raw.rehearseQueue),
+    autoResolveConflicts: nullableBool(raw.autoResolveConflicts),
+    archiveLaneOnLand: nullableBool(raw.archiveLaneOnLand),
+    mergeMethod:
+      raw.mergeMethod === "merge" || raw.mergeMethod === "squash" || raw.mergeMethod === "rebase"
+        ? raw.mergeMethod
+        : null,
+    conflictResolverModel: nullableString(raw.conflictResolverModel),
+    reasoningEffort: nullableString(raw.reasoningEffort),
+    description: nullableString(raw.description),
+  };
+}
+
+function normalizeFinalizationState(value: unknown): MissionFinalizationState | null {
+  const raw = isRecord(value) ? value : null;
+  if (!raw) return null;
+  const policy = normalizeFinalizationPolicy(raw.policy);
+  if (!policy) return null;
+  const VALID_FINALIZATION_STATUSES = new Set([
+    "idle", "finalizing", "creating_pr", "rehearsing_queue", "landing_queue",
+    "resolving_integration_conflicts", "resolving_queue_conflicts", "waiting_for_green",
+    "awaiting_operator_review", "posting_review_comment", "finalization_failed", "completed",
+  ]);
+  const VALID_WAIT_REASONS = new Set(["ci", "review", "merge_conflict", "resolver_failed", "merge_blocked", "manual", "canceled"]);
+  const status = VALID_FINALIZATION_STATUSES.has(raw.status as string)
+    ? (raw.status as MissionFinalizationState["status"])
+    : "idle";
+  const waitReason = VALID_WAIT_REASONS.has(raw.waitReason as string)
+    ? (raw.waitReason as MissionFinalizationState["waitReason"])
+    : null;
+  return {
+    policy,
+    status,
+    executionComplete: raw.executionComplete === true,
+    contractSatisfied: raw.contractSatisfied === true,
+    blocked: raw.blocked === true,
+    blockedReason: nullableString(raw.blockedReason),
+    summary: nullableString(raw.summary),
+    detail: nullableString(raw.detail),
+    resolverJobId: nullableString(raw.resolverJobId),
+    integrationLaneId: nullableString(raw.integrationLaneId),
+    queueGroupId: nullableString(raw.queueGroupId),
+    queueId: nullableString(raw.queueId),
+    queueRehearsalId: nullableString(raw.queueRehearsalId),
+    scratchLaneId: nullableString(raw.scratchLaneId),
+    activePrId: nullableString(raw.activePrId),
+    waitReason,
+    proposalUrl: nullableString(raw.proposalUrl),
+    prUrls: normalizeStringArray(raw.prUrls, 20),
+    reviewStatus: nullableString(raw.reviewStatus),
+    mergeReadiness: nullableString(raw.mergeReadiness),
+    requirements: Array.isArray(raw.requirements)
+      ? raw.requirements
+          .map((entry) => normalizeCloseoutRequirement(entry))
+          .filter((entry): entry is MissionCloseoutRequirement => Boolean(entry))
+      : [],
+    warnings: normalizeStringArray(raw.warnings, 40),
+    updatedAt: stringOr(raw.updatedAt).trim() || nowIso(),
+    startedAt: nullableString(raw.startedAt),
+    completedAt: nullableString(raw.completedAt),
+  };
+}
+
+function normalizeCoordinatorAvailability(value: unknown): MissionCoordinatorAvailability | null {
+  const raw = isRecord(value) ? value : null;
+  if (!raw) return null;
+  const mode =
+    raw.mode === "offline" || raw.mode === "consult_only" || raw.mode === "continuation_required"
+      ? raw.mode
+      : null;
+  const summary = stringOr(raw.summary).trim();
+  if (!mode || !summary.length) return null;
+  return {
+    available: raw.available === true,
+    mode,
+    summary,
+    detail: nullableString(raw.detail),
+    updatedAt: stringOr(raw.updatedAt).trim() || nowIso(),
+  };
+}
+
 
 function normalizeReflectionEntry(value: unknown): OrchestratorReflectionEntry | null {
   const raw = isRecord(value) ? value : null;
@@ -279,6 +414,8 @@ function normalizeDocument(rawDoc: unknown): MissionStateDocument | null {
         .filter((entry): entry is MissionStatePendingIntervention => Boolean(entry))
     : [];
   const modifiedFiles = normalizeStringArray(raw.modifiedFiles);
+  const finalization = normalizeFinalizationState(raw.finalization);
+  const coordinatorAvailability = normalizeCoordinatorAvailability(raw.coordinatorAvailability);
   return {
     schemaVersion: 1,
     missionId,
@@ -291,6 +428,8 @@ function normalizeDocument(rawDoc: unknown): MissionStateDocument | null {
     activeIssues: activeIssues.slice(-MAX_ACTIVE_ISSUES),
     modifiedFiles,
     pendingInterventions: pendingInterventions.slice(-MAX_PENDING_INTERVENTIONS),
+    finalization,
+    coordinatorAvailability,
     reflections: Array.isArray(raw.reflections)
       ? raw.reflections.map((entry) => normalizeReflectionEntry(entry)).filter((entry): entry is OrchestratorReflectionEntry => Boolean(entry)).slice(-200)
       : [],
@@ -385,6 +524,8 @@ function applyPatch(doc: MissionStateDocument, patch: MissionStateDocumentPatch)
     activeIssues: [...doc.activeIssues],
     modifiedFiles: [...doc.modifiedFiles],
     pendingInterventions: [...doc.pendingInterventions],
+    finalization: doc.finalization ?? null,
+    coordinatorAvailability: doc.coordinatorAvailability ?? null,
     reflections: [...(doc.reflections ?? [])],
     latestRetrospective: doc.latestRetrospective ?? null,
     updatedAt: nowIso(),
@@ -470,6 +611,16 @@ function applyPatch(doc: MissionStateDocument, patch: MissionStateDocumentPatch)
       .map((entry) => normalizePendingIntervention(entry))
       .filter((entry): entry is MissionStatePendingIntervention => Boolean(entry))
       .slice(-MAX_PENDING_INTERVENTIONS);
+  }
+
+  if (patch.finalization !== undefined) {
+    next.finalization = patch.finalization ? normalizeFinalizationState(patch.finalization) : null;
+  }
+
+  if (patch.coordinatorAvailability !== undefined) {
+    next.coordinatorAvailability = patch.coordinatorAvailability
+      ? normalizeCoordinatorAvailability(patch.coordinatorAvailability)
+      : null;
   }
 
   if (patch.reflections) {

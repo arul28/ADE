@@ -818,7 +818,77 @@ describe("orchestratorService", () => {
     }
   });
 
-  it("ignores display-only task cards when scanning ready autopilot steps", async () => {
+  it("rejects executor-backed attempts before scaffolding when laneId is missing", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "missing-lane",
+            title: "Missing lane",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "unified",
+          }
+        ]
+      });
+      const createdStep = fixture.service.listSteps(started.run.id)[0];
+      if (!createdStep) throw new Error("Missing step");
+
+      fixture.db.run(
+        `update orchestrator_steps set lane_id = null, updated_at = ? where id = ? and project_id = ?`,
+        [new Date().toISOString(), createdStep.id, fixture.projectId],
+      );
+      const refreshedStep = fixture.service.listSteps(started.run.id)[0];
+      expect(refreshedStep?.laneId).toBeNull();
+
+      await expect(
+        fixture.service.startAttempt({
+          runId: started.run.id,
+          stepId: refreshedStep?.id ?? createdStep.id,
+          ownerId: "owner",
+          executorKind: "unified",
+        }),
+      ).rejects.toThrow(/laneId is missing/i);
+      expect(fixture.service.listAttempts({ runId: started.run.id })).toHaveLength(0);
+      expect(fixture.ptyCreateCalls).toHaveLength(0);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("defaults added mission steps to the persisted mission lane", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          missionLaneId: fixture.laneId,
+        },
+        steps: [],
+      });
+
+      const created = fixture.service.addSteps({
+        runId: started.run.id,
+        steps: [
+          {
+            stepKey: "mission-task",
+            title: "Mission task",
+            stepIndex: 0,
+            executorKind: "manual",
+          },
+        ],
+      });
+
+      expect(created[0]?.laneId).toBe(fixture.laneId);
+      expect(fixture.service.listSteps(started.run.id)[0]?.laneId).toBe(fixture.laneId);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("still launches ready workers even when manual task steps are present", async () => {
     const fixture = await createFixture();
     try {
       const started = fixture.service.startRun({
@@ -838,8 +908,7 @@ describe("orchestratorService", () => {
             stepIndex: 0,
             executorKind: "manual",
             metadata: {
-              isTask: true,
-              displayOnlyTask: true
+              stepType: "task"
             }
           },
           {
@@ -869,14 +938,363 @@ describe("orchestratorService", () => {
       expect(attempts).toHaveLength(1);
       expect(attempts[0]?.stepId).toBe(planningWorkerStep?.id);
 
-      const timeline = fixture.service.listTimeline({ runId: started.run.id, limit: 100 });
-      const manualSkipEvents = timeline.filter((entry) =>
-        entry.eventType === "autopilot_step_skipped"
-        && entry.reason === "manual_step_requires_operator"
-        && (entry.detail as Record<string, unknown> | null)?.stepKey === "plan"
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("keeps future-phase steps pending until the active phase changes", async () => {
+    const fixture = await createFixture();
+    try {
+      const planningPhase = {
+        id: "phase-planning",
+        phaseKey: "planning",
+        name: "Planning",
+        description: "Plan the work",
+        instructions: "Research first.",
+        model: { provider: "anthropic", modelId: "anthropic/claude-sonnet-4-6" },
+        budget: {},
+        orderingConstraints: { mustBeFirst: true },
+        askQuestions: { enabled: false },
+        validationGate: { tier: "none", required: false, criteria: "" },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 0,
+        createdAt: "2026-03-08T00:00:00.000Z",
+        updatedAt: "2026-03-08T00:00:00.000Z",
+      };
+      const developmentPhase = {
+        id: "phase-development",
+        phaseKey: "development",
+        name: "Development",
+        description: "Implement the work",
+        instructions: "Write code.",
+        model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+        budget: {},
+        orderingConstraints: { mustFollow: ["planning"] },
+        askQuestions: { enabled: false },
+        validationGate: { tier: "none", required: false, criteria: "" },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 1,
+        createdAt: "2026-03-08T00:00:00.000Z",
+        updatedAt: "2026-03-08T00:00:00.000Z",
+      };
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          phaseConfiguration: { selectedPhases: [planningPhase, developmentPhase] },
+          phaseRuntime: {
+            currentPhaseKey: "planning",
+            currentPhaseName: "Planning",
+            currentPhaseModel: planningPhase.model,
+          },
+          autopilot: {
+            enabled: true,
+            executorKind: "unified",
+            ownerId: "autopilot-owner",
+            parallelismCap: 2
+          }
+        },
+        steps: [
+          {
+            stepKey: "plan-work",
+            title: "Plan work",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "unified",
+            metadata: {
+              stepType: "planning",
+              phaseKey: "planning",
+              phaseName: "Planning",
+              phasePosition: 0,
+            }
+          },
+          {
+            stepKey: "impl-work",
+            title: "Implement work",
+            stepIndex: 1,
+            laneId: fixture.laneId,
+            executorKind: "unified",
+            metadata: {
+              stepType: "implementation",
+              phaseKey: "development",
+              phaseName: "Development",
+              phasePosition: 1,
+            }
+          }
+        ]
+      });
+
+      const planningStep = fixture.service.listSteps(started.run.id).find((step) => step.stepKey === "plan-work");
+      const implementationStep = fixture.service.listSteps(started.run.id).find((step) => step.stepKey === "impl-work");
+      expect(planningStep?.status).toBe("ready");
+      expect(implementationStep?.status).toBe("pending");
+
+      const startedAttempts = await fixture.service.startReadyAutopilotAttempts({
+        runId: started.run.id,
+        reason: "phase_gate_regression"
+      });
+
+      expect(startedAttempts).toBe(1);
+      const attempts = fixture.service.listAttempts({ runId: started.run.id });
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0]?.stepId).toBe(planningStep?.id);
+      const refreshedImplementation = fixture.service.listSteps(started.run.id).find((step) => step.stepKey === "impl-work");
+      expect(refreshedImplementation?.status).toBe("pending");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("auto-advances to the next configured phase when current phase is complete and downstream work exists", async () => {
+    const fixture = await createFixture();
+    try {
+      const planningPhase = {
+        id: "phase-planning",
+        phaseKey: "planning",
+        name: "Planning",
+        description: "Plan the work",
+        instructions: "Research first.",
+        model: { provider: "anthropic", modelId: "anthropic/claude-sonnet-4-6" },
+        budget: {},
+        orderingConstraints: { mustBeFirst: true },
+        askQuestions: { enabled: false },
+        validationGate: { tier: "none", required: false, criteria: "" },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 0,
+        createdAt: "2026-03-08T00:00:00.000Z",
+        updatedAt: "2026-03-08T00:00:00.000Z",
+      };
+      const developmentPhase = {
+        id: "phase-development",
+        phaseKey: "development",
+        name: "Development",
+        description: "Implement the work",
+        instructions: "Write code.",
+        model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+        budget: {},
+        orderingConstraints: { mustFollow: ["planning"] },
+        askQuestions: { enabled: false },
+        validationGate: { tier: "none", required: false, criteria: "" },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 1,
+        createdAt: "2026-03-08T00:00:00.000Z",
+        updatedAt: "2026-03-08T00:00:00.000Z",
+      };
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          phaseConfiguration: { selectedPhases: [planningPhase, developmentPhase] },
+          phaseRuntime: {
+            currentPhaseKey: "planning",
+            currentPhaseName: "Planning",
+            currentPhaseModel: planningPhase.model,
+          },
+        },
+        steps: [
+          {
+            stepKey: "plan-work",
+            title: "Plan work",
+            stepIndex: 0,
+            executorKind: "manual",
+            metadata: {
+              stepType: "planning",
+              phaseKey: "planning",
+              phaseName: "Planning",
+              readOnlyExecution: true,
+            }
+          },
+          {
+            stepKey: "impl-work",
+            title: "Implement work",
+            stepIndex: 1,
+            dependencyStepKeys: ["plan-work"],
+            executorKind: "manual",
+            metadata: {
+              stepType: "implementation",
+              phaseKey: "development",
+              phaseName: "Development",
+            }
+          }
+        ]
+      });
+
+      const planningStep = fixture.service.listSteps(started.run.id).find((step) => step.stepKey === "plan-work");
+      const implementationStep = fixture.service.listSteps(started.run.id).find((step) => step.stepKey === "impl-work");
+      if (!planningStep || !implementationStep) throw new Error("Missing phase auto-advance steps");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: planningStep.id,
+        ownerId: "planner-owner",
+        executorKind: "manual",
+      });
+      await fixture.service.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "Planning complete.",
+          outputs: null,
+          warnings: [],
+          sessionId: null,
+          trackedSession: false,
+        },
+      });
+
+      const refreshed = fixture.service.getRunGraph({ runId: started.run.id, timelineLimit: 50 });
+      const phaseRuntime = refreshed.run.metadata?.phaseRuntime as Record<string, unknown> | undefined;
+      const developmentStep = refreshed.steps.find((step) => step.id === implementationStep.id);
+
+      expect(phaseRuntime?.currentPhaseKey).toBe("development");
+      expect(phaseRuntime?.currentPhaseName).toBe("Development");
+      expect(developmentStep?.status).toBe("ready");
+      expect(
+        refreshed.timeline.some((entry) => entry.eventType === "phase_transition" && entry.reason === "kernel_auto_advance")
+      ).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("holds downstream steps pending until required validation passes", async () => {
+    const fixture = await createFixture();
+    try {
+      const implementationPhase = {
+        id: "phase-implementation",
+        phaseKey: "implementation",
+        name: "Implementation",
+        description: "Build",
+        instructions: "",
+        model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+        budget: {},
+        orderingConstraints: {},
+        askQuestions: { enabled: false },
+        validationGate: { tier: "self", required: true, criteria: "Reviewer must confirm the change." },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 1,
+        createdAt: "2026-03-08T00:00:00.000Z",
+        updatedAt: "2026-03-08T00:00:00.000Z",
+      };
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          phaseConfiguration: { selectedPhases: [implementationPhase] },
+          phaseRuntime: {
+            currentPhaseKey: "implementation",
+            currentPhaseName: "Implementation",
+            currentPhaseModel: implementationPhase.model,
+          },
+          autopilot: {
+            enabled: true,
+            executorKind: "unified",
+            ownerId: "autopilot-owner",
+            parallelismCap: 1
+          }
+        },
+        steps: [
+          {
+            stepKey: "impl-auth",
+            title: "Implement auth flow",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "unified",
+            metadata: {
+              stepType: "implementation",
+              phaseKey: "implementation",
+              phaseName: "Implementation",
+              validationContract: {
+                level: "step",
+                tier: "self",
+                required: true,
+                criteria: "Reviewer must confirm the change.",
+                evidence: [],
+                maxRetries: 2
+              }
+            }
+          },
+          {
+            stepKey: "wire-auth",
+            title: "Wire auth into app shell",
+            stepIndex: 1,
+            laneId: fixture.laneId,
+            dependencyStepKeys: ["impl-auth"],
+            executorKind: "unified",
+            metadata: {
+              stepType: "implementation",
+              phaseKey: "implementation",
+              phaseName: "Implementation",
+            }
+          }
+        ]
+      });
+
+      const implStep = fixture.service.listSteps(started.run.id).find((step) => step.stepKey === "impl-auth");
+      const downstreamStep = fixture.service.listSteps(started.run.id).find((step) => step.stepKey === "wire-auth");
+      if (!implStep || !downstreamStep) throw new Error("Missing steps for validation gate test");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: implStep.id,
+        ownerId: "owner"
+      });
+      await fixture.service.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "Implemented auth flow.",
+          outputs: {
+            filesChanged: ["src/auth.ts"],
+          },
+          warnings: [],
+          sessionId: null,
+          trackedSession: false
+        }
+      });
+
+      const pendingBeforePass = fixture.service.listSteps(started.run.id).find((step) => step.id === downstreamStep.id);
+      expect(pendingBeforePass?.status).toBe("pending");
+      expect(
+        await fixture.service.startReadyAutopilotAttempts({
+          runId: started.run.id,
+          reason: "validation_gate_regression"
+        })
+      ).toBe(0);
+
+      const implAfterSuccess = fixture.service.listSteps(started.run.id).find((step) => step.id === implStep.id);
+      fixture.db.run(
+        `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ?`,
+        [
+          JSON.stringify({
+            ...(implAfterSuccess?.metadata ?? {}),
+            validationState: "pass",
+            validationPassedAt: "2026-03-08T00:05:00.000Z",
+          }),
+          "2026-03-08T00:05:00.000Z",
+          implStep.id
+        ]
       );
 
-      expect(manualSkipEvents).toHaveLength(0);
+      fixture.service.tick({ runId: started.run.id });
+
+      const releasedStep = fixture.service.listSteps(started.run.id).find((step) => step.id === downstreamStep.id);
+      expect(releasedStep?.status).toBe("ready");
+      expect(
+        await fixture.service.startReadyAutopilotAttempts({
+          runId: started.run.id,
+          reason: "validation_gate_released"
+        })
+      ).toBe(1);
     } finally {
       fixture.dispose();
     }
@@ -1680,6 +2098,88 @@ describe("orchestratorService", () => {
     }
   });
 
+  it("preserves mission phase metadata and initializes phase runtime when starting from a mission", async () => {
+    const fixture = await createFixture();
+    try {
+      const planningPhase = {
+        id: "phase-planning",
+        phaseKey: "planning",
+        name: "Planning",
+        description: "Plan the work",
+        instructions: "Research the task first.",
+        model: { provider: "anthropic", modelId: "anthropic/claude-sonnet-4-6" },
+        budget: {},
+        orderingConstraints: { mustBeFirst: true },
+        askQuestions: { enabled: false },
+        validationGate: { tier: "none", required: false, criteria: "" },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 0,
+        createdAt: "2026-03-08T00:00:00.000Z",
+        updatedAt: "2026-03-08T00:00:00.000Z",
+      };
+      const releasePhase = {
+        id: "phase-release",
+        phaseKey: "release",
+        name: "Release",
+        description: "Ship the change",
+        instructions: "Prepare release notes and ship.",
+        model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+        budget: {},
+        orderingConstraints: { mustFollow: ["planning"] },
+        askQuestions: { enabled: false },
+        validationGate: { tier: "self", required: true, criteria: "Release checklist must pass." },
+        isBuiltIn: false,
+        isCustom: true,
+        position: 1,
+        createdAt: "2026-03-08T00:00:00.000Z",
+        updatedAt: "2026-03-08T00:00:00.000Z",
+      };
+
+      fixture.db.run(
+        `update missions set metadata_json = ? where id = ? and project_id = ?`,
+        [
+          JSON.stringify({
+            phaseConfiguration: {
+              selectedPhases: [planningPhase, releasePhase],
+              profileId: "custom-phase-profile"
+            },
+            missionLevelSettings: {
+              prStrategy: { kind: "manual" }
+            },
+            phaseOverride: [planningPhase, releasePhase],
+            phaseProfileId: "custom-phase-profile"
+          }),
+          fixture.missionId,
+          fixture.projectId
+        ]
+      );
+
+      const started = fixture.service.startRunFromMission({
+        missionId: fixture.missionId,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      const run = fixture.service.listRuns({ missionId: fixture.missionId }).find((entry) => entry.id === started.run.id);
+      const metadata = run?.metadata as Record<string, unknown> | undefined;
+      const phaseRuntime = (metadata?.phaseRuntime ?? {}) as Record<string, unknown>;
+
+      expect(metadata?.phaseConfiguration).toEqual({
+        selectedPhases: [planningPhase, releasePhase],
+        profileId: "custom-phase-profile"
+      });
+      expect(metadata?.missionLevelSettings).toEqual({
+        prStrategy: { kind: "manual" }
+      });
+      expect(metadata?.phaseOverride).toEqual([planningPhase, releasePhase]);
+      expect(metadata?.phaseProfileId).toBe("custom-phase-profile");
+      expect(phaseRuntime.currentPhaseKey).toBe("planning");
+      expect(phaseRuntime.currentPhaseName).toBe("Planning");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("preserves explicit empty mission-step dependencies instead of forcing sequential fallback", async () => {
     const fixture = await createFixture();
     try {
@@ -2102,7 +2602,7 @@ describe("orchestratorService", () => {
               model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
               budget: {},
               orderingConstraints: {},
-              askQuestions: { enabled: false, mode: "never" },
+              askQuestions: { enabled: false },
               validationGate: { tier: "none", required: false },
               isBuiltIn: true,
               isCustom: false,
@@ -2119,7 +2619,7 @@ describe("orchestratorService", () => {
               model: { provider: "anthropic", modelId: "anthropic/claude-sonnet-4-6" },
               budget: {},
               orderingConstraints: {},
-              askQuestions: { enabled: false, mode: "never" },
+              askQuestions: { enabled: false },
               validationGate: { tier: "dedicated", required: false },
               isBuiltIn: true,
               isCustom: false,
@@ -2254,6 +2754,129 @@ describe("orchestratorService", () => {
     }
   });
 
+  it("does not let force finalize bypass required phase success", async () => {
+    const fixture = await createFixture();
+    try {
+      const developmentPhase = {
+        id: "phase-development",
+        phaseKey: "development",
+        name: "Development",
+        description: "Build the feature.",
+        instructions: "Implement the feature.",
+        model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+        budget: {},
+        orderingConstraints: {},
+        askQuestions: { enabled: false },
+        validationGate: { tier: "dedicated", required: true, criteria: "Implementation must actually succeed" },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 1,
+        createdAt: "2026-03-04T00:00:00.000Z",
+        updatedAt: "2026-03-04T00:00:00.000Z",
+      };
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          phaseConfiguration: { selectedPhases: [developmentPhase] },
+          missionLevelSettings: { prStrategy: { kind: "manual" } },
+        },
+        steps: [
+          {
+            stepKey: "impl",
+            title: "Implementation",
+            stepIndex: 0,
+            metadata: {
+              stepType: "implementation",
+              phaseKey: "development",
+              phaseName: "Development",
+            },
+          },
+        ],
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+      fixture.service.skipStep({
+        runId: started.run.id,
+        stepId: step.id,
+        reason: "Skipped by coordinator",
+      });
+
+      const finalized = fixture.service.finalizeRun({ runId: started.run.id, force: true });
+      const run = fixture.service.listRuns({ missionId: fixture.missionId }).find((entry) => entry.id === started.run.id);
+
+      expect(finalized.finalized).toBe(false);
+      expect(finalized.finalStatus).toBe("completing");
+      expect(finalized.blockers.some((entry) => entry.includes("without any successful work"))).toBe(true);
+      expect(run?.status).toBe("completing");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("keeps interventions on the same step distinct until each interventionId is resolved", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [{ stepKey: "finalize-step", title: "Finalize Step", stepIndex: 0 }],
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner",
+      });
+      await fixture.service.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+      });
+
+      fixture.service.appendRuntimeEvent({
+        runId: started.run.id,
+        stepId: step.id,
+        eventType: "intervention_opened",
+        eventKey: "intervention-opened-1",
+        payload: { interventionId: "intervention-1" },
+      });
+      fixture.service.appendRuntimeEvent({
+        runId: started.run.id,
+        stepId: step.id,
+        eventType: "intervention_opened",
+        eventKey: "intervention-opened-2",
+        payload: { interventionId: "intervention-2" },
+      });
+      fixture.service.appendRuntimeEvent({
+        runId: started.run.id,
+        stepId: step.id,
+        eventType: "intervention_resolved",
+        eventKey: "intervention-resolved-1",
+        payload: { interventionId: "intervention-1" },
+      });
+
+      const blocked = fixture.service.finalizeRun({ runId: started.run.id });
+      expect(blocked.finalized).toBe(false);
+      expect(blocked.blockers).toEqual(
+        expect.arrayContaining([expect.stringContaining("unresolved intervention")]),
+      );
+
+      fixture.service.appendRuntimeEvent({
+        runId: started.run.id,
+        stepId: step.id,
+        eventType: "intervention_resolved",
+        eventKey: "intervention-resolved-2",
+        payload: { interventionId: "intervention-2" },
+      });
+
+      const finalized = fixture.service.finalizeRun({ runId: started.run.id });
+      expect(finalized.finalized).toBe(true);
+      expect(finalized.finalStatus).toBe("succeeded");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("supports claim heartbeat and expiry recovery for blocked collision steps", async () => {
     const fixture = await createFixture();
     try {
@@ -2371,6 +2994,12 @@ describe("orchestratorService", () => {
       expect(firstAttempt?.status).toBe("running");
       expect(firstAttempt?.executorSessionId).toBeTruthy();
       if (!firstAttempt?.executorSessionId) throw new Error("Expected running session-backed attempt");
+      const transcriptPath = path.join(transcriptDir, `${firstAttempt.executorSessionId}.log`);
+      fs.writeFileSync(
+        transcriptPath,
+        "Implemented the first step and verified the result before exiting.\n",
+        "utf8"
+      );
 
       const reconciled = await fixture.service.onTrackedSessionEnded({
         sessionId: firstAttempt.executorSessionId,
@@ -2499,7 +3128,7 @@ describe("orchestratorService", () => {
       fs.writeFileSync(
         transcriptPath,
         [
-          "ADE_MISSION_ID='mission-1' ADE_RUN_ID='run-1' exec claude --model 'sonnet' --permission-mode 'plan'",
+          "ADE_MISSION_ID='mission-1' ADE_RUN_ID='run-1' exec claude --model 'sonnet' --permission-mode 'default'",
           "/Users/admin/.zshrc:3: no such file or directory: /Users/admin/.openclaw/get-codex-token.sh",
           "/Users/admin/.openclaw/completions/openclaw.zsh:3803: command not found: compdef",
           "admin@Mac test-10-f4bb12de %",
@@ -2517,7 +3146,8 @@ describe("orchestratorService", () => {
 
       const after = fixture.service.listAttempts({ runId: started.run.id }).find((entry) => entry.id === attempt.id);
       expect(after?.status).toBe("failed");
-      expect(after?.errorMessage).toBe("Planning worker exited without reporting a usable plan.");
+      expect(after?.errorMessage).toBe("Planning worker exited before producing any assistant or tool activity.");
+      expect(after?.errorClass).toBe("startup_failure");
     } finally {
       fixture.dispose();
     }
@@ -2562,6 +3192,11 @@ describe("orchestratorService", () => {
         ownerId: "operator"
       });
       if (!firstAttempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+      fs.writeFileSync(
+        path.join(transcriptDir, `${firstAttempt.executorSessionId}.log`),
+        "Completed the worker step and reported the outcome.\n",
+        "utf8"
+      );
 
       // Update the pre-inserted row to simulate a completed session (for deriving status).
       fixture.db.run(
@@ -2976,6 +3611,7 @@ describe("orchestratorService", () => {
             stepKey: "api-worker",
             title: "API worker",
             stepIndex: 0,
+            laneId: fixture.laneId,
             executorKind: "unified",
             metadata: {
               modelId: "openai/gpt-4.1"
@@ -3525,7 +4161,7 @@ describe("orchestratorService", () => {
         model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
         budget: {},
         orderingConstraints: {},
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "dedicated", required: true, criteria: "Validator must pass before moving on" },
         isBuiltIn: true,
         isCustom: false,
@@ -3633,7 +4269,7 @@ describe("orchestratorService", () => {
         model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
         budget: {},
         orderingConstraints: {},
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "dedicated", required: true, criteria: "Validator must pass before moving on" },
         isBuiltIn: true,
         isCustom: false,
@@ -3741,7 +4377,7 @@ describe("orchestratorService", () => {
         model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
         budget: {},
         orderingConstraints: {},
-        askQuestions: { enabled: false, mode: "never" },
+        askQuestions: { enabled: false },
         validationGate: { tier: "self", required: true, criteria: "Coordinator must validate test results" },
         isBuiltIn: true,
         isCustom: false,

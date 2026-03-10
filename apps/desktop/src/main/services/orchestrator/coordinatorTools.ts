@@ -37,7 +37,6 @@ import type { createMissionService } from "../missions/missionService";
 import {
   asRecord,
   filterExecutionSteps,
-  isDisplayOnlyTaskStep,
   nowIso,
   TERMINAL_STEP_STATUSES,
 } from "./orchestratorContext";
@@ -45,6 +44,7 @@ import { readMissionStateDocument, updateMissionStateDocument } from "./missionS
 import { isWithinDir } from "../shared/utils";
 import { normalizeAgentRuntimeFlags } from "./teamRuntimeConfig";
 import { registerTeamMember } from "./teamRuntimeState";
+import type { createMemoryService } from "../memory/memoryService";
 import {
   classifyWorkerExecutionPath,
   resolveModelDescriptor,
@@ -153,6 +153,8 @@ export const COORDINATOR_TOOL_NAMES = [
   "read_mission_status",
   "read_mission_state",
   "update_mission_state",
+  "memory_search",
+  "memory_add",
   "revise_plan",
   "update_tool_profiles",
   "transfer_lane",
@@ -177,10 +179,22 @@ export const COORDINATOR_TOOL_NAMES = [
   "get_project_context",
 ] as const;
 
+const COORDINATOR_OBSERVATION_TOOL_NAMES = [
+  "get_mission",
+  "get_run_graph",
+  "get_step_output",
+  "get_worker_states",
+  "get_timeline",
+  "get_final_diff",
+  "stream_events",
+] as const;
+
 export function buildCoordinatorMcpAllowedTools(serverName = "ade"): string[] {
   const trimmed = serverName.trim();
   const resolvedServerName = trimmed.length > 0 ? trimmed : "ade";
-  return COORDINATOR_TOOL_NAMES.map((toolName) => `mcp__${resolvedServerName}__${toolName}`);
+  return [...COORDINATOR_TOOL_NAMES, ...COORDINATOR_OBSERVATION_TOOL_NAMES].map(
+    (toolName) => `mcp__${resolvedServerName}__${toolName}`,
+  );
 }
 
 export type CoordinatorWorkerDeliveryStatus =
@@ -191,6 +205,7 @@ export type CoordinatorWorkerDeliveryStatus =
 export type CoordinatorSendWorkerMessageFn = (args: {
   sessionId: string;
   text: string;
+  priority?: "normal" | "urgent";
 }) => Promise<CoordinatorWorkerDeliveryStatus>;
 
 // ---------------------------------------------------------------------------
@@ -199,9 +214,11 @@ export type CoordinatorSendWorkerMessageFn = (args: {
 
 function resolveStep(
   graph: OrchestratorRunGraph,
-  stepKey: string,
+  stepRef: string,
 ): OrchestratorStep | null {
-  return graph.steps.find((s) => s.stepKey === stepKey) ?? null;
+  const normalizedRef = normalizeText(stepRef);
+  if (!normalizedRef.length) return null;
+  return graph.steps.find((s) => s.stepKey === normalizedRef || s.id === normalizedRef) ?? null;
 }
 
 function findRunningAttempt(
@@ -266,6 +283,38 @@ function normalizeText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function normalizeDependencyReferences(args: {
+  graph: OrchestratorRunGraph;
+  refs: readonly unknown[] | null | undefined;
+  label: string;
+  additionalKnownKeys?: ReadonlySet<string>;
+}): string[] {
+  const normalizedRefs = dedupeKeys(args.refs);
+  const normalizedKeys: string[] = [];
+  const unknownRefs: string[] = [];
+  for (const ref of normalizedRefs) {
+    const resolvedStep = resolveStep(args.graph, ref);
+    if (resolvedStep) {
+      normalizedKeys.push(resolvedStep.stepKey);
+      continue;
+    }
+    if (args.additionalKnownKeys?.has(ref)) {
+      normalizedKeys.push(ref);
+      continue;
+    }
+    unknownRefs.push(ref);
+  }
+  if (unknownRefs.length > 0) {
+    throw new Error(`${args.label} references unknown dependency keys: ${unknownRefs.join(", ")}`);
+  }
+  return dedupeKeys(normalizedKeys);
+}
+
+function isTaskShellStep(step: OrchestratorStep | null | undefined): boolean {
+  const metadata = asRecord(step?.metadata) ?? {};
+  return metadata.isTask === true;
+}
+
 function resolveExecutableDependencyKeys(graph: OrchestratorRunGraph, dependencyKeys: string[]): string[] {
   const visited = new Set<string>();
   const resolved: string[] = [];
@@ -280,7 +329,7 @@ function resolveExecutableDependencyKeys(graph: OrchestratorRunGraph, dependency
       resolved.push(normalizedKey);
       return;
     }
-    if (!isDisplayOnlyTaskStep(step)) {
+    if (!isTaskShellStep(step)) {
       resolved.push(step.stepKey);
       return;
     }
@@ -469,9 +518,11 @@ function parseValidationFinding(value: unknown): ValidationResultReport["finding
 export function createCoordinatorToolSet(deps: {
   orchestratorService: ReturnType<typeof createOrchestratorService>;
   missionService: ReturnType<typeof createMissionService>;
+  memoryService?: ReturnType<typeof createMemoryService> | null;
   getMissionBudgetStatus?: () => Promise<MissionBudgetSnapshot | null>;
   runId: string;
   missionId: string;
+  projectId?: string;
   logger: Logger;
   db: AdeDb;
   projectRoot: string;
@@ -496,6 +547,10 @@ export function createCoordinatorToolSet(deps: {
     projectRoot,
     onDagMutation
   } = deps;
+  const projectId = typeof deps.projectId === "string" && deps.projectId.trim().length > 0
+    ? deps.projectId.trim()
+    : null;
+  const memoryService = deps.memoryService ?? null;
   const missionLaneId = typeof deps.missionLaneId === "string" && deps.missionLaneId.trim().length > 0
     ? deps.missionLaneId.trim()
     : null;
@@ -570,7 +625,33 @@ export function createCoordinatorToolSet(deps: {
     return `Mission ${missionId}`;
   }
 
-  async function deliverToWorkerSession(sessionId: string, text: string): Promise<CoordinatorWorkerDeliveryStatus> {
+  function mapMemoryCategoryToFactType(category: "fact" | "convention" | "pattern" | "decision" | "gotcha" | "preference") {
+    switch (category) {
+      case "pattern":
+        return "api_pattern" as const;
+      case "gotcha":
+        return "gotcha" as const;
+      case "convention":
+      case "preference":
+        return "config" as const;
+      default:
+        return "architectural" as const;
+    }
+  }
+
+  function resolveMemoryScopeOwnerId(scope: "project" | "agent" | "mission", explicit?: string | null): string | undefined {
+    const trimmed = typeof explicit === "string" ? explicit.trim() : "";
+    if (trimmed.length > 0) return trimmed;
+    if (scope === "agent") return `coordinator:${runId}`;
+    if (scope === "mission") return runId;
+    return undefined;
+  }
+
+  async function deliverToWorkerSession(
+    sessionId: string,
+    text: string,
+    priority: "normal" | "urgent" = "normal",
+  ): Promise<CoordinatorWorkerDeliveryStatus> {
     if (!deps.sendWorkerMessageToSession) {
       return {
         ok: false,
@@ -580,7 +661,7 @@ export function createCoordinatorToolSet(deps: {
       };
     }
     try {
-      return await deps.sendWorkerMessageToSession({ sessionId, text });
+      return await deps.sendWorkerMessageToSession({ sessionId, text, priority });
     } catch (error) {
       return {
         ok: false,
@@ -667,6 +748,13 @@ export function createCoordinatorToolSet(deps: {
       };
 
   function resolveModelFromPhaseModel(g: OrchestratorRunGraph): PhaseModelResolution {
+    const phaseContext = resolveConfiguredPhaseContext(g);
+    if (!phaseContext.ok) {
+      return {
+        ok: false,
+        error: phaseContext.error,
+      };
+    }
     const runMeta = asRecord(g.run.metadata);
     const phaseRuntime = asRecord(runMeta?.phaseRuntime);
     const currentPhaseModel = asRecord(phaseRuntime?.currentPhaseModel);
@@ -683,6 +771,97 @@ export function createCoordinatorToolSet(deps: {
     }
 
     return { ok: false, error: "Current phase does not define modelId. Configure a phase model before spawning workers." };
+  }
+
+  type WorkerSpawnPolicyResult =
+    | {
+        ok: true;
+        missionPhases: PhaseCard[];
+        currentPhase: PhaseCard | null;
+        resolvedModelId: string;
+        resolvedProvider: string;
+      }
+    | {
+        ok: false;
+        error: string;
+        blockedByPhaseOrdering?: boolean;
+        blockedByValidationGate?: boolean;
+      };
+
+  function authorizeWorkerSpawnPolicy(args: {
+    g: OrchestratorRunGraph;
+    requestedModelId?: string | null;
+  }): WorkerSpawnPolicyResult {
+    const missionPhases = resolveMissionPhases(args.g);
+    const phaseContext = resolveConfiguredPhaseContext(args.g, missionPhases);
+    if (!phaseContext.ok) {
+      return { ok: false, error: phaseContext.error };
+    }
+    if (missionPhases.length > 0) {
+      const phaseCheck = validatePhaseOrdering(missionPhases, args.g);
+      if (!phaseCheck.valid) {
+        return {
+          ok: false,
+          error: phaseCheck.reason,
+          blockedByPhaseOrdering: true,
+        };
+      }
+      const validationGateCheck = validateRequiredValidationGates(missionPhases, args.g);
+      if (!validationGateCheck.valid) {
+        return {
+          ok: false,
+          error: validationGateCheck.reason,
+          blockedByValidationGate: true,
+        };
+      }
+    }
+
+    const explicitModelId = typeof args.requestedModelId === "string" ? args.requestedModelId.trim() : "";
+    let resolvedModelId = explicitModelId;
+    if (!resolvedModelId.length) {
+      const phaseModelResolution = resolveModelFromPhaseModel(args.g);
+      if (!phaseModelResolution.ok) {
+        return { ok: false, error: phaseModelResolution.error };
+      }
+      resolvedModelId = phaseModelResolution.modelId;
+    }
+    const resolvedDescriptor = resolveModelDescriptor(resolvedModelId);
+    if (!resolvedDescriptor) {
+      return { ok: false, error: `Model '${resolvedModelId}' is not registered.` };
+    }
+
+    const currentPhaseModelId =
+      missionPhases.length > 0 && typeof phaseContext.currentPhase?.model?.modelId === "string"
+        ? phaseContext.currentPhase.model.modelId.trim()
+        : "";
+    if (explicitModelId.length > 0 && currentPhaseModelId.length > 0) {
+      const currentPhaseDescriptor = resolveModelDescriptor(currentPhaseModelId);
+      const normalizedPhaseModelId = currentPhaseDescriptor?.id ?? currentPhaseModelId;
+      if (resolvedDescriptor.id !== normalizedPhaseModelId) {
+        const phaseLabel = phaseContext.currentPhase?.name;
+        return {
+          ok: false,
+          error:
+            `${phaseLabel ? `Current phase "${phaseLabel}"` : "Current phase"} is configured for model "${normalizedPhaseModelId}". ` +
+            `Omit modelId to use the phase model, or call set_current_phase before switching models.`
+        };
+      }
+    }
+
+    const resolvedProvider =
+      resolvedDescriptor.family === "anthropic"
+        ? "claude"
+        : resolvedDescriptor.family === "openai"
+          ? "codex"
+          : resolvedDescriptor.family;
+
+    return {
+      ok: true,
+      missionPhases,
+      currentPhase: phaseContext.currentPhase,
+      resolvedModelId: resolvedDescriptor.id,
+      resolvedProvider,
+    };
   }
 
   // ─── Worker Management ────────────────────────────────────────
@@ -710,13 +889,25 @@ export function createCoordinatorToolSet(deps: {
     reusedExistingStep: boolean;
   } => {
     const g = graph();
-    const requestedDependencyStepKeys = dedupeKeys(args.requestedDependsOn ?? args.dependsOn);
-    const inferredDependencyStepKeys = dedupeKeys(args.inferredDependsOn);
-    const resolvedDependencyStepKeys = dedupeKeys(args.dependsOn);
+    const requestedDependencyStepKeys = normalizeDependencyReferences({
+      graph: g,
+      refs: args.requestedDependsOn ?? args.dependsOn,
+      label: `Worker '${args.name}'`,
+    });
+    const inferredDependencyStepKeys = normalizeDependencyReferences({
+      graph: g,
+      refs: args.inferredDependsOn,
+      label: `Worker '${args.name}'`,
+    });
+    const resolvedDependencyStepKeys = normalizeDependencyReferences({
+      graph: g,
+      refs: args.dependsOn,
+      label: `Worker '${args.name}'`,
+    });
     const executableDependencyStepKeys = resolveExecutableDependencyKeys(g, resolvedDependencyStepKeys);
-    const displayDependencyTaskKeys = requestedDependencyStepKeys.filter((dependencyKey) => {
+    const taskShellDependencyKeys = requestedDependencyStepKeys.filter((dependencyKey) => {
       const dependencyStep = resolveStep(g, dependencyKey);
-      return Boolean(dependencyStep && isDisplayOnlyTaskStep(dependencyStep));
+      return Boolean(dependencyStep && isTaskShellStep(dependencyStep));
     });
     const teamRuntime = resolveTeamRuntimeConfig(g);
     const roleDef = args.roleName ? resolveRoleDefinition(teamRuntime, args.roleName) : null;
@@ -743,6 +934,30 @@ export function createCoordinatorToolSet(deps: {
     const replacementValidationReport = asRecord(replacementSourceMeta.lastValidationReport);
     const replacementAttempt = replacementSourceStep ? findLatestCompletedAttempt(g, replacementSourceStep.id) : null;
     const inheritedLaneId = normalizeLaneId(replacementSourceStep?.laneId ?? null);
+    const replacementReason = args.replacementReason?.trim() || "Replacement worker requested by coordinator.";
+    const replacementSourceSummary =
+      (typeof replacementResultReport.summary === "string" && replacementResultReport.summary.trim().length > 0
+        ? replacementResultReport.summary.trim()
+        : replacementAttempt?.resultEnvelope?.summary) ?? null;
+    const replacementChangedFiles = Array.isArray(replacementResultReport.filesChanged)
+      ? replacementResultReport.filesChanged
+          .map((entry) => String(entry ?? "").trim())
+          .filter((entry) => entry.length > 0)
+      : [];
+    const replacementFailedChecks =
+      replacementResultReport.testsRun &&
+      typeof replacementResultReport.testsRun === "object" &&
+      Number((replacementResultReport.testsRun as Record<string, unknown>).failed ?? 0) > 0
+        ? [
+            {
+              failed: Number((replacementResultReport.testsRun as Record<string, unknown>).failed ?? 0),
+              raw:
+                typeof (replacementResultReport.testsRun as Record<string, unknown>).raw === "string"
+                  ? (replacementResultReport.testsRun as Record<string, unknown>).raw
+                  : null
+            }
+          ]
+        : [];
     const explicitLaneId = normalizeLaneId(args.laneId ?? null);
     const effectiveLaneId = explicitLaneId ?? inheritedLaneId ?? missionLaneId;
     const maxIndex = g.steps.reduce(
@@ -756,20 +971,20 @@ export function createCoordinatorToolSet(deps: {
         : `worker_${args.name.replace(/[^a-zA-Z0-9_-]/g, "_")}_${Date.now()}`;
     const missionPhases = resolveMissionPhases();
     const phaseMetadata = buildPhaseMetadataForNewStep(g, missionPhases);
-    const reusableDisplayTask =
+    const reusableTaskShell =
       !replacementSourceStep
         ? (() => {
             const candidate = resolveStep(g, stepKey);
             if (!candidate) return null;
-            if (!isDisplayOnlyTaskStep(candidate)) return null;
+            if (!isTaskShellStep(candidate)) return null;
             if (TERMINAL_STEP_STATUSES.has(candidate.status)) return null;
             return candidate;
           })()
         : null;
-    if (reusableDisplayTask) {
+    if (reusableTaskShell) {
       let preparedStep = orchestratorService.updateStepMetadata({
         runId,
-        stepId: reusableDisplayTask.id,
+        stepId: reusableTaskShell.id,
         metadata: {
           ...phaseMetadata,
           executorKind: "unified",
@@ -777,7 +992,7 @@ export function createCoordinatorToolSet(deps: {
           workerName: args.name,
           requestedDependencyStepKeys,
           ...(inferredDependencyStepKeys.length > 0 ? { inferredDependencyStepKeys } : {}),
-          planningTaskDependencies: displayDependencyTaskKeys,
+          planningTaskDependencies: taskShellDependencyKeys,
           spawnedByCoordinator: true,
           modelId: resolvedModelId,
           modelProviderHint: resolvedProvider,
@@ -786,9 +1001,8 @@ export function createCoordinatorToolSet(deps: {
           roleCapabilities: roleDef?.capabilities ?? [],
           toolProfile: toolProfile ?? null,
           mcpServerAllowlist: teamRuntime?.mcpServerAllowlist ?? [],
-          displayOnlyTask: false,
           isTask: false,
-          convertedFromDisplayTask: true,
+          convertedFromTaskShell: true,
           ...(args.validationContract ? { validationContract: args.validationContract } : {}),
         }
       });
@@ -797,7 +1011,7 @@ export function createCoordinatorToolSet(deps: {
           runId,
           stepId: preparedStep.id,
           laneId: effectiveLaneId,
-          reason: "Converted display-only task into an executable worker step.",
+          reason: "Converted task shell into an executable worker step.",
           transferredBy: "coordinator",
         });
       }
@@ -831,7 +1045,7 @@ export function createCoordinatorToolSet(deps: {
             workerName: args.name,
             requestedDependencyStepKeys,
             ...(inferredDependencyStepKeys.length > 0 ? { inferredDependencyStepKeys } : {}),
-            planningTaskDependencies: displayDependencyTaskKeys,
+            planningTaskDependencies: taskShellDependencyKeys,
             spawnedByCoordinator: true,
             modelId: resolvedModelId,
             modelProviderHint: resolvedProvider,
@@ -847,30 +1061,10 @@ export function createCoordinatorToolSet(deps: {
                     replacedWorkerId: replacementSourceStep.stepKey,
                     replacedStepId: replacementSourceStep.id,
                     inheritedLaneId,
-                    reason: args.replacementReason?.trim() || "Replacement worker requested by coordinator.",
-                    sourceSummary:
-                      (typeof replacementResultReport.summary === "string" && replacementResultReport.summary.trim().length > 0
-                        ? replacementResultReport.summary.trim()
-                        : replacementAttempt?.resultEnvelope?.summary) ?? null,
-                    changedFiles: Array.isArray(replacementResultReport.filesChanged)
-                      ? replacementResultReport.filesChanged
-                          .map((entry) => String(entry ?? "").trim())
-                          .filter((entry) => entry.length > 0)
-                      : [],
-                    failedChecks:
-                      replacementResultReport.testsRun &&
-                      typeof replacementResultReport.testsRun === "object" &&
-                      Number((replacementResultReport.testsRun as Record<string, unknown>).failed ?? 0) > 0
-                        ? [
-                            {
-                              failed: Number((replacementResultReport.testsRun as Record<string, unknown>).failed ?? 0),
-                              raw:
-                                typeof (replacementResultReport.testsRun as Record<string, unknown>).raw === "string"
-                                  ? (replacementResultReport.testsRun as Record<string, unknown>).raw
-                                  : null
-                            }
-                          ]
-                        : [],
+                    reason: replacementReason,
+                    sourceSummary: replacementSourceSummary,
+                    changedFiles: replacementChangedFiles,
+                    failedChecks: replacementFailedChecks,
                     priorValidatorFeedback: replacementValidationReport ?? null
                   }
                 }
@@ -888,46 +1082,25 @@ export function createCoordinatorToolSet(deps: {
       ],
     });
     if (replacementSourceStep && created[0]) {
-      const replacementPayload = {
-        replacedWorkerId: replacementSourceStep.stepKey,
-        replacedStepId: replacementSourceStep.id,
-        replacementWorkerId: created[0].stepKey,
-        replacementStepId: created[0].id,
-        laneId: effectiveLaneId,
-        reason: args.replacementReason?.trim() || "Replacement worker requested by coordinator.",
-        sourceSummary:
-          (typeof replacementResultReport.summary === "string" && replacementResultReport.summary.trim().length > 0
-            ? replacementResultReport.summary.trim()
-            : replacementAttempt?.resultEnvelope?.summary) ?? null,
-        changedFiles: Array.isArray(replacementResultReport.filesChanged)
-          ? replacementResultReport.filesChanged
-              .map((entry) => String(entry ?? "").trim())
-              .filter((entry) => entry.length > 0)
-          : [],
-        failedChecks:
-          replacementResultReport.testsRun &&
-          typeof replacementResultReport.testsRun === "object" &&
-          Number((replacementResultReport.testsRun as Record<string, unknown>).failed ?? 0) > 0
-            ? [
-                {
-                  failed: Number((replacementResultReport.testsRun as Record<string, unknown>).failed ?? 0),
-                  raw:
-                    typeof (replacementResultReport.testsRun as Record<string, unknown>).raw === "string"
-                      ? (replacementResultReport.testsRun as Record<string, unknown>).raw
-                      : null
-                }
-              ]
-            : [],
-        priorValidatorFeedback: replacementValidationReport ?? null,
-        priorStatusReport: replacementStatusReport ?? null
-      };
       orchestratorService.createHandoff({
         missionId,
         runId,
         stepId: created[0].id,
         handoffType: "worker_replacement_handoff",
         producer: "coordinator",
-        payload: replacementPayload
+        payload: {
+          replacedWorkerId: replacementSourceStep.stepKey,
+          replacedStepId: replacementSourceStep.id,
+          replacementWorkerId: created[0].stepKey,
+          replacementStepId: created[0].id,
+          laneId: effectiveLaneId,
+          reason: replacementReason,
+          sourceSummary: replacementSourceSummary,
+          changedFiles: replacementChangedFiles,
+          failedChecks: replacementFailedChecks,
+          priorValidatorFeedback: replacementValidationReport ?? null,
+          priorStatusReport: replacementStatusReport ?? null
+        },
       });
     }
     return {
@@ -954,6 +1127,7 @@ export function createCoordinatorToolSet(deps: {
         if (Array.isArray(runPhaseConfig.selectedPhases)) return runPhaseConfig.selectedPhases as PhaseCard[];
         if (Array.isArray(runPhaseConfig.phases)) return runPhaseConfig.phases as PhaseCard[];
       }
+      if (Array.isArray(runMeta?.phaseOverride)) return runMeta.phaseOverride as PhaseCard[];
       const runPhaseOverride = asRecord(runMeta?.phaseOverride);
       if (runPhaseOverride) {
         if (Array.isArray(runPhaseOverride.selectedPhases)) return runPhaseOverride.selectedPhases as PhaseCard[];
@@ -974,11 +1148,79 @@ export function createCoordinatorToolSet(deps: {
         if (Array.isArray(phaseConfig.selectedPhases)) return phaseConfig.selectedPhases as PhaseCard[];
         if (Array.isArray(phaseConfig.phases)) return phaseConfig.phases as PhaseCard[];
       }
+      if (Array.isArray(raw.phaseOverride)) return raw.phaseOverride as PhaseCard[];
       if (Array.isArray(raw.phases)) return raw.phases as PhaseCard[];
       return [];
     } catch {
       return [];
     }
+  }
+
+  type PhaseContextResolution =
+    | {
+        ok: true;
+        phases: PhaseCard[];
+        currentPhase: PhaseCard | null;
+        phaseRuntime: Record<string, unknown> | null;
+      }
+    | {
+        ok: false;
+        phases: PhaseCard[];
+        error: string;
+      };
+
+  function resolveConfiguredPhaseContext(
+    g: OrchestratorRunGraph,
+    phasesInput?: PhaseCard[],
+  ): PhaseContextResolution {
+    const phases = [...(phasesInput ?? resolveMissionPhases(g))].sort((a, b) => a.position - b.position);
+    const runMeta = asRecord(g.run.metadata);
+    const phaseRuntime = asRecord(runMeta?.phaseRuntime);
+    if (phases.length === 0) {
+      return {
+        ok: true,
+        phases,
+        currentPhase: null,
+        phaseRuntime,
+      };
+    }
+    if (!phaseRuntime) {
+      return {
+        ok: false,
+        phases,
+        error:
+          "Mission phases are configured, but phase runtime is missing. Call set_current_phase before spawning or delegating workers."
+      };
+    }
+    const runtimePhaseKey = typeof phaseRuntime.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
+    const runtimePhaseName = typeof phaseRuntime.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim() : "";
+    if (!runtimePhaseKey && !runtimePhaseName) {
+      return {
+        ok: false,
+        phases,
+        error:
+          "Mission phases are configured, but the current phase is unset. Call set_current_phase before spawning or delegating workers."
+      };
+    }
+    const currentPhase = phases.find(
+      (phase) => phase.phaseKey === runtimePhaseKey || phase.name === runtimePhaseName,
+    );
+    if (!currentPhase) {
+      const requestedLabel = runtimePhaseName || runtimePhaseKey;
+      return {
+        ok: false,
+        phases,
+        error:
+          `Current phase "${requestedLabel}" is not present in the configured mission phases. ` +
+          "Call set_current_phase with a valid phase before spawning or delegating workers."
+      };
+    }
+    return {
+      ok: true,
+      phases,
+      currentPhase,
+      phaseRuntime,
+    };
   }
 
   function resolvePhaseStepType(phaseKey: string): string {
@@ -1035,6 +1277,15 @@ export function createCoordinatorToolSet(deps: {
     };
   }
 
+  function getStepsForPhase(g: OrchestratorRunGraph, phase: PhaseCard): OrchestratorStep[] {
+    return g.steps.filter((step) => {
+      const stepMeta = asRecord(step.metadata);
+      const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim() : "";
+      const stepPhaseName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim() : "";
+      return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
+    });
+  }
+
   function stepBelongsToPhase(step: OrchestratorStep, phase: PhaseCard): boolean {
     const stepMeta = asRecord(step.metadata);
     const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
@@ -1045,7 +1296,7 @@ export function createCoordinatorToolSet(deps: {
   }
 
   function isImplicitDependencyCandidate(step: OrchestratorStep): boolean {
-    if (isDisplayOnlyTaskStep(step)) return false;
+    if (isTaskShellStep(step)) return false;
     return step.status === "succeeded" || step.status === "running" || step.status === "blocked";
   }
 
@@ -1098,7 +1349,69 @@ export function createCoordinatorToolSet(deps: {
       return phase.length === 0 || phase === "planning" || phase === currentKey || phase === currentName;
     });
     if (blocking.length === 0) return null;
-    return `Planning input is still pending. Resolve ${blocking.length === 1 ? "the open clarification" : "the open clarifications"} before executing planning actions.`;
+    return `Planning input is still pending. Resolve ${blocking.length === 1 ? "the open question" : "the open questions"} before executing planning actions.`;
+  }
+
+  function resolvePlanningQuestionPolicy(g: OrchestratorRunGraph): {
+    phase: PhaseCard | null;
+    phaseKey: string;
+    enabled: boolean;
+    maxQuestions: number;
+  } {
+    const phases = resolveMissionPhases(g);
+    const current = resolveCurrentPhaseCard(g, phases);
+    const currentKey = current?.phaseKey.trim().toLowerCase() ?? "";
+    const currentName = current?.name.trim().toLowerCase() ?? "";
+    const inPlanning = currentKey === "planning" || currentName === "planning";
+    return {
+      phase: current ?? null,
+      phaseKey: current?.phaseKey ?? current?.name ?? "",
+      enabled: inPlanning && current?.askQuestions.enabled === true,
+      maxQuestions: Math.max(1, Math.min(10, Number(current?.askQuestions.maxQuestions ?? 5) || 5)),
+    };
+  }
+
+  function listPlanningQuestionInterventions(g: OrchestratorRunGraph): import("../../../shared/types").MissionIntervention[] {
+    const mission = missionService.get(missionId);
+    if (!mission) return [];
+    const policy = resolvePlanningQuestionPolicy(g);
+    const normalizedPhase = policy.phaseKey.trim().toLowerCase();
+    return mission.interventions.filter((entry) => {
+      if (entry.interventionType !== "manual_input") return false;
+      const metadata = asRecord(entry.metadata);
+      if (metadata?.source !== "ask_user") return false;
+      const phase = typeof metadata?.phase === "string" ? metadata.phase.trim().toLowerCase() : "";
+      return phase.length === 0 || phase === "planning" || phase === normalizedPhase;
+    });
+  }
+
+  function getPlanningQuestionPolicyBlockReason(g: OrchestratorRunGraph): string | null {
+    const policy = resolvePlanningQuestionPolicy(g);
+    if (!policy.enabled) return null;
+    const interventions = listPlanningQuestionInterventions(g);
+    const openQuestion = interventions.find((entry) => entry.status === "open") ?? null;
+    if (openQuestion) {
+      return "Planning questions are still open. Resolve them before spawning the planning worker.";
+    }
+    if (interventions.length === 0) {
+      return "Planning Ask Questions is enabled. Use ask_user first, wait for the user's answers, then spawn the planning worker.";
+    }
+    return null;
+  }
+
+  function getQuestionAskingBlockReason(g: OrchestratorRunGraph): string | null {
+    const policy = resolvePlanningQuestionPolicy(g);
+    if (policy.enabled) return null;
+    return "Ask Questions is disabled for the current phase. Outside Planning, proceed with the best reasonable assumption unless runtime opens its own intervention.";
+  }
+
+  function getPlanningRepoReadBlockReason(g: OrchestratorRunGraph): string | null {
+    const phases = resolveMissionPhases(g);
+    const current = resolveCurrentPhaseCard(g, phases);
+    const currentKey = current?.phaseKey.trim().toLowerCase() ?? "";
+    const currentName = current?.name.trim().toLowerCase() ?? "";
+    if (currentKey !== "planning" && currentName !== "planning") return null;
+    return "Coordinator-side repo inspection is disabled during Planning. Use get_project_context to brief the planner, wait for the planning worker output, then transition phases before doing coordinator-side file reads.";
   }
 
   function promptContainsImplementationDirectives(prompt: string): boolean {
@@ -1140,9 +1453,10 @@ export function createCoordinatorToolSet(deps: {
     const name = args.name.trim().toLowerCase();
     const roleName = args.roleName?.trim().toLowerCase() ?? "";
     const prompt = args.prompt.trim().toLowerCase();
+    const validationPattern = /\b(validat(?:e|ion|or))\b/;
     return (
-      /\b(validat(?:e|ion|or))\b/.test(name)
-      || /\b(validat(?:e|ion|or))\b/.test(roleName)
+      validationPattern.test(name)
+      || validationPattern.test(roleName)
       || prompt.includes("report_validation")
       || prompt.includes("validation checklist")
       || prompt.includes("verdict: \"pass\"")
@@ -1154,8 +1468,7 @@ export function createCoordinatorToolSet(deps: {
     const stepMeta = asRecord(step.metadata);
     const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
     const stepPhaseName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim().toLowerCase() : "";
-    const isDisplayOnly = stepMeta?.displayOnlyTask === true || stepMeta?.isTask === true;
-    return !isDisplayOnly && (stepPhaseKey === "planning" || stepPhaseName === "planning");
+    return !isTaskShellStep(step) && (stepPhaseKey === "planning" || stepPhaseName === "planning");
   }
 
   function phaseHasCompletionEligibleStep(
@@ -1164,11 +1477,29 @@ export function createCoordinatorToolSet(deps: {
   ): boolean {
     const phaseKey = phase.phaseKey.trim().toLowerCase();
     const phaseName = phase.name.trim().toLowerCase();
-    const phaseSteps = stepsForPhase(phase);
+    const phaseSteps = filterExecutionSteps(stepsForPhase(phase));
     if (phaseKey === "planning" || phaseName === "planning") {
       return phaseSteps.some((step) => isPlanningExecutionStep(step) && step.status === "succeeded");
     }
     return phaseSteps.some((step) => TERMINAL_STEP_STATUSES.has(step.status));
+  }
+
+  function phaseHasSuccessfulCompletion(
+    phase: PhaseCard,
+    stepsForPhase: (phase: PhaseCard) => OrchestratorStep[],
+  ): boolean {
+    const phaseKey = phase.phaseKey.trim().toLowerCase();
+    const phaseName = phase.name.trim().toLowerCase();
+    const phaseSteps = filterExecutionSteps(stepsForPhase(phase));
+    if (phaseSteps.length === 0) return false;
+    if (phaseKey === "planning" || phaseName === "planning") {
+      return phaseSteps.some((step) => isPlanningExecutionStep(step) && step.status === "succeeded");
+    }
+    const allTerminalWithoutFailure = phaseSteps.every(
+      (step) => step.status === "succeeded" || step.status === "skipped" || step.status === "superseded",
+    );
+    const hasConcreteSuccess = phaseSteps.some((step) => step.status === "succeeded");
+    return allTerminalWithoutFailure && hasConcreteSuccess;
   }
 
   function stopReasonLooksLikeNormalCompletion(reason: string): boolean {
@@ -1212,48 +1543,26 @@ export function createCoordinatorToolSet(deps: {
     g: OrchestratorRunGraph,
   ): { valid: true } | { valid: false; reason: string } {
     if (phases.length === 0) return { valid: true };
-
-    // Resolve current phase from run metadata
-    const runMeta = asRecord(g.run.metadata);
-    const phaseRuntime = asRecord(runMeta?.phaseRuntime);
-    const currentPhaseKey = typeof phaseRuntime?.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
-    const currentPhaseName = typeof phaseRuntime?.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim() : "";
-
-    if (!currentPhaseKey && !currentPhaseName) {
-      // No phase context set — cannot enforce ordering, allow spawn
-      return { valid: true };
+    const phaseContext = resolveConfiguredPhaseContext(g, phases);
+    if (!phaseContext.ok) {
+      return { valid: false, reason: phaseContext.error };
     }
-
-    const sorted = [...phases].sort((a, b) => a.position - b.position);
-    const currentPhase = sorted.find(
-      (p) => p.phaseKey === currentPhaseKey || p.name === currentPhaseName,
-    );
-    if (!currentPhase) {
-      // Current phase not found in cards — cannot enforce, allow spawn
-      return { valid: true };
-    }
+    if (!phaseContext.currentPhase) return { valid: true };
+    const sorted = phaseContext.phases;
+    const currentPhase = phaseContext.currentPhase;
 
     const currentIndex = sorted.indexOf(currentPhase);
 
-    // Collect steps belonging to a given phase (matched by phaseKey or name)
-    const stepsForPhase = (phase: PhaseCard): OrchestratorStep[] =>
-      g.steps.filter((step) => {
-        const stepMeta = asRecord(step.metadata);
-        const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim() : "";
-        const stepPhaseName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim() : "";
-        return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
-      });
-
-    const phaseHasTerminalStep = (phase: PhaseCard): boolean =>
-      phaseHasCompletionEligibleStep(phase, stepsForPhase);
+    const phaseHasSucceeded = (phase: PhaseCard): boolean =>
+      phaseHasSuccessfulCompletion(phase, (p) => getStepsForPhase(g, p));
 
     const phaseHasNonTerminalStep = (phase: PhaseCard): boolean =>
-      stepsForPhase(phase).some((step) => !TERMINAL_STEP_STATUSES.has(step.status));
+      getStepsForPhase(g, phase).some((step) => !TERMINAL_STEP_STATUSES.has(step.status));
 
     const currentPhaseKeyNormalized = currentPhase.phaseKey.trim().toLowerCase();
     const currentPhaseNameNormalized = currentPhase.name.trim().toLowerCase();
     if (currentPhaseKeyNormalized === "planning" || currentPhaseNameNormalized === "planning") {
-      const planningExecutionSteps = filterExecutionSteps(stepsForPhase(currentPhase));
+      const planningExecutionSteps = filterExecutionSteps(getStepsForPhase(g, currentPhase));
       if (planningExecutionSteps.some((step) => !TERMINAL_STEP_STATUSES.has(step.status))) {
         return {
           valid: false,
@@ -1275,10 +1584,10 @@ export function createCoordinatorToolSet(deps: {
         const trimmed = predecessor.trim();
         if (!trimmed.length) continue;
         const predecessorPhase = sorted.find((p) => p.phaseKey === trimmed || p.name === trimmed);
-        if (predecessorPhase && !phaseHasTerminalStep(predecessorPhase)) {
+        if (predecessorPhase && !phaseHasSucceeded(predecessorPhase)) {
           return {
             valid: false,
-            reason: `Phase "${currentPhase.name}" requires phase "${predecessorPhase.name}" to complete first (mustFollow constraint). No completed steps found for "${predecessorPhase.name}".`,
+            reason: `Phase "${currentPhase.name}" requires phase "${predecessorPhase.name}" to succeed first (mustFollow constraint). No successful completion was found for "${predecessorPhase.name}".`,
           };
         }
       }
@@ -1288,10 +1597,10 @@ export function createCoordinatorToolSet(deps: {
     for (let i = 0; i < currentIndex; i++) {
       const earlier = sorted[i];
       if (!earlier.validationGate.required) continue;
-      if (!phaseHasTerminalStep(earlier)) {
+      if (!phaseHasSucceeded(earlier)) {
         return {
           valid: false,
-          reason: `Required phase "${earlier.name}" (position ${earlier.position}) has no completed steps yet. It must finish before starting phase "${currentPhase.name}" (position ${currentPhase.position}).`,
+          reason: `Required phase "${earlier.name}" (position ${earlier.position}) has not succeeded yet. It must succeed before starting phase "${currentPhase.name}" (position ${currentPhase.position}).`,
         };
       }
     }
@@ -1309,12 +1618,12 @@ export function createCoordinatorToolSet(deps: {
       }
     }
 
-    // Check mustBeFirst: if a phase is mustBeFirst, it must complete before others start
+    // Check mustBeFirst: if a phase is mustBeFirst, it must succeed before others start
     const firstPhase = sorted.find((p) => p.orderingConstraints.mustBeFirst);
-    if (firstPhase && firstPhase !== currentPhase && !phaseHasTerminalStep(firstPhase)) {
+    if (firstPhase && firstPhase !== currentPhase && !phaseHasSucceeded(firstPhase)) {
       return {
         valid: false,
-        reason: `Phase "${firstPhase.name}" is marked mustBeFirst and has not completed yet. Cannot start phase "${currentPhase.name}" until it finishes.`,
+        reason: `Phase "${firstPhase.name}" is marked mustBeFirst and has not succeeded yet. Cannot start phase "${currentPhase.name}" until it succeeds.`,
       };
     }
 
@@ -1335,31 +1644,19 @@ export function createCoordinatorToolSet(deps: {
     g: OrchestratorRunGraph,
   ): { valid: true } | { valid: false; reason: string } {
     if (phases.length === 0) return { valid: true };
-    const runMeta = asRecord(g.run.metadata);
-    const phaseRuntime = asRecord(runMeta?.phaseRuntime);
-    const currentPhaseKey = typeof phaseRuntime?.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
-    const currentPhaseName = typeof phaseRuntime?.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim() : "";
-    if (!currentPhaseKey && !currentPhaseName) return { valid: true };
-
-    const sorted = [...phases].sort((a, b) => a.position - b.position);
-    const currentPhase = sorted.find(
-      (phase) => phase.phaseKey === currentPhaseKey || phase.name === currentPhaseName,
-    );
-    if (!currentPhase) return { valid: true };
+    const phaseContext = resolveConfiguredPhaseContext(g, phases);
+    if (!phaseContext.ok) {
+      return { valid: false, reason: phaseContext.error };
+    }
+    if (!phaseContext.currentPhase) return { valid: true };
+    const sorted = phaseContext.phases;
+    const currentPhase = phaseContext.currentPhase;
     const currentIndex = sorted.indexOf(currentPhase);
-
-    const stepsForPhase = (phase: PhaseCard): OrchestratorStep[] =>
-      g.steps.filter((step) => {
-        const stepMeta = asRecord(step.metadata);
-        const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim() : "";
-        const stepPhaseName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim() : "";
-        return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
-      });
 
     for (let i = 0; i < currentIndex; i += 1) {
       const earlier = sorted[i]!;
       if (!earlier.validationGate.required) continue;
-      const missingRequiredValidation = stepsForPhase(earlier)
+      const missingRequiredValidation = getStepsForPhase(g, earlier)
         .filter((step) => step.status === "succeeded")
         .filter((step) => !stepHasPassingRequiredValidation(step));
       if (missingRequiredValidation.length > 0) {
@@ -1401,6 +1698,10 @@ export function createCoordinatorToolSet(deps: {
         if (planningInputBlockReason) {
           return { ok: false, error: planningInputBlockReason };
         }
+        const planningQuestionPolicyBlockReason = getPlanningQuestionPolicyBlockReason(g);
+        if (planningQuestionPolicyBlockReason) {
+          return { ok: false, error: planningQuestionPolicyBlockReason };
+        }
         const normalizedName = normalizeText(name);
         if (!normalizedName.length) {
           return { ok: false, error: "Worker name is required." };
@@ -1409,18 +1710,11 @@ export function createCoordinatorToolSet(deps: {
         if (!normalizedPrompt.length) {
           return { ok: false, error: "Worker prompt is required." };
         }
-        const missionPhases = resolveMissionPhases(g);
-        const currentPhaseForPromptGuard = missionPhases.length > 0 ? resolveCurrentPhaseCard(g, missionPhases) : null;
-        const currentPhaseKeyForPromptGuard = currentPhaseForPromptGuard?.phaseKey.trim().toLowerCase() ?? "";
-        if (currentPhaseKeyForPromptGuard === "planning" && promptContainsImplementationDirectives(normalizedPrompt)) {
-          return {
-            ok: false,
-            error:
-              'Current phase is "planning". Planning workers must stay read-only and produce research/plan output only. ' +
-              'This prompt contains implementation or commit instructions. Use a research prompt now, then call set_current_phase with phaseKey "development" before implementation work.'
-          };
-        }
-        const requestedDependsOn = dedupeKeys(dependsOn);
+        const requestedDependsOn = normalizeDependencyReferences({
+          graph: g,
+          refs: dependsOn,
+          label: `Worker '${normalizedName}'`,
+        });
         const teamRuntime = resolveTeamRuntimeConfig(g);
         const normalizedRole = typeof role === "string" ? role.trim() : "";
         if (normalizedRole.length > 0 && !resolveRoleDefinition(teamRuntime, normalizedRole)) {
@@ -1434,7 +1728,12 @@ export function createCoordinatorToolSet(deps: {
         if (validationContract && !parsedContract) {
           return { ok: false, error: "Invalid validationContract payload." };
         }
-        const currentPhase = missionPhases.length > 0 ? resolveCurrentPhaseCard(g, missionPhases) : null;
+        const missionPhases = resolveMissionPhases(g);
+        const phaseContext = resolveConfiguredPhaseContext(g, missionPhases);
+        if (!phaseContext.ok) {
+          return { ok: false, error: phaseContext.error };
+        }
+        const currentPhase = phaseContext.currentPhase;
         const currentPhaseKey = currentPhase?.phaseKey.trim().toLowerCase() ?? "";
         const inferredDependsOn =
           requestedDependsOn.length === 0 && missionPhases.length > 0
@@ -1442,6 +1741,14 @@ export function createCoordinatorToolSet(deps: {
             : [];
         const normalizedDependsOn =
           requestedDependsOn.length > 0 ? requestedDependsOn : inferredDependsOn;
+        if (currentPhaseKey === "planning" && promptContainsImplementationDirectives(normalizedPrompt)) {
+          return {
+            ok: false,
+            error:
+              'Current phase is "planning". Planning workers must stay read-only and produce research/plan output only. ' +
+              'This prompt contains implementation or commit instructions. Use a research prompt now, then call set_current_phase with phaseKey "development" before implementation work.'
+          };
+        }
         if (
           currentPhaseKey !== "validation"
           && looksLikeValidationWorkerRequest({
@@ -1458,41 +1765,62 @@ export function createCoordinatorToolSet(deps: {
               'Finish the active work, call set_current_phase with phaseKey "validation", and depend on the worker you are validating.'
           };
         }
-
-        // Resolve worker model from explicit input -> active phase model.
-        const explicitModelId = typeof modelId === "string" ? modelId.trim() : "";
-        let resolvedModelId = explicitModelId;
-        if (!resolvedModelId.length) {
-          const phaseModelResolution = resolveModelFromPhaseModel(g);
-          if (!phaseModelResolution.ok) {
-            return { ok: false, error: phaseModelResolution.error };
-          }
-          resolvedModelId = phaseModelResolution.modelId;
-        }
-        const resolvedDescriptor = resolveModelDescriptor(resolvedModelId);
-        if (!resolvedDescriptor) {
-          return { ok: false, error: `Model '${resolvedModelId}' is not registered.` };
-        }
-        const resolvedProvider =
-          resolvedDescriptor.family === "anthropic"
-            ? "claude"
-            : resolvedDescriptor.family === "openai"
-            ? "codex"
-            : resolvedDescriptor.family;
-        const currentPhaseModelId =
-          typeof currentPhase?.model?.modelId === "string" ? currentPhase.model.modelId.trim() : "";
-        if (explicitModelId.length > 0 && currentPhase && currentPhaseModelId.length > 0) {
-          const currentPhaseDescriptor = resolveModelDescriptor(currentPhaseModelId);
-          const normalizedPhaseModelId = currentPhaseDescriptor?.id ?? currentPhaseModelId;
-          if (resolvedDescriptor.id !== normalizedPhaseModelId) {
-            return {
-              ok: false,
-              error:
-                `Current phase "${currentPhase.name}" is configured for model "${normalizedPhaseModelId}". ` +
-                `Omit modelId to use the phase model, or call set_current_phase before switching models.`
+        const spawnPolicy = authorizeWorkerSpawnPolicy({
+          g,
+          requestedModelId: modelId,
+        });
+        if (!spawnPolicy.ok) {
+          if (spawnPolicy.blockedByValidationGate) {
+            logger.info("coordinator.spawn_worker.validation_gate_blocked", {
+              name,
+              reason: spawnPolicy.error,
+            });
+            const gateBlockedAt = nowIso();
+            const graphStep = resolveStep(
+              g,
+              replacementSourceWorkerId.length > 0
+                ? replacementSourceWorkerId
+                : requestedDependsOn[requestedDependsOn.length - 1] ?? "",
+            );
+            const gateBlockedDetail = {
+              workerName: name,
+              requestedRole: normalizedRole.length > 0 ? normalizedRole : null,
+              phase: resolveCurrentPhase(g),
+              reason: spawnPolicy.error,
+              blockedByValidationGate: true,
+              laneId: typeof laneId === "string" && laneId.trim().length > 0 ? laneId.trim() : null,
+              stepKey: graphStep?.stepKey ?? null
             };
+            orchestratorService.appendTimelineEvent({
+              runId,
+              stepId: graphStep?.id ?? null,
+              eventType: "validation_gate_blocked",
+              reason: "required_validation_gate_blocked",
+              detail: gateBlockedDetail
+            });
+            orchestratorService.appendRuntimeEvent({
+              runId,
+              stepId: graphStep?.id ?? null,
+              eventType: "validation_gate_blocked",
+              eventKey: `validation_gate_blocked:${runId}:${name}:${normalizedRole}:${gateBlockedAt}`,
+              occurredAt: gateBlockedAt,
+              payload: gateBlockedDetail
+            });
+            orchestratorService.emitRuntimeUpdate({
+              runId,
+              stepId: graphStep?.id ?? null,
+              reason: "validation_gate_blocked"
+            });
+          } else if (spawnPolicy.blockedByPhaseOrdering) {
+            logger.info("coordinator.spawn_worker.phase_ordering_blocked", {
+              name,
+              reason: spawnPolicy.error,
+            });
           }
+          return { ok: false, error: spawnPolicy.error };
         }
+        let resolvedModelId = spawnPolicy.resolvedModelId;
+        const resolvedProvider = spawnPolicy.resolvedProvider;
 
         // Hard cap check: refuse to spawn if budget hard caps are triggered
         const budgetCheck = await checkBudgetHardCaps({
@@ -1527,6 +1855,49 @@ export function createCoordinatorToolSet(deps: {
           }
         }
 
+        // ── VAL-USAGE-003: Model downgrade runtime ──
+        // Check if usage exceeds the configured model downgrade threshold.
+        // If so, override the resolved model ID with a cheaper alternative.
+        if (getMissionBudgetStatus) {
+          try {
+            const usageSnap = await getMissionBudgetStatus();
+            if (usageSnap) {
+              const runMeta = asRecord(g.run.metadata);
+              const budgetConfig = asRecord(runMeta?.budgetConfig);
+              const thresholdPct = Number(budgetConfig?.modelDowngradeThresholdPct ?? 0);
+              if (thresholdPct > 0) {
+                const maxUsagePct = Math.max(
+                  ...(usageSnap.perProvider ?? []).map((p: any) =>
+                    Math.max(Number(p.fiveHour?.usedPct ?? 0), Number(p.weekly?.usedPct ?? 0))
+                  ),
+                  0
+                );
+                if (maxUsagePct >= thresholdPct) {
+                  const { evaluateModelDowngrade } = await import("./adaptiveRuntime");
+                  const downgradeResult = evaluateModelDowngrade({
+                    currentModelId: resolvedModelId,
+                    downgradeThresholdPct: thresholdPct,
+                    currentUsagePct: maxUsagePct,
+                  });
+                  if (downgradeResult.downgraded) {
+                    logger.info("coordinator.spawn_worker.model_downgrade", {
+                      name,
+                      originalModel: downgradeResult.originalModelId,
+                      downgradedModel: downgradeResult.resolvedModelId,
+                      reason: downgradeResult.reason,
+                      usagePct: Math.round(maxUsagePct),
+                      thresholdPct,
+                    });
+                    resolvedModelId = downgradeResult.resolvedModelId;
+                  }
+                }
+              }
+            }
+          } catch {
+            // Non-blocking — downgrade check is best-effort
+          }
+        }
+
         // Parallel agent enforcement: if disabled, block when a worker is already running
         const teamRuntimeForPolicy = resolveTeamRuntimeConfig(g);
         if (teamRuntimeForPolicy?.allowParallelAgents === false) {
@@ -1539,70 +1910,16 @@ export function createCoordinatorToolSet(deps: {
           }
         }
 
-        // Phase ordering enforcement: validate the current phase respects constraints
+        // Phase ordering enforcement is handled centrally. Planning still gets
+        // a dedicated post-completion guard because only one planning worker result
+        // should exist before transitioning phases.
         if (missionPhases.length > 0) {
-          const phaseCheck = validatePhaseOrdering(missionPhases, g);
-          if (!phaseCheck.valid) {
-            logger.info("coordinator.spawn_worker.phase_ordering_blocked", {
-              name,
-              reason: phaseCheck.reason,
-            });
-            return { ok: false, error: phaseCheck.reason };
-          }
-          const validationGateCheck = validateRequiredValidationGates(missionPhases, g);
-          if (!validationGateCheck.valid) {
-            logger.info("coordinator.spawn_worker.validation_gate_blocked", {
-              name,
-              reason: validationGateCheck.reason,
-            });
-            const gateBlockedAt = nowIso();
-            const graphStep = resolveStep(
-              g,
-              replacementSourceWorkerId.length > 0
-                ? replacementSourceWorkerId
-                : normalizedDependsOn[normalizedDependsOn.length - 1] ?? "",
-            );
-            const gateBlockedDetail = {
-              workerName: name,
-              requestedRole: normalizedRole.length > 0 ? normalizedRole : null,
-              phase: resolveCurrentPhase(g),
-              reason: validationGateCheck.reason,
-              blockedByValidationGate: true,
-              laneId: typeof laneId === "string" && laneId.trim().length > 0 ? laneId.trim() : null,
-              stepKey: graphStep?.stepKey ?? null
-            };
-            orchestratorService.appendTimelineEvent({
-              runId,
-              stepId: graphStep?.id ?? null,
-              eventType: "validation_gate_blocked",
-              reason: "required_validation_gate_blocked",
-              detail: gateBlockedDetail
-            });
-            orchestratorService.appendRuntimeEvent({
-              runId,
-              stepId: graphStep?.id ?? null,
-              eventType: "validation_gate_blocked",
-              eventKey: `validation_gate_blocked:${runId}:${name}:${normalizedRole}:${gateBlockedAt}`,
-              occurredAt: gateBlockedAt,
-              payload: gateBlockedDetail
-            });
-            orchestratorService.emitRuntimeUpdate({
-              runId,
-              stepId: graphStep?.id ?? null,
-              reason: "validation_gate_blocked"
-            });
-            return { ok: false, error: validationGateCheck.reason };
-          }
-
-          const currentPhase = resolveCurrentPhaseCard(g, missionPhases);
-          const currentPhaseKey = currentPhase?.phaseKey.trim().toLowerCase() ?? "";
           if (currentPhaseKey === "planning") {
             const completedPlanningWorker = g.steps.some((step) => {
               const stepMeta = asRecord(step.metadata);
               const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
               const stepPhaseName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim().toLowerCase() : "";
-              const isDisplayOnly = stepMeta?.displayOnlyTask === true || stepMeta?.isTask === true;
-              return !isDisplayOnly
+              return !isTaskShellStep(step)
                 && (stepPhaseKey === "planning" || stepPhaseName === "planning")
                 && step.status === "succeeded";
             });
@@ -1738,23 +2055,17 @@ export function createCoordinatorToolSet(deps: {
           return { ok: false, error: "validationCriteria is required for insert_milestone." };
         }
 
-        const normalizedDependsOn = dedupeKeys(dependsOn);
-        const unknownDependsOn = normalizedDependsOn.filter((entry) => !resolveStep(g, entry));
-        if (unknownDependsOn.length > 0) {
-          return {
-            ok: false,
-            error: `Unknown dependency step keys: ${unknownDependsOn.join(", ")}`
-          };
-        }
+        const normalizedDependsOn = normalizeDependencyReferences({
+          graph: g,
+          refs: dependsOn,
+          label: `Milestone '${normalizedName}'`,
+        });
 
-        const normalizedGatesSteps = dedupeKeys(gatesSteps);
-        const unknownGates = normalizedGatesSteps.filter((entry) => !resolveStep(g, entry));
-        if (unknownGates.length > 0) {
-          return {
-            ok: false,
-            error: `Unknown gatesSteps step keys: ${unknownGates.join(", ")}`
-          };
-        }
+        const normalizedGatesSteps = normalizeDependencyReferences({
+          graph: g,
+          refs: gatesSteps,
+          label: `Milestone '${normalizedName}' gates`,
+        });
 
         const maxIndex = g.steps.reduce(
           (max, step) => Math.max(max, step.stepIndex),
@@ -1910,8 +2221,12 @@ export function createCoordinatorToolSet(deps: {
         if (!normalizedObjective.length) {
           return { ok: false, error: "Specialist request requires a non-empty objective." };
         }
-        const normalizedDependsOn = dedupeKeys(dependsOn);
         const workerName = (normalizeText(name) || `${roleDef.name}-specialist`).slice(0, 80);
+        const normalizedDependsOn = normalizeDependencyReferences({
+          graph: g,
+          refs: dependsOn,
+          label: `Specialist '${workerName}'`,
+        });
         const parsedLaneId = laneId?.trim().length ? laneId.trim() : null;
         const replacementSourceWorkerId = replacementForWorkerId?.trim().length ? replacementForWorkerId.trim() : null;
         if (replacementSourceWorkerId && !resolveStep(g, replacementSourceWorkerId)) {
@@ -1933,11 +2248,11 @@ export function createCoordinatorToolSet(deps: {
           };
         }
 
-        const phaseModelResolution = resolveModelFromPhaseModel(g);
-        if (!phaseModelResolution.ok) {
-          return { ok: false, error: phaseModelResolution.error };
+        const spawnPolicy = authorizeWorkerSpawnPolicy({ g });
+        if (!spawnPolicy.ok) {
+          return { ok: false, error: spawnPolicy.error };
         }
-        const specialistModelId = phaseModelResolution.modelId;
+        const specialistModelId = spawnPolicy.resolvedModelId;
 
         const { workerId, step, roleName, modelId: spawnedModelId, toolProfile } = spawnWorkerStep({
           name: workerName,
@@ -2203,7 +2518,7 @@ export function createCoordinatorToolSet(deps: {
         const deliveryPriority = priority === "high" || priority === "urgent" ? "urgent" : "normal";
         const messageId = randomUUID();
         const fromAttemptId = findRunningAttempt(g, fromStep.id)?.id ?? null;
-        const delivery = await deliverToWorkerSession(recipientAttempt.executorSessionId, content);
+        const delivery = await deliverToWorkerSession(recipientAttempt.executorSessionId, content, deliveryPriority);
         orchestratorService.appendRuntimeEvent({
           runId,
           stepId: toStep.id,
@@ -2584,6 +2899,11 @@ export function createCoordinatorToolSet(deps: {
           reason: "report_status",
           detail: report as unknown as Record<string, unknown>
         });
+        orchestratorService.emitRuntimeUpdate({
+          runId,
+          stepId: step.id,
+          reason: "worker_status_report"
+        });
         return { ok: true, report };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -2738,6 +3058,11 @@ export function createCoordinatorToolSet(deps: {
           handoffType: "worker_result_report",
           producer: workerId,
           payload: report as unknown as Record<string, unknown>
+        });
+        orchestratorService.emitRuntimeUpdate({
+          runId,
+          stepId: step.id,
+          reason: "worker_result_report"
         });
         return { ok: true, report };
       } catch (err) {
@@ -2929,6 +3254,11 @@ export function createCoordinatorToolSet(deps: {
           handoffType: "validation_report",
           producer: report.validatorWorkerId ?? "validator",
           payload: report as unknown as Record<string, unknown>
+        });
+        orchestratorService.emitRuntimeUpdate({
+          runId,
+          stepId: targetStep?.id ?? validatorStep?.id ?? null,
+          reason: "validation_report"
         });
         if (maxRetriesExceeded) {
           orchestratorService.appendTimelineEvent({
@@ -3202,6 +3532,124 @@ export function createCoordinatorToolSet(deps: {
     },
   });
 
+  const memory_search = tool({
+    description:
+      "Search project memory for relevant patterns, prior decisions, gotchas, or mission knowledge from earlier work.",
+    inputSchema: z.object({
+      query: z.string().describe("Search query for relevant memory"),
+      scope: z.enum(["project", "agent", "mission"]).optional().describe("Optional scope filter"),
+      scopeOwnerId: z.string().optional().describe("Optional explicit owner id for agent/mission scope"),
+      limit: z.number().int().min(1).max(20).optional().default(5).describe("Maximum number of memory hits to return"),
+    }),
+    execute: async ({ query, scope, scopeOwnerId, limit }) => {
+      try {
+        if (!memoryService || !projectId) {
+          return { ok: false, error: "Project memory is not configured for this coordinator." };
+        }
+        const effectiveLimit = limit ?? 5;
+        const memories = await memoryService.search({
+          projectId,
+          query,
+          ...(scope ? { scope } : {}),
+          ...(scope ? { scopeOwnerId: resolveMemoryScopeOwnerId(scope, scopeOwnerId) ?? null } : {}),
+          limit: effectiveLimit,
+        });
+        return {
+          ok: true,
+          memories: memories.map((memory) => ({
+            id: memory.id,
+            scope: memory.scope,
+            scopeOwnerId: memory.scopeOwnerId,
+            status: memory.status,
+            category: memory.category,
+            content: memory.content,
+            importance: memory.importance,
+            confidence: memory.confidence,
+            pinned: memory.pinned,
+            sourceRunId: memory.sourceRunId,
+            createdAt: memory.createdAt,
+          })),
+          count: memories.length,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error("coordinator.memory_search.error", { error: msg });
+        return { ok: false, error: msg };
+      }
+    },
+  });
+
+  const memory_add = tool({
+    description:
+      "Persist a durable discovery to project memory so future missions, coordinators, and workers can reuse it.",
+    inputSchema: z.object({
+      content: z.string().describe("The discovery, decision, pattern, or gotcha to remember"),
+      category: z.enum(["fact", "convention", "pattern", "decision", "gotcha", "preference"]).describe("Memory category"),
+      scope: z.enum(["project", "agent", "mission"]).optional().default("project").describe("Where to store the memory"),
+      scopeOwnerId: z.string().optional().describe("Optional explicit owner id for agent/mission scope"),
+      importance: z.enum(["low", "medium", "high"]).optional().default("medium").describe("Memory importance"),
+      pin: z.boolean().optional().default(false).describe("Pin this memory into Tier-1 context"),
+      writeMode: z.enum(["default", "strict"]).optional().default("default").describe("Write gate strictness"),
+    }),
+    execute: async ({ content, category, scope, scopeOwnerId, importance, pin, writeMode }) => {
+      try {
+        if (!memoryService || !projectId) {
+          return { ok: false, error: "Project memory is not configured for this coordinator." };
+        }
+        const effectiveScope = scope ?? "project";
+        const effectiveImportance = importance ?? "medium";
+        const effectivePin = pin ?? false;
+        const effectiveWriteMode = writeMode ?? "default";
+        const result = memoryService.writeMemory({
+          projectId,
+          scope: effectiveScope,
+          scopeOwnerId: resolveMemoryScopeOwnerId(effectiveScope, scopeOwnerId),
+          tier: effectivePin ? 1 : 2,
+          category,
+          content,
+          importance: effectiveImportance,
+          pinned: effectivePin,
+          status: "promoted",
+          confidence: 1,
+          sourceType: "system",
+          sourceRunId: runId,
+          sourceId: `coordinator:${runId}`,
+          writeGateMode: effectiveWriteMode,
+        });
+
+        if (!result.accepted || !result.memory) {
+          return {
+            ok: false,
+            error: result.reason ?? "Project memory write was rejected.",
+          };
+        }
+
+        try {
+          memoryService.addSharedFact({
+            runId,
+            factType: mapMemoryCategoryToFactType(category),
+            content,
+          });
+        } catch {
+          // Best-effort: durable memory write should succeed even if shared-fact propagation fails.
+        }
+
+        return {
+          ok: true,
+          saved: true,
+          id: result.memory.id,
+          tier: result.memory.tier,
+          deduped: result.deduped === true,
+          mergedIntoId: result.mergedIntoId ?? null,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error("coordinator.memory_add.error", { error: msg });
+        return { ok: false, error: msg };
+      }
+    },
+  });
+
   const revise_plan = tool({
     description:
       "Revise mission plan by partially or fully replacing steps. Replaced steps are marked superseded (not deleted).",
@@ -3351,29 +3799,26 @@ export function createCoordinatorToolSet(deps: {
           if (entry.validationContract && !parsedContract) {
             return { ok: false, error: `Invalid validation contract for step '${entry.key}'.` };
           }
-          const dependsOn = dedupeKeys(entry.dependsOn);
+          const dependsOn = normalizeDependencyReferences({
+            graph: initialGraph,
+            refs: entry.dependsOn,
+            label: `Revised step '${normalizedKey}'`,
+            additionalKnownKeys: knownStepKeysAfterCreation,
+          });
           const replacementSourceStep = replaces.length > 0 ? (stepByKey.get(replaces[0]) ?? null) : null;
-          const phaseModelResolution = resolveModelFromPhaseModel(initialGraph);
           const modelOverride = normalizeText(entry.modelId);
-          const resolvedModel =
-            modelOverride.length > 0
-              ? modelOverride
-              : (phaseModelResolution.ok ? phaseModelResolution.modelId : "");
-          if (!resolvedModel.length) {
-            return {
-              ok: false,
-              error: `Unable to resolve modelId for new step '${normalizedKey}'. Add modelId explicitly or configure the phase modelId.`
-            };
-          }
-          const descriptor = resolveModelDescriptor(resolvedModel);
-          if (!descriptor) {
-            return { ok: false, error: `Unknown model '${resolvedModel}' for new step '${normalizedKey}'.` };
+          const spawnPolicy = authorizeWorkerSpawnPolicy({
+            g: initialGraph,
+            requestedModelId: modelOverride,
+          });
+          if (!spawnPolicy.ok) {
+            return { ok: false, error: spawnPolicy.error };
           }
           parsedNewSteps.push({
             key: normalizedKey,
             title: normalizedTitle,
             description: normalizedDescription,
-            modelId: descriptor.id,
+            modelId: spawnPolicy.resolvedModelId,
             roleName: normalizedRole.length > 0 ? normalizedRole : null,
             laneId: entry.laneId ?? replacementSourceStep?.laneId ?? null,
             dependsOn,
@@ -3421,7 +3866,12 @@ export function createCoordinatorToolSet(deps: {
           if (!knownStepKeysAfterCreation.has(stepKey)) {
             return { ok: false, error: `dependencyPatches references unknown step '${stepKey}'.` };
           }
-          const nextDeps = dedupeKeys(patch.dependencyStepKeys);
+          const nextDeps = normalizeDependencyReferences({
+            graph: initialGraph,
+            refs: patch.dependencyStepKeys,
+            label: `Dependency patch '${stepKey}'`,
+            additionalKnownKeys: knownStepKeysAfterCreation,
+          });
           const unknownDeps = nextDeps.filter((depKey) => !knownStepKeysAfterCreation.has(depKey));
           if (unknownDeps.length > 0) {
             return {
@@ -3762,22 +4212,19 @@ export function createCoordinatorToolSet(deps: {
           };
         }
 
-        const stepsForPhase = (phase: PhaseCard): OrchestratorStep[] =>
-          g.steps.filter((step) => {
-            const meta = asRecord(step.metadata);
-            const stepPhaseKey = typeof meta?.phaseKey === "string" ? meta.phaseKey.trim() : "";
-            const stepPhaseName = typeof meta?.phaseName === "string" ? meta.phaseName.trim() : "";
-            return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
-          });
-        const hasTerminalStep = (phase: PhaseCard): boolean =>
-          phaseHasCompletionEligibleStep(phase, stepsForPhase);
+        const hasSuccessfulCompletion = (phase: PhaseCard): boolean =>
+          phaseHasSuccessfulCompletion(phase, (p) => getStepsForPhase(g, p));
 
         const targetIndex = missionPhases.findIndex((phase) => phase.phaseKey === targetPhase.phaseKey);
         if (targetIndex < 0) {
           return { ok: false, error: `Could not resolve target phase index for '${targetPhase.phaseKey}'.` };
         }
 
-        if (currentPhase?.phaseKey === "planning" && targetPhase.phaseKey !== "planning" && !hasTerminalStep(currentPhase)) {
+        if (
+          currentPhase?.phaseKey === "planning"
+          && targetPhase.phaseKey !== "planning"
+          && !hasSuccessfulCompletion(currentPhase)
+        ) {
           return {
             ok: false,
             error: "Planning phase has not completed yet. Wait for a planning worker to succeed before transitioning."
@@ -3787,10 +4234,10 @@ export function createCoordinatorToolSet(deps: {
         for (let i = 0; i < targetIndex; i += 1) {
           const earlier = missionPhases[i]!;
           const mustComplete = earlier.validationGate.required || earlier.orderingConstraints.mustBeFirst;
-          if (mustComplete && !hasTerminalStep(earlier)) {
+          if (mustComplete && !hasSuccessfulCompletion(earlier)) {
             return {
               ok: false,
-              error: `Cannot enter phase '${targetPhase.name}' before '${earlier.name}' has completed.`
+              error: `Cannot enter phase '${targetPhase.name}' before '${earlier.name}' has succeeded.`
             };
           }
         }
@@ -3800,10 +4247,56 @@ export function createCoordinatorToolSet(deps: {
           const predecessorKey = rawPredecessor.trim();
           if (!predecessorKey.length) continue;
           const predecessor = missionPhases.find((phase) => phase.phaseKey === predecessorKey || phase.name === predecessorKey);
-          if (predecessor && !hasTerminalStep(predecessor)) {
+          if (predecessor && !hasSuccessfulCompletion(predecessor)) {
             return {
               ok: false,
-              error: `Cannot enter phase '${targetPhase.name}' until '${predecessor.name}' completes (mustFollow).`
+              error: `Cannot enter phase '${targetPhase.name}' until '${predecessor.name}' succeeds (mustFollow).`
+            };
+          }
+        }
+
+        // ── VAL-PLAN-005 / VAL-PLAN-007: Approval gate ──
+        // Before leaving any phase with requiresApproval=true, require user approval.
+        if (currentPhase && currentPhase.requiresApproval === true) {
+          const mission = missionService.get(missionId);
+          const approvalInterventions = (mission?.interventions ?? []).filter((entry: any) => {
+            if (entry.interventionType !== "phase_approval") return false;
+            const meta = asRecord(entry.metadata);
+            const phase = typeof meta?.phaseKey === "string" ? meta.phaseKey.trim() : "";
+            const targetPhaseKey = typeof meta?.targetPhaseKey === "string" ? meta.targetPhaseKey.trim() : "";
+            const approvalRunId = typeof meta?.runId === "string" ? meta.runId.trim() : "";
+            if (approvalRunId && approvalRunId !== runId) return false;
+            if (phase !== currentPhase.phaseKey && phase !== "") return false;
+            if (targetPhaseKey && targetPhaseKey !== targetPhase.phaseKey) return false;
+            return true;
+          });
+          const hasResolvedApproval = approvalInterventions.some((entry: any) => entry.status === "resolved");
+          if (!hasResolvedApproval) {
+            // Create a blocking phase_approval intervention if none exists yet
+            const hasOpenApproval = approvalInterventions.some((entry: any) => entry.status === "open");
+            if (!hasOpenApproval) {
+              missionService.addIntervention({
+                missionId,
+                interventionType: "phase_approval",
+                title: `Approve transition from "${currentPhase.name}" phase`,
+                body: `The "${currentPhase.name}" phase requires manual approval before the mission can proceed to "${targetPhase.name}". Please review the phase output and approve to continue.`,
+                requestedAction: `Approve the "${currentPhase.name}" output to proceed to "${targetPhase.name}".`,
+                pauseMission: true,
+                metadata: {
+                  runId,
+                  phaseKey: currentPhase.phaseKey,
+                  phaseName: currentPhase.name,
+                  targetPhaseKey: targetPhase.phaseKey,
+                  targetPhaseName: targetPhase.name,
+                  source: "phase_approval_gate",
+                },
+              });
+            }
+            return {
+              ok: false,
+              error: `Phase "${currentPhase.name}" requires manual approval before transitioning to "${targetPhase.name}". A phase_approval intervention has been created. Wait for the user to approve.`,
+              pendingApproval: true,
+              phaseKey: currentPhase.phaseKey,
             };
           }
         }
@@ -3837,6 +4330,8 @@ export function createCoordinatorToolSet(deps: {
           at: now,
           reason: transitionReason
         });
+        const existingPhaseBudgets = asRecord(phaseRuntime.phaseBudgets) ?? {};
+        const targetPhaseBudget = asRecord(existingPhaseBudgets[targetPhase.phaseKey]);
         phaseRuntime.transitions = transitions.slice(0, 64);
         phaseRuntime.currentPhaseKey = targetPhase.phaseKey;
         phaseRuntime.currentPhaseName = targetPhase.name;
@@ -3845,6 +4340,20 @@ export function createCoordinatorToolSet(deps: {
         phaseRuntime.currentPhaseValidation = targetPhase.validationGate;
         phaseRuntime.currentPhaseBudget = targetPhase.budget ?? {};
         phaseRuntime.transitionedAt = now;
+        phaseRuntime.phaseBudgets = {
+          ...existingPhaseBudgets,
+          [targetPhase.phaseKey]: {
+            enteredAt: typeof targetPhaseBudget?.enteredAt === "string" && targetPhaseBudget.enteredAt.trim().length > 0
+              ? targetPhaseBudget.enteredAt
+              : now,
+            usedTokens: Number.isFinite(Number(targetPhaseBudget?.usedTokens))
+              ? Number(targetPhaseBudget?.usedTokens)
+              : 0,
+            usedCostUsd: Number.isFinite(Number(targetPhaseBudget?.usedCostUsd))
+              ? Number(targetPhaseBudget?.usedCostUsd)
+              : 0
+          }
+        };
         metadata.phaseRuntime = phaseRuntime;
 
         db.run(
@@ -3922,7 +4431,11 @@ export function createCoordinatorToolSet(deps: {
         const normalizedKey = String(key ?? "").trim();
         const normalizedTitle = String(title ?? "").trim();
         const normalizedDescription = String(description ?? "").trim();
-        const requestedDependsOn = dedupeKeys(dependsOn);
+        const requestedDependsOn = normalizeDependencyReferences({
+          graph: g,
+          refs: dependsOn,
+          label: `Task '${normalizedKey}'`,
+        });
         if (!normalizedKey.length) {
           return { ok: false, error: "Task key is required." };
         }
@@ -3950,13 +4463,13 @@ export function createCoordinatorToolSet(deps: {
               stepKey: normalizedKey,
               title: normalizedTitle,
               stepIndex: maxIndex + 1,
+              laneId: missionLaneId ?? undefined,
               dependencyStepKeys: normalizedDependsOn,
               executorKind: "manual",
               metadata: {
                 ...phaseMetadata,
                 instructions: normalizedDescription,
-                isTask: true,
-                displayOnlyTask: true,
+                stepType: "task",
                 requestedDependencyStepKeys: requestedDependsOn,
                 ...(inferredDependsOn.length > 0 ? { inferredDependencyStepKeys: inferredDependsOn } : {}),
               },
@@ -4090,7 +4603,7 @@ export function createCoordinatorToolSet(deps: {
             assignedTo: meta.assignedTo ?? null,
             hasRunningWorker: !!attempt,
             retryCount: s.retryCount,
-            displayOnly: isDisplayOnlyTaskStep(s),
+            stepType: typeof meta.stepType === "string" ? meta.stepType : null,
           };
         });
         return {
@@ -4360,7 +4873,7 @@ export function createCoordinatorToolSet(deps: {
 
   const complete_mission = tool({
     description:
-      "Declare the mission complete. Call this when you are satisfied that all work is done.",
+      "Request mission success finalization. The runtime still enforces completion gates before success is granted.",
     inputSchema: z.object({
       summary: z.string().describe("Summary of what was accomplished"),
     }),
@@ -4406,46 +4919,33 @@ export function createCoordinatorToolSet(deps: {
             blockers
           };
         }
+        const finalized = orchestratorService.finalizeRun({ runId });
+        if (!finalized.finalized) {
+          return {
+            ok: false,
+            error: "Mission cannot be completed until the runtime completion gates pass.",
+            blockers: finalized.blockers,
+          };
+        }
+        if (finalized.finalStatus !== "succeeded") {
+          return {
+            ok: false,
+            error: `Mission completion request did not resolve to success (final status: ${finalized.finalStatus}).`,
+            blockers: finalized.blockers,
+            finalStatus: finalized.finalStatus,
+          };
+        }
 
         orchestratorService.appendRuntimeEvent({
           runId,
           eventType: "done",
           payload: { summary, completedBy: "coordinator" },
         });
-        // Mark all remaining ready/blocked steps as skipped
-        for (const step of relevantSteps) {
-          if (step.status === "ready" || step.status === "blocked" || step.status === "pending") {
-            orchestratorService.skipStep({
-              runId,
-              stepId: step.id,
-              reason: "Mission completed by coordinator",
-            });
-            onDagMutation({
-              runId,
-              mutation: { type: "status_changed", stepKey: step.stepKey, newStatus: "skipped" },
-              timestamp: nowIso(),
-              source: "coordinator",
-            });
-          }
-        }
-        // Finalize via proper lifecycle callback
         if (deps.onRunFinalize) {
           deps.onRunFinalize({ runId, succeeded: true, summary });
-        } else {
-          // Fallback: raw update if no callback provided (shouldn't happen in practice)
-          const ts = nowIso();
-          db.run(
-            `update orchestrator_runs set status = 'succeeded', completed_at = ?, updated_at = ? where id = ?`,
-            [ts, ts, runId],
-          );
-          try {
-            deps.orchestratorService.generateRunRetrospective({ runId });
-          } catch {
-            // best-effort
-          }
         }
         logger.info("coordinator.complete_mission", { runId, summary });
-        return { ok: true, runId, summary };
+        return { ok: true, runId, summary, finalStatus: finalized.finalStatus };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.error("coordinator.complete_mission.error", { error: msg });
@@ -4543,7 +5043,7 @@ export function createCoordinatorToolSet(deps: {
       requestedAction: args.canProceedWithoutAnswer
         ? "Optional: provide guidance. Coordinator may continue with best-effort assumptions."
         : "Provide guidance to unblock coordinator execution.",
-      pauseMission: false,
+      pauseMission: args.canProceedWithoutAnswer !== true,
       metadata: {
         source: args.source,
         runId,
@@ -4551,10 +5051,26 @@ export function createCoordinatorToolSet(deps: {
         context: context.length > 0 ? context : null,
         urgency,
         canProceedWithoutAnswer: args.canProceedWithoutAnswer === true,
+        blocking: args.canProceedWithoutAnswer !== true,
+        category: "user_input" as const,
         phase: currentPhase?.phaseKey ?? null,
         phaseName: currentPhase?.name ?? null
       }
     });
+
+    // If the intervention is blocking, also pause the orchestrator run
+    if (args.canProceedWithoutAnswer !== true) {
+      try {
+        orchestratorService.pauseRun({
+          runId,
+          reason: `Blocking user input required: ${question.slice(0, 100)}`,
+          metadata: { interventionSource: args.source, interventionId: intervention.id },
+        });
+      } catch (e) {
+        // Run may already be paused or in a terminal state
+        logger.warn(`Could not pause run for blocking intervention: ${e}`);
+      }
+    }
 
     orchestratorService.appendRuntimeEvent({
       runId,
@@ -4568,6 +5084,8 @@ export function createCoordinatorToolSet(deps: {
         context: context.length > 0 ? context : null,
         urgency,
         canProceedWithoutAnswer: args.canProceedWithoutAnswer === true,
+        blocking: args.canProceedWithoutAnswer !== true,
+        category: "user_input",
         phase: currentPhase?.phaseKey ?? null
       },
     });
@@ -4578,7 +5096,8 @@ export function createCoordinatorToolSet(deps: {
       detail: {
         interventionId: intervention.id,
         source: args.source,
-        urgency
+        urgency,
+        blocking: args.canProceedWithoutAnswer !== true
       }
     });
     logger.info("coordinator.user_input_requested", {
@@ -4586,7 +5105,8 @@ export function createCoordinatorToolSet(deps: {
       missionId,
       interventionId: intervention.id,
       source: args.source,
-      urgency
+      urgency,
+      blocking: args.canProceedWithoutAnswer !== true
     });
     return { ok: true as const, interventionId: intervention.id, question, deduped: false };
   };
@@ -4764,7 +5284,7 @@ export function createCoordinatorToolSet(deps: {
 
   const ask_user = tool({
     description:
-      "Ask the user one or more structured clarification questions. Creates a single quiz-style intervention visible in the UI. Bundle all related questions in one call.",
+      "Ask the user one or more structured questions during Planning. Creates a single quiz-style intervention visible in the UI. Bundle all related questions in one call.",
     inputSchema: z.object({
       questions: z.array(z.object({
         question: z.string().describe("The question text"),
@@ -4777,6 +5297,35 @@ export function createCoordinatorToolSet(deps: {
     }),
     execute: async ({ questions, phase }) => {
       try {
+        const g = graph();
+        const questionBlockReason = getQuestionAskingBlockReason(g);
+        if (questionBlockReason) {
+          return { ok: false as const, error: questionBlockReason };
+        }
+        const policy = resolvePlanningQuestionPolicy(g);
+        const priorInterventions = listPlanningQuestionInterventions(g);
+        const openQuestion = priorInterventions.find((entry) => entry.status === "open") ?? null;
+        if (openQuestion) {
+          const openMeta = asRecord(openQuestion.metadata);
+          return {
+            ok: true as const,
+            interventionId: openQuestion.id,
+            questionCount: Math.max(1, Number(openMeta?.questionCount ?? 1) || 1),
+            deduped: true,
+          };
+        }
+        if (!policy.enabled) {
+          return { ok: false as const, error: "Ask Questions is disabled for this Planning phase." };
+        }
+        // VAL-PLAN-006: Multi-round deliberation — when phase has canLoop=true,
+        // bypass the maxQuestions ceiling to allow unbounded ask_user + re-plan cycles.
+        const phaseCanLoop = policy.phase?.orderingConstraints?.canLoop === true;
+        if (!phaseCanLoop && priorInterventions.length >= policy.maxQuestions) {
+          return {
+            ok: false as const,
+            error: `This Planning phase already reached its Ask Questions limit (${policy.maxQuestions}). Continue with the best grounded assumptions you can.`,
+          };
+        }
         const firstQuestion = questions[0].question.trim();
         if (!firstQuestion.length) {
           return { ok: false as const, error: "First question text is required." };
@@ -4788,8 +5337,8 @@ export function createCoordinatorToolSet(deps: {
         }
 
         const title = questions.length === 1
-          ? (firstQuestion.length > 96 ? "Coordinator clarification needed" : `Clarification: ${firstQuestion}`)
-          : `Coordinator has ${questions.length} clarification questions`;
+          ? (firstQuestion.length > 96 ? "Coordinator question ready" : `Question: ${firstQuestion}`)
+          : `Coordinator has ${questions.length} questions`;
         const bodyLines = questions.map((q: { question: string }, i: number) => `Q${i + 1}: ${q.question}`);
         const body = bodyLines.join("\n");
 
@@ -4798,18 +5347,32 @@ export function createCoordinatorToolSet(deps: {
           interventionType: "manual_input",
           title,
           body,
-          requestedAction: "Answer the clarification questions to unblock coordinator execution.",
-          pauseMission: false,
+          requestedAction: "Answer the planning questions to unblock coordinator execution.",
+          pauseMission: true,
           metadata: {
             source: "ask_user",
             runId,
             quizMode: true,
             canProceedWithoutAnswer: false,
+            blocking: true,
+            category: "user_input" as const,
             questions,
-            phase: phase ?? null,
+            phase: phase ?? policy.phaseKey ?? null,
             questionCount: questions.length,
           }
         });
+
+        // ask_user is always blocking (planning phase) — pause the run
+        try {
+          orchestratorService.pauseRun({
+            runId,
+            reason: `Blocking planning questions (${questions.length}): ${firstQuestion.slice(0, 100)}`,
+            metadata: { interventionSource: "ask_user", interventionId: intervention.id },
+          });
+        } catch (e) {
+          // Run may already be paused or in a terminal state
+          logger.warn(`Could not pause run for ask_user intervention: ${e}`);
+        }
 
         orchestratorService.appendRuntimeEvent({
           runId,
@@ -4820,8 +5383,10 @@ export function createCoordinatorToolSet(deps: {
             interventionType: intervention.interventionType,
             source: "ask_user",
             quizMode: true,
+            blocking: true,
+            category: "user_input",
             questionCount: questions.length,
-            phase: phase ?? null,
+            phase: phase ?? policy.phaseKey ?? null,
           },
         });
         orchestratorService.appendTimelineEvent({
@@ -4832,6 +5397,7 @@ export function createCoordinatorToolSet(deps: {
             interventionId: intervention.id,
             source: "ask_user",
             quizMode: true,
+            blocking: true,
             questionCount: questions.length,
           }
         });
@@ -4840,7 +5406,8 @@ export function createCoordinatorToolSet(deps: {
           missionId,
           interventionId: intervention.id,
           questionCount: questions.length,
-          phase: phase ?? null,
+          blocking: true,
+          phase: phase ?? policy.phaseKey ?? null,
         });
         return { ok: true as const, interventionId: intervention.id, questionCount: questions.length, deduped: false };
       } catch (err) {
@@ -4865,6 +5432,11 @@ export function createCoordinatorToolSet(deps: {
     }),
     execute: async ({ question, context, urgency, canProceedWithoutAnswer }) => {
       try {
+        const g = graph();
+        const questionBlockReason = getQuestionAskingBlockReason(g);
+        if (questionBlockReason) {
+          return { ok: false as const, error: questionBlockReason };
+        }
         return openHumanIntervention({
           source: "request_user_input",
           question,
@@ -4891,6 +5463,11 @@ export function createCoordinatorToolSet(deps: {
     }),
     execute: async ({ filePath, maxLines }) => {
       try {
+        const g = graph();
+        const planningReadBlockReason = getPlanningRepoReadBlockReason(g);
+        if (planningReadBlockReason) {
+          return { ok: false, error: planningReadBlockReason };
+        }
         const fullPath = path.resolve(resolvedProjectRoot, filePath);
         // Security: ensure path is within project root
         if (!isWithinDir(resolvedProjectRoot, fullPath)) {
@@ -4963,6 +5540,11 @@ export function createCoordinatorToolSet(deps: {
     }),
     execute: async ({ pattern, searchType, maxResults }) => {
       try {
+        const g = graph();
+        const planningReadBlockReason = getPlanningRepoReadBlockReason(g);
+        if (planningReadBlockReason) {
+          return { ok: false, error: planningReadBlockReason };
+        }
         const limit = maxResults ?? 20;
         if (searchType === "filename") {
           // Simple recursive file listing with glob matching
@@ -5113,29 +5695,20 @@ export function createCoordinatorToolSet(deps: {
           };
         }
 
-        // Resolve model for sub-agent: explicit override -> phase modelId.
         const roleDef = role?.trim().length ? resolveRoleDefinition(teamRuntime, role.trim()) : null;
-        const phaseModelResolution = resolveModelFromPhaseModel(g);
-        const requestedModelId = typeof modelId === "string" ? modelId.trim() : "";
-        const resolvedModelId = requestedModelId || (phaseModelResolution.ok ? phaseModelResolution.modelId : "");
-        if (!resolvedModelId.length) {
-          return {
-            ok: false,
-            error: phaseModelResolution.ok
-              ? "Unable to resolve sub-agent modelId from override or current phase."
-              : phaseModelResolution.error
-          };
+        const spawnPolicy = authorizeWorkerSpawnPolicy({
+          g,
+          requestedModelId: modelId,
+        });
+        if (!spawnPolicy.ok) {
+          return { ok: false, error: spawnPolicy.error };
         }
+        const resolvedModelId = spawnPolicy.resolvedModelId;
+        const resolvedProvider = spawnPolicy.resolvedProvider;
         const resolvedDescriptor = resolveModelDescriptor(resolvedModelId);
         if (!resolvedDescriptor) {
           return { ok: false, error: `Model '${resolvedModelId}' is not registered.` };
         }
-        const resolvedProvider =
-          resolvedDescriptor.family === "anthropic"
-            ? "claude"
-            : resolvedDescriptor.family === "openai"
-              ? "codex"
-              : resolvedDescriptor.family;
 
         // Hard constraint: allowClaudeAgentTeams must be enabled for Claude CLI sub-agents
         if (resolvedProvider === "claude" && resolvedDescriptor.isCliWrapped && teamRuntime?.allowClaudeAgentTeams === false) {
@@ -5169,7 +5742,7 @@ export function createCoordinatorToolSet(deps: {
         // Create child step via spawnWorkerStep with parent linkage
         const { workerId, step: newStep, roleName, modelId: spawnedModelId, toolProfile } = spawnWorkerStep({
           name,
-          modelId: resolvedDescriptor.id,
+          modelId: resolvedModelId,
           prompt,
           dependsOn: [parentWorkerId],
           roleName: normalizedRole.length > 0 ? normalizedRole : null,
@@ -5329,8 +5902,6 @@ export function createCoordinatorToolSet(deps: {
           };
         }
 
-        const phaseModelResolution = resolveModelFromPhaseModel(g);
-
         const validatedTasks: Array<{
           name: string;
           prompt: string;
@@ -5358,27 +5929,18 @@ export function createCoordinatorToolSet(deps: {
           if (normalizedRole && !roleDef) {
             return { ok: false, error: `Unknown role '${normalizedRole}' in active team template.` };
           }
-          const requestedModelId = typeof rawTask.modelId === "string" ? rawTask.modelId.trim() : "";
-          const resolvedModelId = requestedModelId
-            || (phaseModelResolution.ok ? phaseModelResolution.modelId : "");
-          if (!resolvedModelId.length) {
-            return {
-              ok: false,
-              error: phaseModelResolution.ok
-                ? `Unable to resolve modelId for task '${taskName}' from override or phase model.`
-                : phaseModelResolution.error,
-            };
+          const spawnPolicy = authorizeWorkerSpawnPolicy({
+            g,
+            requestedModelId: rawTask.modelId,
+          });
+          if (!spawnPolicy.ok) {
+            return { ok: false, error: spawnPolicy.error };
           }
-          const descriptor = resolveModelDescriptor(resolvedModelId);
+          const descriptor = resolveModelDescriptor(spawnPolicy.resolvedModelId);
           if (!descriptor) {
-            return { ok: false, error: `Model '${resolvedModelId}' is not registered.` };
+            return { ok: false, error: `Model '${spawnPolicy.resolvedModelId}' is not registered.` };
           }
-          const provider =
-            descriptor.family === "anthropic"
-              ? "claude"
-              : descriptor.family === "openai"
-                ? "codex"
-                : descriptor.family;
+          const provider = spawnPolicy.resolvedProvider;
 
           if (provider === "claude" && descriptor.isCliWrapped && teamRuntime?.allowClaudeAgentTeams === false) {
             return {
@@ -5392,7 +5954,7 @@ export function createCoordinatorToolSet(deps: {
             prompt: taskPrompt,
             normalizedRole,
             roleName: roleDef?.name ?? normalizedRole,
-            resolvedModelId: descriptor.id,
+            resolvedModelId: spawnPolicy.resolvedModelId,
             provider,
             toolProfile: normalizedRole ? resolveRoleToolProfile(teamRuntime, normalizedRole) : null,
           });
@@ -5532,6 +6094,8 @@ export function createCoordinatorToolSet(deps: {
     read_mission_status,
     read_mission_state,
     update_mission_state,
+    memory_search,
+    memory_add,
     revise_plan,
     update_tool_profiles,
     transfer_lane,

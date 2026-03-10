@@ -5,7 +5,7 @@ import { sessionStatusDot } from "../../lib/terminalAttention";
 import { primarySessionLabel, secondarySessionLabel } from "../../lib/sessions";
 import { useSessionDelta } from "./useSessionDelta";
 import { cn } from "../ui/cn";
-import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
+import { MONO_FONT } from "../lanes/laneDesignTokens";
 import { ToolLogo } from "./ToolLogos";
 
 /** Tool-type accent gradient for left bar — more vibrant, colorful palette */
@@ -32,32 +32,34 @@ const DELTA_CHIP_STYLE: React.CSSProperties = {
   fontWeight: 700,
   fontFamily: MONO_FONT,
   textTransform: "uppercase",
-  letterSpacing: "1px",
-  borderRadius: 0,
+  letterSpacing: "0.14em",
+  borderRadius: 999,
 };
 
 const SELECTED_CARD_BASE: React.CSSProperties = {
-  background: "#A78BFA12",
-  border: "1px solid #A78BFA30",
+  background: "linear-gradient(180deg, rgba(var(--tab-tint-rgb, 113, 113, 122), 0.18) 0%, color-mix(in srgb, var(--color-card) 92%, transparent) 100%)",
+  border: "1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.22)",
   borderLeftWidth: 3,
-  borderLeftColor: COLORS.accent,
+  borderLeftColor: "rgba(var(--tab-tint-rgb, 113, 113, 122), 0.9)",
+  boxShadow: "0 24px 56px -42px rgba(var(--tab-tint-rgb, 113, 113, 122), 0.75)",
 };
 
 const UNSELECTED_CARD_BASE: React.CSSProperties = {
-  background: COLORS.cardBg,
-  border: `1px solid ${COLORS.border}`,
+  background: "linear-gradient(180deg, color-mix(in srgb, var(--color-card) 86%, transparent), color-mix(in srgb, var(--color-surface) 78%, transparent))",
+  border: "1px solid color-mix(in srgb, var(--color-border) 76%, transparent)",
+  boxShadow: "0 18px 42px -38px rgba(0, 0, 0, 0.8)",
 };
 
 const INFO_BUTTON_STYLE: React.CSSProperties = {
-  borderRadius: 0,
-  border: `1px solid ${COLORS.outlineBorder}`,
-  background: COLORS.cardBg,
+  borderRadius: 999,
+  border: "1px solid color-mix(in srgb, var(--color-border) 76%, transparent)",
+  background: "color-mix(in srgb, var(--color-card) 78%, transparent)",
 };
 
 const RESUME_BUTTON_STYLE: React.CSSProperties = {
-  borderRadius: 0,
-  border: `1px solid ${COLORS.outlineBorder}`,
-  background: COLORS.cardBg,
+  borderRadius: 999,
+  border: "1px solid color-mix(in srgb, var(--color-border) 76%, transparent)",
+  background: "color-mix(in srgb, var(--color-card) 78%, transparent)",
   fontSize: 11,
   fontWeight: 700,
   fontFamily: MONO_FONT,
@@ -94,12 +96,12 @@ export const SessionCard = React.memo(function SessionCard({
       <button
         type="button"
         className={cn(
-          "relative w-full overflow-hidden text-left transition-all duration-150",
-          isSelected ? "hover:brightness-110" : "hover:bg-[#1A1720]",
+          "ade-glass-card relative w-full overflow-hidden text-left transition-all duration-150",
+          isSelected ? "hover:brightness-105" : "hover:-translate-y-px",
         )}
         style={{
           fontFamily: MONO_FONT,
-          borderRadius: 0,
+          borderRadius: 20,
           ...(isSelected ? SELECTED_CARD_BASE : UNSELECTED_CARD_BASE),
         }}
         onClick={() => onSelect(session.id)}
@@ -119,7 +121,7 @@ export const SessionCard = React.memo(function SessionCard({
               className="min-w-0 flex-1 truncate text-xs font-semibold"
               style={{
                 fontFamily: MONO_FONT,
-                color: isSelected ? COLORS.accent : undefined,
+                color: isSelected ? "var(--color-fg)" : undefined,
               }}
             >
               {primaryText}
@@ -130,14 +132,14 @@ export const SessionCard = React.memo(function SessionCard({
           <div className="mt-1 flex items-center gap-1.5 pl-[14px] min-w-0">
             <span
               className="shrink-0"
-              style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.accent }}
+              style={{ fontSize: 10, fontFamily: MONO_FONT, color: "rgba(var(--tab-tint-rgb, 113, 113, 122), 0.95)" }}
             >
               {session.laneName}
             </span>
             {secondaryText ? (
               <span
                 className="truncate"
-                style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}
+                style={{ fontSize: 11, fontFamily: MONO_FONT, color: "var(--color-muted-fg)" }}
               >
                 {secondaryText}
               </span>

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useMemo } from "react";
+import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import {
   Rocket,
   X,
@@ -21,17 +21,29 @@ import type {
   OrchestratorDecisionTimeoutCapHours,
   AggregatedUsageStats,
   MissionBudgetTelemetrySnapshot,
+  MergeMethod,
   TeamRuntimeConfig,
   MissionPermissionConfig,
+  CreateMissionArgs,
+  MissionPreflightResult,
 } from "../../../shared/types";
 import { BUILT_IN_PROFILES } from "../../../shared/modelProfiles";
-import { MODEL_REGISTRY, resolveModelDescriptor } from "../../../shared/modelRegistry";
+import { getDefaultModelDescriptor, MODEL_REGISTRY, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton } from "../lanes/laneDesignTokens";
 import { ModelSelector } from "./ModelSelector";
 import { SmartBudgetPanel } from "./SmartBudgetPanel";
 import { MissionPromptInput } from "./MissionPromptInput";
 import { PhaseCardEditor } from "./PhaseCardEditor";
 import { WorkerPermissionsEditor } from "./WorkerPermissionsEditor";
+import { createBuiltInMissionPhaseCards, createBuiltInMissionPhaseProfiles } from "./missionPhaseDefaults";
+import {
+  getCachedPhaseItems,
+  getCachedPhaseProfiles,
+  hasFreshPhaseItems,
+  hasFreshPhaseProfiles,
+  setCachedPhaseItems,
+  setCachedPhaseProfiles,
+} from "./missionDialogDataCache";
 
 export type CreateDraft = {
   title: string;
@@ -62,11 +74,40 @@ const DEFAULT_AGENT_RUNTIME: MissionAgentRuntimeConfig = {
 const DECISION_TIMEOUT_CAP_OPTIONS: OrchestratorDecisionTimeoutCapHours[] = [6, 12, 24, 48];
 
 const DEFAULT_ORCHESTRATOR_MODEL_BY_PROVIDER: Record<"claude" | "codex", MissionModelConfig["orchestratorModel"]> = {
-  claude: { provider: "claude", modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
-  codex: { provider: "codex", modelId: "openai/gpt-5.3-codex", thinkingLevel: "medium" },
+  claude: { provider: "claude", modelId: getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
+  codex: { provider: "codex", modelId: getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.3-codex", thinkingLevel: "medium" },
 };
 
 const HIGH_TEAMMATE_COUNT_GUARDRAIL_THRESHOLD = 5;
+const CREATE_DIALOG_CACHE_TTL_MS = 60_000;
+const CREATE_DIALOG_PREWARM_DELAY_MS = 300;
+const CREATE_DIALOG_PHASE_SYNC_DELAY_MS = 1_500;
+
+type CreateMissionDialogAiStatusCache = {
+  availableModelIds?: string[];
+  detectedAuth: import("../../../shared/types").AiDetectedAuth[] | null;
+};
+
+const createMissionDialogCache: {
+  aiStatus: CreateMissionDialogAiStatusCache | null;
+  aiStatusCachedAt: number;
+} = {
+  aiStatus: null,
+  aiStatusCachedAt: 0,
+};
+
+function hasFreshCreateDialogCache(cachedAt: number): boolean {
+  return cachedAt > 0 && Date.now() - cachedAt < CREATE_DIALOG_CACHE_TTL_MS;
+}
+
+function getDefaultPhaseProfile(profiles: PhaseProfile[]): PhaseProfile | null {
+  return profiles.find((profile) => profile.isDefault) ?? profiles[0] ?? null;
+}
+
+function cloneProfilePhases(profile: PhaseProfile | null): PhaseCard[] {
+  if (!profile) return [];
+  return profile.phases.map((phase, index) => ({ ...phase, position: index }));
+}
 
 function buildDefaultModelConfig(
   defaults: CreateMissionDefaults | null | undefined,
@@ -129,6 +170,38 @@ export function buildCreateMissionDraft(
   };
 }
 
+export function buildMissionLaunchRequest(args: {
+  draft: CreateDraft;
+  activePhases: PhaseCard[];
+  defaultLaneId?: string | null;
+}): CreateMissionArgs {
+  const resolvedLaneId = resolveLaunchLaneId({
+    draftLaneId: args.draft.laneId,
+    defaultLaneId: args.defaultLaneId,
+  });
+  return {
+    title: args.draft.title.trim() || undefined,
+    prompt: args.draft.prompt.trim(),
+    laneId: resolvedLaneId || undefined,
+    priority: args.draft.priority,
+    agentRuntime: args.draft.agentRuntime,
+    teamRuntime: args.draft.teamRuntime,
+    executionPolicy: {
+      prStrategy: args.draft.prStrategy,
+      ...(args.draft.teamRuntime ? { teamRuntime: args.draft.teamRuntime } : {}),
+    },
+    modelConfig: {
+      ...args.draft.modelConfig,
+      decisionTimeoutCapHours: args.draft.modelConfig.decisionTimeoutCapHours ?? 24,
+    },
+    phaseProfileId: args.draft.phaseProfileId,
+    phaseOverride: args.activePhases,
+    permissionConfig: args.draft.permissionConfig,
+    autostart: true,
+    launchMode: "autopilot",
+  };
+}
+
 function validatePhaseOrder(cards: PhaseCard[]): string[] {
   if (!cards.length) return ["At least one phase is required."];
   const errors: string[] = [];
@@ -143,6 +216,7 @@ function validatePhaseOrder(cards: PhaseCard[]): string[] {
     if (phaseKey === "development" && firstDevelopmentIndex < 0) firstDevelopmentIndex = index;
     if (phaseKey === "planning" && firstPlanningIndex < 0) firstPlanningIndex = index;
   });
+  if (!byKey.has("planning")) errors.push("Planning phase is required.");
   if (!byKey.has("development")) errors.push("Development phase is required.");
   if (firstPlanningIndex >= 0 && firstDevelopmentIndex >= 0 && firstPlanningIndex > firstDevelopmentIndex) {
     errors.push("Planning phase must appear before development.");
@@ -190,6 +264,7 @@ function CreateMissionDialogInner({
   lanes,
   defaultLaneId,
   missionDefaults,
+  resetVersion,
 }: {
   open: boolean;
   onClose: () => void;
@@ -198,34 +273,75 @@ function CreateMissionDialogInner({
   lanes: Array<{ id: string; name: string }>;
   defaultLaneId?: string | null;
   missionDefaults?: CreateMissionDefaults | null;
+  resetVersion?: number;
 }) {
   const sortedLanes = useMemo(
     () => [...lanes].sort((a, b) => a.name.localeCompare(b.name)),
     [lanes]
   );
   const initialDraft = useMemo(() => buildCreateMissionDraft(missionDefaults), [missionDefaults]);
+  const builtInPhaseCards = useMemo(() => createBuiltInMissionPhaseCards(), []);
+  const builtInPhaseProfiles = useMemo(
+    () => createBuiltInMissionPhaseProfiles(builtInPhaseCards),
+    [builtInPhaseCards]
+  );
+  const [hasMountedBody, setHasMountedBody] = useState(open);
   const [attachments, setAttachments] = useState<string[]>([]);
-  const [phaseProfiles, setPhaseProfiles] = useState<PhaseProfile[]>([]);
+  const [phaseProfiles, setPhaseProfiles] = useState<PhaseProfile[]>(() => {
+    const cachedProfiles = getCachedPhaseProfiles();
+    return cachedProfiles?.length ? cachedProfiles : builtInPhaseProfiles;
+  });
   const [phaseLoading, setPhaseLoading] = useState(false);
   const [phaseError, setPhaseError] = useState<string | null>(null);
   const [expandedPhases, setExpandedPhases] = useState<Record<string, boolean>>({});
   const [disabledPhases, setDisabledPhases] = useState<Record<string, boolean>>({});
-  const [availableModelIds, setAvailableModelIds] = useState<string[] | undefined>(undefined);
-  const [aiDetectedAuth, setAiDetectedAuth] = useState<import("../../../shared/types").AiDetectedAuth[] | null>(null);
+  const [availableModelIds, setAvailableModelIds] = useState<string[] | undefined>(() => createMissionDialogCache.aiStatus?.availableModelIds);
+  const [aiDetectedAuth, setAiDetectedAuth] = useState<import("../../../shared/types").AiDetectedAuth[] | null>(() => createMissionDialogCache.aiStatus?.detectedAuth ?? null);
   const [currentUsage, setCurrentUsage] = useState<AggregatedUsageStats | null>(null);
   const [weeklyUsage, setWeeklyUsage] = useState<AggregatedUsageStats | null>(null);
   const [budgetTelemetry, setBudgetTelemetry] = useState<MissionBudgetTelemetrySnapshot | null>(null);
-  const [phaseItems, setPhaseItems] = useState<PhaseCard[]>([]);
+  const [phaseItems, setPhaseItems] = useState<PhaseCard[]>(() => getCachedPhaseItems() ?? []);
   const [phaseItemsLoading, setPhaseItemsLoading] = useState(false);
   const [phaseItemsError, setPhaseItemsError] = useState<string | null>(null);
   const [selectedPhaseItemKey, setSelectedPhaseItemKey] = useState<string>("");
   const [phaseNotice, setPhaseNotice] = useState<string | null>(null);
   const [teamBudgetGuardrailConfirmed, setTeamBudgetGuardrailConfirmed] = useState(false);
+  const [preflightLoading, setPreflightLoading] = useState(false);
+  const [preflightError, setPreflightError] = useState<string | null>(null);
+  const [preflightResult, setPreflightResult] = useState<MissionPreflightResult | null>(null);
+  const [preflightFingerprint, setPreflightFingerprint] = useState<string | null>(null);
   const [draft, setDraft] = useState<CreateDraft>(initialDraft);
+  const [nonCriticalReady, setNonCriticalReady] = useState(false);
+  const initializedResetVersionRef = useRef<number | undefined>(undefined);
+  const phaseDataSyncStartedRef = useRef(false);
+
+  useEffect(() => {
+    if (hasMountedBody) return;
+    if (open) {
+      setHasMountedBody(true);
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      setHasMountedBody(true);
+    }, CREATE_DIALOG_PREWARM_DELAY_MS);
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [hasMountedBody, open]);
 
   useEffect(() => {
     if (!open) return;
+    if (initializedResetVersionRef.current === resetVersion) return;
+    initializedResetVersionRef.current = resetVersion;
+    const cachedProfiles = getCachedPhaseProfiles();
+    const fallbackProfiles = cachedProfiles?.length ? cachedProfiles : builtInPhaseProfiles;
+    const cachedItems = getCachedPhaseItems() ?? [];
     const resetDraft = buildCreateMissionDraft(missionDefaults);
+    const defaultCachedProfile = getDefaultPhaseProfile(fallbackProfiles);
+    if (defaultCachedProfile) {
+      resetDraft.phaseProfileId = defaultCachedProfile.id;
+      resetDraft.phaseOverride = cloneProfilePhases(defaultCachedProfile);
+    }
     setAttachments([]);
     setPhaseError(null);
     setPhaseNotice(null);
@@ -235,57 +351,107 @@ function CreateMissionDialogInner({
     setDisabledPhases({});
     setTeamBudgetGuardrailConfirmed(false);
     setDraft(resetDraft);
+    setPhaseProfiles(fallbackProfiles);
+    setPhaseItems(cachedItems);
+    setAvailableModelIds(
+      hasFreshCreateDialogCache(createMissionDialogCache.aiStatusCachedAt)
+        ? createMissionDialogCache.aiStatus?.availableModelIds
+        : undefined
+    );
+    setAiDetectedAuth(
+      hasFreshCreateDialogCache(createMissionDialogCache.aiStatusCachedAt)
+        ? createMissionDialogCache.aiStatus?.detectedAuth ?? null
+        : null
+    );
+    setPhaseLoading(false);
+    setPhaseItemsLoading(false);
+  }, [open, missionDefaults, resetVersion, builtInPhaseProfiles]);
 
+  useEffect(() => {
+    if (!open) {
+      setNonCriticalReady(false);
+      return;
+    }
     let cancelled = false;
-    setPhaseLoading(true);
-    setPhaseItemsLoading(true);
-    void window.ade.missions
-      .listPhaseProfiles({})
-      .then((profiles) => {
-        if (cancelled) return;
-        setPhaseProfiles(profiles);
-        const defaultProfile = profiles.find((profile) => profile.isDefault) ?? profiles[0] ?? null;
-        if (!defaultProfile) {
-          setDraft((prev) => ({ ...prev, phaseProfileId: null, phaseOverride: [] }));
-          return;
-        }
-        setDraft((prev) => ({
-          ...prev,
-          phaseProfileId: defaultProfile.id,
-          phaseOverride: defaultProfile.phases.map((phase, index) => ({ ...phase, position: index }))
-        }));
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setPhaseProfiles([]);
-        setPhaseError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setPhaseLoading(false);
-      });
+    const timeoutId = window.setTimeout(() => {
+      if (!cancelled) {
+        setNonCriticalReady(true);
+      }
+    }, 1200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [open]);
 
-    void window.ade.missions
-      .listPhaseItems({})
-      .then((items) => {
-        if (cancelled) return;
-        setPhaseItems(items);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setPhaseItems([]);
-        setPhaseItemsError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setPhaseItemsLoading(false);
-      });
+  useEffect(() => {
+    if (!hasMountedBody || phaseDataSyncStartedRef.current) return;
+    const shouldRefreshProfiles = !hasFreshPhaseProfiles();
+    const shouldRefreshItems = !hasFreshPhaseItems();
+    if (!shouldRefreshProfiles && !shouldRefreshItems) return;
+
+    phaseDataSyncStartedRef.current = true;
+    let cancelled = false;
+    const timeoutId = window.setTimeout(() => {
+      if (cancelled) return;
+      if (shouldRefreshProfiles) setPhaseLoading(true);
+      if (shouldRefreshItems) setPhaseItemsLoading(true);
+
+      if (shouldRefreshProfiles) {
+        void window.ade.missions
+          .listPhaseProfiles({})
+          .then((profiles) => {
+            if (cancelled) return;
+            const nextProfiles = profiles.length > 0 ? profiles : builtInPhaseProfiles;
+            setCachedPhaseProfiles(nextProfiles);
+            setPhaseProfiles(nextProfiles);
+            const defaultProfile = getDefaultPhaseProfile(nextProfiles);
+            setDraft((prev) => {
+              if (prev.phaseOverride.length > 0) return prev;
+              return {
+                ...prev,
+                phaseProfileId: defaultProfile?.id ?? null,
+                phaseOverride: cloneProfilePhases(defaultProfile),
+              };
+            });
+          })
+          .catch((err) => {
+            if (!cancelled) {
+              setPhaseError(err instanceof Error ? err.message : String(err));
+            }
+          })
+          .finally(() => {
+            if (!cancelled) setPhaseLoading(false);
+          });
+      }
+
+      if (shouldRefreshItems) {
+        void window.ade.missions
+          .listPhaseItems({})
+          .then((items) => {
+            if (cancelled) return;
+            setCachedPhaseItems(items);
+            setPhaseItems(items);
+          })
+          .catch((err) => {
+            if (!cancelled) {
+              setPhaseItemsError(err instanceof Error ? err.message : String(err));
+            }
+          })
+          .finally(() => {
+            if (!cancelled) setPhaseItemsLoading(false);
+          });
+      }
+    }, CREATE_DIALOG_PHASE_SYNC_DELAY_MS);
 
     return () => {
       cancelled = true;
+      window.clearTimeout(timeoutId);
     };
-  }, [open, missionDefaults]);
+  }, [hasMountedBody, builtInPhaseProfiles]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !nonCriticalReady || hasFreshCreateDialogCache(createMissionDialogCache.aiStatusCachedAt)) return;
     let cancelled = false;
 
     const rafId = requestAnimationFrame(() => {
@@ -294,32 +460,41 @@ function CreateMissionDialogInner({
         if (cancelled) return;
         const ids: string[] = [];
         const auth = status.detectedAuth ?? [];
-        setAiDetectedAuth(auth);
-        for (const a of auth) {
-          if (!a.authenticated) continue;
-          if (a.type === "cli-subscription" && a.cli) {
+        for (const entry of auth) {
+          if (!entry.authenticated) continue;
+          if (entry.type === "cli-subscription" && entry.cli) {
             const familyMap: Record<string, string> = { claude: "anthropic", codex: "openai", gemini: "google" };
-            const family = familyMap[a.cli];
+            const family = familyMap[entry.cli];
             if (family) {
-              for (const m of MODEL_REGISTRY) {
-                if (m.family === family && !m.deprecated) ids.push(m.id);
+              for (const model of MODEL_REGISTRY) {
+                if (model.family === family && !model.deprecated) ids.push(model.id);
               }
             }
           }
-          if (a.type === "api-key" && a.provider) {
-            for (const m of MODEL_REGISTRY) {
-              if (m.family === a.provider && !m.deprecated) ids.push(m.id);
+          if (entry.type === "api-key" && entry.provider) {
+            for (const model of MODEL_REGISTRY) {
+              if (model.family === entry.provider && !model.deprecated) ids.push(model.id);
             }
           }
         }
-        setAvailableModelIds(ids.length > 0 ? [...new Set(ids)] : undefined);
+        const cachedStatus: CreateMissionDialogAiStatusCache = {
+          detectedAuth: auth,
+          availableModelIds: ids.length > 0 ? [...new Set(ids)] : undefined,
+        };
+        createMissionDialogCache.aiStatus = cachedStatus;
+        createMissionDialogCache.aiStatusCachedAt = Date.now();
+        setAiDetectedAuth(cachedStatus.detectedAuth);
+        setAvailableModelIds(cachedStatus.availableModelIds);
       }).catch(() => {
         if (!cancelled) setAvailableModelIds(undefined);
       });
     });
 
-    return () => { cancelled = true; cancelAnimationFrame(rafId); };
-  }, [open]);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(rafId);
+    };
+  }, [open, nonCriticalReady]);
 
   const activePhases = useMemo(() => {
     const enabled = draft.phaseOverride
@@ -378,7 +553,7 @@ function CreateMissionDialogInner({
   }, [activePhases, draft.modelConfig.orchestratorModel?.modelId]);
 
   useEffect(() => {
-    if (!open) {
+    if (!open || !nonCriticalReady) {
       setBudgetTelemetry(null);
       setCurrentUsage(null);
       setWeeklyUsage(null);
@@ -420,6 +595,7 @@ function CreateMissionDialogInner({
     };
   }, [
     open,
+    nonCriticalReady,
     selectedBudgetFamilies.hasApiModels,
     selectedBudgetFamilies.subscriptionProviders,
   ]);
@@ -525,18 +701,28 @@ function CreateMissionDialogInner({
     && draft.modelConfig.smartBudget?.enabled !== true;
   const teamBudgetGuardrailEnabled = draft.teamRuntime?.enabled === true;
   const teamBudgetGuardrailSmartBudget = draft.modelConfig.smartBudget?.enabled === true;
+  const launchRequest = useMemo(
+    () => buildMissionLaunchRequest({ draft, activePhases, defaultLaneId }),
+    [activePhases, defaultLaneId, draft],
+  );
+  const launchFingerprint = useMemo(() => JSON.stringify(launchRequest), [launchRequest]);
+  const preflightCurrent = preflightResult && preflightFingerprint === launchFingerprint ? preflightResult : null;
+  const checklistFailures = preflightCurrent?.checklist.filter((item) => item.severity === "fail") ?? [];
+  const checklistWarnings = preflightCurrent?.checklist.filter((item) => item.severity === "warning") ?? [];
 
   useEffect(() => {
     setTeamBudgetGuardrailConfirmed(false);
   }, [teamBudgetGuardrailEnabled, teamBudgetGuardrailTeammateCount, teamBudgetGuardrailSmartBudget]);
 
-  const handleLaunch = useCallback(() => {
+  useEffect(() => {
+    setPreflightError(null);
+    setPreflightResult(null);
+    setPreflightFingerprint(null);
+  }, [launchFingerprint]);
+
+  const handleLaunch = useCallback(async () => {
     if (!draft.prompt.trim()) return;
     if (validatePhaseOrder(activePhases).length > 0) return;
-    const resolvedLaneId = resolveLaunchLaneId({
-      draftLaneId: draft.laneId,
-      defaultLaneId
-    });
     if (teamBudgetGuardrailActive && !teamBudgetGuardrailConfirmed) {
       const confirmed = window.confirm(
         `Team runtime is configured with ${teamBudgetGuardrailTeammateCount} teammates while Smart Budget is disabled. This can increase token/cost burn quickly. Continue?`
@@ -544,30 +730,62 @@ function CreateMissionDialogInner({
       if (!confirmed) return;
       setTeamBudgetGuardrailConfirmed(true);
     }
-    onLaunch({ ...draft, laneId: resolvedLaneId, phaseOverride: activePhases });
+    if (!preflightCurrent) {
+      try {
+        setPreflightLoading(true);
+        const result = await window.ade.missions.preflight({ launch: launchRequest });
+        setPreflightResult(result);
+        setPreflightFingerprint(launchFingerprint);
+        setPreflightError(null);
+      } catch (error) {
+        setPreflightError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setPreflightLoading(false);
+      }
+      return;
+    }
+    if (!preflightCurrent.canLaunch) return;
+    onLaunch({ ...draft, laneId: launchRequest.laneId ?? "", phaseOverride: activePhases });
   }, [
-    draft,
     activePhases,
+    draft,
+    launchFingerprint,
+    launchRequest,
     onLaunch,
+    preflightCurrent,
     teamBudgetGuardrailActive,
     teamBudgetGuardrailConfirmed,
     teamBudgetGuardrailTeammateCount,
-    defaultLaneId,
   ]);
 
-  if (!open) return null;
+  const shouldRenderBody = hasMountedBody || open;
+  if (!shouldRenderBody) return null;
 
   const dlgInputStyle = DLG_INPUT_STYLE;
   const dlgLabelStyle = DLG_LABEL_STYLE;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
+    <div
+      aria-hidden={!open}
+      className={`fixed inset-0 z-50 flex items-center justify-center bg-black/70 transition-opacity duration-150 ${
+        open ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
+      }`}
+      style={{ visibility: open ? "visible" : "hidden" }}
+      onClick={() => {
+        if (busy) return;
+        onClose();
+      }}
+    >
       <motion.div
-        initial={{ opacity: 0, scale: 0.95 }}
-        animate={{ opacity: 1, scale: 1, transition: { duration: 0.15 } }}
-        exit={{ opacity: 0, scale: 0.95 }}
+        initial={false}
+        animate={{
+          opacity: open ? 1 : 0,
+          scale: open ? 1 : 0.98,
+          transition: { duration: open ? 0.15 : 0.1 },
+        }}
         className="w-full max-w-3xl shadow-2xl max-h-[90vh] overflow-y-auto"
         style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}
+        onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between px-5 h-14" style={{ background: COLORS.recessedBg, borderBottom: `1px solid ${COLORS.border}` }}>
           <div className="flex items-center gap-2">
@@ -753,6 +971,11 @@ function CreateMissionDialogInner({
                                   draft: p.prStrategy.kind !== "manual" && "draft" in p.prStrategy ? p.prStrategy.draft : true,
                                   autoRebase: true,
                                   ciGating: true,
+                                  autoLand: false,
+                                  rehearseQueue: false,
+                                  autoResolveConflicts: false,
+                                  archiveLaneOnLand: false,
+                                  mergeMethod: "squash" as MergeMethod,
                                 }
                               }));
                             } else {
@@ -822,29 +1045,112 @@ function CreateMissionDialogInner({
                     </div>
                   )}
                   {draft.prStrategy.kind === "queue" && (
-                    <div className="flex items-center gap-3 mt-1">
-                      <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                        <input
-                          type="checkbox"
-                          checked={draft.prStrategy.autoRebase ?? true}
-                          onChange={(e) => setDraft((p) => ({
-                            ...p,
-                            prStrategy: { ...p.prStrategy, autoRebase: e.target.checked } as PrStrategy
-                          }))}
-                        />
-                        Auto-rebase
-                      </label>
-                      <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                        <input
-                          type="checkbox"
-                          checked={draft.prStrategy.ciGating ?? true}
-                          onChange={(e) => setDraft((p) => ({
-                            ...p,
-                            prStrategy: { ...p.prStrategy, ciGating: e.target.checked } as PrStrategy
-                          }))}
-                        />
-                        CI gating
-                      </label>
+                    <div className="mt-1 space-y-2">
+                      <div className="flex items-center gap-3">
+                        <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          <input
+                            type="checkbox"
+                            checked={draft.prStrategy.autoRebase ?? true}
+                            onChange={(e) => setDraft((p) => ({
+                              ...p,
+                              prStrategy: { ...p.prStrategy, autoRebase: e.target.checked } as PrStrategy
+                            }))}
+                          />
+                          Auto-rebase
+                        </label>
+                        <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          <input
+                            type="checkbox"
+                            checked={draft.prStrategy.ciGating ?? true}
+                            onChange={(e) => setDraft((p) => ({
+                              ...p,
+                              prStrategy: { ...p.prStrategy, ciGating: e.target.checked } as PrStrategy
+                            }))}
+                          />
+                          CI gating
+                        </label>
+                        <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          <input
+                            type="checkbox"
+                            checked={draft.prStrategy.rehearseQueue ?? false}
+                            onChange={(e) => setDraft((p) => {
+                              const prevQueue = p.prStrategy.kind === "queue" ? p.prStrategy : { kind: "queue" as const };
+                              return {
+                                ...p,
+                                prStrategy: {
+                                  ...prevQueue,
+                                  rehearseQueue: e.target.checked,
+                                  autoLand: e.target.checked ? false : prevQueue.autoLand,
+                                } as PrStrategy
+                              };
+                            })}
+                          />
+                          Dry-run full queue
+                        </label>
+                        <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          <input
+                            type="checkbox"
+                            checked={draft.prStrategy.autoLand ?? false}
+                            onChange={(e) => setDraft((p) => {
+                              const prevQueue = p.prStrategy.kind === "queue" ? p.prStrategy : { kind: "queue" as const };
+                              return {
+                                ...p,
+                                prStrategy: {
+                                  ...prevQueue,
+                                  autoLand: e.target.checked,
+                                  rehearseQueue: e.target.checked ? false : prevQueue.rehearseQueue,
+                                } as PrStrategy
+                              };
+                            })}
+                          />
+                          Auto-land queue
+                        </label>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          <input
+                            type="checkbox"
+                            checked={draft.prStrategy.autoResolveConflicts ?? false}
+                            onChange={(e) => setDraft((p) => ({
+                              ...p,
+                              prStrategy: { ...p.prStrategy, autoResolveConflicts: e.target.checked } as PrStrategy
+                            }))}
+                          />
+                          Auto-resolve conflicts
+                        </label>
+                        <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          <input
+                            type="checkbox"
+                            checked={draft.prStrategy.archiveLaneOnLand ?? false}
+                            onChange={(e) => setDraft((p) => ({
+                              ...p,
+                              prStrategy: { ...p.prStrategy, archiveLaneOnLand: e.target.checked } as PrStrategy
+                            }))}
+                          />
+                          Archive lane on land
+                        </label>
+                        <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          <span>Merge method</span>
+                          <select
+                            value={draft.prStrategy.mergeMethod ?? "squash"}
+                            onChange={(e) => setDraft((p) => ({
+                              ...p,
+                              prStrategy: { ...p.prStrategy, mergeMethod: e.target.value as MergeMethod } as PrStrategy
+                            }))}
+                            className="h-6 px-2 text-xs outline-none"
+                            style={dlgInputStyle}
+                          >
+                            <option value="merge">merge</option>
+                            <option value="squash">squash</option>
+                            <option value="rebase">rebase</option>
+                          </select>
+                        </label>
+                      </div>
+                      {(draft.prStrategy.autoResolveConflicts ?? false) ? (
+                        <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          Uses the configured Claude/Codex CLI resolver model from mission runtime settings. Queue rehearsal runs on an isolated scratch lane and never merges; auto-land still merges for real. Launch is blocked if no compatible resolver model is available.
+                        </div>
+                      ) : null}
                     </div>
                   )}
                   {draft.prStrategy.kind === "integration" && (
@@ -949,8 +1255,8 @@ function CreateMissionDialogInner({
                               model: { provider: "claude", modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
                               budget: {},
                               orderingConstraints: {},
-                              askQuestions: { enabled: false, mode: "never" },
-                              validationGate: { tier: "self", required: false },
+                              askQuestions: { enabled: false },
+                              validationGate: { tier: "none", required: false },
                               isBuiltIn: false,
                               isCustom: true,
                               position: prev.phaseOverride.length,
@@ -1008,7 +1314,11 @@ function CreateMissionDialogInner({
                               phases: draft.phaseOverride
                             }
                           });
-                          setPhaseProfiles((prev) => [saved, ...prev.filter((entry) => entry.id !== saved.id)]);
+                          setPhaseProfiles((prev) => {
+                            const next = [saved, ...prev.filter((entry) => entry.id !== saved.id)];
+                            setCachedPhaseProfiles(next);
+                            return next;
+                          });
                           setDraft((prev) => ({ ...prev, phaseProfileId: saved.id }));
                         } catch (err) {
                           setPhaseError(err instanceof Error ? err.message : String(err));
@@ -1029,7 +1339,9 @@ function CreateMissionDialogInner({
                           setPhaseItems((prev) => {
                             const map = new Map(prev.map((item) => [item.phaseKey, item] as const));
                             for (const item of imported) map.set(item.phaseKey, item);
-                            return Array.from(map.values());
+                            const next = Array.from(map.values());
+                            setCachedPhaseItems(next);
+                            return next;
                           });
                           setPhaseNotice(`Imported ${imported.length} phase item${imported.length === 1 ? "" : "s"}.`);
                           setPhaseItemsError(null);
@@ -1080,7 +1392,9 @@ function CreateMissionDialogInner({
                           setPhaseItems((prev) => {
                             const map = new Map(prev.map((item) => [item.phaseKey, item] as const));
                             for (const item of saved) map.set(item.phaseKey, item);
-                            return Array.from(map.values());
+                            const next = Array.from(map.values());
+                            setCachedPhaseItems(next);
+                            return next;
                           });
                           setPhaseNotice(`Saved ${saved.length} reusable phase item${saved.length === 1 ? "" : "s"}.`);
                           setPhaseItemsError(null);
@@ -1118,7 +1432,9 @@ function CreateMissionDialogInner({
                     </div>
                   ) : null}
                   <div className="space-y-1.5">
-                    {draft.phaseOverride.map((phase, index) => (
+                    {draft.phaseOverride.map((phase, index) => {
+                      const isPlanningPhase = phase.phaseKey.trim().toLowerCase() === "planning";
+                      return (
                       <PhaseCardEditor
                         key={phase.id}
                         phase={phase}
@@ -1126,9 +1442,9 @@ function CreateMissionDialogInner({
                         totalCount={draft.phaseOverride.length}
                         expanded={expandedPhases[phase.id] === true}
                         readOnly={false}
-                        showToggle
-                        disabled={disabledPhases[phase.id] === true}
-                        onToggleDisabled={() => setDisabledPhases((prev) => ({ ...prev, [phase.id]: !prev[phase.id] }))}
+                        showToggle={!isPlanningPhase}
+                        disabled={isPlanningPhase ? false : disabledPhases[phase.id] === true}
+                        onToggleDisabled={isPlanningPhase ? undefined : () => setDisabledPhases((prev) => ({ ...prev, [phase.id]: !prev[phase.id] }))}
                         onToggleExpand={() => setExpandedPhases((prev) => ({ ...prev, [phase.id]: !prev[phase.id] }))}
                         onUpdate={(updated) => {
                           setDraft((prev) => ({
@@ -1173,8 +1489,13 @@ function CreateMissionDialogInner({
                         availableModelIds={availableModelIds}
                         labelStyle={dlgLabelStyle}
                         inputStyle={dlgInputStyle}
+                        planningPromptPreview={{
+                          missionPrompt: draft.prompt,
+                          phases: draft.phaseOverride,
+                        }}
                       />
-                    ))}
+                    );
+                    })}
                   </div>
                   {phaseValidationErrors.length > 0 ? (
                     <div className="space-y-1 px-2 py-1.5" style={{ background: `${COLORS.warning}15`, border: `1px solid ${COLORS.warning}30`, color: COLORS.warning }}>
@@ -1353,6 +1674,83 @@ function CreateMissionDialogInner({
                   dlgLabelStyle={dlgLabelStyle}
                   dlgInputStyle={dlgInputStyle}
                 />
+                {(preflightCurrent || preflightError) ? (
+                  <div
+                    className="space-y-2 p-3"
+                    style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          Launch Review
+                        </div>
+                        <div className="mt-1 text-[12px]" style={{ color: COLORS.textPrimary }}>
+                          {preflightCurrent?.approvalSummary?.missionGoal ?? "Review launch assumptions before starting the mission."}
+                        </div>
+                      </div>
+                      {preflightCurrent ? (
+                        <div
+                          className="px-2 py-1 text-[10px] font-bold uppercase tracking-[1px]"
+                          style={{
+                            color: preflightCurrent.canLaunch ? COLORS.success : COLORS.warning,
+                            border: `1px solid ${preflightCurrent.canLaunch ? `${COLORS.success}35` : `${COLORS.warning}35`}`,
+                            background: preflightCurrent.canLaunch ? `${COLORS.success}12` : `${COLORS.warning}12`,
+                            fontFamily: MONO_FONT,
+                          }}
+                        >
+                          {preflightCurrent.canLaunch ? "Ready to launch" : "Fix launch blockers"}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    {preflightCurrent?.approvalSummary ? (
+                      <div className="grid gap-2 md:grid-cols-2">
+                        <div className="space-y-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          <div>Lane: {preflightCurrent.approvalSummary.laneLabel ?? preflightCurrent.approvalSummary.laneId ?? "default active lane"}</div>
+                          <div>Execution: {preflightCurrent.approvalSummary.recommendedExecution.strategy}</div>
+                          <div>Model: {preflightCurrent.approvalSummary.recommendedExecution.orchestratorModelId ?? "not configured"}</div>
+                        </div>
+                        <div className="space-y-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          <div>Phases: {preflightCurrent.approvalSummary.phaseLabels.join(" -> ")}</div>
+                          <div>Warnings: {preflightCurrent.warnings}</div>
+                          <div>Failures: {preflightCurrent.hardFailures}</div>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {preflightError ? (
+                      <div className="text-[10px]" style={{ color: COLORS.danger, fontFamily: MONO_FONT }}>
+                        {preflightError}
+                      </div>
+                    ) : null}
+
+                    {checklistFailures.length > 0 ? (
+                      <div className="space-y-1">
+                        <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.warning, fontFamily: MONO_FONT }}>
+                          Blocking Issues
+                        </div>
+                        {checklistFailures.slice(0, 4).map((item) => (
+                          <div key={item.id} className="text-[10px]" style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT }}>
+                            {item.title}: {item.summary}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    {checklistWarnings.length > 0 ? (
+                      <div className="space-y-1">
+                        <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          Runtime Warnings
+                        </div>
+                        {checklistWarnings.slice(0, 3).map((item) => (
+                          <div key={item.id} className="text-[10px]" style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT }}>
+                            {item.title}: {item.summary}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
           </div>
 
         </div>
@@ -1362,10 +1760,12 @@ function CreateMissionDialogInner({
           <button
             style={primaryButton()}
             onClick={handleLaunch}
-            disabled={busy || !draft.prompt.trim() || phaseValidationErrors.length > 0}
+            disabled={busy || preflightLoading || !draft.prompt.trim() || phaseValidationErrors.length > 0 || Boolean(preflightCurrent && !preflightCurrent.canLaunch)}
           >
-            {busy ? <SpinnerGap className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
-            LAUNCH MISSION
+            {busy || preflightLoading ? <SpinnerGap className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
+            {preflightCurrent
+              ? (preflightCurrent.canLaunch ? "LAUNCH MISSION" : "FIX FAILURES")
+              : "REVIEW LAUNCH"}
           </button>
         </div>
       </motion.div>

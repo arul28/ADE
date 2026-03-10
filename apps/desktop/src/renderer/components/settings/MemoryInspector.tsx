@@ -1,5 +1,5 @@
 import React from "react";
-import type { ContextStatus } from "../../../shared/types";
+import type { ContextStatus, MemoryHealthStats, MemorySearchMode } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { GenerateDocsModal } from "../context/GenerateDocsModal";
 import { EmptyState } from "../ui/EmptyState";
@@ -29,6 +29,7 @@ type MemoryEntry = {
   accessCount: number;
   status: MemoryStatus;
   confidence: number;
+  embedded: boolean;
 };
 
 type MemoryInspectorPanelProps = {
@@ -38,6 +39,38 @@ type MemoryInspectorPanelProps = {
 };
 
 type ScopeFilter = "all" | MemoryScope;
+
+function createEmptyMemoryHealthStats(): MemoryHealthStats {
+  return {
+    scopes: [
+      { scope: "project", current: 0, max: 2000, counts: { tier1: 0, tier2: 0, tier3: 0, archived: 0 } },
+      { scope: "agent", current: 0, max: 500, counts: { tier1: 0, tier2: 0, tier3: 0, archived: 0 } },
+      { scope: "mission", current: 0, max: 200, counts: { tier1: 0, tier2: 0, tier3: 0, archived: 0 } },
+    ],
+    lastSweep: null,
+    lastConsolidation: null,
+    embeddings: {
+      entriesEmbedded: 0,
+      entriesTotal: 0,
+      queueDepth: 0,
+      processing: false,
+      lastBatchProcessedAt: null,
+      cacheEntries: 0,
+      cacheHits: 0,
+      cacheMisses: 0,
+      cacheHitRate: 0,
+      model: {
+        modelId: "Xenova/all-MiniLM-L6-v2",
+        state: "idle",
+        progress: null,
+        loaded: null,
+        total: null,
+        file: null,
+        error: null,
+      },
+    },
+  };
+}
 
 const sectionLabelStyle: React.CSSProperties = {
   ...LABEL_STYLE,
@@ -84,6 +117,7 @@ function toMemoryEntry(value: unknown): MemoryEntry | null {
     accessCount: Number(row.accessCount ?? row.access_count ?? 0),
     status: normalizeMemoryStatus(row.status),
     confidence: Number(row.confidence ?? 0),
+    embedded: row.embedded === true || row.embedded === 1 || row.embedded === "1",
   };
 }
 
@@ -164,6 +198,16 @@ function memoryMatchesFilters(entry: MemoryEntry, scopeFilter: ScopeFilter, cate
   return true;
 }
 
+function areEmbeddingsReady(stats: MemoryHealthStats): boolean {
+  return stats.embeddings.model.state === "ready";
+}
+
+function searchModeButtonStyle(active: boolean): React.CSSProperties {
+  return active
+    ? primaryButton({ height: 28, padding: "0 10px", fontSize: 10 })
+    : outlineButton({ height: 28, padding: "0 10px", fontSize: 10 });
+}
+
 export function MemoryInspectorPanel({
   laneId = null,
   compact = false,
@@ -184,6 +228,9 @@ export function MemoryInspectorPanel({
   const [searchResults, setSearchResults] = React.useState<MemoryEntry[]>([]);
   const [scopeFilter, setScopeFilter] = React.useState<ScopeFilter>("all");
   const [categoryFilter, setCategoryFilter] = React.useState<string>("all");
+  const [healthStats, setHealthStats] = React.useState<MemoryHealthStats>(createEmptyMemoryHealthStats());
+  const [searchMode, setSearchMode] = React.useState<MemorySearchMode>("lexical");
+  const [hasChosenSearchMode, setHasChosenSearchMode] = React.useState(false);
 
   const [docsStatus, setDocsStatus] = React.useState<ContextStatus | null>(null);
   const [docsModalOpen, setDocsModalOpen] = React.useState(false);
@@ -198,16 +245,22 @@ export function MemoryInspectorPanel({
     if (!memoryApi) {
       setBudgetEntries([]);
       setCandidates([]);
+      setHealthStats(createEmptyMemoryHealthStats());
       setLoading(false);
       return;
     }
     try {
-      const [budgetRaw, candidatesRaw] = await Promise.all([
+      const [budgetRaw, candidatesRaw, nextHealthStats] = await Promise.all([
         memoryApi.getBudget({ level: "deep" }),
         memoryApi.getCandidates({ limit: 25 }),
+        memoryApi.getHealthStats?.() ?? Promise.resolve(createEmptyMemoryHealthStats()),
       ]);
       setBudgetEntries(toMemoryEntries(budgetRaw));
       setCandidates(toMemoryEntries(candidatesRaw));
+      setHealthStats(nextHealthStats);
+      if (!hasChosenSearchMode) {
+        setSearchMode(areEmbeddingsReady(nextHealthStats) ? "hybrid" : "lexical");
+      }
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -215,7 +268,7 @@ export function MemoryInspectorPanel({
       setLoading(false);
       setRefreshing(false);
     }
-  }, [memoryApi]);
+  }, [hasChosenSearchMode, memoryApi]);
 
   const reloadDocs = React.useCallback(async () => {
     if (!showDocsSection) return;
@@ -249,7 +302,7 @@ export function MemoryInspectorPanel({
     }
     setSearching(true);
     try {
-      const raw = await memoryApi.search({ query, limit: compact ? 12 : 40 });
+      const raw = await memoryApi.search({ query, limit: compact ? 12 : 40, mode: searchMode });
       setSearchResults(toMemoryEntries(raw));
       setError(null);
     } catch (err) {
@@ -257,7 +310,7 @@ export function MemoryInspectorPanel({
     } finally {
       setSearching(false);
     }
-  }, [compact, memoryApi, searchInput]);
+  }, [compact, memoryApi, searchInput, searchMode]);
 
   const refreshAll = React.useCallback(() => {
     setRefreshing(true);
@@ -303,6 +356,8 @@ export function MemoryInspectorPanel({
     memoryMatchesFilters(entry, scopeFilter, categoryFilter)
   );
   const candidateEntries = candidates.filter((entry) => memoryMatchesFilters(entry, scopeFilter, categoryFilter));
+  const embeddingsReady = areEmbeddingsReady(healthStats);
+  const showEmbeddedColumn = !compact;
 
   if (!memoryApi && !showDocsSection) {
     return <EmptyState title="Memory unavailable" description="Memory service is not enabled in this build." />;
@@ -365,6 +420,36 @@ export function MemoryInspectorPanel({
             </button>
           </div>
 
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                aria-pressed={searchMode === "lexical"}
+                style={searchModeButtonStyle(searchMode === "lexical")}
+                onClick={() => {
+                  setHasChosenSearchMode(true);
+                  setSearchMode("lexical");
+                }}
+              >
+                Lexical only
+              </button>
+              <button
+                type="button"
+                aria-pressed={searchMode === "hybrid"}
+                style={searchModeButtonStyle(searchMode === "hybrid")}
+                onClick={() => {
+                  setHasChosenSearchMode(true);
+                  setSearchMode("hybrid");
+                }}
+              >
+                Hybrid (recommended)
+              </button>
+            </div>
+            <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: embeddingsReady ? COLORS.success : COLORS.textMuted }}>
+              {embeddingsReady ? "Embeddings ready" : "Embeddings unavailable — lexical is the safe default"}
+            </div>
+          </div>
+
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <select
               value={scopeFilter}
@@ -411,42 +496,103 @@ export function MemoryInspectorPanel({
           {loading ? (
             <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>Loading memory...</div>
           ) : activeEntries.length ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: compact ? 320 : 420, overflowY: "auto", paddingRight: 2 }}>
-              {activeEntries.map((entry) => (
-                <div key={entry.id} style={{ border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
-                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                      <SmallBadge label={entry.scope} color={scopeBadgeColor(entry.scope)} />
-                      <SmallBadge label={entry.status} color={statusBadgeColor(entry.status)} />
-                      <SmallBadge label={entry.importance} color={importanceBadgeColor(entry.importance)} />
-                      {entry.pinned ? <SmallBadge label="pinned" color={COLORS.success} /> : null}
-                    </div>
-                    <div style={{ display: "flex", gap: 6 }}>
-                      {!entry.pinned ? (
+            compact ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 320, overflowY: "auto", paddingRight: 2 }}>
+                {activeEntries.map((entry) => (
+                  <div key={entry.id} style={{ border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        <SmallBadge label={entry.scope} color={scopeBadgeColor(entry.scope)} />
+                        <SmallBadge label={entry.status} color={statusBadgeColor(entry.status)} />
+                        <SmallBadge label={entry.importance} color={importanceBadgeColor(entry.importance)} />
+                        {entry.pinned ? <SmallBadge label="pinned" color={COLORS.success} /> : null}
+                      </div>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        {!entry.pinned ? (
+                          <button
+                            type="button"
+                            style={primaryButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                            onClick={() => void handlePin(entry.id)}
+                          >
+                            Pin
+                          </button>
+                        ) : null}
                         <button
                           type="button"
-                          style={primaryButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                          onClick={() => void handlePin(entry.id)}
+                          style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                          onClick={() => void handleArchive(entry.id)}
                         >
-                          Pin
+                          Archive
                         </button>
-                      ) : null}
-                      <button
-                        type="button"
-                        style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                        onClick={() => void handleArchive(entry.id)}
-                      >
-                        Archive
-                      </button>
+                      </div>
+                    </div>
+                    <div style={{ fontFamily: MONO_FONT, fontSize: 12, color: COLORS.textPrimary, whiteSpace: "pre-wrap", lineHeight: 1.45 }}>{entry.content}</div>
+                    <div style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textMuted }}>
+                      category: {entry.category} • tier: {entry.tier} • confidence: {entry.confidence.toFixed(2)} • accessed: {entry.accessCount} • updated {relativeTime(entry.lastAccessedAt || entry.createdAt)}
                     </div>
                   </div>
-                  <div style={{ fontFamily: MONO_FONT, fontSize: 12, color: COLORS.textPrimary, whiteSpace: "pre-wrap", lineHeight: 1.45 }}>{entry.content}</div>
-                  <div style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textMuted }}>
-                    category: {entry.category} • tier: {entry.tier} • confidence: {entry.confidence.toFixed(2)} • accessed: {entry.accessCount} • updated {relativeTime(entry.lastAccessedAt || entry.createdAt)}
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ maxHeight: 420, overflowY: "auto", border: `1px solid ${COLORS.border}` }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
+                  <thead>
+                    <tr style={{ background: COLORS.recessedBg }}>
+                      <th scope="col" style={{ textAlign: "left", padding: "8px 10px", ...LABEL_STYLE, fontSize: 9 }}>Content</th>
+                      <th scope="col" style={{ textAlign: "left", padding: "8px 10px", ...LABEL_STYLE, fontSize: 9 }}>Scope</th>
+                      <th scope="col" style={{ textAlign: "left", padding: "8px 10px", ...LABEL_STYLE, fontSize: 9 }}>Status</th>
+                      {showEmbeddedColumn ? <th scope="col" style={{ textAlign: "left", padding: "8px 10px", ...LABEL_STYLE, fontSize: 9 }}>Embedded</th> : null}
+                      <th scope="col" style={{ textAlign: "left", padding: "8px 10px", ...LABEL_STYLE, fontSize: 9 }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {activeEntries.map((entry) => (
+                      <tr key={entry.id} style={{ borderTop: `1px solid ${COLORS.border}`, background: COLORS.pageBg, verticalAlign: "top" }}>
+                        <td style={{ padding: "10px", fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textPrimary }}>
+                          <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.45 }}>{entry.content}</div>
+                          <div style={{ marginTop: 6, fontSize: 10, color: COLORS.textMuted }}>
+                            category: {entry.category} • tier: {entry.tier} • confidence: {entry.confidence.toFixed(2)} • updated {relativeTime(entry.lastAccessedAt || entry.createdAt)}
+                          </div>
+                        </td>
+                        <td style={{ padding: "10px" }}><SmallBadge label={entry.scope} color={scopeBadgeColor(entry.scope)} /></td>
+                        <td style={{ padding: "10px" }}>
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            <SmallBadge label={entry.status} color={statusBadgeColor(entry.status)} />
+                            <SmallBadge label={entry.importance} color={importanceBadgeColor(entry.importance)} />
+                            {entry.pinned ? <SmallBadge label="pinned" color={COLORS.success} /> : null}
+                          </div>
+                        </td>
+                        {showEmbeddedColumn ? (
+                          <td style={{ padding: "10px", fontFamily: MONO_FONT, fontSize: 14, color: entry.embedded ? COLORS.success : COLORS.textMuted }}>
+                            {entry.embedded ? "✓" : "—"}
+                          </td>
+                        ) : null}
+                        <td style={{ padding: "10px" }}>
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {!entry.pinned ? (
+                              <button
+                                type="button"
+                                style={primaryButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                                onClick={() => void handlePin(entry.id)}
+                              >
+                                Pin
+                              </button>
+                            ) : null}
+                            <button
+                              type="button"
+                              style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                              onClick={() => void handleArchive(entry.id)}
+                            >
+                              Archive
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
           ) : (
             <EmptyState
               title={searchInput.trim() ? "No memory matches" : "No promoted memory"}

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { OrchestratorExecutorAdapter } from "./orchestratorService";
-import { createBaseOrchestratorAdapter, shellEscapeArg, shellInlineDecodedArg } from "./baseOrchestratorAdapter";
+import { buildFullPrompt, createBaseOrchestratorAdapter, shellEscapeArg, shellInlineDecodedArg } from "./baseOrchestratorAdapter";
 import {
   classifyWorkerExecutionPath,
   getModelById,
@@ -9,8 +9,14 @@ import {
   resolveModelAlias,
   resolveModelDescriptor,
 } from "../../../shared/modelRegistry";
+import type {
+  AgentChatExecutionMode,
+  AgentChatPermissionMode,
+  TeamRuntimeConfig,
+} from "../../../shared/types";
 import type { MissionPermissionConfig, MissionProviderPermissions } from "../../../shared/types/missions";
 import { resolveClaudeCliModel, resolveCodexCliModel } from "../ai/claudeModelUtils";
+import type { createAgentChatService } from "../chat/agentChatService";
 import {
   mapPermissionToClaude,
   mapPermissionToCodex,
@@ -45,6 +51,7 @@ export function resolveAdeMcpServerLaunch(args: {
   stepId?: string;
   attemptId?: string;
   defaultRole?: string;
+  ownerId?: string;
 }): {
   command: string;
   cmdArgs: string[];
@@ -75,6 +82,7 @@ export function resolveAdeMcpServerLaunch(args: {
       ADE_STEP_ID: args.stepId ?? "",
       ADE_ATTEMPT_ID: args.attemptId ?? "",
       ADE_DEFAULT_ROLE: args.defaultRole ?? "agent",
+      ADE_OWNER_ID: args.ownerId ?? "",
     }
   };
 }
@@ -154,6 +162,9 @@ const CLAUDE_READ_ONLY_WORKER_MCP_TOOLS = [
   "mcp__ade__get_pending_messages",
   "mcp__ade__report_status",
   "mcp__ade__report_result",
+  "mcp__ade__ask_user",
+  "mcp__ade__memory_search",
+  "mcp__ade__memory_add",
 ] as const;
 
 function dedupeAllowedTools(entries: readonly string[]): string[] {
@@ -278,45 +289,67 @@ export function cleanupMcpConfigFile(projectRoot: string, attemptId: string, lan
  * Remove all stale MCP config files from previous runs.
  * Called at adapter creation time.
  */
-function cleanupStaleMcpConfigFiles(projectRoot: string): void {
-  const configDir = path.join(projectRoot, ".ade", "orchestrator", "mcp-configs");
+function cleanupStaleFilesInDir(dir: string, prefix: string, suffix: string): void {
   try {
-    const entries = fs.readdirSync(configDir);
-    for (const entry of entries) {
-      if (entry.startsWith("worker-") && entry.endsWith(".json")) {
-        try {
-          fs.unlinkSync(path.join(configDir, entry));
-        } catch {
-          // Ignore individual file removal errors
-        }
+    for (const entry of fs.readdirSync(dir)) {
+      if (entry.startsWith(prefix) && entry.endsWith(suffix)) {
+        try { fs.unlinkSync(path.join(dir, entry)); } catch { /* ignore */ }
       }
     }
   } catch {
-    // Directory may not exist yet — that's fine
-  }
-
-  const promptDir = path.join(projectRoot, ".ade", "orchestrator", "worker-prompts");
-  try {
-    const entries = fs.readdirSync(promptDir);
-    for (const entry of entries) {
-      if (entry.startsWith("worker-") && entry.endsWith(".txt")) {
-        try {
-          fs.unlinkSync(path.join(promptDir, entry));
-        } catch {
-          // Ignore individual file removal errors
-        }
-      }
-    }
-  } catch {
-    // Directory may not exist yet — that's fine
+    // Directory may not exist yet
   }
 }
 
-/** @deprecated Kept only as fallback when _providers is absent. Prefer per-provider mapping. */
-function resolveCliMode(permissionConfig: { cli?: { mode?: "read-only" | "edit" | "full-auto" } } | undefined): "read-only" | "edit" | "full-auto" {
-  const mode = permissionConfig?.cli?.mode;
-  if (mode === "read-only" || mode === "edit" || mode === "full-auto") return mode;
-  return "full-auto";
+function cleanupStaleMcpConfigFiles(projectRoot: string): void {
+  cleanupStaleFilesInDir(
+    path.join(projectRoot, ".ade", "orchestrator", "mcp-configs"),
+    "worker-", ".json",
+  );
+  cleanupStaleFilesInDir(
+    path.join(projectRoot, ".ade", "orchestrator", "worker-prompts"),
+    "worker-", ".txt",
+  );
+}
+
+function resolveManagedPermissionMode(args: {
+  provider: "claude" | "codex" | "unified";
+  permissionConfig: LegacyPermissionConfig | undefined;
+  readOnlyExecution: boolean;
+}): AgentChatPermissionMode | undefined {
+  if (args.readOnlyExecution) return "plan";
+  const providers = args.permissionConfig?._providers;
+  let candidate: unknown;
+  if (args.provider === "claude") candidate = providers?.claude;
+  else if (args.provider === "codex") candidate = providers?.codex;
+  else candidate = providers?.unified;
+  return candidate === "default"
+    || candidate === "plan"
+    || candidate === "edit"
+    || candidate === "full-auto"
+    || candidate === "config-toml"
+    ? candidate
+    : undefined;
+}
+
+function resolveManagedExecutionMode(args: {
+  provider: "claude" | "codex" | "unified";
+  teamRuntime?: TeamRuntimeConfig;
+}): AgentChatExecutionMode {
+  if (args.provider === "claude") {
+    if (
+      args.teamRuntime?.enabled
+      && args.teamRuntime.allowClaudeAgentTeams !== false
+      && (args.teamRuntime.targetProvider === "claude" || args.teamRuntime.targetProvider === "auto")
+    ) {
+      return "teams";
+    }
+    return args.teamRuntime?.allowSubAgents === false ? "focused" : "subagents";
+  }
+  if (args.provider === "codex") {
+    return args.teamRuntime?.allowParallelAgents === false ? "focused" : "parallel";
+  }
+  return "focused";
 }
 
 type LegacyPermissionConfig = {
@@ -340,7 +373,7 @@ export function forceReadOnlyPermissionConfig(
   const providers = normalizeMissionPermissions(permissionConfig as MissionPermissionConfig | undefined);
   return providerPermissionsToLegacyConfig({
     ...providers,
-    claude: "plan",
+    claude: "default",
     codex: "plan",
     unified: "plan",
     codexSandbox: "read-only",
@@ -356,6 +389,7 @@ export function forceReadOnlyPermissionConfig(
 export function createUnifiedOrchestratorAdapter(options?: {
   workspaceRoot?: string;
   runtimeRoot?: string;
+  agentChatService?: ReturnType<typeof createAgentChatService> | null;
 }): OrchestratorExecutorAdapter {
   const runtimeRoot = typeof options?.runtimeRoot === "string" && options.runtimeRoot.trim().length
     ? options.runtimeRoot.trim()
@@ -367,7 +401,7 @@ export function createUnifiedOrchestratorAdapter(options?: {
   // Clean up stale MCP config files from previous runs
   cleanupStaleMcpConfigFiles(workspaceRoot);
 
-  return createBaseOrchestratorAdapter({
+  const shellAdapter = createBaseOrchestratorAdapter({
     executorKind: "unified",
     sessionType: "ai-orchestrated",
 
@@ -405,11 +439,9 @@ export function createUnifiedOrchestratorAdapter(options?: {
         const claudeProviderMode = effectivePermissionConfig?._providers?.claude;
         const mappedClaude = mapPermissionToClaude(claudeProviderMode);
         const dangerouslySkip = !readOnlyExecution && mappedClaude === "bypassPermissions";
-        const permissionMode = readOnlyExecution
-          ? "plan"
-          : mappedClaude === "bypassPermissions"
-            ? "acceptEdits"
-            : mappedClaude;
+        const permissionMode = mappedClaude === "bypassPermissions"
+          ? "acceptEdits"
+          : mappedClaude;
         const configuredAllowedTools =
           effectivePermissionConfig?._providers?.allowedTools ?? effectivePermissionConfig?.cli?.allowedTools ?? [];
         const allowedTools = readOnlyExecution
@@ -514,4 +546,131 @@ export function createUnifiedOrchestratorAdapter(options?: {
       };
     }
   });
+
+  const agentChatService = options?.agentChatService ?? null;
+
+  if (!agentChatService) {
+    return {
+      ...shellAdapter,
+      requiresLaneId: true,
+    };
+  }
+
+  return {
+    kind: "unified",
+    requiresLaneId: true,
+    async start(args) {
+      const rawStartup = typeof args.step.metadata?.startupCommand === "string" ? args.step.metadata.startupCommand.trim() : "";
+      if (rawStartup.length > 0) {
+        return shellAdapter.start(args);
+      }
+
+      if (!args.step.laneId) {
+        return {
+          status: "failed",
+          errorClass: "policy",
+          errorMessage: "Unified executor requires step.laneId to create worker sessions."
+        };
+      }
+
+      const modelRef = typeof args.step.metadata?.modelId === "string" ? args.step.metadata.modelId.trim() : "";
+      if (!modelRef.length) {
+        return {
+          status: "failed",
+          errorClass: "policy",
+          errorMessage: `Step '${args.step.stepKey}' is missing required metadata.modelId for unified execution.`
+        };
+      }
+
+      const descriptor = getModelById(modelRef) ?? resolveModelAlias(modelRef);
+      if (!descriptor) {
+        return {
+          status: "failed",
+          errorClass: "policy",
+          errorMessage: `Model '${modelRef}' is not registered.`
+        };
+      }
+
+      const teamRuntime = args.run.metadata && typeof args.run.metadata === "object" && !Array.isArray(args.run.metadata)
+        ? (args.run.metadata as Record<string, unknown>).teamRuntime as TeamRuntimeConfig | undefined
+        : undefined;
+      const requiresPlanApproval =
+        args.step.metadata?.requiresPlanApproval === true || args.step.metadata?.coordinationPattern === "plan_then_implement";
+      const readOnlyExecution = args.step.metadata?.readOnlyExecution === true || requiresPlanApproval;
+      const effectivePermissionConfig = forceReadOnlyPermissionConfig(args.permissionConfig, readOnlyExecution);
+      const { prompt, filePatterns, steeringDirectiveCount } = buildFullPrompt(args, "unified", {
+        memoryService: args.memoryService as any,
+        projectId: args.memoryProjectId,
+        workerRuntime: "in_process",
+      });
+      let provider: "claude" | "codex" | "unified" = "unified";
+      if (descriptor.isCliWrapped) {
+        if (descriptor.family === "openai") provider = "codex";
+        else if (descriptor.family === "anthropic") provider = "claude";
+      }
+      const model = descriptor.isCliWrapped ? descriptor.shortId : descriptor.id;
+      const reasoningEffort =
+        typeof args.step.metadata?.reasoningEffort === "string" && args.step.metadata.reasoningEffort.trim().length > 0
+          ? args.step.metadata.reasoningEffort.trim()
+          : undefined;
+      const permissionMode = resolveManagedPermissionMode({
+        provider,
+        permissionConfig: effectivePermissionConfig,
+        readOnlyExecution,
+      });
+      const executionMode = resolveManagedExecutionMode({
+        provider,
+        teamRuntime,
+      });
+
+      try {
+        const session = await agentChatService.createSession({
+          laneId: args.step.laneId,
+          provider,
+          model,
+          modelId: descriptor.id,
+          reasoningEffort: reasoningEffort ?? null,
+          permissionMode,
+        });
+        return {
+          status: "accepted",
+          sessionId: session.id,
+          launch: {
+            prompt,
+            displayText: `Execute worker step "${args.step.title}".`,
+            reasoningEffort: reasoningEffort ?? null,
+            executionMode,
+            permissionMode: permissionMode ?? null,
+          },
+          metadata: {
+            adapterKind: "unified",
+            workerSessionKind: "managed_chat",
+            workerStreamSource: "agent_chat",
+            model: descriptor.id,
+            modelFamily: descriptor.family ?? "unknown",
+            isCliWrapped: descriptor.isCliWrapped ?? false,
+            reasoningEffort,
+            executionMode,
+            permissionMode,
+            filePatterns: filePatterns.length > 0 ? filePatterns : undefined,
+            steeringDirectiveCount,
+            promptLength: prompt.length,
+            startupCommandPreview: "[managed chat session]",
+          }
+        };
+      } catch (error) {
+        return {
+          status: "failed",
+          errorClass: "startup_failure",
+          errorMessage: error instanceof Error ? error.message : String(error),
+          metadata: {
+            adapterKind: "unified",
+            workerSessionKind: "managed_chat",
+            workerStreamSource: "agent_chat",
+            adapterState: "managed_chat_session_create_failed",
+          }
+        };
+      }
+    },
+  };
 }

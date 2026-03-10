@@ -48,6 +48,7 @@ import type {
   PlannerClarifyingQuestion,
   PlannerClarifyingAnswer,
   ResolveMissionInterventionArgs,
+  ArchiveMissionArgs,
   DeleteMissionArgs,
   UpdateMissionArgs,
   UpdateMissionStepArgs
@@ -395,9 +396,6 @@ function toPhaseCard(value: unknown, fallbackPosition = 0): PhaseCard | null {
     },
     askQuestions: {
       enabled: coerceBoolean(askQuestions.enabled),
-      mode: askQuestions.mode === "always" || askQuestions.mode === "auto_if_uncertain" || askQuestions.mode === "never"
-        ? askQuestions.mode
-        : "auto_if_uncertain",
       maxQuestions: coerceNumber(askQuestions.maxQuestions),
     },
     validationGate: {
@@ -423,9 +421,44 @@ function toPhaseCards(raw: unknown[]): PhaseCard[] {
 
 function normalizePhaseCards(phases: PhaseCard[]): PhaseCard[] {
   return phases
-    .map((phase, index) => ({ ...phase, position: index }))
-    .sort((a, b) => a.position - b.position)
-    .map((phase, index) => ({ ...phase, position: index }));
+    .map((phase, index) => {
+      const phaseKey = String(phase.phaseKey ?? "").trim().toLowerCase();
+      const planningPhase = phaseKey === "planning";
+      const testingOrValidation = phaseKey === "testing" || phaseKey === "validation";
+      const askQuestions: PhaseCard["askQuestions"] = planningPhase
+        ? {
+            ...phase.askQuestions,
+            enabled: phase.askQuestions.enabled !== false,
+            maxQuestions: Math.max(1, Math.min(10, Number(phase.askQuestions.maxQuestions ?? 5) || 5)),
+          }
+        : {
+            ...phase.askQuestions,
+            enabled: false,
+            maxQuestions: undefined,
+          };
+      const validationGate: PhaseCard["validationGate"] = planningPhase || phaseKey === "development"
+        ? {
+            ...phase.validationGate,
+            tier: "none",
+            required: false,
+            criteria: undefined,
+            evidenceRequirements: undefined,
+          }
+        : testingOrValidation
+          ? {
+              ...phase.validationGate,
+              tier: phase.validationGate.tier === "none" ? "dedicated" : phase.validationGate.tier,
+            }
+          : phase.validationGate;
+      const requiresApproval = phase.requiresApproval === true;
+      return {
+        ...phase,
+        askQuestions,
+        validationGate,
+        requiresApproval,
+        position: index,
+      };
+    });
 }
 
 function toPhaseProfile(row: PhaseProfileRow): PhaseProfile {
@@ -501,12 +534,23 @@ function normalizeStepStatus(value: string): MissionStepStatus {
 }
 
 function normalizeArtifactType(value: string): MissionArtifactType {
-  if (value === "summary" || value === "pr" || value === "link" || value === "note" || value === "patch") return value;
+  if (value === "summary" || value === "pr" || value === "link" || value === "note" || value === "patch" || value === "plan") return value;
   return "note";
 }
 
 function normalizeInterventionType(value: string): MissionInterventionType {
-  if (value === "approval_required" || value === "manual_input" || value === "conflict" || value === "policy_block" || value === "failed_step") {
+  if (
+    value === "approval_required" ||
+    value === "manual_input" ||
+    value === "conflict" ||
+    value === "policy_block" ||
+    value === "failed_step" ||
+    value === "orchestrator_escalation" ||
+    value === "budget_limit_reached" ||
+    value === "provider_unreachable" ||
+    value === "unrecoverable_error" ||
+    value === "phase_approval"
+  ) {
     return value;
   }
   return "manual_input";
@@ -684,6 +728,16 @@ export function createMissionService({
     ...DEFAULT_CONCURRENCY_CONFIG,
     ...concurrencyConfig
   };
+
+  const ensureMissionSchemaCompatibility = () => {
+    const missionColumns = db.all<{ name: string }>("pragma table_info(missions)");
+    const hasArchivedAt = missionColumns.some((column) => column.name === "archived_at");
+    if (!hasArchivedAt) {
+      db.run("alter table missions add column archived_at text");
+    }
+  };
+
+  ensureMissionSchemaCompatibility();
 
   // Late-bound reference to the service object for use in internal helpers.
   // Assigned after the return object is created. Uses a minimal interface
@@ -1612,6 +1666,9 @@ export function createMissionService({
     list(args: ListMissionsArgs = {}): MissionSummary[] {
       const where: string[] = [];
       const params: Array<string | number> = [projectId];
+      if (args.includeArchived !== true) {
+        where.push("m.archived_at is null");
+      }
 
       const laneId = typeof args.laneId === "string" ? args.laneId.trim() : "";
       if (laneId.length) {
@@ -2203,6 +2260,7 @@ export function createMissionService({
 
       const recentRows = db.all<MissionRow>(
         `${baseMissionSelect}
+         and m.archived_at is null
          and m.status in ('completed', 'failed', 'canceled')
          order by coalesce(m.completed_at, m.updated_at) desc
          limit 12`,
@@ -2227,6 +2285,7 @@ export function createMissionService({
       const weekStart = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
       const weeklyRows = db.all<MissionRow>(
         `${baseMissionSelect}
+         and m.archived_at is null
          and m.created_at >= ?
          order by m.created_at desc`,
         [projectId, weekStart]
@@ -2610,6 +2669,47 @@ export function createMissionService({
         });
       }
 
+      if (plannerPlan) {
+        const planSummaryText = [
+          plannerPlan.missionSummary?.strategy ? `Strategy: ${plannerPlan.missionSummary.strategy}` : null,
+          plannerPlan.missionSummary?.objective ? `Objective: ${plannerPlan.missionSummary.objective}` : null,
+          plannerPlan.assumptions?.length ? `Assumptions:\n${plannerPlan.assumptions.map((entry) => `- ${entry}`).join("\n")}` : null,
+          plannerPlan.risks?.length ? `Risks:\n${plannerPlan.risks.map((entry) => `- ${entry}`).join("\n")}` : null,
+          plannerPlan.steps.length
+            ? `Plan Steps:\n${plannerPlan.steps.map((step, index) => `${index + 1}. ${step.name}`).join("\n")}`
+            : null,
+        ].filter((entry): entry is string => Boolean(entry)).join("\n\n");
+
+        if (planSummaryText.trim().length > 0) {
+          insertArtifact({
+            missionId: id,
+            artifactType: "summary",
+            title: "Generated mission plan",
+            description: planSummaryText,
+            createdBy: "system",
+            metadata: {
+              plannerStepCount: plannerPlan.steps.length,
+              source: "planner_plan",
+            },
+          });
+        }
+      }
+
+      if (plannerRun?.rawResponse?.trim()) {
+        insertArtifact({
+          missionId: id,
+          artifactType: "note",
+          title: "Planner output",
+          description: truncateForMetadata(plannerRun.rawResponse, 20_000),
+          createdBy: "system",
+          metadata: {
+            plannerRunId: plannerRun.id,
+            resolvedEngine: plannerRun.resolvedEngine,
+            source: "planner_run",
+          },
+        });
+      }
+
       db.flushNow();
       emit({ missionId: id, reason: "created" });
       const detail = this.get(id);
@@ -2790,6 +2890,53 @@ export function createMissionService({
         [JSON.stringify(next), nowIso(), id, projectId]
       );
       db.flushNow();
+    },
+
+    archive(args: ArchiveMissionArgs): void {
+      const missionId = args.missionId.trim();
+      if (!missionId.length) throw new Error("missionId is required.");
+      const row = db.get<{ id: string; status: string; archived_at: string | null }>(
+        `
+          select id, status, archived_at
+          from missions
+          where id = ?
+            and project_id = ?
+          limit 1
+        `,
+        [missionId, projectId]
+      );
+      if (!row?.id) throw new Error(`Mission not found: ${missionId}`);
+      if (row.archived_at) return;
+
+      const status = normalizeMissionStatus(row.status);
+      if (!TERMINAL_MISSION_STATUSES.has(status)) {
+        throw new Error("Only completed, failed, or canceled missions can be archived.");
+      }
+
+      const archivedAt = nowIso();
+      recordEvent({
+        missionId,
+        eventType: "mission_archived",
+        actor: "user",
+        summary: "Mission archived from the Missions tab.",
+        payload: {
+          archivedAt,
+          status,
+        }
+      });
+      db.run(
+        `
+          update missions
+          set archived_at = ?,
+              updated_at = ?
+          where id = ?
+            and project_id = ?
+            and archived_at is null
+        `,
+        [archivedAt, archivedAt, missionId, projectId]
+      );
+      db.flushNow();
+      emit({ missionId, reason: "archived" });
     },
 
     delete(args: DeleteMissionArgs): void {
@@ -3263,13 +3410,13 @@ export function createMissionService({
         uri: args.uri,
         laneId: args.laneId,
         metadata: args.metadata,
-        createdBy: "user"
+        createdBy: typeof args.createdBy === "string" && args.createdBy.trim().length > 0 ? args.createdBy.trim() : "user"
       });
 
       recordEvent({
         missionId,
         eventType: "mission_artifact_added",
-        actor: "user",
+        actor: typeof args.actor === "string" && args.actor.trim().length > 0 ? args.actor.trim() : "user",
         summary: `Artifact added: ${artifact.title}`,
         payload: {
           artifactId: artifact.id,
@@ -3290,6 +3437,47 @@ export function createMissionService({
       const missionId = args.missionId.trim();
       if (!missionId.length) throw new Error("missionId is required.");
       if (!getMissionRow(missionId)) throw new Error(`Mission not found: ${missionId}`);
+
+      // VAL-INTV-001 / VAL-INTV-002: Deduplicate interventions.
+      // Check for an existing open intervention that matches this one.
+      // For failed_step interventions, match by stepId in metadata.
+      // For budget_limit_reached / provider_unreachable / unrecoverable_error,
+      // match by interventionType alone (at most one open per type).
+      const meta = args.metadata ?? null;
+      const metaStepId = meta && typeof (meta as Record<string, unknown>).stepId === "string"
+        ? ((meta as Record<string, unknown>).stepId as string).trim()
+        : null;
+
+      const existingOpenRows = db.all<MissionInterventionRow>(
+        `select id, mission_id, intervention_type, status, title, body,
+                requested_action, resolution_note, lane_id,
+                created_at, updated_at, resolved_at, metadata_json
+         from mission_interventions
+         where mission_id = ? and project_id = ? and status = 'open'
+           and intervention_type = ?`,
+        [missionId, projectId, args.interventionType]
+      );
+
+      for (const row of existingOpenRows) {
+        if (args.interventionType === "failed_step" && metaStepId) {
+          // Match by stepId in metadata
+          const rowMeta = safeParseRecord(row.metadata_json);
+          const rowStepId = rowMeta && typeof rowMeta.stepId === "string"
+            ? rowMeta.stepId.trim()
+            : null;
+          if (rowStepId === metaStepId) {
+            // Return existing intervention — skip duplicate creation
+            return toMissionIntervention(row);
+          }
+        } else if (
+          args.interventionType === "budget_limit_reached" ||
+          args.interventionType === "provider_unreachable" ||
+          args.interventionType === "unrecoverable_error"
+        ) {
+          // At most one open intervention per type
+          return toMissionIntervention(row);
+        }
+      }
 
       const intervention = insertIntervention({
         missionId,

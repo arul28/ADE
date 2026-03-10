@@ -195,6 +195,7 @@ const TOOL_SPECS: ToolSpec[] = [
         body: { type: "string", minLength: 1 },
         requestedAction: { type: "string" },
         laneId: { type: "string" },
+        phase: { type: "string" },
         waitForResolutionMs: { type: "number", minimum: 0, maximum: 3600000 },
         pollIntervalMs: { type: "number", minimum: 100, maximum: 10000 }
       }
@@ -217,7 +218,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "memory_update_core",
-    description: "Update CTO core memory Tier-1 fields (project summary, conventions, preferences, focus, notes).",
+    description: "Update identity core memory Tier-1 fields (project summary, conventions, preferences, focus, notes).",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -786,6 +787,7 @@ const COORDINATOR_TOOL_SPECS: ToolSpec[] = [
   { name: "update_tool_profiles", description: "Coordinator: update runtime role/tool profiles.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "transfer_lane", description: "Coordinator: transfer a worker step to another lane.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "provision_lane", description: "Coordinator: provision a new mission child lane.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "set_current_phase", description: "Coordinator: set the active mission phase.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "create_task", description: "Coordinator: create a logical mission task without spawning a worker.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "update_task", description: "Coordinator: update task metadata/status.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "assign_task", description: "Coordinator: assign a task to an existing worker.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
@@ -794,7 +796,7 @@ const COORDINATOR_TOOL_SPECS: ToolSpec[] = [
   { name: "mark_step_complete", description: "Coordinator: mark a worker step as succeeded.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "mark_step_failed", description: "Coordinator: mark a worker step as failed.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "retry_step", description: "Coordinator: retry a failed worker step.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "complete_mission", description: "Coordinator: finalize the mission run as succeeded.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
+  { name: "complete_mission", description: "Coordinator: request mission success finalization. The runtime still enforces completion gates before success is granted.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "fail_mission", description: "Coordinator: finalize the mission run as failed.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "get_budget_status", description: "Coordinator: inspect mission budget pressure/hard caps.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "request_user_input", description: "Coordinator: open a user intervention with a question.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
@@ -803,6 +805,25 @@ const COORDINATOR_TOOL_SPECS: ToolSpec[] = [
   { name: "search_files", description: "Coordinator: search files/content in project root.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
   { name: "get_project_context", description: "Coordinator: return compact mission/project context for planning.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
 ];
+
+const AGENT_VISIBLE_COORDINATOR_TOOL_NAMES = new Set([
+  "report_status",
+  "report_result",
+  "report_validation",
+  "delegate_to_subagent",
+  "delegate_parallel",
+  "get_worker_output",
+  "list_workers",
+  "read_mission_status",
+  "read_mission_state",
+  "list_tasks",
+  "get_budget_status",
+  "get_project_context",
+]);
+
+const AGENT_VISIBLE_COORDINATOR_TOOL_SPECS = COORDINATOR_TOOL_SPECS.filter((tool) =>
+  AGENT_VISIBLE_COORDINATOR_TOOL_NAMES.has(tool.name)
+);
 
 const ALL_TOOL_SPECS: ToolSpec[] = [...TOOL_SPECS, ...COORDINATOR_TOOL_SPECS];
 const COORDINATOR_TOOL_NAMES = new Set(COORDINATOR_TOOL_SPECS.map((tool) => tool.name));
@@ -1197,6 +1218,7 @@ type CallerContext = {
   runId: string | null;
   stepId: string | null;
   attemptId: string | null;
+  ownerId: string | null;
 };
 
 function resolveEnvCallerContext(): CallerContext {
@@ -1211,7 +1233,8 @@ function resolveEnvCallerContext(): CallerContext {
     missionId: process.env.ADE_MISSION_ID?.trim() || null,
     runId: process.env.ADE_RUN_ID?.trim() || null,
     stepId: process.env.ADE_STEP_ID?.trim() || null,
-    attemptId: process.env.ADE_ATTEMPT_ID?.trim() || null
+    attemptId: process.env.ADE_ATTEMPT_ID?.trim() || null,
+    ownerId: process.env.ADE_OWNER_ID?.trim() || null,
   };
 }
 
@@ -1224,17 +1247,44 @@ function resolveCallerContext(session?: SessionState): CallerContext {
     missionId: session.identity.missionId ?? envContext.missionId,
     runId: session.identity.runId ?? envContext.runId,
     stepId: session.identity.stepId ?? envContext.stepId,
-    attemptId: session.identity.attemptId ?? envContext.attemptId
+    attemptId: session.identity.attemptId ?? envContext.attemptId,
+    ownerId: session.identity.ownerId ?? envContext.ownerId,
   };
+}
+
+function canCallerAccessCoordinatorTool(name: string, callerCtx: CallerContext): boolean {
+  if (!COORDINATOR_TOOL_NAMES.has(name)) return true;
+  if (callerCtx.role === "orchestrator") return true;
+  if (callerCtx.role === "agent" && AGENT_VISIBLE_COORDINATOR_TOOL_NAMES.has(name)) return true;
+  if (
+    AGENT_VISIBLE_COORDINATOR_TOOL_NAMES.has(name)
+    && (callerCtx.attemptId || callerCtx.stepId || callerCtx.runId || callerCtx.missionId)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function listToolSpecsForSession(session: SessionState): ToolSpec[] {
+  const callerCtx = resolveCallerContext(session);
+  if (callerCtx.role === "agent") {
+    return [...TOOL_SPECS, ...AGENT_VISIBLE_COORDINATOR_TOOL_SPECS];
+  }
+  return ALL_TOOL_SPECS;
 }
 
 function parseInitializeIdentity(params: unknown): SessionIdentity {
   const data = safeObject(params);
   const identity = safeObject(data.identity);
   const envContext = resolveEnvCallerContext();
-  const role = asTrimmedString(identity.role) || process.env.ADE_DEFAULT_ROLE || "";
+  const requestedRole = asTrimmedString(identity.role);
   const validRole: SessionIdentity["role"] =
-    role === "orchestrator" || role === "agent" || role === "evaluator" ? role : "external";
+    envContext.role
+      ?? (
+        requestedRole === "orchestrator" || requestedRole === "agent" || requestedRole === "evaluator"
+          ? requestedRole
+          : "external"
+      );
 
   return {
     callerId: asOptionalTrimmedString(identity.callerId) ?? envContext.attemptId ?? "unknown",
@@ -1243,7 +1293,7 @@ function parseInitializeIdentity(params: unknown): SessionIdentity {
     runId: asOptionalTrimmedString(identity.runId) ?? envContext.runId,
     stepId: asOptionalTrimmedString(identity.stepId) ?? envContext.stepId,
     attemptId: asOptionalTrimmedString(identity.attemptId) ?? envContext.attemptId,
-    ownerId: asOptionalTrimmedString(identity.ownerId)
+    ownerId: asOptionalTrimmedString(identity.ownerId) ?? envContext.ownerId
   };
 }
 
@@ -1594,6 +1644,29 @@ function resolveMissionIdForRun(runtime: AdeMcpRuntime, runId: string): string |
   return asOptionalTrimmedString(row?.mission_id);
 }
 
+function resolveRunIdForMission(runtime: AdeMcpRuntime, missionId: string): string | null {
+  const row = runtime.db.get<{ id: string | null }>(
+    `
+      select id
+      from orchestrator_runs
+      where mission_id = ?
+      order by
+        case status
+          when 'active' then 0
+          when 'bootstrapping' then 1
+          when 'queued' then 2
+          when 'paused' then 3
+          else 4
+        end,
+        datetime(updated_at) desc,
+        datetime(created_at) desc
+      limit 1
+    `,
+    [missionId]
+  );
+  return asOptionalTrimmedString(row?.id);
+}
+
 function getCoordinatorToolSet(args: {
   runtime: AdeMcpRuntime;
   runId: string;
@@ -1793,6 +1866,42 @@ function normalizeCoordinatorWorkerToolArgs(args: {
     }
   }
 
+  return normalized;
+}
+
+function normalizeAgentDelegationToolArgs(args: {
+  name: string;
+  toolArgs: Record<string, unknown>;
+  callerCtx: CallerContext;
+  graph: Record<string, unknown> | null;
+}): Record<string, unknown> {
+  const normalized = { ...args.toolArgs };
+  if (args.callerCtx.role !== "agent") return normalized;
+  if (args.name !== "delegate_to_subagent" && args.name !== "delegate_parallel") return normalized;
+  if (!args.graph) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `Agent caller cannot use '${args.name}' without an active run graph.`
+    );
+  }
+
+  const ownedWorkerId = inferWorkerIdFromCaller(args.graph, args.callerCtx);
+  if (!ownedWorkerId) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `Agent caller cannot use '${args.name}' without an active parent worker context.`
+    );
+  }
+
+  const requestedParentWorkerId = asOptionalTrimmedString(normalized.parentWorkerId);
+  if (requestedParentWorkerId && requestedParentWorkerId !== ownedWorkerId) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `Agent caller may only delegate beneath its own worker '${ownedWorkerId}'.`
+    );
+  }
+
+  normalized.parentWorkerId = ownedWorkerId;
   return normalized;
 }
 
@@ -2076,7 +2185,13 @@ async function runCoordinatorTool(args: {
   toolArgs: Record<string, unknown>;
   callerCtx: CallerContext;
 }): Promise<Record<string, unknown>> {
-  const runId = args.callerCtx.runId ?? asOptionalTrimmedString(args.toolArgs.runId);
+  const missionIdFromContext =
+    args.callerCtx.missionId
+    ?? asOptionalTrimmedString(args.toolArgs.missionId);
+  const runId =
+    args.callerCtx.runId
+    ?? asOptionalTrimmedString(args.toolArgs.runId)
+    ?? (missionIdFromContext ? resolveRunIdForMission(args.runtime, missionIdFromContext) : null);
   if (!runId) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
@@ -2084,8 +2199,7 @@ async function runCoordinatorTool(args: {
     );
   }
   const missionId =
-    args.callerCtx.missionId
-    ?? asOptionalTrimmedString(args.toolArgs.missionId)
+    missionIdFromContext
     ?? resolveMissionIdForRun(args.runtime, runId);
   if (!missionId) {
     throw new JsonRpcError(
@@ -2104,7 +2218,7 @@ async function runCoordinatorTool(args: {
     throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Coordinator tool not found: ${args.name}`);
   }
   const graph = getRunGraphSafe(args.runtime, runId);
-  const effectiveToolArgs =
+  const normalizedToolArgs =
     args.name === "report_status" || args.name === "report_result" || args.name === "report_validation"
       ? normalizeCoordinatorWorkerToolArgs({
           name: args.name,
@@ -2113,6 +2227,12 @@ async function runCoordinatorTool(args: {
           graph,
         })
       : { ...args.toolArgs };
+  const effectiveToolArgs = normalizeAgentDelegationToolArgs({
+    name: args.name,
+    toolArgs: normalizedToolArgs,
+    callerCtx: args.callerCtx,
+    graph,
+  });
   const nativeRegistration = ensureNativeTeammateRegistration({
     runtime: args.runtime,
     runId,
@@ -2153,6 +2273,9 @@ async function runTool(args: {
   const callerCtx = resolveCallerContext(session);
 
   if (COORDINATOR_TOOL_NAMES.has(name)) {
+    if (!canCallerAccessCoordinatorTool(name, callerCtx)) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
+    }
     return await runCoordinatorTool({ runtime, name, toolArgs, callerCtx });
   }
 
@@ -2284,6 +2407,7 @@ async function runTool(args: {
     const body = assertNonEmptyString(toolArgs.body, "body");
     const requestedAction = asOptionalTrimmedString(toolArgs.requestedAction);
     const laneId = asOptionalTrimmedString(toolArgs.laneId);
+    const phase = asOptionalTrimmedString(toolArgs.phase);
     const waitForResolutionMs = Math.max(0, Math.floor(asNumber(toolArgs.waitForResolutionMs, 0)));
     const pollIntervalMs = Math.max(100, Math.floor(asNumber(toolArgs.pollIntervalMs, 1000)));
 
@@ -2293,8 +2417,38 @@ async function runTool(args: {
       title,
       body,
       ...(requestedAction ? { requestedAction } : {}),
-      ...(laneId ? { laneId } : {})
+      ...(laneId ? { laneId } : {}),
+      metadata: {
+        source: "ask_user",
+        ...(callerCtx.runId ? { runId: callerCtx.runId } : {}),
+        ...(phase ? { phase } : {}),
+        blocking: true,
+        canProceedWithoutAnswer: false,
+      }
     });
+
+    if (callerCtx.runId) {
+      try {
+        runtime.orchestratorService.pauseRun({
+          runId: callerCtx.runId,
+          reason: `Blocking user question: ${title.slice(0, 120)}`,
+          metadata: {
+            interventionSource: "ask_user",
+            interventionId: intervention.id,
+          },
+        });
+      } catch {
+        // Best-effort: the run may already be paused or terminal.
+      }
+    }
+
+    if (session.identity.role === "orchestrator" || callerCtx.runId) {
+      return {
+        intervention,
+        awaitingUserResponse: true,
+        blocking: true
+      };
+    }
 
     if (waitForResolutionMs <= 0) {
       return {
@@ -2434,6 +2588,17 @@ async function runTool(args: {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "memory_update_core requires at least one patch field.");
     }
 
+    const callerCtx = resolveCallerContext(session);
+    if (callerCtx.role === "agent" && callerCtx.ownerId && runtime.workerAgentService) {
+      const coreMemory = runtime.workerAgentService.updateCoreMemory(callerCtx.ownerId, patch);
+      return {
+        updated: true,
+        version: coreMemory.version,
+        updatedAt: coreMemory.updatedAt,
+        coreMemory
+      };
+    }
+
     const snapshot = runtime.ctoStateService.updateCoreMemory(patch);
     return {
       updated: true,
@@ -2502,7 +2667,7 @@ async function runTool(args: {
         ? (["promoted", "candidate", "archived"] as const)
         : status;
     const limit = Math.max(1, Math.min(50, Math.floor(asNumber(toolArgs.limit, 5))));
-    const memories = runtime.memoryService.searchMemories(
+    const memories = await runtime.memoryService.searchMemories(
       query,
       runtime.projectId,
       serviceScope,
@@ -3626,6 +3791,7 @@ export function createMcpRequestHandler(args: {
       session.initialized = true;
       session.protocolVersion = asOptionalTrimmedString(params.protocolVersion) ?? DEFAULT_PROTOCOL_VERSION;
       session.identity = parseInitializeIdentity(params);
+      const resourcesEnabled = session.identity.role !== "orchestrator";
       return {
         protocolVersion: session.protocolVersion,
         serverInfo: {
@@ -3636,10 +3802,14 @@ export function createMcpRequestHandler(args: {
           tools: {
             listChanged: false
           },
-          resources: {
-            listChanged: false,
-            subscribe: false
-          }
+          ...(resourcesEnabled
+            ? {
+                resources: {
+                  listChanged: false,
+                  subscribe: false
+                }
+              }
+            : {})
         }
       };
     }
@@ -3658,7 +3828,7 @@ export function createMcpRequestHandler(args: {
 
     if (method === "tools/list") {
       return {
-        tools: ALL_TOOL_SPECS.map((tool) => ({
+        tools: listToolSpecsForSession(session).map((tool) => ({
           name: tool.name,
           description: tool.description,
           inputSchema: tool.inputSchema

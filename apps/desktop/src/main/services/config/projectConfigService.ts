@@ -492,6 +492,7 @@ const AI_TASK_KEYS: AiTaskRoutingKey[] = [
   "implementation",
   "review",
   "conflict_resolution",
+  "memory_consolidation",
   "narrative",
   "pr_description",
   "terminal_summary",
@@ -504,6 +505,7 @@ const AI_FEATURE_KEYS: AiFeatureKey[] = [
   "conflict_proposals",
   "pr_descriptions",
   "terminal_summaries",
+  "memory_consolidation",
   "mission_planning",
   "orchestrator",
   "initial_context"

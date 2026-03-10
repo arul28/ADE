@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
+import type { createHybridSearchService } from "./hybridSearchService";
 
 export type UnifiedMemoryScope = "project" | "agent" | "mission";
 export type MemoryScope = UnifiedMemoryScope | "user" | "lane";
@@ -18,7 +19,22 @@ export type MemoryCategory =
   | "handoff";
 export type MemoryImportance = "low" | "medium" | "high";
 export type MemoryStatus = "candidate" | "promoted" | "archived";
-export type MemorySourceType = "agent" | "system" | "user" | "mission_promotion";
+export type MemorySourceType = "agent" | "system" | "user" | "mission_promotion" | "consolidation";
+export type MemorySearchMode = "lexical" | "hybrid";
+
+type CreateUnifiedMemoryServiceOpts = {
+  onMemoryMutated?: () => void;
+  onMemoryUpserted?: (event: MemoryUpsertEvent) => void;
+  hybridSearchService?: Pick<ReturnType<typeof createHybridSearchService>, "search">;
+};
+
+export type MemoryUpsertEvent = {
+  memory: Memory;
+  created: boolean;
+  deduped: boolean;
+  mergedIntoId?: string;
+  contentChanged: boolean;
+};
 
 export type Memory = {
   id: string;
@@ -45,8 +61,10 @@ export type Memory = {
   sourceId: string | null;
   fileScopePattern: string | null;
   pinned: boolean;
+  accessScore: number;
   compositeScore: number;
   writeGateReason: string | null;
+  embedded?: boolean;
 };
 
 export type SharedFact = {
@@ -88,6 +106,7 @@ export type SearchMemoryOpts = {
   scope?: UnifiedMemoryScope;
   scopeOwnerId?: string | null;
   limit?: number;
+  mode?: MemorySearchMode;
   status?: MemoryStatus | ReadonlyArray<MemoryStatus>;
   tiers?: MemoryTier[];
 };
@@ -175,7 +194,7 @@ function normalizeMemoryTier(value: unknown, fallback: MemoryTier): MemoryTier {
 
 function normalizeSourceType(value: unknown): MemorySourceType {
   const s = String(value ?? "").trim();
-  if (s === "agent" || s === "system" || s === "user" || s === "mission_promotion") return s;
+  if (s === "agent" || s === "system" || s === "user" || s === "mission_promotion" || s === "consolidation") return s;
   return "agent";
 }
 
@@ -237,6 +256,11 @@ function resolveHigherStatus(left: MemoryStatus, right: MemoryStatus): MemorySta
 function resolveHigherTier(left: MemoryTier, right: MemoryTier): MemoryTier {
   // Tier 1 (pinned) is highest precedence, then Tier 2, then Tier 3.
   return Math.min(left, right) as MemoryTier;
+}
+
+function seedAccessScore(importance: MemoryImportance, confidence: number): number {
+  const importanceScore = importance === "high" ? 1 : importance === "medium" ? 0.6 : 0.3;
+  return clamp01(Math.max(importanceScore, confidence));
 }
 
 function mergeMemoryContent(existing: string, incoming: string): string {
@@ -331,8 +355,10 @@ function mapMemoryRow(row: Record<string, unknown>): Memory {
     sourceId: row.source_id ? String(row.source_id) : null,
     fileScopePattern: row.file_scope_pattern ? String(row.file_scope_pattern) : null,
     pinned: pinned || tier === 1,
+    accessScore: Number(row.access_score ?? row.composite_score ?? 0),
     compositeScore: Number(row.composite_score ?? 0),
     writeGateReason: row.write_gate_reason ? String(row.write_gate_reason) : null,
+    embedded: row.embedded === true || Number(row.embedded ?? 0) === 1 || row.embedding_blob != null,
   };
 }
 
@@ -349,7 +375,23 @@ function mapSharedFactRow(row: Record<string, unknown>): SharedFact {
 
 export type UnifiedMemoryService = ReturnType<typeof createUnifiedMemoryService>;
 
-export function createUnifiedMemoryService(db: AdeDb) {
+export function createUnifiedMemoryService(db: AdeDb, serviceOpts: CreateUnifiedMemoryServiceOpts = {}) {
+  const notifyMutation = () => {
+    try {
+      serviceOpts.onMemoryMutated?.();
+    } catch {
+      // Mutation side-effects are best-effort and must not break memory writes.
+    }
+  };
+
+  const notifyMemoryUpserted = (event: MemoryUpsertEvent) => {
+    try {
+      serviceOpts.onMemoryUpserted?.(event);
+    } catch {
+      // Embedding / observer hooks are best-effort and must not break memory writes.
+    }
+  };
+
   function readById(id: string): Memory | null {
     const row = db.get<Record<string, unknown>>(
       `SELECT * FROM unified_memories WHERE id = ? LIMIT 1`,
@@ -367,10 +409,14 @@ export function createUnifiedMemoryService(db: AdeDb) {
           SET access_count = access_count + 1,
               last_accessed_at = ?,
               updated_at = ?,
+              access_score = CASE
+                WHEN COALESCE(access_score, 0) > ? THEN COALESCE(access_score, 0)
+                ELSE ?
+              END,
               composite_score = ?
           WHERE id = ?
         `,
-        [now, now, compositeScore, id]
+        [now, now, compositeScore, compositeScore, compositeScore, id]
       );
       return;
     }
@@ -556,6 +602,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
       const nextPinned = opts.pinned || existing.pinned || nextTier === 1;
       const nextObservationCount = Math.max(1, existing.observationCount) + 1;
       const boostedConfidence = clamp01(Math.max(existing.confidence, opts.confidence) + 0.05);
+      const nextAccessScore = Math.max(existing.accessScore, seedAccessScore(nextImportance, boostedConfidence));
       const promotedAt = nextStatus === "promoted"
         ? existing.promotedAt ?? now
         : null;
@@ -578,6 +625,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
               source_id = COALESCE(?, source_id),
               file_scope_pattern = COALESCE(?, file_scope_pattern),
               agent_id = COALESCE(?, agent_id),
+              access_score = ?,
               promoted_at = ?,
               dedupe_key = ?,
               write_gate_reason = ?,
@@ -602,6 +650,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
           opts.sourceId ?? null,
           opts.fileScopePattern ?? null,
           opts.agentId ?? null,
+          nextAccessScore,
           promotedAt,
           gate.dedupeKey,
           gate.duplicateId ? "duplicate" : "near_duplicate",
@@ -619,6 +668,15 @@ export function createUnifiedMemoryService(db: AdeDb) {
         };
       }
 
+      notifyMutation();
+      notifyMemoryUpserted({
+        memory: updated,
+        created: false,
+        deduped: true,
+        mergedIntoId: duplicateId,
+        contentChanged: updated.content !== existing.content,
+      });
+
       return {
         accepted: true,
         memory: updated,
@@ -630,6 +688,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
     const id = randomUUID();
     const pinned = opts.pinned || opts.tier === 1;
     const tier: MemoryTier = pinned ? 1 : opts.tier;
+    const accessScore = seedAccessScore(opts.importance, opts.confidence);
     const promotedAt = opts.status === "promoted" ? now : null;
 
     db.run(
@@ -654,6 +713,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
           file_scope_pattern,
           agent_id,
           pinned,
+          access_score,
           composite_score,
           write_gate_reason,
           dedupe_key,
@@ -663,7 +723,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
           access_count,
           promoted_at
         ) VALUES (
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, 0, ?
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, 0, ?
         )
       `,
       [
@@ -685,6 +745,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
         opts.fileScopePattern ?? null,
         opts.agentId ?? null,
         pinned ? 1 : 0,
+        accessScore,
         gate.dedupeKey,
         now,
         now,
@@ -700,6 +761,14 @@ export function createUnifiedMemoryService(db: AdeDb) {
         reason: "failed to read inserted memory",
       };
     }
+
+    notifyMutation();
+    notifyMemoryUpserted({
+      memory: inserted,
+      created: true,
+      deduped: false,
+      contentChanged: true,
+    });
 
     return {
       accepted: true,
@@ -786,6 +855,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
       `,
       [now, now, id]
     );
+    notifyMutation();
   }
 
   function archiveMemory(id: string): void {
@@ -801,6 +871,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
       `,
       [now, id]
     );
+    notifyMutation();
   }
 
   function pinMemory(id: string): Memory | null {
@@ -816,6 +887,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
       `,
       [now, id]
     );
+    notifyMutation();
     return readById(id);
   }
 
@@ -835,16 +907,21 @@ export function createUnifiedMemoryService(db: AdeDb) {
       `,
       [now, id]
     );
+    notifyMutation();
     return readById(id);
   }
 
   function getCandidateMemories(projectId: string, limit = 20): Memory[] {
     const rows = db.all<Record<string, unknown>>(
       `
-        SELECT *
-        FROM unified_memories
-        WHERE project_id = ?
-          AND status = 'candidate'
+        SELECT m.*, EXISTS(
+          SELECT 1
+          FROM unified_memory_embeddings e
+          WHERE e.memory_id = m.id
+        ) AS embedded
+        FROM unified_memories m
+        WHERE m.project_id = ?
+          AND m.status = 'candidate'
         ORDER BY confidence DESC, observation_count DESC, created_at DESC
         LIMIT ?
       `,
@@ -853,7 +930,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
     return rows.map(mapMemoryRow);
   }
 
-  function search(opts: SearchMemoryOpts): Memory[] {
+  function searchLexical(opts: SearchMemoryOpts): Memory[] {
     const statusList = Array.isArray(opts.status)
       ? [...opts.status]
       : opts.status
@@ -864,30 +941,38 @@ export function createUnifiedMemoryService(db: AdeDb) {
     const words = normalizeMemoryForDedup(opts.query).split(/\s+/).filter(Boolean);
     const params: Array<string | number | null> = [opts.projectId];
 
-    let sql = `SELECT * FROM unified_memories WHERE project_id = ?`;
+    let sql = `
+      SELECT m.*, EXISTS(
+        SELECT 1
+        FROM unified_memory_embeddings e
+        WHERE e.memory_id = m.id
+      ) AS embedded
+      FROM unified_memories m
+      WHERE m.project_id = ?
+    `;
 
     if (opts.scope) {
-      sql += ` AND scope = ?`;
+      sql += ` AND m.scope = ?`;
       params.push(opts.scope);
     }
 
     if (opts.scopeOwnerId !== undefined) {
-      sql += ` AND COALESCE(scope_owner_id, '') = ?`;
+      sql += ` AND COALESCE(m.scope_owner_id, '') = ?`;
       params.push(String(opts.scopeOwnerId ?? ""));
     }
 
     if (statusList.length > 0) {
-      sql += ` AND status IN (${statusList.map(() => "?").join(",")})`;
+      sql += ` AND m.status IN (${statusList.map(() => "?").join(",")})`;
       params.push(...statusList);
     }
 
     if (opts.tiers?.length) {
-      sql += ` AND tier IN (${opts.tiers.map(() => "?").join(",")})`;
+      sql += ` AND m.tier IN (${opts.tiers.map(() => "?").join(",")})`;
       params.push(...opts.tiers);
     }
 
     if (words.length > 0) {
-      const contentFilters = words.map(() => `LOWER(content) LIKE ?`).join(" AND ");
+      const contentFilters = words.map(() => `LOWER(m.content) LIKE ?`).join(" AND ");
       sql += ` AND ${contentFilters}`;
       for (const word of words) {
         params.push(`%${word}%`);
@@ -895,7 +980,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
     }
 
     const fetchLimit = limit * 4;
-    sql += ` ORDER BY pinned DESC, tier ASC, updated_at DESC LIMIT ?`;
+    sql += ` ORDER BY m.pinned DESC, m.tier ASC, m.updated_at DESC LIMIT ?`;
     params.push(fetchLimit);
 
     const rows = db.all<Record<string, unknown>>(sql, params);
@@ -918,6 +1003,44 @@ export function createUnifiedMemoryService(db: AdeDb) {
       })
       .slice(0, limit);
 
+    return scored;
+  }
+
+  async function searchHybrid(opts: SearchMemoryOpts): Promise<Memory[] | null> {
+    const normalizedQuery = normalizeMemoryForDedup(opts.query);
+    if (!normalizedQuery.length || !serviceOpts.hybridSearchService) return null;
+
+    const statusList = Array.isArray(opts.status)
+      ? [...opts.status]
+      : opts.status
+        ? [opts.status]
+        : ["promoted"];
+
+    try {
+      const hits = await serviceOpts.hybridSearchService.search({
+        query: opts.query,
+        projectId: opts.projectId,
+        scope: opts.scope,
+        scopeOwnerId: opts.scopeOwnerId,
+        limit: opts.limit,
+        status: statusList,
+        tiers: opts.tiers,
+      });
+
+      return hits.map((hit): Memory => ({
+        ...hit.memory,
+        compositeScore: hit.compositeScore,
+      }));
+    } catch {
+      return null;
+    }
+  }
+
+  async function search(opts: SearchMemoryOpts): Promise<Memory[]> {
+    const scored = opts.mode === "lexical"
+      ? searchLexical(opts)
+      : (await searchHybrid(opts)) ?? searchLexical(opts);
+
     for (const entry of scored) {
       updateAccessStats(entry.id, entry.compositeScore);
     }
@@ -925,19 +1048,21 @@ export function createUnifiedMemoryService(db: AdeDb) {
     return scored;
   }
 
-  function searchMemories(
+  async function searchMemories(
     query: string,
     projectId: string,
     scope?: MemoryScope,
     limit = 10,
     status: MemoryStatus | ReadonlyArray<MemoryStatus> = "promoted",
-    scopeOwnerId?: string | null
-  ): Memory[] {
-    return search({
+    scopeOwnerId?: string | null,
+    mode: MemorySearchMode = "hybrid"
+  ): Promise<Memory[]> {
+    return await search({
       query,
       projectId,
       scope: scope ? normalizeScope(scope) : undefined,
       limit,
+      mode,
       status,
       ...(scopeOwnerId !== undefined ? { scopeOwnerId } : {}),
     });
@@ -959,7 +1084,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
       ? (["promoted", "candidate"] as MemoryStatus[])
       : "promoted";
 
-    return search({
+    return searchLexical({
       projectId,
       query: "",
       limit: limits[level],

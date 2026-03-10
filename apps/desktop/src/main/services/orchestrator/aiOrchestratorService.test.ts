@@ -245,7 +245,7 @@ describe("buildCoordinatorEvaluationActionHints", () => {
 });
 
 describe("deriveMissionPhaseSyncTarget", () => {
-  it("auto-advances to the next configured phase when planning execution is complete", () => {
+  it("holds the current configured phase after planning execution completes", () => {
     const target = deriveMissionPhaseSyncTarget({
       run: {
         id: "run-1",
@@ -279,22 +279,8 @@ describe("deriveMissionPhaseSyncTarget", () => {
       },
       steps: [
         {
-          id: "display-1",
-          stepIndex: 0,
-          stepKey: "implement-test-tab",
-          title: "Implement Test tab",
-          status: "ready",
-          metadata: {
-            displayOnlyTask: true,
-            phaseKey: "planning",
-            phaseName: "Planning",
-            phasePosition: 0,
-            stepType: "planning",
-          },
-        },
-        {
           id: "worker-1",
-          stepIndex: 1,
+          stepIndex: 0,
           stepKey: "plan-test-tab",
           title: "Plan Test tab",
           status: "succeeded",
@@ -316,9 +302,9 @@ describe("deriveMissionPhaseSyncTarget", () => {
     } as any);
 
     expect(target).toMatchObject({
-      phaseKey: "development",
-      phaseName: "Development",
-      phaseInstructions: "Implement the work",
+      phaseKey: "planning",
+      phaseName: "Planning",
+      phaseInstructions: "Plan first",
       sourceStepId: "worker-1",
     });
   });
@@ -337,21 +323,8 @@ describe("deriveMissionPhaseSyncTarget", () => {
       },
       steps: [
         {
-          id: "display-1",
-          stepIndex: 0,
-          stepKey: "implement-test-tab",
-          title: "Implement Test tab",
-          status: "ready",
-          metadata: {
-            displayOnlyTask: true,
-            phaseKey: "planning",
-            phaseName: "Planning",
-            phasePosition: 0,
-          },
-        },
-        {
           id: "worker-1",
-          stepIndex: 1,
+          stepIndex: 0,
           stepKey: "worker-impl",
           title: "Implementation worker",
           status: "running",
@@ -441,6 +414,220 @@ describe("deriveMissionPhaseSyncTarget", () => {
       phaseInstructions: "Implement the work",
       sourceStepId: null,
     });
+  });
+
+  it("syncMissionFromRun does not auto-transition configured phases after planning succeeds", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Keep explicit coordinator control over phase transitions.",
+        laneId: fixture.laneId,
+      });
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        metadata: {
+          phaseOverride: [
+            {
+              phaseKey: "planning",
+              name: "Planning",
+              position: 0,
+              model: { modelId: "anthropic/claude-sonnet-4-6" },
+              instructions: "Plan first",
+              validationGate: { tier: "self", required: false },
+              budget: {},
+            },
+            {
+              phaseKey: "development",
+              name: "Development",
+              position: 1,
+              model: { modelId: "openai/gpt-5.3-codex" },
+              instructions: "Implement the work",
+              validationGate: { tier: "self", required: false },
+              budget: {},
+            },
+          ],
+          phaseRuntime: {
+            currentPhaseKey: "planning",
+            currentPhaseName: "Planning",
+            currentPhaseModel: { modelId: "anthropic/claude-sonnet-4-6" },
+            currentPhaseInstructions: "Plan first",
+            currentPhaseValidation: { tier: "self", required: false },
+            currentPhaseBudget: {},
+            transitionedAt: "2026-03-01T00:00:00.000Z",
+            transitions: [
+              {
+                fromPhaseKey: null,
+                fromPhaseName: null,
+                toPhaseKey: "planning",
+                toPhaseName: "Planning",
+                at: "2026-03-01T00:00:00.000Z",
+                reason: "run_initialized",
+              },
+            ],
+            phaseBudgets: {
+              planning: {
+                enteredAt: "2026-03-01T00:00:00.000Z",
+                usedTokens: 0,
+                usedCostUsd: 0,
+              },
+            },
+          },
+        },
+        steps: [
+          {
+            stepKey: "plan-step",
+            title: "Plan the mission",
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            executorKind: "manual",
+            metadata: {
+              phaseKey: "planning",
+              phaseName: "Planning",
+              stepType: "planning",
+              phaseInstructions: "Plan first",
+            },
+          },
+        ],
+      });
+
+      fixture.db.run(
+        `update orchestrator_runs set status = 'active', updated_at = ? where id = ?`,
+        [new Date().toISOString(), started.run.id],
+      );
+      fixture.orchestratorService.tick({ runId: started.run.id });
+      const planningStep = fixture.orchestratorService.listSteps(started.run.id)[0];
+      if (!planningStep) throw new Error("Expected planning step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId: started.run.id,
+        stepId: planningStep.id,
+        ownerId: "planner-owner",
+        executorKind: "manual",
+      });
+      await fixture.orchestratorService.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "Planning complete.",
+          outputs: null,
+          warnings: [],
+          sessionId: null,
+          trackedSession: false,
+        },
+      });
+
+      await fixture.aiOrchestratorService.syncMissionFromRun(started.run.id, "planning_completed");
+
+      const refreshed = fixture.orchestratorService.getRunGraph({ runId: started.run.id, timelineLimit: 50 });
+      const phaseRuntime = refreshed.run.metadata?.phaseRuntime as Record<string, unknown> | undefined;
+      expect(phaseRuntime?.currentPhaseKey).toBe("planning");
+      expect(phaseRuntime?.currentPhaseName).toBe("Planning");
+      expect(Array.isArray(phaseRuntime?.transitions) ? phaseRuntime?.transitions : []).toHaveLength(1);
+      expect(refreshed.timeline.filter((entry) => entry.eventType === "phase_transition")).toHaveLength(0);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("deduplicates downstream handoff summaries when completion events replay", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Avoid duplicate downstream handoff context on replay.",
+        laneId: fixture.laneId,
+      });
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [
+          {
+            stepKey: "alpha",
+            title: "Alpha",
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            executorKind: "manual",
+            metadata: { stepType: "implementation" },
+          },
+          {
+            stepKey: "beta",
+            title: "Beta",
+            stepIndex: 1,
+            dependencyStepKeys: ["alpha"],
+            executorKind: "manual",
+            metadata: { stepType: "test" },
+          },
+        ],
+      });
+      fixture.db.run(
+        `update orchestrator_runs set status = 'active', updated_at = ? where id = ?`,
+        [new Date().toISOString(), started.run.id],
+      );
+      fixture.orchestratorService.tick({ runId: started.run.id });
+
+      const graphBefore = fixture.orchestratorService.getRunGraph({ runId: started.run.id, timelineLimit: 0 });
+      const alpha = graphBefore.steps.find((entry) => entry.stepKey === "alpha");
+      const beta = graphBefore.steps.find((entry) => entry.stepKey === "beta");
+      if (!alpha || !beta) throw new Error("Expected alpha/beta steps");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId: started.run.id,
+        stepId: alpha.id,
+        ownerId: "alpha-owner",
+        executorKind: "manual",
+      });
+      await fixture.orchestratorService.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "Alpha finished cleanly.",
+          outputs: {
+            filesChanged: ["src/alpha.ts"],
+            testsPassed: 2,
+            testsFailed: 0,
+            testsSkipped: 0,
+          },
+          warnings: [],
+          sessionId: null,
+          trackedSession: false,
+        },
+      });
+
+      const replayEvent = {
+        type: "orchestrator-attempt-updated" as const,
+        runId: started.run.id,
+        stepId: alpha.id,
+        attemptId: attempt.id,
+        at: new Date().toISOString(),
+        reason: "attempt_completed",
+      };
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent(replayEvent);
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent(replayEvent);
+
+      await waitFor(() => {
+        const refreshed = fixture.orchestratorService.getRunGraph({ runId: started.run.id, timelineLimit: 0 });
+        const downstream = refreshed.steps.find((entry) => entry.id === beta.id);
+        const summaries = Array.isArray(downstream?.metadata?.handoffSummaries)
+          ? downstream?.metadata?.handoffSummaries as unknown[]
+          : [];
+        return summaries.length === 1;
+      });
+
+      const refreshed = fixture.orchestratorService.getRunGraph({ runId: started.run.id, timelineLimit: 0 });
+      const downstream = refreshed.steps.find((entry) => entry.id === beta.id);
+      const summaries = Array.isArray(downstream?.metadata?.handoffSummaries)
+        ? downstream?.metadata?.handoffSummaries as string[]
+        : [];
+      const summaryKeys = Array.isArray(downstream?.metadata?.handoffSummaryKeys)
+        ? downstream?.metadata?.handoffSummaryKeys as string[]
+        : [];
+      expect(summaries).toHaveLength(1);
+      expect(summaryKeys).toEqual([`${alpha.id}:${attempt.id}`]);
+    } finally {
+      fixture.dispose();
+    }
   });
 });
 
@@ -624,6 +811,21 @@ function setMissionPlanningMode(
   db.run(`update missions set metadata_json = ? where id = ?`, [JSON.stringify(metadata), missionId]);
 }
 
+function clearRunPhaseConfig(
+  db: Awaited<ReturnType<typeof openKvDb>>,
+  runId: string,
+): void {
+  const row = db.get<{ metadata_json: string | null }>(
+    `select metadata_json from orchestrator_runs where id = ? limit 1`,
+    [runId]
+  );
+  const metadata = row?.metadata_json ? JSON.parse(row.metadata_json) : {};
+  delete metadata.phaseOverride;
+  delete metadata.phaseConfiguration;
+  delete metadata.phaseRuntime;
+  db.run(`update orchestrator_runs set metadata_json = ? where id = ?`, [JSON.stringify(metadata), runId]);
+}
+
 async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
   const started = Date.now();
   while (!predicate()) {
@@ -631,6 +833,33 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<voi
       throw new Error("Timed out waiting for condition");
     }
     await new Promise((resolve) => setTimeout(resolve, 15));
+  }
+}
+
+function markRunStepValidationPassed(
+  db: Awaited<ReturnType<typeof openKvDb>>,
+  runId: string,
+): void {
+  const steps = db.all<{ id: string; metadata_json: string | null }>(
+    `select id, metadata_json from orchestrator_steps where run_id = ?`,
+    [runId],
+  );
+  const now = new Date().toISOString();
+  for (const step of steps) {
+    const metadata = step.metadata_json ? JSON.parse(step.metadata_json) : {};
+    if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+      metadata.validationState = "pass";
+      metadata.validationPassedAt = now;
+      metadata.lastValidationReport = {
+        verdict: "pass",
+        summary: "Validation accepted in test fixture.",
+        at: now,
+      };
+    }
+    db.run(
+      `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ?`,
+      [JSON.stringify(metadata), now, step.id],
+    );
   }
 }
 
@@ -703,7 +932,46 @@ async function createFixture(args: {
   );
 
   const missionService = createMissionService({ db, projectId });
-  const laneService = args.laneService ?? null;
+  let defaultLaneCounter = 0;
+  const defaultLaneService = {
+    list: vi.fn(async () => [
+      { id: laneId, laneType: "primary" }
+    ]),
+    createChild: vi.fn(async ({ name }: { name: string }) => {
+      defaultLaneCounter += 1;
+      const childId = `mission-lane-${defaultLaneCounter}`;
+      const childNow = new Date().toISOString();
+      db.run(
+        `insert into lanes(
+          id, project_id, name, description, lane_type, base_ref, branch_ref,
+          worktree_path, attached_root_path, is_edit_protected, parent_lane_id,
+          color, icon, tags_json, status, created_at, archived_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          childId,
+          projectId,
+          name,
+          null,
+          "worktree",
+          "main",
+          `feature/${childId}`,
+          projectRoot,
+          null,
+          0,
+          laneId,
+          null,
+          null,
+          null,
+          "active",
+          childNow,
+          null,
+        ]
+      );
+      return { id: childId, name };
+    }),
+    archive: vi.fn(async () => undefined),
+  };
+  const laneService = args.laneService ?? defaultLaneService;
   const aiIntegrationService = "aiIntegrationService" in args ? args.aiIntegrationService : createMockAiIntegrationService();
   const projectConfigService = {
     get: () => ({
@@ -2332,6 +2600,191 @@ describe("aiOrchestratorService", () => {
     }
   });
 
+  it("auto-resolves exhausted planning interventions when a recovery planning step succeeds", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Recover a failed planning step with a follow-up planning worker.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.addSteps({
+        runId,
+        steps: [
+          {
+            stepKey: "planner-primary",
+            title: "Primary planner",
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            executorKind: "manual",
+            retryLimit: 0,
+            metadata: {
+              instructions: "Plan the work.",
+              phaseKey: "planning",
+              phaseName: "Planning",
+              stepType: "planning",
+              readOnlyExecution: true,
+            }
+          }
+        ]
+      });
+      fixture.orchestratorService.tick({ runId });
+      let graph = fixture.orchestratorService.getRunGraph({ runId });
+      const failedPlanner = graph.steps.find((step) => step.stepKey === "planner-primary" && step.status === "ready");
+      if (!failedPlanner) throw new Error("Expected primary planner step to be ready");
+
+      const failedAttempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: failedPlanner.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+      await fixture.orchestratorService.completeAttempt({
+        attemptId: failedAttempt.id,
+        status: "failed",
+        errorClass: "startup_failure",
+        errorMessage: "Planning worker exited before producing any assistant or tool activity.",
+      });
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-attempt-updated",
+        runId,
+        stepId: failedPlanner.id,
+        attemptId: failedAttempt.id,
+        at: new Date().toISOString(),
+        reason: "failed"
+      });
+
+      let refreshedMission = fixture.missionService.get(mission.id);
+      const openPlanningIntervention = refreshedMission?.interventions.find((entry) =>
+        entry.status === "open"
+        && entry.interventionType === "failed_step"
+        && entry.body.includes("Planning worker exited before producing any assistant or tool activity.")
+      );
+      expect(openPlanningIntervention).toBeTruthy();
+      expect(refreshedMission?.status).toBe("intervention_required");
+
+      fixture.orchestratorService.addSteps({
+        runId,
+        steps: [
+          {
+            stepKey: "planner-recovery",
+            title: "Recovery planner",
+            stepIndex: 1,
+            dependencyStepKeys: [],
+            executorKind: "manual",
+            metadata: {
+              instructions: "Recover the planning pass and report back.",
+              phaseKey: "planning",
+              phaseName: "Planning",
+              stepType: "planning",
+              readOnlyExecution: true,
+            }
+          }
+        ]
+      });
+      fixture.orchestratorService.tick({ runId });
+      graph = fixture.orchestratorService.getRunGraph({ runId });
+      const recoveryPlanner = graph.steps.find((step) => step.stepKey === "planner-recovery" && step.status === "ready");
+      if (!recoveryPlanner) throw new Error("Expected recovery planner step to be ready");
+
+      const recoveryAttempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: recoveryPlanner.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+      await fixture.orchestratorService.completeAttempt({
+        attemptId: recoveryAttempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "Recovered the plan and reported the next steps.",
+          outputs: null,
+          warnings: [],
+          sessionId: null,
+          trackedSession: false,
+        },
+      });
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-attempt-updated",
+        runId,
+        stepId: recoveryPlanner.id,
+        attemptId: recoveryAttempt.id,
+        at: new Date().toISOString(),
+        reason: "succeeded"
+      });
+
+      refreshedMission = fixture.missionService.get(mission.id);
+      const resolvedPlanningIntervention = refreshedMission?.interventions.find((entry) => entry.id === openPlanningIntervention?.id);
+      expect(resolvedPlanningIntervention?.status).toBe("resolved");
+      expect(refreshedMission?.status).toBe("in_progress");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("auto-resolves stale coordinator availability interventions once the coordinator is healthy again", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Close stale coordinator availability interventions after recovery.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      const intervention = fixture.missionService.addIntervention({
+        missionId: mission.id,
+        interventionType: "failed_step",
+        title: "Coordinator unavailable",
+        body: "Coordinator agent is not available for this run.",
+        requestedAction: "Resume after coordinator runtime is healthy.",
+        metadata: {
+          runId,
+          reasonCode: "coordinator_unavailable",
+        },
+      });
+
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-run-updated",
+        runId,
+        at: new Date().toISOString(),
+        reason: "heartbeat",
+      } as any);
+
+      const refreshedMission = fixture.missionService.get(mission.id);
+      const refreshedIntervention = refreshedMission?.interventions.find((entry) => entry.id === intervention.id);
+      expect(refreshedIntervention?.status).toBe("resolved");
+
+      const resolvedEvent = fixture.orchestratorService.listRuntimeEvents({
+        runId,
+        eventTypes: ["intervention_resolved"],
+        limit: 10,
+      }).find((entry) =>
+        entry.eventType === "intervention_resolved"
+        && String((entry.payload as Record<string, unknown> | null)?.interventionId ?? "") === intervention.id
+      );
+      expect(resolvedEvent).toBeTruthy();
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("reconciles running attempts when tracked sessions already ended", async () => {
     const fixture = await createFixture();
     try {
@@ -2403,6 +2856,12 @@ describe("aiOrchestratorService", () => {
           "2026-02-20T00:05:00.000Z",
           path.join(fixture.projectRoot, ".ade", "transcripts", "session-ended-1.log")
         ]
+      );
+      fs.mkdirSync(path.join(fixture.projectRoot, ".ade", "transcripts"), { recursive: true });
+      fs.writeFileSync(
+        path.join(fixture.projectRoot, ".ade", "transcripts", "session-ended-1.log"),
+        "Worker completed the requested changes and exited cleanly.\n",
+        "utf8"
       );
 
       const sweep = await fixture.aiOrchestratorService.runHealthSweep("session_ended_test");
@@ -2657,7 +3116,7 @@ describe("aiOrchestratorService", () => {
         "-p \"$(cat '/Users/admin/Projects/ADE/.ade/orchestrator/worker-prompts/worker-123.txt')\"",
         "cp '/tmp/worker-123.json' '.ade-worker-mcp-123.json' && exec codex --model gpt-5.3-codex",
         "12f2b.txt')\"",
-        "ADE_MISSION_ID='mission-1' exec claude --model 'sonnet' --permission-mode 'plan'",
+        "ADE_MISSION_ID='mission-1' exec claude --model 'sonnet' --permission-mode 'default'",
         "orchestrator/worker-prompts/worker-ce33e94c-b964-42c9-9127-dfdeb6853d36",
         "/Users/admin/.zshrc:3: no such file or directory: /Users/admin/.openclaw/get-codex-token.sh",
         "/Users/admin/.openclaw/completions/openclaw.zsh:3803: command not found: compdef",
@@ -2933,6 +3392,12 @@ describe("aiOrchestratorService", () => {
           "2026-02-20T00:05:00.000Z",
           path.join(fixture.projectRoot, ".ade", "transcripts", "session-runtime-ended-1.log")
         ]
+      );
+      fs.mkdirSync(path.join(fixture.projectRoot, ".ade", "transcripts"), { recursive: true });
+      fs.writeFileSync(
+        path.join(fixture.projectRoot, ".ade", "transcripts", "session-runtime-ended-1.log"),
+        "Worker finished the task and confirmed completion before exit.\n",
+        "utf8"
       );
 
       fixture.aiOrchestratorService.onSessionRuntimeSignal({
@@ -3592,9 +4057,12 @@ describe("aiOrchestratorService", () => {
     // laneService.createChild must insert the lane row into the DB so that
     // foreign key constraints on mission_steps.lane_id -> lanes.id are satisfied.
     let fixtureRef: Awaited<ReturnType<typeof createFixture>> | null = null;
+    let laneCounter = 0;
     const laneService = {
       createChild: vi.fn().mockImplementation(async () => {
         const f = fixtureRef!;
+        laneCounter += 1;
+        const laneId = `lane-child-${laneCounter}`;
         const childNow = new Date().toISOString();
         f.db.run(
           `insert into lanes(
@@ -3603,12 +4071,12 @@ describe("aiOrchestratorService", () => {
             color, icon, tags_json, status, created_at, archived_at
           ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
-            "lane-child-1", f.projectId, "m-auto-child-1", null, "worktree",
-            "main", "feature/lane-child-1", f.projectRoot, null, 0, f.laneId,
+            laneId, f.projectId, `m-auto-child-${laneCounter}`, null, "worktree",
+            "main", `feature/${laneId}`, f.projectRoot, null, 0, f.laneId,
             null, null, null, "active", childNow, null
           ]
         );
-        return { id: "lane-child-1", name: "m-auto-child-1" };
+        return { id: laneId, name: `m-auto-child-${laneCounter}` };
       })
     };
     const fixture = await createFixture({ laneService });
@@ -3685,13 +4153,45 @@ describe("aiOrchestratorService", () => {
   });
 
   it("does not create duplicate child lanes when parallel roots are already assigned", async () => {
+    let fixtureRef: Awaited<ReturnType<typeof createFixture>> | null = null;
+    let laneCounter = 0;
     const laneService = {
-      createChild: vi.fn().mockResolvedValue({
-        id: "lane-child-unexpected",
-        name: "unexpected"
+      createChild: vi.fn().mockImplementation(async () => {
+        const f = fixtureRef!;
+        laneCounter += 1;
+        const laneId = `lane-child-unexpected-${laneCounter}`;
+        const childNow = new Date().toISOString();
+        f.db.run(
+          `insert into lanes(
+            id, project_id, name, description, lane_type, base_ref, branch_ref,
+            worktree_path, attached_root_path, is_edit_protected, parent_lane_id,
+            color, icon, tags_json, status, created_at, archived_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            laneId,
+            f.projectId,
+            `unexpected-${laneCounter}`,
+            null,
+            "worktree",
+            "main",
+            `feature/${laneId}`,
+            f.projectRoot,
+            null,
+            0,
+            f.laneId,
+            null,
+            null,
+            null,
+            "active",
+            childNow,
+            null,
+          ]
+        );
+        return { id: laneId, name: `unexpected-${laneCounter}` };
       })
     };
     const fixture = await createFixture({ laneService });
+    fixtureRef = fixture;
     try {
       const mission = fixture.missionService.create({
         prompt: "Run existing parallel workstreams and integrate.",
@@ -3800,7 +4300,7 @@ describe("aiOrchestratorService", () => {
     }
   });
 
-  it("pauses mission start when AI lane assignments omit required steps", async () => {
+  it("keeps mission startup active when lane assignment gaps are left for the coordinator to resolve", async () => {
     const executeTask = vi.fn().mockImplementation(async (request: { prompt?: string }) => {
       const prompt = String(request?.prompt ?? "");
       if (prompt.includes("Decision: lane strategy")) {
@@ -3817,13 +4317,48 @@ describe("aiOrchestratorService", () => {
       }
       return createAiTaskResult(buildDefaultDecisionStructuredOutput(prompt));
     });
+    let fixtureRef: Awaited<ReturnType<typeof createFixture>> | null = null;
+    let laneCounter = 0;
     const laneService = {
-      createChild: vi.fn().mockResolvedValue({ id: "lane-unused", name: "lane-unused" })
+      createChild: vi.fn().mockImplementation(async () => {
+        const f = fixtureRef!;
+        laneCounter += 1;
+        const laneId = `lane-unused-${laneCounter}`;
+        const childNow = new Date().toISOString();
+        f.db.run(
+          `insert into lanes(
+            id, project_id, name, description, lane_type, base_ref, branch_ref,
+            worktree_path, attached_root_path, is_edit_protected, parent_lane_id,
+            color, icon, tags_json, status, created_at, archived_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            laneId,
+            f.projectId,
+            laneId,
+            null,
+            "worktree",
+            "main",
+            `feature/${laneId}`,
+            f.projectRoot,
+            null,
+            0,
+            f.laneId,
+            null,
+            null,
+            null,
+            "active",
+            childNow,
+            null,
+          ]
+        );
+        return { id: laneId, name: laneId };
+      })
     };
     const fixture = await createFixture({
       aiIntegrationService: createMockAiIntegrationService({ executeTask }),
       laneService
     });
+    fixtureRef = fixture;
     try {
 	      const mission = fixture.missionService.create({
 	        prompt: "Run in parallel and then integrate.",
@@ -3841,8 +4376,8 @@ describe("aiOrchestratorService", () => {
 	        runMode: "autopilot",
 	        defaultExecutorKind: "manual",
       });
-      // In the AI-first flow, the run starts with empty steps and in_progress.
-      // The coordinator handles lane assignments internally.
+      // Startup no longer performs synchronous AI lane-assignment validation.
+      // The coordinator owns task creation and any later lane-assignment recovery.
       expect(started.started).toBeTruthy();
 
       const refreshed = fixture.missionService.get(mission.id);
@@ -3956,29 +4491,47 @@ describe("aiOrchestratorService", () => {
   it("synchronizes mission step and mission status from orchestrator runtime state", async () => {
     const fixture = await createFixture();
     try {
+      const defaultProfile = fixture.missionService.listPhaseProfiles().find((profile) => profile.isDefault);
+      if (!defaultProfile) throw new Error("Expected default phase profile");
       const mission = fixture.missionService.create({
         prompt: "Implement endpoint update, test, and summarize outcome.",
-        laneId: fixture.laneId
+        laneId: fixture.laneId,
+        phaseProfileId: defaultProfile.id,
+        phaseOverride: defaultProfile.phases.map((phase, index) => ({
+          ...phase,
+          position: index,
+          validationGate: {
+            ...phase.validationGate,
+            tier: "none",
+            required: false,
+            criteria: undefined,
+            evidenceRequirements: undefined,
+          },
+        })),
+        plannedSteps: [
+          {
+            index: 0,
+            title: "Implement endpoint update",
+            detail: "Write the change",
+            kind: "implementation",
+            metadata: { stepType: "implementation" }
+          },
+          {
+            index: 1,
+            title: "Test endpoint update",
+            detail: "Verify behavior",
+            kind: "test",
+            metadata: { stepType: "test" }
+          },
+        ],
       });
-
-      const launch = await fixture.aiOrchestratorService.startMissionRun({
-        missionId: mission.id,
-        runMode: "manual",
-        defaultExecutorKind: "manual"
-      });
-      if (!launch.started) {
-        throw new Error("Expected mission run to start");
-      }
-
-      const runId = launch.started.run.id;
 
       // Get mission steps created by the deterministic planner and map them to orchestrator steps
       const missionDetail = fixture.missionService.get(mission.id);
       const missionSteps = missionDetail?.steps ?? [];
 
-      // Add orchestrator steps manually, mapping each to a mission step via missionStepId
-      fixture.orchestratorService.addSteps({
-        runId,
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
         steps: missionSteps.map((ms, idx) => ({
           stepKey: `step-${idx}`,
           title: ms.title,
@@ -3986,45 +4539,31 @@ describe("aiOrchestratorService", () => {
           dependencyStepKeys: [],
           executorKind: "manual" as const,
           missionStepId: ms.id,
-          metadata: { instructions: "Do the work" }
+          metadata: {
+            instructions: "Do the work",
+            stepType: ms.kind === "test" ? "test" : "implementation",
+          }
         }))
       });
+      fixture.db.run(
+        `update orchestrator_runs set status = 'active', updated_at = ? where id = ?`,
+        [new Date().toISOString(), started.run.id],
+      );
+      const runId = started.run.id;
+      fixture.missionService.update({
+        missionId: mission.id,
+        status: "in_progress",
+      });
 
-      let safety = 0;
-      while (safety < 20) {
-        safety += 1;
-        const graph = fixture.orchestratorService.getRunGraph({ runId });
-        if (graph.run.status === "succeeded" || graph.run.status === "failed" || graph.run.status === "canceled") {
-          break;
-        }
-        const readySteps = graph.steps.filter((step) => step.status === "ready");
-        if (!readySteps.length) {
-          fixture.orchestratorService.tick({ runId });
-          continue;
-        }
-        for (const step of readySteps) {
-          const attempt = await fixture.orchestratorService.startAttempt({
-            runId,
-            stepId: step.id,
-            ownerId: "test-owner",
-            executorKind: "manual"
-          });
-          await fixture.orchestratorService.completeAttempt({
-            attemptId: attempt.id,
-            status: "succeeded"
-          });
-          fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
-            type: "orchestrator-attempt-updated",
-            runId,
-            stepId: step.id,
-            attemptId: attempt.id,
-            at: new Date().toISOString(),
-            reason: "completed"
-          });
-        }
-      }
+      const completionAt = new Date().toISOString();
+      fixture.db.run(
+        `update orchestrator_steps set status = 'succeeded', completed_at = ?, updated_at = ? where run_id = ?`,
+        [completionAt, completionAt, runId],
+      );
+      markRunStepValidationPassed(fixture.db, runId);
 
-      fixture.aiOrchestratorService.finalizeRun({ runId, force: true });
+      const finalizeResult = fixture.aiOrchestratorService.finalizeRun({ runId });
+      expect(finalizeResult.finalized).toBe(true);
       await fixture.aiOrchestratorService.syncMissionFromRun(runId, "test_final_sync");
       const refreshed = fixture.missionService.get(mission.id);
       expect(refreshed?.status).toBe("completed");
@@ -4530,7 +5069,7 @@ describe("aiOrchestratorService", () => {
         if (!updated) return false;
         if (updated.deliveryState !== "queued") return false;
         const workerDelivery = ((updated.metadata ?? {}) as { workerDelivery?: { lastError?: string } }).workerDelivery;
-        return typeof workerDelivery?.lastError === "string" && workerDelivery.lastError.includes("Multiple active worker chat sessions");
+        return typeof workerDelivery?.lastError === "string" && workerDelivery.lastError.includes("Multiple active worker sessions");
       });
 
       expect(sendMessage).not.toHaveBeenCalled();
@@ -4953,6 +5492,7 @@ describe("aiOrchestratorService", () => {
       });
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
+      clearRunPhaseConfig(fixture.db, runId);
 
       fixture.orchestratorService.addSteps({
         runId,
@@ -5272,10 +5812,18 @@ describe("aiOrchestratorService", () => {
 
     const fixture = await createFixture();
     try {
+      const defaultProfile = fixture.missionService.listPhaseProfiles().find((profile) => profile.isDefault);
+      if (!defaultProfile) throw new Error("Expected default phase profile");
       // Create a mission with steps on different lanes
       const mission = fixture.missionService.create({
         prompt: "Build feature with two workers.",
         laneId: fixture.laneId,
+        phaseProfileId: defaultProfile.id,
+        phaseOverride: defaultProfile.phases.map((phase, index) => ({
+          ...phase,
+          position: index,
+          validationGate: { ...phase.validationGate, tier: "none", required: false, criteria: undefined, evidenceRequirements: undefined },
+        })),
         plannedSteps: [
           { index: 0, title: "Worker A task", detail: "Task A", kind: "implementation", metadata: { stepType: "implementation" } },
           { index: 0, title: "Worker B task", detail: "Task B", kind: "implementation", metadata: { stepType: "implementation" } }
@@ -5323,23 +5871,18 @@ describe("aiOrchestratorService", () => {
 	        projectRoot: fixture.projectRoot
 	      });
 
-	      setMissionPlanningMode(fixture.db, mission.id, "off");
-	      const launch = await aiOrchestratorWithPr.startMissionRun({
-	        missionId: mission.id,
-	        runMode: "manual",
-	        defaultExecutorKind: "manual",
-      });
-      if (!launch.started) throw new Error("Expected mission run to start");
-      const runId = launch.started.run.id;
-
-      // Add steps manually (simulating coordinator creating tasks)
-      fixture.orchestratorService.addSteps({
-        runId,
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
         steps: [
           { stepKey: "worker-a-task", title: "Worker A task", stepIndex: 0, dependencyStepKeys: [], executorKind: "manual", metadata: { stepType: "implementation", instructions: "Task A" } },
           { stepKey: "worker-b-task", title: "Worker B task", stepIndex: 1, dependencyStepKeys: [], executorKind: "manual", metadata: { stepType: "implementation", instructions: "Task B" } }
         ]
       });
+      fixture.db.run(
+        `update orchestrator_runs set status = 'active', updated_at = ? where id = ?`,
+        [new Date().toISOString(), started.run.id],
+      );
+      const runId = started.run.id;
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
 
@@ -5400,7 +5943,8 @@ describe("aiOrchestratorService", () => {
         }
       }
       fixture.orchestratorService.tick({ runId });
-      aiOrchestratorWithPr.finalizeRun({ runId, force: true });
+      const finalizeResult = aiOrchestratorWithPr.finalizeRun({ runId });
+      expect(finalizeResult.finalized).toBe(true);
 
       // Verify run is actually completed
       const finalGraph = fixture.orchestratorService.getRunGraph({ runId });
@@ -5411,7 +5955,7 @@ describe("aiOrchestratorService", () => {
       expect(uniqueLaneIds.size).toBeGreaterThan(1);
 
       // Directly call syncMissionFromRun and await it
-      await aiOrchestratorWithPr.syncMissionFromRun(runId, "run_completed");
+      await aiOrchestratorWithPr.syncMissionFromRun(runId, "run_completed", { nextMissionStatus: "completed" });
 
       // Verify mission became completed
       const missionAfterSync = fixture.missionService.get(mission.id);
@@ -5454,7 +5998,12 @@ describe("aiOrchestratorService", () => {
       );
       existingMeta2.executionPolicy = {
         ...existingMeta2.executionPolicy,
+        prStrategy: { kind: "integration", targetBranch: "main", draft: true },
         integrationPr: { enabled: true, draft: true, autoResolveConflicts: false }
+      };
+      existingMeta2.missionLevelSettings = {
+        ...(existingMeta2.missionLevelSettings ?? {}),
+        prStrategy: { kind: "integration", targetBranch: "main", draft: true },
       };
       fixture.db.run(
         `update missions set metadata_json = ? where id = ?`,
@@ -5473,23 +6022,18 @@ describe("aiOrchestratorService", () => {
 	        projectRoot: fixture.projectRoot
 	      });
 
-	      setMissionPlanningMode(fixture.db, mission.id, "off");
-	      const launch = await aiOrchestratorWithPr.startMissionRun({
-	        missionId: mission.id,
-	        runMode: "manual",
-	        defaultExecutorKind: "manual",
-      });
-      if (!launch.started) throw new Error("Expected mission run to start");
-      const runId = launch.started.run.id;
-
-      // Add steps manually (simulating coordinator creating tasks)
-      fixture.orchestratorService.addSteps({
-        runId,
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
         steps: [
           { stepKey: "worker-a", title: "Worker A", stepIndex: 0, dependencyStepKeys: [], executorKind: "manual", metadata: { stepType: "implementation" } },
           { stepKey: "worker-b", title: "Worker B", stepIndex: 1, dependencyStepKeys: [], executorKind: "manual", metadata: { stepType: "implementation" } }
         ]
       });
+      fixture.db.run(
+        `update orchestrator_runs set status = 'active', updated_at = ? where id = ?`,
+        [new Date().toISOString(), started.run.id],
+      );
+      const runId = started.run.id;
 
       // Assign different laneIds and complete all steps sequentially
       {
@@ -5536,21 +6080,14 @@ describe("aiOrchestratorService", () => {
         fixture.orchestratorService.tick({ runId });
       }
 
-      aiOrchestratorWithPr.finalizeRun({ runId, force: true });
+      const finalizeResult = aiOrchestratorWithPr.finalizeRun({ runId });
+      expect(finalizeResult.finalized).toBe(true);
 
-      // This should not throw even though PR creation fails
-      aiOrchestratorWithPr.onOrchestratorRuntimeEvent({
-        type: "orchestrator-run-updated",
-        runId,
-        at: new Date().toISOString(),
-        reason: "run_completed"
-      });
+      await aiOrchestratorWithPr.syncMissionFromRun(runId, "run_completed", { nextMissionStatus: "completed" });
 
-      await new Promise((resolve) => setTimeout(resolve, 500));
-
-      // Mission should still be completed despite PR failure
+      // PR finalization failure should block successful mission completion
       const refreshed = fixture.missionService.get(mission.id);
-      expect(refreshed?.status).toBe("completed");
+      expect(refreshed?.status).toBe("failed");
 
       aiOrchestratorWithPr.dispose();
     } finally {
@@ -5630,17 +6167,8 @@ describe("aiOrchestratorService", () => {
         projectRoot: fixture.projectRoot
       });
 
-      setMissionPlanningMode(fixture.db, mission.id, "off");
-      const launch = await aiOrchestratorWithPr.startMissionRun({
+      const started = fixture.orchestratorService.startRun({
         missionId: mission.id,
-        runMode: "manual",
-        defaultExecutorKind: "manual",
-      });
-      if (!launch.started) throw new Error("Expected mission run to start");
-      const runId = launch.started.run.id;
-
-      fixture.orchestratorService.addSteps({
-        runId,
         steps: [
           {
             stepKey: "worker-task",
@@ -5652,6 +6180,11 @@ describe("aiOrchestratorService", () => {
           }
         ]
       });
+      fixture.db.run(
+        `update orchestrator_runs set status = 'active', updated_at = ? where id = ?`,
+        [new Date().toISOString(), started.run.id],
+      );
+      const runId = started.run.id;
 
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
@@ -5679,8 +6212,9 @@ describe("aiOrchestratorService", () => {
       });
 
       fixture.orchestratorService.tick({ runId });
-      aiOrchestratorWithPr.finalizeRun({ runId, force: true });
-      await aiOrchestratorWithPr.syncMissionFromRun(runId, "run_completed");
+      const finalizeResult = aiOrchestratorWithPr.finalizeRun({ runId });
+      expect(finalizeResult.finalized).toBe(true);
+      await aiOrchestratorWithPr.syncMissionFromRun(runId, "run_completed", { nextMissionStatus: "completed" });
 
       expect(prServiceMock.createIntegrationPr).toHaveBeenCalled();
       const prArgs = prServiceMock.createIntegrationPr.mock.calls[0]![0];
@@ -5741,23 +6275,18 @@ describe("aiOrchestratorService", () => {
 	        projectRoot: fixture.projectRoot
 	      });
 
-	      setMissionPlanningMode(fixture.db, mission.id, "off");
-	      const launch = await aiOrchestratorWithPr.startMissionRun({
-	        missionId: mission.id,
-	        runMode: "manual",
-	        defaultExecutorKind: "manual",
-      });
-      if (!launch.started) throw new Error("Expected mission run to start");
-      const runId = launch.started.run.id;
-
-      // Add steps manually (simulating coordinator creating tasks)
-      fixture.orchestratorService.addSteps({
-        runId,
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
         steps: [
           { stepKey: "step-1", title: "Step 1", stepIndex: 0, dependencyStepKeys: [], executorKind: "manual", metadata: { stepType: "implementation" } },
           { stepKey: "step-2", title: "Step 2", stepIndex: 1, dependencyStepKeys: ["step-1"], executorKind: "manual", metadata: { stepType: "test" } }
         ]
       });
+      fixture.db.run(
+        `update orchestrator_runs set status = 'active', updated_at = ? where id = ?`,
+        [new Date().toISOString(), started.run.id],
+      );
+      const runId = started.run.id;
 
       // Complete all steps sequentially (single lane — no lane_id changes)
       {
@@ -5781,19 +6310,336 @@ describe("aiOrchestratorService", () => {
         fixture.orchestratorService.tick({ runId });
       }
 
-      aiOrchestratorWithPr.onOrchestratorRuntimeEvent({
-        type: "orchestrator-run-updated",
-        runId,
-        at: new Date().toISOString(),
-        reason: "run_completed"
-      });
-
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await aiOrchestratorWithPr.syncMissionFromRun(runId, "run_completed", { nextMissionStatus: "completed" });
 
       // Single-lane run should NOT trigger integration PR
       expect(prServiceMock.createIntegrationPr).not.toHaveBeenCalled();
 
       aiOrchestratorWithPr.dispose();
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("keeps mission incomplete while queue auto-land finalization is still running", async () => {
+    const prServiceMock = {
+      createQueuePrs: vi.fn().mockResolvedValue({
+        groupId: "queue-group-1",
+        prs: [
+          { id: "pr-1", githubUrl: "https://github.com/test/repo/pull/101" },
+          { id: "pr-2", githubUrl: "https://github.com/test/repo/pull/102" },
+        ],
+        errors: [],
+      }),
+    } as any;
+    const queueLandingServiceMock = {
+      startQueue: vi.fn().mockResolvedValue({
+        queueId: "queue-1",
+        groupId: "queue-group-1",
+        groupName: "Queue Group 1",
+        targetBranch: "main",
+        state: "landing",
+        entries: [],
+        currentPosition: 0,
+        activePrId: "pr-1",
+        activeResolverRunId: null,
+        lastError: null,
+        waitReason: null,
+        config: {
+          method: "squash",
+          archiveLane: false,
+          autoResolve: true,
+          ciGating: true,
+          resolverProvider: "claude",
+          resolverModel: "anthropic/claude-sonnet-4-6",
+          reasoningEffort: "medium",
+          permissionMode: "guarded_edit",
+          confidenceThreshold: null,
+          originSurface: "mission",
+          originMissionId: null,
+          originRunId: null,
+          originLabel: null,
+        },
+        startedAt: new Date().toISOString(),
+        completedAt: null,
+        updatedAt: new Date().toISOString(),
+      }),
+    } as any;
+
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Queue mission.",
+        laneId: fixture.laneId,
+        plannedSteps: [
+          { index: 0, title: "Worker task", detail: "Task", kind: "implementation", metadata: { stepType: "implementation" } },
+        ],
+      });
+
+      const existingMeta = JSON.parse(
+        fixture.db.get<{ metadata_json: string | null }>(
+          `select metadata_json from missions where id = ? limit 1`,
+          [mission.id],
+        )?.metadata_json ?? "{}",
+      );
+      existingMeta.executionPolicy = {
+        ...existingMeta.executionPolicy,
+        prStrategy: {
+          kind: "queue",
+          targetBranch: "main",
+          autoLand: true,
+          autoResolveConflicts: true,
+          ciGating: true,
+          mergeMethod: "squash",
+        },
+      };
+      existingMeta.missionLevelSettings = {
+        ...(existingMeta.missionLevelSettings ?? {}),
+        prStrategy: {
+          kind: "queue",
+          targetBranch: "main",
+          autoLand: true,
+          autoResolveConflicts: true,
+          ciGating: true,
+          mergeMethod: "squash",
+        },
+      };
+      fixture.db.run(
+        `update missions set metadata_json = ? where id = ?`,
+        [JSON.stringify(existingMeta), mission.id],
+      );
+
+      const service = createAiOrchestratorService({
+        db: fixture.db,
+        logger: createLogger(),
+        missionService: fixture.missionService,
+        orchestratorService: fixture.orchestratorService,
+        laneService: fixture.laneService,
+        projectConfigService: fixture.projectConfigService,
+        aiIntegrationService: fixture.aiIntegrationService,
+        prService: prServiceMock,
+        queueLandingService: queueLandingServiceMock,
+        projectRoot: fixture.projectRoot,
+      });
+
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [
+          {
+            stepKey: "worker-task",
+            title: "Worker task",
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            executorKind: "manual",
+            metadata: { stepType: "implementation", instructions: "Do the work" },
+          },
+        ],
+      });
+      fixture.db.run(
+        `update orchestrator_runs set status = 'active', updated_at = ? where id = ?`,
+        [new Date().toISOString(), started.run.id],
+      );
+      const runId = started.run.id;
+
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((entry) => entry.status === "ready") ?? graph.steps[0];
+      if (!readyStep) throw new Error("Expected mission step");
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual",
+      });
+      await fixture.orchestratorService.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "Done",
+          outputs: null,
+          warnings: [],
+          sessionId: null,
+          trackedSession: false,
+        },
+      });
+
+      fixture.orchestratorService.tick({ runId });
+      service.finalizeRun({ runId });
+      await service.syncMissionFromRun(runId, "run_completed", { nextMissionStatus: "completed" });
+
+      expect(prServiceMock.createQueuePrs).toHaveBeenCalled();
+      expect(queueLandingServiceMock.startQueue).toHaveBeenCalledWith(expect.objectContaining({
+        groupId: "queue-group-1",
+        autoResolve: true,
+        originSurface: "mission",
+        originMissionId: mission.id,
+        originRunId: runId,
+      }));
+      expect(fixture.missionService.get(mission.id)?.status).not.toBe("completed");
+
+      service.dispose();
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("keeps mission incomplete while queue rehearsal finalization is still running", async () => {
+    const prServiceMock = {
+      createQueuePrs: vi.fn().mockResolvedValue({
+        groupId: "queue-group-2",
+        prs: [
+          { id: "pr-11", githubUrl: "https://github.com/test/repo/pull/111" },
+        ],
+        errors: [],
+      }),
+    } as any;
+    const queueRehearsalServiceMock = {
+      startQueueRehearsal: vi.fn().mockResolvedValue({
+        rehearsalId: "queue-rehearsal-1",
+        groupId: "queue-group-2",
+        groupName: "Queue Rehearsal",
+        targetBranch: "main",
+        state: "running",
+        entries: [],
+        currentPosition: 0,
+        scratchLaneId: "lane-scratch",
+        activePrId: "pr-11",
+        activeResolverRunId: null,
+        lastError: null,
+        waitReason: null,
+        config: {
+          method: "squash",
+          autoResolve: true,
+          resolverProvider: "claude",
+          resolverModel: "anthropic/claude-sonnet-4-6",
+          reasoningEffort: "medium",
+          permissionMode: "guarded_edit",
+          preserveScratchLane: true,
+          originSurface: "mission",
+          originMissionId: null,
+          originRunId: null,
+          originLabel: null,
+        },
+        startedAt: new Date().toISOString(),
+        completedAt: null,
+        updatedAt: new Date().toISOString(),
+      }),
+    } as any;
+
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Queue rehearsal mission.",
+        laneId: fixture.laneId,
+        plannedSteps: [
+          { index: 0, title: "Worker task", detail: "Task", kind: "implementation", metadata: { stepType: "implementation" } },
+        ],
+      });
+
+      const existingMeta = JSON.parse(
+        fixture.db.get<{ metadata_json: string | null }>(
+          `select metadata_json from missions where id = ? limit 1`,
+          [mission.id],
+        )?.metadata_json ?? "{}",
+      );
+      existingMeta.executionPolicy = {
+        ...existingMeta.executionPolicy,
+        prStrategy: {
+          kind: "queue",
+          targetBranch: "main",
+          rehearseQueue: true,
+          autoResolveConflicts: true,
+          mergeMethod: "squash",
+        },
+      };
+      existingMeta.missionLevelSettings = {
+        ...(existingMeta.missionLevelSettings ?? {}),
+        prStrategy: {
+          kind: "queue",
+          targetBranch: "main",
+          rehearseQueue: true,
+          autoResolveConflicts: true,
+          mergeMethod: "squash",
+        },
+      };
+      fixture.db.run(
+        `update missions set metadata_json = ? where id = ?`,
+        [JSON.stringify(existingMeta), mission.id],
+      );
+
+      const service = createAiOrchestratorService({
+        db: fixture.db,
+        logger: createLogger(),
+        missionService: fixture.missionService,
+        orchestratorService: fixture.orchestratorService,
+        laneService: fixture.laneService,
+        projectConfigService: fixture.projectConfigService,
+        aiIntegrationService: fixture.aiIntegrationService,
+        prService: prServiceMock,
+        queueRehearsalService: queueRehearsalServiceMock,
+        projectRoot: fixture.projectRoot,
+      });
+
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [
+          {
+            stepKey: "worker-task",
+            title: "Worker task",
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            executorKind: "manual",
+            metadata: { stepType: "implementation", instructions: "Do the work" },
+          },
+        ],
+      });
+      fixture.db.run(
+        `update orchestrator_runs set status = 'active', updated_at = ? where id = ?`,
+        [new Date().toISOString(), started.run.id],
+      );
+      const runId = started.run.id;
+
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((entry) => entry.status === "ready") ?? graph.steps[0];
+      if (!readyStep) throw new Error("Expected mission step");
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual",
+      });
+      await fixture.orchestratorService.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "Done",
+          outputs: null,
+          warnings: [],
+          sessionId: null,
+          trackedSession: false,
+        },
+      });
+
+      fixture.orchestratorService.tick({ runId });
+      service.finalizeRun({ runId });
+      await service.syncMissionFromRun(runId, "run_completed", { nextMissionStatus: "completed" });
+
+      expect(prServiceMock.createQueuePrs).toHaveBeenCalled();
+      expect(queueRehearsalServiceMock.startQueueRehearsal).toHaveBeenCalledWith(expect.objectContaining({
+        groupId: "queue-group-2",
+        autoResolve: true,
+        originSurface: "mission",
+        originMissionId: mission.id,
+        originRunId: runId,
+      }));
+      expect(fixture.missionService.get(mission.id)?.status).not.toBe("completed");
+
+      service.dispose();
     } finally {
       fixture.dispose();
     }
@@ -6016,6 +6862,145 @@ describe("aiOrchestratorService", () => {
     } finally {
       fixture.dispose();
       vi.useRealTimers();
+    }
+  });
+
+  it("projects coordinator-loss interventions as blocked run views instead of canceled runs", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Recover the coordinator if it disappears.",
+        laneId: fixture.laneId,
+      });
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [
+          {
+            stepKey: "worker-alpha",
+            title: "Worker alpha",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "manual",
+          },
+        ],
+      });
+      fixture.missionService.update({
+        missionId: mission.id,
+        status: "planning",
+      });
+
+      fixture.missionService.addIntervention({
+        missionId: mission.id,
+        interventionType: "unrecoverable_error",
+        title: "Coordinator unavailable",
+        body: "Coordinator agent is not available for this run.",
+        requestedAction: "Resume after coordinator runtime is healthy.",
+        metadata: { reasonCode: "coordinator_unavailable" },
+        pauseMission: true,
+      });
+      fixture.orchestratorService.cancelRun({ runId: started.run.id, reason: "operator cleanup" });
+
+      const runView = await fixture.aiOrchestratorService.getRunView({
+        missionId: mission.id,
+        runId: started.run.id,
+      });
+
+      expect(runView).not.toBeNull();
+      expect(runView?.lifecycle.displayStatus).toBe("blocked");
+      expect(runView?.haltReason?.source).toBe("intervention");
+      expect(runView?.coordinator.available).toBe(false);
+      expect(runView?.haltReason?.title).toMatch(/coordinator unavailable/i);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("prefers the active reopened run over the newest terminal run", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Resume the older run if it becomes active again.",
+        laneId: fixture.laneId,
+      });
+      const firstRun = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [],
+      });
+      fixture.orchestratorService.cancelRun({ runId: firstRun.run.id, reason: "paused for later" });
+
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      const secondRun = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [],
+      });
+      fixture.orchestratorService.cancelRun({ runId: secondRun.run.id, reason: "superseded" });
+      fixture.orchestratorService.addPostCompletionSteps({
+        runId: firstRun.run.id,
+        steps: [
+          {
+            stepKey: "resume-work",
+            title: "Resume work",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "manual",
+          },
+        ],
+      });
+
+      const runView = await fixture.aiOrchestratorService.getRunView({ missionId: mission.id });
+
+      expect(runView?.runId).toBe(firstRun.run.id);
+      expect(runView?.lifecycle.runStatus).toBe("active");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("ignores open interventions from older runs when a newer run is healthy", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Keep the current run healthy.",
+        laneId: fixture.laneId,
+      });
+      const oldRun = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [],
+      });
+      fixture.missionService.addIntervention({
+        missionId: mission.id,
+        interventionType: "unrecoverable_error",
+        title: "Old run blocked",
+        body: "A previous run needs attention.",
+        requestedAction: "Ignore for current run.",
+        metadata: { runId: oldRun.run.id, reasonCode: "coordinator_unavailable" },
+        pauseMission: false,
+      });
+      fixture.orchestratorService.cancelRun({ runId: oldRun.run.id, reason: "old run closed" });
+
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      const currentRun = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [],
+      });
+      fixture.missionService.update({
+        missionId: mission.id,
+        status: "in_progress",
+      });
+
+      const runView = await fixture.aiOrchestratorService.getRunView({
+        missionId: mission.id,
+        runId: currentRun.run.id,
+      });
+
+      expect(runView?.runId).toBe(currentRun.run.id);
+      expect(runView?.lifecycle.displayStatus).not.toBe("blocked");
+      expect(runView?.coordinator.available).not.toBe(false);
+      expect(runView?.haltReason).toBeNull();
+    } finally {
+      fixture.dispose();
     }
   });
 });

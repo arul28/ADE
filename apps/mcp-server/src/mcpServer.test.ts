@@ -268,6 +268,19 @@ function createRuntime() {
         recentSessions: []
       }))
     } as any,
+    workerAgentService: {
+      updateCoreMemory: vi.fn((patch: Record<string, unknown>) => ({
+        version: 4,
+        updatedAt: "2026-03-05T13:00:00.000Z",
+        projectSummary: String((patch as { projectSummary?: unknown }).projectSummary ?? "worker-summary"),
+        criticalConventions: [],
+        userPreferences: [],
+        activeFocus: Array.isArray((patch as { activeFocus?: unknown }).activeFocus)
+          ? (patch as { activeFocus: string[] }).activeFocus
+          : [],
+        notes: []
+      }))
+    } as any,
     orchestratorService: {
       listRuns: vi.fn(() => []),
       pauseRun: vi.fn(({ runId }: any) => ({ id: runId, status: "paused" })),
@@ -320,6 +333,7 @@ function createRuntime() {
       updateStepDependencies: vi.fn(),
       appendRuntimeEvent: vi.fn(),
       appendTimelineEvent: vi.fn(),
+      emitRuntimeUpdate: vi.fn(),
       listRetrospectives: vi.fn(() => [
         {
           id: "retro:run-1",
@@ -489,11 +503,11 @@ async function callTool(
 }
 
 describe("mcpServer", () => {
-  it("lists the full tool surface including coordinator orchestration tools", async () => {
+  it("lists the full tool surface including coordinator orchestration tools for orchestrator callers", async () => {
     const { runtime } = createRuntime();
     const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
 
-    await initialize(handler);
+    await initialize(handler, { callerId: "coord-1", role: "orchestrator" });
     const result = (await handler({ jsonrpc: "2.0", id: 3, method: "tools/list" })) as any;
 
     const names = (result.tools ?? []).map((tool: any) => tool.name);
@@ -554,6 +568,321 @@ describe("mcpServer", () => {
       ])
     );
     expect(names.length).toBeGreaterThan(38);
+  });
+
+  it("shows agent-safe delegation, reporting, and observation coordinator tools to agent callers", async () => {
+    const { runtime } = createRuntime();
+    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-1",
+      attemptId: "attempt-1"
+    });
+
+    const result = (await handler({ jsonrpc: "2.0", id: 3, method: "tools/list" })) as any;
+    const names = (result.tools ?? []).map((tool: any) => tool.name);
+
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "report_status",
+        "report_result",
+        "report_validation",
+        "delegate_to_subagent",
+        "delegate_parallel",
+        "get_worker_output",
+        "list_workers",
+        "read_mission_status",
+        "read_mission_state",
+        "list_tasks",
+        "get_budget_status",
+        "get_project_context",
+      ])
+    );
+    expect(names).not.toEqual(
+      expect.arrayContaining([
+        "spawn_worker",
+        "revise_plan",
+        "request_specialist",
+        "set_current_phase",
+        "message_worker",
+        "update_tool_profiles",
+      ])
+    );
+  });
+
+  it("lets agent callers use safe mission observation coordinator tools", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
+      steps: [],
+      attempts: [],
+      claims: [],
+      contextSnapshots: [],
+      handoffs: [],
+      timeline: [],
+      runtimeEvents: [],
+      completionEvaluation: { complete: false }
+    }));
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-1",
+      attemptId: "attempt-1"
+    });
+
+    const response = await callTool(handler, "read_mission_status", {});
+
+    expect(response.isError).toBeUndefined();
+    expect(response.structuredContent.ok).toBe(true);
+    expect(response.structuredContent.runId).toBe("run-1");
+  });
+
+  it("rejects coordinator-only tool calls from agent callers before coordinator dispatch", async () => {
+    const { runtime } = createRuntime();
+    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-1",
+      attemptId: "attempt-1"
+    });
+
+    const response = await callTool(handler, "spawn_worker", {
+      name: "implementation-worker",
+      prompt: "Do work"
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("Unsupported tool: spawn_worker");
+  });
+
+  it("lets agent callers delegate nested work only beneath their own worker", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
+      steps: [{ id: "step-1", stepKey: "step-a", laneId: "lane-1", status: "running", metadata: {} }],
+      attempts: [{ id: "attempt-1", stepId: "step-1", status: "running" }],
+      claims: [],
+      contextSnapshots: [],
+      handoffs: [],
+      timeline: [],
+      runtimeEvents: [],
+      completionEvaluation: { complete: false }
+    }));
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-1",
+      attemptId: "attempt-1"
+    });
+
+    const response = await callTool(handler, "delegate_parallel", {
+      tasks: [
+        { name: "child-1", prompt: "Handle the first child task.", modelId: "openai/gpt-5.3-codex" },
+        { name: "child-2", prompt: "Handle the second child task.", modelId: "openai/gpt-5.3-codex" },
+      ]
+    });
+
+    expect(response.isError).toBeUndefined();
+    expect(response.structuredContent.ok).toBe(true);
+    expect(response.structuredContent.parentWorkerId).toBe("step-a");
+    expect(response.structuredContent.total).toBe(2);
+  });
+
+  it("rejects agent delegation attempts that target another worker", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
+      steps: [
+        { id: "step-1", stepKey: "step-a", laneId: "lane-1", status: "running", metadata: {} },
+        { id: "step-2", stepKey: "step-b", laneId: "lane-1", status: "running", metadata: {} },
+      ],
+      attempts: [{ id: "attempt-1", stepId: "step-1", status: "running" }],
+      claims: [],
+      contextSnapshots: [],
+      handoffs: [],
+      timeline: [],
+      runtimeEvents: [],
+      completionEvaluation: { complete: false }
+    }));
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-1",
+      attemptId: "attempt-1"
+    });
+
+    const response = await callTool(handler, "delegate_to_subagent", {
+      parentWorkerId: "step-b",
+      name: "rogue-child",
+      prompt: "Try to escape the current worker scope."
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
+      "may only delegate beneath its own worker 'step-a'"
+    );
+  });
+
+  it("still routes coordinator-only tool calls for orchestrator callers", async () => {
+    const { runtime } = createRuntime();
+    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "coord-1", role: "orchestrator" });
+    const response = await callTool(handler, "spawn_worker", {
+      name: "implementation-worker",
+      prompt: "Do work"
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("requires run context");
+  });
+
+  it("falls back to env orchestrator role when initialize sends an unknown role", async () => {
+    const fixture = createRuntime();
+    const previousRole = process.env.ADE_DEFAULT_ROLE;
+    const previousMissionId = process.env.ADE_MISSION_ID;
+    const previousRunId = process.env.ADE_RUN_ID;
+    process.env.ADE_DEFAULT_ROLE = "orchestrator";
+    process.env.ADE_MISSION_ID = "mission-1";
+    process.env.ADE_RUN_ID = "run-1";
+    try {
+      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+        run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
+        steps: [],
+        attempts: [],
+        claims: [],
+        contextSnapshots: [],
+        handoffs: [],
+        timeline: [],
+        runtimeEvents: [],
+        completionEvaluation: { complete: false }
+      }));
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+      await initialize(handler, { callerId: "coord-1", role: "assistant" as any });
+      const response = await callTool(handler, "read_mission_status", {});
+
+      expect(response.isError).toBeUndefined();
+      expect(response.structuredContent.ok).toBe(true);
+      expect(response.structuredContent.runId).toBe("run-1");
+    } finally {
+      if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
+      else process.env.ADE_DEFAULT_ROLE = previousRole;
+      if (previousMissionId == null) delete process.env.ADE_MISSION_ID;
+      else process.env.ADE_MISSION_ID = previousMissionId;
+      if (previousRunId == null) delete process.env.ADE_RUN_ID;
+      else process.env.ADE_RUN_ID = previousRunId;
+    }
+  });
+
+  it("keeps env orchestrator role even when initialize requests agent", async () => {
+    const fixture = createRuntime();
+    const previousRole = process.env.ADE_DEFAULT_ROLE;
+    const previousMissionId = process.env.ADE_MISSION_ID;
+    const previousRunId = process.env.ADE_RUN_ID;
+    process.env.ADE_DEFAULT_ROLE = "orchestrator";
+    process.env.ADE_MISSION_ID = "mission-1";
+    process.env.ADE_RUN_ID = "run-1";
+    try {
+      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+        run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
+        steps: [],
+        attempts: [],
+        claims: [],
+        contextSnapshots: [],
+        handoffs: [],
+        timeline: [],
+        runtimeEvents: [],
+        completionEvaluation: { complete: false }
+      }));
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+      await initialize(handler, { callerId: "coord-1", role: "agent" as any });
+      const response = await callTool(handler, "read_mission_status", {});
+
+      expect(response.isError).toBeUndefined();
+      expect(response.structuredContent.ok).toBe(true);
+      expect(response.structuredContent.runId).toBe("run-1");
+    } finally {
+      if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
+      else process.env.ADE_DEFAULT_ROLE = previousRole;
+      if (previousMissionId == null) delete process.env.ADE_MISSION_ID;
+      else process.env.ADE_MISSION_ID = previousMissionId;
+      if (previousRunId == null) delete process.env.ADE_RUN_ID;
+      else process.env.ADE_RUN_ID = previousRunId;
+    }
+  });
+
+  it("does not let env agent sessions escalate to orchestrator tools", async () => {
+    const fixture = createRuntime();
+    const previousRole = process.env.ADE_DEFAULT_ROLE;
+    const previousMissionId = process.env.ADE_MISSION_ID;
+    const previousRunId = process.env.ADE_RUN_ID;
+    const previousStepId = process.env.ADE_STEP_ID;
+    const previousAttemptId = process.env.ADE_ATTEMPT_ID;
+    process.env.ADE_DEFAULT_ROLE = "agent";
+    process.env.ADE_MISSION_ID = "mission-1";
+    process.env.ADE_RUN_ID = "run-1";
+    process.env.ADE_STEP_ID = "step-1";
+    process.env.ADE_ATTEMPT_ID = "attempt-1";
+    try {
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+      await initialize(handler, { callerId: "worker-1", role: "orchestrator" as any });
+      const response = await callTool(handler, "spawn_worker", {
+        name: "rogue-worker",
+        prompt: "Try to escape worker scope",
+      });
+
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("Unsupported tool: spawn_worker");
+    } finally {
+      if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
+      else process.env.ADE_DEFAULT_ROLE = previousRole;
+      if (previousMissionId == null) delete process.env.ADE_MISSION_ID;
+      else process.env.ADE_MISSION_ID = previousMissionId;
+      if (previousRunId == null) delete process.env.ADE_RUN_ID;
+      else process.env.ADE_RUN_ID = previousRunId;
+      if (previousStepId == null) delete process.env.ADE_STEP_ID;
+      else process.env.ADE_STEP_ID = previousStepId;
+      if (previousAttemptId == null) delete process.env.ADE_ATTEMPT_ID;
+      else process.env.ADE_ATTEMPT_ID = previousAttemptId;
+    }
+  });
+
+  it("does not advertise resources to orchestrator callers", async () => {
+    const { runtime } = createRuntime();
+    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+
+    const response = await handler({
+      jsonrpc: "2.0",
+      id: 99,
+      method: "initialize",
+      params: { identity: { callerId: "coord-1", role: "orchestrator" } }
+    }) as any;
+
+    expect(response.capabilities?.tools).toBeTruthy();
+    expect(response.capabilities?.resources).toBeUndefined();
   });
 
   it("routes reflection_add and uses initialize identity fallback", async () => {
@@ -1386,6 +1715,37 @@ describe("mcpServer", () => {
     expect(response.structuredContent.updatedAt).toBe("2026-03-05T12:00:00.000Z");
   });
 
+  it("routes memory_update_core to worker core memory when agent ownerId is set", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      ownerId: "worker-agent-1",
+      missionId: "mission-1",
+      runId: "run-1"
+    });
+
+    const response = await callTool(handler, "memory_update_core", {
+      projectSummary: "Worker-specific checkout strategy",
+      activeFocus: ["checkout reliability"]
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.workerAgentService.updateCoreMemory).toHaveBeenCalledWith(
+      "worker-agent-1",
+      expect.objectContaining({
+        projectSummary: "Worker-specific checkout strategy",
+        activeFocus: ["checkout reliability"]
+      })
+    );
+    expect(fixture.runtime.ctoStateService.updateCoreMemory).not.toHaveBeenCalled();
+    expect(response.structuredContent.updated).toBe(true);
+    expect(response.structuredContent.version).toBe(4);
+    expect(response.structuredContent.updatedAt).toBe("2026-03-05T13:00:00.000Z");
+  });
+
   it("materializes compact context manifests for spawn_agent to keep prompts lightweight", async () => {
     const fixture = createRuntime();
     const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -1463,16 +1823,33 @@ describe("mcpServer", () => {
     const fixture = createRuntime();
     const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler);
+    await initialize(handler, { callerId: "coord-1", role: "orchestrator", missionId: "mission-1", runId: "run-1" });
     const response = await callTool(handler, "ask_user", {
       missionId: "mission-1",
       title: "Need decision",
-      body: "Choose the merge order"
+      body: "Choose the merge order",
+      phase: "planning"
     });
 
     expect(response?.isError).toBeUndefined();
     expect(fixture.runtime.missionService.addIntervention).toHaveBeenCalledTimes(1);
+    expect(fixture.runtime.missionService.addIntervention).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({
+        source: "ask_user",
+        runId: "run-1",
+        phase: "planning",
+        blocking: true,
+        canProceedWithoutAnswer: false,
+      }),
+    }));
+    expect(fixture.runtime.orchestratorService.pauseRun).toHaveBeenCalledWith(expect.objectContaining({
+      runId: "run-1",
+      metadata: expect.objectContaining({
+        interventionSource: "ask_user",
+      }),
+    }));
     expect(response.structuredContent.awaitingUserResponse).toBe(true);
+    expect(response.structuredContent.blocking).toBe(true);
   });
 
   it("allows mutations for any session", async () => {

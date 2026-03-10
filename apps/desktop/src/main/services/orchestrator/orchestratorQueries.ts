@@ -209,7 +209,9 @@ export const CONTEXT_PROFILES: Record<OrchestratorContextProfileId, Orchestrator
 export const TERMINAL_RUN_STATUSES = new Set<OrchestratorRunStatus>(["succeeded", "failed", "canceled"]);
 export const RETRYABLE_ERROR_CLASSES = new Set<OrchestratorErrorClass>([
   "transient",
+  "startup_failure",
   "executor_failure",
+  "interrupted",
   "claim_conflict",
   "resume_recovered"
 ]);
@@ -299,9 +301,13 @@ export function normalizeErrorClass(value: string): OrchestratorErrorClass {
     value === "deterministic" ||
     value === "policy" ||
     value === "claim_conflict" ||
+    value === "startup_failure" ||
     value === "executor_failure" ||
+    value === "interrupted" ||
+    value === "configuration_error" ||
     value === "canceled" ||
-    value === "resume_recovered"
+    value === "resume_recovered" ||
+    value === "soft_success_blocking_failure"
   ) {
     return value;
   }
@@ -531,7 +537,10 @@ export function toContextSnapshot(row: ContextSnapshotRow): OrchestratorContextS
     runId: row.run_id,
     stepId: row.step_id,
     attemptId: row.attempt_id,
-    snapshotType: row.snapshot_type === "step" ? "step" : row.snapshot_type === "attempt" ? "attempt" : "run",
+    snapshotType:
+      row.snapshot_type === "step" ? "step"
+      : row.snapshot_type === "attempt" ? "attempt"
+      : "run",
     contextProfile: normalizeProfileId(row.context_profile),
     cursor,
     createdAt: row.created_at
@@ -758,4 +767,70 @@ export function branchNameFromRef(ref: string): string {
 export function clipText(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value;
   return `${value.slice(0, Math.max(0, maxChars - 14))}\n...<truncated>`;
+}
+
+// ── Blocking Warning Classification ────────────────────────────────
+
+/**
+ * Classify warnings from a succeeded attempt to detect blocking failures
+ * that should override the success status.
+ */
+export type BlockingWarningClassification = {
+  hasBlockingFailure: boolean;
+  category: 'sandbox_block' | 'permission_denied' | 'tool_failure' | 'missing_auth' | 'worker_no_output' | null;
+  detail: string | null;
+};
+
+const BLOCKING_WARNING_PATTERNS: Array<{ pattern: RegExp; category: BlockingWarningClassification['category'] }> = [
+  { pattern: /SANDBOX BLOCKED/i, category: 'sandbox_block' },
+  { pattern: /sandbox.?block/i, category: 'sandbox_block' },
+  { pattern: /File path outside sandbox/i, category: 'sandbox_block' },
+  { pattern: /PreToolUse:\w+ hook error/i, category: 'tool_failure' },
+  { pattern: /permission denied/i, category: 'permission_denied' },
+  { pattern: /EPERM|EACCES/i, category: 'permission_denied' },
+  { pattern: /validation failed for tool/i, category: 'tool_failure' },
+  { pattern: /zod validation.*tool/i, category: 'tool_failure' },
+  { pattern: /tool .+ failed/i, category: 'tool_failure' },
+  { pattern: /tool startup fail/i, category: 'tool_failure' },
+  { pattern: /needs-auth/i, category: 'missing_auth' },
+  { pattern: /authentication required/i, category: 'missing_auth' },
+  { pattern: /unauthorized/i, category: 'missing_auth' },
+];
+
+// External MCP auth warnings that should NOT be treated as blocking
+const EXTERNAL_MCP_NOISE_PATTERNS: RegExp[] = [
+  /claude\.ai\s+\S+:needs-auth/i,
+  /claude\.ai\s+Gmail/i,
+  /claude\.ai\s+Google Calendar/i,
+  /claude\.ai\s+Google Drive/i,
+  /claude\.ai\s+Slack/i,
+];
+
+export function classifyBlockingWarnings(args: {
+  warnings: string[];
+  summary: string | null;
+}): BlockingWarningClassification {
+  const { warnings, summary } = args;
+
+  // Combine all text to scan
+  const textsToScan = [...warnings];
+  if (summary) textsToScan.push(summary);
+
+  for (const text of textsToScan) {
+    // Skip external MCP noise
+    const isExternalNoise = EXTERNAL_MCP_NOISE_PATTERNS.some(p => p.test(text));
+    if (isExternalNoise) continue;
+
+    for (const { pattern, category } of BLOCKING_WARNING_PATTERNS) {
+      if (pattern.test(text)) {
+        return {
+          hasBlockingFailure: true,
+          category,
+          detail: text.slice(0, 500),
+        };
+      }
+    }
+  }
+
+  return { hasBlockingFailure: false, category: null, detail: null };
 }

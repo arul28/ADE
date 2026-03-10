@@ -1,8 +1,9 @@
 import React from "react";
-import { X, Warning } from "@phosphor-icons/react";
-import type { PhaseCard, MissionPhaseValidationTier, ModelConfig } from "../../../shared/types";
+import { X } from "@phosphor-icons/react";
+import type { PhaseCard, OrchestratorPromptInspector } from "../../../shared/types";
 import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { ModelSelector } from "./ModelSelector";
+import { PromptInspectorCard } from "./PromptInspectorCard";
 
 export type PhaseCardEditorProps = {
   phase: PhaseCard;
@@ -22,6 +23,10 @@ export type PhaseCardEditorProps = {
   onToggleDisabled?: () => void;
   labelStyle?: React.CSSProperties;
   inputStyle?: React.CSSProperties;
+  planningPromptPreview?: {
+    missionPrompt: string;
+    phases: PhaseCard[];
+  } | null;
 };
 
 const DEFAULT_LABEL_STYLE: React.CSSProperties = {
@@ -63,13 +68,69 @@ export function PhaseCardEditor({
   onToggleDisabled,
   labelStyle: lblStyle,
   inputStyle: inpStyle,
+  planningPromptPreview,
 }: PhaseCardEditorProps) {
   const labelStyle = lblStyle ?? DEFAULT_LABEL_STYLE;
   const inputStyle = inpStyle ?? DEFAULT_INPUT_STYLE;
+  const isPlanningPhase = phase.phaseKey.trim().toLowerCase() === "planning";
+  const [planningInspector, setPlanningInspector] = React.useState<OrchestratorPromptInspector | null>(null);
+  const [planningInspectorLoading, setPlanningInspectorLoading] = React.useState(false);
+  const [planningInspectorError, setPlanningInspectorError] = React.useState<string | null>(null);
 
   const updateField = <K extends keyof PhaseCard>(key: K, value: PhaseCard[K]) => {
     onUpdate({ ...phase, [key]: value });
   };
+
+  // Stable fingerprint to avoid re-fetching on every object-identity change.
+  const previewFingerprint = React.useMemo(() => {
+    if (!isPlanningPhase || !expanded || !planningPromptPreview) return null;
+    return JSON.stringify({
+      missionPrompt: planningPromptPreview.missionPrompt,
+      phaseInstructions: phase.instructions,
+      phaseModel: phase.model.modelId,
+      askQuestionsEnabled: phase.askQuestions.enabled,
+      phases: planningPromptPreview.phases.map((p) => p.phaseKey),
+    });
+  }, [isPlanningPhase, expanded, planningPromptPreview, phase.instructions, phase.model.modelId, phase.askQuestions.enabled]);
+
+  // Keep a ref to the latest values so the debounced callback always uses fresh data.
+  const previewArgsRef = React.useRef({ phase, planningPromptPreview });
+  previewArgsRef.current = { phase, planningPromptPreview };
+
+  React.useEffect(() => {
+    if (!previewFingerprint || !previewArgsRef.current.planningPromptPreview
+        || !previewArgsRef.current.planningPromptPreview.missionPrompt.trim().length) {
+      setPlanningInspector(null);
+      setPlanningInspectorLoading(false);
+      setPlanningInspectorError(null);
+      return;
+    }
+    let cancelled = false;
+    setPlanningInspectorLoading(true);
+    setPlanningInspectorError(null);
+    const timer = setTimeout(() => {
+      const args = previewArgsRef.current;
+      if (!args.planningPromptPreview) return;
+      void window.ade.orchestrator.getPlanningPromptPreview({
+        missionPrompt: args.planningPromptPreview.missionPrompt,
+        phase: args.phase,
+        phases: args.planningPromptPreview.phases,
+      }).then((inspector) => {
+        if (cancelled) return;
+        setPlanningInspector(inspector);
+        setPlanningInspectorLoading(false);
+      }).catch((error) => {
+        if (cancelled) return;
+        setPlanningInspector(null);
+        setPlanningInspectorError(error instanceof Error ? error.message : String(error));
+        setPlanningInspectorLoading(false);
+      });
+    }, 500);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [previewFingerprint]);
 
   return (
     <div
@@ -135,7 +196,10 @@ export function PhaseCardEditor({
             </div>
           ) : null}
           <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-            {phase.model.modelId} · {phase.validationGate.tier}
+            {phase.model.modelId}
+            {isPlanningPhase
+              ? ` · Ask Questions ${phase.askQuestions.enabled ? "on" : "off"}`
+              : ""}
           </div>
         </div>
 
@@ -235,7 +299,7 @@ export function PhaseCardEditor({
           </label>
 
           <label className="space-y-1 text-[10px]">
-            <span style={labelStyle}>INSTRUCTIONS</span>
+            <span style={labelStyle}>{isPlanningPhase ? "CUSTOM INSTRUCTIONS" : "INSTRUCTIONS"}</span>
             <textarea
               value={phase.instructions}
               onChange={(e) => updateField("instructions", e.target.value)}
@@ -246,120 +310,70 @@ export function PhaseCardEditor({
             />
           </label>
 
-          {/* Validation gate */}
-          <div className="space-y-1">
-            <span style={labelStyle}>VALIDATION GATE</span>
-            <div className="flex items-center gap-3">
-              <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                <span style={{ fontSize: 9 }}>Tier</span>
-                <select
-                  value={phase.validationGate.tier}
-                  onChange={(e) => {
-                    const tier = e.target.value as MissionPhaseValidationTier;
-                    updateField("validationGate", { ...phase.validationGate, tier });
-                  }}
-                  className="h-6 px-1 outline-none"
-                  style={{ ...inputStyle, width: "auto", minWidth: 90 }}
-                  disabled={readOnly}
-                >
-                  <option value="none">None</option>
-                  <option value="self">Self</option>
-                  <option value="dedicated">Dedicated</option>
-                </select>
-              </label>
-              <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                <input
-                  type="checkbox"
-                  checked={phase.validationGate.required}
-                  onChange={(e) => {
-                    updateField("validationGate", { ...phase.validationGate, required: e.target.checked });
-                  }}
-                  disabled={readOnly}
-                />
-                Required
-              </label>
-            </div>
-            {phase.validationGate.tier !== "none" && (
+          {/* Require manual approval toggle */}
+          <div className="flex items-center gap-2">
+            <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
               <input
-                value={phase.validationGate.criteria ?? ""}
+                type="checkbox"
+                checked={phase.requiresApproval === true}
                 onChange={(e) => {
-                  updateField("validationGate", { ...phase.validationGate, criteria: e.target.value || undefined });
+                  onUpdate({ ...phase, requiresApproval: e.target.checked });
                 }}
-                placeholder="Validation criteria (e.g. all tests pass, no lint errors)"
-                className="h-6 w-full px-2 outline-none text-[10px]"
-                style={inputStyle}
                 disabled={readOnly}
               />
-            )}
+              Require manual approval
+            </label>
           </div>
 
-          {/* Clarification / askQuestions */}
-          <div className="space-y-1">
-            <span style={labelStyle} title={phase.orderingConstraints.mustBeFirst
-              ? "When enabled, the coordinator must ask clarifying questions before starting this phase"
-              : "When enabled, the coordinator may ask clarifying questions when uncertain"
-            }>USER CLARIFICATIONS</span>
-            <div className="flex flex-wrap items-center gap-3">
-              <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }} title={phase.orderingConstraints.mustBeFirst
-                ? "Planning phase: coordinator MUST ask before proceeding"
-                : "Other phases: coordinator MAY ask when genuinely uncertain"
-              }>
-                <input
-                  type="checkbox"
-                  checked={phase.askQuestions.enabled}
-                  onChange={(e) => {
-                    const enabled = e.target.checked;
-                    updateField("askQuestions", {
-                      ...phase.askQuestions,
-                      enabled,
-                      mode: enabled
-                        ? (phase.askQuestions.mode === "never" ? "auto_if_uncertain" : phase.askQuestions.mode)
-                        : "never",
-                    });
-                  }}
-                  disabled={readOnly}
+          {isPlanningPhase ? (
+            <>
+              <div className="space-y-1 text-[10px]">
+                <span style={labelStyle}>EXACT COMPOSED PLANNER PROMPT</span>
+                <PromptInspectorCard
+                  inspector={planningInspector}
+                  loading={planningInspectorLoading}
+                  error={planningInspectorError}
+                  title="Read-only system / composed planner prompt"
                 />
-                Enabled
-              </label>
-              <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                <span style={{ fontSize: 9 }}>Mode</span>
-                <select
-                  value={phase.askQuestions.mode}
-                  onChange={(e) => {
-                    const mode = e.target.value as "always" | "auto_if_uncertain" | "never";
-                    updateField("askQuestions", {
-                      ...phase.askQuestions,
-                      mode,
-                      enabled: mode === "never" ? false : phase.askQuestions.enabled,
-                    });
-                  }}
-                  className="h-6 px-1 outline-none"
-                  style={{ ...inputStyle, width: "auto", minWidth: 130 }}
-                  disabled={readOnly}
-                >
-                  <option value="auto_if_uncertain">Auto (if uncertain)</option>
-                  <option value="always">Always</option>
-                  <option value="never">Never</option>
-                </select>
-              </label>
-              <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                <span style={{ fontSize: 9 }}>Max questions</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={10}
-                  value={Math.max(1, Math.min(10, Number(phase.askQuestions.maxQuestions ?? 5) || 5))}
-                  onChange={(e) => {
-                    const maxQuestions = Math.max(1, Math.min(10, Number(e.target.value) || 5));
-                    updateField("askQuestions", { ...phase.askQuestions, maxQuestions });
-                  }}
-                  className="h-6 w-16 px-1 text-[10px] text-center outline-none"
-                  style={inputStyle}
-                  disabled={readOnly}
-                />
-              </label>
-            </div>
-          </div>
+              </div>
+
+              <div className="space-y-1">
+                <span style={labelStyle}>ASK QUESTIONS</span>
+                <div className="flex flex-wrap items-center gap-3">
+                  <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                    <input
+                      type="checkbox"
+                      checked={phase.askQuestions.enabled}
+                      onChange={(e) => {
+                        updateField("askQuestions", { ...phase.askQuestions, enabled: e.target.checked });
+                      }}
+                      disabled={readOnly}
+                    />
+                    Enabled
+                  </label>
+                  <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                    {phase.askQuestions.enabled ? "Planner must ask at least one question before finalizing." : "Planner will proceed without asking questions."}
+                  </div>
+                  <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                    <span style={{ fontSize: 9 }}>Max questions</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={10}
+                      value={Math.max(1, Math.min(10, Number(phase.askQuestions.maxQuestions ?? 5) || 5))}
+                      onChange={(e) => {
+                        const maxQuestions = Math.max(1, Math.min(10, Number(e.target.value) || 5));
+                        updateField("askQuestions", { ...phase.askQuestions, maxQuestions });
+                      }}
+                      className="h-6 w-16 px-1 text-[10px] text-center outline-none"
+                      style={inputStyle}
+                      disabled={readOnly}
+                    />
+                  </label>
+                </div>
+              </div>
+            </>
+          ) : null}
         </div>
       ) : null}
     </div>

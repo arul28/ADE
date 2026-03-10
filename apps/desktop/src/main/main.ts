@@ -34,6 +34,7 @@ import { createGithubService } from "./services/github/githubService";
 import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
 import { createQueueLandingService } from "./services/prs/queueLandingService";
+import { createQueueRehearsalService } from "./services/prs/queueRehearsalService";
 import { detectDefaultBaseRef, ensureAdeExcluded, resolveRepoRoot, toProjectInfo, upsertProjectRow } from "./services/projects/projectService";
 import { IPC } from "../shared/ipc";
 import type { ProjectInfo } from "../shared/types";
@@ -55,7 +56,13 @@ import { createRebaseSuggestionService } from "./services/lanes/rebaseSuggestion
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createMissionService } from "./services/missions/missionService";
 import { createMissionPreflightService } from "./services/missions/missionPreflightService";
+import { createCompactionFlushService } from "./services/memory/compactionFlushService";
+import { createBatchConsolidationService } from "./services/memory/batchConsolidationService";
+import { createEmbeddingService } from "./services/memory/embeddingService";
+import { createEmbeddingWorkerService } from "./services/memory/embeddingWorkerService";
+import { createHybridSearchService } from "./services/memory/hybridSearchService";
 import { createUnifiedMemoryService } from "./services/memory/unifiedMemoryService";
+import { createMemoryLifecycleService } from "./services/memory/memoryLifecycleService";
 import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createWorkerAgentService } from "./services/cto/workerAgentService";
 import { createWorkerRevisionService } from "./services/cto/workerRevisionService";
@@ -754,14 +761,34 @@ app.whenReady().then(async () => {
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.prsEvent, event)
     });
 
+    let orchestratorServiceRef: ReturnType<typeof createOrchestratorService> | null = null;
+    let aiOrchestratorServiceRef: ReturnType<typeof createAiOrchestratorService> | null = null;
     const queueLandingService = createQueueLandingService({
       db,
       logger,
       projectId,
       prService,
-      emitEvent: (event) => emitProjectEvent(projectRoot, IPC.prsEvent, event)
+      laneService,
+      conflictService,
+      emitEvent: (event) => emitProjectEvent(projectRoot, IPC.prsEvent, event),
+      onStateChanged: (state) => {
+        aiOrchestratorServiceRef?.onQueueLandingStateChanged?.(state);
+      }
     });
     queueLandingService.init();
+    const queueRehearsalService = createQueueRehearsalService({
+      db,
+      logger,
+      projectId,
+      prService,
+      laneService,
+      conflictService,
+      emitEvent: (event) => emitProjectEvent(projectRoot, IPC.prsEvent, event),
+      onStateChanged: (state) => {
+        aiOrchestratorServiceRef?.onQueueRehearsalStateChanged?.(state);
+      }
+    });
+    queueRehearsalService.init();
 
     const fileService = createFileService({
       laneService,
@@ -770,8 +797,6 @@ app.whenReady().then(async () => {
       }
     });
 
-    let orchestratorServiceRef: ReturnType<typeof createOrchestratorService> | null = null;
-    let aiOrchestratorServiceRef: ReturnType<typeof createAiOrchestratorService> | null = null;
     const onTrackedSessionEnded = ({ laneId, sessionId, exitCode }: { laneId: string; sessionId: string; exitCode: number | null }) => {
       jobEngine?.onSessionEnded({ laneId, sessionId });
       automationService?.onSessionEnded({ laneId, sessionId });
@@ -809,7 +834,53 @@ app.whenReady().then(async () => {
       sessionService
     });
 
-    const memoryService = createUnifiedMemoryService(db);
+    let batchConsolidationServiceRef: ReturnType<typeof createBatchConsolidationService> | null = null;
+    let embeddingWorkerServiceRef: ReturnType<typeof createEmbeddingWorkerService> | null = null;
+    const embeddingService = createEmbeddingService({
+      logger,
+      cacheDir: path.join(app.getPath("userData"), "transformers-cache"),
+    });
+    const hybridSearchService = createHybridSearchService({
+      db,
+      embeddingService,
+    });
+    const memoryService = createUnifiedMemoryService(db, {
+      hybridSearchService,
+      onMemoryMutated: () => {
+        batchConsolidationServiceRef?.scheduleAutoConsolidationCheck();
+      },
+      onMemoryUpserted: (event) => {
+        if ((event.created || event.contentChanged) && embeddingService.isAvailable()) {
+          embeddingWorkerServiceRef?.queueMemory(event.memory.id);
+        }
+      },
+    });
+    const compactionFlushService = createCompactionFlushService(undefined, { logger });
+    aiIntegrationService.setCompactionFlushService(compactionFlushService);
+    const batchConsolidationService = createBatchConsolidationService({
+      db,
+      logger,
+      aiIntegrationService,
+      projectConfigService,
+      projectId,
+      projectRoot,
+      onStatus: (event) => emitProjectEvent(projectRoot, IPC.memoryConsolidationStatus, event)
+    });
+    batchConsolidationServiceRef = batchConsolidationService;
+    const memoryLifecycleService = createMemoryLifecycleService({
+      db,
+      logger,
+      projectId,
+      onStatus: (event) => emitProjectEvent(projectRoot, IPC.memorySweepStatus, event)
+    });
+    const embeddingWorkerService = createEmbeddingWorkerService({
+      db,
+      logger,
+      projectId,
+      embeddingService,
+      sessionService,
+    });
+    embeddingWorkerServiceRef = embeddingWorkerService;
     const contextDocService = createContextDocService({
       db,
       logger,
@@ -860,6 +931,8 @@ app.whenReady().then(async () => {
       workerAdapterRuntimeService,
       workerTaskSessionService,
       workerBudgetService,
+      memoryService,
+      ctoStateService,
       logger,
     });
 
@@ -903,6 +976,7 @@ app.whenReady().then(async () => {
       projectId,
       memoryService,
       packService,
+      workerAgentService,
       laneService,
       sessionService,
       projectConfigService,
@@ -965,7 +1039,19 @@ app.whenReady().then(async () => {
       db,
       projectId,
       projectRoot,
-      onEvent: (event) => emitProjectEvent(projectRoot, IPC.missionsEvent, event)
+      onEvent: (event) => {
+        emitProjectEvent(projectRoot, IPC.missionsEvent, event);
+        if (event.reason === "ready_to_start" && event.missionId) {
+          void aiOrchestratorServiceRef?.startMissionRun({
+            missionId: event.missionId,
+          }).catch((error) => {
+            logger.warn("missions.queue_autostart_failed", {
+              missionId: event.missionId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+        }
+      }
     });
     // Run phase built-in migration/cleanup once at startup so launcher state is canonical.
     try {
@@ -1002,6 +1088,7 @@ app.whenReady().then(async () => {
       packService,
       conflictService,
       ptyService,
+      agentChatService,
       prService,
       projectConfigService,
       aiIntegrationService,
@@ -1022,12 +1109,22 @@ app.whenReady().then(async () => {
       projectConfigService,
       aiIntegrationService,
       prService,
+      conflictService,
+      queueLandingService,
+      queueRehearsalService,
       projectRoot,
       missionBudgetService,
       onThreadEvent: (event) => emitProjectEvent(projectRoot, IPC.orchestratorThreadEvent, event),
       onDagMutation: (event) => emitProjectEvent(projectRoot, IPC.orchestratorDagMutation, event)
     });
     aiOrchestratorServiceRef = aiOrchestratorService;
+    try {
+      missionService.processQueue();
+    } catch (error) {
+      logger.warn("missions.queue_autostart_bootstrap_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     const linearSyncService = createLinearSyncService({
       db,
@@ -1071,6 +1168,25 @@ app.whenReady().then(async () => {
       logger,
       projectConfigService,
       usageTrackingService
+    });
+
+    void memoryLifecycleService.runStartupSweepIfDue().catch((error) => {
+      logger.warn("memory.lifecycle.startup_sweep_failed", {
+        projectId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
+    void batchConsolidationService.runAutoConsolidationIfNeeded().catch((error: unknown) => {
+      logger.warn("memory.consolidation.startup_check_failed", {
+        projectId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
+    void embeddingWorkerService.start().catch((error) => {
+      logger.warn("memory.embedding_worker.start_failed", {
+        projectId,
+        error: error instanceof Error ? error.message : String(error)
+      });
     });
 
     // Head watcher: detects commits/rebases made outside ADE's Git UI (e.g. in the terminal),
@@ -1209,6 +1325,7 @@ app.whenReady().then(async () => {
       prService,
       memoryService,
       ctoStateService,
+      workerAgentService,
       orchestratorService,
       aiOrchestratorService,
       eventBuffer: mcpEventBuffer,
@@ -1282,6 +1399,7 @@ app.whenReady().then(async () => {
       prService,
       prPollingService,
       queueLandingService,
+      queueRehearsalService,
       jobEngine,
       automationService,
       automationPlannerService,
@@ -1301,6 +1419,10 @@ app.whenReady().then(async () => {
       sessionDeltaService,
       testService,
       memoryService,
+      batchConsolidationService,
+      memoryLifecycleService,
+      embeddingService,
+      embeddingWorkerService,
       ctoStateService,
       workerAgentService,
       workerRevisionService,
@@ -1357,6 +1479,7 @@ app.whenReady().then(async () => {
       prService: null,
       prPollingService: null,
       queueLandingService: null,
+      queueRehearsalService: null,
       jobEngine: null,
       automationService: null,
       automationPlannerService: null,
@@ -1373,7 +1496,11 @@ app.whenReady().then(async () => {
       processService: null,
       sessionDeltaService: null,
       testService: null,
+      embeddingService: null,
+      embeddingWorkerService: null,
       memoryService: null,
+      batchConsolidationService: null,
+      memoryLifecycleService: null,
       ctoStateService: null,
       workerAgentService: null,
       workerRevisionService: null,

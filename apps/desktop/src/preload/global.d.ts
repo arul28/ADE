@@ -81,6 +81,11 @@ import type {
   BudgetCapScope,
   BudgetCapProvider,
   BudgetCapConfig,
+  MemoryHealthStats,
+  MemoryConsolidationResult,
+  MemoryConsolidationStatusEventPayload,
+  MemoryLifecycleSweepResult,
+  MemorySweepStatusEventPayload,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -172,6 +177,7 @@ import type {
   CommitIntegrationArgs,
   LandQueueNextArgs,
   QueueLandingState,
+  QueueRehearsalState,
   PrHealth,
   RebaseNeed,
   RebaseLaneArgs,
@@ -315,8 +321,12 @@ import type {
   ImportPhaseProfileArgs,
   MissionPhaseConfiguration,
   MissionDashboardSnapshot,
+  GetFullMissionViewArgs,
+  FullMissionViewResult,
   MissionPreflightRequest,
   MissionPreflightResult,
+  GetMissionRunViewArgs,
+  MissionRunView,
   GetMissionLogsArgs,
   GetMissionLogsResult,
   ExportMissionLogsArgs,
@@ -326,6 +336,7 @@ import type {
   ListOrchestratorRunsArgs,
   ListOrchestratorTimelineArgs,
   CreateMissionArgs,
+  ArchiveMissionArgs,
   CancelOrchestratorRunArgs,
   CleanupOrchestratorTeamResourcesArgs,
   CleanupOrchestratorTeamResourcesResult,
@@ -373,12 +384,19 @@ import type {
   ListOrchestratorWorkerDigestsArgs,
   GetOrchestratorContextCheckpointArgs,
   ListOrchestratorLaneDecisionsArgs,
+  ListOrchestratorArtifactsArgs,
+  ListOrchestratorWorkerCheckpointsArgs,
   MissionMetricsConfig,
   MissionMetricSample,
   SetMissionMetricsConfigArgs,
   ExecutionPlanPreview,
   GetMissionStateDocumentArgs,
   MissionStateDocument,
+  OrchestratorArtifact,
+  OrchestratorWorkerCheckpoint,
+  GetOrchestratorPromptInspectorArgs,
+  GetPlanningPromptPreviewArgs,
+  OrchestratorPromptInspector,
   GetMissionBudgetTelemetryArgs,
   GetMissionBudgetStatusArgs,
   MissionBudgetTelemetrySnapshot,
@@ -512,6 +530,7 @@ declare global {
         get: (missionId: string) => Promise<MissionDetail | null>;
         create: (args: CreateMissionArgs) => Promise<MissionDetail>;
         update: (args: UpdateMissionArgs) => Promise<MissionDetail>;
+        archive: (args: ArchiveMissionArgs) => Promise<void>;
         delete: (args: DeleteMissionArgs) => Promise<void>;
         updateStep: (args: UpdateMissionStepArgs) => Promise<MissionStep>;
         addArtifact: (args: AddMissionArtifactArgs) => Promise<MissionArtifact>;
@@ -530,7 +549,10 @@ declare global {
         importPhaseProfile: (args: ImportPhaseProfileArgs) => Promise<PhaseProfile>;
         getPhaseConfiguration: (missionId: string) => Promise<MissionPhaseConfiguration | null>;
         getDashboard: () => Promise<MissionDashboardSnapshot>;
+        getFullMissionView: (args: GetFullMissionViewArgs) => Promise<FullMissionViewResult>;
         preflight: (args: MissionPreflightRequest) => Promise<MissionPreflightResult>;
+        getRunView: (args: GetMissionRunViewArgs) => Promise<MissionRunView | null>;
+        subscribeRunView: (args: GetMissionRunViewArgs, cb: (view: MissionRunView | null) => void) => () => void;
         onEvent: (cb: (ev: MissionsEventPayload) => void) => () => void;
       };
       orchestrator: {
@@ -568,6 +590,10 @@ declare global {
         listWorkerDigests: (args: ListOrchestratorWorkerDigestsArgs) => Promise<OrchestratorWorkerDigest[]>;
         getContextCheckpoint: (args: GetOrchestratorContextCheckpointArgs) => Promise<OrchestratorContextCheckpoint | null>;
         listLaneDecisions: (args: ListOrchestratorLaneDecisionsArgs) => Promise<OrchestratorLaneDecision[]>;
+        listArtifacts: (args: ListOrchestratorArtifactsArgs) => Promise<OrchestratorArtifact[]>;
+        listWorkerCheckpoints: (args: ListOrchestratorWorkerCheckpointsArgs) => Promise<OrchestratorWorkerCheckpoint[]>;
+        getPromptInspector: (args: GetOrchestratorPromptInspectorArgs) => Promise<OrchestratorPromptInspector>;
+        getPlanningPromptPreview: (args: GetPlanningPromptPreviewArgs) => Promise<OrchestratorPromptInspector>;
         getMissionMetrics: (args: GetMissionMetricsArgs) => Promise<{ config: MissionMetricsConfig | null; samples: MissionMetricSample[] }>;
         setMissionMetricsConfig: (args: SetMissionMetricsConfigArgs) => Promise<MissionMetricsConfig>;
         getExecutionPlanPreview: (args: { runId: string }) => Promise<ExecutionPlanPreview | null>;
@@ -746,7 +772,9 @@ declare global {
         listExternalResolverRuns: (args?: ListExternalConflictResolverRunsArgs) => Promise<ConflictExternalResolverRunSummary[]>;
         commitExternalResolverRun: (args: CommitExternalConflictResolverRunArgs) => Promise<CommitExternalConflictResolverRunResult>;
         prepareResolverSession: (args: import("../shared/types").PrepareResolverSessionArgs) => Promise<import("../shared/types").PrepareResolverSessionResult>;
+        attachResolverSession: (args: import("../shared/types").AttachResolverSessionArgs) => Promise<import("../shared/types").ConflictExternalResolverRunSummary>;
         finalizeResolverSession: (args: import("../shared/types").FinalizeResolverSessionArgs) => Promise<import("../shared/types").ConflictExternalResolverRunSummary>;
+        cancelResolverSession: (args: import("../shared/types").CancelResolverSessionArgs) => Promise<import("../shared/types").ConflictExternalResolverRunSummary>;
         suggestResolverTarget: (args: import("../shared/types").SuggestResolverTargetArgs) => Promise<import("../shared/types").SuggestResolverTargetResult>;
         onEvent: (cb: (ev: ConflictEventPayload) => void) => () => void;
       };
@@ -793,8 +821,17 @@ declare global {
         onAiResolutionEvent: (cb: (ev: PrAiResolutionEventPayload) => void) => () => void;
         landStackEnhanced: (args: import("../shared/types").LandStackEnhancedArgs) => Promise<import("../shared/types").LandResult[]>;
         landQueueNext: (args: LandQueueNextArgs) => Promise<LandResult>;
+        startQueueAutomation: (args: import("../shared/types").StartQueueAutomationArgs) => Promise<QueueLandingState>;
+        pauseQueueAutomation: (queueId: string) => Promise<QueueLandingState | null>;
+        resumeQueueAutomation: (args: import("../shared/types").ResumeQueueAutomationArgs) => Promise<QueueLandingState | null>;
+        cancelQueueAutomation: (queueId: string) => Promise<QueueLandingState | null>;
+        startQueueRehearsal: (args: import("../shared/types").StartQueueRehearsalArgs) => Promise<QueueRehearsalState>;
+        cancelQueueRehearsal: (rehearsalId: string) => Promise<QueueRehearsalState | null>;
         getHealth: (prId: string) => Promise<PrHealth>;
         getQueueState: (groupId: string) => Promise<QueueLandingState | null>;
+        listQueueStates: (args?: { includeCompleted?: boolean; limit?: number }) => Promise<QueueLandingState[]>;
+        getQueueRehearsalState: (groupId: string) => Promise<QueueRehearsalState | null>;
+        listQueueRehearsals: (args?: { includeCompleted?: boolean; limit?: number }) => Promise<QueueRehearsalState[]>;
         getConflictAnalysis: (prId: string) => Promise<import("../shared/types").PrConflictAnalysis>;
         getMergeContext: (prId: string) => Promise<PrMergeContext>;
         listWithConflicts: () => Promise<import("../shared/types").PrWithConflicts[]>;
@@ -895,8 +932,15 @@ declare global {
           scope?: "user" | "project" | "lane" | "mission" | "agent";
           scopeOwnerId?: string;
           limit?: number;
+          mode?: "lexical" | "hybrid";
           status?: "promoted" | "candidate" | "archived" | "all";
         }) => Promise<unknown[]>;
+        getHealthStats: () => Promise<MemoryHealthStats>;
+        downloadEmbeddingModel: () => Promise<MemoryHealthStats>;
+        runSweep: () => Promise<MemoryLifecycleSweepResult>;
+        onSweepStatus: (cb: (payload: MemorySweepStatusEventPayload) => void) => () => void;
+        runConsolidation: () => Promise<MemoryConsolidationResult>;
+        onConsolidationStatus: (cb: (payload: MemoryConsolidationStatusEventPayload) => void) => () => void;
       };
       cto?: {
         getState: (args?: CtoGetStateArgs) => Promise<CtoSnapshot>;

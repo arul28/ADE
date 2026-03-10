@@ -1,0 +1,56 @@
+{
+  "featureId": "embedding-model-and-background-job",
+  "reviewedAt": "2026-03-10T02:00:00.000Z",
+  "commitId": "35a850e",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "Solid, well-structured implementation. Both services follow the project's factory function pattern, tests use real SQLite via the fixture pattern, and all expectedBehavior items are covered. Several non-blocking observations noted below.",
+    "issues": [
+      {
+        "file": "apps/desktop/src/main/services/memory/embeddingService.ts",
+        "line": 134,
+        "severity": "non_blocking",
+        "description": "The in-memory content-hash cache (Map<string, Float32Array>) has no eviction policy or size limit. In a long-running Electron session that embeds a large number of unique texts, this map will grow without bound. For this milestone's scope the risk is low (memory entries are bounded), but a max-cache-size cap would make this more robust."
+      },
+      {
+        "file": "apps/desktop/src/main/services/memory/embeddingService.ts",
+        "line": 264,
+        "severity": "non_blocking",
+        "description": "`isAvailable()` returns `state === 'ready'`, which is false in both 'idle' and 'loading' states. Any caller that checks isAvailable() before the first embed() call (which triggers loading) will always see false and fall back to lexical, even though the model is actively loading. This is technically correct given the async loading design, but callers that want to wait for readiness have no hook. For the current use case (hybrid retrieval falls back gracefully) this is acceptable."
+      },
+      {
+        "file": "apps/desktop/src/main/services/memory/embeddingWorkerService.ts",
+        "line": 302,
+        "severity": "non_blocking",
+        "description": "`processQueue` is included in the returned public API object. Exposing it allows external callers to trigger queue processing directly outside the normal scheduling flow. It's used correctly in tests (via `waitForIdle` which depends on processingPromise settling), but is an unnecessary surface in production. Minor API hygiene issue."
+      },
+      {
+        "file": "apps/desktop/src/main/services/memory/unifiedMemoryService.ts",
+        "line": null,
+        "severity": "non_blocking",
+        "description": "The `notifyMemoryUpserted` hook is only wired into the dedup-merge path and the new-insert path. If unifiedMemoryService has a direct-update path (editing an existing memory without going through addMemory), content changes on that path would not trigger re-embedding. Auditing the full service shows the two current callers suffice for the stated feature scope ('On memoryAdd … queue entry ID'), but a future in-place edit feature would need a third hook point."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The service-worker skill's Step 3 (Write Tests First / TDD red-green) does not accommodate the case where the assigned feature's commit is already on HEAD from a prior worker session. Worker 41faf4db correctly shifted to verification-only mode but had to improvise; the skill has no explicit 'feature already committed' branch. The worker's skillFeedback.suggestedChanges flags this gap directly.",
+      "evidence": "Handoff skillFeedback.followedProcedure=false, deviation on step '3. Write Tests First / 4. Implement': 'The assigned feature was already present on the branch when this worker session started.' Worker suggestion: 'The worker bootstrap could note when the assigned feature commit is already present on HEAD so the procedure can explicitly switch into verification-only mode.'"
+    },
+    {
+      "area": "conventions",
+      "observation": "The feature added `asarUnpack` for `onnxruntime-node/**` in `apps/desktop/package.json` and updated the `rebuild:native` script — both correct and required for native Electron packaging. AGENTS.md documents that onnxruntime-node must be excluded from asar packaging, so the convention was followed. No gap here, but confirming the packaging wiring was done completely (tsup external + asarUnpack + rebuild:native).",
+      "evidence": "git show 35a850e -- apps/desktop/package.json shows: +\"onnxruntime-node\": \"^1.24.3\" in dependencies, +\"node_modules/onnxruntime-node/**\" in asarUnpack, and rebuild:native updated to include -w onnxruntime-node."
+    },
+    {
+      "area": "knowledge",
+      "observation": "The implementation correctly avoids the `sqlite-vec` extension (documented AGENTS.md constraint) and stores embeddings as BLOBs (Float32Array serialized to Buffer) in `unified_memory_embeddings`. The knowledge about sql.js/onnxruntime-node incompatibilities is already well-captured in AGENTS.md and library/memory-engine.md — no new knowledge gap detected.",
+      "evidence": "embeddingWorkerService.ts writeEmbedding() uses Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength) for BLOB storage. AGENTS.md states 'sqlite-vec CANNOT be used with sql.js'."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "The implementation fully covers all expectedBehavior requirements: pipeline loading with userData cache, 384-d vector output, sha256 content-hash memoization, graceful degradation (isAvailable()=false, logged warning), async queueing from memoryAdd hook, startup backfill, bounded batches (10/50 active/idle), 100ms yield, per-entry failure isolation, BLOB storage, and onnxruntime-node marked external in tsup + asarUnpack in electron-builder. Tests (8 total, 3 + 5) use real SQLite via the project fixture pattern and mock only the transformers pipeline. TypeScript typecheck is clean. The four issues flagged are all non-blocking: unbounded in-memory cache, isAvailable() idle-state false-negative, processQueue() over-exposure, and a potential future gap in direct-update hooks."
+}

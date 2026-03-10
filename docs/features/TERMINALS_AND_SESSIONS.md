@@ -720,18 +720,18 @@ CREATE INDEX idx_deltas_lane_id ON session_deltas(lane_id);
 
 | ID | Task | Status |
 |----|------|--------|
-| TERM-041 | AgentChatService interface and types | TODO |
-| TERM-042 | CodexChatBackend (App Server JSON-RPC client) | TODO |
-| TERM-043 | ClaudeChatBackend (community provider multi-turn) | TODO |
-| TERM-044 | Chat session → terminal_sessions integration (tool_type, transcript, delta) | TODO |
-| TERM-045 | AgentChatMessageList component (all item type renderers) | TODO |
-| TERM-046 | AgentChatComposer component (input, model selector, steer, interrupt) | TODO |
-| TERM-047 | ApprovalOverlay component (accept/decline/accept-for-session) | TODO |
-| TERM-048 | AgentChatPane integration in Lanes tab Work Pane (view toggle) | TODO |
-| TERM-049 | Chat sessions in Terminals tab session list | TODO |
-| TERM-050 | Chat session resume (Codex thread/resume, Claude messages reload) | TODO |
-| TERM-051 | Chat transcript storage (.chat.jsonl) and delta computation | TODO |
-| TERM-052 | Chat-specific Settings (default provider, approval policy, send-on-enter) | TODO |
+| TERM-041 | AgentChatService interface and types | DONE |
+| TERM-042 | CodexChatBackend (App Server JSON-RPC client) | DONE |
+| TERM-043 | ClaudeChatBackend (community provider multi-turn) | DONE |
+| TERM-044 | Chat session → terminal_sessions integration (tool_type, transcript, delta) | DONE |
+| TERM-045 | AgentChatMessageList component (all item type renderers) | DONE |
+| TERM-046 | AgentChatComposer component (input, model selector, steer, interrupt) | DONE |
+| TERM-047 | ApprovalOverlay component (accept/decline/accept-for-session) | DONE |
+| TERM-048 | AgentChatPane integration in Lanes tab Work Pane (view toggle) | DONE |
+| TERM-049 | Chat sessions in Terminals tab session list | DONE |
+| TERM-050 | Chat session resume (Codex thread/resume, Claude messages reload) | DONE |
+| TERM-051 | Chat transcript storage (.chat.jsonl) and delta computation | DONE |
+| TERM-052 | Chat-specific Settings (default provider, approval policy, send-on-enter) | DONE |
 
 ### Remote Terminal Support (Planned)
 

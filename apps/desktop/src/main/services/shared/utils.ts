@@ -173,6 +173,11 @@ export function normalizeRelative(relPath: string): string {
 
 // ── Binary detection ───────────────────────────────────────────────
 
+/** Strip refs/heads/ and origin/ prefixes from a branch name. */
+export function normalizeBranchName(ref: string): string {
+  return ref.replace(/^refs\/heads\//, "").replace(/^origin\//, "");
+}
+
 /** Returns true if the buffer contains a null byte in the first 8192 bytes. */
 export function hasNullByte(buf: Buffer): boolean {
   const max = Math.min(buf.length, 8192);

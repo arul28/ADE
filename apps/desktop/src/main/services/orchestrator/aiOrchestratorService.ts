@@ -35,6 +35,8 @@ import type {
   GetOrchestratorWorkerDigestArgs,
   GetOrchestratorContextCheckpointArgs,
   ListOrchestratorLaneDecisionsArgs,
+  ListOrchestratorArtifactsArgs,
+  ListOrchestratorWorkerCheckpointsArgs,
   MissionMetricsConfig,
   MissionMetricSample,
   GetMissionMetricsArgs,
@@ -61,19 +63,37 @@ import type {
   TeamRuntimeConfig,
   FinalizeRunArgs,
   FinalizeRunResult,
-  RunCompletionBlocker,
   GetMissionStateDocumentArgs,
   MissionStateDocument,
   MissionStateDocumentPatch,
+  MissionCloseoutRequirement,
+  MissionCloseoutRequirementKey,
+  MissionFinalizationPolicy,
+  MissionFinalizationState,
+  MissionCoordinatorAvailability,
   MissionStatePendingIntervention,
   MissionStateProgress,
   MissionStateStepOutcome,
   GetMissionLogsArgs,
   GetMissionLogsResult,
+  GetMissionRunViewArgs,
   MissionLogEntry,
   MissionLogChannel,
   ExportMissionLogsArgs,
   ExportMissionLogsResult,
+  MissionRunView,
+  MissionRunViewDisplayStatus,
+  MissionRunViewHaltReason,
+  MissionRunViewLatestIntervention,
+  MissionRunViewProgressItem,
+  MissionRunViewSeverity,
+  MissionRunViewWorkerSummary,
+  OrchestratorArtifact,
+  OrchestratorWorkerCheckpoint,
+  GetOrchestratorPromptInspectorArgs,
+  GetPlanningPromptPreviewArgs,
+  OrchestratorPromptInspector,
+  ValidationEvidenceRequirement,
 } from "../../../shared/types";
 import type { ModelConfig, OrchestratorCallType } from "../../../shared/types";
 import {
@@ -92,16 +112,26 @@ import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createLaneService } from "../lanes/laneService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createPrService } from "../prs/prService";
+import type { createConflictService } from "../conflicts/conflictService";
+import type { createQueueLandingService } from "../prs/queueLandingService";
+import type { createQueueRehearsalService } from "../prs/queueRehearsalService";
 import { createMemoryService } from "../memory/memoryService";
 import { CoordinatorAgent } from "./coordinatorAgent";
 import { routeEventToCoordinator } from "./runtimeEventRouter";
 import {
   deleteCoordinatorCheckpoint,
+  getCoordinatorCheckpointPath,
+  getMissionStateDocumentPath,
   readCoordinatorCheckpoint,
   readMissionStateDocument,
   updateMissionStateDocument,
 } from "./missionStateDoc";
-import { getErrorMessage } from "../shared/utils";
+import { getErrorMessage, normalizeBranchName } from "../shared/utils";
+import {
+  buildCoordinatorPromptInspector,
+  buildPlanningPromptPreview,
+  buildWorkerPromptInspector,
+} from "./promptInspector";
 
 // ── Module imports (extracted from this file) ────────────────────
 import type {
@@ -155,6 +185,7 @@ import {
   parseQuestionLink,
   detectWaitingInputSignal,
   clipTextForContext,
+  parseJsonRecord,
   workerStateFromRuntimeSignal,
   parseTerminalRuntimeState,
   toOptionalString,
@@ -165,7 +196,6 @@ import {
   buildConflictResolutionInstructions,
   extractRunFailureMessage,
   filterExecutionSteps,
-  isDisplayOnlyTaskStep,
   runOrchestratorHookCommand,
   getModelCapabilities,
 } from "./orchestratorContext";
@@ -180,6 +210,8 @@ import {
 
 // Import from runtime event router module
 import {
+  onAgentChatEvent as onAgentChatEventCtx,
+  onSessionRuntimeSignal as onSessionRuntimeSignalCtx,
   pruneSessionRuntimeSignals as pruneSessionRuntimeSignalsCtx,
 } from "./runtimeEventRouter";
 
@@ -201,6 +233,7 @@ import {
   maybeDispatchTeammateIdleHookCtx,
 } from "./missionLifecycle";
 import type { HookDispatchDeps } from "./missionLifecycle";
+import { hasMaterialWorkerChatEvent } from "../../../shared/chatTranscript";
 
 // ── Intervention Prompt Builder (inlined from deleted planningPipeline module) ──
 
@@ -399,17 +432,12 @@ export function deriveMissionPhaseSyncTarget(graph: OrchestratorRunGraph): Phase
         currentPhaseExecutionSteps.length > 0
         && currentPhaseExecutionSteps.every((step) => TERMINAL_PHASE_STEP_STATUSES.has(step.status))
       ) {
-        const planningPhase = currentPhase.phaseKey.trim().toLowerCase() === "planning"
-          || currentPhase.name.trim().toLowerCase() === "planning";
         const currentPhaseCompleted = currentPhaseExecutionSteps.some((step) =>
           phaseStepCountsAsCompleteForSync(step, currentPhase)
         );
-        if (!planningPhase || currentPhaseCompleted) {
-          const nextPhase = configuredPhases[currentPhaseIndex + 1];
-          if (nextPhase) {
-            const sourceStepId = currentPhaseExecutionSteps[currentPhaseExecutionSteps.length - 1]?.id ?? null;
-            return buildPhaseSyncTargetFromCard(nextPhase, sourceStepId);
-          }
+        if (currentPhaseCompleted) {
+          const sourceStepId = currentPhaseExecutionSteps[currentPhaseExecutionSteps.length - 1]?.id ?? null;
+          return buildPhaseSyncTargetFromCard(currentPhase, sourceStepId);
         }
       }
     }
@@ -705,6 +733,9 @@ export function createAiOrchestratorService(args: {
   projectConfigService?: ReturnType<typeof createProjectConfigService> | null;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   prService?: ReturnType<typeof createPrService> | null;
+  conflictService?: ReturnType<typeof createConflictService> | null;
+  queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
+  queueRehearsalService?: ReturnType<typeof createQueueRehearsalService> | null;
   missionBudgetService?: import("./missionBudgetService").MissionBudgetService | null;
   projectRoot?: string;
   onThreadEvent?: (event: OrchestratorThreadEvent) => void;
@@ -721,6 +752,9 @@ export function createAiOrchestratorService(args: {
     projectConfigService,
     aiIntegrationService,
     prService,
+    conflictService,
+    queueLandingService,
+    queueRehearsalService,
     missionBudgetService,
     projectRoot,
     onThreadEvent,
@@ -750,7 +784,6 @@ export function createAiOrchestratorService(args: {
   const subagentCompletionRollupSent = new Set<string>();
   const validationSystemSignalDedupe = new Set<string>();
   const workerProgressChatState = new Map<string, { lastDigest: string | null; lastEmittedAtMs: number }>();
-  const coordinatorProgressChatState = new Map<string, { lastDigest: string | null; lastEmittedAtMs: number }>();
 
   // ── V2 Coordinator Agents (tool-based, replaces specialist calls) ──
   const coordinatorAgents = new Map<string, CoordinatorAgent>();
@@ -821,7 +854,6 @@ export function createAiOrchestratorService(args: {
     runRecoveryLoopStates.delete(runId);
     pendingIntegrations.delete(runId);
     teamRuntimeStates.delete(runId);
-    coordinatorProgressChatState.delete(runId);
     for (const key of milestoneReadyNotificationSignatures.keys()) {
       if (key.startsWith(`${runId}::`)) {
         milestoneReadyNotificationSignatures.delete(key);
@@ -877,8 +909,6 @@ export function createAiOrchestratorService(args: {
 
   const WORKER_PROGRESS_CHAT_MIN_INTERVAL_MS = 12_000;
   const WORKER_PROGRESS_CHAT_REPEAT_INTERVAL_MS = 45_000;
-  const COORDINATOR_PROGRESS_CHAT_MIN_INTERVAL_MS = 10_000;
-  const COORDINATOR_PROGRESS_CHAT_REPEAT_INTERVAL_MS = 30_000;
   const structuredThreadMessageIds = new Map<string, string>();
   const structuredChatSessions = new Set<string>();
 
@@ -957,7 +987,7 @@ export function createAiOrchestratorService(args: {
     switch (event.type) {
       case "text":
       case "reasoning":
-        return `${scopeKey}:${event.type}:${event.turnId ?? "turn"}:${event.itemId ?? "default"}`;
+        return `${scopeKey}:${event.type}:${event.turnId ?? "turn"}`;
       case "tool_call":
       case "tool_result":
         return `${scopeKey}:tool:${event.turnId ?? "turn"}:${event.itemId}`;
@@ -970,7 +1000,7 @@ export function createAiOrchestratorService(args: {
       case "approval_request":
         return `${scopeKey}:approval:${event.turnId ?? "turn"}:${event.itemId}`;
       case "activity":
-        return `${scopeKey}:activity:${event.turnId ?? "turn"}:${event.activity}`;
+        return `${scopeKey}:activity:${event.turnId ?? "turn"}:${event.activity}:${event.detail ?? ""}`;
       default:
         return null;
     }
@@ -1023,6 +1053,7 @@ export function createAiOrchestratorService(args: {
           sessionId,
           turnId: event.turnId ?? null,
           itemId: event.itemId,
+          parentItemId: event.parentItemId ?? null,
           tool: event.tool,
           args: event.args,
           status: "running",
@@ -1038,6 +1069,7 @@ export function createAiOrchestratorService(args: {
           sessionId,
           turnId: event.turnId ?? null,
           itemId: event.itemId,
+          parentItemId: event.parentItemId ?? null,
           tool: event.tool,
           result: event.result,
           status: event.status ?? "completed",
@@ -1274,7 +1306,9 @@ export function createAiOrchestratorService(args: {
     const summary = buildStructuredEventSummary(args.event);
     const metadata = buildStructuredEventMetadata(args.sessionId, args.event);
     const canAppendText =
-      args.event.type === "text"
+      args.event.type === "user_message"
+      || args.event.type === "activity"
+      || args.event.type === "text"
       || args.event.type === "reasoning";
     if (key) {
       const existingMessageId = structuredThreadMessageIds.get(key);
@@ -1317,9 +1351,6 @@ export function createAiOrchestratorService(args: {
   };
 
   const persistStructuredWorkerChatEvent = (envelope: AgentChatEventEnvelope): void => {
-    if (envelope.event.type === "user_message") {
-      return;
-    }
     const workerState = [...workerStates.values()].find((candidate) => candidate.sessionId === envelope.sessionId);
     if (!workerState) return;
     let graph: OrchestratorRunGraph;
@@ -1370,6 +1401,15 @@ export function createAiOrchestratorService(args: {
       attemptId: workerState.attemptId,
       laneId: step.laneId ?? null,
       event: envelope.event,
+    });
+    if (!hasMaterialWorkerChatEvent([envelope])) return;
+    if (workerState.state !== "initializing" && workerState.state !== "spawned") return;
+    upsertWorkerState(workerState.attemptId, {
+      stepId: workerState.stepId,
+      runId: workerState.runId,
+      sessionId: workerState.sessionId,
+      executorKind: workerState.executorKind,
+      state: "working",
     });
   };
 
@@ -1474,38 +1514,6 @@ export function createAiOrchestratorService(args: {
     return clipTextForContext(compact, 180);
   };
 
-  const maybeEmitCoordinatorProgressChatUpdate = (args: {
-    missionId: string;
-    runId: string;
-    message: string;
-  }): void => {
-    const content = normalizeCoordinatorUpdateForChat(args.message);
-    if (!content) return;
-
-    const digest = digestSignalText(content);
-    const nowMs = Date.now();
-    const lastState = coordinatorProgressChatState.get(args.runId) ?? {
-      lastDigest: null,
-      lastEmittedAtMs: 0,
-    };
-    const sameDigest = digest != null && lastState.lastDigest === digest;
-    const minIntervalMs = sameDigest
-      ? COORDINATOR_PROGRESS_CHAT_REPEAT_INTERVAL_MS
-      : COORDINATOR_PROGRESS_CHAT_MIN_INTERVAL_MS;
-    if (nowMs - lastState.lastEmittedAtMs < minIntervalMs) return;
-
-    coordinatorProgressChatState.set(args.runId, {
-      lastDigest: digest,
-      lastEmittedAtMs: nowMs,
-    });
-
-    emitOrchestratorMessage(args.missionId, content, null, {
-      role: "coordinator_v2",
-      runId: args.runId,
-      source: "coordinator_progress",
-    });
-  };
-
   const maybeEmitWorkerProgressChatUpdate = (args: {
     missionId: string;
     runId: string;
@@ -1583,6 +1591,7 @@ export function createAiOrchestratorService(args: {
     }
 
     try {
+      const coordinatorProjectId = resolveProjectIdForMission(missionId) ?? missionId;
       const modelId = modelConfigToServiceModel(modelConfig);
       const agent = new CoordinatorAgent({
         orchestratorService,
@@ -1593,8 +1602,9 @@ export function createAiOrchestratorService(args: {
         modelId,
         logger,
         db,
-        projectId: missionId,
+        projectId: coordinatorProjectId,
         projectRoot,
+        memoryService: plannerMemoryService,
         getMissionBudgetStatus: missionBudgetService
           ? async () => {
               try {
@@ -1606,9 +1616,6 @@ export function createAiOrchestratorService(args: {
           : undefined,
         onDagMutation: (event) => {
           if (onDagMutation) onDagMutation(event);
-        },
-        onCoordinatorMessage: (message) => {
-          maybeEmitCoordinatorProgressChatUpdate({ missionId, runId, message });
         },
         onCoordinatorEvent: (event) => {
           persistStructuredCoordinatorChatEvent({ missionId, runId, event });
@@ -1627,8 +1634,8 @@ export function createAiOrchestratorService(args: {
               runId,
               event: "mission_failed",
             });
+            finalizeRun({ runId, force: true });
           }
-          finalizeRun({ runId, force: true });
         },
         onHardCapTriggered: (detail) => {
           pauseOnBudgetHardCap(missionId, detail);
@@ -1641,8 +1648,8 @@ export function createAiOrchestratorService(args: {
             { budgetPressure: pressure, source: "budget_soft_warning" }
           );
         },
-        sendWorkerMessageToSession: async ({ sessionId, text }) =>
-          sendWorkerMessageToSessionWithStatusCtx(ctx, sessionId, text),
+        sendWorkerMessageToSession: async ({ sessionId, text, priority }) =>
+          sendWorkerMessageToSessionWithStatusCtx(ctx, sessionId, text, { priority }),
         enableCompaction: true,
         userRules: opts?.userRules,
         projectContext: opts?.projectContext,
@@ -1671,7 +1678,7 @@ export function createAiOrchestratorService(args: {
         const planningIsFirstPhase = initialCoordinatorPhase?.phaseKey.trim().toLowerCase() === "planning";
         agent.injectMessage(
           planningIsFirstPhase
-            ? `You have been activated. Your mission:\n\n${missionGoal}\n\nPlanning is the active first phase. If clarification is not required, immediately call get_project_context, spawn the planning worker in read-only mode, and then wait for its output instead of continuing to reason on your own.${laneContext}`
+            ? `You have been activated. Your mission:\n\n${missionGoal}\n\nPlanning is the active first phase. If no planning questions are needed, immediately call get_project_context, spawn the planning worker in read-only mode, and then wait for its output instead of continuing to reason on your own.${laneContext}`
             : `You have been activated. Your mission:\n\n${missionGoal}\n\nYou have full authority. Read the mission, create tasks, spawn workers, and complete the mission. Delegate quickly, then stay idle until a worker produces meaningful new information.${laneContext}`,
         );
       }
@@ -1830,6 +1837,11 @@ Check all worker statuses and continue managing the mission from here. Read work
         null,
         { role: "coordinator_v2", runId },
       );
+      resolveCoordinatorHealthInterventions({
+        runId,
+        note: `Coordinator recovered and resumed mission control on attempt ${nextAttempt}/${maxRecoveries}.`,
+        resolutionReason: "coordinator_recovered",
+      });
 
       return newAgent;
     } catch (error) {
@@ -1985,6 +1997,14 @@ Check all worker statuses and continue managing the mission from here. Read work
     patch: MissionStateDocumentPatch,
     options?: { graph?: OrchestratorRunGraph | null }
   ): void => {
+    void persistMissionStateDoc(runId, patch, options);
+  };
+
+  const persistMissionStateDoc = async (
+    runId: string,
+    patch: MissionStateDocumentPatch,
+    options?: { graph?: OrchestratorRunGraph | null }
+  ): Promise<void> => {
     if (!projectRoot) return;
     const graph =
       options?.graph ??
@@ -2009,7 +2029,7 @@ Check all worker statuses and continue managing the mission from here. Read work
           }
         : {}),
     };
-    void updateMissionStateDocument({
+    await updateMissionStateDocument({
       projectRoot,
       missionId,
       runId,
@@ -2023,6 +2043,546 @@ Check all worker statuses and continue managing the mission from here. Read work
         error: error instanceof Error ? error.message : String(error),
       });
     });
+  };
+
+  const NULL_FINALIZATION_FIELDS = {
+    targetBranch: null,
+    draft: null,
+    prDepth: null,
+    autoRebase: null,
+    ciGating: null,
+    autoLand: null,
+    rehearseQueue: null,
+    autoResolveConflicts: null,
+    archiveLaneOnLand: null,
+    mergeMethod: null,
+    conflictResolverModel: null,
+    reasoningEffort: null,
+  } as const;
+
+  const resolveMissionFinalizationPolicy = (strategy: PrStrategy | null | undefined): MissionFinalizationPolicy => {
+    if (!strategy || strategy.kind === "manual") {
+      return {
+        ...NULL_FINALIZATION_FIELDS,
+        kind: "manual",
+        description: "Manual PR handling. Execution completion satisfies the mission contract."
+      };
+    }
+    if (strategy.kind === "integration") {
+      return {
+        ...NULL_FINALIZATION_FIELDS,
+        kind: "integration",
+        targetBranch: strategy.targetBranch ?? null,
+        draft: strategy.draft ?? true,
+        prDepth: strategy.prDepth ?? "resolve-conflicts",
+        description: "Create a single integration PR as part of mission completion."
+      };
+    }
+    if (strategy.kind === "per-lane") {
+      return {
+        ...NULL_FINALIZATION_FIELDS,
+        kind: "per-lane",
+        targetBranch: strategy.targetBranch ?? null,
+        draft: strategy.draft ?? true,
+        prDepth: strategy.prDepth ?? null,
+        description: "Create one PR per lane before the mission is considered complete."
+      };
+    }
+    const autoLand = strategy.autoLand ?? false;
+    const rehearseQueue = strategy.rehearseQueue ?? false;
+    const autoResolveConflicts = strategy.autoResolveConflicts ?? false;
+    return {
+      kind: "queue",
+      targetBranch: strategy.targetBranch ?? null,
+      draft: strategy.draft ?? true,
+      prDepth: strategy.prDepth ?? null,
+      autoRebase: strategy.autoRebase ?? true,
+      ciGating: strategy.ciGating ?? false,
+      autoLand,
+      rehearseQueue,
+      autoResolveConflicts,
+      archiveLaneOnLand: strategy.archiveLaneOnLand ?? false,
+      mergeMethod: strategy.mergeMethod ?? "squash",
+      conflictResolverModel: strategy.conflictResolverModel ?? null,
+      reasoningEffort: strategy.reasoningEffort ?? null,
+      description: rehearseQueue
+        ? autoResolveConflicts
+          ? "Create queue PRs, rehearse the entire queue on an isolated scratch lane, and use the shared AI resolver before the mission is considered complete."
+          : "Create queue PRs and rehearse the entire queue on an isolated scratch lane before the mission is considered complete."
+        : autoLand
+        ? autoResolveConflicts
+          ? "Create queue PRs, auto-resolve merge conflicts, and land the queue before the mission is considered complete."
+          : "Create queue PRs and land the queue before the mission is considered complete."
+        : "Create queue PRs before the mission is considered complete."
+    };
+  };
+
+  const EVIDENCE_TO_CLOSEOUT_KEYS = new Set<string>([
+    "planning_document", "research_summary", "changed_files_summary",
+    "test_report", "review_summary", "risk_notes", "final_outcome_summary",
+    "screenshot", "browser_verification", "video_recording", "browser_trace", "console_logs",
+  ]);
+
+  const mapEvidenceRequirementToCloseoutKey = (
+    requirement: ValidationEvidenceRequirement
+  ): MissionCloseoutRequirementKey | null =>
+    EVIDENCE_TO_CLOSEOUT_KEYS.has(requirement) ? requirement as MissionCloseoutRequirementKey : null;
+
+  const buildMissionCloseoutRequirements = (args: {
+    mission: MissionDetail;
+    graph: OrchestratorRunGraph;
+    policy: MissionFinalizationPolicy;
+    finalization: MissionFinalizationState | null;
+    stateDoc: MissionStateDocument | null;
+  }): MissionCloseoutRequirement[] => {
+    const outcomeSummary = buildOutcomeSummary(args.graph).trim();
+    const modifiedFiles = args.stateDoc?.modifiedFiles ?? [];
+    const completionDiagnostics = args.graph.completionEvaluation?.diagnostics ?? [];
+    const explicitValidationVerdict = args.graph.completionEvaluation?.validation?.canComplete;
+    const validationPhaseSucceeded = completionDiagnostics.some(
+      (diagnostic) => diagnostic.phase === "validation" && diagnostic.code === "phase_succeeded"
+    );
+    const validationPhaseBlocked = completionDiagnostics.some(
+      (diagnostic) => diagnostic.phase === "validation" && diagnostic.blocking
+    );
+    const validationVerdict = typeof explicitValidationVerdict === "boolean"
+      ? explicitValidationVerdict
+      : validationPhaseSucceeded
+        ? true
+        : validationPhaseBlocked
+          ? false
+          : undefined;
+    const missionArtifacts = args.mission.artifacts ?? [];
+    const orchestratorArtifacts = orchestratorService.getArtifactsForMission(args.mission.id);
+    const closeoutRequirements = new Map<MissionCloseoutRequirementKey, MissionCloseoutRequirement>();
+    const artifactByKey = new Map<string, { artifactId: string | null; uri: string | null; detail: string | null; source: "declared" | "discovered" }>();
+
+    for (const artifact of missionArtifacts) {
+      artifactByKey.set(artifact.artifactType, {
+        artifactId: artifact.id,
+        uri: artifact.uri ?? null,
+        detail: artifact.description ?? null,
+        source: "declared",
+      });
+    }
+    for (const artifact of orchestratorArtifacts) {
+      artifactByKey.set(artifact.artifactKey, {
+        artifactId: artifact.id,
+        uri: artifact.kind === "file" || artifact.kind === "pr" || artifact.kind === "branch" ? artifact.value : null,
+        detail: typeof artifact.metadata.summary === "string"
+          ? artifact.metadata.summary
+          : typeof artifact.metadata.description === "string"
+            ? artifact.metadata.description
+            : null,
+        source: artifact.declared ? "declared" : "discovered",
+      });
+    }
+
+    const pushRequirement = (requirement: MissionCloseoutRequirement): void => {
+      closeoutRequirements.set(requirement.key, requirement);
+    };
+
+    pushRequirement({
+      key: "implementation_summary",
+      label: "Implementation summary",
+      required: true,
+      status: outcomeSummary.length > 0 ? "present" : "missing",
+      detail: outcomeSummary.length > 0 ? outcomeSummary : "Execution finished without a final implementation summary.",
+      artifactId: null,
+      uri: null,
+      source: "runtime",
+    });
+
+    pushRequirement({
+      key: "final_outcome_summary",
+      label: "Final outcome summary",
+      required: true,
+      status: outcomeSummary.length > 0 ? "present" : "missing",
+      detail: outcomeSummary.length > 0 ? outcomeSummary : "No final outcome summary has been recorded yet.",
+      artifactId: null,
+      uri: null,
+      source: "runtime",
+    });
+
+    pushRequirement({
+      key: "changed_files_summary",
+      label: "Changed files summary",
+      required: true,
+      status: modifiedFiles.length > 0 ? "present" : "waived",
+      detail: modifiedFiles.length > 0
+        ? `${modifiedFiles.length} file(s) changed: ${modifiedFiles.slice(0, 12).join(", ")}`
+        : "No file changes were reported for this mission.",
+      artifactId: null,
+      uri: null,
+      source: modifiedFiles.length > 0 ? "runtime" : "waiver",
+    });
+
+    const validationRequired = (args.mission.phaseConfiguration?.selectedPhases ?? [])
+      .some((phase) => phase.validationGate.required);
+    pushRequirement({
+      key: "validation_verdict",
+      label: "Validation verdict",
+      required: validationRequired,
+      status: validationRequired
+        ? typeof validationVerdict === "boolean"
+          ? "present"
+          : "missing"
+        : "waived",
+      detail: validationRequired
+        ? typeof validationVerdict === "boolean"
+          ? validationVerdict
+            ? "Validation passed."
+            : "Validation reported blockers."
+          : "Validation verdict has not been recorded yet."
+        : "No required validation gate was configured for this mission.",
+      artifactId: null,
+      uri: null,
+      source: validationRequired ? "runtime" : "waiver",
+    });
+
+    if (args.policy.kind !== "manual" && args.policy.kind !== "disabled") {
+      const reviewRequired = args.policy.prDepth === "open-and-comment";
+      const proposalOnly = args.policy.prDepth === "propose-only";
+      pushRequirement({
+        key: proposalOnly ? "proposal_url" : "pr_url",
+        label: proposalOnly ? "Proposal URL" : "PR URL",
+        required: true,
+        status: proposalOnly
+          ? args.finalization?.proposalUrl
+            ? "present"
+            : "missing"
+          : (args.finalization?.prUrls.length ?? 0) > 0
+            ? "present"
+            : "missing",
+        detail: proposalOnly
+          ? args.finalization?.proposalUrl ?? "A proposal URL has not been attached yet."
+          : args.finalization?.prUrls[0] ?? "A PR URL has not been attached yet.",
+        artifactId: null,
+        uri: proposalOnly ? args.finalization?.proposalUrl ?? null : args.finalization?.prUrls[0] ?? null,
+        source: "runtime",
+      });
+      if (reviewRequired) {
+        pushRequirement({
+          key: "review_summary",
+          label: "Review summary",
+          required: true,
+          status: args.finalization?.reviewStatus === "comment_posted" ? "present" : "missing",
+          detail: args.finalization?.reviewStatus === "comment_posted"
+            ? "ADE posted the configured review/finalization comment."
+            : "The configured review summary comment has not been posted yet.",
+          artifactId: null,
+          uri: args.finalization?.prUrls[0] ?? null,
+          source: "runtime",
+        });
+      }
+    }
+
+    const requiredEvidence = new Set<MissionCloseoutRequirementKey>();
+    for (const phase of args.mission.phaseConfiguration?.selectedPhases ?? []) {
+      if (!phase.validationGate.required) continue;
+      for (const evidenceRequirement of phase.validationGate.evidenceRequirements ?? []) {
+        const requirementKey = mapEvidenceRequirementToCloseoutKey(evidenceRequirement);
+        if (requirementKey) requiredEvidence.add(requirementKey);
+      }
+    }
+
+    for (const requirementKey of requiredEvidence) {
+      if (closeoutRequirements.has(requirementKey)) continue;
+      const artifact = artifactByKey.get(requirementKey) ?? null;
+      pushRequirement({
+        key: requirementKey,
+        label: requirementKey.replace(/_/g, " "),
+        required: true,
+        status: artifact ? "present" : "missing",
+        detail: artifact?.detail ?? (artifact?.uri ?? `Required evidence "${requirementKey.replace(/_/g, " ")}" has not been attached yet.`),
+        artifactId: artifact?.artifactId ?? null,
+        uri: artifact?.uri ?? null,
+        source: artifact?.source ?? "declared",
+      });
+    }
+
+    return [...closeoutRequirements.values()];
+  };
+
+  const updateMissionFinalizationState = async (
+    runId: string,
+    state: Partial<MissionFinalizationState> & { policy: MissionFinalizationPolicy; status: MissionFinalizationState["status"] },
+    options?: { graph?: OrchestratorRunGraph | null }
+  ): Promise<MissionFinalizationState | null> => {
+    const now = nowIso();
+    const stateDoc = projectRoot
+      ? await readMissionStateDocument({ projectRoot, runId }).catch(() => null)
+      : null;
+    const previous = stateDoc?.finalization ?? null;
+    const next: MissionFinalizationState = {
+      policy: state.policy,
+      status: state.status,
+      executionComplete: state.executionComplete ?? previous?.executionComplete ?? false,
+      contractSatisfied: state.contractSatisfied ?? previous?.contractSatisfied ?? false,
+      blocked: state.blocked ?? previous?.blocked ?? false,
+      blockedReason: state.blockedReason ?? previous?.blockedReason ?? null,
+      summary: state.summary ?? previous?.summary ?? null,
+      detail: state.detail ?? previous?.detail ?? null,
+      resolverJobId: state.resolverJobId ?? previous?.resolverJobId ?? null,
+      integrationLaneId: state.integrationLaneId ?? previous?.integrationLaneId ?? null,
+      queueGroupId: state.queueGroupId ?? previous?.queueGroupId ?? null,
+      queueId: state.queueId ?? previous?.queueId ?? null,
+      queueRehearsalId: state.queueRehearsalId ?? previous?.queueRehearsalId ?? null,
+      scratchLaneId: state.scratchLaneId ?? previous?.scratchLaneId ?? null,
+      activePrId: state.activePrId ?? previous?.activePrId ?? null,
+      waitReason: state.waitReason ?? previous?.waitReason ?? null,
+      proposalUrl: state.proposalUrl ?? previous?.proposalUrl ?? null,
+      prUrls: state.prUrls ?? previous?.prUrls ?? [],
+      reviewStatus: state.reviewStatus ?? previous?.reviewStatus ?? null,
+      mergeReadiness: state.mergeReadiness ?? previous?.mergeReadiness ?? null,
+      requirements: state.requirements ?? previous?.requirements ?? [],
+      warnings: state.warnings ?? previous?.warnings ?? [],
+      updatedAt: now,
+      startedAt: state.startedAt ?? previous?.startedAt ?? now,
+      completedAt: state.completedAt ?? previous?.completedAt ?? null,
+    };
+    await persistMissionStateDoc(runId, { finalization: next }, options);
+    return next;
+  };
+
+  const updateMissionCompletionFromStateDoc = async (args: {
+    runId: string;
+    graph: OrchestratorRunGraph;
+    mission: MissionDetail;
+    finalization: MissionFinalizationState | null;
+  }): Promise<void> => {
+    if (!projectRoot || !args.finalization) return;
+    const stateDoc = await readMissionStateDocument({ projectRoot, runId: args.runId }).catch(() => null);
+    const closeoutRequirements = buildMissionCloseoutRequirements({
+      mission: args.mission,
+      graph: args.graph,
+      policy: args.finalization.policy,
+      finalization: args.finalization,
+      stateDoc,
+    });
+    const unmetRequirements = closeoutRequirements.filter((requirement) =>
+      requirement.required && requirement.status !== "present" && requirement.status !== "waived",
+    );
+    const nextFinalization = await updateMissionFinalizationState(args.runId, {
+      policy: args.finalization.policy,
+      status: unmetRequirements.length > 0 && args.finalization.status === "completed"
+        ? "finalizing"
+        : args.finalization.status,
+      executionComplete: true,
+      contractSatisfied: args.finalization.contractSatisfied && unmetRequirements.length === 0,
+      requirements: closeoutRequirements,
+      summary: unmetRequirements.length > 0
+        ? "Execution finished, but the closeout contract is still incomplete."
+        : args.finalization.summary,
+      detail: unmetRequirements.length > 0
+        ? unmetRequirements.map((requirement) => requirement.label).join(", ")
+        : args.finalization.detail,
+      completedAt: unmetRequirements.length > 0 ? null : args.finalization.completedAt,
+    }, { graph: args.graph });
+    if (!nextFinalization) return;
+    if (nextFinalization.status === "finalization_failed") {
+      transitionMissionStatus(args.mission.id, "failed", {
+        lastError: nextFinalization.blockedReason ?? nextFinalization.detail ?? "Mission finalization failed.",
+      });
+      return;
+    }
+    if (nextFinalization.contractSatisfied) {
+      transitionMissionStatus(args.mission.id, "completed", {
+        outcomeSummary: buildOutcomeSummary(args.graph),
+        lastError: null,
+      });
+    }
+  };
+
+  const setCoordinatorAvailability = (
+    runId: string,
+    availability: MissionCoordinatorAvailability,
+    options?: { graph?: OrchestratorRunGraph | null }
+  ): void => {
+    updateMissionStateDoc(runId, { coordinatorAvailability: availability }, options);
+  };
+
+  const onQueueLandingStateChanged = async (queueState: import("../../../shared/types").QueueLandingState): Promise<void> => {
+    const runId = queueState.config.originRunId ?? null;
+    const missionId = queueState.config.originMissionId ?? (runId ? getMissionIdForRun(runId) : null);
+    if (!runId || !missionId) return;
+
+    const mission = missionService.get(missionId);
+    if (!mission) return;
+
+    let graph: OrchestratorRunGraph;
+    try {
+      graph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+    } catch {
+      return;
+    }
+
+    const prUrls = queueState.entries
+      .map((entry) => entry.githubUrl ?? null)
+      .filter((value): value is string => Boolean(value));
+
+    let status: MissionFinalizationState["status"] = "landing_queue";
+    let blocked = false;
+    let blockedReason: string | null = null;
+    let mergeReadiness: string | null = null;
+    let contractSatisfied = false;
+    let summary = "Queue finalization is still running.";
+    let detail = queueState.lastError ?? null;
+
+    if (queueState.state === "completed") {
+      status = "completed";
+      contractSatisfied = true;
+      mergeReadiness = "queue_landed";
+      summary = "Execution and queue landing completed.";
+      detail = `Queue ${queueState.groupName ?? queueState.groupId} landed ${queueState.entries.filter((entry) => entry.state === "landed").length} PR(s).`;
+    } else if (queueState.state === "landing") {
+      if (queueState.activeResolverRunId) {
+        status = "resolving_queue_conflicts";
+        summary = "Queue landing is resolving merge conflicts before continuing.";
+      } else {
+        status = "landing_queue";
+        summary = "Queue landing is progressing through queued PRs.";
+      }
+    } else if (queueState.state === "paused") {
+      if (queueState.waitReason === "ci") {
+        status = "waiting_for_green";
+        mergeReadiness = "waiting_for_green";
+        summary = "Queue landing is waiting for CI before it can continue.";
+      } else if (queueState.waitReason === "review") {
+        status = "awaiting_operator_review";
+        mergeReadiness = "operator_review_required";
+        summary = "Queue landing is waiting for operator review before it can continue.";
+      } else if (queueState.waitReason === "manual") {
+        status = "finalizing";
+        blocked = true;
+        blockedReason = queueState.lastError ?? "Queue finalization is paused and needs operator intervention.";
+        summary = "Queue finalization is paused pending operator intervention.";
+      } else {
+        status = "finalization_failed";
+        blocked = true;
+        blockedReason = queueState.lastError ?? "Queue finalization failed.";
+        summary = "Queue finalization failed.";
+      }
+    } else if (queueState.state === "cancelled") {
+      status = "finalization_failed";
+      blocked = true;
+      blockedReason = queueState.lastError ?? "Queue finalization was cancelled.";
+      summary = "Queue finalization was cancelled.";
+    }
+
+    const finalization = await updateMissionFinalizationState(runId, {
+      policy: resolveMissionFinalizationPolicy((resolveActivePhaseSettings(missionId).settings.prStrategy ?? { kind: "manual" }) as PrStrategy),
+      status,
+      executionComplete: true,
+      contractSatisfied,
+      blocked,
+      blockedReason,
+      summary,
+      detail,
+      resolverJobId: queueState.activeResolverRunId,
+      queueGroupId: queueState.groupId,
+      queueId: queueState.queueId,
+      activePrId: queueState.activePrId,
+      waitReason: queueState.waitReason,
+      prUrls,
+      mergeReadiness,
+      completedAt: contractSatisfied ? queueState.completedAt : null,
+      warnings: [],
+    }, { graph });
+
+    if (finalization) {
+      await updateMissionCompletionFromStateDoc({
+        runId,
+        graph,
+        mission,
+        finalization,
+      });
+    }
+  };
+
+  const onQueueRehearsalStateChanged = async (rehearsalState: import("../../../shared/types").QueueRehearsalState): Promise<void> => {
+    const runId = rehearsalState.config.originRunId ?? null;
+    const missionId = rehearsalState.config.originMissionId ?? (runId ? getMissionIdForRun(runId) : null);
+    if (!runId || !missionId) return;
+
+    const mission = missionService.get(missionId);
+    if (!mission) return;
+
+    let graph: OrchestratorRunGraph;
+    try {
+      graph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+    } catch {
+      return;
+    }
+
+    const prUrls = rehearsalState.entries
+      .map((entry) => entry.githubUrl ?? null)
+      .filter((value): value is string => Boolean(value));
+
+    let status: MissionFinalizationState["status"] = "rehearsing_queue";
+    let blocked = false;
+    let blockedReason: string | null = null;
+    let mergeReadiness: string | null = null;
+    let contractSatisfied = false;
+    let summary = "Queue rehearsal is still running.";
+    let detail = rehearsalState.lastError ?? null;
+
+    if (rehearsalState.state === "completed") {
+      status = "completed";
+      contractSatisfied = true;
+      mergeReadiness = "queue_rehearsed";
+      const resolvedCount = rehearsalState.entries.filter((entry) => entry.state === "resolved").length;
+      summary = resolvedCount > 0
+        ? "Execution finished and the full queue rehearsal completed with AI-assisted conflict fixes."
+        : "Execution finished and the full queue rehearsal completed cleanly.";
+      detail = `Rehearsed ${rehearsalState.entries.length} queue PR(s) on scratch lane ${rehearsalState.scratchLaneId ?? "unknown"}.`;
+    } else if (rehearsalState.state === "running") {
+      status = rehearsalState.activeResolverRunId ? "resolving_queue_conflicts" : "rehearsing_queue";
+      summary = rehearsalState.activeResolverRunId
+        ? "Queue rehearsal is resolving simulated conflicts before it can continue."
+        : "Queue rehearsal is simulating queue landing on an isolated scratch lane.";
+    } else if (rehearsalState.state === "paused") {
+      status = "finalizing";
+      blocked = true;
+      blockedReason = rehearsalState.lastError ?? "Queue rehearsal paused and needs operator intervention.";
+      summary = "Queue rehearsal is paused pending operator intervention.";
+    } else if (rehearsalState.state === "cancelled" || rehearsalState.state === "failed") {
+      status = "finalization_failed";
+      blocked = true;
+      blockedReason = rehearsalState.lastError ?? "Queue rehearsal failed.";
+      summary = rehearsalState.state === "cancelled"
+        ? "Queue rehearsal was cancelled."
+        : "Queue rehearsal failed.";
+    }
+
+    const finalization = await updateMissionFinalizationState(runId, {
+      policy: resolveMissionFinalizationPolicy((resolveActivePhaseSettings(missionId).settings.prStrategy ?? { kind: "manual" }) as PrStrategy),
+      status,
+      executionComplete: true,
+      contractSatisfied,
+      blocked,
+      blockedReason,
+      summary,
+      detail,
+      resolverJobId: rehearsalState.activeResolverRunId,
+      queueGroupId: rehearsalState.groupId,
+      queueRehearsalId: rehearsalState.rehearsalId,
+      scratchLaneId: rehearsalState.scratchLaneId,
+      activePrId: rehearsalState.activePrId,
+      prUrls,
+      mergeReadiness,
+      completedAt: contractSatisfied ? rehearsalState.completedAt : null,
+      warnings: [],
+    }, { graph });
+
+    if (finalization) {
+      await updateMissionCompletionFromStateDoc({
+        runId,
+        graph,
+        mission,
+        finalization,
+      });
+    }
   };
 
   const resolveMissionStateStepPhase = (step: OrchestratorStep): string => {
@@ -2039,7 +2599,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     stepId: string
   ): MissionStateStepOutcome | null => {
     const step = graph.steps.find((entry) => entry.id === stepId) ?? null;
-    if (!step || isDisplayOnlyTaskStep(step)) return null;
+    if (!step) return null;
 
     const attemptsForStep = graph.attempts
       .filter((attempt) => attempt.stepId === step.id)
@@ -2113,18 +2673,95 @@ Check all worker statuses and continue managing the mission from here. Read work
     };
   };
 
-  /**
-   * Resolve the primary lane ID. Returns null if lane service is unavailable.
-   */
-  const resolvePrimaryLaneId = async (): Promise<string | null> => {
-    if (!laneService || typeof laneService.list !== "function") return null;
-    const lanes = await laneService.list({ includeArchived: false });
-    const primary = lanes.find((lane) => lane.laneType === "primary") ?? lanes[0] ?? null;
-    return primary?.id?.trim() || null;
+  const resolveProjectIdForMission = (missionId?: string | null): string | null => {
+    const normalizedMissionId = toOptionalString(missionId);
+    if (normalizedMissionId) {
+      const missionProjectId =
+        toOptionalString(
+          db.get<{ project_id: string | null }>(
+            `select project_id from missions where id = ? limit 1`,
+            [normalizedMissionId],
+          )?.project_id,
+        );
+      if (missionProjectId) return missionProjectId;
+    }
+
+    return toOptionalString(
+      db.get<{ id: string | null }>(
+        `
+          select id
+          from projects
+          order by datetime(last_opened_at) desc, datetime(created_at) desc, id asc
+          limit 1
+        `,
+      )?.id,
+    );
   };
 
   /**
-   * Create a lane branching from the primary lane.
+   * Resolve the primary lane ID. Returns null if lane service is unavailable.
+   */
+  const resolvePrimaryLaneId = async (missionId?: string | null): Promise<string | null> => {
+    const effectiveProjectId = resolveProjectIdForMission(missionId);
+    if (!effectiveProjectId) return null;
+    if (laneService && typeof laneService.list === "function") {
+      const lanes = await laneService.list({ includeArchived: false });
+      const primary = lanes.find((lane) => lane.laneType === "primary") ?? lanes[0] ?? null;
+      return primary?.id?.trim() || null;
+    }
+    const laneRow = db.get<{ id: string | null }>(
+      `
+        select id
+        from lanes
+        where project_id = ?
+          and archived_at is null
+        order by case when lane_type = 'primary' then 0 else 1 end, created_at asc, id asc
+        limit 1
+      `,
+      [effectiveProjectId]
+    );
+    return toOptionalString(laneRow?.id);
+  };
+
+  const resolveMissionBaseLaneId = async (missionId?: string | null): Promise<string | null> => {
+    const normalizedMissionId = toOptionalString(missionId);
+    if (normalizedMissionId) {
+      const selectedLaneId = toOptionalString(missionService.get(normalizedMissionId)?.laneId);
+      if (selectedLaneId) return selectedLaneId;
+    }
+    return await resolvePrimaryLaneId(missionId);
+  };
+
+  const resolveLaneBranchName = async (laneId?: string | null): Promise<string | null> => {
+    const normalizedLaneId = toOptionalString(laneId);
+    if (!normalizedLaneId) return null;
+    if (laneService && typeof laneService.list === "function") {
+      const lanes = await laneService.list({ includeArchived: false });
+      const lane = lanes.find((entry) => entry.id === normalizedLaneId) ?? null;
+      if (lane) {
+        return normalizeBranchName(lane.branchRef || lane.baseRef || "") || null;
+      }
+    }
+    const laneRow = db.get<{ branch_ref: string | null; base_ref: string | null }>(
+      `
+        select branch_ref, base_ref
+        from lanes
+        where id = ?
+        limit 1
+      `,
+      [normalizedLaneId]
+    );
+    return normalizeBranchName(laneRow?.branch_ref ?? laneRow?.base_ref ?? "") || null;
+  };
+
+  const resolveMissionBaseBranch = async (missionId?: string | null): Promise<string | null> => {
+    const baseLaneId = await resolveMissionBaseLaneId(missionId);
+    return await resolveLaneBranchName(baseLaneId);
+  };
+
+  /**
+   * Create a lane branching from the mission's selected base lane.
+   * Falls back to primary when the mission has no explicit base lane.
    * Used for both initial mission lane creation and dynamic provisioning.
    * Returns { laneId, name } or null if unavailable.
    */
@@ -2133,7 +2770,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     opts: { description?: string; folder?: string; missionId: string },
   ): Promise<{ laneId: string; name: string } | null> => {
     if (!laneService) return null;
-    const baseLaneId = await resolvePrimaryLaneId();
+    const baseLaneId = await resolveMissionBaseLaneId(opts.missionId);
     if (!baseLaneId) {
       logger.warn("ai_orchestrator.lane_create_skip", { missionId: opts.missionId, reason: "no_base_lane" });
       return null;
@@ -2889,12 +3526,22 @@ Check all worker statuses and continue managing the mission from here. Read work
 
       updateAttemptStagnationTracker(attempt.attemptId, signal.lastOutputPreview);
       const previousWorkerState = workerStates.get(attempt.attemptId)?.state ?? null;
+      const attemptMetadata = parseJsonRecord(attempt.attemptMetadataJson);
+      const workerSessionKind = typeof attemptMetadata?.workerSessionKind === "string"
+        ? attemptMetadata.workerSessionKind.trim()
+        : "";
+      const effectiveRuntimeWorkerState =
+        workerSessionKind === "managed_chat"
+        && !structuredChatSessions.has(sessionId)
+        && runtimeWorkerState === "working"
+          ? "initializing"
+          : runtimeWorkerState;
       upsertWorkerState(attempt.attemptId, {
         runId: attempt.runId,
         stepId: attempt.stepId,
         sessionId,
         executorKind: attempt.executorKind,
-        state: runtimeWorkerState
+        state: effectiveRuntimeWorkerState
       });
       if (attempt.executorKind !== "manual") {
         maybeDispatchTeammateIdleHook({
@@ -2903,7 +3550,7 @@ Check all worker statuses and continue managing the mission from here. Read work
           attemptId: attempt.attemptId,
           sessionId,
           previousState: previousWorkerState,
-          nextState: runtimeWorkerState,
+          nextState: effectiveRuntimeWorkerState,
           reason: waitingForInput ? "waiting_input_signal" : "runtime_idle_signal",
           triggerSource: "runtime_signal",
           runtimeState: signal.runtimeState,
@@ -3289,6 +3936,17 @@ Check all worker statuses and continue managing the mission from here. Read work
             runtimeState: runtimeStateForWorker,
             waitingForInput
           });
+          const attemptMetadata = asRecord(attempt.metadata);
+          const workerSessionKind = typeof attemptMetadata?.workerSessionKind === "string"
+            ? attemptMetadata.workerSessionKind.trim()
+            : "";
+          const effectiveNextWorkerState =
+            workerSessionKind === "managed_chat"
+            && attempt.executorSessionId
+            && !structuredChatSessions.has(attempt.executorSessionId)
+            && nextWorkerState === "working"
+              ? "initializing"
+              : nextWorkerState;
           const stagnationSnapshot = updateAttemptStagnationTracker(attempt.id, effectivePreview);
 
           const previousWorkerState = workerStates.get(attempt.id)?.state ?? null;
@@ -3297,7 +3955,7 @@ Check all worker statuses and continue managing the mission from here. Read work
             stepId: step.id,
             sessionId: attempt.executorSessionId,
             executorKind: attempt.executorKind,
-            state: nextWorkerState
+            state: effectiveNextWorkerState
           });
           maybeDispatchTeammateIdleHook({
             runId: run.id,
@@ -3305,7 +3963,7 @@ Check all worker statuses and continue managing the mission from here. Read work
             attemptId: attempt.id,
             sessionId: attempt.executorSessionId ?? null,
             previousState: previousWorkerState,
-            nextState: nextWorkerState,
+            nextState: effectiveNextWorkerState,
             reason: waitingForInput ? "waiting_input_sweep" : "idle_like_sweep",
             triggerSource: "health_sweep",
             runtimeState: sessionSignal?.runtimeState ?? runtimeStateForWorker,
@@ -3637,83 +4295,47 @@ Check all worker statuses and continue managing the mission from here. Read work
    * Validates that all tasks are done, no running attempts remain, and no blockers exist.
    */
   const finalizeRun = (finalizeArgs: FinalizeRunArgs): FinalizeRunResult => {
-    const { runId, force } = finalizeArgs;
+    const { runId } = finalizeArgs;
     const graph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
     const missionId = graph.run.missionId;
 
     // The act of calling finalizeRun IS the completion request
     updateTeamRuntimePhase(runId, "executing", { completionRequested: true });
-
-    const blockers: RunCompletionBlocker[] = [];
-
-    // Hard gate: can't complete while workers are still executing
-    const runningAttempts = graph.attempts.filter((a) => a.status === "running");
-    if (runningAttempts.length > 0) {
-      blockers.push({ code: "running_attempts", message: `${runningAttempts.length} attempts still running` });
-    }
-
-    // Soft gate: tasks not done — only block if NOT force (coordinator already skipped remaining steps)
-    if (!force) {
-      const notDoneSteps = graph.steps.filter(
-        (s) =>
-          s.status !== "succeeded" &&
-          s.status !== "skipped" &&
-          s.status !== "superseded" &&
-          s.status !== "canceled" &&
-          s.status !== "failed"
-      );
-      if (notDoneSteps.length > 0) {
-        blockers.push({ code: "claimed_tasks", message: `${notDoneSteps.length} tasks not yet complete` });
-      }
-    }
-
-    // completion_not_requested gate removed — calling finalizeRun IS the request
-
-    if (blockers.length > 0 && !force) {
+    const finalized = orchestratorService.finalizeRun(finalizeArgs);
+    if (!finalized.finalized) {
       updateTeamRuntimePhase(runId, "executing", {
         completionRequested: true,
         completionValidated: false,
-        lastValidationError: blockers.map((b) => b.message).join("; "),
+        lastValidationError: finalized.blockers.join("; ") || null,
       });
-      return { finalized: false, blockers: blockers.map((b) => b.message), finalStatus: "active" };
+      return finalized;
     }
 
-    // When force is true, only running_attempts is a hard gate
-    if (force && runningAttempts.length > 0) {
-      return { finalized: false, blockers: blockers.map((b) => b.message), finalStatus: "active" };
-    }
-
-    // Determine final status
-    const failedSteps = graph.steps.filter((s) => s.status === "failed");
-    const allSucceededOrSkipped = graph.steps.every(
-      (s) => s.status === "succeeded" || s.status === "skipped" || s.status === "superseded" || s.status === "canceled"
-    );
-    let finalStatus: OrchestratorRunStatus;
-    if (allSucceededOrSkipped) {
-      finalStatus = "succeeded";
-    } else if (failedSteps.length > 0 && failedSteps.length < graph.steps.length) {
-      finalStatus = "failed";
-    } else {
-      finalStatus = "failed";
-    }
-
-    // Transition run
+    const finalStatus = finalized.finalStatus;
     const ts = nowIso();
-    db.run(
-      `update orchestrator_runs set status = ?, completed_at = ?, updated_at = ? where id = ?`,
-      [finalStatus, ts, ts, runId]
-    );
     updateTeamRuntimePhase(runId, "done", {
       completionRequested: true,
       completionValidated: true,
+      lastValidationError: null,
     });
 
-    // End coordinator
-    endCoordinatorAgentV2(runId);
-    cleanupCoordinatorCheckpointFile(runId, "finalize_run");
+    const keepCoordinatorOnline = finalStatus === "succeeded";
+    if (!keepCoordinatorOnline) {
+      endCoordinatorAgentV2(runId);
+      cleanupCoordinatorCheckpointFile(runId, "finalize_run");
+    } else {
+      setCoordinatorAvailability(runId, {
+        available: true,
+        mode: "consult_only",
+        summary: "Mission execution is complete. The coordinator remains available for follow-up questions and continuation requests.",
+        detail: "Post-completion messages stay in consult mode. New implementation work should create an explicit continuation.",
+        updatedAt: ts,
+      }, { graph });
+    }
+    const finalGraph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
 
     const buildRecoveryHandoffPayload = () => {
-      const doneSteps = graph.steps
+      const doneSteps = finalGraph.steps
         .filter((step) => step.status === "succeeded" || step.status === "skipped" || step.status === "superseded" || step.status === "canceled")
         .map((step) => ({
           stepId: step.id,
@@ -3722,7 +4344,7 @@ Check all worker statuses and continue managing the mission from here. Read work
           status: step.status,
           laneId: step.laneId
         }));
-      const remainingSteps = graph.steps
+      const remainingSteps = finalGraph.steps
         .filter((step) => step.status !== "succeeded" && step.status !== "skipped" && step.status !== "superseded" && step.status !== "canceled")
         .map((step) => ({
           stepId: step.id,
@@ -3731,14 +4353,14 @@ Check all worker statuses and continue managing the mission from here. Read work
           status: step.status,
           laneId: step.laneId
         }));
-      const laneMap = graph.steps.reduce<Record<string, string[]>>((acc, step) => {
+      const laneMap = finalGraph.steps.reduce<Record<string, string[]>>((acc, step) => {
         const laneKey = step.laneId ?? "unassigned";
         const list = acc[laneKey] ?? [];
         list.push(step.stepKey);
         acc[laneKey] = list;
         return acc;
       }, {});
-      const validations = graph.runtimeEvents
+      const validations = finalGraph.runtimeEvents
         ?.filter((event) => event.eventType === "validation_report")
         .slice(-25)
         .map((event) => ({
@@ -3783,9 +4405,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     };
 
     // Transition mission status
-    if (finalStatus === "succeeded") {
-      transitionMissionStatus(missionId, "completed");
-    } else {
+    if (finalStatus !== "succeeded") {
       persistRecoveryHandoff("recovery_handoff");
       transitionMissionStatus(missionId, "failed");
     }
@@ -3823,8 +4443,14 @@ Check all worker statuses and continue managing the mission from here. Read work
       });
     }
 
-    logger.info("ai_orchestrator.run_finalized", { runId, missionId, finalStatus, blockerCount: blockers.length, retrospectiveGenerated: Boolean(retrospective) });
-    return { finalized: true, blockers: [], finalStatus };
+    logger.info("ai_orchestrator.run_finalized", {
+      runId,
+      missionId,
+      finalStatus,
+      blockerCount: finalized.blockers.length,
+      retrospectiveGenerated: Boolean(retrospective)
+    });
+    return finalized;
   };
 
   /**
@@ -3988,10 +4614,6 @@ Check all worker statuses and continue managing the mission from here. Read work
     // Route user messages directly to the coordinator agent (tool-based)
     const runs = orchestratorService.listRuns({ missionId: chatArgs.missionId });
     const latestRun = runs[0] ?? null;
-    if (latestRun && (latestRun.status === "succeeded" || latestRun.status === "failed" || latestRun.status === "canceled")) {
-      // Mission run already closed — do not emit post-terminal fallback chat responses.
-      return;
-    }
     const activeRun = runs.find((r) => r.status === "active" || r.status === "bootstrapping" || r.status === "queued" || r.status === "paused");
     if (activeRun) {
       const routed = routeUserMessageToCoordinator(chatArgs.missionId, activeRun.id, latestUserMessage);
@@ -4003,6 +4625,16 @@ Check all worker statuses and continue managing the mission from here. Read work
         );
         return;
       }
+    }
+
+    if (latestRun && (latestRun.status === "succeeded" || latestRun.status === "failed" || latestRun.status === "canceled")) {
+      const coordAgent = coordinatorAgents.get(latestRun.id);
+      if (coordAgent?.isAlive) {
+        const consultMessage = `[FOLLOW-UP CONSULT ONLY]\nThe mission run is already terminal (${latestRun.status}). Answer questions, explain decisions, and recommend next steps. Do not mutate the completed run. If more implementation work is requested, instruct the operator to start a continuation.\n\nUser message:\n${latestUserMessage}`;
+        coordAgent.injectMessage(consultMessage);
+        return;
+      }
+      return;
     }
 
     emitOrchestratorMessage(
@@ -4132,7 +4764,6 @@ Check all worker statuses and continue managing the mission from here. Read work
             const resultPreview = latestAttempt?.resultEnvelope?.summary?.slice(0, 200) ?? "";
             const errorMsg = latestAttempt?.errorMessage?.slice(0, 150) ?? "";
             let line = `  ${s.stepKey} [${s.status}] "${s.title}"`;
-            if (isDisplayOnlyTaskStep(s)) line += " plan_only";
             if (deps.length) line += ` deps:[${deps.join(",")}]`;
             if (resultPreview) line += ` result:"${resultPreview}"`;
             if (errorMsg && s.status === "failed") line += ` error:"${errorMsg}"`;
@@ -4669,10 +5300,22 @@ Check all worker statuses and continue managing the mission from here. Read work
       const now = nowIso();
       for (const downstream of downstreamSteps) {
         const meta = isRecord(downstream.metadata) ? { ...downstream.metadata } : {};
-        const existing = Array.isArray(meta.handoffSummaries) ? [...meta.handoffSummaries as unknown[]] : [];
+        const handoffKey = `${completedStep.id}:${args.digest.attemptId}`;
+        const existing = Array.isArray(meta.handoffSummaries)
+          ? [...meta.handoffSummaries as unknown[]].filter((entry) => typeof entry === "string" && entry.trim().length > 0)
+          : [];
+        const existingKeys = Array.isArray(meta.handoffSummaryKeys)
+          ? [...meta.handoffSummaryKeys as unknown[]].filter((entry) => typeof entry === "string" && entry.trim().length > 0)
+          : [];
+        const alreadyApplied = existingKeys.includes(handoffKey) || existing.includes(handoffText);
+        if (alreadyApplied) {
+          continue;
+        }
         existing.push(handoffText);
+        existingKeys.push(handoffKey);
         // Cap at 10 handoff entries to prevent prompt bloat
         meta.handoffSummaries = existing.slice(-10);
+        meta.handoffSummaryKeys = existingKeys.slice(-10);
         db.run(
           `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ? and run_id = ?`,
           [JSON.stringify(meta), now, downstream.id, args.runId]
@@ -4980,6 +5623,67 @@ Check all worker statuses and continue managing the mission from here. Read work
   const transitionMissionStatus = (missionId: string, next: MissionStatus, args?: { outcomeSummary?: string | null; lastError?: string | null }) =>
     transitionMissionStatusCtx(ctx, missionId, next, args);
 
+  const COORDINATOR_FAILURE_REASON_CODES = new Set([
+    "coordinator_unavailable",
+    "coordinator_recovery_failed",
+  ]);
+
+  const resolveCoordinatorHealthInterventions = (args: {
+    runId: string;
+    note: string;
+    resolutionReason: "coordinator_recovered" | "run_terminal";
+  }): number => {
+    const missionId = getMissionIdForRun(args.runId);
+    if (!missionId) return 0;
+    const mission = missionService.get(missionId);
+    if (!mission) return 0;
+
+    let resolved = 0;
+    const resolvedAt = nowIso();
+
+    for (const intervention of mission.interventions) {
+      if (intervention.status !== "open" || intervention.interventionType !== "failed_step") continue;
+      const metadata = isRecord(intervention.metadata) ? intervention.metadata : null;
+      const reasonCode = typeof metadata?.reasonCode === "string" ? metadata.reasonCode.trim() : "";
+      const interventionRunId = typeof metadata?.runId === "string" ? metadata.runId.trim() : "";
+      if (!COORDINATOR_FAILURE_REASON_CODES.has(reasonCode)) continue;
+      if (interventionRunId.length > 0 && interventionRunId !== args.runId) continue;
+
+      try {
+        missionService.resolveIntervention({
+          missionId,
+          interventionId: intervention.id,
+          status: "resolved",
+          note: args.note,
+        });
+        recordRuntimeEvent({
+          runId: args.runId,
+          stepId: typeof metadata?.stepId === "string" ? metadata.stepId : null,
+          attemptId: typeof metadata?.attemptId === "string" ? metadata.attemptId : null,
+          sessionId: typeof metadata?.sessionId === "string" ? metadata.sessionId : null,
+          eventType: "intervention_resolved",
+          eventKey: `intervention_resolved:${intervention.id}:${args.resolutionReason}`,
+          payload: {
+            interventionId: intervention.id,
+            reason: args.resolutionReason,
+            reasonCode,
+            resolvedAt,
+          }
+        });
+        resolved += 1;
+      } catch (error) {
+        logger.debug("ai_orchestrator.coordinator_intervention_resolve_failed", {
+          runId: args.runId,
+          interventionId: intervention.id,
+          reasonCode,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return resolved;
+  };
+
   const pauseRunWithIntervention = (args: {
     runId: string;
     missionId: string;
@@ -5147,107 +5851,11 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (!graph.run.missionId) return;
     const target = deriveMissionPhaseSyncTarget(graph);
     if (!target) return;
-    const nextPhaseKey = target.phaseKey;
-    const nextPhaseName = target.phaseName;
-    const nextPhaseModel = target.phaseModel;
-    const nextPhaseInstructions = target.phaseInstructions;
-    const nextPhaseValidation = target.phaseValidation;
-    const nextPhaseBudget = target.phaseBudget;
-
-    const runMeta = isRecord(graph.run.metadata) ? graph.run.metadata : {};
-    const phaseRuntime = isRecord(runMeta.phaseRuntime) ? runMeta.phaseRuntime : {};
-    const prevPhaseKey = typeof phaseRuntime.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey : null;
-    const prevPhaseName = typeof phaseRuntime.currentPhaseName === "string" ? phaseRuntime.currentPhaseName : null;
-    if (prevPhaseKey === nextPhaseKey) return;
-
-    const transitionedAt = nowIso();
-    const transitionReason = `${prevPhaseName ?? "Start"} -> ${nextPhaseName}`;
-
-    updateRunMetadata(graph.run.id, (metadata) => {
-      const nextRuntime = isRecord(metadata.phaseRuntime) ? { ...metadata.phaseRuntime } : {};
-      const transitions = Array.isArray(nextRuntime.transitions) ? [...nextRuntime.transitions] : [];
-      transitions.unshift({
-        fromPhaseKey: prevPhaseKey,
-        fromPhaseName: prevPhaseName,
-        toPhaseKey: nextPhaseKey,
-        toPhaseName: nextPhaseName,
-        at: transitionedAt,
-        reason
-      });
-      nextRuntime.transitions = transitions.slice(0, 64);
-      nextRuntime.currentPhaseKey = nextPhaseKey;
-      nextRuntime.currentPhaseName = nextPhaseName;
-      nextRuntime.currentPhaseModel = nextPhaseModel;
-      nextRuntime.currentPhaseInstructions = nextPhaseInstructions;
-      nextRuntime.currentPhaseValidation = nextPhaseValidation;
-      nextRuntime.currentPhaseBudget = nextPhaseBudget;
-      nextRuntime.transitionedAt = transitionedAt;
-
-      const phaseBudgets = isRecord(nextRuntime.phaseBudgets) ? { ...nextRuntime.phaseBudgets } : {};
-      if (!isRecord(phaseBudgets[nextPhaseKey])) {
-        phaseBudgets[nextPhaseKey] = {
-          enteredAt: transitionedAt,
-          usedTokens: 0,
-          usedCostUsd: 0
-        };
-      }
-      nextRuntime.phaseBudgets = phaseBudgets;
-      metadata.phaseRuntime = nextRuntime;
-    });
-
-    orchestratorService.appendTimelineEvent({
-      runId: graph.run.id,
-      stepId: target.sourceStepId ?? undefined,
-      eventType: "phase_transition",
-      reason: transitionReason,
-      detail: {
-        fromPhaseKey: prevPhaseKey,
-        fromPhaseName: prevPhaseName,
-        toPhaseKey: nextPhaseKey,
-        toPhaseName: nextPhaseName,
-        transitionReason: reason,
-        phaseModel: nextPhaseModel,
-        phaseValidation: nextPhaseValidation,
-        phaseBudget: nextPhaseBudget,
-        transitionedAt
-      }
-    });
-
-    emitOrchestratorMessage(
-      graph.run.missionId,
-      `Phase transition: ${prevPhaseName ?? "Start"} → ${nextPhaseName}`,
-      null,
-      { phaseFrom: prevPhaseKey, phaseTo: nextPhaseKey }
-    );
-
     updateMissionStateDoc(graph.run.id, {
       updateProgress: {
-        currentPhase: nextPhaseName,
+        currentPhase: target.phaseName,
       },
     }, { graph });
-
-    try {
-      missionService.logEvent({
-        missionId: graph.run.missionId,
-        eventType: "phase_transition",
-        actor: "system",
-        summary: transitionReason,
-        payload: {
-          runId: graph.run.id,
-          fromPhaseKey: prevPhaseKey,
-          fromPhaseName: prevPhaseName,
-          toPhaseKey: nextPhaseKey,
-          toPhaseName: nextPhaseName,
-          transitionReason: reason,
-          phaseModel: nextPhaseModel,
-          phaseValidation: nextPhaseValidation,
-          phaseBudget: nextPhaseBudget,
-          transitionedAt
-        }
-      });
-    } catch {
-      // Best effort mission event write; runtime should continue.
-    }
   };
 
   const syncMissionFromRun = async (
@@ -5427,25 +6035,51 @@ Check all worker statuses and continue managing the mission from here. Read work
         // The mission transition to "completed" is deferred until AFTER PR creation
         // because the conflict pipeline may spawn workers that reopen the run.
         let workersSpawned = false;
+        const { settings: runPhaseSettings } = resolveActivePhaseSettings(mission.id);
+        const integrationPrPolicy = runPhaseSettings.integrationPr ?? DEFAULT_INTEGRATION_PR_POLICY;
+        const laneIdArrayBase = [...new Set(graph.steps.map((s) => s.laneId).filter(Boolean))] as string[];
+        const missionLaneId = resolvePersistedMissionLaneIdForRun(runId) ?? toOptionalString(mission.laneId);
+        if (laneIdArrayBase.length === 0 && missionLaneId) laneIdArrayBase.push(missionLaneId);
+        const prStrategy: PrStrategy =
+          runPhaseSettings.prStrategy
+          ?? { kind: "manual" };
+        const finalizationPolicy = resolveMissionFinalizationPolicy(prStrategy);
+        const missionBaseBranch = await resolveMissionBaseBranch(mission.id);
 
         if (skipNormalPrCreation) {
           // Already handled via post-resolution path
         } else try {
-          const { settings: runPhaseSettings } = resolveActivePhaseSettings(mission.id);
-          const integrationPrPolicy = runPhaseSettings.integrationPr ?? DEFAULT_INTEGRATION_PR_POLICY;
-          const laneIdArrayBase = [...new Set(graph.steps.map((s) => s.laneId).filter(Boolean))] as string[];
-          if (laneIdArrayBase.length === 0 && mission.laneId) laneIdArrayBase.push(mission.laneId);
-          const prStrategy: PrStrategy =
-            runPhaseSettings.prStrategy
-            ?? { kind: "manual" };
+          await updateMissionFinalizationState(runId, {
+            policy: finalizationPolicy,
+            status: prStrategy.kind === "manual" ? "completed" : "finalizing",
+            executionComplete: true,
+            contractSatisfied: prStrategy.kind === "manual",
+            blocked: false,
+            summary: prStrategy.kind === "manual"
+              ? "Execution completed. PR handling is manual for this mission."
+              : "Execution completed. ADE is now running the selected finalization contract.",
+            detail: finalizationPolicy.description,
+            warnings: [],
+            completedAt: prStrategy.kind === "manual" ? nowIso() : null,
+          }, { graph });
 
           if (prStrategy.kind === "manual") {
             logger.debug("ai_orchestrator.pr_strategy_manual", { missionId: mission.id, runId });
           } else if (prStrategy.kind === "integration" && prService) {
+            await updateMissionFinalizationState(runId, {
+              policy: finalizationPolicy,
+              status: "creating_pr",
+              executionComplete: true,
+              contractSatisfied: false,
+              blocked: false,
+              summary: "Execution finished. Creating integration PR before mission completion.",
+              detail: `Base branch: ${prStrategy.targetBranch ?? missionBaseBranch ?? "main"}`,
+              warnings: [],
+            }, { graph });
             try {
               const laneIdArray = laneIdArrayBase;
               const integrationLaneName = `integration/${mission.id.slice(0, 8)}`;
-              const baseBranch = prStrategy.targetBranch ?? mission.laneId ?? "main";
+              const baseBranch = prStrategy.targetBranch ?? missionBaseBranch ?? "main";
               const isDraft = prStrategy.draft ?? integrationPrPolicy.draft ?? true;
 
               const prResult = await prService.createIntegrationPr({
@@ -5467,289 +6101,149 @@ Check all worker statuses and continue managing the mission from here. Read work
                 prNumber: prResult.pr.githubPrNumber,
                 url: prResult.pr.githubUrl
               });
+              await updateMissionFinalizationState(runId, {
+                policy: finalizationPolicy,
+                status: "completed",
+                executionComplete: true,
+                contractSatisfied: true,
+                blocked: false,
+                prUrls: [prResult.pr.githubUrl],
+                mergeReadiness: "operator_review_required",
+                summary: "Execution and integration PR creation completed.",
+                detail: `Integration PR ${prResult.pr.githubUrl} created.`,
+                warnings: [],
+                completedAt: nowIso(),
+              }, { graph });
             } catch (prError) {
-              // ── Worker-based conflict resolution pipeline ──────────────────
-              // When direct PR creation fails (typically due to merge conflicts),
-              // the behavior depends on prDepth:
-              //   "propose-only"       → list conflicts, create draft PR, no workers
-              //   "resolve-conflicts"  → spawn orchestrator worker steps for each conflict
-              //   "open-and-comment"   → resolve + spawn review comment worker
               const prDepth = prStrategy.prDepth
                 ?? integrationPrPolicy.prDepth
                 ?? "resolve-conflicts";
+              const laneIdArray = laneIdArrayBase;
+              const baseBranch = prStrategy.targetBranch ?? missionBaseBranch ?? "main";
+              const isDraft = prStrategy.draft ?? integrationPrPolicy.draft ?? true;
+              const integrationLaneName = `integration/${mission.id.slice(0, 8)}`;
 
-              try {
-                // Step 1: Simulate integration to get a conflict map / proposal
-                const laneIdArray = laneIdArrayBase;
-                const baseBranch = prStrategy.targetBranch ?? mission.laneId ?? "main";
-                const isDraft = prStrategy.draft ?? integrationPrPolicy.draft ?? true;
-
-                emitOrchestratorMessage(
-                  mission.id,
-                  `Integration PR creation hit conflicts. Simulating integration for ${laneIdArray.length} lanes against ${baseBranch}...`
-                );
-                logger.info("ai_orchestrator.conflict_pipeline_starting", {
-                  missionId: mission.id,
-                  runId,
-                  prDepth,
-                  originalError: prError instanceof Error ? prError.message : String(prError)
-                });
-
-                const proposal = await prService.simulateIntegration({
-                  sourceLaneIds: laneIdArray,
-                  baseBranch
-                });
-
-                const conflictingSteps = proposal.steps.filter((s) => s.outcome === "conflict");
-
-                if (conflictingSteps.length === 0) {
-                  // Simulation says no conflicts — original error was likely transient
-                  emitOrchestratorMessage(
-                    mission.id,
-                    `Simulation found no conflicts (original failure may have been transient). Retrying PR creation...`
-                  );
-                  const retryResult = await prService.createIntegrationPr({
-                    sourceLaneIds: laneIdArray,
-                    integrationLaneName: `integration/${mission.id.slice(0, 8)}`,
-                    baseBranch,
-                    title: `[ADE] Integration: ${mission.title}`,
-                    body: `Automated integration PR for mission "${mission.title}".\n\nLanes: ${laneIdArray.join(", ")}`,
-                    draft: isDraft
-                  });
-                  emitOrchestratorMessage(
-                    mission.id,
-                    `Integration PR #${retryResult.pr.githubPrNumber} created (retry): ${retryResult.pr.githubUrl}`
-                  );
-                  logger.info("ai_orchestrator.integration_pr_created_retry", {
-                    missionId: mission.id,
-                    runId,
-                    prNumber: retryResult.pr.githubPrNumber,
-                    url: retryResult.pr.githubUrl
-                  });
-                } else {
-                  // Real conflicts exist — create integration lane
-                  emitOrchestratorMessage(
-                    mission.id,
-                    `Found ${conflictingSteps.length} lane(s) with conflicts: ${conflictingSteps.map((s) => s.laneName).join(", ")}. ` +
-                    `Setting up integration lane...`
-                  );
-
-                  const laneResult = await prService.createIntegrationLaneForProposal({
-                    proposalId: proposal.proposalId
-                  });
-
-                  logger.info("ai_orchestrator.integration_lane_created", {
-                    missionId: mission.id,
-                    runId,
-                    integrationLaneId: laneResult.integrationLaneId,
-                    mergedClean: laneResult.mergedCleanLanes.length,
-                    conflicting: laneResult.conflictingLanes.length
-                  });
-
-                  if (laneResult.mergedCleanLanes.length > 0) {
-                    emitOrchestratorMessage(
-                      mission.id,
-                      `Merged ${laneResult.mergedCleanLanes.length} clean lane(s). ` +
-                      `${laneResult.conflictingLanes.length} lane(s) need resolution.`
-                    );
-                  }
-
-                  const integrationLaneName = `integration/${mission.id.slice(0, 8)}`;
-
-                  // ── propose-only: list conflicts and create draft, no resolution ──
-                  if (prDepth === "propose-only") {
-                    const conflictSummaryLines: string[] = [];
-                    for (const conflictLaneId of laneResult.conflictingLanes) {
-                      const cStep = conflictingSteps.find((s) => s.laneId === conflictLaneId);
-                      const laneName = cStep?.laneName ?? conflictLaneId;
-                      const files = cStep?.conflictingFiles.map((f) => f.path) ?? [];
-                      conflictSummaryLines.push(
-                        `Lane "${laneName}" conflicts in ${files.length} file(s): ${files.join(", ") || "(unknown)"}`
-                      );
-                    }
-                    emitOrchestratorMessage(
-                      mission.id,
-                      `Conflicts detected (propose-only mode — no auto-resolution):\n${conflictSummaryLines.join("\n")}`
-                    );
-
-                    // Create draft PR that documents the conflicts
-                    try {
-                      const draftResult = await prService.commitIntegration({
-                        proposalId: proposal.proposalId,
-                        integrationLaneName,
-                        title: `[ADE] Integration (draft): ${mission.title}`,
-                        body: `Automated integration PR for mission "${mission.title}".\n\n` +
-                              `Lanes: ${laneIdArray.join(", ")}\n\n` +
-                              `**Conflicts (not auto-resolved):**\n${conflictSummaryLines.join("\n")}`,
-                        draft: true
-                      });
-                      emitOrchestratorMessage(
-                        mission.id,
-                        `Draft integration PR #${draftResult.pr.githubPrNumber} created: ${draftResult.pr.githubUrl}`
-                      );
-                      logger.info("ai_orchestrator.integration_pr_draft_created", {
-                        missionId: mission.id,
-                        runId,
-                        prNumber: draftResult.pr.githubPrNumber,
-                        url: draftResult.pr.githubUrl,
-                        conflictCount: laneResult.conflictingLanes.length
-                      });
-                    } catch (draftError) {
-                      logger.warn("ai_orchestrator.integration_pr_draft_failed", {
-                        missionId: mission.id,
-                        runId,
-                        error: draftError instanceof Error ? draftError.message : String(draftError)
-                      });
-                      emitOrchestratorMessage(
-                        mission.id,
-                        `Could not create draft PR: ${draftError instanceof Error ? draftError.message : String(draftError)}. ` +
-                        `Integration lane is available for manual resolution.`
-                      );
-                    }
-                  } else {
-                    // ── resolve-conflicts / open-and-comment: spawn worker steps ──
-
-                    // For each conflicting lane, probe for conflict files and spawn a worker step
-                    const conflictStepKeys: string[] = [];
-                    const existingSteps = graph.steps;
-                    const maxIndex = existingSteps.reduce((max, s) => Math.max(max, s.stepIndex), -1);
-                    const newStepInputs: StartOrchestratorRunStepInput[] = [];
-
-                    for (let i = 0; i < laneResult.conflictingLanes.length; i++) {
-                      const conflictLaneId = laneResult.conflictingLanes[i]!;
-                      const cStep = conflictingSteps.find((s) => s.laneId === conflictLaneId);
-                      const laneName = cStep?.laneName ?? conflictLaneId;
-
-                      // Probe conflict files via startIntegrationResolution
-                      const resolutionInfo = await prService.startIntegrationResolution({
-                        proposalId: proposal.proposalId,
-                        laneId: conflictLaneId
-                      });
-
-                      if (resolutionInfo.mergedClean) {
-                        emitOrchestratorMessage(mission.id, `Lane "${laneName}" merged cleanly (no worker needed).`);
-                        continue;
-                      }
-
-                      const stepKey = `conflict-resolve-${conflictLaneId.slice(0, 8)}`;
-                      conflictStepKeys.push(stepKey);
-
-                      newStepInputs.push({
-                        stepKey,
-                        title: `Resolve conflicts: ${laneName}`,
-                        stepIndex: maxIndex + 1 + i,
-                        laneId: resolutionInfo.integrationLaneId,
-                        dependencyStepKeys: [],
-                        retryLimit: 1,
-                        metadata: {
-                          stepType: "conflict-resolution",
-                          conflictFiles: resolutionInfo.conflictFiles,
-                          sourceLaneName: laneName,
-                          sourceLaneId: conflictLaneId,
-                          integrationLaneId: resolutionInfo.integrationLaneId,
-                          proposalId: proposal.proposalId,
-                          instructions: buildConflictResolutionInstructions(resolutionInfo.conflictFiles, laneName)
-                        }
-                      });
-
-                      emitOrchestratorMessage(
-                        mission.id,
-                        `Spawning conflict resolution worker for lane "${laneName}" (${resolutionInfo.conflictFiles.length} file(s)).`
-                      );
-                    }
-
-                    if (newStepInputs.length === 0) {
-                      // All lanes merged cleanly during probe — commit directly
-                      emitOrchestratorMessage(mission.id, `All conflicts resolved during probe. Creating integration PR...`);
-                      const commitResult = await prService.commitIntegration({
-                        proposalId: proposal.proposalId,
-                        integrationLaneName,
-                        title: `[ADE] Integration: ${mission.title}`,
-                        body: `Automated integration PR for mission "${mission.title}".\n\nLanes: ${laneIdArray.join(", ")}`,
-                        draft: isDraft
-                      });
-                      emitOrchestratorMessage(
-                        mission.id,
-                        `Integration PR #${commitResult.pr.githubPrNumber} created: ${commitResult.pr.githubUrl}`
-                      );
-                      logger.info("ai_orchestrator.integration_pr_created_clean_probe", {
-                        missionId: mission.id,
-                        runId,
-                        prNumber: commitResult.pr.githubPrNumber,
-                        url: commitResult.pr.githubUrl
-                      });
-                    } else {
-                      // Add worker steps to the run (reopens terminal run if needed)
-                      const addedSteps = orchestratorService.addPostCompletionSteps({
-                        runId,
-                        steps: newStepInputs
-                      });
-
-                      // Track each worker with prService
-                      for (const addedStep of addedSteps) {
-                        const meta = addedStep.metadata as Record<string, unknown> | null;
-                        const sourceLaneId = meta?.sourceLaneId as string | undefined;
-                        if (sourceLaneId) {
-                          prService.markResolutionWorkerActive(proposal.proposalId, sourceLaneId, addedStep.id);
-                        }
-                      }
-
-                      // Store context for post-resolution completion handler
-                      pendingIntegrations.set(runId, {
-                        proposalId: proposal.proposalId,
-                        missionId: mission.id,
-                        integrationLaneName,
-                        integrationLaneId: laneResult.integrationLaneId,
-                        baseBranch,
-                        isDraft,
-                        prDepth,
-                        conflictStepKeys,
-                        reviewStepKey: null,
-                        laneIdArray,
-                        missionTitle: mission.title
-                      });
-
-                      // Flag that workers were spawned — defer mission completion
-                      workersSpawned = true;
-
-                      logger.info("ai_orchestrator.conflict_workers_spawned", {
-                        missionId: mission.id,
-                        runId,
-                        prDepth,
-                        workerCount: addedSteps.length,
-                        stepKeys: conflictStepKeys
-                      });
-
-                      emitOrchestratorMessage(
-                        mission.id,
-                        `Spawned ${addedSteps.length} conflict resolution worker(s). ` +
-                        `The run will resume and complete after all conflicts are resolved.`
-                      );
-                    }
-                  }
-                }
-              } catch (pipelineError) {
-                // Safety net: if the pipeline itself fails, fall back to logging + messaging
-                logger.warn("ai_orchestrator.conflict_pipeline_failed", {
-                  missionId: mission.id,
-                  runId,
-                  prDepth,
-                  originalError: prError instanceof Error ? prError.message : String(prError),
-                  pipelineError: pipelineError instanceof Error ? pipelineError.message : String(pipelineError)
-                });
-                emitOrchestratorMessage(
-                  mission.id,
-                  `Integration PR creation failed and conflict pipeline also failed.\n` +
-                  `Original error: ${prError instanceof Error ? prError.message : String(prError)}\n` +
-                  `Pipeline error: ${pipelineError instanceof Error ? pipelineError.message : String(pipelineError)}`
-                );
+              if (prDepth === "propose-only" || !conflictService || !laneService) {
+                throw prError;
               }
+
+              const targetLane = (await laneService.list({ includeArchived: false })).find((lane) => {
+                const branchRef = normalizeBranchName(lane.branchRef);
+                const laneBaseRef = normalizeBranchName(lane.baseRef);
+                const desired = normalizeBranchName(baseBranch);
+                return lane.id === baseBranch || branchRef === desired || laneBaseRef === desired;
+              });
+              if (!targetLane) {
+                throw new Error(`No lane is available for base branch "${baseBranch}".`);
+              }
+
+              const resolverModelId = integrationPrPolicy.conflictResolverModel ?? null;
+              const resolverDescriptor = resolverModelId ? getModelById(resolverModelId) : null;
+              const resolverProvider = resolverDescriptor?.family === "openai" ? "codex" : "claude";
+
+              await updateMissionFinalizationState(runId, {
+                policy: resolveMissionFinalizationPolicy(prStrategy),
+                status: "resolving_integration_conflicts",
+                executionComplete: true,
+                contractSatisfied: false,
+                blocked: false,
+                summary: "Execution finished. ADE is resolving integration conflicts before closeout can complete.",
+                detail: prError instanceof Error ? prError.message : String(prError),
+                warnings: [],
+              }, { graph });
+              emitOrchestratorMessage(
+                mission.id,
+                `Integration PR creation hit conflicts. Launching shared resolver on integration lane "${integrationLaneName}" before finalization can complete.`
+              );
+
+              const resolverRun = await conflictService.runExternalResolver({
+                provider: resolverProvider,
+                targetLaneId: targetLane.id,
+                sourceLaneIds: laneIdArray,
+                integrationLaneName,
+              });
+              if (resolverRun.status !== "completed" || !resolverRun.integrationLaneId) {
+                throw new Error(resolverRun.error ?? "Shared conflict resolver did not complete successfully.");
+              }
+
+              await updateMissionFinalizationState(runId, {
+                policy: resolveMissionFinalizationPolicy(prStrategy),
+                status: "creating_pr",
+                executionComplete: true,
+                contractSatisfied: false,
+                blocked: false,
+                resolverJobId: resolverRun.runId,
+                integrationLaneId: resolverRun.integrationLaneId,
+                detail: resolverRun.summary ?? "Conflict resolution completed. Creating integration PR.",
+                warnings: resolverRun.warnings,
+              }, { graph });
+
+              const resolvedPr = await prService.createFromLane({
+                laneId: resolverRun.integrationLaneId,
+                title: `[ADE] Integration: ${mission.title}`,
+                body: `Automated integration PR for mission "${mission.title}".\n\nLanes: ${laneIdArray.join(", ")}\n\nResolved via the shared ADE conflict resolver job ${resolverRun.runId}.`,
+                draft: isDraft,
+                baseBranch,
+              });
+
+              if (prDepth === "open-and-comment") {
+                await updateMissionFinalizationState(runId, {
+                  policy: resolveMissionFinalizationPolicy(prStrategy),
+                  status: "posting_review_comment",
+                  executionComplete: true,
+                  contractSatisfied: false,
+                  blocked: false,
+                  resolverJobId: resolverRun.runId,
+                  integrationLaneId: resolverRun.integrationLaneId,
+                  prUrls: [resolvedPr.githubUrl],
+                }, { graph });
+                await prService.addComment({
+                  prId: resolvedPr.id,
+                  body: [
+                    `ADE finalization summary for mission "${mission.title}":`,
+                    "",
+                    `- Integration conflicts were resolved by shared resolver job \`${resolverRun.runId}\`.`,
+                    `- Changed files: ${resolverRun.changedFiles.length > 0 ? resolverRun.changedFiles.join(", ") : "not reported"}.`,
+                    `- Review this PR before landing. This mission is complete, but follow-up work should start as a continuation.`,
+                  ].join("\n"),
+                });
+              }
+
+              emitOrchestratorMessage(
+                mission.id,
+                `Integration PR #${resolvedPr.githubPrNumber} created after shared conflict resolution: ${resolvedPr.githubUrl}`
+              );
+              logger.info("ai_orchestrator.integration_pr_created_via_shared_resolver", {
+                missionId: mission.id,
+                runId,
+                resolverRunId: resolverRun.runId,
+                prNumber: resolvedPr.githubPrNumber,
+                url: resolvedPr.githubUrl
+              });
+              await updateMissionFinalizationState(runId, {
+                policy: resolveMissionFinalizationPolicy(prStrategy),
+                status: "completed",
+                executionComplete: true,
+                contractSatisfied: true,
+                blocked: false,
+                resolverJobId: resolverRun.runId,
+                integrationLaneId: resolverRun.integrationLaneId,
+                prUrls: [resolvedPr.githubUrl],
+                reviewStatus: prDepth === "open-and-comment" ? "comment_posted" : null,
+                mergeReadiness: "operator_review_required",
+                summary: "Execution and PR finalization completed.",
+                detail: `Integration PR ${resolvedPr.githubUrl} created via shared resolver job ${resolverRun.runId}.`,
+                warnings: resolverRun.warnings,
+                completedAt: nowIso(),
+              }, { graph });
             }
           } else if (prStrategy.kind === "per-lane" && prService) {
             try {
               const laneIdArray = laneIdArrayBase;
-              const baseBranch = prStrategy.targetBranch ?? mission.laneId ?? "main";
+              const baseBranch = prStrategy.targetBranch ?? missionBaseBranch ?? "main";
               const isDraft = prStrategy.draft ?? true;
+              const createdPrUrls: string[] = [];
+              const laneFailures: string[] = [];
 
               for (const laneId of laneIdArray) {
                 try {
@@ -5772,6 +6266,7 @@ Check all worker statuses and continue managing the mission from here. Read work
                     prNumber: prResult.pr.githubPrNumber,
                     url: prResult.pr.githubUrl
                   });
+                  createdPrUrls.push(prResult.pr.githubUrl);
                 } catch (lanePrError) {
                   logger.warn("ai_orchestrator.per_lane_pr_failed", {
                     missionId: mission.id,
@@ -5783,7 +6278,36 @@ Check all worker statuses and continue managing the mission from here. Read work
                     mission.id,
                     `Per-lane PR for ${laneId} failed: ${lanePrError instanceof Error ? lanePrError.message : String(lanePrError)}`
                   );
+                  laneFailures.push(`${laneId}: ${lanePrError instanceof Error ? lanePrError.message : String(lanePrError)}`);
                 }
+              }
+              if (laneFailures.length > 0) {
+                await updateMissionFinalizationState(runId, {
+                  policy: finalizationPolicy,
+                  status: "finalization_failed",
+                  executionComplete: true,
+                  contractSatisfied: false,
+                  blocked: true,
+                  blockedReason: laneFailures.join("; "),
+                  prUrls: createdPrUrls,
+                  summary: "Per-lane PR finalization did not complete successfully.",
+                  detail: laneFailures.join("\n"),
+                  warnings: [],
+                }, { graph });
+              } else {
+                await updateMissionFinalizationState(runId, {
+                  policy: finalizationPolicy,
+                  status: "completed",
+                  executionComplete: true,
+                  contractSatisfied: true,
+                  blocked: false,
+                  prUrls: createdPrUrls,
+                  mergeReadiness: "operator_review_required",
+                  summary: "Execution and per-lane PR creation completed.",
+                  detail: `${createdPrUrls.length} PR(s) created.`,
+                  warnings: [],
+                  completedAt: nowIso(),
+                }, { graph });
               }
             } catch (perLaneError) {
               logger.warn("ai_orchestrator.per_lane_pr_batch_failed", {
@@ -5791,11 +6315,29 @@ Check all worker statuses and continue managing the mission from here. Read work
                 runId,
                 error: perLaneError instanceof Error ? perLaneError.message : String(perLaneError)
               });
+              await updateMissionFinalizationState(runId, {
+                policy: finalizationPolicy,
+                status: "finalization_failed",
+                executionComplete: true,
+                contractSatisfied: false,
+                blocked: true,
+                blockedReason: perLaneError instanceof Error ? perLaneError.message : String(perLaneError),
+                summary: "Per-lane PR finalization failed.",
+                detail: perLaneError instanceof Error ? perLaneError.message : String(perLaneError),
+                warnings: [],
+              }, { graph });
             }
           } else if (prStrategy.kind === "queue" && prService) {
             try {
               const laneIdArray = laneIdArrayBase;
-              const targetBranch = prStrategy.targetBranch ?? mission.laneId ?? "main";
+              const targetBranch = prStrategy.targetBranch ?? missionBaseBranch ?? "main";
+              const autoLandQueue = prStrategy.autoLand ?? false;
+              const rehearseQueue = prStrategy.rehearseQueue ?? false;
+              const autoResolveQueueConflicts = prStrategy.autoResolveConflicts ?? false;
+              const queueMergeMethod = prStrategy.mergeMethod ?? "squash";
+              const resolverModelId = prStrategy.conflictResolverModel ?? integrationPrPolicy.conflictResolverModel ?? null;
+              const resolverDescriptor = resolverModelId ? getModelById(resolverModelId) : null;
+              const resolverProvider = resolverDescriptor?.family === "anthropic" ? "claude" : resolverModelId ? "codex" : null;
 
               const queueResult = await prService.createQueuePrs({
                 laneIds: laneIdArray,
@@ -5824,6 +6366,93 @@ Check all worker statuses and continue managing the mission from here. Read work
                 prCount: queueResult.prs.length,
                 errorCount: queueResult.errors.length
               });
+              if (queueResult.errors.length > 0) {
+                await updateMissionFinalizationState(runId, {
+                  policy: finalizationPolicy,
+                  status: "finalization_failed",
+                  executionComplete: true,
+                  contractSatisfied: false,
+                  blocked: true,
+                  blockedReason: queueResult.errors.map((entry) => `${entry.laneId}: ${entry.error}`).join("; "),
+                  queueGroupId: queueResult.groupId,
+                  prUrls: queueResult.prs.map((entry) => entry.githubUrl),
+                  summary: "Queue PR finalization failed for one or more lanes.",
+                  detail: queueResult.errors.map((entry) => `${entry.laneId}: ${entry.error}`).join("\n"),
+                  warnings: [],
+                }, { graph });
+              } else if (rehearseQueue && queueRehearsalService) {
+                await updateMissionFinalizationState(runId, {
+                  policy: finalizationPolicy,
+                  status: "rehearsing_queue",
+                  executionComplete: true,
+                  contractSatisfied: false,
+                  blocked: false,
+                  queueGroupId: queueResult.groupId,
+                  prUrls: queueResult.prs.map((entry) => entry.githubUrl),
+                  mergeReadiness: "queue_rehearsing",
+                  summary: "Execution finished. Queue rehearsal has started and must complete before the mission can close out.",
+                  detail: `Queue group ${queueResult.groupId} created with ${queueResult.prs.length} PR(s).`,
+                  warnings: [],
+                }, { graph });
+                await queueRehearsalService.startQueueRehearsal({
+                  groupId: queueResult.groupId,
+                  method: queueMergeMethod,
+                  autoResolve: autoResolveQueueConflicts,
+                  resolverProvider,
+                  resolverModel: resolverModelId,
+                  reasoningEffort: prStrategy.reasoningEffort ?? null,
+                  permissionMode: prStrategy.permissionMode ?? "guarded_edit",
+                  preserveScratchLane: true,
+                  originSurface: "mission",
+                  originMissionId: mission.id,
+                  originRunId: runId,
+                  originLabel: mission.title,
+                });
+              } else if (autoLandQueue && queueLandingService) {
+                await updateMissionFinalizationState(runId, {
+                  policy: finalizationPolicy,
+                  status: "landing_queue",
+                  executionComplete: true,
+                  contractSatisfied: false,
+                  blocked: false,
+                  queueGroupId: queueResult.groupId,
+                  prUrls: queueResult.prs.map((entry) => entry.githubUrl),
+                  mergeReadiness: prStrategy.ciGating ? "waiting_for_green" : "queue_landing",
+                  summary: "Execution finished. Queue landing has started and must complete before the mission can close out.",
+                  detail: `Queue group ${queueResult.groupId} created with ${queueResult.prs.length} PR(s).`,
+                  warnings: [],
+                }, { graph });
+                await queueLandingService.startQueue({
+                  groupId: queueResult.groupId,
+                  method: queueMergeMethod,
+                  archiveLane: prStrategy.archiveLaneOnLand ?? false,
+                  autoResolve: autoResolveQueueConflicts,
+                  ciGating: prStrategy.ciGating ?? false,
+                  resolverProvider,
+                  resolverModel: resolverModelId,
+                  reasoningEffort: prStrategy.reasoningEffort ?? null,
+                  permissionMode: prStrategy.permissionMode ?? "guarded_edit",
+                  originSurface: "mission",
+                  originMissionId: mission.id,
+                  originRunId: runId,
+                  originLabel: mission.title,
+                });
+              } else {
+                await updateMissionFinalizationState(runId, {
+                  policy: finalizationPolicy,
+                  status: "completed",
+                  executionComplete: true,
+                  contractSatisfied: true,
+                  blocked: false,
+                  queueGroupId: queueResult.groupId,
+                  prUrls: queueResult.prs.map((entry) => entry.githubUrl),
+                  mergeReadiness: prStrategy.ciGating ? "waiting_for_green" : "operator_review_required",
+                  summary: "Execution and queue PR creation completed.",
+                  detail: `Queue group ${queueResult.groupId} created with ${queueResult.prs.length} PR(s). Queue landing remains operator-driven.`,
+                  warnings: [],
+                  completedAt: nowIso(),
+                }, { graph });
+              }
             } catch (queueError) {
               logger.warn("ai_orchestrator.queue_pr_creation_failed", {
                 missionId: mission.id,
@@ -5834,13 +6463,39 @@ Check all worker statuses and continue managing the mission from here. Read work
                 mission.id,
                 `Queue PR creation failed: ${queueError instanceof Error ? queueError.message : String(queueError)}`
               );
+              await updateMissionFinalizationState(runId, {
+                policy: finalizationPolicy,
+                status: "finalization_failed",
+                executionComplete: true,
+                contractSatisfied: false,
+                blocked: true,
+                blockedReason: queueError instanceof Error ? queueError.message : String(queueError),
+                summary: "Queue PR finalization failed.",
+                detail: queueError instanceof Error ? queueError.message : String(queueError),
+                warnings: [],
+              }, { graph });
             }
           }
         } catch (prStrategyError) {
+          const finalizationErrorMessage = prStrategyError instanceof Error ? prStrategyError.message : String(prStrategyError);
           logger.debug("ai_orchestrator.pr_strategy_trigger_failed", {
             runId,
             missionId: mission.id,
-            error: prStrategyError instanceof Error ? prStrategyError.message : String(prStrategyError)
+            error: finalizationErrorMessage
+          });
+          await updateMissionFinalizationState(runId, {
+            policy: resolveMissionFinalizationPolicy(resolveActivePhaseSettings(mission.id).settings.prStrategy ?? { kind: "manual" }),
+            status: "finalization_failed",
+            executionComplete: true,
+            contractSatisfied: false,
+            blocked: true,
+            blockedReason: finalizationErrorMessage,
+            summary: "Mission finalization failed.",
+            detail: finalizationErrorMessage,
+            warnings: [],
+          }, { graph });
+          transitionMissionStatus(mission.id, "failed", {
+            lastError: finalizationErrorMessage,
           });
         }
 
@@ -5848,7 +6503,49 @@ Check all worker statuses and continue managing the mission from here. Read work
         // conflict resolution workers were spawned. When workers ARE spawned,
         // the run was reopened (succeeded → running) and the mission should
         // stay in_progress until the workers complete.
-        if (!workersSpawned) {
+        let stateDocAfterFinalization = projectRoot
+          ? await readMissionStateDocument({ projectRoot, runId }).catch(() => null)
+          : null;
+        if (stateDocAfterFinalization?.finalization) {
+          const closeoutRequirements = buildMissionCloseoutRequirements({
+            mission,
+            graph,
+            policy: stateDocAfterFinalization.finalization.policy,
+            finalization: stateDocAfterFinalization.finalization,
+            stateDoc: stateDocAfterFinalization,
+          });
+          const unmetRequirements = closeoutRequirements.filter((requirement) =>
+            requirement.required
+            && requirement.status !== "present"
+            && requirement.status !== "waived"
+          );
+          await updateMissionFinalizationState(runId, {
+            policy: stateDocAfterFinalization.finalization.policy,
+            status: unmetRequirements.length > 0 && stateDocAfterFinalization.finalization.status === "completed"
+              ? "finalizing"
+              : stateDocAfterFinalization.finalization.status,
+            executionComplete: true,
+            contractSatisfied: stateDocAfterFinalization.finalization.contractSatisfied && unmetRequirements.length === 0,
+            requirements: closeoutRequirements,
+            summary: unmetRequirements.length > 0
+              ? "Execution finished, but the closeout contract is still incomplete."
+              : stateDocAfterFinalization.finalization.summary,
+            detail: unmetRequirements.length > 0
+              ? unmetRequirements.map((requirement) => requirement.label).join(", ")
+              : stateDocAfterFinalization.finalization.detail,
+            completedAt: unmetRequirements.length > 0 ? null : stateDocAfterFinalization.finalization.completedAt,
+          }, { graph });
+          stateDocAfterFinalization = projectRoot
+            ? await readMissionStateDocument({ projectRoot, runId }).catch(() => null)
+            : stateDocAfterFinalization;
+        }
+        const finalizationSatisfied = stateDocAfterFinalization?.finalization?.contractSatisfied ?? (prStrategy.kind === "manual");
+        const finalizationFailed = stateDocAfterFinalization?.finalization?.status === "finalization_failed";
+        if (finalizationFailed) {
+          transitionMissionStatus(mission.id, "failed", {
+            lastError: stateDocAfterFinalization?.finalization?.blockedReason ?? stateDocAfterFinalization?.finalization?.detail ?? "Mission finalization failed."
+          });
+        } else if (!workersSpawned && finalizationSatisfied) {
           transitionMissionStatus(mission.id, "completed", {
             outcomeSummary: refreshed.outcomeSummary ?? buildOutcomeSummary(graph),
             lastError: null
@@ -5994,8 +6691,13 @@ Check all worker statuses and continue managing the mission from here. Read work
       )
     );
     const { userRules, projectCtx, availableProviders, phases } = gatherCoordinatorContext(missionId, args);
+    const activePolicy = resolveActivePolicy(missionId);
     const sortedPhases = [...phases].sort((a, b) => a.position - b.position);
-    const initialPhase = sortedPhases[0] ?? null;
+    const runtimePhases = activePolicy.planning.mode === "off"
+      ? sortedPhases.filter((phase) => phase.phaseKey.trim().toLowerCase() !== "planning")
+      : sortedPhases;
+    const effectivePhases = runtimePhases.length > 0 ? runtimePhases : sortedPhases;
+    const initialPhase = effectivePhases[0] ?? null;
     const phaseRuntime = initialPhase
       ? {
           currentPhaseKey: initialPhase.phaseKey,
@@ -6057,7 +6759,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         aiFirst: true,
         ...(missionLevelSettings ? { missionLevelSettings } : {}),
         ...(missionPhaseConfiguration ? { phaseConfiguration: missionPhaseConfiguration } : {}),
-        phaseOverride: phases,
+        phaseOverride: effectivePhases,
         phaseProfileId: typeof missionPhaseConfiguration?.profileId === "string"
           ? missionPhaseConfiguration.profileId
           : null,
@@ -6071,6 +6773,29 @@ Check all worker statuses and continue managing the mission from here. Read work
       missionId,
       missionTitle: initialMission.title,
     });
+    if (!missionLaneId) {
+      pauseRunWithIntervention({
+        runId: started.run.id,
+        missionId,
+        source: "transition_decision",
+        reasonCode: "mission_lane_unavailable",
+        title: "Mission lane isolation failed",
+        body: "ADE could not create or recover the dedicated mission lane/worktree for this run. The mission has been paused so work does not proceed in an unsafe lane.",
+        requestedAction: "Fix lane/worktree health, then resume the run to retry mission activation.",
+        metadata: {
+          startupPath: "start_mission_run",
+          isolationRequired: true,
+        }
+      });
+      const blockedRun = orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === started.run.id) ?? started.run;
+      return {
+        started: {
+          run: blockedRun,
+          steps: orchestratorService.listSteps(started.run.id),
+        },
+        mission: missionService.get(missionId),
+      };
+    }
 
     // ── Spawn the coordinator — the AI brain takes over ──
     const coordinatorModelConfig = resolveOrchestratorModelConfig(missionId, "coordinator");
@@ -6078,8 +6803,8 @@ Check all worker statuses and continue managing the mission from here. Read work
       userRules,
       projectContext: projectCtx,
       availableProviders,
-      phases,
-      missionLaneId: missionLaneId ?? undefined,
+      phases: effectivePhases,
+      missionLaneId,
     });
     if (!coordinatorAgent?.isAlive) {
       pauseRunWithIntervention({
@@ -6230,6 +6955,12 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (availability) {
       if (availability.claude) availableProviders.push({ name: "claude", available: true });
       if (availability.codex) availableProviders.push({ name: "codex", available: true });
+    }
+    if (aiIntegrationService) {
+      availableProviders.push({
+        name: "api/local",
+        available: true,
+      });
     }
 
     // Load phase cards so the coordinator knows the mission execution phases
@@ -6445,6 +7176,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     const requestedRunId = toOptionalString(cleanupArgs.runId);
     const cleanupLanes = cleanupArgs.cleanupLanes !== false;
     let resolvedRunId: string | null = requestedRunId ?? null;
+    const laneIds = new Set<string>();
 
     if (requestedRunId) {
       const runMissionId = getMissionIdForRun(requestedRunId);
@@ -6454,36 +7186,46 @@ Check all worker statuses and continue managing the mission from here. Read work
       if (runMissionId !== missionId) {
         throw new Error(`Run ${requestedRunId} does not belong to mission ${missionId}.`);
       }
+      const graph = getRunGraphSafe(requestedRunId);
+      for (const laneId of graph?.steps.map((step) => toOptionalString(step.laneId)).filter((value): value is string => Boolean(value)) ?? []) {
+        laneIds.add(laneId);
+      }
+      const missionLaneId = resolvePersistedMissionLaneIdForRun(requestedRunId);
+      if (missionLaneId) laneIds.add(missionLaneId);
     } else {
       const missionRuns = [...orchestratorService.listRuns({ missionId, limit: 200 })]
         .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
       resolvedRunId = missionRuns[0]?.id ?? null;
+      for (const run of missionRuns) {
+        const graph = getRunGraphSafe(run.id);
+        for (const laneId of graph?.steps.map((step) => toOptionalString(step.laneId)).filter((value): value is string => Boolean(value)) ?? []) {
+          laneIds.add(laneId);
+        }
+        const missionLaneId = resolvePersistedMissionLaneIdForRun(run.id);
+        if (missionLaneId) laneIds.add(missionLaneId);
+      }
     }
-
-    const graph = resolvedRunId ? getRunGraphSafe(resolvedRunId) : null;
-    const laneIds = graph
-      ? [...new Set(graph.steps.map((step) => toOptionalString(step.laneId)).filter((value): value is string => Boolean(value)))]
-      : [];
+    const laneIdList = [...laneIds];
 
     const result: CleanupOrchestratorTeamResourcesResult = {
       missionId,
       runId: resolvedRunId,
-      laneIds,
+      laneIds: laneIdList,
       lanesArchived: [],
       lanesSkipped: [],
       laneErrors: []
     };
 
-    if (!cleanupLanes || !laneIds.length) {
+    if (!cleanupLanes || !laneIdList.length) {
       return result;
     }
 
     if (!laneService || typeof laneService.archive !== "function") {
-      result.laneErrors = laneIds.map((laneId) => ({ laneId, error: "Lane service unavailable." }));
+      result.laneErrors = laneIdList.map((laneId) => ({ laneId, error: "Lane service unavailable." }));
       return result;
     }
 
-    for (const laneId of laneIds) {
+    for (const laneId of laneIdList) {
       try {
         await Promise.resolve(laneService.archive({ laneId }));
         result.lanesArchived.push(laneId);
@@ -6504,7 +7246,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     logger.info("ai_orchestrator.team_resources_cleanup_complete", {
       missionId,
       runId: resolvedRunId,
-      laneCount: laneIds.length,
+      laneCount: laneIds.size,
       archivedCount: result.lanesArchived.length,
       skippedCount: result.lanesSkipped.length,
       errorCount: result.laneErrors.length
@@ -6743,6 +7485,46 @@ Check all worker statuses and continue managing the mission from here. Read work
           projectedStepCount
         }
       );
+
+      // VAL-STEER-001: After resolving all blocking interventions, check if any
+      // paused runs should be resumed. If no open interventions remain on the
+      // mission, resume paused runs and transition mission back to in_progress.
+      try {
+        const postSteerMission = missionService.get(missionId);
+        const remainingOpenInterventions = postSteerMission?.interventions.filter(
+          (iv) => iv.status === "open"
+        ) ?? [];
+        if (remainingOpenInterventions.length === 0) {
+          for (const runId of resumedRunIds) {
+            try {
+              const runGraph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+              if (runGraph.run.status === "paused") {
+                orchestratorService.resumeRun({ runId });
+                logger.info("ai_orchestrator.steer_auto_resumed_run", { missionId, runId });
+              }
+            } catch (resumeError) {
+              logger.debug("ai_orchestrator.steer_auto_resume_failed", {
+                missionId,
+                runId,
+                error: resumeError instanceof Error ? resumeError.message : String(resumeError),
+              });
+            }
+          }
+          // Transition mission back to in_progress if it was intervention_required
+          if (postSteerMission?.status === "intervention_required") {
+            try {
+              missionService.update({ missionId, status: "in_progress" });
+            } catch {
+              // Best effort — mission might already be in a different state
+            }
+          }
+        }
+      } catch (steerResumeError) {
+        logger.debug("ai_orchestrator.steer_resume_check_failed", {
+          missionId,
+          error: steerResumeError instanceof Error ? steerResumeError.message : String(steerResumeError),
+        });
+      }
     }
 
     // Real-time delivery: try to deliver the directive to running worker sessions
@@ -6977,6 +7759,89 @@ Check all worker statuses and continue managing the mission from here. Read work
   const getWorkerDigest = (digestArgs: GetOrchestratorWorkerDigestArgs) => getWorkerDigestCtx(ctx, digestArgs);
   const getContextCheckpoint = (checkpointArgs: GetOrchestratorContextCheckpointArgs) => getContextCheckpointCtx(ctx, checkpointArgs);
   const listLaneDecisions = (laneArgs: ListOrchestratorLaneDecisionsArgs) => listLaneDecisionsCtx(ctx, laneArgs);
+  const listArtifacts = (artifactArgs: ListOrchestratorArtifactsArgs): OrchestratorArtifact[] => {
+    const missionId = toOptionalString(artifactArgs.missionId);
+    const runId = toOptionalString(artifactArgs.runId);
+    const stepId = toOptionalString(artifactArgs.stepId);
+
+    if (stepId) {
+      return orchestratorService.getArtifactsForStep(stepId).filter((artifact) => {
+        if (missionId && artifact.missionId !== missionId) return false;
+        if (runId && artifact.runId !== runId) return false;
+        return true;
+      });
+    }
+
+    const resolvedMissionId =
+      missionId
+      ?? (runId
+        ? toOptionalString(orchestratorService.getRunGraph({ runId, timelineLimit: 0 }).run.missionId)
+        : null);
+    if (!resolvedMissionId) {
+      throw new Error("listArtifacts requires missionId, runId, or stepId.");
+    }
+
+    return orchestratorService.getArtifactsForMission(resolvedMissionId).filter((artifact) =>
+      !runId || artifact.runId === runId
+    );
+  };
+  const listWorkerCheckpoints = (checkpointArgs: ListOrchestratorWorkerCheckpointsArgs): OrchestratorWorkerCheckpoint[] => {
+    const missionId = toOptionalString(checkpointArgs.missionId);
+    const runId = toOptionalString(checkpointArgs.runId);
+    const stepId = toOptionalString(checkpointArgs.stepId);
+
+    let checkpoints: OrchestratorWorkerCheckpoint[] = [];
+    if (runId) {
+      checkpoints = orchestratorService.getWorkerCheckpointsForRun({ runId });
+    } else if (missionId) {
+      checkpoints = orchestratorService.getWorkerCheckpointsForMission({ missionId });
+    } else if (stepId) {
+      const row = db.get<{ run_id: string | null }>(
+        `select run_id from orchestrator_steps where id = ? limit 1`,
+        [stepId],
+      );
+      const resolvedRunId = toOptionalString(row?.run_id);
+      if (!resolvedRunId) throw new Error(`Unable to resolve run for step ${stepId}.`);
+      checkpoints = orchestratorService.getWorkerCheckpointsForRun({ runId: resolvedRunId });
+    } else {
+      throw new Error("listWorkerCheckpoints requires missionId, runId, or stepId.");
+    }
+
+    return stepId ? checkpoints.filter((checkpoint) => checkpoint.stepId === stepId) : checkpoints;
+  };
+  const getPromptInspector = (promptArgs: GetOrchestratorPromptInspectorArgs): OrchestratorPromptInspector => {
+    const runId = String(promptArgs.runId ?? "").trim();
+    if (!runId) throw new Error("runId is required.");
+    const graph = orchestratorService.getRunGraph({ runId, timelineLimit: 500 });
+    const runMeta = isRecord(graph.run.metadata) ? graph.run.metadata : null;
+    const phaseRuntime = isRecord(runMeta?.phaseRuntime) ? runMeta.phaseRuntime : null;
+
+    if (promptArgs.target === "worker") {
+      const stepId = toOptionalString(promptArgs.stepId);
+      if (!stepId) throw new Error("stepId is required for worker prompt inspection.");
+      return buildWorkerPromptInspector({ graph, stepId });
+    }
+
+    const missionId = graph.run.missionId;
+    const missionGoal =
+      typeof runMeta?.missionGoal === "string" && runMeta.missionGoal.trim().length > 0
+        ? runMeta.missionGoal.trim()
+        : missionService.get(missionId)?.prompt ?? "";
+    const coordinatorContext = gatherCoordinatorContext(missionId, { missionId });
+    return buildCoordinatorPromptInspector({
+      runId,
+      missionId,
+      missionGoal,
+      userRules: coordinatorContext.userRules,
+      projectContext: coordinatorContext.projectCtx,
+      availableProviders: coordinatorContext.availableProviders,
+      phases: coordinatorContext.phases,
+      currentPhaseKey: toOptionalString(phaseRuntime?.currentPhaseKey),
+      currentPhaseName: toOptionalString(phaseRuntime?.currentPhaseName),
+    });
+  };
+  const getPlanningPromptPreview = (promptArgs: GetPlanningPromptPreviewArgs): OrchestratorPromptInspector =>
+    buildPlanningPromptPreview(promptArgs);
 
   const chatRoutingDeps: ChatRoutingDeps = {
     routeMessageToWorker,
@@ -7034,83 +7899,600 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (disposed) return;
     const sessionId = String(signal.sessionId ?? "").trim();
     if (!sessionId.length) return;
-    const runtimeState = parseTerminalRuntimeState(signal.runtimeState) ?? "running";
     const normalizedSignal: SessionRuntimeSignal = {
       laneId: String(signal.laneId ?? "").trim(),
       sessionId,
-      runtimeState,
+      runtimeState: parseTerminalRuntimeState(signal.runtimeState) ?? "running",
       lastOutputPreview:
         typeof signal.lastOutputPreview === "string" && signal.lastOutputPreview.trim().length > 0
           ? clipTextForContext(signal.lastOutputPreview.trim(), MAX_RUNTIME_SIGNAL_PREVIEW_CHARS)
           : null,
       at: typeof signal.at === "string" && signal.at.trim().length > 0 ? signal.at : nowIso()
     };
-    sessionRuntimeSignals.set(sessionId, normalizedSignal);
+    onSessionRuntimeSignalCtx(ctx, normalizedSignal, {
+      processSessionRuntimeSignal,
+      replayQueuedWorkerMessages,
+    });
     if (sessionRuntimeSignals.size > 500) {
       pruneSessionRuntimeSignals();
     }
-    const previous = sessionSignalQueues.get(sessionId) ?? Promise.resolve();
-    const next = previous
-      .catch((error) => { logger.warn("ai_orchestrator.session_signal_queue_previous_failed", { sessionId, error: getErrorMessage(error) }); })
-      .then(async () => {
-        if (disposed) return;
-        await processSessionRuntimeSignal(normalizedSignal);
-        if (disposed) return;
-        await replayQueuedWorkerMessages({
-          reason: "runtime_signal",
-          sessionId
-        });
-      })
-      .catch((error) => {
-        logger.debug("ai_orchestrator.runtime_signal_process_failed", {
-          sessionId,
-          runtimeState: normalizedSignal.runtimeState,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      })
-      .finally(() => {
-        if (sessionSignalQueues.get(sessionId) === next) {
-          sessionSignalQueues.delete(sessionId);
-        }
-      });
-    sessionSignalQueues.set(sessionId, next);
   };
 
   const onAgentChatEvent = (envelope: AgentChatEventEnvelope): void => {
     if (disposed) return;
-    const sessionId = String(envelope.sessionId ?? "").trim();
-    if (!sessionId.length) return;
-    const event = envelope.event;
     persistStructuredWorkerChatEvent(envelope);
-    const shouldReplay =
-      (event.type === "status" && (event.turnStatus === "completed" || event.turnStatus === "interrupted" || event.turnStatus === "failed"))
-      || event.type === "done"
-      || event.type === "error";
-    if (!shouldReplay) return;
+    onAgentChatEventCtx(ctx, envelope, { replayQueuedWorkerMessages });
+  };
 
-    const previous = sessionSignalQueues.get(sessionId) ?? Promise.resolve();
-    const next = previous
-      .catch((error) => { logger.warn("ai_orchestrator.session_signal_queue_previous_failed", { sessionId, error: getErrorMessage(error) }); })
-      .then(async () => {
-        if (disposed) return;
-        await replayQueuedWorkerMessages({
-          reason: `agent_chat:${event.type}`,
-          sessionId
-        });
-      })
-      .catch((error) => {
-        logger.warn("ai_orchestrator.agent_chat_replay_failed", {
-          sessionId,
-          eventType: event.type,
-          error: getErrorMessage(error)
-        });
-      })
-      .finally(() => {
-        if (sessionSignalQueues.get(sessionId) === next) {
-          sessionSignalQueues.delete(sessionId);
+  const RUN_VIEW_NOISE_EVENT_TYPES = new Set([
+    "scheduler_tick",
+    "claim_heartbeat",
+    "autopilot_parallelism_cap_adjusted",
+    "context_snapshot_created",
+    "context_pack_v2_metrics",
+    "executor_session_attached",
+    "startup_verification_warning",
+    "step_metadata_updated",
+    "step_dependencies_resolved",
+  ]);
+
+  const toRunViewSeverity = (value: string | null | undefined): MissionRunViewSeverity => {
+    const normalized = String(value ?? "").trim().toLowerCase();
+    if (
+      normalized.includes("fail")
+      || normalized.includes("error")
+      || normalized.includes("unavailable")
+      || normalized.includes("blocked")
+      || normalized.includes("cancel")
+    ) {
+      return "error";
+    }
+    if (
+      normalized.includes("warn")
+      || normalized.includes("pause")
+      || normalized.includes("waiting")
+      || normalized.includes("retry")
+      || normalized.includes("review")
+    ) {
+      return "warning";
+    }
+    if (normalized.includes("success") || normalized.includes("complete") || normalized.includes("done")) {
+      return "success";
+    }
+    return "info";
+  };
+
+  const ACTIVE_RUN_VIEW_STATUSES = new Set<OrchestratorRunStatus>(["active", "bootstrapping", "queued", "paused"]);
+
+  const pickPreferredMissionRun = (
+    runs: OrchestratorRun[],
+    requestedRunId?: string | null,
+  ): OrchestratorRun | null => {
+    const explicitRunId = toOptionalString(requestedRunId);
+    if (explicitRunId) {
+      return runs.find((entry) => entry.id === explicitRunId) ?? null;
+    }
+    return runs.find((entry) => ACTIVE_RUN_VIEW_STATUSES.has(entry.status)) ?? runs[0] ?? null;
+  };
+
+  const getScopedOpenIntervention = (args: {
+    mission: MissionDetail;
+    run: OrchestratorRun | null;
+  }) => {
+    const sortByUpdatedAtDesc = (left: MissionDetail["interventions"][number], right: MissionDetail["interventions"][number]) =>
+      Date.parse(right.updatedAt || right.createdAt) - Date.parse(left.updatedAt || left.createdAt);
+    const openEntries = args.mission.interventions.filter((entry) => entry.status === "open");
+    if (!args.run) return [...openEntries].sort(sortByUpdatedAtDesc)[0] ?? null;
+    const runScoped = openEntries
+      .filter((entry) => toOptionalString(asRecord(entry.metadata)?.runId) === args.run?.id)
+      .sort(sortByUpdatedAtDesc)[0] ?? null;
+    if (runScoped) return runScoped;
+    if (args.mission.status === "intervention_required") {
+      return [...openEntries]
+        .filter((entry) => !toOptionalString(asRecord(entry.metadata)?.runId))
+        .sort(sortByUpdatedAtDesc)[0] ?? null;
+    }
+    return null;
+  };
+
+  const toRunViewLatestIntervention = (mission: MissionDetail): MissionRunViewLatestIntervention | null => {
+    const latest = [...mission.interventions].sort((left, right) => {
+      const leftAt = Date.parse(left.updatedAt || left.createdAt);
+      const rightAt = Date.parse(right.updatedAt || right.createdAt);
+      return (Number.isFinite(rightAt) ? rightAt : 0) - (Number.isFinite(leftAt) ? leftAt : 0);
+    })[0];
+    if (!latest) return null;
+    return {
+      id: latest.id,
+      title: latest.title,
+      body: latest.body,
+      interventionType: latest.interventionType,
+      status: latest.status,
+      requestedAction: latest.requestedAction ?? null,
+      createdAt: latest.updatedAt || latest.createdAt,
+    };
+  };
+
+  const toRunViewWorkerStatus = (
+    worker: OrchestratorWorkerState | null,
+    attemptStatus: string | null,
+  ): MissionRunViewWorkerSummary["status"] => {
+    if (!worker) {
+      if (attemptStatus === "blocked") return "blocked";
+      if (attemptStatus === "failed") return "failed";
+      if (attemptStatus === "succeeded" || attemptStatus === "canceled") return "completed";
+      return "idle";
+    }
+    switch (worker.state) {
+      case "spawned":
+      case "initializing":
+      case "working":
+      case "waiting_input":
+        return "active";
+      case "failed":
+        return "failed";
+      case "completed":
+        return "completed";
+      case "disposed":
+        return attemptStatus === "failed" ? "failed" : attemptStatus === "blocked" ? "blocked" : "idle";
+      default:
+        return "idle";
+    }
+  };
+
+  const buildRunViewHaltReason = (args: {
+    mission: MissionDetail;
+    runStatus: OrchestratorRunStatus | null;
+    coordinatorAvailability: MissionCoordinatorAvailability | null;
+    latestIntervention: MissionRunViewLatestIntervention | null;
+    openIntervention: MissionDetail["interventions"][number] | null;
+  }): MissionRunViewHaltReason | null => {
+    const openIntervention = args.openIntervention;
+    if (openIntervention) {
+      return {
+        source: "intervention",
+        title: openIntervention.title,
+        detail: openIntervention.requestedAction?.trim() || openIntervention.body,
+        severity: "warning",
+        interventionId: openIntervention.id,
+        createdAt: openIntervention.updatedAt || openIntervention.createdAt,
+      };
+    }
+    if (args.coordinatorAvailability && args.coordinatorAvailability.available === false) {
+      return {
+        source: "coordinator",
+        title: "Coordinator unavailable",
+        detail: args.coordinatorAvailability.detail?.trim() || args.coordinatorAvailability.summary,
+        severity: "error",
+        createdAt: args.coordinatorAvailability.updatedAt,
+      };
+    }
+    if (args.runStatus === "failed") {
+      return {
+        source: "run",
+        title: "Run failed",
+        detail: args.mission.lastError?.trim() || "The run stopped with a failure.",
+        severity: "error",
+        createdAt: args.mission.updatedAt,
+      };
+    }
+    if (args.runStatus === "canceled" || args.mission.status === "canceled") {
+      return {
+        source: args.runStatus === "canceled" ? "run" : "mission",
+        title: "Run canceled",
+        detail: args.mission.lastError?.trim() || "Execution was canceled before completion.",
+        severity: "warning",
+        createdAt: args.mission.updatedAt,
+      };
+    }
+    if (args.mission.status === "failed") {
+      return {
+        source: "mission",
+        title: "Mission failed",
+        detail: args.mission.lastError?.trim() || args.latestIntervention?.body || "Mission ended in a failed state.",
+        severity: "error",
+        createdAt: args.mission.updatedAt,
+      };
+    }
+    return null;
+  };
+
+  const buildRunViewTimelineItem = (
+    event: OrchestratorRunGraph["timeline"][number],
+    stepById: Map<string, OrchestratorStep>,
+  ): MissionRunViewProgressItem | null => {
+    if (RUN_VIEW_NOISE_EVENT_TYPES.has(event.eventType)) return null;
+    const step = event.stepId ? stepById.get(event.stepId) ?? null : null;
+    const stepLabel = step?.title ?? step?.stepKey ?? "run";
+    const detailRecord = isRecord(event.detail) ? event.detail : null;
+    const detailSummary = toOptionalString(detailRecord?.summary)
+      ?? toOptionalString(detailRecord?.message)
+      ?? toOptionalString(detailRecord?.reason)
+      ?? null;
+
+    switch (event.eventType) {
+      case "run_created":
+      case "run_activated":
+        return {
+          id: `timeline:${event.id}`,
+          at: event.createdAt,
+          kind: "system",
+          title: event.eventType === "run_created" ? "Run created" : "Run activated",
+          detail: detailSummary ?? event.reason ?? "Mission execution is live.",
+          severity: "info",
+        };
+      case "phase_transition":
+        return {
+          id: `timeline:${event.id}`,
+          at: event.createdAt,
+          kind: "system",
+          title: "Phase advanced",
+          detail: detailSummary
+            ?? `Now working in ${(toOptionalString(detailRecord?.toPhaseName) ?? toOptionalString(detailRecord?.toPhaseKey) ?? "the next phase")}.`,
+          severity: "info",
+          stepId: event.stepId,
+          stepKey: step?.stepKey ?? null,
+          attemptId: event.attemptId,
+        };
+      case "step_status_changed": {
+        if (!["running", "blocked", "failed", "succeeded", "canceled"].includes(event.reason)) return null;
+        const reasonTitle = event.reason === "running"
+          ? "Worker started"
+          : event.reason === "succeeded"
+            ? "Worker completed"
+            : event.reason === "blocked"
+              ? "Worker blocked"
+              : event.reason === "failed"
+                ? "Worker failed"
+                : "Worker canceled";
+        return {
+          id: `timeline:${event.id}`,
+          at: event.createdAt,
+          kind: "worker",
+          title: reasonTitle,
+          detail: detailSummary ?? `${stepLabel} is ${event.reason}.`,
+          severity: toRunViewSeverity(event.reason),
+          stepId: event.stepId,
+          stepKey: step?.stepKey ?? null,
+          attemptId: event.attemptId,
+        };
+      }
+      case "attempt_started":
+      case "attempt_completed":
+        return {
+          id: `timeline:${event.id}`,
+          at: event.createdAt,
+          kind: "worker",
+          title: event.eventType === "attempt_started" ? "Attempt started" : "Attempt completed",
+          detail: detailSummary ?? `${stepLabel} attempt ${event.eventType === "attempt_started" ? "started" : "finished"}.`,
+          severity: "info",
+          stepId: event.stepId,
+          stepKey: step?.stepKey ?? null,
+          attemptId: event.attemptId,
+        };
+      case "worker_status_reported":
+      case "worker_result_reported":
+        return {
+          id: `timeline:${event.id}`,
+          at: event.createdAt,
+          kind: "worker",
+          title: event.eventType === "worker_result_reported" ? "Worker result" : "Worker update",
+          detail: detailSummary ?? `${stepLabel} reported progress.`,
+          severity: toRunViewSeverity(detailSummary ?? event.reason),
+          stepId: event.stepId,
+          stepKey: step?.stepKey ?? null,
+          attemptId: event.attemptId,
+        };
+      case "autopilot_step_skipped":
+        return {
+          id: `timeline:${event.id}`,
+          at: event.createdAt,
+          kind: "system",
+          title: "Step skipped",
+          detail: detailSummary ?? `${stepLabel} was skipped by the orchestrator.`,
+          severity: "warning",
+          stepId: event.stepId,
+          stepKey: step?.stepKey ?? null,
+          attemptId: event.attemptId,
+        };
+      default:
+        if (
+          event.eventType.startsWith("validation_")
+          || event.reason.startsWith("validation_")
+        ) {
+          return {
+            id: `timeline:${event.id}`,
+            at: event.createdAt,
+            kind: "validation",
+            title: "Validation update",
+            detail: detailSummary ?? `${stepLabel} validation changed.`,
+            severity: toRunViewSeverity(event.reason),
+            stepId: event.stepId,
+            stepKey: step?.stepKey ?? null,
+            attemptId: event.attemptId,
+          };
         }
+        return null;
+    }
+  };
+
+  const buildRunViewRuntimeItem = (
+    event: NonNullable<OrchestratorRunGraph["runtimeEvents"]>[number],
+    stepById: Map<string, OrchestratorStep>,
+  ): MissionRunViewProgressItem | null => {
+    if (
+      RUN_VIEW_NOISE_EVENT_TYPES.has(event.eventType)
+      || event.eventType === "heartbeat"
+      || event.eventType === "progress"
+    ) {
+      return null;
+    }
+    const step = event.stepId ? stepById.get(event.stepId) ?? null : null;
+    const payload = isRecord(event.payload) ? event.payload : null;
+    const detail = toOptionalString(payload?.summary)
+      ?? toOptionalString(payload?.message)
+      ?? toOptionalString(payload?.reason)
+      ?? toOptionalString(payload?.directive)
+      ?? null;
+
+    if (event.eventType === "coordinator_steering" || event.eventType === "coordinator_broadcast") {
+      return {
+        id: `runtime:${event.id}`,
+        at: event.occurredAt,
+        kind: "user",
+        title: event.eventType === "coordinator_broadcast" ? "Broadcast sent" : "Steering applied",
+        detail: detail ?? "Mission steering was applied.",
+        severity: "info",
+        stepId: event.stepId,
+        stepKey: step?.stepKey ?? null,
+        attemptId: event.attemptId,
+      };
+    }
+    if (
+      event.eventType === "validation_report"
+      || event.eventType === "validation_contract_unfulfilled"
+      || event.eventType === "validation_self_check_reminder"
+      || event.eventType === "validation_gate_blocked"
+    ) {
+      return {
+        id: `runtime:${event.id}`,
+        at: event.occurredAt,
+        kind: "validation",
+        title: "Validation signal",
+        detail: detail ?? `${step?.title ?? step?.stepKey ?? "Step"} validation state changed.`,
+        severity: toRunViewSeverity(event.eventType),
+        stepId: event.stepId,
+        stepKey: step?.stepKey ?? null,
+        attemptId: event.attemptId,
+      };
+    }
+    return null;
+  };
+
+  const buildRunViewProgressLog = (args: {
+    mission: MissionDetail;
+    graph: OrchestratorRunGraph | null;
+  }): MissionRunViewProgressItem[] => {
+    const stepById = new Map((args.graph?.steps ?? []).map((step) => [step.id, step] as const));
+    const items: MissionRunViewProgressItem[] = [];
+    for (const event of args.graph?.timeline ?? []) {
+      const item = buildRunViewTimelineItem(event, stepById);
+      if (item) items.push(item);
+    }
+    for (const event of args.graph?.runtimeEvents ?? []) {
+      const item = buildRunViewRuntimeItem(event, stepById);
+      if (item) items.push(item);
+    }
+    for (const intervention of args.mission.interventions) {
+      items.push({
+        id: `intervention:${intervention.id}:${intervention.status}`,
+        at: intervention.updatedAt || intervention.createdAt,
+        kind: "intervention",
+        title: intervention.title,
+        detail: intervention.requestedAction?.trim() || intervention.body,
+        severity: intervention.status === "open" ? "warning" : "info",
       });
-    sessionSignalQueues.set(sessionId, next);
+    }
+    for (const event of args.mission.events) {
+      if (
+        event.eventType !== "mission_intervention_resolved"
+        && event.eventType !== "mission_status_changed"
+        && event.eventType !== "mission_ready_to_start"
+      ) {
+        continue;
+      }
+      items.push({
+        id: `mission:${event.id}`,
+        at: event.createdAt,
+        kind: event.eventType === "mission_intervention_resolved" ? "user" : "system",
+        title: event.eventType === "mission_intervention_resolved" ? "Intervention resolved" : "Mission update",
+        detail: event.summary,
+        severity: toRunViewSeverity(event.eventType),
+      });
+    }
+    return items
+      .sort((left, right) => {
+        const delta = Date.parse(right.at) - Date.parse(left.at);
+        return Number.isFinite(delta) && delta !== 0 ? delta : right.id.localeCompare(left.id);
+      })
+      .slice(0, 80);
+  };
+
+  const getRunView = async (
+    viewArgs: GetMissionRunViewArgs,
+  ): Promise<MissionRunView | null> => {
+    const missionId = String(viewArgs.missionId ?? "").trim();
+    if (!missionId.length) return null;
+    const mission = missionService.get(missionId);
+    if (!mission) return null;
+
+    const runs = orchestratorService.listRuns({ missionId, limit: 200 });
+    const run = pickPreferredMissionRun(runs, viewArgs.runId);
+    const graph = run ? orchestratorService.getRunGraph({ runId: run.id, timelineLimit: 200 }) : null;
+    const stateDoc = run ? await getMissionStateDocument({ runId: run.id }) : null;
+    const workerStates = run ? getWorkerStates({ runId: run.id }) : [];
+    const latestIntervention = toRunViewLatestIntervention(mission);
+    const openIntervention = getScopedOpenIntervention({ mission, run });
+    const openInterventionReasonCode = toOptionalString(asRecord(openIntervention?.metadata)?.reasonCode);
+    const coordinatorAvailability = stateDoc?.coordinatorAvailability
+      ?? (
+        openInterventionReasonCode === "coordinator_unavailable" || openInterventionReasonCode === "coordinator_recovery_failed"
+          ? {
+              available: false,
+              mode: "continuation_required",
+              summary: openIntervention?.title ?? "Coordinator unavailable",
+              detail: openIntervention?.body ?? null,
+              updatedAt: openIntervention?.updatedAt ?? mission.updatedAt,
+            } satisfies MissionCoordinatorAvailability
+          : null
+      )
+      ?? (
+        run && coordinatorAgents.get(run.id)?.isAlive
+          ? {
+              available: true,
+              mode: "continuation_required",
+              summary: "Coordinator online",
+              detail: null,
+              updatedAt: mission.updatedAt,
+            } satisfies MissionCoordinatorAvailability
+          : null
+      );
+
+    const haltReason = buildRunViewHaltReason({
+      mission,
+      runStatus: run?.status ?? null,
+      coordinatorAvailability,
+      latestIntervention,
+      openIntervention,
+    });
+
+    const activeStep = (() => {
+      const steps = filterExecutionSteps(graph?.steps ?? []);
+      const byPriority = [
+        steps.find((step) => step.status === "running"),
+        steps.find((step) => step.status === "blocked"),
+        steps.find((step) => step.status === "ready" || step.status === "pending"),
+        steps.find((step) => step.status === "failed"),
+      ];
+      return byPriority.find((step): step is OrchestratorStep => Boolean(step)) ?? null;
+    })();
+
+    const phaseRuntime = asRecord(isRecord(graph?.run.metadata) ? graph?.run.metadata.phaseRuntime : null);
+    const activeStepMeta = asRecord(activeStep?.metadata);
+    const displayStatus = (() => {
+      if (openIntervention || coordinatorAvailability?.available === false) return "blocked" satisfies MissionRunViewDisplayStatus;
+      if (run?.status === "failed" || mission.status === "failed") return "failed" satisfies MissionRunViewDisplayStatus;
+      if (run?.status === "canceled" || mission.status === "canceled") return "canceled" satisfies MissionRunViewDisplayStatus;
+      if (run?.status === "succeeded" || mission.status === "completed") return "completed" satisfies MissionRunViewDisplayStatus;
+      if (run?.status === "queued" || run?.status === "bootstrapping" || mission.status === "planning") return "starting" satisfies MissionRunViewDisplayStatus;
+      if (run?.status === "paused") return "paused" satisfies MissionRunViewDisplayStatus;
+      if (run?.status === "active" || mission.status === "in_progress") return "running" satisfies MissionRunViewDisplayStatus;
+      return "not_started" satisfies MissionRunViewDisplayStatus;
+    })();
+
+    const progressLog = buildRunViewProgressLog({ mission, graph });
+    const stepById = new Map((graph?.steps ?? []).map((step) => [step.id, step] as const));
+    const attemptById = new Map((graph?.attempts ?? []).map((attempt) => [attempt.id, attempt] as const));
+    const workers: MissionRunViewWorkerSummary[] = workerStates.map((worker) => {
+      const step = stepById.get(worker.stepId) ?? null;
+      const attempt = attemptById.get(worker.attemptId) ?? null;
+      return {
+        attemptId: worker.attemptId,
+        stepId: worker.stepId,
+        stepKey: step?.stepKey ?? null,
+        stepTitle: step?.title ?? null,
+        laneId: step?.laneId ?? null,
+        sessionId: worker.sessionId ?? null,
+        executorKind: worker.executorKind ?? null,
+        state: worker.state,
+        status: toRunViewWorkerStatus(worker, attempt?.status ?? null),
+        lastHeartbeatAt: worker.lastHeartbeatAt ?? null,
+        completedAt: worker.completedAt ?? null,
+      };
+    });
+
+    for (const step of filterExecutionSteps(graph?.steps ?? []).filter((entry) => entry.status === "blocked")) {
+      if (workers.some((worker) => worker.stepId === step.id)) continue;
+      const latestAttempt = [...(graph?.attempts ?? [])]
+        .filter((attempt) => attempt.stepId === step.id)
+        .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0] ?? null;
+      workers.push({
+        attemptId: latestAttempt?.id ?? null,
+        stepId: step.id,
+        stepKey: step.stepKey,
+        stepTitle: step.title,
+        laneId: step.laneId ?? null,
+        sessionId: latestAttempt?.executorSessionId ?? null,
+        executorKind: latestAttempt?.executorKind ?? null,
+        state: "blocked",
+        status: "blocked",
+        lastHeartbeatAt: latestAttempt?.completedAt ?? latestAttempt?.startedAt ?? latestAttempt?.createdAt ?? null,
+        completedAt: latestAttempt?.completedAt ?? null,
+      });
+    }
+
+    return {
+      missionId,
+      runId: run?.id ?? null,
+      lifecycle: {
+        missionStatus: mission.status,
+        runStatus: run?.status ?? null,
+        displayStatus,
+        summary: haltReason?.detail
+          ?? (
+            displayStatus === "running"
+              ? activeStep?.title
+                ? `Working on ${activeStep.title}.`
+                : "Mission is actively running."
+              : displayStatus === "starting"
+                ? "Preparing mission runtime and coordinator."
+                : displayStatus === "completed"
+                  ? (mission.outcomeSummary?.trim() || "Mission completed.")
+                  : displayStatus === "failed"
+                    ? (mission.lastError?.trim() || "Mission failed.")
+                    : displayStatus === "canceled"
+                      ? "Mission was canceled."
+                      : displayStatus === "paused"
+                        ? "Mission is paused."
+                      : "Mission has not started yet."
+          ),
+        startedAt: run?.startedAt ?? mission.startedAt ?? null,
+        completedAt: run?.completedAt ?? mission.completedAt ?? null,
+      },
+      active: {
+        phaseKey: toOptionalString(activeStepMeta?.phaseKey)
+          ?? toOptionalString(phaseRuntime?.currentPhaseKey)
+          ?? toOptionalString(stateDoc?.progress.currentPhase)
+          ?? null,
+        phaseName: toOptionalString(activeStepMeta?.phaseName)
+          ?? toOptionalString(phaseRuntime?.currentPhaseName)
+          ?? toOptionalString(stateDoc?.progress.currentPhase)
+          ?? null,
+        stepId: activeStep?.id ?? null,
+        stepKey: activeStep?.stepKey ?? null,
+        stepTitle: activeStep?.title ?? null,
+        featureLabel: toOptionalString(activeStepMeta?.featureLabel)
+          ?? toOptionalString(activeStepMeta?.featureKey)
+          ?? toOptionalString(activeStepMeta?.phaseName)
+          ?? null,
+      },
+      coordinator: {
+        available: coordinatorAvailability?.available ?? null,
+        mode: coordinatorAvailability?.mode ?? null,
+        summary: coordinatorAvailability?.summary ?? null,
+        detail: coordinatorAvailability?.detail ?? null,
+        updatedAt: coordinatorAvailability?.updatedAt ?? null,
+      },
+      latestIntervention,
+      haltReason,
+      workers: workers.sort((left, right) => {
+        const leftAt = Date.parse(left.completedAt || left.lastHeartbeatAt || "");
+        const rightAt = Date.parse(right.completedAt || right.lastHeartbeatAt || "");
+        return (Number.isFinite(rightAt) ? rightAt : 0) - (Number.isFinite(leftAt) ? leftAt : 0);
+      }),
+      progressLog,
+      lastMeaningfulProgress: progressLog[0] ?? null,
+    };
   };
 
   // ── Execution Plan Preview ──────────────────────────────────
@@ -7331,10 +8713,8 @@ Check all worker statuses and continue managing the mission from here. Read work
   };
 
   const pickMissionLogRunId = (missionId: string, requestedRunId?: string | null): string | null => {
-    const explicit = toOptionalString(requestedRunId);
-    if (explicit) return explicit;
     const runs = orchestratorService.listRuns({ missionId, limit: 200 });
-    return runs[0]?.id ?? null;
+    return pickPreferredMissionRun(runs, requestedRunId)?.id ?? null;
   };
 
   const getMissionLogs = async (args: GetMissionLogsArgs): Promise<GetMissionLogsResult> => {
@@ -7620,6 +9000,18 @@ Check all worker statuses and continue managing the mission from here. Read work
         entries: entriesCount,
       });
     };
+    const copyBundleFile = (name: string, sourcePath: string): void => {
+      if (!sourcePath.trim().length || !fs.existsSync(sourcePath)) return;
+      const filePath = nodePath.join(bundlePath, name);
+      fs.mkdirSync(nodePath.dirname(filePath), { recursive: true });
+      fs.copyFileSync(sourcePath, filePath);
+      files.push({
+        name,
+        path: filePath,
+        bytes: fs.statSync(filePath).size,
+        entries: 0,
+      });
+    };
 
     const grouped = new Map<MissionLogChannel, MissionLogEntry[]>();
     for (const channel of channels) grouped.set(channel, []);
@@ -7654,6 +9046,30 @@ Check all worker statuses and continue managing the mission from here. Read work
           )}\n`,
         );
       }
+      writeBundleFile(
+        "chat-transcript.json",
+        `${JSON.stringify(getChat({ missionId }), null, 2)}\n`,
+      );
+      if (runId) {
+        const runGraph = orchestratorService.getRunGraph({ runId, timelineLimit: 5_000 });
+        writeBundleFile("run-graph.json", `${JSON.stringify(runGraph, null, 2)}\n`);
+        writeBundleFile(
+          "worker-checkpoints.json",
+          `${JSON.stringify(orchestratorService.getWorkerCheckpointsForRun({ runId }), null, 2)}\n`,
+        );
+        copyBundleFile("mission-state.json", getMissionStateDocumentPath(root, runId));
+        copyBundleFile("coordinator-checkpoint.json", getCoordinatorCheckpointPath(root, runId));
+        copyBundleFile("logs/main.jsonl", nodePath.join(root, ".ade", "logs", "main.jsonl"));
+        copyBundleFile("logs/runtime.log", nodePath.join(root, ".ade", "logs", "runtime.log"));
+        copyBundleFile("logs/coordinator.claude.log", nodePath.join(root, ".ade", "logs", `coordinator-${runId}.claude.log`));
+        for (const attempt of runGraph.attempts) {
+          const metadata = isRecord(attempt.metadata) ? attempt.metadata : null;
+          const transcriptPath = typeof metadata?.transcriptPath === "string" ? metadata.transcriptPath.trim() : "";
+          if (!transcriptPath.length) continue;
+          const fileName = nodePath.basename(transcriptPath);
+          copyBundleFile(nodePath.join("transcripts", fileName), transcriptPath);
+        }
+      }
     }
 
     const exportedAt = nowIso();
@@ -7679,6 +9095,8 @@ Check all worker statuses and continue managing the mission from here. Read work
     startMissionRun,
     cancelRunGracefully,
     cleanupTeamResources,
+    onQueueLandingStateChanged,
+    onQueueRehearsalStateChanged,
 
     onOrchestratorRuntimeEvent(event: OrchestratorRuntimeEvent) {
       if (disposed) return;
@@ -7720,6 +9138,32 @@ Check all worker statuses and continue managing the mission from here. Read work
             stepId: event.stepId ?? null,
             attemptId: event.attemptId ?? null,
             error: signalError instanceof Error ? signalError.message : String(signalError)
+          });
+        }
+      }
+
+      // VAL-BUDGET-001: When completeAttempt detects token-budget-exceeded and
+      // pauses the run, create a budget_limit_reached intervention matching the
+      // hard cap path in coordinatorTools (pauseOnBudgetHardCap).
+      if (event.type === "orchestrator-run-updated" && event.reason === "budget_exceeded") {
+        try {
+          const missionId = getMissionIdForRun(runId);
+          if (missionId) {
+            const graph = getEventGraph();
+            const detail = graph.run.lastError ?? "Total token budget exceeded.";
+            pauseMissionWithIntervention({
+              missionId,
+              interventionType: "budget_limit_reached",
+              title: "Token budget exceeded",
+              body: detail,
+              requestedAction: "Raise budget limits, wait for the 5-hour window to reset, or cancel the mission.",
+              metadata: { source: "completeAttempt_budget_exceeded", runId },
+            });
+          }
+        } catch (budgetError) {
+          logger.debug("ai_orchestrator.budget_exceeded_intervention_failed", {
+            runId,
+            error: budgetError instanceof Error ? budgetError.message : String(budgetError),
           });
         }
       }
@@ -7807,6 +9251,12 @@ Check all worker statuses and continue managing the mission from here. Read work
               }
             });
           }
+        } else if (runStatus === "succeeded" || runStatus === "failed" || runStatus === "canceled") {
+          resolveCoordinatorHealthInterventions({
+            runId,
+            note: `Run reached terminal state (${runStatus}) and stale coordinator availability intervention was closed.`,
+            resolutionReason: "run_terminal",
+          });
         }
         logger.warn("ai_orchestrator.coordinator_unavailable", {
           runId,
@@ -7817,8 +9267,22 @@ Check all worker statuses and continue managing the mission from here. Read work
         return;
       }
 
+      resolveCoordinatorHealthInterventions({
+        runId,
+        note: "Coordinator runtime is healthy again; closed stale coordinator availability intervention.",
+        resolutionReason: "coordinator_recovered",
+      });
+
       // Run finalized — coordinator's job is done, shut it down
       if (event.reason === "finalized") {
+        const terminalRunStatus = getEventGraph().run.status;
+        if (terminalRunStatus === "succeeded" || terminalRunStatus === "failed" || terminalRunStatus === "canceled") {
+          resolveCoordinatorHealthInterventions({
+            runId,
+            note: `Run reached terminal state (${terminalRunStatus}) and stale coordinator availability intervention was closed.`,
+            resolutionReason: "run_terminal",
+          });
+        }
         void syncMissionFromRun(runId, event.reason);
         endCoordinatorAgentV2(runId);
         return;
@@ -7960,10 +9424,15 @@ Check all worker statuses and continue managing the mission from here. Read work
     listWorkerDigests,
     getContextCheckpoint,
     listLaneDecisions,
+    listArtifacts,
+    listWorkerCheckpoints,
+    getPromptInspector,
+    getPlanningPromptPreview,
     getMissionMetrics,
     setMissionMetricsConfig,
     getExecutionPlanPreview,
     getMissionStateDocument,
+    getRunView,
     getAggregatedUsage,
     getTeamManifest: (tmArgs: { runId: string }): TeamManifest | null => {
       return runTeamManifests.get(tmArgs.runId) ?? null;

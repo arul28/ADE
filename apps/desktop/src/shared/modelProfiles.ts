@@ -7,8 +7,10 @@ import type {
   ThinkingLevel
 } from "./types";
 import {
+  getDefaultModelDescriptor,
   MODEL_REGISTRY,
   getModelPricing,
+  listModelDescriptorsForProvider,
   updateModelPricingInRegistry,
   type ModelDescriptor,
 } from "./modelRegistry";
@@ -43,18 +45,20 @@ function descriptorToEntry(d: ModelDescriptor, overrides?: { recommended?: boole
   };
 }
 
+const DEFAULT_CLAUDE_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
+const DEFAULT_CODEX_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4-codex";
+
 // CLI-wrapped Anthropic models (claude provider)
 export const CLAUDE_MODELS: ModelEntry[] = MODEL_REGISTRY
   .filter((m) => m.family === "anthropic" && m.isCliWrapped && !m.deprecated)
   .map((d) => descriptorToEntry(d, {
-    recommended: d.sdkModelId.includes("sonnet"),
+    recommended: d.id === DEFAULT_CLAUDE_MODEL_ID,
   }));
 
 // CLI-wrapped OpenAI models (codex provider)
-export const CODEX_MODELS: ModelEntry[] = MODEL_REGISTRY
-  .filter((m) => m.family === "openai" && m.isCliWrapped && !m.deprecated)
+export const CODEX_MODELS: ModelEntry[] = listModelDescriptorsForProvider("codex")
   .map((d) => descriptorToEntry(d, {
-    recommended: d.sdkModelId === "gpt-5.3-codex",
+    recommended: d.id === DEFAULT_CODEX_MODEL_ID,
   }));
 
 export const ALL_MODELS: ModelEntry[] = MODEL_REGISTRY
@@ -135,7 +139,7 @@ export const ORCHESTRATOR_CALL_TYPES: CallTypeInfo[] = [
 const CLAUDE_SONNET: ModelConfig = { provider: "claude", modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" };
 const CLAUDE_HAIKU: ModelConfig = { provider: "claude", modelId: "anthropic/claude-haiku-4-5", thinkingLevel: "low" };
 const CLAUDE_OPUS: ModelConfig = { provider: "claude", modelId: "anthropic/claude-opus-4-6", thinkingLevel: "high" };
-const CODEX_53: ModelConfig = { provider: "codex", modelId: "openai/gpt-5.3-codex", thinkingLevel: "medium" };
+const CODEX_STANDARD: ModelConfig = { provider: "codex", modelId: DEFAULT_CODEX_MODEL_ID, thinkingLevel: "medium" };
 const CODEX_MINI: ModelConfig = { provider: "codex", modelId: "openai/codex-mini-latest", thinkingLevel: "low" };
 
 export const BUILT_IN_PROFILES: MissionModelProfile[] = [
@@ -148,12 +152,12 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
     decisionTimeoutCapHours: 24,
     phaseDefaults: {
       planning: CLAUDE_SONNET,
-      implementation: CODEX_53,
-      testing: CODEX_53,
-      validation: CODEX_53,
+      implementation: CODEX_STANDARD,
+      testing: CODEX_STANDARD,
+      validation: CODEX_STANDARD,
       codeReview: CLAUDE_SONNET,
-      testReview: CODEX_53,
-      prReview: CODEX_53,
+      testReview: CODEX_STANDARD,
+      prReview: CODEX_STANDARD,
     },
     intelligenceConfig: {
       coordinator: CLAUDE_SONNET,
@@ -196,11 +200,11 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
     phaseDefaults: {
       planning: CLAUDE_OPUS,
       implementation: { provider: "codex", modelId: "openai/gpt-5.1-codex-max", thinkingLevel: "high" },
-      testing: CODEX_53,
+      testing: CODEX_STANDARD,
       validation: CLAUDE_OPUS,
       codeReview: CLAUDE_OPUS,
       testReview: CLAUDE_SONNET,
-      prReview: CODEX_53,
+      prReview: CODEX_STANDARD,
     },
     intelligenceConfig: {
       coordinator: CLAUDE_OPUS,
@@ -212,20 +216,20 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
     name: "Codex Only",
     description: "Uses Codex (OpenAI) for everything. No Claude API calls. Good if you only have OpenAI access.",
     isBuiltIn: true,
-    orchestratorModel: CODEX_53,
+    orchestratorModel: CODEX_STANDARD,
     decisionTimeoutCapHours: 24,
     phaseDefaults: {
-      planning: CODEX_53,
-      implementation: CODEX_53,
-      testing: CODEX_53,
-      validation: CODEX_53,
-      codeReview: CODEX_53,
-      testReview: CODEX_53,
-      prReview: CODEX_53,
+      planning: CODEX_STANDARD,
+      implementation: CODEX_STANDARD,
+      testing: CODEX_STANDARD,
+      validation: CODEX_STANDARD,
+      codeReview: CODEX_STANDARD,
+      testReview: CODEX_STANDARD,
+      prReview: CODEX_STANDARD,
     },
     intelligenceConfig: {
-      coordinator: CODEX_53,
-      chat_response: CODEX_53,
+      coordinator: CODEX_STANDARD,
+      chat_response: CODEX_STANDARD,
     }
   },
   {
@@ -276,7 +280,7 @@ export function resolveCallTypeModel(
 export function modelConfigToServiceModel(config: ModelConfig): string {
   const modelId = config.modelId?.trim();
   if (modelId && modelId.length > 0) return modelId;
-  if (config.provider === "codex") return "openai/gpt-5.3-codex";
+  if (config.provider === "codex") return DEFAULT_CODEX_MODEL_ID;
   return "anthropic/claude-sonnet-4-6";
 }
 

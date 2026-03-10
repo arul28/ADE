@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-02
+> Last updated: 2026-03-10
 
 This document describes the renderer architecture in `apps/desktop/src/renderer`, including routing, theme system, state model, layout patterns, and IPC integration constraints.
 
@@ -22,6 +22,7 @@ This document describes the renderer architecture in `apps/desktop/src/renderer`
   - [WorkspaceGraphPage Decomposition](#workspacegraphpage-decomposition)
   - [Shared Frontend Utilities](#shared-frontend-utilities)
 - [IPC Integration](#ipc-integration)
+- [Performance](#performance)
 - [Implementation Status](#implementation-status)
 
 ---
@@ -82,15 +83,13 @@ Routes are defined in `apps/desktop/src/renderer/components/app/App.tsx`. Curren
 - `/onboarding`
 - `/lanes`
 - `/files`
-- `/terminals` (legacy redirect to `/work`)
 - `/work`
-- `/context` (legacy redirect to `/settings`)
 - `/graph`
 - `/prs`
 - `/history`
 - `/automations`
-- `/agents` (compatibility alias to `/automations`)
 - `/missions`
+- `/cto`
 - `/settings`
 
 Primary left-rail nav (`TabNav`) exposes 11 tabs:
@@ -113,6 +112,8 @@ The shell is composed by `AppShell` + `TopBar` + `TabNav`, with each route rende
 
 ## State Management
 
+### Global App Store
+
 Global renderer state lives in `apps/desktop/src/renderer/state/appStore.ts`.
 
 Core app state includes:
@@ -129,11 +130,20 @@ Core app state includes:
 
 Store actions include project/lane refresh, project switching, provider mode refresh, keybindings refresh, and theme persistence.
 
-State design principles:
+### Domain-Specific Stores
+
+`useMissionsStore` (`apps/desktop/src/renderer/components/missions/useMissionsStore.ts`) is a domain-specific Zustand store that owns all mission-related state and actions. It colocates state, derived data, and side-effect management in a single module:
+
+- **Fine-grained selectors with `useShallow`**: Components subscribe to narrow slices of the store using `useShallow` to minimize rerenders (e.g., `useMissionsStore(useShallow(s => ({ missions: s.missions, selectedId: s.selectedMissionId })))`).
+- **Store-owned event subscriptions (`initEventSubscriptions`)**: The store registers IPC event listeners for `ade.missions.event` and `ade.orchestrator.event` internally, ensuring mission and orchestrator state updates are handled in one place rather than scattered across components.
+- **Store-owned timers**: Toast management (auto-dismiss timers) and debounced operations (e.g., search filtering, event coalescing) are managed within the store, keeping timer lifecycle tied to store lifetime.
+
+### State Design Principles
 
 - Keep remote/system authority in main-process services; renderer store remains projection + UI selection state.
 - Use narrow selectors in components to minimize rerenders.
 - Keep cross-page selected lane/run lane continuity for workflow speed.
+- Domain-heavy pages (Missions) use dedicated Zustand stores to avoid bloating the global appStore.
 
 ---
 
@@ -175,11 +185,18 @@ Renderer components are feature-grouped under `apps/desktop/src/renderer/compone
 
 ### MissionsPage Decomposition
 
-`MissionsPage.tsx` was decomposed from ~5,600 lines to ~2,200 lines (60% reduction). The extracted modules live alongside it in `missions/`:
+The missions UI has been further decomposed through the M3/M4 UI overhaul. The current module structure:
 
 | Module | Lines | Responsibility |
 |--------|-------|----------------|
-| `missionHelpers.ts` | ~520 | Shared mission utility functions (formatting, status logic, color mapping) |
+| `MissionsPage.tsx` | ~389 | Orchestrates layout, hooks, loading state, sidebar + detail routing |
+| `useMissionsStore.ts` | ~596 | All mission state + actions (Zustand store with event subscriptions, timers, selectors) |
+| `MissionSidebar.tsx` | — | Virtualized mission list, search, status filters |
+| `MissionHeader.tsx` | — | Status display, progress (`computeProgress`), lifecycle actions, `CompactUsageMeter` |
+| `MissionDetailView.tsx` | — | Tab routing (Plan, Work, DAG, Chat, Activity, Details), intervention panel |
+| `MissionTabContainer.tsx` | — | Tab content rendering |
+| `InterventionPanel.tsx` | — | Dedicated intervention display and resolve UI |
+| `missionHelpers.ts` | ~520 | `STATUS_CONFIG`, `classifyErrorSource`, `computeProgress`, `collapseFeedMessages`, `getAvailableLifecycleActions`, `usagePercentColor`, `formatResetCountdown` |
 | `CreateMissionDialog.tsx` | ~1,500 | Full mission creation wizard with model selection, budget, PR strategy |
 | `MissionSettingsDialog.tsx` | ~590 | Runtime settings adjustment for active missions |
 | `PlanTab.tsx` | ~190 | Plan DAG visualization tab |
@@ -188,7 +205,13 @@ Renderer components are feature-grouped under `apps/desktop/src/renderer/compone
 | `ActivityNarrativeHeader.tsx` | ~150 | Run narrative header for the Activity tab |
 | `MissionsHomeDashboard.tsx` | ~100 | Mission list/dashboard landing page |
 
-Other mission-scoped components that remain as standalone files: `MissionChatV2.tsx` (mission chat container), `MissionThreadMessageList.tsx` (shared renderer wrapper for worker/orchestrator threads), `OrchestratorDAG.tsx`, `ModelSelector.tsx`, `ModelProfileSelector.tsx`, `SmartBudgetPanel.tsx`, `PolicyEditor.tsx`, `UsageDashboard.tsx`, `AgentPresencePanel.tsx`, `MissionComposer.tsx`, `MissionControlPage.tsx`, `PhaseProgressBar.tsx`.
+**MissionChatV2 decomposition**: The mission chat container has been decomposed into focused sub-components:
+- `ChatChannelList` — Channel sidebar for thread navigation
+- `ChatMessageArea` — Message display with virtualized scrolling
+- `ChatInput` — Message composition and send
+- `chatFilters` — Filter logic for channel-based message routing
+
+Other mission-scoped components that remain as standalone files: `MissionThreadMessageList.tsx` (shared renderer wrapper for worker/orchestrator threads), `OrchestratorDAG.tsx`, `ModelSelector.tsx`, `ModelProfileSelector.tsx`, `SmartBudgetPanel.tsx`, `UsageDashboard.tsx`, `AgentPresencePanel.tsx`, `MissionComposer.tsx`, `MissionControlPage.tsx`, `PhaseProgressBar.tsx`.
 
 ### WorkspaceGraphPage Decomposition
 
@@ -245,6 +268,10 @@ High-level IPC domains consumed by the renderer:
 - Agents/missions/layout/graph/processes/tests
 - Project config/keybindings/terminal profiles/agent tools
 
+**Consolidated IPC patterns:**
+
+- `getFullMissionView`: A single IPC call that returns the complete mission state (metadata, run status, steps, chat threads, interventions, artifacts, usage) for a selected mission. Replaces 5+ separate IPC calls that previously fired on every mission selection change, reducing burst traffic and simplifying renderer-side data assembly.
+
 High-frequency event streams include:
 
 - `ade.pty.data`
@@ -261,6 +288,25 @@ High-frequency event streams include:
 - `ade.project.missing`
 
 The complete live channel inventory is defined in `apps/desktop/src/shared/ipc.ts`.
+
+---
+
+## Performance
+
+### Virtualized Lists
+
+The missions UI uses `@tanstack/react-virtual` for virtualized rendering of large lists:
+
+- **Mission sidebar list**: The mission list in `MissionSidebar.tsx` is virtualized to handle large numbers of missions without DOM bloat.
+- **Chat message area**: `ChatMessageArea` uses virtualized scrolling for mission chat threads, ensuring smooth performance even with thousands of messages.
+
+### Consolidated IPC
+
+Mission selection previously triggered 5+ separate IPC calls (metadata, run, steps, chat, interventions, etc.). The `getFullMissionView` consolidated call reduces selection-change burst to a single round-trip, cutting perceived latency and main-process load.
+
+### Store-Level Event Debouncing
+
+`useMissionsStore` debounces high-frequency `ade.missions.event` and `ade.orchestrator.event` streams at the store level, coalescing rapid state updates into batched renders rather than triggering per-event component updates.
 
 ---
 

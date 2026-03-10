@@ -159,4 +159,44 @@ describe("buildFullPrompt", () => {
     expect(prompt.prompt).toContain("PROGRESS CHECKPOINTING:");
     expect(prompt.prompt).toContain("STEP OUTPUT FILE:");
   });
+
+  it("removes ADE mission-tool instructions for in-process workers", () => {
+    const prompt = buildFullPrompt(
+      {
+        run: {
+          id: "run-1",
+          missionId: "mission-1",
+          metadata: {
+            missionGoal: "Implement the sidebar flow",
+          },
+        } as any,
+        step: {
+          id: "step-1",
+          title: "Implement sidebar changes",
+          stepKey: "implement-sidebar",
+          laneId: "lane-1",
+          metadata: {},
+          dependencyStepIds: [],
+          joinPolicy: "all_success",
+        } as any,
+        attempt: {} as any,
+        allSteps: [],
+        contextProfile: {} as any,
+        laneExport: null,
+        projectExport: {
+          content: "Project context body",
+        } as any,
+        docsRefs: [],
+        fullDocs: [],
+        createTrackedSession: async () => ({ ptyId: "pty-1", sessionId: "session-1" }),
+      },
+      "unified",
+      { workerRuntime: "in_process" }
+    );
+
+    expect(prompt.prompt).toContain("This worker is running in-process.");
+    expect(prompt.prompt).toContain("RUNTIME LIMITS:");
+    expect(prompt.prompt).not.toContain("ALWAYS call `report_result`");
+    expect(prompt.prompt).not.toContain("ADE MCP TOOLS:");
+  });
 });

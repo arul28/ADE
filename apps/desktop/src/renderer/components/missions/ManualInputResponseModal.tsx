@@ -26,6 +26,7 @@ export function ManualInputResponseModal({
 
   const metadata = intervention.metadata ?? null;
   const canProceedWithoutAnswer = metadata?.canProceedWithoutAnswer === true;
+  const workerDeliveryFailure = metadata?.workerDeliveryFailure === true;
   const phaseLabel = typeof metadata?.phaseName === "string" && metadata.phaseName.trim().length > 0
     ? metadata.phaseName.trim()
     : typeof metadata?.phase === "string" && metadata.phase.trim().length > 0
@@ -36,12 +37,20 @@ export function ManualInputResponseModal({
     : null;
 
   const statusTone = useMemo(() => {
+    if (workerDeliveryFailure) {
+      return {
+        border: `${COLORS.warning}35`,
+        background: `${COLORS.warning}12`,
+        color: COLORS.warning,
+        copy: "A worker message could not be delivered live. ADE kept the note on the worker thread and is asking how you want the mission to recover.",
+      };
+    }
     if (canProceedWithoutAnswer) {
       return {
         border: `${COLORS.accent}35`,
         background: `${COLORS.accent}12`,
         color: COLORS.accent,
-        copy: "Optional clarification. The mission can continue, but your answer will tighten the result.",
+        copy: "Optional question. The mission can continue, but your answer will tighten the result.",
       };
     }
     return {
@@ -50,7 +59,7 @@ export function ManualInputResponseModal({
       color: COLORS.warning,
       copy: "Coordinator is waiting on this answer before it should keep going.",
     };
-  }, [canProceedWithoutAnswer]);
+  }, [canProceedWithoutAnswer, workerDeliveryFailure]);
 
   const handleSubmit = useCallback(async () => {
     const trimmed = answer.trim();
@@ -112,7 +121,7 @@ export function ManualInputResponseModal({
                 color: COLORS.accent,
               }}
             >
-              Coordinator Input
+              {workerDeliveryFailure ? "Worker Message Recovery" : "Coordinator Input"}
             </span>
           </div>
           <button
@@ -187,7 +196,7 @@ export function ManualInputResponseModal({
           {intervention.requestedAction ? (
             <div>
               <div style={{ ...LABEL_STYLE, color: COLORS.textMuted, marginBottom: 6 }}>
-                WHAT TO DO
+                {workerDeliveryFailure ? "RECOVERY GUIDANCE" : "WHAT TO DO"}
               </div>
               <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
                 {intervention.requestedAction}
@@ -197,12 +206,14 @@ export function ManualInputResponseModal({
 
           <div>
             <div style={{ ...LABEL_STYLE, color: COLORS.textMuted, marginBottom: 6 }}>
-              YOUR ANSWER
+              {workerDeliveryFailure ? "HOW ADE SHOULD RECOVER" : "YOUR ANSWER"}
             </div>
             <textarea
               value={answer}
               onChange={(event) => setAnswer(event.target.value)}
-              placeholder="Type the answer you want the mission to follow..."
+              placeholder={workerDeliveryFailure
+                ? "Tell ADE how to recover: reroute through the coordinator, leave the note queued, or retry when the worker is active again."
+                : "Type the answer you want the mission to follow..."}
               style={{
                 width: "100%",
                 minHeight: 140,
@@ -232,7 +243,11 @@ export function ManualInputResponseModal({
           }}
         >
           <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
-            {canProceedWithoutAnswer ? "You can close this if you want the mission to keep its current assumptions." : "Send an answer to unblock the mission cleanly."}
+            {workerDeliveryFailure
+              ? "Send recovery guidance only if you want ADE to retry or redirect the stale worker message."
+              : canProceedWithoutAnswer
+                ? "You can close this if you want the mission to keep its current assumptions."
+                : "Send an answer to unblock the mission cleanly."}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <button style={outlineButton()} onClick={onClose} disabled={submitting}>

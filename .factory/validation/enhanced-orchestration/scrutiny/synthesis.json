@@ -1,0 +1,83 @@
+{
+  "milestone": "enhanced-orchestration",
+  "round": 1,
+  "status": "fail",
+  "validatorsRun": {
+    "test": {
+      "passed": true,
+      "command": "cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run --reporter=verbose",
+      "exitCode": 1,
+      "notes": "Full suite exited with only the 2 known pre-existing failures documented in AGENTS.md: aiOrchestratorService single-lane integration closing strategy and orchestratorService unified-attempt laneId handling. No additional failures were observed (111 passed files, 1206 passing tests, 2 known failures)."
+    },
+    "typecheck": {
+      "passed": true,
+      "command": "cd /Users/admin/Projects/ADE/apps/desktop && npx tsc --noEmit",
+      "exitCode": 0,
+      "notes": "Typecheck passed with no diagnostics."
+    },
+    "lint": {
+      "passed": true,
+      "command": "echo \"lint not configured (todo)\"",
+      "exitCode": 0,
+      "notes": "Lint is not configured in the project manifest or services.yaml; the documented placeholder command completed successfully."
+    }
+  },
+  "reviewsSummary": {
+    "total": 2,
+    "passed": 0,
+    "failed": 2,
+    "failedFeatures": [
+      "orchestration-adaptive-planning-runtime",
+      "knowledge-conflicts-browser-cto-cross"
+    ]
+  },
+  "blockingIssues": [
+    {
+      "featureId": "orchestration-adaptive-planning-runtime",
+      "severity": "blocking",
+      "description": "Adaptive execution is not wired into the production runtime: run launch still derives parallelism from planner metadata, while the new task-complexity helpers are only exercised in tests. VAL-ENH-002 and VAL-ENH-003 are therefore not enforced at runtime.",
+      "sourceReview": ".factory/validation/enhanced-orchestration/scrutiny/reviews/orchestration-adaptive-planning-runtime.json"
+    },
+    {
+      "featureId": "orchestration-adaptive-planning-runtime",
+      "severity": "blocking",
+      "description": "Multi-round planning loops remain blocked because `loopTarget` is not wired into phase transitions and `spawn_worker` refuses a second planning worker after the first planning success, leaving VAL-PLAN-006 unmet.",
+      "sourceReview": ".factory/validation/enhanced-orchestration/scrutiny/reviews/orchestration-adaptive-planning-runtime.json"
+    },
+    {
+      "featureId": "knowledge-conflicts-browser-cto-cross",
+      "severity": "blocking",
+      "description": "Phase-level `agent-browser` capabilities are not propagated into spawned worker runtime metadata, so enabling `capabilities: [\"agent-browser\"]` on a phase has no runtime effect. VAL-ENH-050, VAL-ENH-052, and the runtime portion of VAL-CROSS-002 remain unmet.",
+      "sourceReview": ".factory/validation/enhanced-orchestration/scrutiny/reviews/knowledge-conflicts-browser-cto-cross.json"
+    },
+    {
+      "featureId": "knowledge-conflicts-browser-cto-cross",
+      "severity": "blocking",
+      "description": "Worker-reported screenshot/video artifacts are not preserved and matched through the artifact pipeline used by closeout checks, so `screenshot` and `browser_verification` requirements can still be missed. VAL-ENH-061, VAL-ENH-062, VAL-ENH-063, and VAL-CROSS-002 remain unmet.",
+      "sourceReview": ".factory/validation/enhanced-orchestration/scrutiny/reviews/knowledge-conflicts-browser-cto-cross.json"
+    }
+  ],
+  "appliedUpdates": [
+    {
+      "target": "library",
+      "description": "Documented kvDb fixture-seeding schema-name quirks in `.factory/library/architecture.md` so service tests use the actual SQLite column names (`display_name`, `step_index`, `executor_kind`) instead of camelCase runtime field names.",
+      "sourceFeature": "knowledge-conflicts-browser-cto-cross"
+    }
+  ],
+  "suggestedGuidanceUpdates": [
+    {
+      "target": ".factory/skills/service-worker/SKILL.md",
+      "suggestion": "Tighten procedure compliance rules so workers must record deviations whenever they skip required startup reads (such as `.factory/library/architecture.md`) or skip the mandated red-phase/TDD order, instead of still reporting `followedProcedure: true`.",
+      "evidence": "Both enhanced-orchestration service-worker features reported `followedProcedure: true` despite reviewer evidence that one skipped the required architecture-library read and the other appears to have implemented production code before creating the first failing test file.",
+      "isSystemic": true
+    },
+    {
+      "target": ".factory/skills/service-worker/SKILL.md",
+      "suggestion": "Strengthen verification guidance to require at least one test per validation-contract area that exercises the real runtime path, not just type-level checks or direct database inserts.",
+      "evidence": "The scrutiny reviews found shallow tests in both features: adaptive-runtime coverage asserted helper outputs without proving the production fan-out/planning loop path, and artifact/browser coverage relied on plain objects or manual DB inserts while the real worker-metadata and artifact pipeline remained broken.",
+      "isSystemic": true
+    }
+  ],
+  "rejectedObservations": [],
+  "previousRound": null
+}

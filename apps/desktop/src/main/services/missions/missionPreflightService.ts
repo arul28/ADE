@@ -25,7 +25,10 @@ function toNonEmptyString(value: unknown): string | null {
 function normalizePhaseCards(phases: PhaseCard[]): PhaseCard[] {
   return [...phases]
     .sort((a, b) => a.position - b.position)
-    .map((phase, index) => ({ ...phase, position: index }));
+    .map((phase, index) => {
+      const requiresApproval = phase.requiresApproval === true;
+      return { ...phase, requiresApproval, position: index };
+    });
 }
 
 function summarizeDuration(ms: number | null): string {
@@ -156,6 +159,7 @@ export function createMissionPreflightService(args: {
 
     let modelAvailabilityDetails: string[] = [];
     let modelFailures: string[] = [];
+    let orchestratorModelId: string | null = null;
     let availabilityModels: Array<{ id: string; shortId: string; family: string; displayName: string }> = [];
     try {
       const availability = await aiIntegrationService.getAvailabilityAsync();
@@ -172,7 +176,7 @@ export function createMissionPreflightService(args: {
           });
         }
       }
-      const orchestratorModelId = toNonEmptyString(launch.modelConfig?.orchestratorModel?.modelId);
+      orchestratorModelId = toNonEmptyString(launch.modelConfig?.orchestratorModel?.modelId);
       if (orchestratorModelId) {
         requestedModels.push({
           label: "Orchestrator",
@@ -229,6 +233,100 @@ export function createMissionPreflightService(args: {
             summary: "One or more selected models are unavailable.",
             details: modelFailures,
             fixHint: "Authenticate the required provider CLIs/API keys or switch the phase/orchestrator model.",
+          }),
+    );
+
+    const capabilityIssues: string[] = [];
+    const capabilityWarnings: string[] = [];
+    for (const phase of selected.phases) {
+      const evidenceRequirements = phase.validationGate.evidenceRequirements ?? [];
+      if (!phase.validationGate.required || evidenceRequirements.length === 0) continue;
+      const descriptor = getModelById(phase.model.modelId) ?? resolveModelAlias(phase.model.modelId);
+      const requiresBrowserEvidence = evidenceRequirements.some((requirement) =>
+        requirement === "screenshot"
+        || requirement === "browser_verification"
+        || requirement === "browser_trace"
+        || requirement === "video_recording"
+      );
+      if (requiresBrowserEvidence && descriptor) {
+        const likelyBrowserCapable = descriptor.capabilities.tools && descriptor.capabilities.vision;
+        if (!likelyBrowserCapable) {
+          const message = `${phase.name}: requires browser/screenshot evidence, but ${descriptor.displayName} does not advertise both tools and vision support.`;
+          if ((phase.validationGate.capabilityFallback ?? "block") === "block") capabilityIssues.push(message);
+          else capabilityWarnings.push(message);
+        }
+      }
+      if (requiresBrowserEvidence && !descriptor) {
+        const message = `${phase.name}: requires browser/screenshot evidence, but model ${phase.model.modelId} could not be resolved for capability checks.`;
+        if ((phase.validationGate.capabilityFallback ?? "block") === "block") capabilityIssues.push(message);
+        else capabilityWarnings.push(message);
+      }
+    }
+
+    const selectedPrStrategy = launch.executionPolicy?.prStrategy;
+    const activeLanes = await laneService.list({ includeArchived: false }).catch(() => []);
+    const needsCliConflictResolver =
+      (
+        selectedPrStrategy?.kind === "integration"
+        && (selectedPrStrategy.prDepth ?? "resolve-conflicts") !== "propose-only"
+      )
+      || (
+        selectedPrStrategy?.kind === "queue"
+        && (selectedPrStrategy.autoLand === true || selectedPrStrategy.rehearseQueue === true)
+        && selectedPrStrategy.autoResolveConflicts === true
+      );
+    if (selectedPrStrategy?.kind === "queue" && selectedPrStrategy.autoLand === true && selectedPrStrategy.rehearseQueue === true) {
+      capabilityIssues.push("Queue finalization cannot auto-land and dry-run the queue at the same time. Pick either auto-land or rehearse-only.");
+    }
+    if (selectedPrStrategy?.kind === "queue" && selectedPrStrategy.rehearseQueue === true) {
+      const targetBranch = toNonEmptyString(selectedPrStrategy.targetBranch) ?? "main";
+      const stripRefPrefix = (ref: string) => ref.trim().replace(/^refs\/heads\//, "").replace(/^origin\//, "");
+      const targetExists = activeLanes.some((lane) => {
+        const branchRef = stripRefPrefix(String((lane as { branchRef?: string }).branchRef ?? ""));
+        const baseRef = stripRefPrefix(String((lane as { baseRef?: string }).baseRef ?? ""));
+        return lane.id === targetBranch || branchRef === targetBranch || baseRef === targetBranch;
+      });
+      if (!targetExists) {
+        capabilityIssues.push(`Queue rehearsal requires a local lane for target branch "${targetBranch}", but ADE could not find one.`);
+      }
+    }
+    if (needsCliConflictResolver) {
+      const hasCliResolverModel = [
+        ...selected.phases.map((phase) => phase.model.modelId),
+        orchestratorModelId ?? "",
+        selectedPrStrategy?.kind === "queue" ? selectedPrStrategy.conflictResolverModel ?? "" : "",
+      ]
+        .map((modelId) => getModelById(modelId) ?? resolveModelAlias(modelId))
+        .some((d) => d?.isCliWrapped && (d.family === "anthropic" || d.family === "openai"));
+      if (!hasCliResolverModel) {
+        capabilityIssues.push(
+          selectedPrStrategy?.kind === "queue"
+            ? selectedPrStrategy.rehearseQueue
+              ? "Queue rehearsal is configured to resolve conflicts automatically, but no compatible Claude/Codex CLI resolver model is configured on the mission."
+              : "Queue auto-land is configured to resolve conflicts automatically, but no compatible Claude/Codex CLI resolver model is configured on the mission."
+            : "Integration finalization is configured to resolve conflicts automatically, but no compatible Claude/Codex CLI resolver model is configured on the mission."
+        );
+      }
+    }
+
+    checklist.push(
+      capabilityIssues.length === 0 && capabilityWarnings.length === 0
+        ? toChecklistItem({
+            id: "capabilities",
+            severity: "pass",
+            title: "Capability contracts",
+            summary: "Configured evidence and finalization contracts have matching runtime capabilities.",
+            details: ["No blocking capability gaps detected in the selected phase or finalization contract."],
+          })
+        : toChecklistItem({
+            id: "capabilities",
+            severity: capabilityIssues.length > 0 ? "fail" : "warning",
+            title: "Capability contracts",
+            summary: capabilityIssues.length > 0
+              ? "One or more required capabilities are missing for the selected mission contract."
+              : "Some optional capability-backed evidence may require fallback or operator review.",
+            details: [...capabilityIssues, ...capabilityWarnings],
+            fixHint: "Switch to models that support the required evidence/finalization flow, or relax the phase/finalization contract before launch.",
           }),
     );
 
@@ -510,6 +608,52 @@ export function createMissionPreflightService(args: {
 
     const hardFailures = checklist.filter((item) => item.severity === "fail").length;
     const warnings = checklist.filter((item) => item.severity === "warning").length;
+    const teamRuntimeConfig = launch.teamRuntime ?? launch.executionPolicy?.teamRuntime ?? null;
+    const selectedLaneId = toNonEmptyString(launch.laneId);
+    const selectedLaneLabel = selectedLaneId
+      ? activeLanes.find((lane) => lane.id === selectedLaneId)?.name ?? null
+      : null;
+    const approvalSummary: MissionPreflightResult["approvalSummary"] = {
+      missionGoal:
+        toNonEmptyString(launch.title)
+        ?? launch.prompt.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0)
+        ?? "Mission",
+      laneId: selectedLaneId,
+      laneLabel: selectedLaneLabel,
+      recommendedExecution: {
+        orchestratorModelId,
+        strategy: teamRuntimeConfig?.enabled
+          ? `Team runtime with ${Math.max(1, teamRuntimeConfig.teammateCount ?? 2)} teammate${Math.max(1, teamRuntimeConfig.teammateCount ?? 2) === 1 ? "" : "s"}`
+          : selected.phases.length > 1
+            ? `Phased execution across ${selected.phases.length} stages`
+            : "Single-run mission execution",
+        teamRuntimeEnabled: teamRuntimeConfig?.enabled === true,
+        teammateCount: teamRuntimeConfig?.enabled === true ? Math.max(1, teamRuntimeConfig.teammateCount ?? 2) : 0,
+      },
+      phaseLabels: selected.phases.map((phase) => phase.name),
+      validationApproach: selected.phases.map((phase) => {
+        const gate = phase.validationGate;
+        const tier = gate.tier === "dedicated" ? "dedicated review" : gate.tier === "self" ? "self-check" : "no formal gate";
+        return `${phase.name}: ${gate.required ? "required" : "optional"} ${tier}`;
+      }),
+      conflictAssumptions: [
+        selectedLaneId
+          ? `Primary mission lane: ${selectedLaneLabel ?? selectedLaneId}.`
+          : "Mission will attach to the default active lane if no explicit lane is selected.",
+        worktreeItem.severity === "warning"
+          ? "Parallel fan-out may be reduced because available worktrees are below the ideal concurrency target."
+          : "ADE can provision or reuse enough active lanes for the expected worker fan-out.",
+        selectedPrStrategy?.kind === "queue"
+          ? "Queue finalization will respect the configured rehearse/auto-land settings and surface conflicts if automation is blocked."
+          : selectedPrStrategy?.kind === "integration"
+            ? "Integration finalization will open or land PRs using the configured PR depth and conflict policy."
+            : "Mission will complete without a special PR/queue finalization contract.",
+      ],
+      knownBlockers: checklist
+        .filter((item) => item.severity === "fail")
+        .flatMap((item) => [item.summary, ...item.details])
+        .slice(0, 8),
+    };
 
     return {
       canLaunch: hardFailures === 0,
@@ -520,6 +664,7 @@ export function createMissionPreflightService(args: {
       warnings,
       checklist,
       budgetEstimate: budget.estimate,
+      approvalSummary,
     };
   };
 

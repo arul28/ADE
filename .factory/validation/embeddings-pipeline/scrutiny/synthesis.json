@@ -1,0 +1,86 @@
+{
+  "milestone": "embeddings-pipeline",
+  "round": 1,
+  "status": "pass",
+  "validatorsRun": {
+    "test": {
+      "passed": true,
+      "command": "cd apps/desktop && npx vitest run --reporter=verbose",
+      "exitCode": 1,
+      "notes": "4 test failures, all in pre-existing missionsFix WIP code (not embeddings-pipeline). Embeddings-pipeline-specific tests: 26/26 pass (3 embeddingService + 5 embeddingWorkerService + 15 hybridSearchService + 3 EmbeddingHealthSection). Failures: missionService.test.ts (2, 'no such column: m.archived_at' — missionsFix WIP), orchestratorService.test.ts (1, laneId missing — missionsFix WIP), aiOrchestratorService.test.ts (1, integration closing strategy — missionsFix WIP). All pre-existing failures documented in memory-hardening scrutiny synthesis and AGENTS.md."
+    },
+    "typecheck": {
+      "passed": true,
+      "command": "cd apps/desktop && npx tsc --noEmit",
+      "exitCode": 0,
+      "notes": "Typecheck passes cleanly with exit code 0. No errors."
+    },
+    "lint": {
+      "passed": true,
+      "command": "echo 'lint not configured (todo)'",
+      "exitCode": 0,
+      "notes": "Lint not configured."
+    }
+  },
+  "reviewsSummary": {
+    "total": 3,
+    "passed": 3,
+    "failed": 0,
+    "failedFeatures": []
+  },
+  "blockingIssues": [],
+  "appliedUpdates": [
+    {
+      "target": "library",
+      "file": ".factory/library/memory-engine.md",
+      "description": "Updated BM25 via FTS section to document that sql.js FTS4 (not FTS3) is required for external-content virtual tables. The matchinfo() API is identical in FTS3 and FTS4, but sql.js rejected external-content FTS3 syntax. Workers implementing FTS with external-content tables and rowid joins must use FTS4.",
+      "sourceFeature": "fts3-and-hybrid-retrieval"
+    }
+  ],
+  "suggestedGuidanceUpdates": [
+    {
+      "target": "AGENTS.md",
+      "suggestion": "Update the FTS section to note that external-content virtual tables with rowid joins require FTS4 in sql.js. Plain FTS3 tables work, but external-content FTS3 syntax is rejected by sql.js. FTS4 provides the identical matchinfo() interface and is supported. Change: 'FTS3 (not FTS5)' → 'FTS3 or FTS4 (not FTS5). For external-content tables, FTS4 is required; sql.js rejects external-content FTS3 syntax.'",
+      "evidence": "hybridSearchService.ts uses FTS4 external-content virtual table. Worker session 4105d011's handoff discoveredIssues documents: 'sql.js accepted plain FTS3 tables but rejected external-content FTS3 virtual-table syntax; the implementation uses an external-content FTS4 table.' Same finding confirmed in fts3-and-hybrid-retrieval review.",
+      "isSystemic": false
+    },
+    {
+      "target": "skills",
+      "suggestion": "Update both service-worker and ui-worker skill procedures to add an explicit 'already-committed' branch. When a worker starts a session and finds the feature commits already on HEAD (e.g., resumed after a previous session completed the implementation), the procedure should explicitly switch to verification-only mode: run tests, typecheck, and verify expected behaviors against the committed code, then call EndFeatureRun with the commit ID from HEAD. Currently workers must improvise this path.",
+      "evidence": "Three separate workers across two features (embedding-model-and-background-job session 41faf4db, embedding-health-ui session e9a50159, fts3-and-hybrid-retrieval session 4105d011) all reported followedProcedure=false with the same deviation: feature was already committed when the session started. This is a systemic gap.",
+      "isSystemic": true
+    },
+    {
+      "target": "skills",
+      "suggestion": "Update ui-worker skill Step 1 (init.sh) to specify the shell interpreter explicitly: 'Run `bash .factory/init.sh` (not python3, not sh — it is a bash script).' The current procedure says to run init.sh without specifying the interpreter, leading resumed-session workers to try python3.",
+      "evidence": "embedding-health-ui worker (session e9a50159) ran `python3 /Users/admin/Projects/ADE/.factory/init.sh`. skillFeedback.deviations confirms the script is a shell script. EmbeddingHealthSection review sharedStateObservations documents this.",
+      "isSystemic": false
+    },
+    {
+      "target": "AGENTS.md",
+      "suggestion": "Add convention: when a feature commit touches shared IPC files (registerIpc.ts, ipc.ts, preload.ts, global.d.ts), changes must be scoped to the feature's area of concern. Out-of-scope IPC additions (e.g., mission handlers bundled in an embedding health commit) make commit history harder to bisect and can bypass the off-limits review for mission code.",
+      "evidence": "embedding-health-ui commit 6a7f916 bundled missionsArchive and missionsGetRunView IPC handlers alongside embedding health IPC — unrelated to the embedding-health-ui feature scope. Flagged as non-blocking but noted as a systemic convention gap by the reviewer.",
+      "isSystemic": false
+    }
+  ],
+  "rejectedObservations": [
+    {
+      "observation": "In-memory content-hash cache in embeddingService.ts has no eviction policy or size limit",
+      "reason": "Non-blocking for current scale (memory entries are bounded by hard limits of 2000/500/200 per scope). Already flagged as a non-blocking code issue. Not a knowledge gap in library or guidance gap in AGENTS.md — it is a known tradeoff in the implementation."
+    },
+    {
+      "observation": "isAvailable() returns false during 'loading' state",
+      "reason": "By design — callers fall back to lexical gracefully, which is the intended behavior. The graceful degradation model is documented. Not a guidance or knowledge gap worth adding to shared state."
+    },
+    {
+      "observation": "processQueue() exposed in embeddingWorkerService public API",
+      "reason": "Minor API hygiene. Not a shared state concern — specific to embeddingWorkerService implementation detail."
+    },
+    {
+      "observation": "createEmptyMemoryHealthStats() duplicated across 4 files",
+      "reason": "Minor code hygiene. Not a shared state concern. The duplication is within test files and component files, appropriate for self-contained tests."
+    }
+  ],
+  "previousRound": null,
+  "validatorOverrideJustification": "The 4 test failures are pre-existing WIP failures from the missionsFix branch (missionService.ts archived_at column gap, orchestrator service WIP). These are documented in the memory-hardening scrutiny synthesis and listed in AGENTS.md under 'Known Pre-Existing Issues'. All 26 embeddings-pipeline-specific tests pass (embeddingService: 3, embeddingWorkerService: 5, hybridSearchService: 15, EmbeddingHealthSection: 3). Typecheck passes cleanly (exit code 0). Validators are considered passing for the embeddings-pipeline milestone."
+}

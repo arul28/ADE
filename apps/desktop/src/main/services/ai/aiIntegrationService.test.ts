@@ -199,6 +199,22 @@ describe("aiIntegrationService", () => {
     expect(String(firstCall.modelId).length).toBeGreaterThan(0);
   });
 
+  it("resolves a default model for memory consolidation tasks when model is omitted", async () => {
+    const { service } = makeService();
+
+    await service.executeTask({
+      feature: "memory_consolidation",
+      taskType: "memory_consolidation",
+      prompt: "Merge these memory entries",
+      cwd: "/tmp",
+    });
+
+    expect(mockState.executeUnified).toHaveBeenCalledTimes(1);
+    const firstCall = mockState.executeUnified.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(typeof firstCall.modelId).toBe("string");
+    expect(String(firstCall.modelId)).toContain("claude");
+  });
+
   it("uses planning tools for read-only orchestrator tasks and none for other read-only tasks", async () => {
     const { service } = makeService();
 
@@ -232,6 +248,11 @@ describe("aiIntegrationService", () => {
     const memoryService = {
       addSharedFact: vi.fn(),
     } as any;
+    const compactionFlushService = {
+      beforeCompaction: vi.fn(),
+    } as any;
+
+    service.setCompactionFlushService(compactionFlushService);
 
     await service.executeTask({
       feature: "orchestrator",
@@ -254,6 +275,7 @@ describe("aiIntegrationService", () => {
     expect(firstCall.attemptId).toBe("attempt-1");
     expect(firstCall.memoryService).toBe(memoryService);
     expect(firstCall.enableCompaction).toBe(true);
+    expect(firstCall.compactionFlushService).toBe(compactionFlushService);
     expect(firstCall.addSharedFact).toBeTypeOf("function");
   });
 

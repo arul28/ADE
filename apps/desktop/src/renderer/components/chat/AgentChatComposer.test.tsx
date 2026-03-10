@@ -164,9 +164,9 @@ describe("AgentChatComposer", () => {
     renderComposer();
 
     // Toolbar has @ and # quick-action buttons and a send hint
-    expect(screen.getByTitle("Attach files (@)")).toBeTruthy();
+    expect(screen.getByTitle("Attach files or images (@)")).toBeTruthy();
     expect(screen.getByTitle("Context packs (#)")).toBeTruthy();
-    expect(screen.getByText("⏎ send")).toBeTruthy();
+    expect(screen.getByText("Enter sends")).toBeTruthy();
   });
 
   it("switches model and reasoning effort from dropdowns", async () => {
@@ -188,5 +188,20 @@ describe("AgentChatComposer", () => {
 
     expect(onModelChange).toHaveBeenCalledWith("anthropic/claude-sonnet-4-6");
     expect(onReasoningEffortChange).toHaveBeenCalledWith("high");
+  });
+
+  it("shows unconfigured API models like GPT-5.4 as disabled instead of hiding them", async () => {
+    renderComposer();
+
+    fireEvent.click(screen.getByLabelText("Select model"));
+
+    await waitFor(() => {
+      expect(screen.getByRole("listbox")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /API/i }));
+
+    const option = screen.getByRole("option", { name: /^GPT-5\.4 Latest Not configured$/i });
+    expect(option.getAttribute("aria-disabled")).toBe("true");
   });
 });

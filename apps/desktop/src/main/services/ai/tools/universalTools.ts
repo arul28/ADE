@@ -5,7 +5,6 @@ import os from "node:os";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { editFileTool } from "./editFile";
 import { readFileRangeTool } from "./readFileRange";
 import { grepSearchTool } from "./grepSearch";
 import { globSearchTool } from "./globSearch";
@@ -13,7 +12,7 @@ import { webFetchTool } from "./webFetch";
 import { webSearchTool } from "./webSearch";
 import { createMemoryTools } from "./memoryTools";
 import type { createUnifiedMemoryService } from "../../memory/unifiedMemoryService";
-import type { WorkerSandboxConfig, CtoCoreMemory } from "../../../../shared/types";
+import type { AgentChatApprovalDecision, WorkerSandboxConfig, CtoCoreMemory } from "../../../../shared/types";
 import { DEFAULT_WORKER_SANDBOX_CONFIG } from "../../orchestrator/orchestratorConstants";
 import { isWithinDir } from "../../shared/utils";
 
@@ -35,6 +34,8 @@ export interface UniversalToolSetOptions {
   };
   /** Callback invoked when askUser tool is called; must return the user's response */
   onAskUser?: (question: string) => Promise<string>;
+  /** Optional callback for ADE-managed tool approvals in interactive chat sessions. */
+  onApprovalRequest?: (request: ToolApprovalRequest) => Promise<ToolApprovalResult>;
   /** Sandbox config for API-model workers. CLI models skip this check. */
   sandboxConfig?: WorkerSandboxConfig;
 }
@@ -42,6 +43,18 @@ export interface UniversalToolSetOptions {
 // ── Permission helpers ──────────────────────────────────────────────
 
 type ToolCategory = "read" | "write" | "bash";
+
+type ToolApprovalRequest = {
+  category: Exclude<ToolCategory, "read">;
+  description: string;
+  detail?: unknown;
+};
+
+type ToolApprovalResult = {
+  approved: boolean;
+  decision?: AgentChatApprovalDecision;
+  reason?: string | null;
+};
 
 function requiresApproval(mode: PermissionMode, category: ToolCategory): boolean {
   switch (mode) {
@@ -54,11 +67,41 @@ function requiresApproval(mode: PermissionMode, category: ToolCategory): boolean
   }
 }
 
-function makeApproval(mode: PermissionMode, category: ToolCategory) {
+function makeApproval(
+  mode: PermissionMode,
+  category: ToolCategory,
+  useManualApproval: boolean,
+) {
   const needs = requiresApproval(mode, category);
-  if (!needs) return undefined;
+  if (!needs || useManualApproval) return undefined;
   // Return a static async function so the AI SDK gates execution
   return async () => true;
+}
+
+async function maybeRequestApproval(args: {
+  mode: PermissionMode;
+  category: Exclude<ToolCategory, "read">;
+  onApprovalRequest?: (request: ToolApprovalRequest) => Promise<ToolApprovalResult>;
+  description: string;
+  detail?: unknown;
+}): Promise<ToolApprovalResult> {
+  if (!requiresApproval(args.mode, args.category)) {
+    return { approved: true };
+  }
+
+  if (!args.onApprovalRequest) {
+    return {
+      approved: false,
+      decision: "decline",
+      reason: "Approval is required, but no approval handler is configured.",
+    };
+  }
+
+  return args.onApprovalRequest({
+    category: args.category,
+    description: args.description,
+    detail: args.detail,
+  });
 }
 
 // ── Worker sandbox enforcement ──────────────────────────────────────
@@ -256,7 +299,12 @@ export function checkWorkerSandbox(
 
 // ── New tool implementations ────────────────────────────────────────
 
-function createBashTool(cwd: string, mode: PermissionMode, sandboxConfig?: WorkerSandboxConfig) {
+function createBashTool(
+  cwd: string,
+  mode: PermissionMode,
+  sandboxConfig?: WorkerSandboxConfig,
+  onApprovalRequest?: (request: ToolApprovalRequest) => Promise<ToolApprovalResult>,
+) {
   return tool({
     description:
       "Execute a shell command and return stdout/stderr. " +
@@ -269,8 +317,23 @@ function createBashTool(cwd: string, mode: PermissionMode, sandboxConfig?: Worke
         .default(120_000)
         .describe("Timeout in milliseconds (max 600000)"),
     }),
-    ...((() => { const a = makeApproval(mode, "bash"); return a ? { needsApproval: a } : {}; })()),
+    ...((() => { const a = makeApproval(mode, "bash", Boolean(onApprovalRequest)); return a ? { needsApproval: a } : {}; })()),
     execute: async ({ command, timeout }) => {
+      const approval = await maybeRequestApproval({
+        mode,
+        category: "bash",
+        onApprovalRequest,
+        description: `Run command: ${command}`,
+        detail: { command, cwd, timeout },
+      });
+      if (!approval.approved) {
+        return {
+          stdout: "",
+          stderr: `EXECUTION DENIED: ${approval.reason ?? "Command was not approved."}`,
+          exitCode: 126,
+        };
+      }
+
       // Enforce sandbox for API-model workers
       if (sandboxConfig) {
         const check = checkWorkerSandbox(command, sandboxConfig, cwd);
@@ -332,7 +395,12 @@ function createBashTool(cwd: string, mode: PermissionMode, sandboxConfig?: Worke
   });
 }
 
-function createWriteFileTool(cwd: string, mode: PermissionMode, sandboxConfig?: WorkerSandboxConfig) {
+function createWriteFileTool(
+  cwd: string,
+  mode: PermissionMode,
+  sandboxConfig?: WorkerSandboxConfig,
+  onApprovalRequest?: (request: ToolApprovalRequest) => Promise<ToolApprovalResult>,
+) {
   return tool({
     description:
       "Create or overwrite a file with the given content. " +
@@ -341,8 +409,25 @@ function createWriteFileTool(cwd: string, mode: PermissionMode, sandboxConfig?: 
       file_path: z.string().describe("Path to the file (absolute or relative to project root)"),
       content: z.string().describe("The full content to write"),
     }),
-    ...((() => { const a = makeApproval(mode, "write"); return a ? { needsApproval: a } : {}; })()),
+    ...((() => { const a = makeApproval(mode, "write", Boolean(onApprovalRequest)); return a ? { needsApproval: a } : {}; })()),
     execute: async ({ file_path, content }) => {
+      const approval = await maybeRequestApproval({
+        mode,
+        category: "write",
+        onApprovalRequest,
+        description: `Write file: ${file_path}`,
+        detail: {
+          file_path,
+          contentPreview: content.length > 400 ? `${content.slice(0, 400)}...` : content,
+        },
+      });
+      if (!approval.approved) {
+        return {
+          success: false,
+          message: `Execution denied: ${approval.reason ?? "Write was not approved."}`,
+        };
+      }
+
       try {
         const targetPath = path.resolve(cwd, file_path);
         const allowedRoots = resolveAllowedWriteRoots(cwd, sandboxConfig);
@@ -360,6 +445,89 @@ function createWriteFileTool(cwd: string, mode: PermissionMode, sandboxConfig?: 
         return {
           success: false,
           message: `Error writing file: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+    },
+  });
+}
+
+function createEditFileTool(
+  mode: PermissionMode,
+  onApprovalRequest?: (request: ToolApprovalRequest) => Promise<ToolApprovalResult>,
+) {
+  return tool({
+    description:
+      "Make a targeted edit to a file by replacing an exact string match with new content. " +
+      "The old_string must appear exactly once in the file unless replace_all is true.",
+    inputSchema: z.object({
+      file_path: z.string().describe("Absolute path to the file to edit"),
+      old_string: z.string().describe("The exact string to find and replace"),
+      new_string: z.string().describe("The replacement string"),
+      replace_all: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe("Replace all occurrences instead of requiring a unique match"),
+    }),
+    ...((() => { const a = makeApproval(mode, "write", Boolean(onApprovalRequest)); return a ? { needsApproval: a } : {}; })()),
+    execute: async ({ file_path, old_string, new_string, replace_all }) => {
+      const approval = await maybeRequestApproval({
+        mode,
+        category: "write",
+        onApprovalRequest,
+        description: `Edit file: ${file_path}`,
+        detail: {
+          file_path,
+          old_string_preview: old_string.length > 220 ? `${old_string.slice(0, 220)}...` : old_string,
+          new_string_preview: new_string.length > 220 ? `${new_string.slice(0, 220)}...` : new_string,
+          replace_all,
+        },
+      });
+      if (!approval.approved) {
+        return {
+          success: false,
+          message: `Execution denied: ${approval.reason ?? "Edit was not approved."}`,
+        };
+      }
+
+      try {
+        let content: string;
+        try {
+          content = await fs.promises.readFile(file_path, "utf-8");
+        } catch {
+          return { success: false, message: `File not found: ${file_path}` };
+        }
+
+        if (!content.includes(old_string)) {
+          return {
+            success: false,
+            message: `The old_string was not found in ${file_path}`,
+          };
+        }
+
+        if (!replace_all) {
+          const firstIdx = content.indexOf(old_string);
+          const secondIdx = content.indexOf(old_string, firstIdx + 1);
+          if (secondIdx !== -1) {
+            return {
+              success: false,
+              message:
+                `old_string appears multiple times in ${file_path}. ` +
+                "Provide more context to make the match unique, or set replace_all to true.",
+            };
+          }
+        }
+
+        const updated = replace_all
+          ? content.split(old_string).join(new_string)
+          : content.replace(old_string, new_string);
+
+        await fs.promises.writeFile(file_path, updated, "utf-8");
+        return { success: true, message: `Successfully edited ${file_path}` };
+      } catch (err) {
+        return {
+          success: false,
+          message: `Error editing file: ${err instanceof Error ? err.message : String(err)}`,
         };
       }
     },
@@ -550,7 +718,7 @@ function createMemoryUpdateCoreTool(
 ) {
   return tool({
     description:
-      "Update CTO core memory (Tier-1) with durable project context fields.",
+      "Update identity core memory (Tier-1) with durable project context fields.",
     inputSchema: z.object({
       projectSummary: z.string().optional(),
       criticalConventions: z.array(z.string()).optional(),
@@ -582,7 +750,18 @@ export function createUniversalToolSet(
   cwd: string,
   opts: UniversalToolSetOptions
 ): Record<string, Tool> {
-  const { permissionMode, memoryService, projectId, runId, stepId, agentScopeOwnerId, onAskUser, onMemoryUpdateCore, sandboxConfig } = opts;
+  const {
+    permissionMode,
+    memoryService,
+    projectId,
+    runId,
+    stepId,
+    agentScopeOwnerId,
+    onAskUser,
+    onApprovalRequest,
+    onMemoryUpdateCore,
+    sandboxConfig,
+  } = opts;
   const effectiveSandboxConfig = sandboxConfig ?? DEFAULT_WORKER_SANDBOX_CONFIG;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -599,12 +778,12 @@ export function createUniversalToolSet(
     webSearch: webSearchTool,
 
     // Write tools (auto in edit+full-auto, gated in plan)
-    editFile: editFileTool,
-    writeFile: createWriteFileTool(cwd, permissionMode, effectiveSandboxConfig),
+    editFile: createEditFileTool(permissionMode, onApprovalRequest),
+    writeFile: createWriteFileTool(cwd, permissionMode, effectiveSandboxConfig, onApprovalRequest),
 
     // Bash (auto only in full-auto, gated in plan+edit)
     // Default sandbox applies unless the caller provides an explicit override.
-    bash: createBashTool(cwd, permissionMode, effectiveSandboxConfig),
+    bash: createBashTool(cwd, permissionMode, effectiveSandboxConfig, onApprovalRequest),
 
     // Interactive
     askUser: createAskUserTool(onAskUser),

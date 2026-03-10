@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useMemo } from "react";
 import {
   GearSix,
   X,
@@ -10,10 +10,14 @@ import { ConfirmDialog, PromptDialog, useConfirmDialog, usePromptDialog } from "
 import {
   type MissionSettingsDraft,
   toTeammatePlanMode,
+  DEFAULT_SMART_BUDGET,
 } from "./missionHelpers";
+import { SmartBudgetPanel } from "./SmartBudgetPanel";
 import { PhaseCardEditor } from "./PhaseCardEditor";
 import { WorkerPermissionsEditor } from "./WorkerPermissionsEditor";
 import { ModelSelector } from "./ModelSelector";
+import { createBuiltInMissionPhaseCards, createBuiltInMissionPhaseProfiles } from "./missionPhaseDefaults";
+import { getCachedPhaseProfiles, setCachedPhaseProfiles } from "./missionDialogDataCache";
 
 function PhaseProfileCard({
   profile,
@@ -227,8 +231,8 @@ function PhaseProfileCard({
                       model: { provider: "claude", modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
                       budget: {},
                       orderingConstraints: {},
-                      askQuestions: { enabled: false, mode: "never" },
-                      validationGate: { tier: "self", required: false },
+                      askQuestions: { enabled: false },
+                      validationGate: { tier: "none", required: false },
                       isBuiltIn: false,
                       isCustom: true,
                       position: prev.length,
@@ -311,7 +315,16 @@ export function MissionSettingsDialog({
   error: string | null;
   notice: string | null;
 }) {
-  const [phaseProfiles, setPhaseProfiles] = useState<PhaseProfile[]>([]);
+  const builtInPhaseCards = useMemo(() => createBuiltInMissionPhaseCards(), []);
+  const builtInPhaseProfiles = useMemo(
+    () => createBuiltInMissionPhaseProfiles(builtInPhaseCards),
+    [builtInPhaseCards]
+  );
+  const [hasMountedBody, setHasMountedBody] = useState(open);
+  const [phaseProfiles, setPhaseProfiles] = useState<PhaseProfile[]>(() => {
+    const cachedProfiles = getCachedPhaseProfiles();
+    return cachedProfiles?.length ? cachedProfiles : builtInPhaseProfiles;
+  });
   const [phaseBusy, setPhaseBusy] = useState(false);
   const [phaseNotice, setPhaseNotice] = useState<string | null>(null);
   const [phaseError, setPhaseError] = useState<string | null>(null);
@@ -321,38 +334,67 @@ export function MissionSettingsDialog({
   const refreshPhaseProfiles = useCallback(async () => {
     try {
       const profiles = await window.ade.missions.listPhaseProfiles({});
-      setPhaseProfiles(profiles);
+      const nextProfiles = profiles.length > 0 ? profiles : builtInPhaseProfiles;
+      setCachedPhaseProfiles(nextProfiles);
+      setPhaseProfiles(nextProfiles);
       setPhaseError(null);
     } catch (err) {
       setPhaseError(err instanceof Error ? err.message : String(err));
     }
-  }, []);
+  }, [builtInPhaseProfiles]);
+
+  useEffect(() => {
+    if (hasMountedBody) return;
+    if (open) {
+      setHasMountedBody(true);
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      setHasMountedBody(true);
+    }, 300);
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [hasMountedBody, open]);
 
   useEffect(() => {
     if (!open) return;
     setPhaseNotice(null);
-    void refreshPhaseProfiles();
-  }, [open, refreshPhaseProfiles]);
+    const cachedProfiles = getCachedPhaseProfiles();
+    setPhaseProfiles(cachedProfiles?.length ? cachedProfiles : builtInPhaseProfiles);
+  }, [open, builtInPhaseProfiles]);
 
   const defaultProfile = phaseProfiles.find((p) => p.isDefault) ?? phaseProfiles[0] ?? null;
 
-  if (!open) return null;
+  const shouldRenderBody = hasMountedBody || open;
+  if (!shouldRenderBody) return null;
 
   const settingsInputStyle: React.CSSProperties = { height: 32, width: "100%", background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, padding: "0 8px", fontSize: 12, color: COLORS.textPrimary, fontFamily: MONO_FONT, borderRadius: 0, outline: "none" };
   const settingsLabelStyle: React.CSSProperties = { fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
+    <div
+      aria-hidden={!open}
+      className={`fixed inset-0 z-50 flex items-center justify-center bg-black/70 transition-opacity duration-150 ${
+        open ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
+      }`}
+      style={{ visibility: open ? "visible" : "hidden" }}
+      onClick={onClose}
+    >
       <PromptDialog state={createPrompt.state} onClose={createPrompt.close} />
       <PromptDialog state={importPrompt.state} onClose={importPrompt.close} />
       <motion.div
-        initial={{ opacity: 0, scale: 0.95 }}
-        animate={{ opacity: 1, scale: 1, transition: { duration: 0.15 } }}
-        exit={{ opacity: 0, scale: 0.95 }}
-        className="w-full max-w-2xl shadow-2xl"
+        initial={false}
+        animate={{
+          opacity: open ? 1 : 0,
+          scale: open ? 1 : 0.98,
+          transition: { duration: open ? 0.15 : 0.1 },
+        }}
+        className="flex w-[min(96vw,1100px)] max-h-[92vh] flex-col shadow-2xl"
         style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}
+        onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-5 h-14" style={{ background: COLORS.recessedBg, borderBottom: `1px solid ${COLORS.border}` }}>
+        <div className="flex items-center justify-between px-5 h-14 shrink-0" style={{ background: COLORS.recessedBg, borderBottom: `1px solid ${COLORS.border}` }}>
           <div className="flex items-center gap-2">
             <GearSix className="h-4 w-4" style={{ color: COLORS.accent }} />
             <h2 className="text-sm font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>MISSION SETTINGS</h2>
@@ -362,7 +404,7 @@ export function MissionSettingsDialog({
           </button>
         </div>
 
-        <div className="space-y-4 px-5 py-4">
+        <div className="min-h-0 overflow-y-auto px-5 py-4 space-y-4">
           {notice ? <div className="px-3 py-2 text-xs" style={{ border: `1px solid ${COLORS.success}30`, background: `${COLORS.success}18`, color: COLORS.success }}>{notice}</div> : null}
           {error ? <div className="px-3 py-2 text-xs" style={{ border: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}18`, color: COLORS.danger }}>{error}</div> : null}
 
@@ -405,6 +447,14 @@ export function MissionSettingsDialog({
               phases={defaultProfile?.phases ?? []}
               permissionConfig={draft.permissionConfig}
               onPermissionChange={(next) => onDraftChange({ permissionConfig: next })}
+            />
+          </div>
+
+          {/* Smart Token Budget — configurable from mission settings (scrutiny fix) */}
+          <div className="p-3" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+            <SmartBudgetPanel
+              value={draft.smartBudget ?? DEFAULT_SMART_BUDGET}
+              onChange={(config) => onDraftChange({ smartBudget: config })}
             />
           </div>
 
@@ -503,7 +553,7 @@ export function MissionSettingsDialog({
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2 px-5 py-3" style={{ borderTop: `1px solid ${COLORS.border}` }}>
+        <div className="flex items-center justify-end gap-2 px-5 py-3 shrink-0" style={{ borderTop: `1px solid ${COLORS.border}` }}>
           <button style={outlineButton()} onClick={onClose} disabled={busy}>CLOSE</button>
           <button style={primaryButton()} onClick={onSave} disabled={busy}>
             {busy ? "SAVING..." : "SAVE SETTINGS"}

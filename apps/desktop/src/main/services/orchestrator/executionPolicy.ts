@@ -31,18 +31,21 @@ import {
   DEFAULT_INTEGRATION_PR_POLICY
 } from "./orchestratorConstants";
 
-import { getModelById } from "../../../shared/modelRegistry";
+import { getDefaultModelDescriptor, getModelById } from "../../../shared/modelRegistry";
 import { TERMINAL_STEP_STATUSES, filterExecutionSteps } from "./orchestratorContext";
 
 // ─────────────────────────────────────────────────────
 // Default policy
 // ─────────────────────────────────────────────────────
 
+const DEFAULT_CLAUDE_POLICY_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
+const DEFAULT_CODEX_POLICY_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.3-codex";
+
 export const DEFAULT_EXECUTION_POLICY: MissionExecutionPolicy = {
-  planning: { mode: "auto", model: "anthropic/claude-sonnet-4-6" },
-  implementation: { model: "openai/gpt-5.3-codex" },
-  testing: { mode: "post_implementation", model: "openai/gpt-5.3-codex" },
-  validation: { mode: "optional", model: "openai/gpt-5.3-codex" },
+  planning: { mode: "auto", model: DEFAULT_CLAUDE_POLICY_MODEL_ID },
+  implementation: { model: DEFAULT_CODEX_POLICY_MODEL_ID },
+  testing: { mode: "post_implementation", model: DEFAULT_CODEX_POLICY_MODEL_ID },
+  validation: { mode: "optional", model: DEFAULT_CODEX_POLICY_MODEL_ID },
   codeReview: { mode: "off" },
   testReview: { mode: "off" },
   prReview: { mode: "off" },
@@ -140,11 +143,10 @@ export function stepTypeToPhase(stepType: string, taskType?: string): ExecutionP
   if (
     primary === "test" ||
     primary === "testing" ||
-    primary === "validation" ||
     secondary === "test" ||
-    secondary === "testing" ||
-    secondary === "validation"
+    secondary === "testing"
   ) return "testing";
+  if (primary === "validation" || secondary === "validation") return "validation";
   if (primary === "milestone" || secondary === "milestone") return "validation";
   if ((primary === "review" && (secondary === "test" || secondary === "validation")) || (secondary === "review" && primary === "test")) {
     return "testReview";
@@ -223,40 +225,7 @@ export function evaluateRunCompletion(
       continue;
     }
 
-    const statuses = stepsInPhase.map((s) => s.status);
-    const allTerminal = statuses.every((s) => TERMINAL_STEP_STATUSES.has(s));
-    const anyFailed = statuses.some((s) => s === "failed");
-    const allSucceededOrSkipped = statuses.every((s) => s === "succeeded" || s === "skipped" || s === "superseded");
-    const anyBlocked = statuses.some((s) => s === "blocked");
-    const anyInProgress = statuses.some((s) => s === "running" || s === "ready" || s === "pending");
-
-    if (allSucceededOrSkipped) {
-      diagnostics.push({
-        phase,
-        code: "phase_succeeded",
-        message: `Phase "${phase}" completed successfully`,
-        blocking: false
-      });
-    } else if (anyFailed && allTerminal) {
-      const blocking = required;
-      diagnostics.push({
-        phase,
-        code: "phase_failed",
-        message: `Phase "${phase}" has failed steps`,
-        blocking
-      });
-      if (!blocking && required) {
-        riskFactors.push(`${phase}_failed`);
-      }
-    } else if (anyBlocked || anyInProgress) {
-      // In-progress is always blocking — can't complete while steps are running
-      diagnostics.push({
-        phase,
-        code: "phase_in_progress",
-        message: `Phase "${phase}" still in progress`,
-        blocking: true
-      });
-    }
+    evaluatePhaseStepStatuses(phase, phase, required, stepsInPhase, diagnostics, riskFactors);
   }
 
   const requiredValidationMissingStepKeys = relevantSteps
@@ -330,6 +299,75 @@ export function evaluateRunCompletion(
   }
 
   return { status, diagnostics, riskFactors, completionReady };
+}
+
+function phaseHasConcreteSuccess(statuses: OrchestratorStep["status"][]): boolean {
+  return statuses.some((status) => status === "succeeded");
+}
+
+function phaseIsSuccessfulTerminal(statuses: OrchestratorStep["status"][]): boolean {
+  return statuses.every((status) => status === "succeeded" || status === "skipped" || status === "superseded");
+}
+
+function evaluatePhaseStepStatuses(
+  phase: string,
+  phaseLabel: string,
+  required: boolean,
+  steps: OrchestratorStep[],
+  diagnostics: CompletionDiagnostic[],
+  riskFactors: string[],
+): void {
+  const statuses = steps.map((s) => s.status);
+  const allTerminal = statuses.every((s) => TERMINAL_STEP_STATUSES.has(s));
+  const anyFailed = statuses.some((s) => s === "failed");
+  const allSucceededOrSkipped = phaseIsSuccessfulTerminal(statuses);
+  const hasConcreteSuccess = phaseHasConcreteSuccess(statuses);
+  const anyBlocked = statuses.some((s) => s === "blocked");
+  const anyInProgress = statuses.some((s) => s === "running" || s === "ready" || s === "pending");
+
+  if (allSucceededOrSkipped) {
+    if (required && !hasConcreteSuccess) {
+      diagnostics.push({
+        phase,
+        code: "phase_completed_without_success",
+        message: `Required phase "${phaseLabel}" reached a terminal state without any successful work.`,
+        blocking: true
+      });
+      riskFactors.push(`${phase}_completed_without_success`);
+    } else if (!required && !hasConcreteSuccess) {
+      diagnostics.push({
+        phase,
+        code: "phase_terminal_without_success",
+        message: `Phase "${phaseLabel}" ended without a successful step.`,
+        blocking: false
+      });
+    } else {
+      diagnostics.push({
+        phase,
+        code: "phase_succeeded",
+        message: `Phase "${phaseLabel}" completed successfully`,
+        blocking: false
+      });
+    }
+  } else if (anyFailed && allTerminal) {
+    const blocking = required;
+    diagnostics.push({
+      phase,
+      code: "phase_failed",
+      message: `Phase "${phaseLabel}" has failed steps`,
+      blocking
+    });
+    if (!blocking) {
+      riskFactors.push(`${phase}_failed`);
+    }
+  } else if (anyBlocked || anyInProgress) {
+    diagnostics.push({
+      phase,
+      code: "phase_in_progress",
+      message: `Phase "${phaseLabel}" still in progress`,
+      blocking: true
+    });
+  }
 }
 
 // ─────────────────────────────────────────────────────
@@ -774,7 +812,7 @@ export function buildExecutionPlanPreview(args: {
 /** Maps a phaseKey from PhaseCard to an ExecutionPhase */
 function phaseKeyToExecutionPhase(phaseKey: string): ExecutionPhase | null {
   const key = phaseKey.trim().toLowerCase();
-  if (key === "planning" || key === "analysis") return "implementation";
+  if (key === "planning" || key === "analysis") return null;
   if (key === "implementation" || key === "development" || key === "code") return "implementation";
   if (key === "testing" || key === "test") return "testing";
   if (key === "validation") return "validation";
@@ -782,6 +820,26 @@ function phaseKeyToExecutionPhase(phaseKey: string): ExecutionPhase | null {
   if (key === "test_review" || key === "testreview") return "testReview";
   if (key === "integration" || key === "merge" || key === "pr_conflict_resolution") return "integration";
   return null;
+}
+
+type PhaseEvaluationTarget = {
+  key: string;
+  label: string;
+  enabled: boolean;
+  required: boolean;
+};
+
+const BUILT_IN_EXECUTION_PHASES: ExecutionPhase[] = [
+  "implementation",
+  "testing",
+  "validation",
+  "codeReview",
+  "testReview",
+  "integration"
+];
+
+function normalizePhaseIdentity(value: string | null | undefined): string {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
 
 /**
@@ -797,56 +855,105 @@ export function evaluateRunCompletionFromPhases(
   const diagnostics: CompletionDiagnostic[] = [];
   const riskFactors: string[] = [];
 
-  // Map steps to phases
-  const phaseSteps = new Map<ExecutionPhase, OrchestratorStep[]>();
-  for (const step of relevantSteps) {
-    const stepType = typeof step.metadata?.stepType === "string" ? step.metadata.stepType : "";
-    const taskType = typeof step.metadata?.taskType === "string" ? step.metadata.taskType : "";
-    const phase = stepTypeToPhase(stepType, taskType);
-    if (phase) {
-      const bucket = phaseSteps.get(phase) ?? [];
-      bucket.push(step);
-      phaseSteps.set(phase, bucket);
-    }
-  }
+  const phaseTargets = new Map<string, PhaseEvaluationTarget>();
+  const configuredPhaseAliases = new Map<string, string>();
+  const customPhaseOrder: string[] = [];
 
-  // Derive which phases are required from the phase cards
-  const enabledPhases = new Set<ExecutionPhase>();
-  const requiredPhases = new Set<ExecutionPhase>();
-  const phaseLabelByExecution = new Map<ExecutionPhase, string>();
+  for (const phase of BUILT_IN_EXECUTION_PHASES) {
+    phaseTargets.set(phase, {
+      key: phase,
+      label: phase,
+      enabled: false,
+      required: false
+    });
+    configuredPhaseAliases.set(phase, phase);
+  }
 
   for (const card of phases) {
-    const ep = phaseKeyToExecutionPhase(card.phaseKey);
-    if (ep) {
-      enabledPhases.add(ep);
-      if (!phaseLabelByExecution.has(ep)) {
-        phaseLabelByExecution.set(ep, card.name || card.phaseKey || ep);
-      }
-      if (card.validationGate.required) {
-        requiredPhases.add(ep);
-      }
+    const rawPhaseKey = typeof card.phaseKey === "string" ? card.phaseKey.trim() : "";
+    const rawPhaseName = typeof card.name === "string" ? card.name.trim() : "";
+    const normalizedPhaseKey = normalizePhaseIdentity(rawPhaseKey);
+    const normalizedPhaseName = normalizePhaseIdentity(rawPhaseName);
+    const builtInPhase = card.isCustom ? null : phaseKeyToExecutionPhase(rawPhaseKey);
+    const targetKey = builtInPhase ?? normalizedPhaseKey;
+
+    if (!targetKey) {
+      continue;
+    }
+
+    let target = phaseTargets.get(targetKey);
+    if (!target) {
+      target = {
+        key: targetKey,
+        label: rawPhaseName || rawPhaseKey || targetKey,
+        enabled: false,
+        required: false
+      };
+      phaseTargets.set(targetKey, target);
+      customPhaseOrder.push(targetKey);
+    }
+
+    target.enabled = true;
+    if ((rawPhaseName || rawPhaseKey) && target.label === target.key) {
+      target.label = rawPhaseName || rawPhaseKey;
+    }
+    if (card.validationGate.required) {
+      target.required = true;
+    }
+
+    if (normalizedPhaseKey) {
+      configuredPhaseAliases.set(normalizedPhaseKey, targetKey);
+    }
+    if (normalizedPhaseName) {
+      configuredPhaseAliases.set(normalizedPhaseName, targetKey);
     }
   }
 
-  // Implementation is always required
-  enabledPhases.add("implementation");
-  requiredPhases.add("implementation");
-
-  // Integration is conditional on multi-lane
-  if (settings.integrationPr && hasMultipleLanes(relevantSteps)) {
-    enabledPhases.add("integration");
+  const implementationTarget = phaseTargets.get("implementation");
+  if (implementationTarget) {
+    implementationTarget.enabled = true;
+    implementationTarget.required = true;
   }
 
-  const allPhases: ExecutionPhase[] = [
-    "implementation", "testing", "validation",
-    "codeReview", "testReview", "integration"
-  ];
+  if (settings.integrationPr && hasMultipleLanes(relevantSteps)) {
+    const integrationTarget = phaseTargets.get("integration");
+    if (integrationTarget) {
+      integrationTarget.enabled = true;
+    }
+  }
 
-  for (const phase of allPhases) {
+  const phaseSteps = new Map<string, OrchestratorStep[]>();
+  for (const step of relevantSteps) {
+    const meta = step.metadata ?? {};
+    const explicitPhaseKey = normalizePhaseIdentity(typeof meta.phaseKey === "string" ? meta.phaseKey : "");
+    const explicitPhaseName = normalizePhaseIdentity(typeof meta.phaseName === "string" ? meta.phaseName : "");
+    const stepType = typeof meta.stepType === "string" ? meta.stepType : "";
+    const taskType = typeof meta.taskType === "string" ? meta.taskType : "";
+
+    const resolvedTargetKey =
+      configuredPhaseAliases.get(explicitPhaseKey)
+      ?? configuredPhaseAliases.get(explicitPhaseName)
+      ?? stepTypeToPhase(stepType, taskType);
+
+    if (!resolvedTargetKey || !phaseTargets.has(resolvedTargetKey)) {
+      continue;
+    }
+
+    const bucket = phaseSteps.get(resolvedTargetKey) ?? [];
+    bucket.push(step);
+    phaseSteps.set(resolvedTargetKey, bucket);
+  }
+
+  const evaluationOrder = [...BUILT_IN_EXECUTION_PHASES, ...customPhaseOrder];
+
+  for (const phase of evaluationOrder) {
+    const target = phaseTargets.get(phase);
+    if (!target) {
+      continue;
+    }
+
     const stepsInPhase = phaseSteps.get(phase) ?? [];
-    const required = requiredPhases.has(phase);
-    const enabled = enabledPhases.has(phase);
-    const phaseLabel = phaseLabelByExecution.get(phase) ?? phase;
+    const { enabled, label: phaseLabel, required } = target;
 
     if (stepsInPhase.length === 0) {
       if (required) {
@@ -868,39 +975,7 @@ export function evaluateRunCompletionFromPhases(
       continue;
     }
 
-    const statuses = stepsInPhase.map((s) => s.status);
-    const allTerminal = statuses.every((s) => TERMINAL_STEP_STATUSES.has(s));
-    const anyFailed = statuses.some((s) => s === "failed");
-    const allSucceededOrSkipped = statuses.every((s) => s === "succeeded" || s === "skipped" || s === "superseded");
-    const anyBlocked = statuses.some((s) => s === "blocked");
-    const anyInProgress = statuses.some((s) => s === "running" || s === "ready" || s === "pending");
-
-    if (allSucceededOrSkipped) {
-      diagnostics.push({
-        phase,
-        code: "phase_succeeded",
-        message: `Phase "${phaseLabel}" completed successfully`,
-        blocking: false
-      });
-    } else if (anyFailed && allTerminal) {
-      const blocking = required;
-      diagnostics.push({
-        phase,
-        code: "phase_failed",
-        message: `Phase "${phaseLabel}" has failed steps`,
-        blocking
-      });
-      if (!blocking && required) {
-        riskFactors.push(`${phase}_failed`);
-      }
-    } else if (anyBlocked || anyInProgress) {
-      diagnostics.push({
-        phase,
-        code: "phase_in_progress",
-        message: `Phase "${phaseLabel}" still in progress`,
-        blocking: true
-      });
-    }
+    evaluatePhaseStepStatuses(phase, phaseLabel, required, stepsInPhase, diagnostics, riskFactors);
   }
 
   // Check validation contracts

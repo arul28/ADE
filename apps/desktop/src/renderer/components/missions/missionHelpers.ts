@@ -24,41 +24,46 @@ import type {
   MissionMetricToggle,
   MissionMetricSample,
   OrchestratorStepStatus,
+  SmartBudgetConfig,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { COLORS } from "../lanes/laneDesignTokens";
 
-/* ════════════════════ STATUS HELPERS ════════════════════ */
+/* ════════════════════ STATUS CONFIG (VAL-UX-007) ════════════════════ */
 
-export const STATUS_BADGE_STYLES: Record<MissionStatus, { background: string; color: string; border: string }> = {
-  queued: { background: "#71717A18", color: "#71717A", border: "1px solid #71717A30" },
-  planning: { background: "#3B82F618", color: "#3B82F6", border: "1px solid #3B82F630" },
-  in_progress: { background: "#22C55E18", color: "#22C55E", border: "1px solid #22C55E30" },
-  intervention_required: { background: "#F59E0B18", color: "#F59E0B", border: "1px solid #F59E0B30" },
-  completed: { background: "#22C55E18", color: "#22C55E", border: "1px solid #22C55E30" },
-  failed: { background: "#EF444418", color: "#EF4444", border: "1px solid #EF444430" },
-  canceled: { background: "#71717A18", color: "#71717A", border: "1px solid #71717A30" },
+/**
+ * Single canonical status configuration — color / label / icon per MissionStatus.
+ * Every component that needs status styling MUST import from here. (VAL-UX-007)
+ */
+export const STATUS_CONFIG: Record<MissionStatus, {
+  color: string;
+  label: string;
+  icon: string;
+  background: string;
+  border: string;
+}> = {
+  queued:                 { color: "#71717A", label: "Queued",  icon: "⏳", background: "#71717A18", border: "1px solid #71717A30" },
+  planning:              { color: "#3B82F6", label: "Planning", icon: "📋", background: "#3B82F618", border: "1px solid #3B82F630" },
+  in_progress:           { color: "#22C55E", label: "Running",  icon: "▶",  background: "#22C55E18", border: "1px solid #22C55E30" },
+  intervention_required: { color: "#F59E0B", label: "Action",   icon: "⚠",  background: "#F59E0B18", border: "1px solid #F59E0B30" },
+  completed:             { color: "#22C55E", label: "Done",     icon: "✓",  background: "#22C55E18", border: "1px solid #22C55E30" },
+  failed:                { color: "#EF4444", label: "Failed",   icon: "✗",  background: "#EF444418", border: "1px solid #EF444430" },
+  canceled:              { color: "#71717A", label: "Canceled",  icon: "⊘",  background: "#71717A18", border: "1px solid #71717A30" },
 };
 
-export const STATUS_DOT_HEX: Record<MissionStatus, string> = {
-  queued: "#71717A",
-  planning: "#3B82F6",
-  in_progress: "#22C55E",
-  intervention_required: "#F59E0B",
-  completed: "#22C55E",
-  failed: "#EF4444",
-  canceled: "#71717A",
-};
+/** @deprecated Use STATUS_CONFIG instead */
+export const STATUS_BADGE_STYLES: Record<MissionStatus, { background: string; color: string; border: string }> =
+  Object.fromEntries(
+    Object.entries(STATUS_CONFIG).map(([k, v]) => [k, { background: v.background, color: v.color, border: v.border }]),
+  ) as Record<MissionStatus, { background: string; color: string; border: string }>;
 
-export const STATUS_LABELS: Record<MissionStatus, string> = {
-  queued: "Queued",
-  planning: "Planning",
-  in_progress: "Running",
-  intervention_required: "Action",
-  completed: "Done",
-  failed: "Failed",
-  canceled: "Canceled"
-};
+/** @deprecated Use STATUS_CONFIG instead */
+export const STATUS_DOT_HEX: Record<MissionStatus, string> =
+  Object.fromEntries(Object.entries(STATUS_CONFIG).map(([k, v]) => [k, v.color])) as Record<MissionStatus, string>;
+
+/** @deprecated Use STATUS_CONFIG instead */
+export const STATUS_LABELS: Record<MissionStatus, string> =
+  Object.fromEntries(Object.entries(STATUS_CONFIG).map(([k, v]) => [k, v.label])) as Record<MissionStatus, string>;
 
 export const PRIORITY_STYLES: Record<MissionPriority, { background: string; color: string; border: string }> = {
   urgent: { background: "#EF444418", color: "#EF4444", border: "1px solid #EF444430" },
@@ -90,8 +95,15 @@ export const EXECUTOR_BADGE_HEX: Record<string, string> = {
 export const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>(["completed", "failed", "canceled"]);
 
 export const NOISY_EVENT_TYPES = new Set([
+  "scheduler_tick",
   "claim_heartbeat",
   "autopilot_parallelism_cap_adjusted",
+  "context_snapshot_created",
+  "context_pack_v2_metrics",
+  "executor_session_attached",
+  "startup_verification_warning",
+  "step_metadata_updated",
+  "step_dependencies_resolved",
   "tick",
   "dynamic_cap",
 ]);
@@ -141,7 +153,7 @@ export const WORKER_STATUS_HEX: Record<string, string> = {
   disposed: "#71717A",
 };
 
-export type WorkspaceTab = "plan" | "work" | "dag" | "chat" | "activity" | "details";
+export type WorkspaceTab = "overview" | "plan" | "chat" | "artifacts" | "history";
 export type MissionListViewMode = "list" | "board";
 export type PlannerProvider = "auto" | "claude" | "codex";
 export type TeammatePlanMode = "auto" | "off" | "required";
@@ -169,6 +181,8 @@ export type MissionSettingsDraft = {
   cliSandboxPermissions: MissionCliSandboxPermissions;
   /** @deprecated kept for backward-compat read/write */
   inProcessMode: MissionInProcessPermissionMode;
+  /** Smart token budget configuration (persisted as mission-level default) */
+  smartBudget: SmartBudgetConfig;
 };
 
 export const DEFAULT_ORCHESTRATOR_MODEL: ModelConfig = {
@@ -186,6 +200,12 @@ export const DEFAULT_PERMISSION_CONFIG: MissionPermissionConfig = {
   },
 };
 
+export const DEFAULT_SMART_BUDGET: SmartBudgetConfig = {
+  enabled: false,
+  fiveHourThresholdUsd: 10,
+  weeklyThresholdUsd: 50,
+};
+
 export const DEFAULT_MISSION_SETTINGS_DRAFT: MissionSettingsDraft = {
   defaultOrchestratorModel: { ...DEFAULT_ORCHESTRATOR_MODEL },
   teammatePlanMode: "auto",
@@ -194,6 +214,7 @@ export const DEFAULT_MISSION_SETTINGS_DRAFT: MissionSettingsDraft = {
   cliMode: "full-auto",
   cliSandboxPermissions: "workspace-write",
   inProcessMode: "full-auto",
+  smartBudget: { ...DEFAULT_SMART_BUDGET },
 };
 
 /* ════════════════════ PURE UTILITY FUNCTIONS ════════════════════ */
@@ -205,14 +226,15 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 export function isDisplayOnlyTaskStep(
   step: Pick<OrchestratorStep, "metadata"> | null | undefined,
 ): boolean {
-  const metadata = isRecord(step?.metadata) ? step.metadata : null;
-  return metadata?.displayOnlyTask === true;
+  void step;
+  return false;
 }
 
 export function filterExecutionSteps<T extends { metadata?: unknown }>(steps: T[]): T[] {
-  return steps.filter((step) =>
-    !isDisplayOnlyTaskStep(step as Pick<OrchestratorStep, "metadata">),
-  );
+  return steps.filter((step) => {
+    const metadata = isRecord(step.metadata) ? step.metadata : null;
+    return metadata?.isTask !== true && metadata?.displayOnlyTask !== true;
+  });
 }
 
 export function readBool(primary: unknown, fallback: unknown, defaultValue: boolean): boolean {
@@ -285,6 +307,89 @@ export function compactText(value: string, maxChars = 140): string {
   if (!normalized.length) return "";
   if (normalized.length <= maxChars) return normalized;
   return `${normalized.slice(0, maxChars - 1)}...`;
+}
+
+export function looksLikeLowSignalNoise(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed.length) return true;
+  if (/^streaming(?:\.\.\.)?$/i.test(trimmed)) return true;
+  if (/^usage$/i.test(trimmed)) return true;
+  if (/^mcp:/i.test(trimmed)) return true;
+  if (/^[\-dlcbps][rwx\-@+]{8,}/i.test(trimmed)) return true;
+  if (/^[A-Z0-9 .:_()/-]{24,}$/.test(trimmed)) return true;
+  if (!/\s/.test(trimmed) && trimmed.length < 24 && !/[.!?]/.test(trimmed)) return true;
+  if (/^[A-Za-z]+$/.test(trimmed) && trimmed.length < 24) return true;
+  return false;
+}
+
+function titleizeMissionWorkerToken(value: string): string {
+  if (!value.length) return value;
+  return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
+}
+
+function inferMissionWorkerPhase(raw: string): string | null {
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized.length) return null;
+  if (normalized.startsWith("planner") || normalized.startsWith("plan")) return "Planning";
+  if (normalized.startsWith("dev") || normalized.startsWith("implement")) return "Development";
+  if (normalized.startsWith("validator") || normalized.startsWith("validate")) return "Validation";
+  if (normalized.startsWith("test")) return "Testing";
+  if (normalized.startsWith("review")) return "Review";
+  return null;
+}
+
+function humanizeMissionWorkerText(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed.length) return "Worker";
+  const withoutPrefix = trimmed
+    .replace(/^Worker:\s*/i, "")
+    .replace(/^worker[_:-]*/i, "")
+    .replace(/^teammate[_:-]*/i, "");
+  const withoutTimestamp = withoutPrefix.replace(/[_-]\d{10,}$/, "");
+  const withColon = withoutTimestamp.replace(/__/g, ": ");
+  return withColon
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function formatMissionWorkerPresentation(args: {
+  title?: string | null;
+  stepKey?: string | null;
+}): {
+  label: string;
+  fullLabel: string;
+  phaseLabel: string | null;
+} {
+  const raw = (args.title && args.title.trim().length ? args.title : args.stepKey) ?? "Worker";
+  const human = humanizeMissionWorkerText(raw);
+  const [lead, ...rest] = human.split(":");
+  const inferredPhase = inferMissionWorkerPhase(lead ?? "") ?? inferMissionWorkerPhase(args.stepKey ?? "");
+  if (rest.length > 0 && inferredPhase) {
+    const detail = rest.join(":").trim();
+    return {
+      label: detail.length ? detail : inferredPhase,
+      fullLabel: detail.length ? `${inferredPhase}: ${detail}` : inferredPhase,
+      phaseLabel: inferredPhase,
+    };
+  }
+  const tokens = human.split(/\s+/).filter(Boolean);
+  if (tokens.length > 1) {
+    const maybePhase = inferMissionWorkerPhase(tokens[0] ?? "");
+    if (maybePhase) {
+      const detail = tokens.slice(1).join(" ").trim();
+      return {
+        label: detail.length ? detail : maybePhase,
+        fullLabel: detail.length ? `${maybePhase}: ${detail}` : maybePhase,
+        phaseLabel: maybePhase,
+      };
+    }
+  }
+  return {
+    label: human,
+    fullLabel: inferredPhase && human !== inferredPhase ? `${inferredPhase}: ${human}` : human,
+    phaseLabel: inferredPhase ?? (human === "Worker" ? null : titleizeMissionWorkerToken(human.split(" ")[0] ?? "")),
+  };
 }
 
 export function isPlannerStreamMessage(msg: OrchestratorChatMessage): boolean {
@@ -556,4 +661,210 @@ export function ElapsedTime({ startedAt, endedAt }: { startedAt: string | null; 
     return () => window.clearInterval(timer);
   }, [isTerminal, startedAt]);
   return React.createElement(React.Fragment, null, formatElapsed(startedAt, endedAt));
+}
+
+/* ════════════════════ ERROR CLASSIFICATION (VAL-UX-008) ════════════════════ */
+
+export type ErrorSource = "ADE" | "Provider" | "Executor" | "Runtime";
+
+export const ERROR_SOURCE_COLORS: Record<ErrorSource, string> = {
+  ADE: "#EF4444",
+  Provider: "#F59E0B",
+  Executor: "#3B82F6",
+  Runtime: "#71717A",
+};
+
+/**
+ * Classify an error message into its source. (VAL-UX-008)
+ * ADE = orchestrator / internal bugs. Provider = AI API / rate-limit / quota.
+ * Executor = CLI / process spawn. Runtime = env / config / MCP / sandbox.
+ */
+export function classifyErrorSource(message: string): ErrorSource {
+  const m = message.toLowerCase();
+  // Provider errors (rate limit, quota, API, model)
+  if (
+    m.includes("rate limit") ||
+    m.includes("rate_limit") ||
+    m.includes("429") ||
+    m.includes("quota") ||
+    m.includes("api key") ||
+    m.includes("api_key") ||
+    m.includes("authentication") ||
+    m.includes("unauthorized") ||
+    m.includes("anthropic") ||
+    m.includes("openai") ||
+    m.includes("model not found") ||
+    m.includes("overloaded") ||
+    m.includes("capacity")
+  ) {
+    return "Provider";
+  }
+  // Executor errors (CLI, spawn, process)
+  if (
+    m.includes("spawn") ||
+    m.includes("enoent") ||
+    m.includes("process exit") ||
+    m.includes("exit code") ||
+    m.includes("timed out") ||
+    m.includes("timeout") ||
+    m.includes("session") ||
+    m.includes("executor") ||
+    m.includes("worker crash") ||
+    m.includes("startup_failure")
+  ) {
+    return "Executor";
+  }
+  // Runtime errors (env, MCP, config, sandbox)
+  if (
+    m.includes("mcp") ||
+    m.includes("sandbox") ||
+    m.includes("permission") ||
+    m.includes("config") ||
+    m.includes("gmail") ||
+    m.includes("environment") ||
+    m.includes("worktree") ||
+    m.includes("lane")
+  ) {
+    return "Runtime";
+  }
+  // Default to ADE for internal / orchestrator errors
+  return "ADE";
+}
+
+/* ════════════════════ PROGRESS COMPUTATION (VAL-UX-003) ════════════════════ */
+
+/**
+ * Compute accurate progress from execution steps, excluding superseded and
+ * retry variants from both numerator and denominator. (VAL-UX-003)
+ */
+export function computeProgress(
+  steps: Array<Pick<OrchestratorStep, "status" | "metadata">>,
+): { completed: number; total: number; pct: number } {
+  // Filter out display-only task steps and superseded/retry variants
+  const meaningful = steps.filter((step) => {
+    const metadata = isRecord(step.metadata) ? step.metadata : null;
+    if (metadata?.isTask === true || metadata?.displayOnlyTask === true) return false;
+    if (step.status === "superseded") return false;
+    // If the step is a retry variant (has retryOf metadata), exclude it
+    if (metadata?.retryOf) return false;
+    return true;
+  });
+
+  const completed = meaningful.filter(
+    (s) => s.status === "succeeded" || s.status === "skipped" || s.status === "canceled",
+  ).length;
+  const total = meaningful.length;
+  const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+  return { completed, total, pct };
+}
+
+/* ════════════════════ FEED DEDUPLICATION (VAL-UX-002) ════════════════════ */
+
+export type CollapsedFeedMessage<T> = {
+  item: T;
+  count: number;
+  collapsed: T[];
+};
+
+/**
+ * Collapse consecutive duplicate feed events into single entries with count.
+ * Groups by eventType and stepId (when present). (VAL-UX-002)
+ */
+export function collapseFeedMessages<T extends { eventType: string; stepId?: string | null }>(
+  events: T[],
+): CollapsedFeedMessage<T>[] {
+  if (events.length === 0) return [];
+
+  const result: CollapsedFeedMessage<T>[] = [];
+  let current: CollapsedFeedMessage<T> = { item: events[0]!, count: 1, collapsed: [events[0]!] };
+
+  for (let i = 1; i < events.length; i++) {
+    const ev = events[i]!;
+    const prev = current.item;
+    if (ev.eventType === prev.eventType && ev.stepId === prev.stepId) {
+      current.count++;
+      current.collapsed.push(ev);
+      // Keep the most recent event as the representative
+      current.item = ev;
+    } else {
+      result.push(current);
+      current = { item: ev, count: 1, collapsed: [ev] };
+    }
+  }
+  result.push(current);
+  return result;
+}
+
+/* ════════════════════ LIFECYCLE ACTIONS (VAL-UX-006) ════════════════════ */
+
+export type LifecycleAction = "stop_run" | "cancel_mission" | "archive_mission";
+
+export const LIFECYCLE_ACTIONS: Record<LifecycleAction, {
+  label: string;
+  color: string;
+  confirmText: string | null;
+}> = {
+  stop_run: {
+    label: "Stop Run",
+    color: "#F59E0B",       // amber
+    confirmText: null,      // no confirmation for stop
+  },
+  cancel_mission: {
+    label: "Cancel Mission",
+    color: "#EF4444",       // red
+    confirmText: "This will cancel the entire mission. Are you sure?",
+  },
+  archive_mission: {
+    label: "Archive Mission",
+    color: "#71717A",       // gray
+    confirmText: null,
+  },
+};
+
+/**
+ * Determine which lifecycle actions are available for a given mission + run state.
+ * (VAL-UX-006)
+ */
+export function getAvailableLifecycleActions(
+  missionStatus: MissionStatus,
+  runStatus: string | null,
+): LifecycleAction[] {
+  const actions: LifecycleAction[] = [];
+  const hasActiveRun = runStatus != null && !["succeeded", "failed", "canceled"].includes(runStatus);
+  const isTerminal = TERMINAL_MISSION_STATUSES.has(missionStatus);
+
+  // Stop Run: only when there's an active run
+  if (hasActiveRun) {
+    actions.push("stop_run");
+  }
+
+  // Cancel Mission: when mission is not terminal and there's something to cancel
+  if (!isTerminal) {
+    actions.push("cancel_mission");
+  }
+
+  // Archive Mission: only for terminal missions
+  if (isTerminal) {
+    actions.push("archive_mission");
+  }
+
+  return actions;
+}
+
+/* ════════════════════ USAGE FORMATTING ════════════════════ */
+
+/** Format milliseconds into a human-readable reset countdown. (VAL-USAGE-004) */
+export function formatResetCountdown(ms: number): string {
+  if (ms <= 0) return "resets now";
+  const hours = Math.floor(ms / 3_600_000);
+  const mins = Math.floor((ms % 3_600_000) / 60_000);
+  if (hours > 0) return `resets in ${hours}h ${mins}m`;
+  return `resets in ${mins}m`;
+}
+
+/** Return color for a usage percentage: green < 60%, amber 60-80%, red > 80%. */
+export function usagePercentColor(pct: number): string {
+  if (pct > 80) return "#EF4444";
+  if (pct >= 60) return "#F59E0B";
+  return "#22C55E";
 }

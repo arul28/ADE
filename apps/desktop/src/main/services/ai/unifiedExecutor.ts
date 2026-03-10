@@ -9,6 +9,7 @@ import {
 import { detectAllAuth } from "./authDetector";
 import { resolveModel } from "./providerResolver";
 import { createCodingToolSet, createUniversalToolSet } from "./tools";
+import { createMemoryTools } from "./tools/memoryTools";
 import { buildCodingAgentSystemPrompt, composeSystemPrompt } from "./tools/systemPrompt";
 import type { AgentEvent } from "./agentExecutor";
 import {
@@ -17,11 +18,13 @@ import {
   preCompactionWriteback,
   appendTranscriptEntry,
   getTranscript,
+  getTranscriptRecord,
   markTranscriptCompacted,
   type TranscriptEntry,
   type CompactionMonitor,
 } from "./compactionEngine";
 import type { AdeDb } from "../state/kvDb";
+import type { CompactionFlushService } from "../memory/compactionFlushService";
 
 export type UnifiedExecutorOpts = {
   modelId: string;
@@ -50,11 +53,18 @@ export type UnifiedExecutorOpts = {
   }) => unknown;
   /** Optional memory service for wiring memory tools into the coding tool set. */
   memoryService?: unknown;
+  compactionFlushService?: Pick<CompactionFlushService, "beforeCompaction">;
 };
 
 export type UnifiedResumeOpts = UnifiedExecutorOpts & {
   previousAttemptId: string;
 };
+
+function buildConversationText(messages: TranscriptEntry[]): string {
+  return messages
+    .map((message) => `[${message.role}${message.toolName ? ` (${message.toolName})` : ""}]: ${message.content}`)
+    .join("\n\n");
+}
 
 export async function* executeUnified(
   opts: UnifiedExecutorOpts,
@@ -132,6 +142,7 @@ export async function* executeUnified(
   const monitor: CompactionMonitor | null = compactionEnabled
     ? createCompactionMonitor(model)
     : null;
+  let compactionBoundaryIndex = 0;
 
   try {
     const result = streamText({
@@ -266,9 +277,81 @@ export async function* executeUnified(
             yield { type: "text", content: "\n[Compacting context...]\n" };
 
             try {
-              const transcript = getTranscript(opts.db, opts.attemptId);
-              if (transcript) {
-                const messages: TranscriptEntry[] = JSON.parse(transcript.messagesJson);
+              const transcriptRecord = getTranscriptRecord(opts.db, opts.attemptId);
+              if (transcriptRecord) {
+                let messages: TranscriptEntry[] = JSON.parse(transcriptRecord.messagesJson);
+
+                if (opts.compactionFlushService && opts.projectId && opts.memoryService) {
+                  await opts.compactionFlushService.beforeCompaction({
+                    sessionId: opts.attemptId,
+                    boundaryId: `${opts.attemptId}:${compactionBoundaryIndex}`,
+                    conversationTokenCount: transcriptRecord.tokenCount,
+                    maxTokens: model.contextWindow,
+                    appendHiddenMessage: async (message) => {
+                      appendTranscriptEntry(opts.db!, {
+                        projectId: opts.projectId!,
+                        attemptId: opts.attemptId!,
+                        runId: opts.runId!,
+                        stepId: opts.stepId!,
+                        entry: {
+                          role: message.role,
+                          content: message.content,
+                          timestamp: new Date().toISOString(),
+                          tokenEstimate: Math.ceil(message.content.length / 4),
+                        },
+                      });
+                    },
+                    flushTurn: async ({ prompt }) => {
+                      const memoryTools = createMemoryTools(opts.memoryService as any, opts.projectId!, {
+                        runId: opts.runId,
+                        stepId: opts.stepId,
+                        agentScopeOwnerId: opts.attemptId,
+                      });
+                      const flushSystem = composeSystemPrompt(
+                        prompt,
+                        buildCodingAgentSystemPrompt({
+                          cwd: opts.cwd ?? process.cwd(),
+                          mode: "coding",
+                          permissionMode: "edit",
+                          toolNames: Object.keys(memoryTools),
+                          interactive: false,
+                        }),
+                      );
+
+                      const flushStream = streamText({
+                        model: sdkModel,
+                        system: flushSystem,
+                        prompt: `Review this conversation and persist any durable discoveries with memoryAdd before compaction.\n\n${buildConversationText(messages)}`,
+                        tools: memoryTools as any,
+                        stopWhen: stepCountIs(6),
+                        abortSignal: abortController.signal,
+                      });
+
+                      let flushText = "";
+                      for await (const flushPart of flushStream.fullStream) {
+                        if (!flushPart || typeof flushPart !== "object") continue;
+                        if (flushPart.type === "text-delta") {
+                          flushText += String(flushPart.text ?? "");
+                          continue;
+                        }
+                        if (flushPart.type === "error") {
+                          throw new Error(String(flushPart.error));
+                        }
+                      }
+
+                      const flushTokens = Math.ceil(flushText.length / 4);
+                      return {
+                        status: flushTokens > model.contextWindow ? "budget_exceeded" as const : "flushed" as const,
+                      };
+                    },
+                  });
+
+                  const refreshedTranscript = getTranscript(opts.db, opts.attemptId);
+                  if (refreshedTranscript) {
+                    messages = JSON.parse(refreshedTranscript.messagesJson);
+                  }
+                }
+
                 const compactionResult = await compactConversation({
                   messages,
                   modelId: opts.modelId,
@@ -306,6 +389,8 @@ export async function* executeUnified(
             } catch (compactionErr) {
               // Non-fatal — compaction failure should not abort execution
               yield { type: "text", content: `[Compaction skipped: ${compactionErr instanceof Error ? compactionErr.message : String(compactionErr)}]\n` };
+            } finally {
+              compactionBoundaryIndex += 1;
             }
           }
         }

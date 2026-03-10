@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChatCircle, ArrowsClockwise, Plus } from "@phosphor-icons/react";
+import { Plus } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
-  AiDetectedAuth,
+  AgentChatExecutionMode,
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatFileRef,
@@ -10,13 +10,15 @@ import type {
   AgentChatSessionSummary,
   ContextPackOption
 } from "../../../shared/types";
-import { MODEL_REGISTRY, getModelById, type ModelDescriptor } from "../../../shared/modelRegistry";
+import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
+import { getDefaultModelDescriptor, MODEL_REGISTRY, getModelById, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { AgentChatComposer } from "./AgentChatComposer";
 import { AgentChatMessageList } from "./AgentChatMessageList";
 import { AgentQuestionModal } from "./AgentQuestionModal";
 import { isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
+import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 
 type PendingApproval = {
   itemId: string;
@@ -31,27 +33,66 @@ const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
 const LEGACY_PROVIDER_KEY = "ade.chat.lastProvider";
 const LEGACY_MODEL_KEY_PREFIX = "ade.chat.lastModel";
 
-const DEFAULT_MODEL_ID = "anthropic/claude-sonnet-4-6";
+const DEFAULT_MODEL_ID = getDefaultModelDescriptor("unified")?.id
+  ?? getDefaultModelDescriptor("claude")?.id
+  ?? MODEL_REGISTRY.find((model) => model.family === "anthropic" && model.isCliWrapped)?.id
+  ?? MODEL_REGISTRY[0]?.id
+  ?? "openai/gpt-5.4";
 
-function parseChatTranscript(raw: string): AgentChatEventEnvelope[] {
-  const out: AgentChatEventEnvelope[] = [];
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed.length) continue;
-    try {
-      const parsed = JSON.parse(trimmed) as unknown;
-      if (!parsed || typeof parsed !== "object") continue;
-      const record = parsed as Partial<AgentChatEventEnvelope>;
-      const sessionId = typeof record.sessionId === "string" ? record.sessionId : "";
-      const timestamp = typeof record.timestamp === "string" ? record.timestamp : new Date().toISOString();
-      const event = record.event as AgentChatEvent | undefined;
-      if (!sessionId || !event || typeof event !== "object") continue;
-      out.push({ sessionId, timestamp, event });
-    } catch {
-      // Ignore malformed lines.
-    }
+type ExecutionModeOption = {
+  value: AgentChatExecutionMode;
+  label: string;
+  summary: string;
+  helper: string;
+  accent: string;
+};
+
+function getExecutionModeOptions(model: ModelDescriptor | null | undefined): ExecutionModeOption[] {
+  if (!model?.isCliWrapped) return [];
+  if (model.family === "openai") {
+    return [
+      {
+        value: "focused",
+        label: "Focused",
+        summary: "Single thread",
+        helper: "Keep the turn in one thread unless the task clearly benefits from delegation.",
+        accent: "#38BDF8",
+      },
+      {
+        value: "parallel",
+        label: "Parallel",
+        summary: "Parallel delegates",
+        helper: "Tell Codex to split independent work into parallel delegates and reconcile the result in one thread.",
+        accent: "#10B981",
+      },
+    ];
   }
-  return out;
+  if (model.family === "anthropic") {
+    return [
+      {
+        value: "focused",
+        label: "Focused",
+        summary: "Single thread",
+        helper: "Stay in one Claude Code thread unless specialization would materially help.",
+        accent: "#A78BFA",
+      },
+      {
+        value: "subagents",
+        label: "Subagents",
+        summary: "Use Claude subagents",
+        helper: "Favor subagents for specialized or parallel investigation when the task naturally decomposes.",
+        accent: "#D946EF",
+      },
+      {
+        value: "teams",
+        label: "Teams",
+        summary: "Agent teams",
+        helper: "Prefer configured Claude project, local, or user agent teams when they are available in Claude settings.",
+        accent: "#F97316",
+      },
+    ];
+  }
+  return [];
 }
 
 function readRecord(value: unknown): Record<string, unknown> | null {
@@ -242,6 +283,11 @@ function normalizeChatLabel(raw: string | null | undefined): string | null {
   return normalized.length ? normalized : null;
 }
 
+function stripOutcomePrefix(raw: string): string {
+  const stripped = raw.replace(/^(completed?|done|finished|resolved|success|interrupted|failed|error)\b[\s:.-]*/iu, "").trim();
+  return stripped.length ? stripped : raw;
+}
+
 function isLowSignalChatLabel(raw: string | null | undefined): boolean {
   const normalized = normalizeChatLabel(raw);
   if (!normalized) return false;
@@ -274,7 +320,7 @@ function isLowSignalChatLabel(raw: string | null | undefined): boolean {
 function preferredChatLabel(raw: string | null | undefined): string | null {
   const normalized = normalizeChatLabel(raw);
   if (!normalized || isLowSignalChatLabel(normalized)) return null;
-  return normalized;
+  return stripOutcomePrefix(normalized);
 }
 
 function chatSessionTitle(session: AgentChatSessionSummary): string {
@@ -291,77 +337,29 @@ function chatSessionTitle(session: AgentChatSessionSummary): string {
   return descriptor?.displayName ?? `${session.provider}/${session.model}`;
 }
 
-function hasConfiguredNonCliAuth(model: ModelDescriptor, detectedAuth: AiDetectedAuth[]): boolean {
-  return model.authTypes.some((authType) => {
-    if (authType === "api-key") {
-      return detectedAuth.some((auth) => auth.type === "api-key" && auth.provider === model.family);
-    }
-    if (authType === "openrouter") {
-      return detectedAuth.some((auth) => auth.type === "openrouter");
-    }
-    if (authType === "local") {
-      if (model.family === "ollama" || model.family === "lmstudio" || model.family === "vllm") {
-        return detectedAuth.some((auth) => auth.type === "local" && auth.provider === model.family);
-      }
-      return detectedAuth.some((auth) => auth.type === "local");
-    }
-    return false;
-  });
-}
-
-function deriveConfiguredModelIdsFromStatus(status: {
-  availableProviders: { codex: boolean; claude: boolean };
-  models: { codex: Array<{ id: string }>; claude: Array<{ id: string }> };
-  detectedAuth?: AiDetectedAuth[];
-  availableModelIds?: string[];
-}): string[] {
-  const available = new Set<string>();
-
-  for (const modelId of status.availableModelIds ?? []) {
-    const normalized = String(modelId ?? "").trim();
-    if (!normalized.length) continue;
-    const descriptor = getModelById(normalized);
-    if (descriptor && !descriptor.deprecated) {
-      available.add(descriptor.id);
-    }
-  }
-
-  if (status.availableProviders.codex) {
-    for (const model of status.models.codex ?? []) {
-      const resolved = resolveCliRegistryModelId("codex", model.id);
-      if (resolved) available.add(resolved);
-    }
-  }
-
-  if (status.availableProviders.claude) {
-    for (const model of status.models.claude ?? []) {
-      const resolved = resolveCliRegistryModelId("claude", model.id);
-      if (resolved) available.add(resolved);
-    }
-  }
-
-  const detectedAuth = status.detectedAuth ?? [];
-  if (!available.size && detectedAuth.length) {
-    for (const model of MODEL_REGISTRY) {
-      if (model.deprecated || model.isCliWrapped) continue;
-      if (hasConfiguredNonCliAuth(model, detectedAuth)) {
-        available.add(model.id);
-      }
-    }
-  }
-
-  return [...available];
-}
-
 export function AgentChatPane({
   laneId,
+  laneLabel,
   initialSessionId,
-  lockSessionId
+  lockSessionId,
+  hideSessionTabs = false,
+  forceNewSession = false,
+  forceDraftMode = false,
+  draftLayout = "full",
+  onSessionCreated,
 }: {
   laneId: string | null;
+  laneLabel?: string | null;
   initialSessionId?: string | null;
   lockSessionId?: string | null;
+  hideSessionTabs?: boolean;
+  forceNewSession?: boolean;
+  forceDraftMode?: boolean;
+  draftLayout?: "full" | "embedded";
+  onSessionCreated?: (sessionId: string) => void;
 }) {
+  const forceDraft = forceDraftMode || forceNewSession;
+  // draftLayout prop kept for API compat but no longer drives render branching
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(lockSessionId ?? initialSessionId ?? null);
   const [eventsBySession, setEventsBySession] = useState<Record<string, AgentChatEventEnvelope[]>>({});
@@ -369,6 +367,7 @@ export function AgentChatPane({
   const [approvalsBySession, setApprovalsBySession] = useState<Record<string, PendingApproval[]>>({});
   const [modelId, setModelId] = useState<string>(DEFAULT_MODEL_ID);
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
+  const [executionMode, setExecutionMode] = useState<AgentChatExecutionMode>("focused");
   const [availableModelIds, setAvailableModelIds] = useState<string[]>([]);
   const [permissionMode, setPermissionMode] = useState<AgentChatPermissionMode>("plan");
   const [attachments, setAttachments] = useState<AgentChatFileRef[]>([]);
@@ -377,6 +376,7 @@ export function AgentChatPane({
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [preferencesReady, setPreferencesReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const appliedInitialSessionIdRef = useRef<string | null>(initialSessionId ?? null);
@@ -391,6 +391,10 @@ export function AgentChatPane({
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
   );
+  const laneDisplayLabel = useMemo(() => {
+    const normalized = laneLabel?.trim();
+    return normalized?.length ? normalized : laneId;
+  }, [laneId, laneLabel]);
   const selectedSessionModelId = useMemo(() => {
     if (!selectedSession) return null;
     return selectedSession.modelId ?? resolveRegistryModelId(selectedSession.model);
@@ -410,6 +414,7 @@ export function AgentChatPane({
       setModelId(nextModelId);
     }
     setReasoningEffort(session.reasoningEffort ?? null);
+    setExecutionMode(session.executionMode ?? "focused");
     if (session.permissionMode) {
       setPermissionMode(session.permissionMode);
     }
@@ -433,19 +438,40 @@ export function AgentChatPane({
     }
     return selectedModelDesc?.isCliWrapped ?? false;
   }, [selectedSessionModelId, modelSelectionDiffersFromSession, selectedModelDesc]);
+  const executionModeOptions = useMemo(
+    () => getExecutionModeOptions(selectedModelDesc),
+    [selectedModelDesc],
+  );
+  const selectedExecutionMode = useMemo(
+    () => executionModeOptions.find((option) => option.value === executionMode) ?? executionModeOptions[0] ?? null,
+    [executionMode, executionModeOptions],
+  );
+  const launchModeEditable = !selectedSessionId || selectedEvents.length === 0;
 
   // Keep all configured models selectable, and always include the active session model.
+  // When a session has messages, lock to the same family (e.g. Claude→Claude only).
   const effectiveAvailableModelIds = useMemo(() => {
-    if (!selectedSessionModelId) return availableModelIds;
-    return availableModelIds.includes(selectedSessionModelId)
-      ? availableModelIds
-      : [selectedSessionModelId, ...availableModelIds];
-  }, [availableModelIds, selectedSessionModelId]);
+    let ids = availableModelIds;
+    if (selectedSessionModelId && !ids.includes(selectedSessionModelId)) {
+      ids = [selectedSessionModelId, ...ids];
+    }
+    // Lock to same family when session has messages
+    if (selectedSessionModelId && selectedEvents.length > 0) {
+      const sessionDesc = getModelById(selectedSessionModelId);
+      if (sessionDesc) {
+        ids = ids.filter((id) => {
+          const desc = getModelById(id);
+          return desc?.family === sessionDesc.family;
+        });
+      }
+    }
+    return ids;
+  }, [availableModelIds, selectedSessionModelId, selectedEvents.length]);
 
   const refreshAvailableModels = useCallback(async () => {
     try {
       const status = await window.ade.ai.getStatus();
-      const available = deriveConfiguredModelIdsFromStatus(status);
+      const available = deriveConfiguredModelIds(status);
       setAvailableModelIds(available);
       return available;
     } catch {
@@ -502,12 +528,12 @@ export function AgentChatPane({
     }
 
     setSelectedSessionId((current) => {
-      if (!current && draftSelectionLockedRef.current) return null;
+      if (!current && (draftSelectionLockedRef.current || forceDraft)) return null;
       if (current && rows.some((row) => row.sessionId === current)) return current;
       if (current && optimisticSessionIdsRef.current.has(current)) return current;
       return rows[0]?.sessionId ?? null;
     });
-  }, [laneId, lockSessionId]);
+  }, [forceDraft, laneId, lockSessionId]);
 
   const loadHistory = useCallback(async (sessionId: string) => {
     if (loadedHistoryRef.current.has(sessionId)) return;
@@ -521,7 +547,7 @@ export function AgentChatPane({
         maxBytes: 1_800_000,
         raw: true
       });
-      const parsed = parseChatTranscript(raw).filter((entry) => entry.sessionId === sessionId);
+      const parsed = parseAgentChatTranscript(raw).filter((entry) => entry.sessionId === sessionId);
       const derived = deriveRuntimeState(parsed);
       setEventsBySession((prev) => ({ ...prev, [sessionId]: parsed }));
       setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: derived.turnActive }));
@@ -555,7 +581,17 @@ export function AgentChatPane({
     draftSelectionLockedRef.current = false;
     optimisticSessionIdsRef.current.clear();
     appliedInitialSessionIdRef.current = initialSessionId ?? null;
-  }, [laneId]);
+    if (forceDraft && !lockSessionId) {
+      draftSelectionLockedRef.current = true;
+      setSelectedSessionId(null);
+    }
+  }, [forceDraft, laneId, lockSessionId]);
+
+  useEffect(() => {
+    if (!forceDraft || lockSessionId) return;
+    draftSelectionLockedRef.current = true;
+    setSelectedSessionId(null);
+  }, [forceDraft, lockSessionId]);
 
   useEffect(() => {
     syncComposerToSession(selectedSession);
@@ -566,6 +602,7 @@ export function AgentChatPane({
 
     const boot = async () => {
       setLoading(true);
+      setPreferencesReady(false);
       try {
         const snapshot = await window.ade.projectConfig.get();
         const chat = snapshot.effective.ai?.chat;
@@ -581,7 +618,10 @@ export function AgentChatPane({
       try {
         await Promise.all([refreshAvailableModels(), refreshSessions()]);
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          setPreferencesReady(true);
+        }
       }
     };
 
@@ -594,13 +634,17 @@ export function AgentChatPane({
   useEffect(() => {
     if (loading || !availableModelIds.length) return;
     if (availableModelIds.includes(modelId)) return;
+    if (selectedSessionModelId) {
+      setModelId(selectedSessionModelId);
+      return;
+    }
     const preferred = readLastUsedModelId();
     if (preferred && availableModelIds.includes(preferred)) {
       setModelId(preferred);
     } else {
       setModelId(availableModelIds[0]!);
     }
-  }, [loading, availableModelIds, modelId]);
+  }, [loading, availableModelIds, modelId, selectedSessionModelId]);
 
   useEffect(() => {
     if (!reasoningTiers.length) {
@@ -611,6 +655,15 @@ export function AgentChatPane({
     const preferred = readLastUsedReasoningEffort({ laneId, modelId });
     setReasoningEffort(selectReasoningEffort({ tiers: reasoningTiers, preferred }));
   }, [laneId, modelId, reasoningEffort, reasoningTiers]);
+
+  useEffect(() => {
+    if (!executionModeOptions.length) {
+      if (executionMode !== "focused") setExecutionMode("focused");
+      return;
+    }
+    if (executionModeOptions.some((option) => option.value === executionMode)) return;
+    setExecutionMode(executionModeOptions[0]!.value);
+  }, [executionMode, executionModeOptions]);
 
   useEffect(() => {
     if (!selectedSessionId) return;
@@ -702,17 +755,19 @@ export function AgentChatPane({
   }, []);
 
   useEffect(() => {
+    if (!preferencesReady) return;
     if (!modelId.trim().length) return;
     writeLastUsedModelId(modelId);
-  }, [modelId]);
+  }, [modelId, preferencesReady]);
 
   useEffect(() => {
+    if (!preferencesReady) return;
     writeLastUsedReasoningEffort({
       laneId,
       modelId,
       effort: reasoningEffort
     });
-  }, [laneId, modelId, reasoningEffort]);
+  }, [laneId, modelId, preferencesReady, reasoningEffort]);
 
   const searchAttachments = useCallback(async (query: string): Promise<AgentChatFileRef[]> => {
     if (!laneId) return [];
@@ -759,21 +814,28 @@ export function AgentChatPane({
     optimisticSessionIdsRef.current.add(created.id);
     draftSelectionLockedRef.current = false;
     setSelectedSessionId(created.id);
+    onSessionCreated?.(created.id);
     void refreshSessions().catch(() => {});
     return created.id;
-  }, [laneId, modelId, permissionMode, reasoningEffort, refreshSessions]);
+  }, [laneId, modelId, onSessionCreated, permissionMode, reasoningEffort, refreshSessions]);
 
   const submit = useCallback(async () => {
     const text = draft.trim();
     if (!text.length || !laneId) return;
+    const draftSnapshot = draft;
+    const attachmentsSnapshot = attachments;
+    const contextPackSnapshot = selectedContextPacks;
 
     setBusy(true);
     setError(null);
+    setDraft("");
+    setAttachments([]);
+    setSelectedContextPacks([]);
     try {
       let finalText = text;
-      if (selectedContextPacks.length) {
+      if (contextPackSnapshot.length) {
         const packContents: string[] = [];
-        for (const pack of selectedContextPacks) {
+        for (const pack of contextPackSnapshot) {
           try {
             const result = await window.ade.agentChat.fetchContextPack({
               scope: pack.scope,
@@ -798,12 +860,9 @@ export function AgentChatPane({
         Boolean(selectedSessionId)
         && Boolean(selectedSessionModelId)
         && selectedSessionModelId !== modelId;
-      const canRetargetSelectedSession =
-        Boolean(sessionId)
-        && selectedModelChanged
-        && selectedEvents.length === 0
-        && !turnActive;
-      if (canRetargetSelectedSession && sessionId) {
+
+      if (sessionId && selectedModelChanged && !turnActive) {
+        // Model switched within the same family — update the session in-place
         await window.ade.agentChat.updateSession({
           sessionId,
           modelId,
@@ -811,14 +870,15 @@ export function AgentChatPane({
           permissionMode
         });
         await refreshSessions();
-      } else if (!sessionId || selectedModelChanged) {
+      } else if (!sessionId) {
+        // No session yet — create one
         sessionId = await createSession();
       }
       if (!sessionId) {
         throw new Error("Unable to create chat session.");
       }
 
-      const selectedAttachments = attachments;
+      const selectedAttachments = attachmentsSnapshot;
       if (turnActiveBySession[sessionId]) {
         const steerText = selectedAttachments.length
           ? `${finalText}\n\nAttached context:\n${selectedAttachments.map((entry) => `- ${entry.type}: ${entry.path}`).join("\n")}`
@@ -828,15 +888,17 @@ export function AgentChatPane({
         await window.ade.agentChat.send({
           sessionId,
           text: finalText,
+          displayText: text,
           attachments: selectedAttachments,
-          reasoningEffort
+          reasoningEffort,
+          executionMode: launchModeEditable ? executionMode : null,
         });
       }
-      setDraft("");
-      setAttachments([]);
-      setSelectedContextPacks([]);
       await refreshSessions();
     } catch (submitError) {
+      setDraft((current) => (current.trim().length ? current : draftSnapshot));
+      setAttachments((current) => (current.length ? current : attachmentsSnapshot));
+      setSelectedContextPacks((current) => (current.length ? current : contextPackSnapshot));
       setError(submitError instanceof Error ? submitError.message : String(submitError));
     } finally {
       setBusy(false);
@@ -845,7 +907,9 @@ export function AgentChatPane({
     attachments,
     createSession,
     draft,
+    executionMode,
     laneId,
+    launchModeEditable,
     modelId,
     reasoningEffort,
     refreshSessions,
@@ -909,25 +973,18 @@ export function AgentChatPane({
     );
   }
 
-  const sessionModelDesc = selectedSession?.modelId ? getModelById(selectedSession.modelId) : null;
-  const sessionTitle = selectedSession ? chatSessionTitle(selectedSession) : null;
-  const sessionLabel = sessionModelDesc?.displayName
-    ?? (selectedSession ? `${selectedSession.provider}/${selectedSession.model}` : null);
-  const sessionModelColor = sessionModelDesc?.color ?? selectedModelDesc?.color ?? "#A78BFA";
+
+  const draftAccent = selectedModelDesc?.color ?? "#A78BFA";
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 flex-col" style={{ background: "var(--color-card)" }}>
       {/* ── Session tabs ── */}
-      {!lockSessionId ? (
-        <div className="flex items-center gap-0 border-b border-border/8 bg-[var(--color-surface)]">
-          <div className="flex min-w-0 flex-1 items-center overflow-x-auto">
-            {sessions.map((session, index) => {
+      {!lockSessionId && !hideSessionTabs ? (
+        <div className="flex items-center border-b border-border/8 bg-surface">
+          <div className="flex min-w-0 flex-1 items-center gap-px overflow-x-auto">
+            {sessions.map((session) => {
               const desc = session.modelId ? getModelById(session.modelId) : MODEL_REGISTRY.find((m) => m.shortId === session.model);
               const title = chatSessionTitle(session);
-              const secondaryCandidate = preferredChatLabel(session.summary);
-              const secondary = secondaryCandidate && secondaryCandidate !== title
-                ? secondaryCandidate
-                : desc?.displayName ?? `${session.provider}/${session.model}`;
               const isActive = session.sessionId === selectedSessionId;
               const isRunning = turnActiveBySession[session.sessionId] ?? false;
               return (
@@ -935,50 +992,29 @@ export function AgentChatPane({
                   key={session.sessionId}
                   type="button"
                   className={cn(
-                    "group flex shrink-0 flex-col items-start gap-1 border-b-2 px-3 py-2 text-left transition-colors",
+                    "flex shrink-0 items-center gap-1 px-2 py-px font-mono text-[8px] transition-colors",
                     isActive
-                      ? "border-b-accent bg-accent/[0.06] text-fg/95"
-                      : "border-b-transparent text-fg/50 hover:bg-border/6 hover:text-fg/75"
+                      ? "border-b border-b-accent/40 text-fg/70"
+                      : "text-muted-fg/25 hover:text-fg/45"
                   )}
-                  style={{
-                    minWidth: 180,
-                    backgroundImage: isActive
-                      ? `linear-gradient(180deg, ${desc?.color ?? "var(--color-accent)"}14 0%, transparent 100%)`
-                      : undefined,
-                  }}
                   onClick={() => {
                     draftSelectionLockedRef.current = false;
                     syncComposerToSession(session);
                     setSelectedSessionId(session.sessionId);
                   }}
                 >
-                  <span className="flex w-full items-center gap-2">
-                    <span
-                      className="font-mono text-[9px] font-bold uppercase tracking-[0.18em]"
-                      style={{ color: isActive ? desc?.color ?? "var(--color-accent)" : "var(--color-muted-fg)" }}
-                    >
-                      {String(index + 1).padStart(2, "0")}
-                    </span>
-                    <ToolLogo toolType={chatToolTypeForProvider(session.provider)} size={12} />
-                    <span className="truncate font-mono text-[11px] text-fg/90">{title}</span>
-                    <span
-                      className={cn(
-                        "ml-auto h-2 w-2 rounded-full transition-opacity",
-                        isRunning ? "animate-pulse opacity-100" : "opacity-70"
-                      )}
-                      style={{ backgroundColor: desc?.color ?? "#A78BFA" }}
-                    />
-                  </span>
-                  <span className="max-w-[170px] truncate font-mono text-[9px] uppercase tracking-[0.12em] text-muted-fg/60">
-                    {secondary.length ? secondary : desc?.displayName ?? `${session.provider}/${session.model}`}
-                  </span>
+                  <ToolLogo toolType={chatToolTypeForProvider(session.provider)} size={8} />
+                  <span className="max-w-[80px] truncate">{title}</span>
+                  {isRunning ? (
+                    <span className="h-1 w-1 animate-pulse" style={{ backgroundColor: desc?.color ?? "#A78BFA" }} />
+                  ) : null}
                 </button>
               );
             })}
           </div>
           <button
             type="button"
-            className="flex h-full shrink-0 items-center gap-1 border-l border-border/8 px-3 py-2 font-mono text-[10px] text-muted-fg/30 transition-colors hover:bg-accent/[0.04] hover:text-accent/60"
+            className="shrink-0 px-1.5 py-px text-muted-fg/15 transition-colors hover:text-accent/40"
             title="New chat"
             onClick={() => {
               draftSelectionLockedRef.current = true;
@@ -989,58 +1025,16 @@ export function AgentChatPane({
               setSelectedContextPacks([]);
             }}
           >
-            <Plus size={12} weight="bold" />
+            <Plus size={8} weight="bold" />
           </button>
         </div>
       ) : null}
 
-      {/* ── Model badge + session info ── */}
-      <div className="flex items-center gap-3 border-b border-border/8 px-4 py-1.5">
-        <span
-          className="inline-flex items-center gap-1.5 border px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider"
-          style={{
-            borderColor: `${sessionModelColor}30`,
-            backgroundColor: `${sessionModelColor}0A`,
-            color: sessionModelColor
-          }}
-        >
-          <span className="inline-block h-1.5 w-1.5" style={{ backgroundColor: sessionModelColor }} />
-          {sessionTitle ?? sessionLabel ?? selectedModelDesc?.displayName ?? "No model"}
-        </span>
-
-        {selectedSession ? sessionLabel && sessionTitle !== sessionLabel ? (
-          <span className="font-mono text-[10px] text-muted-fg/30">
-            {sessionLabel}
-          </span>
-        ) : null : null}
-
-        {turnActive ? (
-          <span className="inline-flex items-center gap-1 font-mono text-[9px] font-bold uppercase tracking-widest text-accent/60">
-            <span className="h-1.5 w-1.5 animate-pulse bg-accent" />
-            Active
-          </span>
-        ) : null}
-
-        <div className="ml-auto flex items-center gap-1">
-          <button
-            type="button"
-            className="flex items-center gap-1 px-1.5 py-0.5 text-muted-fg/25 transition-colors hover:text-muted-fg/50"
-            onClick={() => {
-              setError(null);
-              refreshSessions().catch((refreshError) => {
-                setError(refreshError instanceof Error ? refreshError.message : String(refreshError));
-              });
-            }}
-            title="Refresh sessions"
-          >
-            <ArrowsClockwise size={11} weight="bold" />
-          </button>
-        </div>
-      </div>
+      {/* Session info bar removed — model/lane info is in the tabs and composer */}
 
       {/* ── Error bar ── */}
       {error ? (
-        <div className="border-b border-red-500/10 bg-gradient-to-r from-red-500/[0.05] to-transparent px-4 py-2 font-mono text-[11px] text-red-400/70">
+        <div className="border-b border-red-500/10 px-4 py-1.5 font-mono text-[10px] text-red-400/60">
           {error}
         </div>
       ) : null}
@@ -1076,48 +1070,38 @@ export function AgentChatPane({
             }}
           />
         ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-5 px-8">
-            {/* Icon with glow */}
-            <div className="relative flex items-center justify-center">
-              <div
-                className="absolute h-16 w-16 rounded-full blur-2xl"
-                style={{ backgroundColor: `${selectedModelDesc?.color ?? "#A78BFA"}18` }}
-              />
-              <div
-                className="relative flex h-12 w-12 items-center justify-center border"
-                style={{
-                  borderColor: `${selectedModelDesc?.color ?? "#A78BFA"}25`,
-                  backgroundColor: `${selectedModelDesc?.color ?? "#A78BFA"}0A`,
-                }}
-              >
-                <ChatCircle size={24} weight="thin" style={{ color: selectedModelDesc?.color ?? "#A78BFA", opacity: 0.5 }} />
+          /* ── Empty state: no session selected — just show the composer below ── */
+          <div className="flex h-full flex-col items-center justify-center px-6">
+            <div className="flex flex-col items-center gap-4 text-center">
+              <div className="flex items-center gap-2">
+                <span
+                  className="inline-block h-2 w-2"
+                  style={{ backgroundColor: draftAccent }}
+                />
+                <span className="font-mono text-[10px] font-bold uppercase tracking-[2px] text-muted-fg/40">
+                  {laneDisplayLabel}
+                </span>
               </div>
-            </div>
-            {/* Model name */}
-            <div className="flex flex-col items-center gap-1">
-              <span className="font-sans text-[13px] font-medium text-fg/60">
-                {selectedModelDesc?.displayName ?? "Ready to chat"}
-              </span>
-              <span className="font-mono text-[10px] uppercase tracking-[2px] text-muted-fg/30">
-                Start a conversation
-              </span>
-            </div>
-            {/* Starter prompts */}
-            <div className="flex flex-col items-stretch gap-1.5 w-full max-w-[260px]">
-              {[
-                "Explain the current project structure",
-                "Review the recent code changes",
-                "Help me plan the next feature",
-              ].map((prompt) => (
-                <button
-                  key={prompt}
-                  type="button"
-                  className="border border-border/15 bg-surface/30 px-3 py-2 text-left font-mono text-[10px] text-muted-fg/45 transition-colors hover:border-accent/20 hover:bg-accent/[0.05] hover:text-fg/60"
-                  onClick={() => setDraft(prompt)}
-                >
-                  {prompt}
-                </button>
-              ))}
+              <div className="font-sans text-[15px] font-medium tracking-tight text-fg/60">
+                Start typing below
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                {[
+                  "Explain the project structure",
+                  "Review recent changes",
+                  "Plan the next feature",
+                  "Find bugs and propose fixes",
+                ].map((prompt) => (
+                  <button
+                    key={prompt}
+                    type="button"
+                    className="border border-border/10 px-3 py-2 text-left font-mono text-[10px] text-muted-fg/40 transition-colors hover:border-border/25 hover:text-fg/60"
+                    onClick={() => setDraft(prompt)}
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         )}
@@ -1139,6 +1123,9 @@ export function AgentChatPane({
         permissionMode={permissionMode}
         sessionProvider={sessionProvider}
         sessionIsCliWrapped={sessionIsCliWrapped}
+        executionMode={selectedExecutionMode?.value ?? "focused"}
+        executionModeOptions={launchModeEditable ? executionModeOptions : []}
+        onExecutionModeChange={setExecutionMode}
         onPermissionModeChange={handlePermissionModeChange}
         onModelChange={(nextModelId) => {
           if (selectedSessionModelId && effectiveAvailableModelIds.length && !effectiveAvailableModelIds.includes(nextModelId)) {

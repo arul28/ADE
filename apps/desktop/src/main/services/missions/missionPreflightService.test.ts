@@ -124,6 +124,9 @@ describe("missionPreflightService", () => {
     expect(result.checklist.find((item) => item.id === "permissions")?.severity).toBe("pass");
     expect(result.checklist.find((item) => item.id === "worktrees")?.severity).toBe("pass");
     expect(result.checklist.find((item) => item.id === "budget")?.severity).toBe("warning");
+    expect(result.approvalSummary?.missionGoal).toBe("Implement mission orchestration improvements.");
+    expect(result.approvalSummary?.recommendedExecution.teamRuntimeEnabled).toBe(true);
+    expect(result.approvalSummary?.phaseLabels.length).toBeGreaterThan(0);
   });
 
   it("blocks launch when budget estimate exceeds API-key envelope", async () => {
@@ -334,5 +337,152 @@ describe("missionPreflightService", () => {
     // providers overrides project-level cli.mode=edit for all families
     expect(permItem?.severity).toBe("pass");
     expect(result.canLaunch).toBe(true);
+  });
+
+  it("blocks launch when queue auto-resolve is enabled without a compatible CLI resolver model", async () => {
+    const profiles = createProfiles();
+    const service = createMissionPreflightService({
+      logger: createLogger(),
+      projectRoot: "/tmp/ade-preflight",
+      missionService: {
+        listPhaseProfiles: () => profiles,
+      } as any,
+      laneService: {
+        list: async () => [{ id: "lane-1", archivedAt: null }, { id: "lane-2", archivedAt: null }],
+      } as any,
+      aiIntegrationService: {
+        getAvailabilityAsync: async () => ({
+          availableModels: [
+            { id: "google/gemini-2.5-flash", shortId: "gemini-2.5-flash", family: "google", displayName: "Gemini 2.5 Flash" },
+          ],
+        }),
+        executeTask: async () => ({ structuredOutput: { clear: true, feedback: [] } }),
+      } as any,
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              permissions: {
+                cli: { mode: "full-auto", sandboxPermissions: "workspace-write" },
+                inProcess: { mode: "full-auto" },
+              },
+            },
+          },
+        }),
+      } as any,
+      missionBudgetService: {
+        estimateLaunchBudget: async () => ({
+          estimate: createBudgetEstimate("subscription"),
+          hardLimitExceeded: false,
+          windowUsageCostUsd: 0.1,
+          remainingWindowCostUsd: 10.9,
+          budgetLimitCostUsd: 11,
+        }),
+      } as any,
+    });
+
+    const result = await service.runPreflight({
+      launch: {
+        prompt: "Land the queue automatically after implementation.",
+        phaseProfileId: profiles[0]!.id,
+        phaseOverride: profiles[0]!.phases.map((phase) => ({
+          ...phase,
+          model: {
+            ...phase.model,
+            provider: "openrouter",
+            modelId: "google/gemini-2.5-flash",
+          },
+        })),
+        modelConfig: {
+          orchestratorModel: {
+            provider: "openai",
+            modelId: "google/gemini-2.5-flash",
+          },
+        },
+        executionPolicy: {
+          prStrategy: {
+            kind: "queue",
+            targetBranch: "main",
+            autoLand: true,
+            autoResolveConflicts: true,
+            ciGating: true,
+            mergeMethod: "squash",
+          },
+        },
+      } as any,
+    });
+
+    expect(result.canLaunch).toBe(false);
+    expect(result.checklist.find((item) => item.id === "capabilities")?.severity).toBe("fail");
+  });
+
+  it("blocks launch when queue rehearsal is selected without a local target lane", async () => {
+    const profiles = createProfiles();
+    const service = createMissionPreflightService({
+      logger: createLogger(),
+      projectRoot: "/tmp/ade-preflight",
+      missionService: {
+        listPhaseProfiles: () => profiles,
+      } as any,
+      laneService: {
+        list: async () => [{ id: "lane-1", branchRef: "feature/lane-1", baseRef: "main", archivedAt: null }],
+      } as any,
+      aiIntegrationService: {
+        getAvailabilityAsync: async () => ({
+          availableModels: [
+            { id: "anthropic/claude-sonnet-4-6", shortId: "claude-sonnet-4-6", family: "anthropic", displayName: "Claude Sonnet 4.6" },
+          ],
+        }),
+        executeTask: async () => ({ structuredOutput: { clear: true, feedback: [] } }),
+      } as any,
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              permissions: {
+                cli: { mode: "full-auto", sandboxPermissions: "workspace-write" },
+                inProcess: { mode: "full-auto" },
+              },
+            },
+          },
+        }),
+      } as any,
+      missionBudgetService: {
+        estimateLaunchBudget: async () => ({
+          estimate: createBudgetEstimate("subscription"),
+          hardLimitExceeded: false,
+          windowUsageCostUsd: 0.1,
+          remainingWindowCostUsd: 10.9,
+          budgetLimitCostUsd: 11,
+        }),
+      } as any,
+    });
+
+    const result = await service.runPreflight({
+      launch: {
+        prompt: "Rehearse the queue before review.",
+        phaseProfileId: profiles[0]!.id,
+        phaseOverride: profiles[0]!.phases,
+        modelConfig: {
+          orchestratorModel: {
+            provider: "claude",
+            modelId: "anthropic/claude-sonnet-4-6",
+          },
+        },
+        executionPolicy: {
+          prStrategy: {
+            kind: "queue",
+            targetBranch: "release/main",
+            rehearseQueue: true,
+            autoResolveConflicts: false,
+            mergeMethod: "squash",
+          },
+        },
+      } as any,
+    });
+
+    expect(result.canLaunch).toBe(false);
+    expect(result.checklist.find((item) => item.id === "capabilities")?.severity).toBe("fail");
+    expect(result.checklist.find((item) => item.id === "capabilities")?.details.some((detail) => detail.includes("local lane"))).toBe(true);
   });
 });

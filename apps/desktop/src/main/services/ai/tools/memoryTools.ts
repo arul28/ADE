@@ -41,7 +41,7 @@ export function createMemoryTools(
       limit: z.number().optional().default(5).describe("Maximum results to return")
     }),
     execute: async ({ query, scope, scopeOwnerId, limit }) => {
-      const memories = memoryService.search({
+      const memories = await memoryService.search({
         projectId,
         query,
         scope,

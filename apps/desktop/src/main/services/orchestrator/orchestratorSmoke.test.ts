@@ -255,6 +255,99 @@ async function createSmokeFixture() {
   );
 
   const missionService = createMissionService({ db, projectId });
+  const laneService = {
+    list: async () => db.all<{
+      id: string;
+      project_id: string;
+      name: string;
+      lane_type: string | null;
+      base_ref: string | null;
+      branch_ref: string | null;
+      worktree_path: string | null;
+      attached_root_path: string | null;
+      status: string | null;
+    }>(
+      `
+        select
+          id,
+          project_id,
+          name,
+          lane_type,
+          base_ref,
+          branch_ref,
+          worktree_path,
+          attached_root_path,
+          status
+        from lanes
+        where project_id = ?
+          and archived_at is null
+        order by created_at asc, id asc
+      `,
+      [projectId]
+    ).map((row) => ({
+      id: row.id,
+      projectId: row.project_id,
+      name: row.name,
+      laneType: row.lane_type === "primary" ? "primary" : "worktree",
+      baseRef: row.base_ref,
+      branchRef: row.branch_ref,
+      worktreePath: row.worktree_path,
+      attachedRootPath: row.attached_root_path,
+      status: row.status === "archived" ? "archived" : "active",
+    })),
+    createChild: async (args: { parentLaneId: string; name: string; description?: string; folder?: string }) => {
+      const childId = `lane-${Math.random().toString(36).slice(2, 10)}`;
+      const childBranch = `mission/${childId}`;
+      db.run(
+        `
+          insert into lanes(
+            id,
+            project_id,
+            name,
+            description,
+            lane_type,
+            base_ref,
+            branch_ref,
+            worktree_path,
+            attached_root_path,
+            is_edit_protected,
+            parent_lane_id,
+            color,
+            icon,
+            tags_json,
+            status,
+            created_at,
+            archived_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          childId,
+          projectId,
+          args.name,
+          args.description ?? null,
+          "worktree",
+          "main",
+          childBranch,
+          projectRoot,
+          null,
+          0,
+          args.parentLaneId,
+          null,
+          null,
+          JSON.stringify(args.folder ? [args.folder] : []),
+          "active",
+          now,
+          null,
+        ]
+      );
+      return {
+        id: childId,
+        name: args.name,
+        branchRef: childBranch,
+        laneType: "worktree",
+      };
+    }
+  } as any;
   const projectConfigService = {
     get: () => ({
       effective: {
@@ -336,7 +429,7 @@ async function createSmokeFixture() {
     missionService,
     orchestratorService,
     aiIntegrationService: createMockAiIntegrationService(),
-    laneService: null,
+    laneService,
     projectConfigService,
     projectRoot
   });
@@ -384,10 +477,38 @@ describe("orchestrator smoke", () => {
       fixture.orchestratorService.addSteps({
         runId,
         steps: [
-          { stepKey: "api-health", title: "Add GET /api/health endpoint", stepIndex: 0, dependencyStepKeys: [], executorKind: "manual", metadata: { instructions: "Implement health endpoint" } },
-          { stepKey: "endpoint-tests", title: "Add/update endpoint tests", stepIndex: 1, dependencyStepKeys: ["api-health"], executorKind: "manual", metadata: { instructions: "Write tests" } },
-          { stepKey: "readme-update", title: "Update README health section", stepIndex: 2, dependencyStepKeys: ["endpoint-tests"], executorKind: "manual", metadata: { instructions: "Update docs" } },
-          { stepKey: "final-review", title: "Run final review for regressions", stepIndex: 3, dependencyStepKeys: ["readme-update"], executorKind: "manual", metadata: { instructions: "Final review" } }
+          {
+            stepKey: "api-health",
+            title: "Add GET /api/health endpoint",
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            executorKind: "manual",
+            metadata: { instructions: "Implement health endpoint", taskType: "implementation" }
+          },
+          {
+            stepKey: "endpoint-tests",
+            title: "Add/update endpoint tests",
+            stepIndex: 1,
+            dependencyStepKeys: ["api-health"],
+            executorKind: "manual",
+            metadata: { instructions: "Write tests", taskType: "test" }
+          },
+          {
+            stepKey: "readme-update",
+            title: "Update README health section",
+            stepIndex: 2,
+            dependencyStepKeys: ["endpoint-tests"],
+            executorKind: "manual",
+            metadata: { instructions: "Update docs", taskType: "implementation" }
+          },
+          {
+            stepKey: "final-review",
+            title: "Run final review for regressions",
+            stepIndex: 3,
+            dependencyStepKeys: ["readme-update"],
+            executorKind: "manual",
+            metadata: { instructions: "Final review", taskType: "milestone" }
+          }
         ]
       });
 
@@ -435,7 +556,7 @@ describe("orchestrator smoke", () => {
       // tick() no longer auto-terminates runs — explicitly finalize.
       fixture.aiOrchestratorService.finalizeRun({ runId, force: true });
 
-      fixture.aiOrchestratorService.syncMissionFromRun(runId, "smoke_finalize");
+      await fixture.aiOrchestratorService.syncMissionFromRun(runId, "smoke_finalize");
       const finalGraph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
       const refreshedMission = fixture.missionService.get(mission.id);
       expect(finalGraph.run.status).toBe("succeeded");
@@ -919,14 +1040,78 @@ describe("orchestrator smoke", () => {
       orchestratorService.addSteps({
         runId,
         steps: [
-          { stepKey: "api-health-route", title: "Build health API route", stepIndex: 0, dependencyStepKeys: [], executorKind: "unified", laneId, metadata: { instructions: "Implement GET /api/health", modelId: workerModelId } },
-          { stepKey: "runtime-watchdog-hardening", title: "Harden watchdog recovery", stepIndex: 1, dependencyStepKeys: [], executorKind: "unified", laneId: childLane1.id, metadata: { instructions: "Improve stall detection", modelId: workerModelId } },
-          { stepKey: "ui-telemetry-panel", title: "Add mission telemetry panel UI", stepIndex: 2, dependencyStepKeys: [], executorKind: "unified", laneId: childLane2.id, metadata: { instructions: "Expose telemetry in UI", modelId: workerModelId } },
-          { stepKey: "integration-contract-check", title: "Integrate contracts and orchestration data model", stepIndex: 3, dependencyStepKeys: ["api-health-route", "runtime-watchdog-hardening", "ui-telemetry-panel"], executorKind: "unified", laneId, metadata: { instructions: "Validate interface compatibility", modelId: workerModelId } },
-          { stepKey: "docs-and-readme", title: "Update docs and README", stepIndex: 4, dependencyStepKeys: ["integration-contract-check"], executorKind: "unified", laneId, metadata: { instructions: "Document changes", modelId: workerModelId } },
-          { stepKey: "test-matrix", title: "Execute endpoint and orchestration test matrix", stepIndex: 5, dependencyStepKeys: ["integration-contract-check"], executorKind: "unified", laneId, metadata: { instructions: "Run tests", modelId: workerModelId } },
-          { stepKey: "rollback-and-risk-check", title: "Perform rollback and risk sanity check", stepIndex: 6, dependencyStepKeys: ["integration-contract-check"], executorKind: "unified", laneId, metadata: { instructions: "Verify rollback path", modelId: workerModelId } },
-          { stepKey: "final-review-gate", title: "Finalize review gate", stepIndex: 7, dependencyStepKeys: ["docs-and-readme", "test-matrix", "rollback-and-risk-check"], executorKind: "unified", laneId, metadata: { instructions: "Final review", modelId: workerModelId } }
+          {
+            stepKey: "api-health-route",
+            title: "Build health API route",
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            executorKind: "unified",
+            laneId,
+            metadata: { instructions: "Implement GET /api/health", modelId: workerModelId, taskType: "implementation" }
+          },
+          {
+            stepKey: "runtime-watchdog-hardening",
+            title: "Harden watchdog recovery",
+            stepIndex: 1,
+            dependencyStepKeys: [],
+            executorKind: "unified",
+            laneId: childLane1.id,
+            metadata: { instructions: "Improve stall detection", modelId: workerModelId, taskType: "implementation" }
+          },
+          {
+            stepKey: "ui-telemetry-panel",
+            title: "Add mission telemetry panel UI",
+            stepIndex: 2,
+            dependencyStepKeys: [],
+            executorKind: "unified",
+            laneId: childLane2.id,
+            metadata: { instructions: "Expose telemetry in UI", modelId: workerModelId, taskType: "implementation" }
+          },
+          {
+            stepKey: "integration-contract-check",
+            title: "Integrate contracts and orchestration data model",
+            stepIndex: 3,
+            dependencyStepKeys: ["api-health-route", "runtime-watchdog-hardening", "ui-telemetry-panel"],
+            executorKind: "unified",
+            laneId,
+            metadata: { instructions: "Validate interface compatibility", modelId: workerModelId, taskType: "integration" }
+          },
+          {
+            stepKey: "docs-and-readme",
+            title: "Update docs and README",
+            stepIndex: 4,
+            dependencyStepKeys: ["integration-contract-check"],
+            executorKind: "unified",
+            laneId,
+            metadata: { instructions: "Document changes", modelId: workerModelId, taskType: "implementation" }
+          },
+          {
+            stepKey: "test-matrix",
+            title: "Execute endpoint and orchestration test matrix",
+            stepIndex: 5,
+            dependencyStepKeys: ["integration-contract-check"],
+            executorKind: "unified",
+            laneId,
+            metadata: { instructions: "Run tests", modelId: workerModelId, taskType: "test" }
+          },
+          {
+            stepKey: "rollback-and-risk-check",
+            title: "Perform rollback and risk sanity check",
+            stepIndex: 6,
+            dependencyStepKeys: ["integration-contract-check"],
+            executorKind: "unified",
+            laneId,
+            metadata: { instructions: "Verify rollback path", modelId: workerModelId, taskType: "validation" }
+          },
+          {
+            stepKey: "final-review-gate",
+            title: "Finalize review gate",
+            stepIndex: 7,
+            dependencyStepKeys: ["docs-and-readme", "test-matrix", "rollback-and-risk-check"],
+            executorKind: "unified",
+            laneId,
+            metadata: { instructions: "Final review", modelId: workerModelId, taskType: "milestone" }
+          }
         ]
       });
 
@@ -1005,7 +1190,7 @@ describe("orchestrator smoke", () => {
         throw new Error(`Observer run did not reach terminal state (run status: ${graph.run.status}).`);
       }
 
-      aiOrchestratorService.syncMissionFromRun(runId, "complex_smoke_finalize");
+      await aiOrchestratorService.syncMissionFromRun(runId, "complex_smoke_finalize");
       const sweep = await aiOrchestratorService.runHealthSweep("complex_smoke_post");
 
       const finalGraph = orchestratorService.getRunGraph({ runId, timelineLimit: 1_000 });

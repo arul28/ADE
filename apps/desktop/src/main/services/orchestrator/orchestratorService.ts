@@ -59,7 +59,9 @@ import type {
   OrchestratorArtifact,
   OrchestratorArtifactKind,
   OrchestratorWorkerCheckpoint,
-  FanOutDecision
+  FanOutDecision,
+  AgentChatExecutionMode,
+  AgentChatPermissionMode,
 } from "../../../shared/types";
 import {
   DEFAULT_RECOVERY_LOOP_POLICY,
@@ -76,6 +78,7 @@ import { runGit } from "../git/git";
 import type { AdeDb, SqlValue } from "../state/kvDb";
 import type { createPackService } from "../packs/packService";
 import type { createPtyService } from "../pty/ptyService";
+import type { createAgentChatService } from "../chat/agentChatService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createPrService } from "../prs/prService";
@@ -86,6 +89,11 @@ import { getMissionStateDocumentPath } from "./missionStateDoc";
 import { buildFullPrompt, shellEscapeArg, shellInlineDecodedArg } from "./baseOrchestratorAdapter";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import { classifyWorkerExecutionPath, resolveModelDescriptor } from "../../../shared/modelRegistry";
+import {
+  deriveAgentChatTranscriptSummary,
+  hasMaterialWorkerChatEvent,
+  parseAgentChatTranscript,
+} from "../../../shared/chatTranscript";
 import { isWorkerBootstrapNoiseLine } from "../../../shared/workerRuntimeNoise";
 import { deriveSessionSummaryFromText } from "../packs/transcriptInsights";
 import {
@@ -107,6 +115,7 @@ import {
   type StepGraphValidationStep,
   normalizeDependencyStepKeys, validateStepGraphIntegrity,
   branchNameFromRef, clipText,
+  classifyBlockingWarnings,
 } from "./orchestratorQueries";
 import {
   type ResolvedOrchestratorRuntimeConfig,
@@ -150,11 +159,20 @@ export type OrchestratorEvent = {
   reason: string;
 };
 
+type ManagedWorkerLaunch = {
+  prompt: string;
+  displayText: string;
+  reasoningEffort?: string | null;
+  executionMode?: AgentChatExecutionMode | null;
+  permissionMode?: AgentChatPermissionMode | null;
+};
+
 export type OrchestratorExecutorStartResult =
   | {
       status: "accepted";
       sessionId?: string | null;
       metadata?: Record<string, unknown> | null;
+      launch?: ManagedWorkerLaunch | null;
     }
   | {
       status: "completed";
@@ -206,6 +224,7 @@ export type OrchestratorExecutorStartArgs = {
 
 export type OrchestratorExecutorAdapter = {
   kind: OrchestratorExecutorKind;
+  requiresLaneId?: boolean;
   start: (args: OrchestratorExecutorStartArgs) => Promise<OrchestratorExecutorStartResult>;
 };
 
@@ -467,6 +486,10 @@ function deriveTranscriptSummaryFromPath(filePath: string | null | undefined): s
   if (!normalizedPath || !fs.existsSync(normalizedPath)) return null;
   try {
     const rawTail = readUtf8Tail(normalizedPath);
+    if (normalizedPath.endsWith(".chat.jsonl")) {
+      const events = parseAgentChatTranscript(rawTail);
+      return deriveAgentChatTranscriptSummary(events);
+    }
     const sanitizedTail = rawTail
       .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
       .split(/\r?\n/)
@@ -492,6 +515,69 @@ function deriveTranscriptSummaryFromPath(filePath: string | null | undefined): s
   }
 }
 
+function analyzeTranscriptFromPath(filePath: string | null | undefined): {
+  summary: string | null;
+  hasMaterialOutput: boolean;
+  isStructuredChat: boolean;
+} {
+  const normalizedPath = typeof filePath === "string" ? filePath.trim() : "";
+  if (!normalizedPath || !fs.existsSync(normalizedPath)) {
+    return { summary: null, hasMaterialOutput: false, isStructuredChat: false };
+  }
+  try {
+    const rawTail = readUtf8Tail(normalizedPath);
+    if (normalizedPath.endsWith(".chat.jsonl")) {
+      const events = parseAgentChatTranscript(rawTail);
+      return {
+        summary: deriveAgentChatTranscriptSummary(events),
+        hasMaterialOutput: hasMaterialWorkerChatEvent(events),
+        isStructuredChat: true,
+      };
+    }
+    return {
+      summary: deriveTranscriptSummaryFromPath(normalizedPath),
+      hasMaterialOutput: deriveTranscriptSummaryFromPath(normalizedPath) != null,
+      isStructuredChat: false,
+    };
+  } catch {
+    return { summary: null, hasMaterialOutput: false, isStructuredChat: normalizedPath.endsWith(".chat.jsonl") };
+  }
+}
+
+function classifySilentWorkerExit(args: {
+  stepMetadata: Record<string, unknown> | null | undefined;
+  transcriptSummary: string | null;
+  hasMaterialOutput: boolean;
+}): { errorClass: OrchestratorErrorClass; errorMessage: string } | null {
+  if (args.transcriptSummary) return null;
+  if (isPlanningLikeStepMetadata(args.stepMetadata)) {
+    if (!args.hasMaterialOutput) {
+      return {
+        errorClass: "startup_failure",
+        errorMessage: "Planning worker exited before producing any assistant or tool activity.",
+      };
+    }
+    return {
+      errorClass: "executor_failure",
+      errorMessage: "Planning worker exited after partial activity without reporting a usable plan summary.",
+    };
+  }
+  if (!args.hasMaterialOutput) {
+    return {
+      errorClass: "startup_failure",
+      errorMessage: "Worker session ended before producing any assistant or tool activity.",
+    };
+  }
+  // VAL-ERR-001: Workers with material output but no transcript summary were
+  // interrupted — classify as "interrupted" rather than returning null (which
+  // would allow a "succeeded" status to stand for a worker that never reported
+  // a proper result).
+  return {
+    errorClass: "interrupted",
+    errorMessage: "Worker session ended after partial activity without reporting a final result.",
+  };
+}
+
 function resolveRunPhaseCardsFromMetadata(runMetadata: Record<string, unknown> | null | undefined): PhaseCard[] | null {
   if (!runMetadata) return null;
   const phaseConfig = typeof runMetadata.phaseConfiguration === "object" && runMetadata.phaseConfiguration
@@ -506,6 +592,38 @@ function resolveRunPhaseCardsFromMetadata(runMetadata: Record<string, unknown> |
           ? runMetadata.phaseOverride as PhaseCard[]
           : null;
   return phaseCards && phaseCards.length > 0 ? phaseCards : null;
+}
+
+function buildInitialPhaseRuntime(phaseCards: PhaseCard[] | null | undefined): Record<string, unknown> | null {
+  if (!Array.isArray(phaseCards) || phaseCards.length === 0) return null;
+  const initialPhase = [...phaseCards].sort((left, right) => left.position - right.position)[0]!;
+  const transitionedAt = nowIso();
+  return {
+    currentPhaseKey: initialPhase.phaseKey,
+    currentPhaseName: initialPhase.name,
+    currentPhaseModel: initialPhase.model,
+    currentPhaseInstructions: initialPhase.instructions,
+    currentPhaseValidation: initialPhase.validationGate,
+    currentPhaseBudget: initialPhase.budget ?? {},
+    transitionedAt,
+    transitions: [
+      {
+        fromPhaseKey: null,
+        fromPhaseName: null,
+        toPhaseKey: initialPhase.phaseKey,
+        toPhaseName: initialPhase.name,
+        at: transitionedAt,
+        reason: "run_initialized"
+      }
+    ],
+    phaseBudgets: {
+      [initialPhase.phaseKey]: {
+        enteredAt: transitionedAt,
+        usedTokens: 0,
+        usedCostUsd: 0
+      }
+    }
+  };
 }
 
 function resolveRunMissionLevelSettingsFromMetadata(
@@ -533,6 +651,116 @@ function isPlanningLikeStepMetadata(stepMetadata: Record<string, unknown> | null
   return stepMetadata.readOnlyExecution === true || stepType === "planning" || phaseKey === "planning";
 }
 
+function resolveCurrentRunPhaseCard(
+  runMetadata: Record<string, unknown> | null | undefined,
+  phaseCards: PhaseCard[] | null | undefined,
+): PhaseCard | null {
+  if (!runMetadata || !Array.isArray(phaseCards) || phaseCards.length === 0) return null;
+  const phaseRuntime = asRecord(runMetadata.phaseRuntime);
+  const currentPhaseKey = typeof phaseRuntime?.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
+  const currentPhaseName = typeof phaseRuntime?.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim() : "";
+  if (currentPhaseKey.length > 0) {
+    const byKey = phaseCards.find((phase) => phase.phaseKey === currentPhaseKey);
+    if (byKey) return byKey;
+  }
+  if (currentPhaseName.length > 0) {
+    const byName = phaseCards.find((phase) => phase.name === currentPhaseName);
+    if (byName) return byName;
+  }
+  return null;
+}
+
+function resolvePhaseCardForStep(
+  step: OrchestratorStep,
+  phaseCards: PhaseCard[] | null | undefined,
+): PhaseCard | null {
+  if (!Array.isArray(phaseCards) || phaseCards.length === 0) return null;
+  const stepMetadata = asRecord(step.metadata);
+  const stepPhaseKey = typeof stepMetadata?.phaseKey === "string" ? stepMetadata.phaseKey.trim() : "";
+  const stepPhaseName = typeof stepMetadata?.phaseName === "string" ? stepMetadata.phaseName.trim() : "";
+  if (stepPhaseKey.length > 0) {
+    const byKey = phaseCards.find((phase) => phase.phaseKey === stepPhaseKey);
+    if (byKey) return byKey;
+  }
+  if (stepPhaseName.length > 0) {
+    const byName = phaseCards.find((phase) => phase.name === stepPhaseName);
+    if (byName) return byName;
+  }
+  return null;
+}
+
+function stepRequiresValidation(
+  step: OrchestratorStep,
+  phaseCards: PhaseCard[] | null | undefined,
+): boolean {
+  const stepMetadata = asRecord(step.metadata);
+  const validationContract = parseValidationContract(stepMetadata?.validationContract ?? null);
+  if (validationContract?.required) return true;
+  const phaseCard = resolvePhaseCardForStep(step, phaseCards);
+  if (!phaseCard) return false;
+  return phaseCard.validationGate.required === true && normalizeValidationTier(phaseCard.validationGate.tier) !== "none";
+}
+
+function stepMatchesPhase(step: OrchestratorStep, phase: PhaseCard): boolean {
+  const stepMetadata = asRecord(step.metadata);
+  const stepPhaseKey = typeof stepMetadata?.phaseKey === "string" ? stepMetadata.phaseKey.trim() : "";
+  const stepPhaseName = typeof stepMetadata?.phaseName === "string" ? stepMetadata.phaseName.trim() : "";
+  return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
+}
+
+function getExecutionStepsForPhase(phase: PhaseCard, steps: OrchestratorStep[]): OrchestratorStep[] {
+  return filterExecutionSteps(steps.filter((step) => stepMatchesPhase(step, phase)));
+}
+
+function phaseHasSuccessfulCompletionRuntime(phase: PhaseCard, steps: OrchestratorStep[]): boolean {
+  const phaseKey = phase.phaseKey.trim().toLowerCase();
+  const phaseName = phase.name.trim().toLowerCase();
+  const phaseSteps = getExecutionStepsForPhase(phase, steps);
+  if (phaseSteps.length === 0) return false;
+  if (phaseKey === "planning" || phaseName === "planning") {
+    return phaseSteps.some((step) => isPlanningLikeStepMetadata(asRecord(step.metadata)) && step.status === "succeeded");
+  }
+  const allTerminalWithoutFailure = phaseSteps.every(
+    (step) => step.status === "succeeded" || step.status === "skipped" || step.status === "superseded",
+  );
+  const hasConcreteSuccess = phaseSteps.some((step) => step.status === "succeeded");
+  return allTerminalWithoutFailure && hasConcreteSuccess;
+}
+
+function phaseHasNonTerminalExecutionWork(phase: PhaseCard, steps: OrchestratorStep[]): boolean {
+  return getExecutionStepsForPhase(phase, steps).some((step) => !TERMINAL_STEP_STATUSES.has(step.status));
+}
+
+function phaseHasAssignedExecutionWork(phase: PhaseCard, steps: OrchestratorStep[]): boolean {
+  return getExecutionStepsForPhase(phase, steps).length > 0;
+}
+
+function canEnterConfiguredPhase(
+  targetPhase: PhaseCard,
+  phases: PhaseCard[],
+  steps: OrchestratorStep[],
+): boolean {
+  const targetIndex = phases.findIndex((phase) => phase.phaseKey === targetPhase.phaseKey);
+  if (targetIndex < 0) return false;
+  for (let index = 0; index < targetIndex; index += 1) {
+    const earlier = phases[index]!;
+    const mustComplete = earlier.validationGate.required || earlier.orderingConstraints.mustBeFirst;
+    if (mustComplete && !phaseHasSuccessfulCompletionRuntime(earlier, steps)) {
+      return false;
+    }
+  }
+  const mustFollow = targetPhase.orderingConstraints.mustFollow ?? [];
+  for (const rawPredecessor of mustFollow) {
+    const predecessorKey = rawPredecessor.trim();
+    if (!predecessorKey.length) continue;
+    const predecessor = phases.find((phase) => phase.phaseKey === predecessorKey || phase.name === predecessorKey);
+    if (predecessor && !phaseHasSuccessfulCompletionRuntime(predecessor, steps)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function createOrchestratorService({
   db,
   projectId,
@@ -540,6 +768,7 @@ export function createOrchestratorService({
   packService,
   conflictService,
   ptyService,
+  agentChatService,
   prService,
   projectConfigService,
   aiIntegrationService,
@@ -552,6 +781,7 @@ export function createOrchestratorService({
   packService: ReturnType<typeof createPackService>;
   conflictService?: ReturnType<typeof createConflictService>;
   ptyService?: ReturnType<typeof createPtyService>;
+  agentChatService?: ReturnType<typeof createAgentChatService> | null;
   prService?: ReturnType<typeof createPrService>;
   projectConfigService?: ReturnType<typeof createProjectConfigService> | null;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
@@ -560,9 +790,27 @@ export function createOrchestratorService({
 }) {
   const adapters = new Map<OrchestratorExecutorKind, OrchestratorExecutorAdapter>();
   // Register the unified adapter that handles all model providers
-  adapters.set("unified", createUnifiedOrchestratorAdapter({ workspaceRoot: projectRoot }));
+  adapters.set("unified", createUnifiedOrchestratorAdapter({ workspaceRoot: projectRoot, agentChatService }));
   const autopilotRunLocks = new Set<string>();
   const recoveryLoopStates = new Map<string, RecoveryLoopState>();
+  const toOptionalNonEmptyString = (value: unknown): string | null => {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  };
+  const resolveRunMissionLaneId = (metadata: Record<string, unknown> | null | undefined): string | null => {
+    const metadataRecord = metadata ? asRecord(metadata) : null;
+    if (!metadataRecord) return null;
+    const directLaneId = toOptionalNonEmptyString(metadataRecord.missionLaneId);
+    if (directLaneId) return directLaneId;
+
+    const coordinatorMeta = asRecord(metadataRecord.coordinator);
+    const coordinatorLaneId = toOptionalNonEmptyString(coordinatorMeta?.missionLaneId);
+    if (coordinatorLaneId) return coordinatorLaneId;
+
+    const teamRuntimeMeta = asRecord(metadataRecord.teamRuntime);
+    return toOptionalNonEmptyString(teamRuntimeMeta?.missionLaneId);
+  };
   const getRuntimeConfig = (): ResolvedOrchestratorRuntimeConfig => {
     const snapshot = projectConfigService?.get();
     const ai = asRecord(snapshot?.effective?.ai);
@@ -1670,10 +1918,232 @@ export function createOrchestratorService({
     return { satisfied: false, permanentlyBlocked: allTerminal };
   };
 
+  const evaluateConfiguredPhaseGate = (args: {
+    step: OrchestratorStep;
+    phaseCards: PhaseCard[] | null;
+    currentPhase: PhaseCard | null;
+  }): {
+    satisfied: boolean;
+    reason: "no_configured_phases" | "step_unphased" | "phase_runtime_missing" | "inactive_phase" | null;
+  } => {
+    if (!Array.isArray(args.phaseCards) || args.phaseCards.length === 0) {
+      return { satisfied: true, reason: "no_configured_phases" };
+    }
+    const stepPhase = resolvePhaseCardForStep(args.step, args.phaseCards);
+    if (!stepPhase) {
+      return { satisfied: true, reason: "step_unphased" };
+    }
+    if (!args.currentPhase) {
+      return { satisfied: false, reason: "phase_runtime_missing" };
+    }
+    return {
+      satisfied: stepPhase.phaseKey === args.currentPhase.phaseKey,
+      reason: stepPhase.phaseKey === args.currentPhase.phaseKey ? null : "inactive_phase"
+    };
+  };
+
+  const evaluateValidationDependencyGate = (args: {
+    step: OrchestratorStep;
+    stepsById: Map<string, OrchestratorStep>;
+    phaseCards: PhaseCard[] | null;
+  }): {
+    satisfied: boolean;
+    blockingDependencyIds: string[];
+  } => {
+    if (!args.step.dependencyStepIds.length || args.step.joinPolicy === "advisory") {
+      return { satisfied: true, blockingDependencyIds: [] };
+    }
+    const depSteps = args.step.dependencyStepIds
+      .map((id) => args.stepsById.get(id) ?? null)
+      .filter((dep): dep is OrchestratorStep => Boolean(dep));
+    const validatedSuccessCount = depSteps.filter((dep) => {
+      if (dep.status !== "succeeded" && dep.status !== "skipped" && dep.status !== "superseded") return false;
+      if (!stepRequiresValidation(dep, args.phaseCards)) return true;
+      return hasPassingValidation(asRecord(dep.metadata));
+    }).length;
+    if (args.step.joinPolicy === "any_success") {
+      return { satisfied: validatedSuccessCount >= 1, blockingDependencyIds: [] };
+    }
+    if (args.step.joinPolicy === "quorum") {
+      const required = args.step.quorumCount && args.step.quorumCount > 0
+        ? args.step.quorumCount
+        : Math.max(1, Math.ceil(depSteps.length / 2));
+      return { satisfied: validatedSuccessCount >= required, blockingDependencyIds: [] };
+    }
+    const blockingDependencyIds = depSteps
+      .filter((dep) => dep.status === "succeeded" && stepRequiresValidation(dep, args.phaseCards))
+      .filter((dep) => !hasPassingValidation(asRecord(dep.metadata)))
+      .map((dep) => dep.id);
+    return {
+      satisfied: blockingDependencyIds.length === 0,
+      blockingDependencyIds
+    };
+  };
+
+  const applyRunPhaseTransition = (args: {
+    runId: string;
+    targetPhase: PhaseCard;
+    reason: string;
+    source: "kernel_auto_phase_sync" | "kernel_phase_runtime_init";
+  }): {
+    changed: boolean;
+    currentPhase: PhaseCard;
+    metadata: Record<string, unknown>;
+  } | null => {
+    const runRow = getRunRow(args.runId);
+    if (!runRow) return null;
+    const metadata = parseJsonRecord(runRow.metadata_json) ?? {};
+    const phaseRuntimeSource = asRecord(metadata.phaseRuntime);
+    const phaseRuntime: Record<string, unknown> = phaseRuntimeSource ? { ...phaseRuntimeSource } : {};
+    const previousPhaseKey = typeof phaseRuntime.currentPhaseKey === "string" ? phaseRuntime.currentPhaseKey.trim() : "";
+    const previousPhaseName = typeof phaseRuntime.currentPhaseName === "string" ? phaseRuntime.currentPhaseName.trim() : "";
+    if (previousPhaseKey === args.targetPhase.phaseKey && previousPhaseName === args.targetPhase.name) {
+      return {
+        changed: false,
+        currentPhase: args.targetPhase,
+        metadata,
+      };
+    }
+    const now = nowIso();
+    const transitions = Array.isArray(phaseRuntime.transitions) ? [...phaseRuntime.transitions] : [];
+    transitions.unshift({
+      fromPhaseKey: previousPhaseKey || null,
+      fromPhaseName: previousPhaseName || null,
+      toPhaseKey: args.targetPhase.phaseKey,
+      toPhaseName: args.targetPhase.name,
+      at: now,
+      reason: args.reason
+    });
+    const existingPhaseBudgets = asRecord(phaseRuntime.phaseBudgets) ?? {};
+    const targetPhaseBudget = asRecord(existingPhaseBudgets[args.targetPhase.phaseKey]);
+    phaseRuntime.transitions = transitions.slice(0, 64);
+    phaseRuntime.currentPhaseKey = args.targetPhase.phaseKey;
+    phaseRuntime.currentPhaseName = args.targetPhase.name;
+    phaseRuntime.currentPhaseModel = args.targetPhase.model;
+    phaseRuntime.currentPhaseInstructions = args.targetPhase.instructions;
+    phaseRuntime.currentPhaseValidation = args.targetPhase.validationGate;
+    phaseRuntime.currentPhaseBudget = args.targetPhase.budget ?? {};
+    phaseRuntime.transitionedAt = now;
+    phaseRuntime.phaseBudgets = {
+      ...existingPhaseBudgets,
+      [args.targetPhase.phaseKey]: {
+        enteredAt: typeof targetPhaseBudget?.enteredAt === "string" && targetPhaseBudget.enteredAt.trim().length > 0
+          ? targetPhaseBudget.enteredAt
+          : now,
+        usedTokens: Number.isFinite(Number(targetPhaseBudget?.usedTokens))
+          ? Number(targetPhaseBudget?.usedTokens)
+          : 0,
+        usedCostUsd: Number.isFinite(Number(targetPhaseBudget?.usedCostUsd))
+          ? Number(targetPhaseBudget?.usedCostUsd)
+          : 0
+      }
+    };
+    const updatedMetadata = {
+      ...metadata,
+      phaseRuntime
+    };
+    db.run(
+      `update orchestrator_runs set metadata_json = ?, updated_at = ? where id = ? and project_id = ?`,
+      [JSON.stringify(updatedMetadata), now, args.runId, projectId]
+    );
+    appendTimelineEvent({
+      runId: args.runId,
+      eventType: "phase_transition",
+      reason: args.reason,
+      detail: {
+        fromPhaseKey: previousPhaseKey || null,
+        fromPhaseName: previousPhaseName || null,
+        toPhaseKey: args.targetPhase.phaseKey,
+        toPhaseName: args.targetPhase.name,
+        phaseModel: args.targetPhase.model,
+        phaseValidation: args.targetPhase.validationGate,
+        phaseBudget: args.targetPhase.budget ?? {},
+        transitionedAt: now,
+        source: args.source
+      }
+    });
+    emit({ type: "orchestrator-run-updated", runId: args.runId, reason: "phase_transition" });
+    emit({
+      type: "orchestrator-step-updated",
+      runId: args.runId,
+      reason: "phase_transition"
+    });
+    return {
+      changed: true,
+      currentPhase: args.targetPhase,
+      metadata: updatedMetadata,
+    };
+  };
+
+  const syncConfiguredPhaseRuntime = (runId: string, steps: OrchestratorStep[]): {
+    phaseCards: PhaseCard[] | null;
+    currentPhase: PhaseCard | null;
+  } => {
+    const runRow = getRunRow(runId);
+    const runMetadata = runRow ? parseJsonRecord(runRow.metadata_json) : null;
+    const phaseCards = resolveRunPhaseCardsFromMetadata(runMetadata);
+    if (!phaseCards || phaseCards.length === 0) {
+      return {
+        phaseCards: null,
+        currentPhase: null
+      };
+    }
+    const sortedPhases = [...phaseCards].sort((left, right) => left.position - right.position);
+    const currentPhase = resolveCurrentRunPhaseCard(runMetadata, sortedPhases);
+    const resolveAutoAdvanceTarget = (): PhaseCard | null => {
+      if (!currentPhase) {
+        return (
+          sortedPhases.find((phase) =>
+            phaseHasAssignedExecutionWork(phase, steps) && canEnterConfiguredPhase(phase, sortedPhases, steps)
+          )
+          ?? sortedPhases[0]
+          ?? null
+        );
+      }
+      if (phaseHasNonTerminalExecutionWork(currentPhase, steps)) {
+        return null;
+      }
+      const currentIndex = sortedPhases.findIndex((phase) => phase.phaseKey === currentPhase.phaseKey);
+      if (currentIndex < 0) return null;
+      for (let index = currentIndex + 1; index < sortedPhases.length; index += 1) {
+        const candidate = sortedPhases[index]!;
+        if (!phaseHasAssignedExecutionWork(candidate, steps)) continue;
+        if (canEnterConfiguredPhase(candidate, sortedPhases, steps)) {
+          return candidate;
+        }
+      }
+      return null;
+    };
+    const targetPhase = resolveAutoAdvanceTarget();
+    if (!targetPhase) {
+      return {
+        phaseCards: sortedPhases,
+        currentPhase
+      };
+    }
+    if (currentPhase?.phaseKey === targetPhase.phaseKey) {
+      return {
+        phaseCards: sortedPhases,
+        currentPhase
+      };
+    }
+    const applied = applyRunPhaseTransition({
+      runId,
+      targetPhase,
+      reason: currentPhase ? "kernel_auto_advance" : "kernel_initialize_phase_runtime",
+      source: currentPhase ? "kernel_auto_phase_sync" : "kernel_phase_runtime_init"
+    });
+    return {
+      phaseCards: sortedPhases,
+      currentPhase: applied?.currentPhase ?? targetPhase
+    };
+  };
+
   const refreshStepReadiness = (runId: string) => {
     const rows = listStepRows(runId);
     if (!rows.length) return;
     const steps = rows.map(toStep);
+    const { phaseCards, currentPhase } = syncConfiguredPhaseRuntime(runId, steps);
     const stepsById = new Map<string, OrchestratorStep>(steps.map((step) => [step.id, step] as const));
     const statusesById = new Map<string, OrchestratorStepStatus>(steps.map((step) => [step.id, step.status] as const));
     const now = nowIso();
@@ -1681,6 +2151,19 @@ export function createOrchestratorService({
     for (const step of steps) {
       if (step.status === "running" || TERMINAL_STEP_STATUSES.has(step.status)) continue;
       const gate = evaluateDependencyGate(step, stepsById);
+      const phaseGate = evaluateConfiguredPhaseGate({
+        step,
+        phaseCards,
+        currentPhase
+      });
+      const validationGate =
+        gate.satisfied && phaseGate.satisfied
+          ? evaluateValidationDependencyGate({
+              step,
+              stepsById,
+              phaseCards
+            })
+          : { satisfied: true, blockingDependencyIds: [] };
       const stepPolicy = resolveStepPolicy(step);
       const claimScoped = (stepPolicy.claimScopes ?? []).length > 0;
       const nextRetryAtRaw = typeof step.metadata?.nextRetryAt === "string" ? step.metadata.nextRetryAt : null;
@@ -1688,12 +2171,12 @@ export function createOrchestratorService({
       const retryDeferred = Number.isFinite(nextRetryAtMs) && nextRetryAtMs > Date.now();
       const stickyBlocked = step.status === "blocked" && step.metadata?.blockedSticky === true;
       let next: OrchestratorStepStatus = step.status;
-      if (gate.satisfied) {
+      if (gate.satisfied && phaseGate.satisfied && validationGate.satisfied) {
         if (stickyBlocked) {
           next = "blocked";
         } else if (retryDeferred) {
           next = "pending";
-        } else if (step.status === "pending" || step.status === "blocked") {
+        } else if (step.status === "pending" || step.status === "blocked" || step.status === "ready") {
           next = "ready";
         }
       } else if (gate.permanentlyBlocked) {
@@ -1757,7 +2240,12 @@ export function createOrchestratorService({
             from: step.status,
             to: next,
             joinPolicy: step.joinPolicy,
-            dependencies: step.dependencyStepIds
+            dependencies: step.dependencyStepIds,
+            dependencyGateSatisfied: gate.satisfied,
+            phaseGateSatisfied: phaseGate.satisfied,
+            phaseGateReason: phaseGate.reason,
+            validationGateSatisfied: validationGate.satisfied,
+            validationBlockingDependencyIds: validationGate.blockingDependencyIds
           }
         });
       }
@@ -3101,6 +3589,7 @@ export function createOrchestratorService({
     if (kind !== "unified") return null;
     return {
       kind,
+      requiresLaneId: true,
       start: async (args) => {
         if (!args.step.laneId) {
           return {
@@ -4198,6 +4687,18 @@ export function createOrchestratorService({
       const autopilotEnabled = requestedRunMode === "autopilot" && fallbackExecutor !== "manual";
       const autopilotOwnerId = String(args.autopilotOwnerId ?? "").trim() || "orchestrator-autopilot";
       const missionMetadata = parseJsonRecord(mission.metadata_json) ?? {};
+      const missionPhaseConfiguration = asRecord(missionMetadata.phaseConfiguration);
+      const missionLevelSettings = asRecord(missionMetadata.missionLevelSettings);
+      const missionExecutionPolicy = isExecutionPolicyRecord(missionMetadata.executionPolicy)
+        ? (missionMetadata.executionPolicy as MissionExecutionPolicy)
+        : null;
+      const missionPhaseOverride = Array.isArray(missionMetadata.phaseOverride)
+        ? missionMetadata.phaseOverride as PhaseCard[]
+        : null;
+      const missionPhaseProfileId =
+        typeof missionMetadata.phaseProfileId === "string" && missionMetadata.phaseProfileId.trim().length > 0
+          ? missionMetadata.phaseProfileId.trim()
+          : null;
       const plannerSummary = asRecord(asRecord(missionMetadata.plannerPlan)?.missionSummary);
       const plannerParallelismRaw = Number(
         args.metadata?.plannerParallelismCap ?? plannerSummary?.parallelismCap ?? Number.NaN
@@ -4416,6 +4917,11 @@ export function createOrchestratorService({
           missionGoal: mission.prompt ?? "",
           missionPrompt: mission.prompt ?? "",
           runMode: requestedRunMode,
+          ...(missionLevelSettings ? { missionLevelSettings } : {}),
+          ...(missionPhaseConfiguration ? { phaseConfiguration: missionPhaseConfiguration } : {}),
+          ...(missionExecutionPolicy ? { executionPolicy: missionExecutionPolicy } : {}),
+          ...(missionPhaseOverride ? { phaseOverride: missionPhaseOverride } : {}),
+          ...(missionPhaseProfileId ? { phaseProfileId: missionPhaseProfileId } : {}),
           ...(launchTeamRuntime
             ? {
                 teamRuntime: {
@@ -4471,6 +4977,13 @@ export function createOrchestratorService({
     async startReadyAutopilotAttempts(args: { runId: string; reason?: string }): Promise<number> {
       const runId = String(args.runId ?? "").trim();
       if (!runId.length) return 0;
+
+      // Early guard: skip if the run is paused or missing (before lock acquisition)
+      const preCheckRow = getRunRow(runId);
+      if (!preCheckRow || normalizeRunStatus(preCheckRow.status) === "paused") {
+        return 0;
+      }
+
       if (autopilotRunLocks.has(runId)) {
         if (args.reason === "initial_ramp_up") {
           let waited = 0;
@@ -4668,9 +5181,9 @@ export function createOrchestratorService({
     async onTrackedSessionEnded(args: { sessionId: string; laneId?: string | null; exitCode: number | null }): Promise<number> {
       const sessionId = String(args.sessionId ?? "").trim();
       if (!sessionId.length) return 0;
-      const sessionRow = db.get<{ status: string | null; exit_code: number | null }>(
+      const sessionRow = db.get<{ status: string | null; exit_code: number | null; transcript_path: string | null }>(
         `
-          select status, exit_code
+          select status, exit_code, transcript_path
           from terminal_sessions
           where id = ?
           limit 1
@@ -4765,14 +5278,20 @@ export function createOrchestratorService({
         const transcriptPath =
           typeof attemptMetadata?.transcriptPath === "string"
             ? attemptMetadata.transcriptPath.trim()
-            : "";
-        const transcriptSummary = deriveTranscriptSummaryFromPath(transcriptPath);
+            : (typeof sessionRow?.transcript_path === "string" ? sessionRow.transcript_path.trim() : "");
+        const transcriptAnalysis = analyzeTranscriptFromPath(transcriptPath);
+        const transcriptSummary = transcriptAnalysis.summary;
+        const silentFailure = classifySilentWorkerExit({
+          stepMetadata,
+          transcriptSummary,
+          hasMaterialOutput: transcriptAnalysis.hasMaterialOutput,
+        });
         const completionForAttempt =
-          completion.status === "succeeded" && isPlanningLikeStepMetadata(stepMetadata) && !transcriptSummary
+          completion.status === "succeeded" && silentFailure
             ? {
                 status: "failed" as const,
-                errorClass: "executor_failure" as const,
-                errorMessage: "Planning worker exited without reporting a usable plan."
+                errorClass: silentFailure.errorClass,
+                errorMessage: silentFailure.errorMessage,
               }
             : completion;
         persistRuntimeEvent({
@@ -5108,7 +5627,13 @@ export function createOrchestratorService({
       const profileId = normalizeProfileId(args.contextProfile);
       const createdAt = nowIso();
       const schedulerState = String(args.schedulerState ?? "initialized").trim() || "initialized";
-      const metadata = args.metadata ?? {};
+      const rawMetadata = args.metadata ?? {};
+      const phaseCards = resolveRunPhaseCardsFromMetadata(rawMetadata);
+      const metadata: Record<string, unknown> = { ...rawMetadata };
+      if (phaseCards && !asRecord(metadata.phaseRuntime)) {
+        const phaseRuntime = buildInitialPhaseRuntime(phaseCards);
+        if (phaseRuntime) metadata.phaseRuntime = phaseRuntime;
+      }
 
       const byKey = new Map<string, string>();
       const dependencyStepKeysByStepKey = new Map<string, string[]>();
@@ -5433,6 +5958,9 @@ export function createOrchestratorService({
 
       const run = toRun(runRow);
       let step = toStep(stepRow);
+      if (run.status === "paused") {
+        throw new Error(`Cannot start attempt for run in status 'paused' (run ${run.id} is paused).`);
+      }
       if (!runCanStartAttempts(run.status)) {
         throw new Error(`Cannot start attempt for run in status '${run.status}'.`);
       }
@@ -5564,6 +6092,24 @@ export function createOrchestratorService({
       const executorKind = normalizeExecutorKind(
         String(args.executorKind ?? step.metadata?.executorKind ?? "manual"),
       );
+      const runMissionLaneId = run.missionId ? resolveRunMissionLaneId(run.metadata) : null;
+      const registeredAdapter = adapters.get(executorKind) ?? null;
+      const defaultAdapter = registeredAdapter ? null : defaultAdapterFor(executorKind);
+      const requiresLaneId =
+        executorKind !== "manual"
+        && (registeredAdapter?.requiresLaneId === true || defaultAdapter?.requiresLaneId === true);
+      if (!step.laneId) {
+        if (runMissionLaneId && executorKind !== "manual") {
+          throw new Error(
+            `Mission step '${step.stepKey}' cannot start with executor '${executorKind}' because the dedicated mission lane is missing.`,
+          );
+        }
+        if (requiresLaneId) {
+          throw new Error(
+            `Step '${step.stepKey}' cannot start with executor '${executorKind}' because laneId is missing.`,
+          );
+        }
+      }
       const stepPolicy = resolveStepPolicy(step);
       const contextPolicy = resolveContextPolicy({ runProfileId: run.contextProfile, stepPolicy });
 
@@ -6018,11 +6564,69 @@ export function createOrchestratorService({
             });
           }
 
+          // Resolve lane worktree path BEFORE building the prompt so the constraint
+          // can be injected into the worker prompt via step.metadata.laneWorktreePath.
+          const laneWorktreePath = (() => {
+            if (!step.laneId) return runMissionLaneId ? null : projectRoot;
+            const row = db.get<{ worktree_path: string | null }>(
+              `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
+              [step.laneId, projectId],
+            );
+            const worktree = typeof row?.worktree_path === "string" ? row.worktree_path.trim() : "";
+            return worktree.length > 0 ? worktree : null;
+          })();
+
+          if (!laneWorktreePath) {
+            const errorMsg = runMissionLaneId
+              ? `Mission step '${step.stepKey}' cannot start without the dedicated mission lane/worktree.`
+              : `Lane '${step.laneId}' has no worktree_path configured. Cannot start worker for step '${step.stepKey}' without a valid worktree.`;
+            appendTimelineEvent({
+              runId: run.id,
+              stepId: step.id,
+              attemptId: attempt.id,
+              eventType: "worker_failed",
+              reason: "worktree_configuration_error",
+              detail: {
+                executorKind,
+                modelId: descriptor.id,
+                executionPath,
+                laneId: step.laneId ?? null,
+                error: errorMsg,
+              }
+            });
+            return completeAndAdvance({
+              attemptId: attempt.id,
+              status: "failed",
+              errorClass: "configuration_error",
+              errorMessage: errorMsg,
+              metadata: {
+                executorKind,
+                modelId: descriptor.id,
+                executionPath,
+                adapterState: "worktree_path_missing",
+                laneId: step.laneId,
+              }
+            });
+          }
+
+          const resolvedCwd = laneWorktreePath ?? projectRoot;
+
+          // Inject laneWorktreePath into step metadata for the prompt builder
+          const stepWithWorktree: typeof step = step.laneId && laneWorktreePath
+            ? {
+                ...step,
+                metadata: {
+                  ...(step.metadata ?? {}),
+                  laneWorktreePath,
+                },
+              }
+            : step;
+
           const allSteps = listStepRows(run.id).map(toStep);
           const promptPack = buildFullPrompt(
             {
               run,
-              step,
+              step: stepWithWorktree,
               attempt,
               allSteps,
               contextProfile: contextPolicy,
@@ -6035,18 +6639,10 @@ export function createOrchestratorService({
               },
             },
             "unified",
-            memoryService ? { memoryService, projectId } : undefined,
+            memoryService
+              ? { memoryService, projectId, workerRuntime: "in_process" }
+              : { projectId, workerRuntime: "in_process" },
           );
-
-          const laneWorktreePath = (() => {
-            if (!step.laneId) return projectRoot;
-            const row = db.get<{ worktree_path: string | null }>(
-              `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
-              [step.laneId, projectId],
-            );
-            const worktree = typeof row?.worktree_path === "string" ? row.worktree_path.trim() : "";
-            return worktree.length > 0 ? worktree : projectRoot;
-          })();
 
           const stepType = String(step.metadata?.stepType ?? step.metadata?.taskType ?? "").trim().toLowerCase();
           const taskType: import("../ai/aiIntegrationService").AiTaskType =
@@ -6112,7 +6708,7 @@ export function createOrchestratorService({
               feature: "orchestrator",
               taskType,
               prompt: promptPack.prompt,
-              cwd: laneWorktreePath,
+              cwd: resolvedCwd,
               model: descriptor.id,
               ...(reasoningEffort ? { reasoningEffort } : {}),
               timeoutMs,
@@ -6198,7 +6794,7 @@ export function createOrchestratorService({
         }
       }
 
-      const adapter = adapters.get(executorKind) ?? defaultAdapterFor(executorKind);
+      const adapter = registeredAdapter ?? defaultAdapter;
       if (adapter) {
         // Build unified permission config: project-level → mission-level override.
         // Both old (cli/inProcess) and new (providers) shapes are normalized through
@@ -6343,15 +6939,50 @@ export function createOrchestratorService({
         })();
 
         const allSteps = listStepRows(run.id).map(toStep);
-        const stepForExecutor = unifiedStepModelId && !(typeof step.metadata?.modelId === "string" && step.metadata.modelId.trim().length > 0)
-          ? ({
-              ...step,
+
+        // Resolve lane worktree path for CLI adapter prompt injection
+        const cliLaneWorktreePath = (() => {
+          if (!step.laneId) return null;
+          const row = db.get<{ worktree_path: string | null }>(
+            `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
+            [step.laneId, projectId],
+          );
+          const wt = typeof row?.worktree_path === "string" ? row.worktree_path.trim() : "";
+          return wt.length > 0 ? wt : null;
+        })();
+
+        if (cliLaneWorktreePath) {
+          try {
+            fs.mkdirSync(path.join(cliLaneWorktreePath, ".ade", "plans"), { recursive: true });
+            fs.mkdirSync(path.join(cliLaneWorktreePath, ".ade", "checkpoints"), { recursive: true });
+          } catch {
+            // Directory creation is best-effort. Worker prompts still instruct
+            // the model to create the directories if needed.
+          }
+        }
+
+        const stepForExecutor = (() => {
+          let s = step;
+          if (unifiedStepModelId && !(typeof step.metadata?.modelId === "string" && step.metadata.modelId.trim().length > 0)) {
+            s = {
+              ...s,
               metadata: {
-                ...(step.metadata ?? {}),
+                ...(s.metadata ?? {}),
                 modelId: unifiedStepModelId,
               }
-            } satisfies OrchestratorStep)
-          : step;
+            } satisfies OrchestratorStep;
+          }
+          if (cliLaneWorktreePath) {
+            s = {
+              ...s,
+              metadata: {
+                ...(s.metadata ?? {}),
+                laneWorktreePath: cliLaneWorktreePath,
+              }
+            } satisfies OrchestratorStep;
+          }
+          return s;
+        })();
         const result = await adapter.start({
           run,
           step: stepForExecutor,
@@ -6373,6 +7004,8 @@ export function createOrchestratorService({
         });
         if (result.status === "accepted") {
           const sessionId = typeof result.sessionId === "string" ? result.sessionId.trim() : "";
+          const managedLaunch = result.launch ?? null;
+          const attachedWorkerState = managedLaunch ? "initializing" : "working";
           if (sessionId) {
             const sessionRow = db.get<{ transcript_path: string | null }>(
               `
@@ -6417,7 +7050,7 @@ export function createOrchestratorService({
                   ...(attempt.metadata ?? {}),
                   ...(result.metadata ?? {}),
                   transcriptPath: sessionRow?.transcript_path ?? null,
-                  workerState: "working",
+                  workerState: attachedWorkerState,
                   workerSessionAttachedAt: nowIso()
                 }),
                 attempt.id,
@@ -6435,9 +7068,83 @@ export function createOrchestratorService({
                 executorKind,
                 sessionId,
                 transcriptPath: sessionRow?.transcript_path ?? null,
-                workerState: "working"
+                workerState: attachedWorkerState
               }
             });
+          }
+
+          if (sessionId && managedLaunch && agentChatService) {
+            void (async () => {
+              try {
+                await agentChatService.sendMessage({
+                  sessionId,
+                  text: managedLaunch.prompt,
+                  displayText: managedLaunch.displayText,
+                  ...(managedLaunch.reasoningEffort ? { reasoningEffort: managedLaunch.reasoningEffort } : {}),
+                  ...(managedLaunch.executionMode ? { executionMode: managedLaunch.executionMode } : {}),
+                });
+                const currentAttemptRow = getAttemptRow(attempt.id);
+                if (!currentAttemptRow || currentAttemptRow.status !== "running") return;
+                const currentStep = getStepRow(step.id);
+                const currentStepMetadata = asRecord(toStep(currentStep ?? stepRow).metadata) ?? {};
+                const attemptMetadata = parseJsonRecord(currentAttemptRow.metadata_json);
+                const transcriptPath =
+                  typeof attemptMetadata?.transcriptPath === "string"
+                    ? attemptMetadata.transcriptPath.trim()
+                    : "";
+                const transcriptAnalysis = analyzeTranscriptFromPath(transcriptPath);
+                const hasStructuredResult = asRecord(currentStepMetadata.lastResultReport) != null;
+                const silentFailure = hasStructuredResult
+                  ? null
+                  : classifySilentWorkerExit({
+                      stepMetadata: currentStepMetadata,
+                      transcriptSummary: transcriptAnalysis.summary,
+                      hasMaterialOutput: transcriptAnalysis.hasMaterialOutput,
+                    });
+                if (silentFailure) {
+                  await this.completeAttempt({
+                    attemptId: attempt.id,
+                    status: "failed",
+                    errorClass: silentFailure.errorClass,
+                    errorMessage: silentFailure.errorMessage,
+                  });
+                } else {
+                  await this.completeAttempt({
+                    attemptId: attempt.id,
+                    status: "succeeded",
+                  });
+                }
+              } catch (error) {
+                const currentAttemptRow = getAttemptRow(attempt.id);
+                if (!currentAttemptRow || currentAttemptRow.status !== "running") return;
+                const currentStep = getStepRow(step.id);
+                const currentStepMetadata = asRecord(toStep(currentStep ?? stepRow).metadata) ?? {};
+                const attemptMetadata = parseJsonRecord(currentAttemptRow.metadata_json);
+                const transcriptPath =
+                  typeof attemptMetadata?.transcriptPath === "string"
+                    ? attemptMetadata.transcriptPath.trim()
+                    : "";
+                const transcriptAnalysis = analyzeTranscriptFromPath(transcriptPath);
+                const errorText = error instanceof Error ? error.message : String(error);
+                const silentFailure = classifySilentWorkerExit({
+                  stepMetadata: currentStepMetadata,
+                  transcriptSummary: transcriptAnalysis.summary,
+                  hasMaterialOutput: transcriptAnalysis.hasMaterialOutput,
+                });
+                await this.completeAttempt({
+                  attemptId: attempt.id,
+                  status: "failed",
+                  errorClass: silentFailure?.errorClass ?? "executor_failure",
+                  errorMessage: silentFailure?.errorMessage ?? errorText,
+                });
+              } finally {
+                try {
+                  await agentChatService.dispose({ sessionId });
+                } catch {
+                  // Ignore disposal failures — tracked session reconciliation is best-effort here.
+                }
+              }
+            })();
           }
 
           // ── Critical fix: trigger autopilot pass for OTHER ready steps ──
@@ -6592,17 +7299,52 @@ export function createOrchestratorService({
 	      if (reservationBlocks) {
 	        status = "blocked";
 	      }
-	      const effectiveErrorMessage = reservationBlocks
-	        ? fileReservationMessage
-	        : args.errorMessage ?? null;
+	      const stepMetadata = asRecord(step.metadata) ?? {};
+	      const lastResultReport = asRecord(stepMetadata.lastResultReport);
+	      const reportedSummary =
+	        typeof lastResultReport?.summary === "string" ? lastResultReport.summary.trim() : "";
+	      const transcriptPath =
+	        typeof attempt.metadata?.transcriptPath === "string" ? attempt.metadata.transcriptPath.trim() : "";
+	      const transcriptSummary =
+	        !args.result && status === "succeeded"
+	          ? deriveTranscriptSummaryFromPath(transcriptPath)
+	          : null;
+	      // Detect blocking soft-failures: attempt says "succeeded" but warnings
+	      // contain sandbox blocks, permission denials, tool startup failures, etc.
+	      // Use the same derived summary path that transcript-only completions rely on,
+	      // so planner/worker sessions cannot silently succeed with a blocked write summary.
+	      let softFailureOverride: ReturnType<typeof classifyBlockingWarnings> | null = null;
+	      if (status === "succeeded") {
+	        const warningsToCheck = Array.isArray(args.result?.warnings) ? args.result.warnings : [];
+	        const explicitSummary =
+	          typeof args.result?.summary === "string" ? args.result.summary.trim() : "";
+	        const summaryToCheck =
+	          explicitSummary
+	          || reportedSummary
+	          || transcriptSummary
+	          || null;
+	        softFailureOverride = classifyBlockingWarnings({ warnings: warningsToCheck, summary: summaryToCheck });
+	        if (softFailureOverride.hasBlockingFailure) {
+	          status = "failed";
+	        } else {
+	          softFailureOverride = null;
+	        }
+	      }
+	      const effectiveErrorMessage = softFailureOverride
+	        ? softFailureOverride.detail
+	        : reservationBlocks
+	          ? fileReservationMessage
+	          : args.errorMessage ?? null;
 	      const errorClass =
-	        status === "failed"
-	          ? args.errorClass ?? "executor_failure"
-	          : status === "blocked"
-	            ? args.errorClass ?? (reservationBlocks ? "policy" : "policy")
-	            : status === "canceled"
-	              ? "canceled"
-	              : "none";
+	        softFailureOverride
+	          ? "soft_success_blocking_failure" as OrchestratorErrorClass
+	          : status === "failed"
+	            ? args.errorClass ?? "executor_failure"
+	            : status === "blocked"
+	              ? args.errorClass ?? (reservationBlocks ? "policy" : "policy")
+	              : status === "canceled"
+	                ? "canceled"
+	                : "none";
 	      const retryable = status === "failed" ? RETRYABLE_ERROR_CLASSES.has(errorClass) : false;
 	      const retryRemaining = status === "failed" ? step.retryCount < step.retryLimit : false;
 	      const shouldRetry = status === "failed" ? retryable && retryRemaining : false;
@@ -6614,16 +7356,6 @@ export function createOrchestratorService({
 	          ? Math.min(10 * 60_000, Math.floor(aiRetryBackoffRaw))
 	          : null;
 	      const computedBackoff = shouldRetry ? (aiRetryBackoffMs ?? 0) : 0;
-		      const stepMetadata = asRecord(step.metadata) ?? {};
-		      const lastResultReport = asRecord(stepMetadata.lastResultReport);
-		      const reportedSummary =
-		        typeof lastResultReport?.summary === "string" ? lastResultReport.summary.trim() : "";
-		      const transcriptPath =
-		        typeof attempt.metadata?.transcriptPath === "string" ? attempt.metadata.transcriptPath.trim() : "";
-		      const transcriptSummary =
-		        !args.result && status === "succeeded"
-		          ? deriveTranscriptSummaryFromPath(transcriptPath)
-		          : null;
 		      const reportedFilesChanged = Array.isArray(lastResultReport?.filesChanged)
 		        ? lastResultReport.filesChanged
 		            .map((entry) => String(entry ?? "").trim())
@@ -6713,6 +7445,16 @@ export function createOrchestratorService({
 	                  fileReservationScopes: fileReservationCheck.normalizedScopes,
 	                  fileReservationTouchedPaths: fileReservationCheck.touchedPaths,
 	                  fileReservationViolations: fileReservationCheck.violations
+	                }
+	              : {}),
+	            ...(softFailureOverride
+	              ? {
+	                  softFailureOverride: {
+	                    category: softFailureOverride.category,
+	                    detail: softFailureOverride.detail,
+	                    originalStatus: 'succeeded',
+	                    overriddenAt: completedAt,
+	                  }
 	                }
 	              : {}),
 	            workerState,
@@ -7289,6 +8031,37 @@ export function createOrchestratorService({
 	          }
 	        });
 	      }
+	      if (softFailureOverride) {
+	        appendTimelineEvent({
+	          runId: run.id,
+	          stepId: step.id,
+	          attemptId: args.attemptId,
+	          eventType: "soft_success_blocking_failure",
+	          reason: softFailureOverride.category ?? "unknown",
+	          detail: {
+	            category: softFailureOverride.category,
+	            detail: softFailureOverride.detail,
+	            originalStatus: "succeeded",
+	            overriddenStatus: "failed",
+	            errorClass: "soft_success_blocking_failure"
+	          }
+	        });
+	        persistRuntimeEvent({
+	          runId: run.id,
+	          stepId: step.id,
+	          attemptId: args.attemptId,
+	          sessionId: attemptRow.executor_session_id,
+	          eventType: "blocked",
+	          eventKey: `soft_failure_override:${args.attemptId}:${softFailureOverride.category}:${completedAt}`,
+	          occurredAt: completedAt,
+	          payload: {
+	            errorClass: "soft_success_blocking_failure",
+	            category: softFailureOverride.category,
+	            errorMessage: softFailureOverride.detail,
+	            originalStatus: "succeeded"
+	          }
+	        });
+	      }
 	      if (status === "succeeded") {
 	        persistRuntimeEvent({
           runId: run.id,
@@ -7378,11 +8151,38 @@ export function createOrchestratorService({
               maxTotalTokenBudget: runtimeConfig.maxTotalTokenBudget
             }
           });
+          // VAL-BUDGET-001: Emit runtime event so aiOrchestratorService can
+          // create a budget_limit_reached intervention (matching the hard cap
+          // path in coordinatorTools).
+          persistRuntimeEvent({
+            runId: run.id,
+            stepId: step.id,
+            attemptId: args.attemptId,
+            eventType: "budget_exceeded",
+            eventKey: `budget_exceeded:${run.id}:${args.attemptId}:${newTotal}`,
+            payload: {
+              tokensConsumed: newTotal,
+              maxTotalTokenBudget: runtimeConfig.maxTotalTokenBudget,
+              missionId: run.missionId,
+              source: "completeAttempt",
+            }
+          });
+          emit({
+            type: "orchestrator-run-updated",
+            runId: run.id,
+            reason: "budget_exceeded",
+          });
         }
       }
 
       // Append run narrative entry for step completion
       appendRunNarrative(run.id, step.stepKey, `${status}: ${envelope.summary.slice(0, 200)}`);
+
+      // VAL-STATE-002: When a step completes, check if it is a fan-out child
+      // and all siblings are terminal. If so, update the parent step status.
+      if (status === "succeeded" || status === "failed") {
+        this.checkFanOutCompletion({ runId: run.id, completedStepKey: step.stepKey });
+      }
 
       const updatedRun = this.tick({ runId: run.id });
       // When the run transitions to "completing" (all steps terminal) or is already terminal,
@@ -7598,6 +8398,15 @@ export function createOrchestratorService({
       }
 
       updateRunStatus(run.id, "paused", patch);
+      appendTimelineEvent({
+        runId: run.id,
+        eventType: "run_paused",
+        reason: args.reason ?? "paused",
+        detail: {
+          previousStatus: run.status,
+          reason: args.reason ?? null
+        }
+      });
       const updated = getRunRow(run.id);
       if (!updated) throw new Error(`Run not found after pause: ${run.id}`);
       return toRun(updated);
@@ -7681,6 +8490,7 @@ export function createOrchestratorService({
         throw new Error(`Cannot add steps to a terminal run (status: ${run.status}).`);
       }
       if (!args.steps.length) return [];
+      const missionLaneId = run.missionId ? resolveRunMissionLaneId(run.metadata) : null;
 
       // Get existing steps to compute next step_index and resolve dependency keys
       const existingStepRows = listStepRows(runId);
@@ -7741,6 +8551,8 @@ export function createOrchestratorService({
 
       // Insert step rows
       for (const { id, input, stepIndex, stepKey } of stepEntries) {
+        const explicitLaneId = toOptionalNonEmptyString(input.laneId);
+        const effectiveLaneId = explicitLaneId ?? missionLaneId;
         const policy: Record<string, unknown> = {
           includeNarrative: input.policy?.includeNarrative === true,
           includeFullDocs: input.policy?.includeFullDocs === true,
@@ -7792,7 +8604,7 @@ export function createOrchestratorService({
             stepKey,
             stepIndex,
             input.title.trim() || stepKey,
-            input.laneId ?? null,
+            effectiveLaneId,
             input.joinPolicy ?? "all_success",
             input.quorumCount ?? null,
             Math.max(0, Math.floor(input.retryLimit ?? 0)),
@@ -7811,7 +8623,8 @@ export function createOrchestratorService({
             stepKey,
             stepIndex,
             joinPolicy: input.joinPolicy ?? "all_success",
-            retryLimit: Math.max(0, Math.floor(input.retryLimit ?? 0))
+            retryLimit: Math.max(0, Math.floor(input.retryLimit ?? 0)),
+            laneId: effectiveLaneId,
           }
         });
       }
@@ -8127,9 +8940,16 @@ export function createOrchestratorService({
 
       if (allDone && parentMeta.fanOutComplete !== true) {
         const updatedMeta = { ...parentMeta, fanOutComplete: true };
+        const now = nowIso();
+        const succeededCount = childKeys.filter((key) => allSteps.find((s) => s.stepKey === key)?.status === "succeeded").length;
+        const failedCount = childKeys.filter((key) => allSteps.find((s) => s.stepKey === key)?.status === "failed").length;
+
+        // VAL-STATE-002: Update parent step status to reflect variant outcomes.
+        // If any child succeeded → parent succeeded; if all failed → parent failed.
+        const parentTerminalStatus = succeededCount > 0 ? "succeeded" : "failed";
         db.run(
-          `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ? and run_id = ? and project_id = ?`,
-          [JSON.stringify(updatedMeta), nowIso(), parentStep.id, runId, projectId]
+          `update orchestrator_steps set status = ?, metadata_json = ?, updated_at = ?, completed_at = coalesce(completed_at, ?) where id = ? and run_id = ? and project_id = ?`,
+          [parentTerminalStatus, JSON.stringify(updatedMeta), now, now, parentStep.id, runId, projectId]
         );
         appendTimelineEvent({
           runId,
@@ -8140,8 +8960,9 @@ export function createOrchestratorService({
             parentStepKey,
             childKeys,
             childCount: childKeys.length,
-            succeeded: childKeys.filter((key) => allSteps.find((s) => s.stepKey === key)?.status === "succeeded").length,
-            failed: childKeys.filter((key) => allSteps.find((s) => s.stepKey === key)?.status === "failed").length
+            succeeded: succeededCount,
+            failed: failedCount,
+            parentTerminalStatus,
           }
         });
         emit({ type: "orchestrator-step-updated", runId, stepId: parentStep.id, reason: "fan_out_complete" });
@@ -9522,49 +10343,30 @@ export function createOrchestratorService({
             and not exists (
               select 1 from orchestrator_runtime_events r
               where r.project_id = e.project_id and r.run_id = e.run_id
-                and (
-                  r.step_id = e.step_id
-                  or (r.step_id is null and e.step_id is null)
-                )
                 and r.event_type = 'intervention_resolved'
+                and (
+                  (
+                    json_extract(e.payload_json, '$.interventionId') is not null
+                    and json_extract(r.payload_json, '$.interventionId') = json_extract(e.payload_json, '$.interventionId')
+                  )
+                  or (
+                    json_extract(e.payload_json, '$.interventionId') is null
+                    and (
+                      r.step_id = e.step_id
+                      or (r.step_id is null and e.step_id is null)
+                    )
+                  )
+                )
             )
         `,
         [projectId, runId]
       );
 
       const validation = validateRunCompletion(run, steps, attempts, claims, runState, interventionRows);
-
-      if (!validation.canComplete && !args.force) {
-        // Store the validation error in run state
-        if (runState) {
-          this.upsertRunState(runId, {
-            ...runState,
-            lastValidationError: validation.blockers.map((b) => b.message).join("; "),
-            completionValidated: false
-          });
-        }
-
-        appendTimelineEvent({
-          runId,
-          eventType: "run_completion_blocked",
-          reason: "validation_failed",
-          detail: {
-            blockers: validation.blockers,
-            validatedAt: validation.validatedAt
-          }
-        });
-
-        return {
-          finalized: false,
-          blockers: validation.blockers.map((b) => b.message),
-          finalStatus: "completing"
-        };
-      }
-
-      // Validation passed (or forced) — evaluate the final status from step outcomes
       const finalRunMeta = parseJsonRecord(runRow.metadata_json);
       const finalPhases = resolveRunPhaseCardsFromMetadata(finalRunMeta);
       const finalSettings = resolveRunMissionLevelSettingsFromMetadata(finalRunMeta);
+      const hasConfiguredPhaseEvaluation = Boolean(finalPhases && finalPhases.length > 0 && finalSettings);
 
       let evaluation: RunCompletionEvaluation;
       if (finalPhases && finalPhases.length > 0 && finalSettings) {
@@ -9578,21 +10380,56 @@ export function createOrchestratorService({
         );
       }
 
+      const evaluationBlockers = evaluation.diagnostics
+        .filter((diagnostic) => diagnostic.blocking)
+        .filter((diagnostic) => hasConfiguredPhaseEvaluation || diagnostic.code === "required_validation_missing")
+        .map((diagnostic) => ({
+          code: diagnostic.code,
+          message: diagnostic.message,
+          detail: diagnostic.details ?? null,
+        }));
+      const completionBlockers = [...validation.blockers, ...evaluationBlockers];
+      const completionReady =
+        validation.canComplete
+        && evaluationBlockers.length === 0
+        && (!hasConfiguredPhaseEvaluation || evaluation.completionReady);
+
+      if (!completionReady) {
+        // Store the validation error in run state
+        if (runState) {
+          this.upsertRunState(runId, {
+            ...runState,
+            lastValidationError: completionBlockers.map((b) => b.message).join("; "),
+            completionValidated: false
+          });
+        }
+
+        appendTimelineEvent({
+          runId,
+          eventType: "run_completion_blocked",
+          reason: "completion_gates_failed",
+          detail: {
+            blockers: completionBlockers,
+            validatedAt: validation.validatedAt,
+            completionReady: evaluation.completionReady,
+            evaluationStatus: evaluation.status
+          }
+        });
+
+        return {
+          finalized: false,
+          blockers: completionBlockers.map((b) => b.message),
+          finalStatus: "completing"
+        };
+      }
+
       // Determine final terminal status
       let finalStatus: OrchestratorRunStatus;
-      const allStepStatuses = filterExecutionSteps(steps).map((s) => s.status);
-      const anyFailed = allStepStatuses.some((s) => s === "failed");
-      const allSucceeded = allStepStatuses.every((s) => s === "succeeded" || s === "skipped" || s === "superseded");
-
-      if (anyFailed) {
-        finalStatus = "failed";
-      } else if (allSucceeded) {
-        finalStatus = "succeeded";
-      } else if (args.force) {
-        // Force-completing with mixed non-failure results still resolves to succeeded.
-        finalStatus = "succeeded";
+      if (hasConfiguredPhaseEvaluation) {
+        finalStatus = evaluation.status === "failed" ? "failed" : "succeeded";
       } else {
-        finalStatus = "succeeded";
+        const allStepStatuses = filterExecutionSteps(steps).map((step) => step.status);
+        finalStatus = allStepStatuses.some((status) => status === "failed") ? "failed" : "succeeded";
       }
 
       // Persist completion diagnostics
@@ -9633,7 +10470,7 @@ export function createOrchestratorService({
         reason: "finalize_run",
         detail: {
           finalStatus,
-          force: args.force ?? false,
+          forceRequested: args.force ?? false,
           diagnosticCount: evaluation.diagnostics.length,
           riskFactors: evaluation.riskFactors
         }
