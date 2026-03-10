@@ -560,6 +560,9 @@ export class CoordinatorAgent {
         "- Research the codebase and discover the implementation plan.",
         "- Identify dependencies, risks, sequencing, and the best execution DAG.",
         "- Do not modify files, run write operations, or ask for plan-exit approval.",
+        "- Do NOT use ExitPlanMode or any provider-native plan approval flow.",
+        "- Write your plan output to `.ade/plans/` in your working directory, NOT to `~/.claude/plans/`.",
+        "- If you need clarification, use `ask_user` to surface structured questions.",
         "- Return a concrete plan the coordinator can use to enter Development automatically.",
       ].join("\n"),
     ].filter((entry): entry is string => Boolean(entry));

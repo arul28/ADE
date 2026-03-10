@@ -228,6 +228,24 @@ export function buildFullPrompt(
       "IMPORTANT: This step is READ-ONLY. Do NOT modify files, stage changes, or run write operations. Research, review, and return findings or a plan only."
     );
   }
+
+  // Planning-specific instructions for planning steps
+  {
+    const stepType = typeof step.metadata?.stepType === "string" ? step.metadata.stepType.trim().toLowerCase() : "";
+    const isPlanningStep = stepType === "planning" || stepType === "analysis";
+    if (isPlanningStep) {
+      systemParts.push(
+        [
+          "PLANNING ARTIFACTS:",
+          "- Write your plan output to `.ade/plans/` in your working directory. Create the `.ade/plans/` directory if it does not exist.",
+          "- Do NOT write plans to any provider-specific location (e.g. home-directory plan folders).",
+          "- Do NOT use ExitPlanMode or any provider-native plan approval flow. Return your plan directly via `report_result`.",
+          "- If you need clarification from the user, use `ask_user` to surface structured questions.",
+        ].join("\n")
+      );
+    }
+  }
+
   systemParts.push(
     hasMissionTooling
       ? [

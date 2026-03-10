@@ -542,7 +542,7 @@ function normalizeStepStatus(value: string): MissionStepStatus {
 }
 
 function normalizeArtifactType(value: string): MissionArtifactType {
-  if (value === "summary" || value === "pr" || value === "link" || value === "note" || value === "patch") return value;
+  if (value === "summary" || value === "pr" || value === "link" || value === "note" || value === "patch" || value === "plan") return value;
   return "note";
 }
 

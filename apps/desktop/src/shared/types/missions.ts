@@ -76,7 +76,7 @@ export type MissionStepStatus =
   | "blocked"
   | "canceled";
 
-export type MissionArtifactType = "summary" | "pr" | "link" | "note" | "patch";
+export type MissionArtifactType = "summary" | "pr" | "link" | "note" | "patch" | "plan";
 
 export type MissionInterventionType =
   | "approval_required"

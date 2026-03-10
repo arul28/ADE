@@ -801,6 +801,14 @@ const EXTERNAL_MCP_NOISE_PATTERNS: RegExp[] = [
   /claude\.ai\s+Slack/i,
 ];
 
+// Benign sandbox blocks from provider-native planning features (ExitPlanMode).
+// These are expected when the sandbox prevents writes to ~/.claude/plans/ — the
+// planner prompt directs artifacts to .ade/plans/ instead, so blocking the
+// provider-native path is intentional and should not fail the attempt.
+const BENIGN_SANDBOX_BLOCK_PATTERNS: RegExp[] = [
+  /\.claude\/plans\//i,
+];
+
 export function classifyBlockingWarnings(args: {
   warnings: string[];
   summary: string | null;
@@ -815,6 +823,10 @@ export function classifyBlockingWarnings(args: {
     // Skip external MCP noise
     const isExternalNoise = EXTERNAL_MCP_NOISE_PATTERNS.some(p => p.test(text));
     if (isExternalNoise) continue;
+
+    // Skip benign sandbox blocks (e.g. ExitPlanMode writing to ~/.claude/plans/)
+    const isBenignSandboxBlock = BENIGN_SANDBOX_BLOCK_PATTERNS.some(p => p.test(text));
+    if (isBenignSandboxBlock) continue;
 
     for (const { pattern, category } of BLOCKING_WARNING_PATTERNS) {
       if (pattern.test(text)) {

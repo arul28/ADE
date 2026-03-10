@@ -118,11 +118,19 @@ async function createFixture() {
 describe("classifyBlockingWarnings", () => {
   it("detects sandbox-blocked writes as blocking", () => {
     const result = classifyBlockingWarnings({
-      warnings: ["Tool 'Write' failed: PreToolUse:Write hook error ... SANDBOX BLOCKED: File path outside sandbox: /Users/admin/.claude/plans/foo"],
+      warnings: ["Tool 'Write' failed: PreToolUse:Write hook error ... SANDBOX BLOCKED: File path outside sandbox: /etc/sensitive/foo"],
       summary: null,
     });
     expect(result.hasBlockingFailure).toBe(true);
     expect(result.category).toBe("sandbox_block");
+  });
+
+  it("treats sandbox blocks to ~/.claude/plans/ as non-blocking (ExitPlanMode is benign)", () => {
+    const result = classifyBlockingWarnings({
+      warnings: ["Tool 'Write' failed: PreToolUse:Write hook error ... SANDBOX BLOCKED: File path outside sandbox: /Users/admin/.claude/plans/foo"],
+      summary: null,
+    });
+    expect(result.hasBlockingFailure).toBe(false);
   });
 
   it("detects tool startup failures as blocking", () => {
@@ -190,13 +198,25 @@ describe("classifyBlockingWarnings", () => {
     const result = classifyBlockingWarnings({
       warnings: [
         "claude.ai Gmail:needs-auth",
-        "Tool 'Write' failed: SANDBOX BLOCKED on /Users/admin/.claude/plans/x",
+        "Tool 'Write' failed: SANDBOX BLOCKED on /etc/sensitive/config",
         "claude.ai Google Drive:needs-auth",
       ],
       summary: null,
     });
     expect(result.hasBlockingFailure).toBe(true);
     expect(result.category).toBe("sandbox_block");
+  });
+
+  it("does not block when mixed noise includes only ~/.claude/plans/ sandbox blocks", () => {
+    const result = classifyBlockingWarnings({
+      warnings: [
+        "claude.ai Gmail:needs-auth",
+        "Tool 'Write' failed: SANDBOX BLOCKED on /Users/admin/.claude/plans/x",
+        "claude.ai Google Drive:needs-auth",
+      ],
+      summary: null,
+    });
+    expect(result.hasBlockingFailure).toBe(false);
   });
 
   it("detects PreToolUse hook errors with sandbox content as sandbox_block", () => {
@@ -326,10 +346,12 @@ describe("soft-failure override in completeAttempt", () => {
         executorKind: "cli",
       });
 
+      // ~/.claude/plans/ sandbox blocks are now treated as benign (ExitPlanMode is expected noise).
+      // Use a non-plan path for the blocking test, then verify plan path stays succeeded.
       const transcriptPath = path.join(fixture.projectRoot, "sandbox-blocked.log");
       fs.writeFileSync(
         transcriptPath,
-        "Tool 'Write' failed: PreToolUse:Write hook error: [/Users/admin/.claude/hooks/sandbox.sh]: SANDBOX BLOCKED: File path outside sandbox: /Users/admin/.claude/plans/temporal-kindling-platypus.md\n",
+        "Tool 'Write' failed: PreToolUse:Write hook error: [/Users/admin/.claude/hooks/sandbox.sh]: SANDBOX BLOCKED: File path outside sandbox: /etc/sensitive/production.conf\n",
         "utf8"
       );
       fixture.db.run(
