@@ -1,10 +1,20 @@
 .DS_Store
 *.pem
-infra/node_modules/
+node_modules/
 infra/.sst/
 infra/.pulumi/
 /infra/.home
 /.npm-cache
-/apps/mcp-server/node_modules
 /apps/desktop/release-stable
 /apps/desktop/.cache
+
+# Temp/debug artifacts
+*_diff.txt
+*.png
+!docs/**/*.png
+
+# Database
+*.db
+
+# Build outputs
+/apps/mcp-server/dist/
