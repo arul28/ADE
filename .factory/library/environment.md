@@ -7,29 +7,19 @@ Environment variables, external dependencies, and setup notes.
 
 ---
 
-## Platform
-- macOS (darwin 24.3.0, Apple Silicon)
-- Node.js via Electron 40.x
-- 14 CPU cores, 36 GB RAM
+## Dependencies
+- Node.js (system)
+- npm (package manager)
+- Electron 40.x (installed via npm)
+- sql.js (WASM SQLite, no native compilation needed)
+- node-pty (native module, requires electron-rebuild)
+- onnxruntime-node (native module for embeddings)
 
-## Database
-- sql.js ^1.13.0 (SQLite compiled to WASM, runs in-process)
-- Database location: `<project_root>/.ade/ade.db`
-- No external database server required
+## Environment Variables
+- `.env.local` exists at project root (minimal config)
+- No external API keys required for mission system development
+- AI provider keys are user-configured in ADE Settings, not in env files
 
-## Native Modules
-- `node-pty` — terminal emulator, rebuilt via `electron-rebuild`
-- `onnxruntime-node` — ONNX inference runtime for embedding model (to be added by W7a)
-  - Must be marked as `external` in tsup config
-  - Must be excluded from asar packaging
-  - Requires `electron-rebuild` after installation
-
-## AI Providers
-- Multiple providers configured (Claude, OpenAI, local via Ollama)
-- Model selection is user-configurable per feature via `featureModelOverrides` in project config
-- No API keys needed for core mission work (uses existing configuration)
-
-## Key Constraints
-- sql.js does NOT support `loadExtension()` — no sqlite-vec, no FTS5
-- FTS3 is available in the default sql.js WASM build
-- Vector search must be implemented in pure TypeScript (cosine similarity)
+## Platform Notes
+- macOS (darwin 24.3.0), 14 cores, 36GB RAM
+- Electron rebuild may be needed after npm install: `npm run rebuild:native`

@@ -1,57 +1,85 @@
 # Architecture
 
-Architectural decisions, patterns discovered, and structural notes.
+Architectural decisions, patterns, and key file locations for ADE mission system.
 
-**What belongs here:** Service patterns, dependency injection approach, IPC architecture, data flow, component hierarchy.
+**What belongs here:** Service patterns, module boundaries, IPC architecture, state machine documentation, key type locations.
 
 ---
 
-## Service Pattern
-All main-process services use the factory function pattern:
+## Project Structure
+
+- `apps/desktop/` — Electron app (main process + renderer)
+  - `src/main/services/` — Main process services (trusted)
+  - `src/renderer/components/` — React components (untrusted, communicates via IPC)
+  - `src/shared/types/` — Shared TypeScript types
+- `apps/mcp-server/` — MCP server (out of scope for this mission)
+- `apps/web/` — Web app (out of scope)
+
+## Key Files — Mission System
+
+### Main Process Services
+| File | Lines | Purpose |
+|---|---|---|
+| `orchestratorService.ts` | ~10500 | State machine, run/step/attempt CRUD, autopilot, tick |
+| `aiOrchestratorService.ts` | ~9400 | Coordinator lifecycle, worker spawn, steer, recovery |
+| `coordinatorTools.ts` | ~5860 | 40+ coordinator AI tools (spawn_worker, complete_mission, etc.) |
+| `coordinatorAgent.ts` | ~1350 | Coordinator AI agent, system prompt, planning flow |
+| `missionService.ts` | ~3600 | Mission CRUD, interventions, state transitions |
+| `baseOrchestratorAdapter.ts` | ~500 | Worker prompt construction, buildFullPrompt() |
+| `missionLifecycle.ts` | ~1050 | Run management, hook dispatch |
+| `workerTracking.ts` | ~1090 | Worker state management |
+| `recoveryService.ts` | ~410 | Failure recovery, health sweep |
+| `phaseEngine.ts` | ~300 | Phase cards, built-in phases, profiles |
+| `executionPolicy.ts` | ~1170 | Step execution policy, gates |
+| `conflictService.ts` | ~1200 | Conflict detection, AI resolution, prediction |
+| `prService.ts` | ~800 | PR creation, integration PRs, queue landing |
+| `laneService.ts` | ~1750 | Lane CRUD, worktrees, rebase |
+| `ctoStateService.ts` | ~600 | CTO identity, core memory, sessions |
+| `unifiedMemoryService.ts` | ~800 | Memory CRUD, search, shared facts |
+
+### Renderer Components
+| File | Lines | Purpose |
+|---|---|---|
+| `MissionsPage.tsx` | ~2437 | Main missions tab (MEGA-COMPONENT — being refactored) |
+| `MissionChatV2.tsx` | ~1755 | Chat component (being refactored) |
+| `MissionRunPanel.tsx` | ~645 | Run status, workers, interventions |
+| `missionHelpers.ts` | ~400 | Constants, types, utilities |
+| `missionControlViewModel.ts` | ~200 | View model derivation |
+
+### Shared Types
+| File | Purpose |
+|---|---|
+| `shared/types/missions.ts` | Mission types, step types, intervention types |
+| `shared/types/orchestrator.ts` | Run, step, attempt, worker, reflection types (~1687 lines) |
+| `shared/types/conflicts.ts` | Conflict, rebase, resolution types |
+| `shared/types/lanes.ts` | Lane types |
+| `shared/types/prs.ts` | PR, integration proposal types |
+| `shared/types/cto.ts` | CTO types |
+| `shared/types/memory.ts` | Memory types |
+
+## Patterns
+
+### Service Factory Pattern
 ```typescript
-export function createXxxService(opts: { db: AdeDb; logger: Logger; /* deps */ }) {
+export function createMyService({ dep1, dep2 }: { dep1: Dep1Type; dep2: Dep2Type }) {
   // private state
   return { publicMethod1, publicMethod2 };
 }
 ```
-Services are instantiated in `main.ts` → `initContextForProjectRoot()` with explicit dependency injection. The `AppContext` object holds all service instances.
 
-## IPC Architecture
-Four files must be updated for every new IPC channel:
-1. `src/shared/ipc.ts` — channel constant string
-2. `src/main/services/ipc/registerIpc.ts` — `ipcMain.handle()` handler
-3. `src/preload/preload.ts` — `ipcRenderer.invoke()` bridge method
-4. `src/preload/global.d.ts` — TypeScript type declaration
+### IPC Pattern (4 files)
+1. `ipc.ts` — Channel name constants
+2. `registerIpc.ts` — Main process handler registration
+3. `preload.ts` — Preload bridge exposure
+4. `global.d.ts` — Type declarations for `window.ade`
 
-Pattern: Renderer → `window.ade.method()` → preload → `ipcRenderer.invoke('channel')` → main → handler → result.
+### State Machine
+- `MissionStatus`: queued → planning → in_progress → intervention_required → completed/failed/canceled
+- `OrchestratorRunStatus`: queued → bootstrapping → active → paused → completing → succeeded/failed/canceled
+- `OrchestratorStepStatus`: pending → ready → running → succeeded/failed/blocked/skipped/superseded/canceled
 
-## Database
-- sql.js (WASM SQLite, in-process)
-- Schema bootstrap in `kvDb.ts` → `migrate()` using `CREATE TABLE IF NOT EXISTS`
-- Migrations via `ALTER TABLE ... ADD COLUMN` wrapped in try/catch
-- Flush strategy: debounced 500ms + explicit `flushNow()` + on shutdown
-- AdeDb interface: `run()`, `get<T>()`, `all<T>()`, `getJson<T>()`, `setJson()`
-
-## Memory System (W6 shipped)
-- Canonical backend: `unifiedMemoryService.ts` (~29KB, 1029 lines)
-- Tables: `unified_memories` (canonical), `unified_memory_embeddings` (placeholder for vectors)
-- Scopes: project, agent, mission
-- Tiers: 1 (pinned), 2 (hot/promoted), 3 (cold/archived/candidate)
-- Categories: fact, preference, pattern, decision, gotcha, convention, episode, procedure, digest, handoff
-- Status lifecycle: candidate → promoted → archived
-- Composite scoring: 40% query + 20% recency + 15% importance + 15% confidence + 10% access + tier/pin boosts
-- Deduplication via `dedupe_key` (Jaccard similarity >= 0.85)
-- Write gating system for quality control
-
-## AI Integration
-- `aiIntegrationService.ts` (~29KB) provides executor abstractions
-- Model resolution: `resolveModelForTask(taskType, modelIdHint?)` checks config overrides → task routing → defaults
-- Feature model overrides stored in `ade.yaml` → `shared.ai.featureModelOverrides`
-- Task defaults defined in TASK_DEFAULTS map within aiIntegrationService
-- `AiFeatureKey` type in `src/shared/types/config.ts` defines valid feature keys
-
-## Compaction System (existing)
-- `compactionEngine.ts` handles conversation transcript compaction
-- 70% context window threshold triggers compaction
-- Pre-compaction fact extraction already exists in some form
-- The compaction flush service (W6½) hooks into this system
+### Database
+- SQLite via sql.js (WASM), single file at `.ade/ade.db`
+- Schema in `kvDb.ts` → `migrate()` function
+- UUID TEXT primary keys
+- Manual flush strategy (125ms debounce)

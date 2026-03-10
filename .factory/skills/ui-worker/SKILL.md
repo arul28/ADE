@@ -1,6 +1,6 @@
 ---
 name: ui-worker
-description: Implements renderer components, Settings UI, IPC handlers, and component tests for the ADE Electron app
+description: Implements renderer components, zustand stores, IPC handlers, and component tests for the ADE Electron app missions tab
 ---
 
 # UI Worker
@@ -10,11 +10,13 @@ NOTE: Startup and cleanup are handled by `worker-base`. This skill defines the W
 ## When to Use This Skill
 
 Use for features that involve renderer-side UI work:
-- React components in `apps/desktop/src/renderer/components/`
-- Settings page additions/modifications
-- Memory Inspector UI changes
+- React components in `apps/desktop/src/renderer/components/missions/`
+- Zustand store creation/modification for missions
 - Component tests (`.test.tsx`)
 - IPC handler additions needed to support UI features
+- Design token changes in `laneDesignTokens.ts`
+- View model functions in `missionControlViewModel.ts`
+- Helper functions in `missionHelpers.ts`
 
 ## Work Procedure
 
@@ -25,61 +27,65 @@ Use for features that involve renderer-side UI work:
 3. Read `.factory/services.yaml` for test/build commands.
 4. Read `.factory/library/user-testing.md` for the testing surface.
 5. Investigate the EXISTING UI patterns:
-   - Read `src/renderer/components/settings/` to understand Settings page structure (11-section sidebar: Profile, Providers, AI Features, Diagnostics, etc.)
-   - Read `src/renderer/components/settings/MemoryInspector.tsx` (~22KB) to understand the current Memory Inspector
-   - Read `src/renderer/components/settings/AiFeaturesSection.tsx` for the feature model override pattern
-   - Read `src/renderer/components/settings/ProvidersSection.tsx` for the model selector pattern
-   - Check `src/renderer/state/appStore.ts` for relevant state
+   - Read the existing missions components you'll be modifying
+   - Read `src/renderer/components/missions/missionHelpers.ts` for constants, types, utilities
+   - Read `src/renderer/components/missions/missionControlViewModel.ts` for derived view models
+   - Check `laneDesignTokens.ts` for the design token system (COLORS, fonts, button styles)
+   - If extracting to zustand: read existing zustand stores (e.g., `appStore.ts`, `missionCreateDialogStore.ts`) for patterns
 
 ### Step 2: Plan Implementation
 
 1. Identify all files to create or modify.
-2. For new Settings sections: follow the existing section pattern (component receives props from SettingsPage).
-3. For IPC channels: update ALL FOUR files (ipc.ts, registerIpc.ts, preload.ts, global.d.ts).
-4. For new components: use TypeScript with explicit prop types, TailwindCSS for styling, tailwind-merge for class management.
-5. Plan empty states, loading states, and error states for every interactive element.
+2. For component decomposition: plan the component tree first — which state goes where, what props flow down.
+3. For zustand stores: define the store shape with TypeScript types BEFORE implementation.
+4. For IPC channels: update ALL FOUR files (ipc.ts, registerIpc.ts, preload.ts, global.d.ts).
+5. For styling: use TailwindCSS classes. Follow the 4px spacing grid. Max 4 font sizes.
+6. Plan empty states, loading states, and error states for every interactive element.
 
 ### Step 3: Write Component Tests First (TDD)
 
-1. Create the test file FIRST (e.g., `MemoryHealthTab.test.tsx`).
+1. Create the test file FIRST (e.g., `MissionSidebar.test.tsx`).
 2. Use `@testing-library/react` with vitest:
    ```typescript
    import { render, screen, fireEvent } from '@testing-library/react';
    import { describe, it, expect, vi } from 'vitest';
    ```
 3. Mock `window.ade` methods used by the component.
-4. Write test cases for:
+4. For zustand stores: test the store directly (actions, selectors, derived state).
+5. Write test cases for:
    - Initial render with various data states (empty, populated, loading)
-   - User interactions (button clicks, toggle switches)
-   - Error states
-   - Loading states during async operations
-5. Run tests — they should FAIL (red phase).
+   - User interactions (button clicks, tab switches, drag)
+   - Error states and recovery
+   - Store integration (component reads from store, updates on action)
+6. Run tests — they should FAIL (red phase).
 
 ### Step 4: Implement
 
 1. Create React components following existing patterns.
-2. Use TailwindCSS classes consistent with the rest of the Settings page.
-3. Implement proper loading states (disabled buttons, spinners) during async operations.
-4. Implement empty states (meaningful messages when no data exists).
-5. Implement error states (show error message, re-enable controls).
-6. Add IPC handlers if needed (all four files).
-7. Wire into existing Settings/MemoryInspector structure.
-8. Run tests — they should PASS (green phase).
+2. Use TailwindCSS classes consistent with design tokens.
+3. For component decomposition:
+   - Extract one component at a time
+   - Verify existing behavior is preserved after each extraction
+   - Keep MissionsPage.tsx as a thin shell that composes sub-components
+4. For zustand:
+   - Define the store type first
+   - Create selectors for each data slice
+   - Use `useShallow` or individual selectors to prevent unnecessary re-renders
+5. Implement proper loading, empty, and error states.
+6. Run tests — they should PASS (green phase).
 
 ### Step 5: Verify
 
-1. Run your component tests: `cd apps/desktop && npx vitest run <testfile> --reporter=verbose`
-2. Run the full test suite: `cd apps/desktop && npx vitest run`
+1. Run your component tests: `cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run <testfile> --reporter=verbose`
+2. Run the full test suite: `cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run`
    - Your new tests must pass.
-   - Pre-existing failures in orchestrator tests (~31 failures) are expected — ignore them.
-3. Run typecheck: `cd apps/desktop && npx tsc --noEmit`
-   - Your new code must not introduce new errors.
-   - Pre-existing errors in orchestrator code (~10 errors) are expected — ignore them.
-4. If the app can be started (`npm run dev`), manually verify the UI renders correctly:
-   - Navigate to Settings > Memory > Health
-   - Check that all sections render without blank areas or errors
-   - Verify buttons are clickable and show loading states
-   - Check dark mode compatibility if possible
+   - 2 pre-existing failures are expected (see AGENTS.md).
+3. Run typecheck: `cd /Users/admin/Projects/ADE/apps/desktop && npx tsc --noEmit`
+   - Must produce no NEW errors.
+4. If the feature is visual, try to verify with agent-browser:
+   - Start the app: `cd /Users/admin/Projects/ADE/apps/desktop && npm run dev`
+   - Connect: `agent-browser connect 9222`
+   - Navigate to Missions tab and verify rendering
 
 ### Step 6: Commit
 
@@ -89,47 +95,47 @@ Commit your changes with a descriptive message. Stage only the files you created
 
 ```json
 {
-  "salientSummary": "Implemented the Memory Health Dashboard tab in Settings > Memory. Shows entry counts by scope/tier, sweep and consolidation logs, hard limit usage bars, and manual action buttons with loading states. Ran `npx vitest run MemoryHealthTab.test.tsx` — 12 component tests passing. Verified UI renders correctly via npm run dev: navigated to Settings > Memory, confirmed all sections render with mock data, buttons show loading state when clicked.",
-  "whatWasImplemented": "Created MemoryHealthTab.tsx with four sections: entry counts grid (scope x tier), last sweep/consolidation summaries with timestamps, hard limit progress bars per scope, and 'Run Sweep Now'/'Run Consolidation Now' buttons with loading/disabled states. Added IPC handlers for memory:health-stats in all four IPC files (ipc.ts, registerIpc.ts, preload.ts, global.d.ts). Wired into SettingsPage as a new section under Memory. Added empty state ('No sweeps yet') and error state (shows failure reason, re-enables button).",
+  "salientSummary": "Extracted zustand mission store from MissionsPage's 45 useState hooks. MissionsPage is now 380 lines (down from 2437). Created MissionSidebar, MissionDetailView, MissionHeader, MissionTabContainer, InterventionPanel as separate components. Ran `npx vitest run src/renderer/components/missions/` — 28 tests passing including 16 new store/component tests. Typecheck clean.",
+  "whatWasImplemented": "Created useMissionsStore.ts with all domain state (missions, selectedMissionId, runGraph, dashboard, activeTab, loading, error, interventions). Split MissionsPage into 6 focused components each under 400 lines. MissionsPage is now a thin shell composing sub-components. All IPC calls moved to store actions. Event subscriptions registered in store middleware.",
   "whatWasLeftUndone": "",
   "verification": {
     "commandsRun": [
       {
-        "command": "cd apps/desktop && npx vitest run src/renderer/components/settings/MemoryHealthTab.test.tsx --reporter=verbose",
+        "command": "cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run src/renderer/components/missions/ --reporter=verbose",
         "exitCode": 0,
-        "observation": "12 tests passing: renders entry counts, renders sweep log, renders consolidation log, renders hard limit bars, Run Sweep Now triggers IPC, button disabled during sweep, empty state shows 'No sweeps yet', error state shows message, consolidation button triggers IPC, loading state during consolidation"
+        "observation": "28 tests passing: store initial state, store selectors, MissionSidebar renders list, MissionHeader shows status, InterventionPanel shows actions, tab switching, IPC consolidation"
       },
       {
-        "command": "cd apps/desktop && npx vitest run",
-        "exitCode": 1,
-        "observation": "88 files passed, 4 failed (pre-existing orchestrator). My 12 new tests pass."
+        "command": "cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run",
+        "exitCode": 0,
+        "observation": "106 files, 1045 tests pass, 2 pre-existing failures. No regressions."
       },
       {
-        "command": "cd apps/desktop && npx tsc --noEmit",
-        "exitCode": 1,
-        "observation": "10 pre-existing errors. No new errors from my changes."
+        "command": "cd /Users/admin/Projects/ADE/apps/desktop && npx tsc --noEmit",
+        "exitCode": 0,
+        "observation": "No new type errors."
+      },
+      {
+        "command": "wc -l src/renderer/components/missions/MissionsPage.tsx",
+        "exitCode": 0,
+        "observation": "380 lines (was 2437)"
       }
     ],
     "interactiveChecks": [
       {
-        "action": "Started app with npm run dev, navigated to Settings > Memory > Health",
-        "observed": "Health section renders with entry count grid, sweep/consolidation summary cards, and hard limit bars. All showing zero/empty state since no sweeps have run."
-      },
-      {
-        "action": "Clicked 'Run Sweep Now' button",
-        "observed": "Button showed loading spinner and 'Running...' text, then updated to show sweep results after completion."
+        "action": "Started app with npm run dev, navigated to Missions tab via agent-browser",
+        "observed": "Missions tab renders with sidebar list, detail view, tabs. Selecting a mission loads detail. No visual regressions."
       }
     ]
   },
   "tests": {
     "added": [
       {
-        "file": "src/renderer/components/settings/MemoryHealthTab.test.tsx",
+        "file": "src/renderer/components/missions/useMissionsStore.test.ts",
         "cases": [
-          { "name": "renders entry counts by scope and tier", "verifies": "VAL-HEALTH-001" },
-          { "name": "shows empty state on first visit", "verifies": "VAL-HEALTH-009" },
-          { "name": "Run Sweep Now button triggers sweep IPC", "verifies": "VAL-HEALTH-005" },
-          { "name": "buttons disabled during active operation", "verifies": "VAL-HEALTH-008" }
+          { "name": "initial state has empty missions array", "verifies": "VAL-ARCH-001" },
+          { "name": "setSelectedMissionId updates store", "verifies": "VAL-ARCH-001" },
+          { "name": "selectors return correct slices", "verifies": "VAL-ARCH-008" }
         ]
       }
     ]
@@ -140,8 +146,9 @@ Commit your changes with a descriptive message. Stage only the files you created
 
 ## When to Return to Orchestrator
 
-- The Settings page structure has changed significantly from what was expected (sections reorganized, different component pattern)
-- Required IPC handlers from service-worker features don't exist yet (dependency not met)
-- The MemoryInspector component is too complex to modify safely without risking regressions
-- Dark mode issues that require design system changes beyond this feature's scope
+- The feature requires modifying main-process services (use service-worker instead)
+- Required IPC handlers from service-worker features don't exist yet
 - The existing component patterns conflict with the feature requirements
+- Component decomposition reveals circular dependencies that need architectural decision
+- Existing tests break in unexpected ways after refactoring
+- Orchestrator insight: note any UX pattern you think the ADE missions UI should adopt

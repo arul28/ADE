@@ -1,15 +1,14 @@
 commands:
-  install: cd apps/desktop && npm install
-  typecheck: cd apps/desktop && npx tsc --noEmit
-  build: cd apps/desktop && npm run build
-  test: cd apps/desktop && npx vitest run --reporter=verbose
+  install: cd /Users/admin/Projects/ADE/apps/desktop && npm install
+  typecheck: cd /Users/admin/Projects/ADE/apps/desktop && npx tsc --noEmit
+  build: cd /Users/admin/Projects/ADE/apps/desktop && npm run build
+  test: cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run --reporter=verbose --max-workers=6
   lint: echo "lint not configured (todo)"
-  dev: cd apps/desktop && npm run dev
 
 services:
   electron-dev:
-    start: cd apps/desktop && npm run dev
+    start: cd /Users/admin/Projects/ADE/apps/desktop && npm run dev -- --remote-debugging-port=9222
     stop: "pkill -f 'electron .' || true"
-    healthcheck: "ps aux | grep -v grep | grep 'electron .'"
-    port: null
+    healthcheck: curl -sf http://localhost:9222/json/version
+    port: 9222
     depends_on: []
