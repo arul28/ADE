@@ -1,11 +1,12 @@
-import { useMemo, useCallback } from "react";
-import { ChatCircle } from "@phosphor-icons/react";
+import { useMemo, useState, useCallback } from "react";
+import { ChatCircle, Clock, WarningCircle, Check, X } from "@phosphor-icons/react";
 import type { MissionIntervention, ClarificationQuestion } from "../../../shared/types";
-import { COLORS, MONO_FONT, SANS_FONT, primaryButton } from "../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
 import { useMissionsStore } from "./useMissionsStore";
 import { isRecord } from "./missionHelpers";
+import { relativeWhen } from "../../lib/format";
 
-/* ════════════════════ INTERVENTION PANEL ════════════════════ */
+/* ════════════════════ INTERVENTION HELPERS ════════════════════ */
 
 function isQuizIntervention(
   intervention: MissionIntervention | null | undefined,
@@ -28,104 +29,222 @@ function isBlockingManualInputIntervention(intervention: MissionIntervention): b
 
 export { isQuizIntervention, isBlockingManualInputIntervention };
 
+/* ════════════════════ INTERVENTION PANEL (VAL-UX-005) ════════════════════ */
+
 /**
- * Banner for coordinator manual input interventions. Shows when the coordinator
- * is waiting for an answer or has optional questions.
+ * Dedicated intervention panel in the detail view.
+ * Shows title, type badge, timestamp, response input, and resolve/dismiss buttons.
+ * Replaces modal auto-open for a better inline UX. (VAL-UX-005)
  */
 export function InterventionPanel({ compact }: { compact: boolean }) {
   const selectedMission = useMissionsStore((s) => s.selectedMission);
-  const setActiveInterventionId = useMissionsStore((s) => s.setActiveInterventionId);
+  const steerBusy = useMissionsStore((s) => s.steerBusy);
 
-  const openManualInputInterventions = useMemo(
-    () =>
-      selectedMission?.interventions.filter(
-        (intervention) => intervention.interventionType === "manual_input" && intervention.status === "open",
-      ) ?? [],
+  const openInterventions = useMemo(
+    () => selectedMission?.interventions.filter((i) => i.status === "open") ?? [],
     [selectedMission],
   );
 
-  const blockingManualInputInterventions = useMemo(
-    () => openManualInputInterventions.filter((intervention) => isBlockingManualInputIntervention(intervention)),
-    [openManualInputInterventions],
+  const [responseText, setResponseText] = useState("");
+
+  const handleResolve = useCallback(
+    async (interventionId: string) => {
+      const s = useMissionsStore.getState();
+      if (!s.selectedMission) return;
+      s.setSteerBusy(true);
+      try {
+        await window.ade.orchestrator.steerMission({
+          missionId: s.selectedMission.id,
+          interventionId,
+          directive: responseText.trim() || "Acknowledged.",
+          priority: "instruction",
+        });
+        setResponseText("");
+        await s.refreshMissionList({ preserveSelection: true, silent: true });
+        await s.loadMissionDetail(s.selectedMission.id);
+        await s.loadOrchestratorGraph(s.selectedMission.id);
+      } catch (err) {
+        s.setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        s.setSteerBusy(false);
+      }
+    },
+    [responseText],
   );
 
-  if (!selectedMission || openManualInputInterventions.length === 0) return null;
+  const handleDismiss = useCallback(
+    async (interventionId: string) => {
+      const s = useMissionsStore.getState();
+      if (!s.selectedMission) return;
+      s.setSteerBusy(true);
+      try {
+        await window.ade.orchestrator.steerMission({
+          missionId: s.selectedMission.id,
+          interventionId,
+          directive: "Dismissed by user — proceed without action.",
+          priority: "instruction",
+        });
+        await s.refreshMissionList({ preserveSelection: true, silent: true });
+        await s.loadMissionDetail(s.selectedMission.id);
+      } catch (err) {
+        s.setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        s.setSteerBusy(false);
+      }
+    },
+    [],
+  );
 
-  const blockingCount = blockingManualInputInterventions.length;
-  const optionalCount = openManualInputInterventions.length - blockingCount;
-  const primaryIntervention = blockingManualInputInterventions[0] ?? openManualInputInterventions[0];
-  if (!primaryIntervention) return null;
+  if (!selectedMission || openInterventions.length === 0) return null;
 
-  const label =
-    blockingCount > 0
-      ? blockingCount === 1
-        ? "Coordinator is waiting on 1 answer"
-        : `Coordinator is waiting on ${blockingCount} answers`
-      : optionalCount === 1
-        ? "Coordinator has 1 optional question"
-        : `Coordinator has ${optionalCount} optional questions`;
+  return (
+    <div style={{ margin: compact ? "8px 12px" : "12px 16px" }}>
+      {openInterventions.map((intervention) => (
+        <InterventionCard
+          key={intervention.id}
+          intervention={intervention}
+          compact={compact}
+          responseText={responseText}
+          onResponseChange={setResponseText}
+          onResolve={handleResolve}
+          onDismiss={handleDismiss}
+          busy={steerBusy}
+        />
+      ))}
+    </div>
+  );
+}
 
-  const detail = isQuizIntervention(primaryIntervention)
-    ? `${primaryIntervention.metadata.questions.length} question${primaryIntervention.metadata.questions.length === 1 ? "" : "s"} ready to answer`
-    : primaryIntervention.title;
+/* ────────── Individual Intervention Card ────────── */
+
+function InterventionCard({
+  intervention,
+  compact,
+  responseText,
+  onResponseChange,
+  onResolve,
+  onDismiss,
+  busy,
+}: {
+  intervention: MissionIntervention;
+  compact: boolean;
+  responseText: string;
+  onResponseChange: (v: string) => void;
+  onResolve: (id: string) => Promise<void>;
+  onDismiss: (id: string) => Promise<void>;
+  busy: boolean;
+}) {
+  const isBlocking = isBlockingManualInputIntervention(intervention);
+  const borderColor = isBlocking ? COLORS.warning : COLORS.accentBorder;
+  const iconColor = isBlocking ? COLORS.warning : COLORS.accent;
+
+  const typeLabel = intervention.interventionType.replace(/_/g, " ");
 
   return (
     <div
       style={{
         background: COLORS.cardBg,
-        border: `1px solid ${blockingCount > 0 ? COLORS.warning : COLORS.accentBorder}`,
-        margin: compact ? "8px 12px" : "12px 16px",
+        border: `1px solid ${borderColor}`,
         padding: compact ? "8px 12px" : "12px 16px",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 12,
+        marginBottom: 8,
+        wordBreak: "break-word",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-        <ChatCircle
+      {/* Header: title + type badge + timestamp */}
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 8 }}>
+        <WarningCircle
           weight="bold"
-          style={{
-            color: blockingCount > 0 ? COLORS.warning : COLORS.accent,
-            width: 14,
-            height: 14,
-            flexShrink: 0,
-          }}
+          style={{ color: iconColor, width: 16, height: 16, flexShrink: 0, marginTop: 1 }}
         />
-        <div style={{ minWidth: 0 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span
+              style={{
+                fontFamily: SANS_FONT,
+                fontSize: 12,
+                fontWeight: 600,
+                color: COLORS.textPrimary,
+              }}
+            >
+              {intervention.title}
+            </span>
+            <span
+              style={{
+                fontFamily: MONO_FONT,
+                fontSize: 10,
+                fontWeight: 700,
+                textTransform: "uppercase",
+                letterSpacing: "1px",
+                color: iconColor,
+                background: `${iconColor}18`,
+                border: `1px solid ${iconColor}30`,
+                padding: "1px 6px",
+              }}
+            >
+              {typeLabel}
+            </span>
+          </div>
           <div
             style={{
               fontFamily: MONO_FONT,
-              fontSize: compact ? 10 : 11,
-              fontWeight: 700,
-              textTransform: "uppercase",
-              letterSpacing: "1px",
-              color: blockingCount > 0 ? COLORS.warning : COLORS.accent,
-            }}
-          >
-            {label}
-          </div>
-          <div
-            style={{
+              fontSize: 10,
+              color: COLORS.textDim,
               marginTop: 4,
-              fontFamily: SANS_FONT,
-              fontSize: compact ? 11 : 12,
-              color: COLORS.textSecondary,
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
             }}
           >
-            {detail}
+            <Clock size={10} />
+            {relativeWhen(intervention.createdAt)}
           </div>
         </div>
       </div>
-      <button
-        style={primaryButton({ height: 28, padding: "0 12px", fontSize: 10 })}
-        onClick={() => setActiveInterventionId(primaryIntervention.id)}
-      >
-        {isQuizIntervention(primaryIntervention) ? "ANSWER NOW" : "OPEN REQUEST"}
-      </button>
+
+      {/* Response input — only for manual_input type */}
+      {intervention.interventionType === "manual_input" && (
+        <div style={{ marginTop: 8 }}>
+          <textarea
+            value={responseText}
+            onChange={(e) => onResponseChange(e.target.value)}
+            placeholder="Type your response..."
+            rows={2}
+            style={{
+              width: "100%",
+              background: COLORS.recessedBg,
+              border: `1px solid ${COLORS.outlineBorder}`,
+              color: COLORS.textPrimary,
+              fontFamily: MONO_FONT,
+              fontSize: 11,
+              padding: "8px 12px",
+              resize: "vertical",
+              outline: "none",
+            }}
+          />
+        </div>
+      )}
+
+      {/* Action buttons */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+        <button
+          style={primaryButton({ height: 28, padding: "0 12px", fontSize: 10 })}
+          onClick={() => void onResolve(intervention.id)}
+          disabled={busy}
+        >
+          <Check size={12} />
+          RESOLVE
+        </button>
+        {!isBlocking && (
+          <button
+            style={outlineButton({ height: 28, padding: "0 12px", fontSize: 10 })}
+            onClick={() => void onDismiss(intervention.id)}
+            disabled={busy}
+          >
+            <X size={12} />
+            DISMISS
+          </button>
+        )}
+      </div>
     </div>
   );
 }

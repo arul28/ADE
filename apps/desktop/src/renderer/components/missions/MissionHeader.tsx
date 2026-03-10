@@ -1,4 +1,4 @@
-import { useMemo, useCallback } from "react";
+import { useMemo, useCallback, useEffect, useState } from "react";
 import {
   Clock,
   SpinnerGap,
@@ -7,22 +7,29 @@ import {
   GearSix,
   GitBranch,
   Trash,
+  Archive,
+  XCircle,
+  Gauge,
 } from "@phosphor-icons/react";
 import type {
   MissionSummary,
   OrchestratorExecutorKind,
   StartOrchestratorRunFromMissionArgs,
+  UsageSnapshot,
 } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
 import { relativeWhen } from "../../lib/format";
 import {
-  STATUS_BADGE_STYLES,
-  STATUS_LABELS,
+  STATUS_CONFIG,
   PRIORITY_STYLES,
   TERMINAL_MISSION_STATUSES,
   ElapsedTime,
-  filterExecutionSteps,
+  computeProgress,
   isRecord,
+  getAvailableLifecycleActions,
+  LIFECYCLE_ACTIONS,
+  formatResetCountdown,
+  usagePercentColor,
 } from "./missionHelpers";
 import { useMissionsStore, type MissionsStore } from "./useMissionsStore";
 import { useShallow } from "zustand/react/shallow";
@@ -61,19 +68,11 @@ export function MissionHeader() {
 
   const selectedMissionSummary = useMissionsStore(selectHeaderMissionSummary);
 
-  const executionSteps = useMemo(
-    () => filterExecutionSteps(runGraph?.steps ?? []),
+  /* ── computeProgress excludes superseded/retry (VAL-UX-003) ── */
+  const executionProgress = useMemo(
+    () => computeProgress(runGraph?.steps ?? []),
     [runGraph?.steps],
   );
-
-  const executionProgress = useMemo(() => {
-    const completed = executionSteps.filter(
-      (s) => s.status === "succeeded" || s.status === "skipped" || s.status === "superseded" || s.status === "canceled",
-    ).length;
-    const total = executionSteps.length;
-    const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
-    return { completed, total, pct };
-  }, [executionSteps]);
 
   const runAutopilotState = useMemo(() => {
     const autopilot =
@@ -263,13 +262,13 @@ export function MissionHeader() {
             {selectedMission.title}
           </h2>
           {(() => {
-            const s = STATUS_BADGE_STYLES[selectedMission.status];
+            const sc = STATUS_CONFIG[selectedMission.status];
             return (
               <span
-                className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[1px]"
-                style={{ background: s.background, color: s.color, border: s.border, fontFamily: MONO_FONT }}
+                className="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[1px]"
+                style={{ background: sc.background, color: sc.color, border: sc.border, fontFamily: MONO_FONT }}
               >
-                {STATUS_LABELS[selectedMission.status]}
+                {sc.label}
               </span>
             );
           })()}
@@ -278,7 +277,7 @@ export function MissionHeader() {
               const p = PRIORITY_STYLES[selectedMission.priority];
               return (
                 <span
-                  className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[1px]"
+                  className="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[1px]"
                   style={{ background: p.background, color: p.color, border: p.border, fontFamily: MONO_FONT }}
                 >
                   {selectedMission.priority}
@@ -311,7 +310,10 @@ export function MissionHeader() {
         )}
       </div>
 
-      {/* Quick actions */}
+      {/* Usage meter (VAL-USAGE-001) */}
+      <CompactUsageMeter />
+
+      {/* Quick actions (VAL-UX-006 lifecycle actions) */}
       <div className="flex items-center gap-1.5">
         {selectedMissionSummary && (
           <button
@@ -323,36 +325,10 @@ export function MissionHeader() {
             MANAGE
           </button>
         )}
-        {!chatFocused && hasNonTerminalRun && (
-          <span
-            className="px-1 text-[9px] uppercase tracking-[0.5px]"
-            style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}
-            title={checkpointIndicatorTooltip}
-          >
-            checkpoint {checkpointIndicatorLabel}
-          </span>
-        )}
         {canStartOrRerun && (
           <button style={primaryButton()} onClick={() => void handleStartRun()} disabled={runBusy}>
             {runBusy ? <SpinnerGap className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
             {runGraph ? "RERUN" : "START"}
-          </button>
-        )}
-        {canPauseRun && (
-          <button
-            style={outlineButton({
-              color: COLORS.warning,
-              border: `1px solid ${COLORS.warning}40`,
-              background: `${COLORS.warning}12`,
-            })}
-            onClick={() => void handlePauseRun()}
-            disabled={runBusy}
-            title="Pause run immediately (mechanical bypass)"
-          >
-            <span className="text-[10px]" style={{ fontFamily: MONO_FONT }}>
-              &#9208;
-            </span>
-            PAUSE
           </button>
         )}
         {canResumeRun && (
@@ -361,20 +337,54 @@ export function MissionHeader() {
             RESUME
           </button>
         )}
-        {canCancelRun && (
-          <button style={dangerButton()} onClick={() => void handleCancelRun()} disabled={runBusy}>
+        {/* Stop Run — amber (VAL-UX-006) */}
+        {canPauseRun && (
+          <button
+            style={outlineButton({
+              color: LIFECYCLE_ACTIONS.stop_run.color,
+              border: `1px solid ${LIFECYCLE_ACTIONS.stop_run.color}40`,
+              background: `${LIFECYCLE_ACTIONS.stop_run.color}12`,
+            })}
+            onClick={() => void handlePauseRun()}
+            disabled={runBusy}
+            title="Stop the current run"
+          >
             <Stop className="h-3 w-3" />
+            STOP RUN
+          </button>
+        )}
+        {/* Cancel Mission — red with confirmation (VAL-UX-006) */}
+        {canCancelRun && (
+          <button
+            style={dangerButton()}
+            onClick={() => {
+              const msg = LIFECYCLE_ACTIONS.cancel_mission.confirmText;
+              if (msg && !window.confirm(msg)) return;
+              void handleCancelRun();
+            }}
+            disabled={runBusy}
+            title="Cancel the entire mission"
+          >
+            <XCircle className="h-3 w-3" />
             CANCEL
           </button>
         )}
-        {selectedMission &&
-          (selectedMission.status === "failed" || selectedMission.status === "canceled") &&
-          runGraph?.steps?.some((s) => s.laneId) && (
-            <button style={outlineButton()} onClick={() => void handleCleanupLanes()} disabled={cleanupBusy}>
-              {cleanupBusy ? <SpinnerGap className="h-3 w-3 animate-spin" /> : <Trash className="h-3 w-3" />}
-              CLEAN UP LANES
-            </button>
-          )}
+        {/* Archive Mission — gray, terminal only (VAL-UX-006) */}
+        {selectedMission && TERMINAL_MISSION_STATUSES.has(selectedMission.status) && (
+          <button
+            style={outlineButton({
+              color: LIFECYCLE_ACTIONS.archive_mission.color,
+              border: `1px solid ${LIFECYCLE_ACTIONS.archive_mission.color}40`,
+              background: `${LIFECYCLE_ACTIONS.archive_mission.color}12`,
+            })}
+            onClick={() => void handleCleanupLanes()}
+            disabled={cleanupBusy}
+            title="Archive this mission and clean up lanes"
+          >
+            {cleanupBusy ? <SpinnerGap className="h-3 w-3 animate-spin" /> : <Archive className="h-3 w-3" />}
+            ARCHIVE
+          </button>
+        )}
       </div>
     </div>
   );
@@ -387,5 +397,87 @@ export function MissionProgressBar({ pct }: { pct: number }) {
     <div className="mt-1.5 h-1 w-full overflow-hidden" style={{ background: COLORS.recessedBg }}>
       <div className="h-full transition-all" style={{ width: `${pct}%`, background: COLORS.accent }} />
     </div>
+  );
+}
+
+/* ────────── Compact Usage Meter (VAL-USAGE-001, VAL-USAGE-004, VAL-USAGE-005) ────────── */
+
+function CompactUsageMeter() {
+  const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
+  const selectedMission = useMissionsStore((s) => s.selectedMission);
+
+  useEffect(() => {
+    if (!window.ade?.usage) return;
+    // Initial load
+    window.ade.usage.getSnapshot().then(setSnapshot).catch(() => {});
+    // Refresh every 2 minutes
+    const timer = window.setInterval(() => {
+      window.ade.usage.getSnapshot().then(setSnapshot).catch(() => {});
+    }, 120_000);
+    // Subscribe to live updates
+    const unsub = window.ade.usage.onUpdate((snap) => setSnapshot(snap));
+    return () => {
+      window.clearInterval(timer);
+      try { unsub(); } catch { /* ignore */ }
+    };
+  }, []);
+
+  if (!snapshot || snapshot.windows.length === 0) return null;
+
+  const claudeWindows = snapshot.windows.filter((w) => w.provider === "claude");
+  const codexWindows = snapshot.windows.filter((w) => w.provider === "codex");
+
+  // Per-mission cost (VAL-USAGE-005)
+  const missionCost = selectedMission
+    ? snapshot.costs.reduce((acc, c) => acc + c.todayCostUsd, 0)
+    : 0;
+
+  return (
+    <div
+      className="flex items-center gap-2 px-2 py-1 shrink-0"
+      style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}
+      title="Subscription usage"
+    >
+      <Gauge className="h-3 w-3 shrink-0" style={{ color: COLORS.textMuted }} />
+      {claudeWindows.map((w) => (
+        <UsageWindowBadge key={`claude-${w.windowType}`} provider="Claude" windowType={w.windowType} pct={w.percentUsed} resetsInMs={w.resetsInMs} />
+      ))}
+      {codexWindows.map((w) => (
+        <UsageWindowBadge key={`codex-${w.windowType}`} provider="Codex" windowType={w.windowType} pct={w.percentUsed} resetsInMs={w.resetsInMs} />
+      ))}
+      {missionCost > 0 && (
+        <span
+          className="text-[10px]"
+          style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}
+          title="Estimated cost for this mission"
+        >
+          ${missionCost.toFixed(2)}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function UsageWindowBadge({
+  provider,
+  windowType,
+  pct,
+  resetsInMs,
+}: {
+  provider: string;
+  windowType: string;
+  pct: number;
+  resetsInMs: number;
+}) {
+  const color = usagePercentColor(pct);
+  const windowLabel = windowType === "five_hour" ? "5h" : "wk";
+  return (
+    <span
+      className="text-[10px] whitespace-nowrap"
+      style={{ color, fontFamily: MONO_FONT }}
+      title={`${provider} ${windowType === "five_hour" ? "5-hour" : "weekly"}: ${pct.toFixed(1)}% — ${formatResetCountdown(resetsInMs)}`}
+    >
+      {provider[0]}/{windowLabel} {Math.round(pct)}%
+    </span>
   );
 }

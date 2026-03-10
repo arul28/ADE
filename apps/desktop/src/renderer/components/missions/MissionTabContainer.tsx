@@ -33,28 +33,30 @@ import { useMissionRunView } from "./useMissionRunView";
 
 /* ════════════════════ TAB NAVIGATION ════════════════════ */
 
+/**
+ * Flat tab navigation — all views 1-click reachable. (VAL-UX-004)
+ * No sub-toggles: planSubview and activityPanelMode eliminated from tab nav.
+ */
 export function MissionTabNavigation() {
   const activeTab = useMissionsStore((s) => s.activeTab);
   const setActiveTab = useMissionsStore((s) => s.setActiveTab);
 
-  const primaryWorkspaceTab = useMemo(() => {
-    if (activeTab === "overview") return "intake" as const;
-    if (activeTab === "plan" || activeTab === "chat") return "run" as const;
-    return "evidence" as const;
-  }, [activeTab]);
+  const tabs: Array<{ key: WorkspaceTab; label: string; icon: typeof SquaresFour }> = [
+    { key: "overview", label: "Overview", icon: SquaresFour },
+    { key: "chat", label: "Feed", icon: ChatCircle },
+    { key: "plan", label: "Plan", icon: SquaresFour },
+    { key: "history", label: "Timeline", icon: Pulse },
+    { key: "artifacts", label: "Artifacts", icon: Pulse },
+  ];
 
   return (
     <div className="flex items-center gap-0 px-3" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
-      {([
-        { key: "intake" as const, tab: "overview" as WorkspaceTab, label: "Intake", icon: SquaresFour },
-        { key: "run" as const, tab: "chat" as WorkspaceTab, label: "Run", icon: ChatCircle },
-        { key: "evidence" as const, tab: "history" as WorkspaceTab, label: "Evidence", icon: Pulse },
-      ]).map((tab) => {
-        const isActive = primaryWorkspaceTab === tab.key;
+      {tabs.map((tab) => {
+        const isActive = activeTab === tab.key;
         return (
           <button
             key={tab.key}
-            onClick={() => setActiveTab(tab.tab)}
+            onClick={() => setActiveTab(tab.key)}
             className="flex items-center gap-1.5 px-2.5 py-2 text-[11px] transition-colors"
             style={{
               color: isActive ? COLORS.textPrimary : COLORS.textMuted,
@@ -69,44 +71,7 @@ export function MissionTabNavigation() {
           </button>
         );
       })}
-      <div className="ml-auto flex items-center gap-1">
-        {primaryWorkspaceTab === "run" ? (
-          <>
-            <SubTabButton label="Feed" tab="chat" activeTab={activeTab} onSelect={setActiveTab} />
-            <SubTabButton label="Plan" tab="plan" activeTab={activeTab} onSelect={setActiveTab} />
-          </>
-        ) : null}
-        {primaryWorkspaceTab === "evidence" ? (
-          <>
-            <SubTabButton label="Timeline" tab="history" activeTab={activeTab} onSelect={setActiveTab} />
-            <SubTabButton label="Artifacts" tab="artifacts" activeTab={activeTab} onSelect={setActiveTab} />
-          </>
-        ) : null}
-      </div>
     </div>
-  );
-}
-
-function SubTabButton(props: {
-  label: string;
-  tab: WorkspaceTab;
-  activeTab: WorkspaceTab;
-  onSelect: (tab: WorkspaceTab) => void;
-}) {
-  const isActive = props.activeTab === props.tab;
-  return (
-    <button
-      type="button"
-      onClick={() => props.onSelect(props.tab)}
-      className="px-2 py-1 text-[10px] font-bold uppercase tracking-[1px]"
-      style={
-        isActive
-          ? { background: `${COLORS.accent}18`, border: `1px solid ${COLORS.accent}35`, color: COLORS.accent, fontFamily: MONO_FONT }
-          : { background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, color: COLORS.textMuted, fontFamily: MONO_FONT }
-      }
-    >
-      {props.label}
-    </button>
   );
 }
 
@@ -375,7 +340,7 @@ export function MissionTabContent() {
       <div
         className={cn(
           "flex-1 min-h-0",
-          activeTab === "chat" ? "flex flex-col overflow-hidden" : "overflow-auto p-4",
+          activeTab === "chat" ? "flex flex-col overflow-hidden" : "overflow-y-auto overflow-x-hidden p-4",
         )}
       >
         {activeTab === "overview" && selectedMission && (
@@ -410,37 +375,7 @@ export function MissionTabContent() {
         {activeTab === "plan" && (
           <div className="flex h-full min-h-0 flex-col gap-3 lg:flex-row">
             <div className="min-h-0 min-w-0 flex-1 overflow-auto">
-              <div className="mb-3 flex items-center gap-2">
-                <button
-                  type="button"
-                  style={outlineButton({
-                    height: 24, padding: "0 8px", fontSize: 9,
-                    background: planSubview === "board" ? `${COLORS.accent}14` : COLORS.cardBg,
-                    color: planSubview === "board" ? COLORS.accent : COLORS.textMuted,
-                    border: `1px solid ${planSubview === "board" ? `${COLORS.accent}35` : COLORS.border}`,
-                  })}
-                  onClick={() => useMissionsStore.getState().setPlanSubview("board")}
-                >
-                  BOARD
-                </button>
-                <button
-                  type="button"
-                  style={outlineButton({
-                    height: 24, padding: "0 8px", fontSize: 9,
-                    background: planSubview === "dag" ? `${COLORS.accent}14` : COLORS.cardBg,
-                    color: planSubview === "dag" ? COLORS.accent : COLORS.textMuted,
-                    border: `1px solid ${planSubview === "dag" ? `${COLORS.accent}35` : COLORS.border}`,
-                  })}
-                  onClick={() => useMissionsStore.getState().setPlanSubview("dag")}
-                >
-                  DAG
-                </button>
-              </div>
-              {planSubview === "board" ? (
-                <PlanTab mission={selectedMission} runGraph={runGraph} attemptsByStep={attemptsByStep} selectedStepId={selectedStepId} onStepSelect={(id) => useMissionsStore.getState().setSelectedStepId(id)} />
-              ) : (
-                <OrchestratorDAG steps={runSteps} attempts={runAttempts} claims={runClaims} selectedStepId={selectedStepId} onStepClick={(id) => useMissionsStore.getState().setSelectedStepId(id)} runId={runGraph?.run?.id} />
-              )}
+              <PlanTab mission={selectedMission} runGraph={runGraph} attemptsByStep={attemptsByStep} selectedStepId={selectedStepId} onStepSelect={(id) => useMissionsStore.getState().setSelectedStepId(id)} />
             </div>
             <div className="space-y-3 lg:w-[380px] lg:max-w-[40%] lg:shrink-0">
               <StepDetailPanel step={selectedStep} attempts={selectedStepAttempts} allSteps={runSteps} claims={runClaims} onOpenWorkerThread={(target) => { useMissionsStore.getState().setChatJumpTarget(target); useMissionsStore.getState().setActiveTab("chat"); }} onInspectPrompt={(stepId) => void loadWorkerPromptInspector(stepId)} />
@@ -451,31 +386,24 @@ export function MissionTabContent() {
 
         {activeTab === "history" && (
           <div className="space-y-3">
-            <div className="flex items-center gap-1">
-              <ModeToggleButton label="Timeline" tab="signal" activeMode={activityPanelMode} onSelect={(m) => useMissionsStore.getState().setActivityPanelMode(m as "signal" | "logs")} />
-              <ModeToggleButton label="Raw Logs" tab="logs" activeMode={activityPanelMode} onSelect={(m) => useMissionsStore.getState().setActivityPanelMode(m as "signal" | "logs")} />
-            </div>
-            {activityPanelMode === "signal" ? (
-              <>
-                <ActivityNarrativeHeader runGraph={runGraph} steeringLog={steeringLog} />
-                <OrchestratorActivityFeed runId={runGraph?.run.id ?? ""} initialTimeline={runTimeline} />
-                {Array.isArray(runGraph?.run?.metadata?.runNarrative) && (runGraph.run.metadata.runNarrative as Array<{ stepKey: string; summary: string; at: string }>).length > 0 && (
-                  <div className="space-y-1.5 mt-4">
-                    <div className="text-[10px] font-bold tracking-wider uppercase" style={{ color: COLORS.textMuted }}>RUN NARRATIVE</div>
-                    <div className="space-y-1">{(runGraph.run.metadata.runNarrative as Array<{ stepKey: string; summary: string; at: string }>).map((entry, i: number) => (
-                      <div key={i} className="text-[11px] flex gap-2 items-start" style={{ fontFamily: MONO_FONT }}><span className="shrink-0" style={{ color: COLORS.accent }}>{entry.stepKey}</span><span style={{ color: COLORS.textSecondary }}>{entry.summary}</span></div>
-                    ))}</div>
-                  </div>
-                )}
-              </>
-            ) : selectedMission ? (
+            <ActivityNarrativeHeader runGraph={runGraph} steeringLog={steeringLog} />
+            <OrchestratorActivityFeed runId={runGraph?.run.id ?? ""} initialTimeline={runTimeline} />
+            {Array.isArray(runGraph?.run?.metadata?.runNarrative) && (runGraph.run.metadata.runNarrative as Array<{ stepKey: string; summary: string; at: string }>).length > 0 && (
+              <div className="space-y-1.5 mt-4">
+                <div className="text-[10px] font-bold tracking-wider uppercase" style={{ color: COLORS.textMuted }}>RUN NARRATIVE</div>
+                <div className="space-y-1">{(runGraph.run.metadata.runNarrative as Array<{ stepKey: string; summary: string; at: string }>).map((entry, i: number) => (
+                  <div key={i} className="text-[11px] flex gap-2 items-start" style={{ fontFamily: MONO_FONT }}><span className="shrink-0" style={{ color: COLORS.accent }}>{entry.stepKey}</span><span style={{ color: COLORS.textSecondary }}>{entry.summary}</span></div>
+                ))}</div>
+              </div>
+            )}
+            {selectedMission && (
               <MissionLogsTab
                 missionId={selectedMission.id}
                 runId={runGraph?.run.id ?? null}
                 focusInterventionId={logsFocusInterventionId}
                 onFocusHandled={() => useMissionsStore.getState().setLogsFocusInterventionId(null)}
               />
-            ) : null}
+            )}
           </div>
         )}
 
@@ -496,27 +424,4 @@ export function MissionTabContent() {
   );
 }
 
-/* ────────── Internal mode toggle (for History signal/logs) ────────── */
 
-function ModeToggleButton(props: {
-  label: string;
-  tab: string;
-  activeMode: string;
-  onSelect: (mode: string) => void;
-}) {
-  const isActive = props.activeMode === props.tab;
-  return (
-    <button
-      type="button"
-      onClick={() => props.onSelect(props.tab)}
-      className="px-2 py-1 text-[10px] font-bold uppercase tracking-[1px]"
-      style={
-        isActive
-          ? { background: `${COLORS.accent}18`, border: `1px solid ${COLORS.accent}35`, color: COLORS.accent, fontFamily: MONO_FONT }
-          : { background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, color: COLORS.textMuted, fontFamily: MONO_FONT }
-      }
-    >
-      {props.label}
-    </button>
-  );
-}

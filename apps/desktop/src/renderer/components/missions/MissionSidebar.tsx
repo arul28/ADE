@@ -64,7 +64,7 @@ export function MissionSidebar() {
 
   return (
     <div
-      className="flex w-[248px] shrink-0 flex-col"
+      className="flex h-full w-full flex-col"
       style={{ background: COLORS.cardBg, borderRight: `1px solid ${COLORS.border}` }}
     >
       {/* Header */}
@@ -81,7 +81,7 @@ export function MissionSidebar() {
             MISSIONS
           </span>
           <span
-            className="px-2 py-0.5 text-[8px] font-bold uppercase tracking-[1px]"
+            className="px-2 py-0.5 text-[10px] font-bold uppercase tracking-[1px]"
             style={{
               background: `${COLORS.accent}18`,
               border: `1px solid ${COLORS.accent}30`,
@@ -379,7 +379,7 @@ function MissionListItem(props: {
         <div className="min-w-0 flex-1">
           <div className="truncate text-xs font-medium" style={{ color: COLORS.textPrimary }}>{m.title}</div>
           <div className="mt-0.5 flex items-center gap-1.5">
-            <span className="px-1 py-0.5 text-[9px] font-bold uppercase tracking-[1px]" style={{ background: badgeStyle.background, color: badgeStyle.color, border: badgeStyle.border, fontFamily: MONO_FONT }}>{STATUS_LABELS[m.status]}</span>
+            <span className="px-1 py-0.5 text-[10px] font-bold uppercase tracking-[1px]" style={{ background: badgeStyle.background, color: badgeStyle.color, border: badgeStyle.border, fontFamily: MONO_FONT }}>{STATUS_LABELS[m.status]}</span>
             <MissionInterventionBadge count={m.openInterventions} />
           </div>
           {m.totalSteps > 0 && (
@@ -387,7 +387,7 @@ function MissionListItem(props: {
               <div className="h-1 flex-1" style={{ background: COLORS.recessedBg }}>
                 <div className="h-1 transition-all" style={{ width: `${progress}%`, background: COLORS.accent }} />
               </div>
-              <span className="shrink-0 text-[9px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>{m.completedSteps}/{m.totalSteps}</span>
+              <span className="shrink-0 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>{m.completedSteps}/{m.totalSteps}</span>
             </div>
           )}
         </div>
@@ -453,7 +453,7 @@ function MissionInterventionBadge({ count }: { count: number }) {
   if (count <= 0) return null;
   return (
     <span
-      className="shrink-0 px-1 py-0.5 text-[9px] font-bold"
+      className="shrink-0 px-1 py-0.5 text-[10px] font-bold"
       style={{
         color: COLORS.warning,
         background: `${COLORS.warning}18`,

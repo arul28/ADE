@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import type { OrchestratorTimelineEvent } from "../../../shared/types";
 import { cn } from "../ui/cn";
+import { NOISY_EVENT_TYPES, classifyErrorSource, ERROR_SOURCE_COLORS } from "./missionHelpers";
 
 type Props = {
   runId: string;
@@ -74,13 +75,8 @@ const DEFAULT_CONFIG = { icon: "\u25CB", color: "text-muted-fg", label: "Event",
 
 const CATEGORY_OPTIONS = ["All Events", "Steps", "Workers", "Quality", "Integration"];
 type Severity = "all" | "warnings" | "errors";
-const HIDDEN_MAINTENANCE_EVENT_TYPES = new Set([
-  "scheduler_tick",
-  "tick",
-  "dynamic_cap",
-  "autopilot_parallelism_cap_adjusted",
-  "claim_heartbeat",
-]);
+/** Noisy events filtered from default view. Uses canonical NOISY_EVENT_TYPES (VAL-UX-008). */
+const HIDDEN_MAINTENANCE_EVENT_TYPES = NOISY_EVENT_TYPES;
 
 function sortTimeline(events: OrchestratorTimelineEvent[]): OrchestratorTimelineEvent[] {
   return [...events].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
@@ -453,7 +449,29 @@ export const OrchestratorActivityFeed = React.memo(function OrchestratorActivity
                           >
                             {evConfig.label}
                           </span>
-                          <span className="flex-1 truncate text-xs" style={{ color: "#FAFAFA" }}>
+                          {/* Error source badge (VAL-UX-008) */}
+                          {sev !== "info" && ev.reason && (() => {
+                            const source = classifyErrorSource(ev.reason);
+                            const srcColor = ERROR_SOURCE_COLORS[source];
+                            return (
+                              <span
+                                className="px-1 py-0.5 text-[10px]"
+                                style={{
+                                  background: `${srcColor}18`,
+                                  color: srcColor,
+                                  border: `1px solid ${srcColor}30`,
+                                  fontFamily: "JetBrains Mono, monospace",
+                                  fontSize: "10px",
+                                  fontWeight: 700,
+                                  textTransform: "uppercase",
+                                  letterSpacing: "0.5px",
+                                }}
+                              >
+                                {source}
+                              </span>
+                            );
+                          })()}
+                          <span className="flex-1 truncate text-xs" style={{ color: "#FAFAFA", wordBreak: "break-word" }}>
                             {ev.reason}
                           </span>
                           <span

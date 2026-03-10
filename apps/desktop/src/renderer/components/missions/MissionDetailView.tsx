@@ -97,7 +97,7 @@ function InterventionModals({ onInterventionResponse }: { onInterventionResponse
   const activeInterventionId = useMissionsStore((s) => s.activeInterventionId);
   const selectedMission = useMissionsStore((s) => s.selectedMission);
   const setActiveInterventionId = useMissionsStore((s) => s.setActiveInterventionId);
-  const autoOpenedRef = useRef<Set<string>>(new Set());
+  // autoOpenedRef removed (VAL-UX-005) — no more auto-open modal
 
   const openManualInputInterventions = useMemo(
     () => selectedMission?.interventions.filter((i) => i.interventionType === "manual_input" && i.status === "open") ?? [],
@@ -108,13 +108,8 @@ function InterventionModals({ onInterventionResponse }: { onInterventionResponse
     [openManualInputInterventions],
   );
 
-  useEffect(() => {
-    if (!selectedMission || activeInterventionId) return;
-    const next = blockingInterventions.find((i) => !autoOpenedRef.current.has(i.id));
-    if (!next) return;
-    autoOpenedRef.current.add(next.id);
-    setActiveInterventionId(next.id);
-  }, [activeInterventionId, blockingInterventions, selectedMission, setActiveInterventionId]);
+  // Auto-open modals removed (VAL-UX-005) — interventions shown in dedicated panel instead.
+  // Users can still click "RESOLVE" in the InterventionPanel to open the modal.
 
   useEffect(() => {
     if (!activeInterventionId) return;

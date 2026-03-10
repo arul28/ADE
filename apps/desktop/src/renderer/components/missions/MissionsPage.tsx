@@ -1,10 +1,12 @@
-import { useCallback, useMemo, useEffect, useRef } from "react";
+import { useCallback, useMemo, useEffect, useRef, useState } from "react";
 import { LazyMotion, domAnimation } from "motion/react";
+import { Group, Panel, Separator } from "react-resizable-panels";
+import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
 
 /* ── Store & extracted components ── */
-import { useMissionsStore } from "./useMissionsStore";
+import { useMissionsStore, type MissionsStore } from "./useMissionsStore";
 import { MissionSidebar } from "./MissionSidebar";
 import { MissionDetailView } from "./MissionDetailView";
 import { ManageMissionDialog, MissionContextMenu } from "./ManageMissionDialog";
@@ -19,19 +21,50 @@ export { collapsePlannerStreamMessages, resolveStepHeartbeatAt } from "./mission
 
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "canceled"]);
 
+/* ── Sidebar width persistence (VAL-UX-010) ── */
+const SIDEBAR_WIDTH_KEY = "ade.missions.sidebarWidth";
+const SIDEBAR_MIN_PX = 200;
+const SIDEBAR_MAX_PX = 400;
+const SIDEBAR_DEFAULT_PX = 248;
+const SIDEBAR_COLLAPSE_THRESHOLD = 900;
+
+/** Read persisted sidebar layout percentage from localStorage. */
+function readPersistedSidebarPct(): number {
+  try {
+    const raw = localStorage.getItem(SIDEBAR_WIDTH_KEY);
+    if (raw) {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+  } catch { /* ignore */ }
+  return Math.round((SIDEBAR_DEFAULT_PX / 1200) * 100);
+}
+
+/* ── Fine-grained page-level selector (VAL-ARCH-008) ── */
+const selectPageData = (s: MissionsStore) => ({
+  loading: s.loading,
+  missionSettingsOpen: s.missionSettingsOpen,
+  missionSettingsBusy: s.missionSettingsBusy,
+  missionSettingsError: s.missionSettingsError,
+  missionSettingsNotice: s.missionSettingsNotice,
+  missionSettingsDraft: s.missionSettingsDraft,
+});
+
 /* ════════════════════ MAIN COMPONENT ════════════════════ */
 
 export default function MissionsPage() {
   const lanes = useAppStore((s) => s.lanes);
   const mappedLanes = useMemo(() => lanes.map((l) => ({ id: l.id, name: l.name })), [lanes]);
 
-  /* ── Minimal store slices (VAL-ARCH-008) ── */
-  const loading = useMissionsStore((s) => s.loading);
-  const missionSettingsOpen = useMissionsStore((s) => s.missionSettingsOpen);
-  const missionSettingsBusy = useMissionsStore((s) => s.missionSettingsBusy);
-  const missionSettingsError = useMissionsStore((s) => s.missionSettingsError);
-  const missionSettingsNotice = useMissionsStore((s) => s.missionSettingsNotice);
-  const missionSettingsDraft = useMissionsStore((s) => s.missionSettingsDraft);
+  /* ── Fine-grained store slice via useShallow (VAL-ARCH-008) ── */
+  const {
+    loading,
+    missionSettingsOpen,
+    missionSettingsBusy,
+    missionSettingsError,
+    missionSettingsNotice,
+    missionSettingsDraft,
+  } = useMissionsStore(useShallow(selectPageData));
 
   /* ── Default lane for create dialog ── */
   const defaultCreateLaneId = useMemo(
@@ -205,7 +238,7 @@ export default function MissionsPage() {
             <div className="h-3 w-32" style={{ background: `${COLORS.border}60` }} />
           </div>
           <div
-            className="text-[10px] font-bold uppercase tracking-[1px]"
+            className="text-[10px] font-bold uppercase tracking-widest"
             style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}
           >
             LOADING MISSIONS...
@@ -215,18 +248,54 @@ export default function MissionsPage() {
     );
   }
 
+  /* ── Responsive sidebar collapse (VAL-UX-010) ── */
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => {
+    const mql = window.matchMedia(`(max-width: ${SIDEBAR_COLLAPSE_THRESHOLD}px)`);
+    const handler = (e: MediaQueryListEvent | MediaQueryList) => setCollapsed(e.matches);
+    handler(mql);
+    mql.addEventListener("change", handler as (e: MediaQueryListEvent) => void);
+    return () => mql.removeEventListener("change", handler as (e: MediaQueryListEvent) => void);
+  }, []);
+
+  const defaultSidebarPct = useMemo(() => readPersistedSidebarPct(), []);
+
   /* ════════════════════ RENDER ════════════════════ */
   return (
     <LazyMotion features={domAnimation}>
-      <div className="flex h-full min-h-0" style={{ background: COLORS.pageBg }}>
-        {/* Sidebar */}
-        <MissionSidebar />
+      <Group
+        id="missions-layout"
+        orientation="horizontal"
+        className="flex h-full min-h-0"
+        style={{ background: COLORS.pageBg }}
+      >
+        {/* Sidebar (resizable 200-400px, VAL-UX-010) */}
+        {!collapsed && (
+          <>
+            <Panel
+              id="missions-sidebar"
+              defaultSize={`${defaultSidebarPct}%`}
+              minSize="15%"
+              maxSize="35%"
+              style={{ overflow: "hidden" }}
+            >
+              <MissionSidebar />
+            </Panel>
+            <Separator
+              id="missions-separator"
+              className="w-[4px] hover:bg-[#A78BFA30] active:bg-[#A78BFA50] transition-colors cursor-col-resize"
+              style={{ background: COLORS.border }}
+            />
+          </>
+        )}
 
         {/* Main workspace */}
-        <div className="flex flex-1 flex-col min-w-0" style={{ background: COLORS.pageBg }}>
-          <MissionDetailView />
-        </div>
-      </div>
+        <Panel id="missions-detail" minSize="50%">
+          <div className="flex flex-1 flex-col min-w-0 h-full" style={{ background: COLORS.pageBg }}>
+            <MissionDetailView />
+          </div>
+        </Panel>
+      </Group>
 
       {/* Context Menu */}
       <MissionContextMenu />
