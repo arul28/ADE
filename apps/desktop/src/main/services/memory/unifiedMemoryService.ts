@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
+import type { createHybridSearchService } from "./hybridSearchService";
 
 export type UnifiedMemoryScope = "project" | "agent" | "mission";
 export type MemoryScope = UnifiedMemoryScope | "user" | "lane";
@@ -23,6 +24,7 @@ export type MemorySourceType = "agent" | "system" | "user" | "mission_promotion"
 type CreateUnifiedMemoryServiceOpts = {
   onMemoryMutated?: () => void;
   onMemoryUpserted?: (event: MemoryUpsertEvent) => void;
+  hybridSearchService?: Pick<ReturnType<typeof createHybridSearchService>, "search">;
 };
 
 export type MemoryUpsertEvent = {
@@ -369,10 +371,10 @@ function mapSharedFactRow(row: Record<string, unknown>): SharedFact {
 
 export type UnifiedMemoryService = ReturnType<typeof createUnifiedMemoryService>;
 
-export function createUnifiedMemoryService(db: AdeDb, opts: CreateUnifiedMemoryServiceOpts = {}) {
+export function createUnifiedMemoryService(db: AdeDb, serviceOpts: CreateUnifiedMemoryServiceOpts = {}) {
   const notifyMutation = () => {
     try {
-      opts.onMemoryMutated?.();
+      serviceOpts.onMemoryMutated?.();
     } catch {
       // Mutation side-effects are best-effort and must not break memory writes.
     }
@@ -380,7 +382,7 @@ export function createUnifiedMemoryService(db: AdeDb, opts: CreateUnifiedMemoryS
 
   const notifyMemoryUpserted = (event: MemoryUpsertEvent) => {
     try {
-      opts.onMemoryUpserted?.(event);
+      serviceOpts.onMemoryUpserted?.(event);
     } catch {
       // Embedding / observer hooks are best-effort and must not break memory writes.
     }
@@ -920,7 +922,7 @@ export function createUnifiedMemoryService(db: AdeDb, opts: CreateUnifiedMemoryS
     return rows.map(mapMemoryRow);
   }
 
-  function search(opts: SearchMemoryOpts): Memory[] {
+  function searchLexical(opts: SearchMemoryOpts): Memory[] {
     const statusList = Array.isArray(opts.status)
       ? [...opts.status]
       : opts.status
@@ -985,6 +987,43 @@ export function createUnifiedMemoryService(db: AdeDb, opts: CreateUnifiedMemoryS
       })
       .slice(0, limit);
 
+    return scored;
+  }
+
+  async function searchHybrid(opts: SearchMemoryOpts): Promise<Memory[] | null> {
+    const normalizedQuery = normalizeMemoryForDedup(opts.query);
+    if (!normalizedQuery.length || !serviceOpts.hybridSearchService) return null;
+
+    const statusList = Array.isArray(opts.status)
+      ? [...opts.status]
+      : opts.status
+        ? [opts.status]
+        : ["promoted"];
+
+    try {
+      const hits = await serviceOpts.hybridSearchService.search({
+        query: opts.query,
+        projectId: opts.projectId,
+        scope: opts.scope,
+        scopeOwnerId: opts.scopeOwnerId,
+        limit: opts.limit,
+        status: statusList,
+        tiers: opts.tiers,
+      });
+
+      return hits.map((hit): Memory => ({
+        ...hit.memory,
+        compositeScore: hit.compositeScore,
+      }));
+    } catch {
+      return null;
+    }
+  }
+
+  async function search(opts: SearchMemoryOpts): Promise<Memory[]> {
+    const hybrid = await searchHybrid(opts);
+    const scored = hybrid ?? searchLexical(opts);
+
     for (const entry of scored) {
       updateAccessStats(entry.id, entry.compositeScore);
     }
@@ -992,15 +1031,15 @@ export function createUnifiedMemoryService(db: AdeDb, opts: CreateUnifiedMemoryS
     return scored;
   }
 
-  function searchMemories(
+  async function searchMemories(
     query: string,
     projectId: string,
     scope?: MemoryScope,
     limit = 10,
     status: MemoryStatus | ReadonlyArray<MemoryStatus> = "promoted",
     scopeOwnerId?: string | null
-  ): Memory[] {
-    return search({
+  ): Promise<Memory[]> {
+    return await search({
       query,
       projectId,
       scope: scope ? normalizeScope(scope) : undefined,
@@ -1026,7 +1065,7 @@ export function createUnifiedMemoryService(db: AdeDb, opts: CreateUnifiedMemoryS
       ? (["promoted", "candidate"] as MemoryStatus[])
       : "promoted";
 
-    return search({
+    return searchLexical({
       projectId,
       query: "",
       limit: limits[level],

@@ -2593,7 +2593,7 @@ async function runTool(args: {
         ? (["promoted", "candidate", "archived"] as const)
         : status;
     const limit = Math.max(1, Math.min(50, Math.floor(asNumber(toolArgs.limit, 5))));
-    const memories = runtime.memoryService.searchMemories(
+    const memories = await runtime.memoryService.searchMemories(
       query,
       runtime.projectId,
       serviceScope,

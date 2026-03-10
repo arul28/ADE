@@ -60,6 +60,7 @@ import { createCompactionFlushService } from "./services/memory/compactionFlushS
 import { createBatchConsolidationService } from "./services/memory/batchConsolidationService";
 import { createEmbeddingService } from "./services/memory/embeddingService";
 import { createEmbeddingWorkerService } from "./services/memory/embeddingWorkerService";
+import { createHybridSearchService } from "./services/memory/hybridSearchService";
 import { createUnifiedMemoryService } from "./services/memory/unifiedMemoryService";
 import { createMemoryLifecycleService } from "./services/memory/memoryLifecycleService";
 import { createCtoStateService } from "./services/cto/ctoStateService";
@@ -839,7 +840,12 @@ app.whenReady().then(async () => {
       logger,
       cacheDir: path.join(app.getPath("userData"), "transformers-cache"),
     });
+    const hybridSearchService = createHybridSearchService({
+      db,
+      embeddingService,
+    });
     const memoryService = createUnifiedMemoryService(db, {
+      hybridSearchService,
       onMemoryMutated: () => {
         batchConsolidationServiceRef?.scheduleAutoConsolidationCheck();
       },

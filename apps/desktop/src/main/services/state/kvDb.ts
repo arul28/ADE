@@ -1423,6 +1423,37 @@ function migrate(db: Database) {
   `);
 
   db.run(`
+    create virtual table if not exists unified_memories_fts using fts4(
+      content,
+      content='unified_memories'
+    )
+  `);
+  db.run(`
+    create trigger if not exists unified_memories_fts_ai after insert on unified_memories begin
+      insert into unified_memories_fts(rowid, content)
+      values (new.rowid, new.content);
+    end
+  `);
+  db.run(`
+    create trigger if not exists unified_memories_fts_bd before delete on unified_memories begin
+      delete from unified_memories_fts
+      where rowid = old.rowid;
+    end
+  `);
+  db.run(`
+    create trigger if not exists unified_memories_fts_bu before update on unified_memories begin
+      delete from unified_memories_fts
+      where rowid = old.rowid;
+    end
+  `);
+  db.run(`
+    create trigger if not exists unified_memories_fts_au after update on unified_memories begin
+      insert into unified_memories_fts(rowid, content)
+      values (new.rowid, new.content);
+    end
+  `);
+
+  db.run(`
     create table if not exists unified_memory_embeddings (
       id text primary key,
       memory_id text not null,
@@ -1556,6 +1587,12 @@ function migrate(db: Database) {
       promoted_at
     from memories
   `);
+  try {
+    db.run("insert into unified_memories_fts(unified_memories_fts) values ('rebuild')");
+  } catch {
+    db.run("delete from unified_memories_fts");
+    db.run("insert into unified_memories_fts(rowid, content) select rowid, content from unified_memories");
+  }
 
   // CTO persistent identity/core-memory/session-log state.
   db.run(`
