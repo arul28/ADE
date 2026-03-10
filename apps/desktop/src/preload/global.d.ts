@@ -81,6 +81,8 @@ import type {
   BudgetCapScope,
   BudgetCapProvider,
   BudgetCapConfig,
+  MemoryConsolidationResult,
+  MemoryConsolidationStatusEventPayload,
   MemoryLifecycleSweepResult,
   MemorySweepStatusEventPayload,
   AiApiKeyVerificationResult,
@@ -924,6 +926,8 @@ declare global {
         }) => Promise<unknown[]>;
         runSweep: () => Promise<MemoryLifecycleSweepResult>;
         onSweepStatus: (cb: (payload: MemorySweepStatusEventPayload) => void) => () => void;
+        runConsolidation: () => Promise<MemoryConsolidationResult>;
+        onConsolidationStatus: (cb: (payload: MemoryConsolidationStatusEventPayload) => void) => () => void;
       };
       cto?: {
         getState: (args?: CtoGetStateArgs) => Promise<CtoSnapshot>;

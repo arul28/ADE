@@ -57,6 +57,7 @@ import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createMissionService } from "./services/missions/missionService";
 import { createMissionPreflightService } from "./services/missions/missionPreflightService";
 import { createCompactionFlushService } from "./services/memory/compactionFlushService";
+import { createBatchConsolidationService } from "./services/memory/batchConsolidationService";
 import { createUnifiedMemoryService } from "./services/memory/unifiedMemoryService";
 import { createMemoryLifecycleService } from "./services/memory/memoryLifecycleService";
 import { createCtoStateService } from "./services/cto/ctoStateService";
@@ -1130,6 +1131,12 @@ app.whenReady().then(async () => {
         error: error instanceof Error ? error.message : String(error)
       });
     });
+    void batchConsolidationService.runAutoConsolidationIfNeeded().catch((error) => {
+      logger.warn("memory.consolidation.startup_check_failed", {
+        projectId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
 
     // Head watcher: detects commits/rebases made outside ADE's Git UI (e.g. in the terminal),
     // then routes them through the same onHeadChanged pipeline (packs, automations, rebase suggestions).
@@ -1360,6 +1367,7 @@ app.whenReady().then(async () => {
       sessionDeltaService,
       testService,
       memoryService,
+      batchConsolidationService,
       memoryLifecycleService,
       ctoStateService,
       workerAgentService,
@@ -1435,6 +1443,7 @@ app.whenReady().then(async () => {
       sessionDeltaService: null,
       testService: null,
       memoryService: null,
+      batchConsolidationService: null,
       memoryLifecycleService: null,
       ctoStateService: null,
       workerAgentService: null,

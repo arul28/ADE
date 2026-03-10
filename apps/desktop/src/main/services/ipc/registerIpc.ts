@@ -432,6 +432,7 @@ import type { createOrchestratorService } from "../orchestrator/orchestratorServ
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
 import { readCoordinatorCheckpoint } from "../orchestrator/missionStateDoc";
 import type { createMemoryService } from "../memory/memoryService";
+import type { createBatchConsolidationService } from "../memory/batchConsolidationService";
 import type { createMemoryLifecycleService } from "../memory/memoryLifecycleService";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { createWorkerAgentService } from "../cto/workerAgentService";
@@ -499,6 +500,7 @@ export type AppContext = {
   testService: ReturnType<typeof createTestService>;
   sessionDeltaService?: SessionDeltaService | null;
   memoryService?: ReturnType<typeof createMemoryService> | null;
+  batchConsolidationService?: ReturnType<typeof createBatchConsolidationService> | null;
   memoryLifecycleService?: ReturnType<typeof createMemoryLifecycleService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
@@ -536,6 +538,7 @@ const AI_USAGE_FEATURE_KEYS: AiFeatureKey[] = [
   "conflict_proposals",
   "pr_descriptions",
   "terminal_summaries",
+  "memory_consolidation",
   "mission_planning",
   "orchestrator",
   "initial_context"
@@ -3910,6 +3913,14 @@ export function registerIpc({
       throw new Error("Memory lifecycle service is not available.");
     }
     return ctx.memoryLifecycleService.runSweep({ reason: "manual" });
+  });
+
+  ipcMain.handle(IPC.memoryRunConsolidation, async () => {
+    const ctx = getCtx();
+    if (!ctx.batchConsolidationService) {
+      throw new Error("Batch consolidation service is not available.");
+    }
+    return ctx.batchConsolidationService.runConsolidation({ reason: "manual" });
   });
 
   // ── CTO state IPC ─────────────────────────────────────────────────

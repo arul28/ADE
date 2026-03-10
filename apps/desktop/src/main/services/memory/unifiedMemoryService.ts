@@ -18,7 +18,11 @@ export type MemoryCategory =
   | "handoff";
 export type MemoryImportance = "low" | "medium" | "high";
 export type MemoryStatus = "candidate" | "promoted" | "archived";
-export type MemorySourceType = "agent" | "system" | "user" | "mission_promotion";
+export type MemorySourceType = "agent" | "system" | "user" | "mission_promotion" | "consolidation";
+
+type CreateUnifiedMemoryServiceOpts = {
+  onMemoryMutated?: () => void;
+};
 
 export type Memory = {
   id: string;
@@ -176,7 +180,7 @@ function normalizeMemoryTier(value: unknown, fallback: MemoryTier): MemoryTier {
 
 function normalizeSourceType(value: unknown): MemorySourceType {
   const s = String(value ?? "").trim();
-  if (s === "agent" || s === "system" || s === "user" || s === "mission_promotion") return s;
+  if (s === "agent" || s === "system" || s === "user" || s === "mission_promotion" || s === "consolidation") return s;
   return "agent";
 }
 
@@ -356,7 +360,15 @@ function mapSharedFactRow(row: Record<string, unknown>): SharedFact {
 
 export type UnifiedMemoryService = ReturnType<typeof createUnifiedMemoryService>;
 
-export function createUnifiedMemoryService(db: AdeDb) {
+export function createUnifiedMemoryService(db: AdeDb, opts: CreateUnifiedMemoryServiceOpts = {}) {
+  const notifyMutation = () => {
+    try {
+      opts.onMemoryMutated?.();
+    } catch {
+      // Mutation side-effects are best-effort and must not break memory writes.
+    }
+  };
+
   function readById(id: string): Memory | null {
     const row = db.get<Record<string, unknown>>(
       `SELECT * FROM unified_memories WHERE id = ? LIMIT 1`,
@@ -633,6 +645,8 @@ export function createUnifiedMemoryService(db: AdeDb) {
         };
       }
 
+      notifyMutation();
+
       return {
         accepted: true,
         memory: updated,
@@ -717,6 +731,8 @@ export function createUnifiedMemoryService(db: AdeDb) {
         reason: "failed to read inserted memory",
       };
     }
+
+    notifyMutation();
 
     return {
       accepted: true,
@@ -803,6 +819,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
       `,
       [now, now, id]
     );
+    notifyMutation();
   }
 
   function archiveMemory(id: string): void {
@@ -818,6 +835,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
       `,
       [now, id]
     );
+    notifyMutation();
   }
 
   function pinMemory(id: string): Memory | null {
@@ -833,6 +851,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
       `,
       [now, id]
     );
+    notifyMutation();
     return readById(id);
   }
 
@@ -852,6 +871,7 @@ export function createUnifiedMemoryService(db: AdeDb) {
       `,
       [now, id]
     );
+    notifyMutation();
     return readById(id);
   }
 

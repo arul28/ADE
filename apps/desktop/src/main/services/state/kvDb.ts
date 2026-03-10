@@ -1459,6 +1459,22 @@ function migrate(db: Database) {
   `);
   db.run("create index if not exists idx_memory_sweep_log_project_completed on memory_sweep_log(project_id, completed_at desc)");
 
+  db.run(`
+    create table if not exists memory_consolidation_log (
+      consolidation_id text primary key,
+      project_id text not null,
+      trigger_reason text not null,
+      started_at text not null,
+      completed_at text not null,
+      clusters_found integer not null default 0,
+      entries_merged integer not null default 0,
+      entries_created integer not null default 0,
+      tokens_used integer not null default 0,
+      duration_ms integer not null default 0
+    )
+  `);
+  db.run("create index if not exists idx_memory_consolidation_log_project_completed on memory_consolidation_log(project_id, completed_at desc)");
+
   // One-time safe backfill from legacy memories table.
   db.run(`
     insert or ignore into unified_memories (

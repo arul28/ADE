@@ -443,6 +443,8 @@ import type {
   BudgetCapScope,
   BudgetCapProvider,
   BudgetCapConfig,
+  MemoryConsolidationResult,
+  MemoryConsolidationStatusEventPayload,
   MemoryLifecycleSweepResult,
   MemorySweepStatusEventPayload,
   GetMissionBudgetTelemetryArgs,
@@ -1286,6 +1288,13 @@ contextBridge.exposeInMainWorld("ade", {
       const listener = (_event: Electron.IpcRendererEvent, payload: MemorySweepStatusEventPayload) => cb(payload);
       ipcRenderer.on(IPC.memorySweepStatus, listener);
       return () => ipcRenderer.removeListener(IPC.memorySweepStatus, listener);
+    },
+    runConsolidation: async (): Promise<MemoryConsolidationResult> =>
+      ipcRenderer.invoke(IPC.memoryRunConsolidation),
+    onConsolidationStatus: (cb: (payload: MemoryConsolidationStatusEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: MemoryConsolidationStatusEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.memoryConsolidationStatus, listener);
+      return () => ipcRenderer.removeListener(IPC.memoryConsolidationStatus, listener);
     }
   },
   cto: {

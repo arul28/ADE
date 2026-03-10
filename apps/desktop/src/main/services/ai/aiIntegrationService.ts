@@ -26,6 +26,7 @@ export type AiTaskType =
   | "implementation"
   | "review"
   | "conflict_resolution"
+  | "memory_consolidation"
   | "narrative"
   | "pr_description"
   | "terminal_summary"
@@ -37,6 +38,7 @@ export type AiFeatureKey =
   | "conflict_proposals"
   | "pr_descriptions"
   | "terminal_summaries"
+  | "memory_consolidation"
   | "mission_planning"
   | "orchestrator"
   | "initial_context";
@@ -122,6 +124,10 @@ const TASK_DEFAULTS: Record<AiTaskType, RuntimeTaskDefaults> = {
   conflict_resolution: {
     modelId: DEFAULT_CLAUDE_TASK_MODEL_ID,
     timeoutMs: 60_000
+  },
+  memory_consolidation: {
+    modelId: "anthropic/claude-haiku-4-5",
+    timeoutMs: 45_000
   },
   narrative: {
     modelId: "anthropic/claude-haiku-4-5",
