@@ -18,3 +18,5 @@ infra/.pulumi/
 
 # Build outputs
 /apps/mcp-server/dist/
+/apps/desktop/release/
+/apps/desktop/dist/
