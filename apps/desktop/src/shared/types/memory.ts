@@ -2,6 +2,55 @@ export type MemorySweepTrigger = "manual" | "startup";
 
 export type MemoryConsolidationTrigger = "manual" | "auto";
 
+export type MemoryHealthScope = "project" | "agent" | "mission";
+
+export type MemoryHealthTierCounts = {
+  tier1: number;
+  tier2: number;
+  tier3: number;
+  archived: number;
+};
+
+export type MemoryHealthScopeStats = {
+  scope: MemoryHealthScope;
+  current: number;
+  max: number;
+  counts: MemoryHealthTierCounts;
+};
+
+export type MemorySweepLogSummary = {
+  sweepId: string;
+  projectId: string;
+  reason: MemorySweepTrigger;
+  startedAt: string;
+  completedAt: string;
+  entriesDecayed: number;
+  entriesDemoted: number;
+  entriesPromoted: number;
+  entriesArchived: number;
+  entriesOrphaned: number;
+  durationMs: number;
+};
+
+export type MemoryConsolidationLogSummary = {
+  consolidationId: string;
+  projectId: string;
+  reason: MemoryConsolidationTrigger;
+  startedAt: string;
+  completedAt: string;
+  clustersFound: number;
+  entriesMerged: number;
+  entriesCreated: number;
+  tokensUsed: number;
+  durationMs: number;
+};
+
+export type MemoryHealthStats = {
+  scopes: MemoryHealthScopeStats[];
+  lastSweep: MemorySweepLogSummary | null;
+  lastConsolidation: MemoryConsolidationLogSummary | null;
+};
+
 export type MemoryLifecycleSweepResult = {
   sweepId: string;
   projectId: string;
