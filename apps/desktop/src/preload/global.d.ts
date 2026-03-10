@@ -474,6 +474,7 @@ declare global {
         closeCurrent: () => Promise<void>;
         switchToPath: (rootPath: string) => Promise<ProjectInfo>;
         forgetRecent: (rootPath: string) => Promise<RecentProjectSummary[]>;
+        reorderRecent: (orderedPaths: string[]) => Promise<RecentProjectSummary[]>;
         onMissing: (cb: (data: { rootPath: string }) => void) => () => void;
       };
       keybindings: {

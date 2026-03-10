@@ -491,6 +491,7 @@ contextBridge.exposeInMainWorld("ade", {
     closeCurrent: async (): Promise<void> => ipcRenderer.invoke(IPC.projectCloseCurrent),
     switchToPath: async (rootPath: string): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.projectSwitchToPath, { rootPath }),
     forgetRecent: async (rootPath: string): Promise<RecentProjectSummary[]> => ipcRenderer.invoke(IPC.projectForgetRecent, { rootPath }),
+    reorderRecent: async (orderedPaths: string[]): Promise<RecentProjectSummary[]> => ipcRenderer.invoke(IPC.projectReorderRecent, { orderedPaths }),
     onMissing: (cb: (data: { rootPath: string }) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: { rootPath: string }) => cb(payload);
       ipcRenderer.on(IPC.projectMissing, listener);

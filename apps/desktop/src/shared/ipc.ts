@@ -13,6 +13,7 @@ export const IPC = {
   projectCloseCurrent: "ade.project.closeCurrent",
   projectSwitchToPath: "ade.project.switchToPath",
   projectForgetRecent: "ade.project.forgetRecent",
+  projectReorderRecent: "ade.project.reorderRecent",
   projectMissing: "ade.project.missing",
   onboardingGetStatus: "ade.onboarding.getStatus",
   onboardingDetectDefaults: "ade.onboarding.detectDefaults",

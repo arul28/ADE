@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Folder, FolderOpen, Plus, Minus, MagnifyingGlass, Trash, X } from "@phosphor-icons/react";
 
 import { useAppStore } from "../../state/appStore";
@@ -31,6 +31,9 @@ export function TopBar({
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>([]);
   const [relocatingPath, setRelocatingPath] = useState<string | null>(null);
   const [zoom, setZoom] = useState(getStoredZoomLevel);
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [dropIdx, setDropIdx] = useState<number | null>(null);
+  const dragCounterRef = useRef(0);
 
   const applyZoom = useCallback((pct: number) => {
     const clamped = Math.max(MIN_ZOOM_LEVEL, Math.min(MAX_ZOOM_LEVEL, pct));
@@ -157,6 +160,43 @@ export function TopBar({
     })().catch(() => { }).finally(() => setRelocatingPath(null));
   }, [openRepo]);
 
+  const handleDragStart = useCallback((e: React.DragEvent, idx: number) => {
+    setDragIdx(idx);
+    dragCounterRef.current = 0;
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", String(idx));
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent, idx: number) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    setDropIdx(idx);
+  }, []);
+
+  const handleDragLeave = useCallback(() => {
+    setDropIdx(null);
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent, targetIdx: number) => {
+    e.preventDefault();
+    setDropIdx(null);
+    if (dragIdx === null || dragIdx === targetIdx) {
+      setDragIdx(null);
+      return;
+    }
+    const items = [...recentProjects];
+    const [moved] = items.splice(dragIdx, 1);
+    items.splice(targetIdx, 0, moved);
+    setRecentProjects(items);
+    setDragIdx(null);
+    window.ade.project.reorderRecent(items.map((r) => r.rootPath)).catch(() => {});
+  }, [dragIdx, recentProjects]);
+
+  const handleDragEnd = useCallback(() => {
+    setDragIdx(null);
+    setDropIdx(null);
+  }, []);
+
   return (
     <header
       className="ade-shell-header flex items-center gap-3"
@@ -193,11 +233,14 @@ export function TopBar({
           </button>
         ) : (
           <>
-              {recentProjects.map((rp) => {
+              {recentProjects.map((rp, idx) => {
               const isCurrent = project?.rootPath === rp.rootPath;
               const isMissing = !rp.exists;
               const isRelocating = relocatingPath === rp.rootPath;
+              const isDragging = dragIdx === idx;
+              const isDropTarget = dropIdx === idx && dragIdx !== idx;
               const projectTabState = isRelocating ? "open" : isMissing ? "missing" : isCurrent ? "active" : undefined;
+              const indicator = terminalAttention?.indicator;
               return (
                 <div
                   key={rp.rootPath}
@@ -206,12 +249,20 @@ export function TopBar({
                   data-state={projectTabState}
                   aria-current={isCurrent ? "true" : undefined}
                   aria-disabled={isRelocating ? true : undefined}
+                  draggable={!isMissing && !isRelocating}
+                  onDragStart={(e) => handleDragStart(e, idx)}
+                  onDragOver={(e) => handleDragOver(e, idx)}
+                  onDragLeave={handleDragLeave}
+                  onDrop={(e) => handleDrop(e, idx)}
+                  onDragEnd={handleDragEnd}
                   className={cn(
                     "ade-shell-project-tab group inline-flex max-w-[180px] shrink-0 items-center gap-1.5 px-2.5 py-1",
                     "transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
                     !isMissing && "cursor-pointer",
                     isCurrent && "font-semibold",
-                    isRelocating && "pointer-events-none opacity-80"
+                    isRelocating && "pointer-events-none opacity-80",
+                    isDragging && "opacity-40",
+                    isDropTarget && "ring-1 ring-accent/50"
                   )}
                   style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
                   onClick={() => {
@@ -234,16 +285,16 @@ export function TopBar({
                       isCurrent ? "opacity-90" : "opacity-70"
                     )}
                   />
-                  {isCurrent && terminalAttention.indicator !== "none" ? (
+                  {isCurrent && indicator != null && indicator !== "none" ? (
                     <span
                       title={
-                        terminalAttention.indicator === "running-needs-attention"
+                        indicator === "running-needs-attention"
                           ? `${terminalAttention.needsAttentionCount} running terminal${terminalAttention.needsAttentionCount === 1 ? " needs" : "s need"} input`
                           : `${terminalAttention.runningCount} running terminal${terminalAttention.runningCount === 1 ? "" : "s"}`
                       }
                       className={cn(
                         "ade-status-dot h-1.5 w-1.5 shrink-0 animate-spin",
-                        terminalAttention.indicator === "running-needs-attention"
+                        indicator === "running-needs-attention"
                           ? "ade-status-dot-warning"
                           : "ade-status-dot-active"
                       )}

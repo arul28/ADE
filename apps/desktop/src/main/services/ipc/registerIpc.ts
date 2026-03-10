@@ -419,7 +419,7 @@ import type { createPrPollingService } from "../prs/prPollingService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createQueueRehearsalService } from "../prs/queueRehearsalService";
 import type { createAgentChatService } from "../chat/agentChatService";
-import { readGlobalState, writeGlobalState } from "../state/globalState";
+import { readGlobalState, writeGlobalState, reorderRecentProjects } from "../state/globalState";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
 import type { createTerminalProfilesService } from "../terminalProfiles/terminalProfilesService";
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
@@ -1412,6 +1412,18 @@ export function registerIpc({
       // Best effort; forgetting a project should still update recents even if teardown fails.
     }
     return filtered.map(toRecentProjectSummary);
+  });
+
+  ipcMain.handle(IPC.projectReorderRecent, async (_event, arg: { orderedPaths: string[] }): Promise<RecentProjectSummary[]> => {
+    const orderedPaths = Array.isArray(arg?.orderedPaths) ? arg.orderedPaths.filter((p): p is string => typeof p === "string" && p.length > 0) : [];
+    if (orderedPaths.length === 0) {
+      const state = readGlobalState(globalStatePath);
+      return (state.recentProjects ?? []).map(toRecentProjectSummary);
+    }
+    const state = readGlobalState(globalStatePath);
+    const next = reorderRecentProjects(state, orderedPaths);
+    writeGlobalState(globalStatePath, next);
+    return (next.recentProjects ?? []).map(toRecentProjectSummary);
   });
 
   ipcMain.handle(IPC.projectSwitchToPath, async (_event, arg: { rootPath: string }): Promise<ProjectInfo> => {
