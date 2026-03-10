@@ -805,8 +805,13 @@ const EXTERNAL_MCP_NOISE_PATTERNS: RegExp[] = [
 // These are expected when the sandbox prevents writes to ~/.claude/plans/ — the
 // planner prompt directs artifacts to .ade/plans/ instead, so blocking the
 // provider-native path is intentional and should not fail the attempt.
+// Also benign: Zod validation errors from ExitPlanMode — the worker is instructed
+// not to use ExitPlanMode, but if it tries anyway, the Zod schema mismatch should
+// not fail or retry the attempt.
 const BENIGN_SANDBOX_BLOCK_PATTERNS: RegExp[] = [
   /\.claude\/plans\//i,
+  /ExitPlanMode.*(?:Zod|validation|schema|parse)/i,
+  /(?:Zod|validation|schema|parse).*ExitPlanMode/i,
 ];
 
 export function classifyBlockingWarnings(args: {

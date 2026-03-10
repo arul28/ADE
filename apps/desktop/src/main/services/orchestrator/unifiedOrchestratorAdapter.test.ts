@@ -41,7 +41,7 @@ describe("buildCodexMcpConfigFlags", () => {
 });
 
 describe("buildClaudeReadOnlyWorkerAllowedTools", () => {
-  it("includes only safe native read tools plus ADE reporting/status tools", () => {
+  it("includes only safe native read tools plus ADE reporting/status tools and ask_user", () => {
     expect(buildClaudeReadOnlyWorkerAllowedTools()).toEqual([
       "Read",
       "Glob",
@@ -53,7 +53,13 @@ describe("buildClaudeReadOnlyWorkerAllowedTools", () => {
       "mcp__ade__get_pending_messages",
       "mcp__ade__report_status",
       "mcp__ade__report_result",
+      "mcp__ade__ask_user",
     ]);
+  });
+
+  it("VAL-PLAN-003: planning worker allowlist includes mcp__ade__ask_user for runtime clarifications", () => {
+    const tools = buildClaudeReadOnlyWorkerAllowedTools();
+    expect(tools).toContain("mcp__ade__ask_user");
   });
 });
 
@@ -234,7 +240,7 @@ describe("createUnifiedOrchestratorAdapter", () => {
     expect(result.status).toBe("accepted");
     expect(startupCommand).toContain("--permission-mode 'plan'");
     expect(startupCommand).not.toContain("--dangerously-skip-permissions");
-    expect(startupCommand).toContain("--allowedTools 'Read,Glob,Grep,mcp__ade__get_mission,mcp__ade__get_run_graph,mcp__ade__stream_events,mcp__ade__get_timeline,mcp__ade__get_pending_messages,mcp__ade__report_status,mcp__ade__report_result'");
+    expect(startupCommand).toContain("--allowedTools 'Read,Glob,Grep,mcp__ade__get_mission,mcp__ade__get_run_graph,mcp__ade__stream_events,mcp__ade__get_timeline,mcp__ade__get_pending_messages,mcp__ade__report_status,mcp__ade__report_result,mcp__ade__ask_user'");
     expect(startupCommand).not.toContain("Bash");
     expect(startupCommand).toContain(`-p "$(cat '`);
     expect(startupCommand).toContain(".ade/orchestrator/worker-prompts/worker-attempt-1.txt");

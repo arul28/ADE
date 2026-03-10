@@ -830,6 +830,29 @@ export function extractAndRegisterArtifacts(
       }
     }
 
+    // Register planning artifact for planning steps
+    const stepType = typeof stepMeta.stepType === "string" ? stepMeta.stepType.trim().toLowerCase() : "";
+    const phaseKey = typeof stepMeta.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
+    const isPlanningStep =
+      stepType === "planning"
+      || phaseKey === "planning"
+      || stepMeta.readOnlyExecution === true;
+    if (isPlanningStep && !registeredKeys.has("plan")) {
+      const planSummary =
+        typeof envelope.summary === "string" && envelope.summary.trim().length > 0
+          ? envelope.summary.trim()
+          : "Planning step completed.";
+      const planValue =
+        typeof outputs.planPath === "string" && outputs.planPath.trim().length > 0
+          ? outputs.planPath.trim()
+          : ".ade/plans/mission-plan.md";
+      register("plan", "custom", planValue, {
+        planType: "mission_plan",
+        source: "planning_worker",
+        summary: planSummary,
+      });
+    }
+
     // Validate: warn for any declared hints that were not produced
     const missingHints = artifactHints.filter((hint) => !registeredKeys.has(hint));
     if (missingHints.length > 0) {

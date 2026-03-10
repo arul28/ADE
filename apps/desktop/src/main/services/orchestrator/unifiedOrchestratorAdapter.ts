@@ -160,6 +160,7 @@ const CLAUDE_READ_ONLY_WORKER_MCP_TOOLS = [
   "mcp__ade__get_pending_messages",
   "mcp__ade__report_status",
   "mcp__ade__report_result",
+  "mcp__ade__ask_user",
 ] as const;
 
 function dedupeAllowedTools(entries: readonly string[]): string[] {
