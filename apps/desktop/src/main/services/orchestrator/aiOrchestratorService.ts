@@ -7484,6 +7484,46 @@ Check all worker statuses and continue managing the mission from here. Read work
           projectedStepCount
         }
       );
+
+      // VAL-STEER-001: After resolving all blocking interventions, check if any
+      // paused runs should be resumed. If no open interventions remain on the
+      // mission, resume paused runs and transition mission back to in_progress.
+      try {
+        const postSteerMission = missionService.get(missionId);
+        const remainingOpenInterventions = postSteerMission?.interventions.filter(
+          (iv) => iv.status === "open"
+        ) ?? [];
+        if (remainingOpenInterventions.length === 0) {
+          for (const runId of resumedRunIds) {
+            try {
+              const runGraph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+              if (runGraph.run.status === "paused") {
+                orchestratorService.resumeRun({ runId });
+                logger.info("ai_orchestrator.steer_auto_resumed_run", { missionId, runId });
+              }
+            } catch (resumeError) {
+              logger.debug("ai_orchestrator.steer_auto_resume_failed", {
+                missionId,
+                runId,
+                error: resumeError instanceof Error ? resumeError.message : String(resumeError),
+              });
+            }
+          }
+          // Transition mission back to in_progress if it was intervention_required
+          if (postSteerMission?.status === "intervention_required") {
+            try {
+              missionService.update({ missionId, status: "in_progress" });
+            } catch {
+              // Best effort — mission might already be in a different state
+            }
+          }
+        }
+      } catch (steerResumeError) {
+        logger.debug("ai_orchestrator.steer_resume_check_failed", {
+          missionId,
+          error: steerResumeError instanceof Error ? steerResumeError.message : String(steerResumeError),
+        });
+      }
     }
 
     // Real-time delivery: try to deliver the directive to running worker sessions
@@ -9069,6 +9109,32 @@ Check all worker statuses and continue managing the mission from here. Read work
             stepId: event.stepId ?? null,
             attemptId: event.attemptId ?? null,
             error: signalError instanceof Error ? signalError.message : String(signalError)
+          });
+        }
+      }
+
+      // VAL-BUDGET-001: When completeAttempt detects token-budget-exceeded and
+      // pauses the run, create a budget_limit_reached intervention matching the
+      // hard cap path in coordinatorTools (pauseOnBudgetHardCap).
+      if (event.type === "orchestrator-run-updated" && event.reason === "budget_exceeded") {
+        try {
+          const missionId = getMissionIdForRun(runId);
+          if (missionId) {
+            const graph = getEventGraph();
+            const detail = graph.run.lastError ?? "Total token budget exceeded.";
+            pauseMissionWithIntervention({
+              missionId,
+              interventionType: "budget_limit_reached",
+              title: "Token budget exceeded",
+              body: detail,
+              requestedAction: "Raise budget limits, wait for the 5-hour window to reset, or cancel the mission.",
+              metadata: { source: "completeAttempt_budget_exceeded", runId },
+            });
+          }
+        } catch (budgetError) {
+          logger.debug("ai_orchestrator.budget_exceeded_intervention_failed", {
+            runId,
+            error: budgetError instanceof Error ? budgetError.message : String(budgetError),
           });
         }
       }

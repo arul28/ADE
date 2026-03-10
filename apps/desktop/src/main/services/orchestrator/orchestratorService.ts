@@ -568,7 +568,14 @@ function classifySilentWorkerExit(args: {
       errorMessage: "Worker session ended before producing any assistant or tool activity.",
     };
   }
-  return null;
+  // VAL-ERR-001: Workers with material output but no transcript summary were
+  // interrupted — classify as "interrupted" rather than returning null (which
+  // would allow a "succeeded" status to stand for a worker that never reported
+  // a proper result).
+  return {
+    errorClass: "interrupted",
+    errorMessage: "Worker session ended after partial activity without reporting a final result.",
+  };
 }
 
 function resolveRunPhaseCardsFromMetadata(runMetadata: Record<string, unknown> | null | undefined): PhaseCard[] | null {
@@ -8105,6 +8112,27 @@ export function createOrchestratorService({
               tokensConsumed: newTotal,
               maxTotalTokenBudget: runtimeConfig.maxTotalTokenBudget
             }
+          });
+          // VAL-BUDGET-001: Emit runtime event so aiOrchestratorService can
+          // create a budget_limit_reached intervention (matching the hard cap
+          // path in coordinatorTools).
+          persistRuntimeEvent({
+            runId: run.id,
+            stepId: step.id,
+            attemptId: args.attemptId,
+            eventType: "budget_exceeded",
+            eventKey: `budget_exceeded:${run.id}:${args.attemptId}:${newTotal}`,
+            payload: {
+              tokensConsumed: newTotal,
+              maxTotalTokenBudget: runtimeConfig.maxTotalTokenBudget,
+              missionId: run.missionId,
+              source: "completeAttempt",
+            }
+          });
+          emit({
+            type: "orchestrator-run-updated",
+            runId: run.id,
+            reason: "budget_exceeded",
           });
         }
       }

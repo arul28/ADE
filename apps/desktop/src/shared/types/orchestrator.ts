@@ -106,6 +106,7 @@ export type OrchestratorErrorClass =
   | "claim_conflict"
   | "startup_failure"
   | "executor_failure"
+  | "interrupted"
   | "configuration_error"
   | "canceled"
   | "resume_recovered"
@@ -850,7 +851,8 @@ export type OrchestratorRuntimeEventType =
   | "validation_gate_blocked"
   | "reflection_added"
   | "retrospective_generated"
-  | "tool_profiles_updated";
+  | "tool_profiles_updated"
+  | "budget_exceeded";
 
 export type OrchestratorRuntimeQuestionLink = {
   threadId: string;

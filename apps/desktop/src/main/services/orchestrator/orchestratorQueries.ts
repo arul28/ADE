@@ -211,6 +211,7 @@ export const RETRYABLE_ERROR_CLASSES = new Set<OrchestratorErrorClass>([
   "transient",
   "startup_failure",
   "executor_failure",
+  "interrupted",
   "claim_conflict",
   "resume_recovered"
 ]);
@@ -302,6 +303,7 @@ export function normalizeErrorClass(value: string): OrchestratorErrorClass {
     value === "claim_conflict" ||
     value === "startup_failure" ||
     value === "executor_failure" ||
+    value === "interrupted" ||
     value === "configuration_error" ||
     value === "canceled" ||
     value === "resume_recovered" ||

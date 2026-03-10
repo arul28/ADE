@@ -547,7 +547,17 @@ function normalizeArtifactType(value: string): MissionArtifactType {
 }
 
 function normalizeInterventionType(value: string): MissionInterventionType {
-  if (value === "approval_required" || value === "manual_input" || value === "conflict" || value === "policy_block" || value === "failed_step") {
+  if (
+    value === "approval_required" ||
+    value === "manual_input" ||
+    value === "conflict" ||
+    value === "policy_block" ||
+    value === "failed_step" ||
+    value === "orchestrator_escalation" ||
+    value === "budget_limit_reached" ||
+    value === "provider_unreachable" ||
+    value === "unrecoverable_error"
+  ) {
     return value;
   }
   return "manual_input";
@@ -3434,6 +3444,47 @@ export function createMissionService({
       const missionId = args.missionId.trim();
       if (!missionId.length) throw new Error("missionId is required.");
       if (!getMissionRow(missionId)) throw new Error(`Mission not found: ${missionId}`);
+
+      // VAL-INTV-001 / VAL-INTV-002: Deduplicate interventions.
+      // Check for an existing open intervention that matches this one.
+      // For failed_step interventions, match by stepId in metadata.
+      // For budget_limit_reached / provider_unreachable / unrecoverable_error,
+      // match by interventionType alone (at most one open per type).
+      const meta = args.metadata ?? null;
+      const metaStepId = meta && typeof (meta as Record<string, unknown>).stepId === "string"
+        ? ((meta as Record<string, unknown>).stepId as string).trim()
+        : null;
+
+      const existingOpenRows = db.all<MissionInterventionRow>(
+        `select id, mission_id, intervention_type, status, title, body,
+                requested_action, resolution_note, lane_id,
+                created_at, updated_at, resolved_at, metadata_json
+         from mission_interventions
+         where mission_id = ? and project_id = ? and status = 'open'
+           and intervention_type = ?`,
+        [missionId, projectId, args.interventionType]
+      );
+
+      for (const row of existingOpenRows) {
+        if (args.interventionType === "failed_step" && metaStepId) {
+          // Match by stepId in metadata
+          const rowMeta = safeParseRecord(row.metadata_json);
+          const rowStepId = rowMeta && typeof rowMeta.stepId === "string"
+            ? rowMeta.stepId.trim()
+            : null;
+          if (rowStepId === metaStepId) {
+            // Return existing intervention — skip duplicate creation
+            return toMissionIntervention(row);
+          }
+        } else if (
+          args.interventionType === "budget_limit_reached" ||
+          args.interventionType === "provider_unreachable" ||
+          args.interventionType === "unrecoverable_error"
+        ) {
+          // At most one open intervention per type
+          return toMissionIntervention(row);
+        }
+      }
 
       const intervention = insertIntervention({
         missionId,
