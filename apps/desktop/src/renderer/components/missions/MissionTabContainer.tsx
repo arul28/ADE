@@ -440,7 +440,12 @@ export function MissionTabContent() {
         )}
 
         {activeTab === "artifacts" && (
-          <MissionArtifactsTab groupedArtifacts={groupedArtifacts} closeoutRequirements={[]} />
+          <MissionArtifactsTab
+            groupedArtifacts={groupedArtifacts}
+            closeoutRequirements={[]}
+            missionId={selectedMissionId}
+            runId={runGraph?.run.id ?? null}
+          />
         )}
       </div>
     </>

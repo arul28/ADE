@@ -21,6 +21,7 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { createPackService } from "../packs/packService";
 import { runGit } from "../git/git";
 import { nowIso, fileSizeOrZero } from "../shared/utils";
+import type { EpisodicSummaryService } from "../memory/episodicSummaryService";
 import type {
   AgentChatApprovalDecision,
   AgentChatCreateArgs,
@@ -767,6 +768,7 @@ export function createAgentChatService(args: {
   projectId?: string;
   memoryService?: ReturnType<typeof createMemoryService> | null;
   packService?: ReturnType<typeof createPackService> | null;
+  episodicSummaryService?: EpisodicSummaryService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
   laneService: ReturnType<typeof createLaneService>;
@@ -784,6 +786,7 @@ export function createAgentChatService(args: {
     projectId,
     memoryService,
     packService,
+    episodicSummaryService,
     ctoStateService,
     workerAgentService,
     laneService,
@@ -1464,6 +1467,13 @@ export function createAgentChatService(args: {
           error: error instanceof Error ? error.message : String(error)
         });
       }
+      episodicSummaryService?.enqueueSessionSummary({
+        sessionId: managed.session.id,
+        role: "cto",
+        summary: explicitSummary || fallbackSummary || "CTO session ended.",
+        startedAt: managed.ctoSessionStartedAt ?? managed.session.createdAt,
+        endedAt,
+      });
     }
     const workerAgentId = resolveWorkerIdentityAgentId(managed.session.identityKey);
     if (workerAgentId && workerAgentService) {
@@ -1480,6 +1490,13 @@ export function createAgentChatService(args: {
           error: error instanceof Error ? error.message : String(error)
         });
       }
+      episodicSummaryService?.enqueueSessionSummary({
+        sessionId: managed.session.id,
+        role: "worker",
+        summary: explicitSummary || fallbackSummary || "Worker session ended.",
+        startedAt: managed.session.createdAt,
+        endedAt,
+      });
     }
 
     const endSha = await computeHeadShaBestEffort(managed.session.laneId).catch(() => null);

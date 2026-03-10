@@ -1,8 +1,17 @@
 import React from "react";
-import type { AiConfig, MemoryHealthStats, MemorySearchMode } from "../../../shared/types";
+import type {
+  AiConfig,
+  KnowledgeSyncStatus,
+  MemoryHealthStats,
+  MemorySearchMode,
+  ProcedureDetail,
+  ProcedureListItem,
+  SkillIndexEntry,
+} from "../../../shared/types";
 import { deriveConfiguredModelOptions, includeSelectedModelOption } from "../../lib/modelOptions";
 import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 import { EmptyState } from "../ui/EmptyState";
+import { MemoryInspectorPanel } from "./MemoryInspector";
 import {
   COLORS,
   MONO_FONT,
@@ -44,6 +53,8 @@ const SELECT_STYLE: React.CSSProperties = {
 type MemoryScope = "agent" | "project" | "mission";
 type MemoryStatus = "candidate" | "promoted" | "archived";
 type MemoryImportance = "low" | "medium" | "high";
+type ProcedureSort = "confidence" | "applications" | "sources" | "recent";
+type SkillSort = "modified" | "path" | "source";
 
 type MemoryEntry = {
   id: string;
@@ -62,6 +73,7 @@ type MemoryEntry = {
 };
 
 type ScopeFilter = "all" | MemoryScope;
+type MemoryConsoleTab = "overview" | "browser" | "procedures" | "skills";
 
 /* ── Empty default stats ── */
 
@@ -97,6 +109,18 @@ function createEmptyHealthStats(): MemoryHealthStats {
   };
 }
 
+function createEmptyKnowledgeSyncStatus(): KnowledgeSyncStatus {
+  return {
+    syncing: false,
+    lastSeenHeadSha: null,
+    currentHeadSha: null,
+    diverged: false,
+    lastDigestAt: null,
+    lastDigestMemoryId: null,
+    lastError: null,
+  };
+}
+
 /* ── Formatting helpers ── */
 
 function formatNumber(value: number): string {
@@ -113,6 +137,11 @@ function formatTimestamp(value: string | null | undefined): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function shortSha(value: string | null | undefined): string {
+  const text = String(value ?? "").trim();
+  return text.length > 8 ? text.slice(0, 8) : text || "unknown";
 }
 
 function relativeTime(value: string | null | undefined): string {
@@ -351,6 +380,12 @@ function memoryMatchesFilters(entry: MemoryEntry, scopeFilter: ScopeFilter, cate
   return true;
 }
 
+function tabButtonStyle(active: boolean): React.CSSProperties {
+  return active
+    ? primaryButton({ height: 30, padding: "0 12px", fontSize: 10 })
+    : outlineButton({ height: 30, padding: "0 12px", fontSize: 10 });
+}
+
 /* ── Tooltip text constants ── */
 
 const TIPS = {
@@ -396,13 +431,52 @@ export function MemoryHealthTab() {
   const [hasChosenSearchMode, setHasChosenSearchMode] = React.useState(false);
 
   /* ── UI state ── */
+  const [activeTab, setActiveTab] = React.useState<MemoryConsoleTab>("overview");
   const [advancedOpen, setAdvancedOpen] = React.useState(false);
   const [expandedEntryIds, setExpandedEntryIds] = React.useState<Set<string>>(new Set());
+  const [procedures, setProcedures] = React.useState<ProcedureListItem[]>([]);
+  const [selectedProcedureId, setSelectedProcedureId] = React.useState<string | null>(null);
+  const [selectedProcedureDetail, setSelectedProcedureDetail] = React.useState<ProcedureDetail | null>(null);
+  const [procedureDetailLoading, setProcedureDetailLoading] = React.useState(false);
+  const [procedureSort, setProcedureSort] = React.useState<ProcedureSort>("confidence");
+  const [skills, setSkills] = React.useState<SkillIndexEntry[]>([]);
+  const [skillSort, setSkillSort] = React.useState<SkillSort>("modified");
+  const [knowledgeSyncStatus, setKnowledgeSyncStatus] = React.useState<KnowledgeSyncStatus>(createEmptyKnowledgeSyncStatus());
+  const [syncRunning, setSyncRunning] = React.useState(false);
 
   const categories = React.useMemo(() => {
     const all = [...budgetEntries, ...candidates, ...searchResults].map((e) => e.category.trim()).filter(Boolean);
     return Array.from(new Set(all)).sort((a, b) => a.localeCompare(b));
   }, [budgetEntries, candidates, searchResults]);
+
+  const sortedProcedures = React.useMemo(() => {
+    const next = [...procedures];
+    next.sort((left, right) => {
+      if (procedureSort === "applications") {
+        const leftCount = left.procedural.successCount + left.procedural.failureCount;
+        const rightCount = right.procedural.successCount + right.procedural.failureCount;
+        return rightCount - leftCount;
+      }
+      if (procedureSort === "sources") {
+        return right.procedural.sourceEpisodeIds.length - left.procedural.sourceEpisodeIds.length;
+      }
+      if (procedureSort === "recent") {
+        return Date.parse(right.memory.updatedAt || right.memory.createdAt) - Date.parse(left.memory.updatedAt || left.memory.createdAt);
+      }
+      return right.procedural.confidence - left.procedural.confidence;
+    });
+    return next;
+  }, [procedureSort, procedures]);
+
+  const sortedSkills = React.useMemo(() => {
+    const next = [...skills];
+    next.sort((left, right) => {
+      if (skillSort === "path") return left.path.localeCompare(right.path);
+      if (skillSort === "source") return left.source.localeCompare(right.source) || left.kind.localeCompare(right.kind);
+      return Date.parse(right.lastModifiedAt ?? right.updatedAt) - Date.parse(left.lastModifiedAt ?? left.updatedAt);
+    });
+    return next;
+  }, [skillSort, skills]);
 
   /* ── Data loading ── */
 
@@ -416,12 +490,15 @@ export function MemoryHealthTab() {
     if (!opts?.quiet) setLoading(true);
 
     try {
-      const [nextStats, budgetRaw, candidatesRaw, aiStatus, snapshot] = await Promise.all([
+      const [nextStats, budgetRaw, candidatesRaw, aiStatus, snapshot, nextProcedures, nextSkills, nextKnowledgeSyncStatus] = await Promise.all([
         memoryApi.getHealthStats(),
         memoryApi.getBudget({ level: "deep" }),
         memoryApi.getCandidates({ limit: 25 }),
         window.ade.ai.getStatus(),
         window.ade.projectConfig.get(),
+        memoryApi.listProcedures?.({ status: "all", scope: "project" }) ?? Promise.resolve([]),
+        memoryApi.listIndexedSkills?.() ?? Promise.resolve([]),
+        memoryApi.getKnowledgeSyncStatus?.() ?? Promise.resolve(createEmptyKnowledgeSyncStatus()),
       ]);
 
       const effectiveAiRaw = snapshot.effective?.ai;
@@ -441,6 +518,13 @@ export function MemoryHealthTab() {
       setStats(nextStats);
       setBudgetEntries(toMemoryEntries(budgetRaw));
       setCandidates(toMemoryEntries(candidatesRaw));
+      setProcedures(nextProcedures);
+      if (selectedProcedureId && !nextProcedures.some((item) => item.memory.id === selectedProcedureId)) {
+        setSelectedProcedureId(null);
+        setSelectedProcedureDetail(null);
+      }
+      setSkills(nextSkills);
+      setKnowledgeSyncStatus(nextKnowledgeSyncStatus);
       setModelOptions(configuredModelOptions);
       setModelValue(nextModelValue);
       setLoadError(null);
@@ -453,7 +537,7 @@ export function MemoryHealthTab() {
     } finally {
       setLoading(false);
     }
-  }, [hasChosenSearchMode, memoryApi]);
+  }, [hasChosenSearchMode, memoryApi, selectedProcedureId]);
 
   React.useEffect(() => {
     void loadDashboard();
@@ -570,6 +654,64 @@ export function MemoryHealthTab() {
       setActionError(error instanceof Error ? error.message : String(error));
     }
   }, [memoryApi, stats.embeddings.model.state]);
+
+  const handleSyncKnowledge = React.useCallback(async () => {
+    if (!memoryApi?.syncKnowledge || syncRunning) return;
+    setSyncRunning(true);
+    setActionError(null);
+    try {
+      await memoryApi.syncKnowledge();
+      await loadDashboard({ quiet: true });
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSyncRunning(false);
+    }
+  }, [loadDashboard, memoryApi, syncRunning]);
+
+  const handleExportProcedureSkill = React.useCallback(async (id: string) => {
+    if (!memoryApi?.exportProcedureSkill) return;
+    setActionError(null);
+    try {
+      await memoryApi.exportProcedureSkill({ id });
+      await loadDashboard({ quiet: true });
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    }
+  }, [loadDashboard, memoryApi]);
+
+  const handleReindexSkills = React.useCallback(async (paths?: string[]) => {
+    if (!memoryApi?.reindexSkills) return;
+    setActionError(null);
+    try {
+      await memoryApi.reindexSkills(paths && paths.length > 0 ? { paths } : {});
+      await loadDashboard({ quiet: true });
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    }
+  }, [loadDashboard, memoryApi]);
+
+  const handleOpenProcedure = React.useCallback(async (id: string) => {
+    if (!memoryApi?.getProcedureDetail) return;
+    setSelectedProcedureId(id);
+    setProcedureDetailLoading(true);
+    try {
+      const detail = await memoryApi.getProcedureDetail({ id });
+      setSelectedProcedureDetail(detail);
+      setActionError(null);
+    } catch (error) {
+      setSelectedProcedureDetail(null);
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setProcedureDetailLoading(false);
+    }
+  }, [memoryApi]);
+
+  React.useEffect(() => {
+    if (activeTab !== "procedures") return;
+    if (selectedProcedureId || sortedProcedures.length === 0) return;
+    void handleOpenProcedure(sortedProcedures[0].memory.id);
+  }, [activeTab, handleOpenProcedure, selectedProcedureId, sortedProcedures]);
 
   const runSearch = React.useCallback(async () => {
     const query = searchInput.trim();
@@ -719,6 +861,189 @@ export function MemoryHealthTab() {
     );
   }
 
+  function renderProcedureList() {
+    if (procedures.length === 0) {
+      return (
+        <EmptyState
+          title="No procedures yet"
+          description="Episode-backed procedures and imported skills will show up here once ADE learns repeatable workflows."
+        />
+      );
+    }
+    return (
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.2fr) minmax(280px, 0.8fr)", gap: 12, alignItems: "start" }}>
+        <div style={{ display: "grid", gap: 10 }}>
+          <div style={cardStyle({ padding: 12, display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" })}>
+            <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+              {sortedProcedures.length} procedure{sortedProcedures.length === 1 ? "" : "s"}
+            </div>
+            <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 10, color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+              sort
+              <select value={procedureSort} onChange={(event) => setProcedureSort(event.target.value as ProcedureSort)} style={{ ...SELECT_STYLE, width: 150, height: 28, fontSize: 10 }}>
+                <option value="confidence">confidence</option>
+                <option value="applications">applications</option>
+                <option value="sources">source episodes</option>
+                <option value="recent">recently updated</option>
+              </select>
+            </label>
+          </div>
+          {sortedProcedures.map((item) => {
+            const applications = item.procedural.successCount + item.procedural.failureCount;
+            const selected = selectedProcedureId === item.memory.id;
+            return (
+              <div key={item.memory.id} style={cardStyle({ padding: 14, display: "flex", flexDirection: "column", gap: 8, border: `1px solid ${selected ? COLORS.accent : COLORS.border}` })}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
+                  <div>
+                    <div style={{ fontSize: 13, color: COLORS.textPrimary, fontFamily: MONO_FONT }}>{item.procedural.trigger}</div>
+                    <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: MONO_FONT, marginTop: 4 }}>
+                      confidence {Math.round(item.procedural.confidence * 100)}% · {applications} application{applications === 1 ? "" : "s"} · {item.memory.status}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    <button type="button" style={outlineButton({ height: 28, padding: "0 10px", fontSize: 10 })} onClick={() => void handleOpenProcedure(item.memory.id)}>
+                      DETAILS
+                    </button>
+                    {item.memory.status === "candidate" ? (
+                      <button type="button" style={outlineButton({ height: 28, padding: "0 10px", fontSize: 10 })} onClick={() => void handlePromote(item.memory.id)}>
+                        PROMOTE
+                      </button>
+                    ) : null}
+                    <button type="button" style={outlineButton({ height: 28, padding: "0 10px", fontSize: 10 })} onClick={() => void handleExportProcedureSkill(item.memory.id)}>
+                      EXPORT
+                    </button>
+                    <button type="button" style={outlineButton({ height: 28, padding: "0 10px", fontSize: 10 })} onClick={() => void handleArchive(item.memory.id)}>
+                      ARCHIVE
+                    </button>
+                  </div>
+                </div>
+                <div style={{ fontSize: 11, color: COLORS.textSecondary, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
+                  {item.procedural.procedure}
+                </div>
+                <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                  success {item.procedural.successCount} · failure {item.procedural.failureCount} · sources {item.procedural.sourceEpisodeIds.length}
+                  {item.exportedSkillPath ? ` · exported ${item.exportedSkillPath}` : ""}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={cardStyle({ padding: 14, display: "flex", flexDirection: "column", gap: 10, position: "sticky", top: 0 })}>
+          <div style={SECTION_LABEL_STYLE}>PROCEDURE DETAIL</div>
+          {procedureDetailLoading ? (
+            <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>Loading procedure detail...</div>
+          ) : selectedProcedureDetail ? (
+            <>
+              <div>
+                <div style={{ fontSize: 12, color: COLORS.textPrimary, fontFamily: MONO_FONT }}>{selectedProcedureDetail.procedural.trigger}</div>
+                <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: MONO_FONT, marginTop: 4 }}>
+                  confidence {Math.round(selectedProcedureDetail.procedural.confidence * 100)}% · last used {formatTimestamp(selectedProcedureDetail.procedural.lastUsed)}
+                </div>
+              </div>
+              <div style={{ fontSize: 11, color: COLORS.textSecondary, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
+                {selectedProcedureDetail.procedural.procedure}
+              </div>
+              <div>
+                <div style={SECTION_LABEL_STYLE}>SOURCE EPISODES</div>
+                {selectedProcedureDetail.sourceEpisodes.length > 0 ? (
+                  <div style={{ display: "grid", gap: 8 }}>
+                    {selectedProcedureDetail.sourceEpisodes.map((episode) => (
+                      <div key={episode.id} style={{ border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, padding: 10 }}>
+                        <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          {formatTimestamp(episode.createdAt)} · {episode.sourceId ?? episode.id}
+                        </div>
+                        <div style={{ fontSize: 11, color: COLORS.textSecondary, whiteSpace: "pre-wrap", lineHeight: 1.45, marginTop: 4 }}>
+                          {episode.content}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 11, color: COLORS.textMuted }}>No source episodes linked yet.</div>
+                )}
+              </div>
+              <div>
+                <div style={SECTION_LABEL_STYLE}>CONFIDENCE HISTORY</div>
+                {selectedProcedureDetail.confidenceHistory.length > 0 ? (
+                  <div style={{ display: "grid", gap: 6 }}>
+                    {selectedProcedureDetail.confidenceHistory.map((entry) => (
+                      <div key={entry.id} style={{ border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, padding: 8 }}>
+                        <div style={{ fontSize: 10, color: COLORS.textPrimary, fontFamily: MONO_FONT }}>
+                          {entry.outcome} · {Math.round(entry.confidence * 100)}%
+                        </div>
+                        <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: MONO_FONT, marginTop: 2 }}>
+                          {formatTimestamp(entry.recordedAt)}
+                          {entry.reason ? ` · ${entry.reason}` : ""}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 11, color: COLORS.textMuted }}>No confidence history recorded yet.</div>
+                )}
+              </div>
+            </>
+          ) : (
+            <div style={{ fontSize: 11, color: COLORS.textMuted }}>
+              Select a procedure to inspect its learned steps, source episodes, and confidence history.
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  function renderSkillList() {
+    if (skills.length === 0) {
+      return (
+        <EmptyState
+          title="No indexed skills"
+          description="User-authored skill files and exported procedures will appear here after the registry scans the project."
+        />
+      );
+    }
+    return (
+      <div style={{ display: "grid", gap: 10 }}>
+        <div style={cardStyle({ padding: 12, display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" })}>
+          <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+            {sortedSkills.length} indexed skill{sortedSkills.length === 1 ? "" : "s"}
+          </div>
+          <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 10, color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+            sort
+            <select value={skillSort} onChange={(event) => setSkillSort(event.target.value as SkillSort)} style={{ ...SELECT_STYLE, width: 150, height: 28, fontSize: 10 }}>
+              <option value="modified">recently modified</option>
+              <option value="path">path</option>
+              <option value="source">source</option>
+            </select>
+          </label>
+        </div>
+        {sortedSkills.map((item) => (
+          <div key={item.id} style={cardStyle({ padding: 14, display: "flex", flexDirection: "column", gap: 8 })}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
+              <div>
+                <div style={{ fontSize: 13, color: COLORS.textPrimary, fontFamily: MONO_FONT }}>{item.path}</div>
+                <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: MONO_FONT, marginTop: 4 }}>
+                  {item.kind} · {item.source} · {item.archivedAt ? "archived" : "active"}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button type="button" style={outlineButton({ height: 28, padding: "0 10px", fontSize: 10 })} onClick={() => void window.ade.app.revealPath(item.path)}>
+                  REVEAL
+                </button>
+                <button type="button" style={outlineButton({ height: 28, padding: "0 10px", fontSize: 10 })} onClick={() => void handleReindexSkills([item.path])}>
+                  REINDEX
+                </button>
+              </div>
+            </div>
+            <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+              modified {formatTimestamp(item.lastModifiedAt)} · hash {item.contentHash.slice(0, 8)}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   /* ── Main render ── */
 
   return (
@@ -730,6 +1055,67 @@ export function MemoryHealthTab() {
           ADE remembers facts, preferences, and patterns across sessions. Browse, search, and manage your project's memory below.
         </p>
       </div>
+
+      <section style={cardStyle({ padding: 16, display: "flex", flexDirection: "column", gap: 14 })}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={SECTION_LABEL_STYLE}>KNOWLEDGE SYNC</div>
+            <div style={{ fontSize: 12, fontFamily: MONO_FONT, color: COLORS.textPrimary }}>
+              {knowledgeSyncStatus.syncing
+                ? "Digesting recent human work..."
+                : knowledgeSyncStatus.diverged
+                  ? "Project knowledge is behind HEAD"
+                  : "Project knowledge is up to date"}
+            </div>
+            <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.6 }}>
+              {`HEAD ${shortSha(knowledgeSyncStatus.currentHeadSha)} · last digested ${shortSha(knowledgeSyncStatus.lastSeenHeadSha)} · updated ${formatTimestamp(knowledgeSyncStatus.lastDigestAt)}`}
+            </div>
+            {knowledgeSyncStatus.lastError ? (
+              <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.warning }}>
+                {knowledgeSyncStatus.lastError}
+              </div>
+            ) : null}
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              style={tabButtonStyle(activeTab === "overview")}
+              onClick={() => setActiveTab("overview")}
+            >
+              Overview
+            </button>
+            <button
+              type="button"
+              style={tabButtonStyle(activeTab === "browser")}
+              onClick={() => setActiveTab("browser")}
+            >
+              Browser
+            </button>
+            <button
+              type="button"
+              style={tabButtonStyle(activeTab === "procedures")}
+              onClick={() => setActiveTab("procedures")}
+            >
+              Procedures
+            </button>
+            <button
+              type="button"
+              style={tabButtonStyle(activeTab === "skills")}
+              onClick={() => setActiveTab("skills")}
+            >
+              Skills
+            </button>
+            <button
+              type="button"
+              style={outlineButton({ height: 30, padding: "0 12px", fontSize: 10 })}
+              onClick={() => void handleSyncKnowledge()}
+              disabled={syncRunning || knowledgeSyncStatus.syncing}
+            >
+              {syncRunning || knowledgeSyncStatus.syncing ? "Syncing..." : "Sync Knowledge"}
+            </button>
+          </div>
+        </div>
+      </section>
 
       {/* Error banners */}
       {loadError ? (
@@ -748,6 +1134,16 @@ export function MemoryHealthTab() {
         <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>Loading memory...</div>
       ) : null}
 
+      {activeTab === "browser" ? (
+        <MemoryInspectorPanel showDocsSection={false} />
+      ) : null}
+
+      {activeTab === "procedures" ? renderProcedureList() : null}
+
+      {activeTab === "skills" ? renderSkillList() : null}
+
+      {activeTab === "overview" ? (
+        <>
       {/* ── Health summary ── */}
       <section style={cardStyle({ padding: 16, display: "flex", flexDirection: "column", gap: 14 })}>
         <div style={SECTION_LABEL_STYLE}>
@@ -1189,6 +1585,8 @@ export function MemoryHealthTab() {
           </div>
         ) : null}
       </section>
+        </>
+      ) : null}
     </div>
   );
 }

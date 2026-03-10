@@ -451,11 +451,17 @@ import type {
   BudgetCapScope,
   BudgetCapProvider,
   BudgetCapConfig,
+  ChangeDigest,
+  KnowledgeSyncStatus,
   MemoryHealthStats,
+  MemoryEntryDto,
   MemoryConsolidationResult,
   MemoryConsolidationStatusEventPayload,
   MemoryLifecycleSweepResult,
   MemorySweepStatusEventPayload,
+  ProcedureDetail,
+  ProcedureListItem,
+  SkillIndexEntry,
   GetMissionBudgetTelemetryArgs,
   GetMissionBudgetStatusArgs,
   MissionBudgetTelemetrySnapshot,
@@ -1339,6 +1345,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.memoryGetCandidates, args),
     promote: async (args: { id: string }): Promise<void> =>
       ipcRenderer.invoke(IPC.memoryPromote, args),
+    promoteMissionEntry: async (args: { id: string; missionId: string }): Promise<MemoryEntryDto | null> =>
+      ipcRenderer.invoke(IPC.memoryPromoteMissionEntry, args),
     archive: async (args: { id: string }): Promise<void> =>
       ipcRenderer.invoke(IPC.memoryArchive, args),
     search: async (args: {
@@ -1351,6 +1359,30 @@ contextBridge.exposeInMainWorld("ade", {
       status?: "promoted" | "candidate" | "archived" | "all";
     }): Promise<unknown[]> =>
       ipcRenderer.invoke(IPC.memorySearch, args),
+    listMissionEntries: async (args: {
+      missionId: string;
+      runId?: string | null;
+      status?: "promoted" | "candidate" | "archived" | "all";
+    }): Promise<MemoryEntryDto[]> =>
+      ipcRenderer.invoke(IPC.memoryListMissionEntries, args),
+    listProcedures: async (args: {
+      status?: "promoted" | "candidate" | "archived" | "all";
+      scope?: "project" | "agent" | "mission";
+      query?: string;
+    } = {}): Promise<ProcedureListItem[]> =>
+      ipcRenderer.invoke(IPC.memoryListProcedures, args),
+    getProcedureDetail: async (args: { id: string }): Promise<ProcedureDetail | null> =>
+      ipcRenderer.invoke(IPC.memoryGetProcedureDetail, args),
+    exportProcedureSkill: async (args: { id: string; name?: string }): Promise<{ path: string; skill: SkillIndexEntry | null } | null> =>
+      ipcRenderer.invoke(IPC.memoryExportProcedureSkill, args),
+    listIndexedSkills: async (): Promise<SkillIndexEntry[]> =>
+      ipcRenderer.invoke(IPC.memoryListIndexedSkills),
+    reindexSkills: async (args: { paths?: string[] } = {}): Promise<SkillIndexEntry[]> =>
+      ipcRenderer.invoke(IPC.memoryReindexSkills, args),
+    syncKnowledge: async (): Promise<ChangeDigest | null> =>
+      ipcRenderer.invoke(IPC.memorySyncKnowledge),
+    getKnowledgeSyncStatus: async (): Promise<KnowledgeSyncStatus> =>
+      ipcRenderer.invoke(IPC.memoryGetKnowledgeSyncStatus),
     getHealthStats: async (): Promise<MemoryHealthStats> =>
       ipcRenderer.invoke(IPC.memoryHealthStats),
     downloadEmbeddingModel: async (): Promise<MemoryHealthStats> =>

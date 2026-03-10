@@ -643,7 +643,7 @@ export function createCoordinatorToolSet(deps: {
     const trimmed = typeof explicit === "string" ? explicit.trim() : "";
     if (trimmed.length > 0) return trimmed;
     if (scope === "agent") return `coordinator:${runId}`;
-    if (scope === "mission") return runId;
+    if (scope === "mission") return missionId;
     return undefined;
   }
 
@@ -3547,13 +3547,21 @@ export function createCoordinatorToolSet(deps: {
           return { ok: false, error: "Project memory is not configured for this coordinator." };
         }
         const effectiveLimit = limit ?? 5;
-        const memories = await memoryService.search({
-          projectId,
-          query,
-          ...(scope ? { scope } : {}),
-          ...(scope ? { scopeOwnerId: resolveMemoryScopeOwnerId(scope, scopeOwnerId) ?? null } : {}),
-          limit: effectiveLimit,
-        });
+        const memories = scope === "mission"
+          ? await memoryService.searchAcrossScopeOwners({
+              projectId,
+              query,
+              scope: "mission",
+              scopeOwnerIds: [missionId, runId, scopeOwnerId ?? null],
+              limit: effectiveLimit,
+            })
+          : await memoryService.search({
+              projectId,
+              query,
+              ...(scope ? { scope } : {}),
+              ...(scope ? { scopeOwnerId: resolveMemoryScopeOwnerId(scope, scopeOwnerId) ?? null } : {}),
+              limit: effectiveLimit,
+            });
         return {
           ok: true,
           memories: memories.map((memory) => ({
@@ -3622,16 +3630,6 @@ export function createCoordinatorToolSet(deps: {
             ok: false,
             error: result.reason ?? "Project memory write was rejected.",
           };
-        }
-
-        try {
-          memoryService.addSharedFact({
-            runId,
-            factType: mapMemoryCategoryToFactType(category),
-            content,
-          });
-        } catch {
-          // Best-effort: durable memory write should succeed even if shared-fact propagation fails.
         }
 
         return {

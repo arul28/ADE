@@ -81,11 +81,17 @@ import type {
   BudgetCapScope,
   BudgetCapProvider,
   BudgetCapConfig,
+  ChangeDigest,
+  KnowledgeSyncStatus,
   MemoryHealthStats,
+  MemoryEntryDto,
   MemoryConsolidationResult,
   MemoryConsolidationStatusEventPayload,
   MemoryLifecycleSweepResult,
   MemorySweepStatusEventPayload,
+  ProcedureDetail,
+  ProcedureListItem,
+  SkillIndexEntry,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -929,6 +935,7 @@ declare global {
         getBudget: (args?: { projectId?: string; level?: string; scope?: "user" | "project" | "lane" | "mission" | "agent"; scopeOwnerId?: string }) => Promise<unknown[]>;
         getCandidates: (args?: { projectId?: string; limit?: number }) => Promise<unknown[]>;
         promote: (args: { id: string }) => Promise<void>;
+        promoteMissionEntry: (args: { id: string; missionId: string }) => Promise<MemoryEntryDto | null>;
         archive: (args: { id: string }) => Promise<void>;
         search: (args: {
           query: string;
@@ -939,6 +946,22 @@ declare global {
           mode?: "lexical" | "hybrid";
           status?: "promoted" | "candidate" | "archived" | "all";
         }) => Promise<unknown[]>;
+        listMissionEntries: (args: {
+          missionId: string;
+          runId?: string | null;
+          status?: "promoted" | "candidate" | "archived" | "all";
+        }) => Promise<MemoryEntryDto[]>;
+        listProcedures: (args?: {
+          status?: "promoted" | "candidate" | "archived" | "all";
+          scope?: "project" | "agent" | "mission";
+          query?: string;
+        }) => Promise<ProcedureListItem[]>;
+        getProcedureDetail: (args: { id: string }) => Promise<ProcedureDetail | null>;
+        exportProcedureSkill: (args: { id: string; name?: string }) => Promise<{ path: string; skill: SkillIndexEntry | null } | null>;
+        listIndexedSkills: () => Promise<SkillIndexEntry[]>;
+        reindexSkills: (args?: { paths?: string[] }) => Promise<SkillIndexEntry[]>;
+        syncKnowledge: () => Promise<ChangeDigest | null>;
+        getKnowledgeSyncStatus: () => Promise<KnowledgeSyncStatus>;
         getHealthStats: () => Promise<MemoryHealthStats>;
         downloadEmbeddingModel: () => Promise<MemoryHealthStats>;
         runSweep: () => Promise<MemoryLifecycleSweepResult>;

@@ -63,6 +63,12 @@ import { createEmbeddingWorkerService } from "./services/memory/embeddingWorkerS
 import { createHybridSearchService } from "./services/memory/hybridSearchService";
 import { createUnifiedMemoryService } from "./services/memory/unifiedMemoryService";
 import { createMemoryLifecycleService } from "./services/memory/memoryLifecycleService";
+import { createMemoryBriefingService } from "./services/memory/memoryBriefingService";
+import { createMissionMemoryLifecycleService } from "./services/memory/missionMemoryLifecycleService";
+import { createEpisodicSummaryService } from "./services/memory/episodicSummaryService";
+import { createHumanWorkDigestService } from "./services/memory/humanWorkDigestService";
+import { createProceduralLearningService } from "./services/memory/proceduralLearningService";
+import { createSkillRegistryService } from "./services/memory/skillRegistryService";
 import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createWorkerAgentService } from "./services/cto/workerAgentService";
 import { createWorkerRevisionService } from "./services/cto/workerRevisionService";
@@ -507,6 +513,7 @@ app.whenReady().then(async () => {
     let automationService: ReturnType<typeof createAutomationService> | null = null;
     let rebaseSuggestionService: ReturnType<typeof createRebaseSuggestionService> | null = null;
     let autoRebaseService: ReturnType<typeof createAutoRebaseService> | null = null;
+    let humanWorkDigestService: ReturnType<typeof createHumanWorkDigestService> | null = null;
 
     const lastHeadByLaneId = new Map<string, string>();
 
@@ -535,6 +542,15 @@ app.whenReady().then(async () => {
         preHeadSha: prev,
         postHeadSha
       });
+      const laneTypeRow = db.get<{ lane_type: string | null }>(
+        `select lane_type from lanes where id = ? and project_id = ? limit 1`,
+        [laneId, projectId]
+      );
+      if (String(laneTypeRow?.lane_type ?? "").trim() === "primary") {
+        void humanWorkDigestService
+          .onHeadChanged({ preHeadSha: prev, postHeadSha })
+          .catch(() => {});
+      }
       void rebaseSuggestionService
         ?.onParentHeadChanged({ laneId, reason: args.reason, preHeadSha: prev, postHeadSha })
         .catch(() => {});
@@ -882,6 +898,41 @@ app.whenReady().then(async () => {
       sessionService,
     });
     embeddingWorkerServiceRef = embeddingWorkerService;
+    const memoryBriefingService = createMemoryBriefingService({
+      memoryService,
+    });
+    const missionMemoryLifecycleService = createMissionMemoryLifecycleService({
+      logger,
+      memoryService,
+    });
+    const proceduralLearningService = createProceduralLearningService({
+      db,
+      logger,
+      projectId,
+      memoryService,
+    });
+    const episodicSummaryService = createEpisodicSummaryService({
+      projectId,
+      projectRoot,
+      logger,
+      aiIntegrationService,
+      memoryService,
+      onEpisodeSaved: (memoryId) => proceduralLearningService.onEpisodeSaved(memoryId),
+    });
+    humanWorkDigestService = createHumanWorkDigestService({
+      projectId,
+      projectRoot,
+      logger,
+      memoryService,
+    });
+    const skillRegistryService = createSkillRegistryService({
+      db,
+      projectId,
+      projectRoot,
+      logger,
+      memoryService,
+      proceduralLearningService,
+    });
     const contextDocService = createContextDocService({
       db,
       logger,
@@ -933,6 +984,7 @@ app.whenReady().then(async () => {
       workerTaskSessionService,
       workerBudgetService,
       memoryService,
+      memoryBriefingService,
       ctoStateService,
       logger,
     });
@@ -978,6 +1030,7 @@ app.whenReady().then(async () => {
       memoryService,
       packService,
       workerAgentService,
+      episodicSummaryService,
       laneService,
       sessionService,
       projectConfigService,
@@ -1081,7 +1134,8 @@ app.whenReady().then(async () => {
       laneService,
       aiIntegrationService,
       projectConfigService,
-      missionBudgetService
+      missionBudgetService,
+      humanWorkDigestService,
     });
 
     const orchestratorService = createOrchestratorService({
@@ -1096,6 +1150,9 @@ app.whenReady().then(async () => {
       projectConfigService,
       aiIntegrationService,
       memoryService,
+      memoryBriefingService,
+      missionMemoryLifecycleService,
+      episodicSummaryService,
       onEvent: (event) => {
         aiOrchestratorServiceRef?.onOrchestratorRuntimeEvent(event);
         emitProjectEvent(projectRoot, IPC.orchestratorEvent, event);
@@ -1117,6 +1174,8 @@ app.whenReady().then(async () => {
       queueRehearsalService,
       projectRoot,
       missionBudgetService,
+      humanWorkDigestService,
+      missionMemoryLifecycleService,
       onThreadEvent: (event) => emitProjectEvent(projectRoot, IPC.orchestratorThreadEvent, event),
       onDagMutation: (event) => emitProjectEvent(projectRoot, IPC.orchestratorDagMutation, event)
     });
@@ -1189,6 +1248,18 @@ app.whenReady().then(async () => {
       logger.warn("memory.embedding_worker.start_failed", {
         projectId,
         error: error instanceof Error ? error.message : String(error)
+      });
+    });
+    void humanWorkDigestService.syncKnowledge().catch((error) => {
+      logger.warn("memory.human_digest.startup_sync_failed", {
+        projectId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    void skillRegistryService.start().catch((error) => {
+      logger.warn("memory.skill_registry.start_failed", {
+        projectId,
+        error: error instanceof Error ? error.message : String(error),
       });
     });
 
@@ -1424,6 +1495,12 @@ app.whenReady().then(async () => {
       memoryService,
       batchConsolidationService,
       memoryLifecycleService,
+      memoryBriefingService,
+      missionMemoryLifecycleService,
+      episodicSummaryService,
+      humanWorkDigestService,
+      proceduralLearningService,
+      skillRegistryService,
       embeddingService,
       embeddingWorkerService,
       ctoStateService,
@@ -1504,6 +1581,12 @@ app.whenReady().then(async () => {
       memoryService: null,
       batchConsolidationService: null,
       memoryLifecycleService: null,
+      memoryBriefingService: null,
+      missionMemoryLifecycleService: null,
+      episodicSummaryService: null,
+      humanWorkDigestService: null,
+      proceduralLearningService: null,
+      skillRegistryService: null,
       ctoStateService: null,
       workerAgentService: null,
       workerRevisionService: null,
@@ -1551,6 +1634,11 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.workerHeartbeatService?.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      await ctx.skillRegistryService?.dispose?.();
     } catch {
       // ignore
     }

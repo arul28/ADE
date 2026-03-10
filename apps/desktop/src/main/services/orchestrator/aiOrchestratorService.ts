@@ -737,6 +737,8 @@ export function createAiOrchestratorService(args: {
   queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   queueRehearsalService?: ReturnType<typeof createQueueRehearsalService> | null;
   missionBudgetService?: import("./missionBudgetService").MissionBudgetService | null;
+  humanWorkDigestService?: import("../memory/humanWorkDigestService").HumanWorkDigestService | null;
+  missionMemoryLifecycleService?: import("../memory/missionMemoryLifecycleService").MissionMemoryLifecycleService | null;
   projectRoot?: string;
   onThreadEvent?: (event: OrchestratorThreadEvent) => void;
   onDagMutation?: (event: DagMutationEvent) => void;
@@ -756,6 +758,8 @@ export function createAiOrchestratorService(args: {
     queueLandingService,
     queueRehearsalService,
     missionBudgetService,
+    humanWorkDigestService,
+    missionMemoryLifecycleService,
     projectRoot,
     onThreadEvent,
     onDagMutation,
@@ -6691,6 +6695,10 @@ Check all worker statuses and continue managing the mission from here. Read work
       )
     );
     const { userRules, projectCtx, availableProviders, phases } = gatherCoordinatorContext(missionId, args);
+    const knowledgeStatus = await humanWorkDigestService?.getKnowledgeSyncStatus?.().catch(() => null) ?? null;
+    if (knowledgeStatus?.diverged) {
+      await humanWorkDigestService?.syncKnowledge?.();
+    }
     const activePolicy = resolveActivePolicy(missionId);
     const sortedPhases = [...phases].sort((a, b) => a.position - b.position);
     const runtimePhases = activePolicy.planning.mode === "off"
@@ -6765,6 +6773,12 @@ Check all worker statuses and continue managing the mission from here. Read work
           : null,
         ...(phaseRuntime ? { phaseRuntime } : {}),
       }
+    });
+    missionMemoryLifecycleService?.startMission({
+      projectId: projectCtx.projectId,
+      missionId,
+      runId: started.run.id,
+      initialDecision: initialMission.prompt ?? initialMission.title,
     });
 
     // ── Create a dedicated mission lane ──
