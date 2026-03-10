@@ -24,8 +24,10 @@ function cosineSimilarity(a: Float32Array, b: Float32Array): number {
 }
 ```
 
-## BM25 via FTS3 + matchinfo()
-sql.js includes FTS3 but NOT FTS5. Use FTS3 with `matchinfo('pcnalx')` to get term frequency statistics, then compute BM25 in JavaScript:
+## BM25 via FTS3/FTS4 + matchinfo()
+sql.js includes FTS3 and FTS4, but NOT FTS5. For plain virtual tables, FTS3 works. For **external-content virtual tables** (e.g., `fts4(content, content=unified_memories)`), FTS4 is required — sql.js rejects external-content FTS3 syntax. The `matchinfo()` API is identical in FTS3 and FTS4.
+
+Use FTS3/FTS4 with `matchinfo('pcnalx')` to get term frequency statistics, then compute BM25 in JavaScript:
 - p = number of matchable phrases
 - c = number of columns
 - n = number of rows in FTS table

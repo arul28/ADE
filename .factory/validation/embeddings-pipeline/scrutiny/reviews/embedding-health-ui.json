@@ -1,0 +1,56 @@
+{
+  "featureId": "embedding-health-ui",
+  "reviewedAt": "2026-03-10T02:40:00.000Z",
+  "commitId": "6a7f9165eeac6c4b9a4d3e15e9932484a996ab9f",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "The embedding health UI feature is fully and correctly implemented. MemoryHealthTab gains an EMBEDDINGS section with backfill progress bar, model status/download indicator, and cache stats. MemoryInspector gains search-mode toggle buttons and an Embedded column in the full (non-compact) table view. IPC surface is wired end-to-end (ipc.ts, registerIpc.ts, preload.ts, global.d.ts). All 12 expected behaviors from the feature spec are met. Tests pass and TypeScript is clean. Four non-blocking observations follow.",
+    "issues": [
+      {
+        "file": "apps/desktop/src/renderer/components/settings/EmbeddingHealthSection.test.tsx",
+        "line": 1,
+        "severity": "non_blocking",
+        "description": "The test file is named EmbeddingHealthSection.test.tsx but no standalone EmbeddingHealthSection component was created; the embedding UI was added inline to MemoryHealthTab.tsx. The test imports MemoryHealthTab directly. Naming is misleading — no functional impact on coverage, but if a future developer looks for EmbeddingHealthSection.tsx they will not find it."
+      },
+      {
+        "file": "apps/desktop/src/main/services/ipc/registerIpc.ts",
+        "line": 1684,
+        "severity": "non_blocking",
+        "description": "Commit 6a7f916 bundles two mission-unrelated IPC handlers (missionsGetRunView and missionsArchive) alongside the embedding health UI changes. These appear to serve the in-flight missionsFix branch work (MissionRunPanel.tsx, useMissionRunView.ts are untracked). The AGENTS.md off-limits constraint covers src/main/services/orchestrator/ but not registerIpc.ts, so this is technically within bounds, but it muddies the embedding-health-ui commit boundary."
+      },
+      {
+        "file": "apps/desktop/src/main/services/ipc/registerIpc.ts",
+        "line": 4220,
+        "severity": "non_blocking",
+        "description": "memoryDownloadEmbeddingModel IPC handler fires ctx.embeddingService.preload() with void (fire-and-forget) and immediately returns getMemoryHealthStats(ctx). Because ensureExtractor() sets state='idle' synchronously before the 'loading' transition happens asynchronously, the returned stats may show state='idle' rather than 'loading'. The user therefore sees no immediate UI feedback after clicking Download; the polling interval (1500ms) must fire before the Downloading state appears. The test mocks this away with a custom downloadEmbeddingModel response. UX is slightly suboptimal but functionally correct."
+      },
+      {
+        "file": "apps/desktop/src/renderer/components/settings/MemoryHealthTab.tsx",
+        "line": 36,
+        "severity": "non_blocking",
+        "description": "createEmptyMemoryHealthStats() / createEmptyEmbeddingStats helper object is duplicated in MemoryHealthTab.tsx, MemoryInspector.tsx, EmbeddingHealthSection.test.tsx, and MemoryInspector.test.tsx. The duplication is harmless and tests are self-contained, but if the MemoryEmbeddingHealthStats shape changes, all four copies need updating."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "conventions",
+      "observation": "The worker attempted to run `.factory/init.sh` with `python3` (because the skill SKILL.md says to run init.sh). The file is a shell script, not a Python script. This caused a wasted tool call on every interrupted+resumed session.",
+      "evidence": "Transcript skeleton shows: Execute { command: 'python3 /Users/admin/Projects/ADE/.factory/init.sh' }. skillFeedback.deviations[0] confirms: 'The script is a shell script, not a Python script'. The SKILL.md ui-worker procedure says to run .factory/init.sh but does not specify the interpreter, leading workers to guess."
+    },
+    {
+      "area": "skills",
+      "observation": "The ui-worker skill procedure (steps 3-4: write component tests first, then implement) could not be followed because the assigned feature was already fully implemented when the resumed session started. The skill has no guidance for resume/continuation scenarios where all code is already committed.",
+      "evidence": "skillFeedback.followedProcedure=false, deviations[1]: 'On resume, I verified the already-committed feature instead of writing new tests or modifying code.' The skill should document how to handle resumed interrupted sessions where the prior worker committed the full implementation."
+    },
+    {
+      "area": "conventions",
+      "observation": "The commit 6a7f916 bundles mission-unrelated IPC additions (missionsArchive, missionsGetRunView, subscribeRunView) alongside the embedding health UI feature. The AGENTS.md off-limits list focuses on the orchestrator service directory but does not explicitly state that registerIpc.ts / preload.ts edits must stay within embedding/memory scope. A convention clarification could prevent cross-feature commits in future milestones.",
+      "evidence": "git show 6a7f916 --stat: registerIpc.ts +122/-1, preload.ts +60/-0. Missions-related types GetMissionRunViewArgs, MissionRunView, ArchiveMissionArgs imported. These are used by MissionRunPanel.tsx (untracked) / useMissionRunView.ts (untracked) in the missionsFix branch."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "PASS. The embedding-health-ui feature is completely and correctly implemented. All 12 expected behaviors are covered: embedding backfill progress bar with polling, model download/load/unavailable states with progress, cache stats (size, hit rate, hits, misses), search-mode toggle (Lexical/Hybrid) in MemoryInspector with correct default logic, Embedded column in the table view, and fresh-install state handling. IPC is wired through all four required layers. Component tests in EmbeddingHealthSection.test.tsx and MemoryInspector.test.tsx cover the key scenarios. TypeScript and tests pass. Four non-blocking issues were noted: a misleading test file name, out-of-scope mission IPC changes bundled in the same commit, a subtle post-download UX timing gap (state reflects idle briefly before polling kicks in), and duplicated empty-stats factory helpers."
+}
