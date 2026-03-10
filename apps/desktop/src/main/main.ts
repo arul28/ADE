@@ -1644,7 +1644,7 @@ app.whenReady().then(async () => {
     if (existing) {
       existing.hasUserSelectedProject = true;
       setActiveProject(repoRoot);
-      persistRecentProject(existing.project, { recordLastProject: true, recordRecent: true });
+      persistRecentProject(existing.project, { recordLastProject: true, recordRecent: false });
       return existing.project;
     }
 
