@@ -315,6 +315,8 @@ export type PhaseCard = {
   validationGate: PhaseCardValidationGate;
   /** When true, transitioning away from this phase requires explicit user approval. */
   requiresApproval?: boolean;
+  /** Optional capabilities enabled for this phase (e.g., "agent-browser"). */
+  capabilities?: string[];
   isBuiltIn: boolean;
   isCustom: boolean;
   position: number;

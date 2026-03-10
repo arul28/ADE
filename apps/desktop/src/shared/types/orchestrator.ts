@@ -1620,7 +1620,7 @@ export type OrchestratorPromptInspector = {
   fullPrompt: string;
 };
 
-export type OrchestratorArtifactKind = "file" | "branch" | "pr" | "test_report" | "checkpoint" | "custom";
+export type OrchestratorArtifactKind = "file" | "branch" | "pr" | "test_report" | "checkpoint" | "custom" | "screenshot" | "video";
 
 export type OrchestratorArtifact = {
   id: string;
