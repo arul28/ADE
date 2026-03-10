@@ -116,7 +116,7 @@ hybridSearchService.ts       — FTS5 + vec_distance_cosine fusion, MMR re-ranki
 
 All three services instantiated in `main.ts` and injected into `unifiedMemoryService` as optional dependencies. If embedding services are unavailable, `unifiedMemoryService` continues with its current lexical path unchanged.
 
-**Implementation status:** Not started.
+**Implementation status:** ✅ Complete (2026-03-09). Local embedding pipeline using `@huggingface/transformers` with all-MiniLM-L6-v2, background embedding worker service with backfill, hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking), graceful degradation to lexical fallback, and Memory Health embedding status dashboard are all shipped.
 
 **Tests:**
 - sqlite-vec extension loading: verify `vec0` table creation, `vec_distance_cosine()` returns correct similarity for known vectors, extension loads on all supported platforms.

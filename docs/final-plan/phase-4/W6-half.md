@@ -163,7 +163,7 @@ create table if not exists context_snapshots (
   - Manual action buttons: "Run Sweep Now", "Run Consolidation Now".
 - **Context snapshot viewer**: In Mission Logs tab, each worker run shows an expandable "Context Snapshot" section listing the memory entries injected at each level (L0/L1/L2/mission) with entry IDs linked to the Memory inspector.
 
-**Implementation status:** Not started.
+**Implementation status:** ✅ Complete (2026-03-09). Memory lifecycle sweeps (temporal decay, tier demotion, candidate promotion, hard limit enforcement, orphan cleanup), batch consolidation (Jaccard trigram clustering + LLM merge), pre-compaction flush, and Memory Health dashboard in Settings are all shipped.
 
 **Tests:**
 - Pre-compaction flush: flush turn injected when tokens exceed threshold, memoryAdd calls in flush turn persist entries, flush counter prevents double-flush, flush skipped when counter > maxFlushTurns.

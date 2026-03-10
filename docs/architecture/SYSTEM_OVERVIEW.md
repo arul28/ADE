@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-06
+> Last updated: 2026-03-09
 >
 > Roadmap note: future sequencing and planned architecture expansion (orchestrator, MCP, relay, iOS, machine hub) are maintained in `docs/final-plan/README.md`.
 
@@ -189,8 +189,8 @@ Common utility code is consolidated into shared modules to eliminate duplication
 | `aiOrchestratorService` | `aiOrchestratorService.ts` (~7.7K lines) + 8 extracted modules (see below) | AI orchestrator coordination layer. Decomposed from a 13.2K-line monolith into a focused core plus domain-specific modules. |
 | `agentChatService` | `agentChatService.ts` | Agent chat session lifecycle, Codex App Server JSON-RPC client, Claude multi-turn backend, unified API/local backend, ChatEvent streaming |
 | `metaReasoner` | `metaReasoner.ts` | AI-driven fan-out dispatch analysis, dynamic step injection, fan-out strategy selection |
-| `compactionEngine` | `compactionEngine.ts` | Token monitoring, self-summarization at 70% threshold, shared-fact/summarization writeback, conversation replacement. Full silent memory-flush integration remains future work. |
-| `memoryService` | `memoryService.ts` | Unified durable memory backend backed by `unified_memories`: project/agent/mission scopes, pinned/hot/cold tiers, lexical/composite ranking, pin/promote/archive flows, and DB-backed persistence in `.ade/ade.db`. Embedding-backed retrieval, consolidation, and full pre-compaction flush remain future work. |
+| `compactionEngine` | `compactionEngine.ts` | Token monitoring, self-summarization at 70% threshold, shared-fact/summarization writeback, conversation replacement. Pre-compaction memory flush (W6½) injects a silent agentic turn before compaction to persist in-context discoveries. |
+| `memoryService` | `memoryService.ts` | Unified durable memory backend backed by `unified_memories`: project/agent/mission scopes, pinned/hot/cold tiers, hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking), pin/promote/archive flows, lifecycle sweeps (temporal decay, tier demotion, hard limits, orphan cleanup), batch consolidation (Jaccard trigram clustering + LLM merge), and DB-backed persistence in `.ade/ade.db`. Local embeddings via `@huggingface/transformers` (all-MiniLM-L6-v2) with background worker and graceful lexical fallback. |
 | `ctoAgent` | `ctoStateService.ts` | CTO agent subsystem — persistent identity, 3-tier memory, org chart, heartbeat, Linear sync, budget enforcement |
 | `externalMcpClient` | *Planned* | Connects to external MCP servers for extended agent capabilities — lazy connect, permission integration, tool manifest merging |
 | `adeStateManager` | *Planned* | Manages `.ade/` portable state directory — cross-machine sync via git, embedding regeneration on clone, state integrity checks |
@@ -456,7 +456,7 @@ ADE is designed to be fully portable across developer machines without requiring
 
 **No hub needed**: Unlike systems that require a central server for state sync, ADE relies entirely on git. When a developer pushes their `.ade/` changes, other machines receive the state on the next pull. This is intentionally simple and works with any git hosting provider.
 
-**Embedding storage**: Memory embeddings are stored in `unified_memory_embeddings` inside `.ade/ade.db`, but they are not yet used by active retrieval. Native sqlite-vec virtual-table integration is deferred; the current runtime uses lexical/composite scoring in `unifiedMemoryService.ts`.
+**Embedding storage**: Memory embeddings are generated locally by `@huggingface/transformers` (all-MiniLM-L6-v2, 384-dim) and stored in `unified_memory_embeddings` inside `.ade/ade.db`. Hybrid retrieval (FTS4 BM25 30% + cosine similarity 70% + MMR re-ranking) is the active search path, with graceful fallback to lexical/composite scoring when embeddings are unavailable.
 
 **Phase 8 relay is NOT state sync**: The planned Phase 8 relay server enables real-time remote control of a running ADE instance (e.g., from an iOS app). This is an operational bridge — it streams live events and accepts commands from a remote client to a running desktop instance. It does not participate in state synchronization, which remains purely git-based.
 
@@ -492,7 +492,9 @@ Current codebase status is feature-rich across lanes, files, terminals, conflict
 | Inter-agent messaging | Complete |
 | Memory architecture (scoped namespaces + candidate/promoted lifecycle) | Complete |
 | Shared facts + run narrative | Complete |
-| Unified Memory System (W6) — replaces pack-first renderer surfaces and unifies retrieval | Baseline shipped (Phase 4); native sqlite-vec deferred |
+| Unified Memory System (W6) — replaces pack-first renderer surfaces and unifies retrieval | Complete (Phase 4) |
+| Memory Engine Hardening (W6½) — lifecycle sweeps, batch consolidation, pre-compaction flush | Complete (Phase 4) |
+| Embeddings Pipeline (W7a) — local all-MiniLM-L6-v2, hybrid FTS+cosine retrieval, MMR re-ranking | Complete (Phase 4) |
 | Skills + Learning Pipeline (W7) — procedural extraction, skill materialization to `.claude/skills/` | Planned (Phase 4) |
 | CTO Agent — core identity, memory, persistent chat (W1) | Complete (Phase 4) |
 | Worker Agents — org chart, multi-adapter, config versioning, budget, task sessions (W2) | Complete (Phase 4) |
@@ -503,6 +505,6 @@ Current codebase status is feature-rich across lanes, files, terminals, conflict
 | Play Runtime Isolation (Phase 5) — laneEnvironmentService, laneProxyService, portAllocationService, laneTemplateService, oauthRedirectService, runtimeDiagnosticsService | Complete |
 | Compute backend abstraction (Phase 5.5) | Dropped (VPS is just another machine running ADE) |
 
-Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is ~90% complete — orchestrator evolution shipped (meta-reasoner, compaction engine, session persistence, inter-agent messaging, mission chat workspace, scoped memory architecture, shared facts, run narrative, phase-based planning runtime, PR strategies). MCP dual-mode architecture shipped: transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding at `.ade/mcp.sock`, smart entry point auto-detection, 35 tools available in both modes. Phase 4 W1-W4 and W6 are complete. Remaining Phase 4 workstreams execute in order W7→W5. Native sqlite-vec integration is deferred; current shipped retrieval is lexical/composite scoring, with embedding-backed retrieval still future work. Phase 5 (Play Runtime Isolation) is complete. Phase 5.5 (Compute Backend Abstraction) was dropped — VPS is just another machine running ADE. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
+Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is ~90% complete — orchestrator evolution shipped (meta-reasoner, compaction engine, session persistence, inter-agent messaging, mission chat workspace, scoped memory architecture, shared facts, run narrative, phase-based planning runtime, PR strategies). MCP dual-mode architecture shipped: transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding at `.ade/mcp.sock`, smart entry point auto-detection, 35 tools available in both modes. Phase 4 W1-W4, W6, W6½, and W7a are complete. Memory engine now includes lifecycle sweeps (temporal decay, tier demotion, hard limits, orphan cleanup), batch consolidation (Jaccard trigram clustering + LLM merge), pre-compaction flush, local embedding pipeline (`@huggingface/transformers` all-MiniLM-L6-v2), and hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking) with graceful lexical fallback. Memory Health dashboard in Settings provides visibility into entry counts, sweep/consolidation logs, embedding progress, and hard limit usage. Remaining Phase 4 workstreams: W-UX, W7b, W7c, W5b, W8, W9, W10. Phase 5 (Play Runtime Isolation) is complete. Phase 5.5 (Compute Backend Abstraction) was dropped — VPS is just another machine running ADE. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
 
 - `docs/final-plan/README.md`

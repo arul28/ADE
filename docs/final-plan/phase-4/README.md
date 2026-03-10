@@ -14,9 +14,9 @@ Goal: Add the CTO agent as a persistent project-aware assistant with a configura
 | W4: Bidirectional Linear Sync | [W1-W4.md](W1-W4.md) | ✅ Complete |
 | W5: Automations Platform + Night Shift | [W5.md](W5.md) | W5a ✅ / W5b not started |
 | W6: Unified Memory System | [W6.md](W6.md) | ✅ Complete |
-| W6½: Memory Engine Hardening | [W6-half.md](W6-half.md) | Not started |
+| W6½: Memory Engine Hardening | [W6-half.md](W6-half.md) | ✅ Complete |
 | W-UX: CTO + Org Experience Overhaul | [W-UX.md](W-UX.md) | Not started |
-| W7a: Embeddings Pipeline | [W7a.md](W7a.md) | Not started |
+| W7a: Embeddings Pipeline | [W7a.md](W7a.md) | ✅ Complete |
 | W7b: Orchestrator ↔ Memory Integration | [W7b.md](W7b.md) | Not started |
 | W7c: Skills + Learning Pipeline | [W7c.md](W7c.md) | Not started |
 | W8: External MCP Consumption | [W8.md](W8.md) | Not started |
@@ -59,25 +59,26 @@ Workstreams are numbered by topic but executed in dependency order. W1-W4, W5a, 
 - W4: Bidirectional Linear Sync ✅
 - W5a: Automations — Usage + Budget + UI ✅
 - W6: Unified Memory System ✅ (lexical/composite scoring; no embeddings)
+- W6½: Memory Engine Hardening ✅ (lifecycle sweeps, batch consolidation, pre-compaction flush)
+- W7a: Embeddings Pipeline ✅ (local all-MiniLM-L6-v2, hybrid FTS+cosine retrieval, MMR re-ranking)
 
 **Known gaps in shipped work** (addressed by remaining workstreams):
-- Memory system has no pre-compaction flush, no lifecycle sweeps, no batch consolidation, no embeddings
 - CTO works without setup flow — no onboarding, no identity configuration, no guided Linear connection
 - Inconsistent theming across CTO/Automations/Memory surfaces; poor discoverability of worker management
 - Orchestrator doesn't systematically write to or read from unified memory during missions
 - No episodic summary generation, no skill extraction pipeline
 
 ```
-Wave 3 (current — memory + UX foundation):
-  W6½: Memory Engine Hardening            ← needs W6 (shipped)
+Wave 3 (complete — memory + UX foundation):
+  W6½: Memory Engine Hardening            ✅ Complete
   W-UX: CTO + Org Experience Overhaul     ← needs W1-W4 (shipped), can parallel with W6½
 
-Wave 4 (after W6½ — embeddings + orchestrator memory):
-  W7a: Embeddings Pipeline                ← needs W6½
-  W7b: Orchestrator ↔ Memory Integration  ← needs W6½ + stable orchestrator
+Wave 4 (complete — embeddings; orchestrator memory next):
+  W7a: Embeddings Pipeline                ✅ Complete
+  W7b: Orchestrator ↔ Memory Integration  ← needs W6½ (shipped) + stable orchestrator
 
-Wave 5 (after W7a + W7b — skills):
-  W7c: Skills + Learning Pipeline         ← needs W7a (embeddings) + W7b (episodic summaries)
+Wave 5 (after W7b — skills):
+  W7c: Skills + Learning Pipeline         ← needs W7a (shipped) + W7b (episodic summaries)
 
 Wave 6 (after stable orchestrator — automations):
   W5b: Automations — Executors + Night Shift + External Triggers  ← needs W5a + stable orchestrator + W6½
@@ -94,9 +95,9 @@ W1-W4 ✅ ──→ W5a ✅ ──→ W5b (Automations Full)
      │                      ↑
      │                      │ (needs stable orchestrator)
      │
-     ├──→ W6 ✅ ──→ W6½ (Memory Hardening) ──→ W7a (Embeddings) ──→ W7c (Skills)
-     │              │                                                    ↑
-     │              ├──→ W7b (Orch ↔ Memory) ────────────────────────────┘
+     ├──→ W6 ✅ ──→ W6½ ✅ ──→ W7a ✅ ──→ W7c (Skills)
+     │              │                          ↑
+     │              ├──→ W7b (Orch ↔ Memory) ──┘
      │              │         ↑ (needs stable orchestrator)
      │              └──→ W10 (.ade/ State)
      │
@@ -172,11 +173,11 @@ Phase 4 should enable a "tech department" loop: one persistent agent per employe
 - ✅ Multi-adapter pattern supports claude-local, codex-local, openclaw-webhook, and process backends.
 - ✅ Unified memory system with lexical/composite scoring, write gate dedup, tier lifecycle, and hard limits.
 
-**W6½ — Memory Engine Hardening:**
-- Pre-compaction flush prevents memory loss during context compaction.
-- Lifecycle sweeps enforce temporal decay, tier demotions, candidate promotion, and hard limit enforcement on schedule.
-- Batch consolidation merges near-duplicate entries via LLM, preventing unbounded memory growth.
-- Context snapshots captured per worker run for debugging and retrospective analysis.
+**W6½ — Memory Engine Hardening: ✅ Complete**
+- ✅ Pre-compaction flush prevents memory loss during context compaction.
+- ✅ Lifecycle sweeps enforce temporal decay (30-day half-life), tier demotions (Tier 2→3 at 90d, Tier 3→archived at 180d), candidate promotion (confidence ≥ 0.7 + observationCount ≥ 2), hard limit enforcement (project: 2K, agent: 500, mission: 200), and orphan cleanup on schedule.
+- ✅ Batch consolidation merges near-duplicate entries via Jaccard trigram clustering + LLM merge, preventing unbounded memory growth.
+- ✅ Memory Health dashboard in Settings > Memory shows entry counts, sweep/consolidation logs, hard limit usage, and manual action buttons.
 
 **W-UX — CTO + Org Experience Overhaul:**
 - First-run CTO onboarding wizard: identity setup, project context scan, integration connection.
@@ -188,12 +189,12 @@ Phase 4 should enable a "tech department" loop: one persistent agent per employe
 - Worker management consolidated into discoverable Team panel with creation wizard, activity feed, and detail slide-out.
 - Fat/thin context delivery: mission workers get full context, heartbeat checks get minimal context.
 
-**W7a — Embeddings Pipeline:**
-- sqlite-vec loaded as native SQLite extension with `vec0` virtual tables.
-- all-MiniLM-L6-v2 GGUF model runs locally for embedding inference (< 100ms per entry).
-- Background embedding job processes new entries and backfills existing ones without blocking.
-- Hybrid retrieval: BM25 (30%) + cosine similarity (70%) with MMR re-ranking replaces lexical-only scoring.
-- Graceful degradation: embedding pipeline disabled → lexical fallback, identical to shipped W6 behavior.
+**W7a — Embeddings Pipeline: ✅ Complete**
+- ✅ Local all-MiniLM-L6-v2 model runs via `@huggingface/transformers` for embedding inference.
+- ✅ Background embedding worker service processes new entries and backfills existing ones without blocking.
+- ✅ Hybrid retrieval: FTS4 BM25 (30%) + cosine similarity (70%) with MMR re-ranking replaces lexical-only scoring.
+- ✅ Graceful degradation: embedding pipeline disabled → lexical fallback, identical to shipped W6 behavior.
+- ✅ Memory Health dashboard shows embedding progress, model status, and cache stats.
 
 **W7b — Orchestrator ↔ Memory Integration:**
 - Mission memory lifecycle: scope creation → accumulation → promotion on success / archival on failure.

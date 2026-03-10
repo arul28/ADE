@@ -824,27 +824,29 @@ Memory tools follow the same MCP permission model as other agent tools. Read ope
 
 > **Full spec**: `docs/final-plan/phase-4.md` W6 (Unified Memory System) contains the comprehensive implementation plan including schema, write gate, scoring formula, lifecycle algorithms, and pack removal strategy.
 
-The memory system provides agents with durable, searchable long-term memory that persists across sessions and runs. Phase 4 W6 is complete: `unifiedMemoryService.ts` is the canonical durable memory backend (project/agent/mission scopes with pinned/hot/cold tiers), and persisted `.ade/packs/...` artifacts are no longer required for runtime context assembly. Deterministic context exports (`packService`) and CTO identity state (`ctoStateService`) remain as explicit compatibility and audit surfaces.
+The memory system provides agents with durable, searchable long-term memory that persists across sessions and runs. Phase 4 W6, W6½, and W7a are complete: `unifiedMemoryService.ts` is the canonical durable memory backend (project/agent/mission scopes with pinned/hot/cold tiers) with hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking), lifecycle sweeps, batch consolidation, and pre-compaction flush. Persisted `.ade/packs/...` artifacts are no longer required for runtime context assembly. Deterministic context exports (`packService`) and CTO identity state (`ctoStateService`) remain as explicit compatibility and audit surfaces.
 
 #### Storage Layer
 
-- **Primary store**: SQLite/sql.js with `unified_memories` as the active memory table and `unified_memory_embeddings` reserved for future embedding-backed retrieval work
-- **Active retrieval path**: SQL filtering + service-level lexical/composite scoring
-- **Native vector engine**: direct `sqlite-vec` integration is deferred and not required for W6
+- **Primary store**: SQLite/sql.js with `unified_memories` as the active memory table and `unified_memory_embeddings` storing 384-dim vectors from local all-MiniLM-L6-v2
+- **Embedding model**: `@huggingface/transformers` running all-MiniLM-L6-v2 locally — no API calls, fully offline
+- **Background embedding**: `embeddingWorkerService.ts` processes new entries asynchronously and backfills existing ones without blocking
+- **Active retrieval path**: Hybrid FTS4 BM25 (30%) + cosine similarity (70%) + MMR re-ranking (λ=0.7), with graceful fallback to lexical/composite scoring when embeddings are unavailable
 
 #### Retrieval Pipeline
 
 ```
-Query → SQL filter candidates → Composite scoring (query coverage + recency + importance + confidence + access) →
-  Budget filter (lite: 3, standard: 8, deep: 20) → Return
+Query → Embed query via all-MiniLM-L6-v2 → FTS4 BM25 keyword scoring + cosine similarity →
+  Hybrid score (0.30 BM25 + 0.70 cosine) → Composite scoring (hybrid + recency + importance + confidence + access) →
+  MMR re-ranking (λ=0.7, reduces redundancy) → Budget filter (lite: 3, standard: 8, deep: 20) → Return
 ```
 
 The composite score combines these live signals:
-- **Lexical query relevance**
-- **Recency** (decay function on `updatedAt` timestamp)
-- **Importance**
-- **Access frequency** (frequently retrieved memories rank higher)
-- **Confidence**
+- **Hybrid query relevance (40%)**: Blended BM25 keyword + cosine semantic similarity (replaces lexical-only)
+- **Recency (20%)**: Exponential decay with 30-day half-life on `lastAccessedAt`
+- **Importance (15%)**: High=1.0, Medium=0.6, Low=0.3
+- **Confidence (15%)**: Entry confidence field (0-1), grows with observations
+- **Access frequency (10%)**: `min(accessCount / 10, 1.0)`, capped at 10 accesses
 
 Budget tiers control how many memories are injected into agent context:
 - **Lite** (3 entries): Quick tasks, terminal summaries, one-shot generation
@@ -856,16 +858,18 @@ Budget tiers control how many memories are injected into agent context:
 ```
 New memory → Category/strict-mode gate →
   Lexical duplicate check in same scope →
-  Merge or insert into `unified_memories`
+  Merge or insert into `unified_memories` →
+  Queue for background embedding (async)
 ```
 
-This shipped path does not yet include embedding similarity, LLM PASS/REPLACE/APPEND/DELETE consolidation, or MMR.
+Memory writes are persisted directly in the local project database (`.ade/ade.db`) and consumed immediately by retrieval paths. Embeddings are generated asynchronously by the background worker and never block writes or reads.
 
-Memory writes are persisted directly in the local project database (`.ade/ade.db`) and consumed immediately by retrieval paths.
+#### Memory Lifecycle (W6½)
 
-#### Pre-Compaction Integration
-
-The current compaction flow still writes summaries/shared facts, but it does not yet run the full silent `memoryAdd` flush described in the W6 target design. Treat pre-compaction memory flush as planned work unless the implementation is explicitly present in code.
+- **Pre-compaction flush**: Before context compaction, a silent agentic turn is injected so the agent can persist in-context discoveries via `memoryAdd`. Flush counter prevents double-flush; configurable `reserveTokensFloor` (default: 40K tokens).
+- **Lifecycle sweeps**: Run on configurable interval (default: daily at 3am or on startup if >24h since last sweep). Operations in order: temporal decay (30-day half-life, Tier 1 and evergreen categories exempt), tier demotion (Tier 2→3 at 90 days, Tier 3→archived at 180 days), candidate promotion (confidence ≥ 0.7 + observationCount ≥ 2), hard limit enforcement (project: 2K, agent: 500, mission: 200), orphan cleanup (mission-scoped entries for deleted missions).
+- **Batch consolidation**: Weekly (or when scope exceeds 80% of hard limit). Clusters entries by Jaccard trigram similarity > 0.7 within (scope, category) groups, then merges clusters of 3+ via LLM. Tier 1 (pinned) entries are never consolidated. Original entries archived, not deleted.
+- **Memory Health dashboard**: Settings > Memory > Health shows entry counts by scope/tier, last sweep and consolidation timestamps and stats, embedding progress, hard limit usage bars, and manual "Run Sweep Now" / "Run Consolidation Now" buttons.
 
 #### Context Assembly Per Runtime
 
@@ -1020,7 +1024,7 @@ Machine A: Agent discovers pattern → memoryAdd → `.ade/ade.db` updated → o
 Machine B: git pull → `.ade/ade.db` updated → memory retrieval reflects new entries
 ```
 
-**Embedding behavior**: Embeddings live in `unified_memory_embeddings` within `.ade/ade.db`, but they are not part of the active retrieval path today. Native sqlite-vec table migration is deferred; production retrieval is still lexical/composite scoring in `unifiedMemoryService.ts`.
+**Embedding behavior**: Embeddings are generated locally by `@huggingface/transformers` (all-MiniLM-L6-v2, 384-dim) and stored in `unified_memory_embeddings` within `.ade/ade.db`. Hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking) is the active search path. On clone/pull, the background embedding worker backfills any entries missing embeddings automatically.
 
 **No cloud dependency**: State sync is entirely git-based. There is no central hub, relay, or cloud service involved in state portability. The Phase 8 relay is for real-time remote control of a running ADE instance — not for state synchronization.
 
@@ -1614,7 +1618,9 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | E2B compute backend | Planned | Phase 4 -- Firecracker microVM sandboxes via E2B SDK |
 | Compute environment types | Planned | Phase 4 -- terminal-only, browser, and desktop environment support |
 | Computer use MCP tools | Planned | Phase 4 -- `screenshot_environment`, `interact_gui`, `record_environment`, `launch_app`, `get_environment_info` |
-| Unified Memory System (W6) — replaces context packs + CTO core memory UI surfaces | Baseline shipped | Unified memory retrieval and renderer cutover are active; embeddings remain stored but inactive in retrieval, and native sqlite-vec is still deferred |
+| Unified Memory System (W6) — replaces context packs + CTO core memory UI surfaces | Complete | Unified memory retrieval and renderer cutover are active |
+| Memory Engine Hardening (W6½) — lifecycle sweeps, batch consolidation, pre-compaction flush | Complete | Temporal decay, tier demotion, hard limits, orphan cleanup, Jaccard+LLM consolidation, pre-compaction flush, Memory Health dashboard |
+| Embeddings Pipeline (W7a) — local embedding + hybrid retrieval | Complete | Local all-MiniLM-L6-v2 via @huggingface/transformers, FTS4 BM25 + cosine similarity + MMR re-ranking, graceful lexical fallback |
 | Skills + Learning Pipeline (W7) — procedural extraction + skill materialization | Planned | Phase 4 — episodic→procedural extraction from 3+ similar episodes, `.claude/skills/SKILL.md` materialization, skill ingestion, knowledge source capture (failures, interventions, repeated errors) |
 | CTO Agent — core identity, persistent chat, core memory (W1) | Complete | Phase 4 -- `ctoStateService.ts`, dual-canonical persistence (DB + file), session reconstruction, CtoPage with chat |
 | Worker Agents — org chart, multi-adapter, config versioning, budget (W2) | Complete | Phase 4 -- `workerAgentService.ts`, `workerRevisionService.ts`, `workerBudgetService.ts`, `workerTaskSessionService.ts`, `workerAdapterRuntimeService.ts` |
@@ -1625,7 +1631,7 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Task agents (lane artifacts) | Planned | Phase 4 -- specialized agents for artifact production within lanes |
 | Chat-to-mission escalation | Planned | Phase 4 -- promote a chat conversation into a full mission with pre-filled context |
 
-**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestrator implementation is functionally complete through Orchestrator Overhaul Phases 1-7. Phase 4 W1-W4 and W6 are complete. Remaining workstreams execute W7→W5. Native sqlite-vec integration is deferred; production retrieval currently uses lexical/composite scoring, with embeddings stored but not yet queried. MCP dual-mode architecture shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
+**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestrator implementation is functionally complete through Orchestrator Overhaul Phases 1-7. Phase 4 W1-W4, W6, W6½, and W7a are complete. Memory engine now includes lifecycle sweeps, batch consolidation, pre-compaction flush, local embedding pipeline (`@huggingface/transformers` all-MiniLM-L6-v2), and hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking) with graceful lexical fallback. Remaining Phase 4 workstreams: W-UX, W7b, W7c, W5b, W8, W9, W10. MCP dual-mode architecture shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
 
 ---
 
