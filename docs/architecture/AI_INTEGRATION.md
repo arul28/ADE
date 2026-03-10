@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-06
+> Last updated: 2026-03-10
 
 The AI integration layer replaces the previous hosted agent with a local-first, provider-flexible approach. Instead of a cloud backend with remote job queues, ADE routes work to configured runtimes (CLI subscriptions, API-key/OpenRouter providers, and local endpoints such as LM Studio/Ollama/vLLM), coordinates tooling through MCP, and manages multi-step workflows via an AI orchestrator.
 
@@ -25,6 +25,7 @@ The AI integration layer replaces the previous hosted agent with a local-first, 
   - [Computer Use MCP Tools](#computer-use-mcp-tools)
   - [AI Orchestrator](#ai-orchestrator)
   - [Meta-Reasoner and Smart Fan-Out](#meta-reasoner-and-smart-fan-out)
+  - [Adaptive Runtime](#adaptive-runtime)
   - [Context Compaction Engine](#context-compaction-engine)
   - [Session Persistence and Resume](#session-persistence-and-resume)
   - [Inter-Agent Messaging](#inter-agent-messaging)
@@ -555,18 +556,21 @@ Mission service (user-facing lifecycle)
 
 #### Planning Phase (Built-In, Default On)
 
-Planning is a first-class mission phase (`planning`) inside the orchestrator run. It is included by default in built-in profiles and can be disabled per mission/profile.
+Planning is a first-class mission phase (`planning`) inside the orchestrator run. It is included by default in built-in profiles and can be disabled per mission/profile. As of M4/M5, planning enforcement is mandatory — if the coordinator receives a `phases` array that lacks a planning phase, the `CoordinatorAgent` constructor injects a synthetic `builtin:planning` PhaseCard at position 0 with `mustBeFirst: true` and `requiresApproval: true`, shifting all other phase positions down. This guarantees that every phased mission begins with a research-and-plan pass before any code-changing workers are spawned.
 
 Runtime flow with planning enabled:
 
 1. Mission run starts with `phaseRuntime.currentPhaseKey = "planning"`.
 2. Coordinator enters planning mode, gathers mission context, and should hand planning work off quickly.
-3. If planning clarifications are enabled, coordinator can issue `ask_user` quiz interventions.
+3. If planning clarifications are enabled (`askQuestions.mode` is `"always"` or `"auto_if_uncertain"`), the coordinator can issue `ask_user` quiz interventions. The `PhaseCardAskQuestions` type supports multi-round deliberation: when `orderingConstraints.canLoop` is true on the planning phase, the coordinator may loop back to gather additional clarifications before finalizing the plan. A `loopTarget` field optionally names the phase to loop back to (e.g., looping from a review phase back to planning). The `maxQuestions` field (clamped to 1–10) bounds how many questions the coordinator can ask per phase iteration, preventing unbounded clarification cycles.
 4. While a planning quiz intervention is open, coordinator task/delegation tools are runtime-blocked.
 5. Planning work runs in read-only mode.
 6. Coordinator requires a usable planner result before downstream development unlocks.
-7. Coordinator transitions via `set_current_phase({ phaseKey: "development" })`.
-8. After delegation, coordinator should stay mostly event-driven until workers report actionable progress, failure, or escalation.
+7. When the planning phase has `requiresApproval: true` (the default for mandatory planning), the coordinator's call to `set_current_phase({ phaseKey: "development" })` triggers an approval gate. The runtime creates a `phase_approval` intervention that pauses the mission until the user reviews the planning output and explicitly approves the transition. See [Intervention Routing](#intervention-routing) for details on the `phase_approval` intervention type.
+8. Once approval is granted (or if `requiresApproval` is false), the coordinator transitions to development.
+9. After delegation, coordinator should stay mostly event-driven until workers report actionable progress, failure, or escalation.
+
+**Mandatory planning enforcement** (VAL-PLAN-005): The `CoordinatorAgent` constructor enforces that a planning phase exists. If the caller-provided `phases` array omits planning, the constructor injects one with `mustBeFirst: true`, `askQuestions: { enabled: true, mode: "auto_if_uncertain" }`, and `requiresApproval: true`. Additionally, on the first coordinator turn, a planning watchdog (`enforcePlanningFirstTurnDelegation`) checks whether the coordinator actually spawned a planning worker; if it did not (and no planning execution record exists), the watchdog force-spawns a read-only planning worker via `buildPlanningRecoveryPrompt()` to prevent the coordinator from bypassing the planning phase.
 
 Runtime flow with planning disabled:
 
@@ -578,7 +582,16 @@ Legacy note:
 
 #### Worker Agent Spawning
 
-For each step that enters the `claimed` state, the orchestrator spawns a worker agent:
+For each step that enters the `claimed` state, the orchestrator spawns a worker agent. As of M4/M5, worker spawning is gated by three additional runtime checks: adaptive complexity classification, budget hard caps, and phase-authoritative model resolution.
+
+**Pre-spawn gates** (evaluated in `authorizeWorkerSpawnPolicy` and `checkBudgetHardCaps`):
+
+- **Budget hard cap check**: Before spawning, the runtime queries `getMissionBudgetStatus()` for the current mission. If any hard cap is triggered (5-hour usage, weekly usage, or API key spend limit), the spawn is rejected and the coordinator receives a structured error explaining which budget limit was hit. The `onHardCapTriggered` callback creates a blocking intervention so the user can decide whether to raise the cap or finalize the mission.
+- **Phase ordering validation**: The runtime validates that spawning a worker in the current phase respects `mustBeFirst`, `mustBeLast`, `mustFollow`, and `mustPrecede` ordering constraints on PhaseCards. Validation gates on prior phases must also have completed before a worker in a downstream phase can start.
+- **Adaptive parallelism**: The `scaleParallelismCap()` function in `adaptiveRuntime.ts` determines how many workers can run concurrently based on the mission's `TeamComplexityAssessment.estimatedScope`. Small missions get a cap of 1 (serial execution), medium missions 2, large missions 4, and very large missions 6.
+- **Model downgrade evaluation**: Before resolving the worker's model, `evaluateModelDowngrade()` checks whether the current provider usage percentage exceeds the configured `downgradeThresholdPct`. If so, the runtime substitutes a cheaper model (e.g., Opus → Sonnet → Haiku, or GPT-5 → GPT-4o → GPT-4o-mini) and logs the downgrade reason. This allows long-running missions to stay within budget by progressively reducing per-token cost.
+
+**Spawn sequence**:
 
 1. **Lane Assignment**: Each worker operates in a dedicated lane worktree. If the step specifies `lanes: ["new"]`, a new lane is created via the `create_lane` MCP tool. If it references an existing lane, the worker is assigned to that lane.
 
@@ -591,6 +604,8 @@ For each step that enters the `claimed` state, the orchestrator spawns a worker 
 3. **ADE Tool Connection**: Workers receive ADE-owned tools through the current runtime surface. CLI-backed workers commonly connect through the ADE MCP server, while API/local models use ADE's in-process planning/coding tools. In both cases, ADE enforces claimed scope (lane + file patterns) for ADE-owned actions.
 
 4. **Session Tracking**: Worker execution attempts are registered as tracked sessions/attempts for transcript capture, delta computation, and pack integration — the same lifecycle guarantees as interactive chat sessions.
+
+**Phase-authoritative model resolution**: Worker model selection follows a strict resolution order: explicit model override (if the coordinator specifies `modelId` in `spawn_worker`) → current phase model (from `phaseRuntime.currentPhaseModel.modelId`). If the coordinator requests a model that differs from the current phase's configured model, the spawn is rejected with a descriptive error directing the coordinator to either omit `modelId` or call `set_current_phase` first. Role-level default model fallback has been removed from active orchestrator routing.
 
 #### Worker Coordination Patterns
 
@@ -605,6 +620,9 @@ The orchestrator manages workers through several coordination patterns:
 | **Review-and-Revise** | One worker implements, another reviews, orchestrator decides on revision | Quality-critical code paths |
 | **Speculative Parallel** | Multiple workers attempt the same step with different approaches, best result wins | Ambiguous tasks where the optimal approach is unclear |
 | **Atomic Batch Delegation** | Coordinator delegates N children in one validated transaction via `delegate_parallel` | When a parent worker needs multiple independent sub-tasks launched together |
+| **Approval-Gated Phase Transition** | Coordinator completes phase work, runtime blocks transition until user approves via `phase_approval` intervention | Phases with `requiresApproval: true` (e.g., planning → development) |
+
+**Approval gates** (M4/M5): The `PhaseCard` type includes a `requiresApproval` boolean field. When a phase has `requiresApproval: true`, the coordinator's call to `set_current_phase` to leave that phase is intercepted by the approval gate logic in `coordinatorTools.ts`. The runtime checks whether a resolved `phase_approval` intervention exists for the current phase. If no resolved approval is found, the runtime creates a new `phase_approval` intervention (with `pauseMission: true`) and returns a blocking error to the coordinator. The coordinator must then wait for the user to review the phase output and resolve the intervention before retrying the phase transition. This pattern is primarily used for the planning → development transition, ensuring that the user has an opportunity to review and approve the plan before implementation begins, but it applies to any phase with `requiresApproval: true`.
 
 **Phase 4 runtime delegation contract**:
 - Parent awareness is push-based: terminal child completions auto-roll up to parent pending messages, and `report_status` updates are forwarded with `[sub-agent:<name>]` context.
@@ -695,6 +713,36 @@ Interventions can also be triggered automatically when:
 - A gate report indicates a blocking condition (e.g., failing tests after implementation).
 - A worker's plan is rejected by the orchestrator and the orchestrator cannot provide adequate feedback (escalates to user).
 - Budget or time limits are approaching.
+- A phase transition is attempted on a phase with `requiresApproval: true` (triggers a `phase_approval` intervention).
+
+**Intervention types**: The `MissionInterventionType` union includes the following values:
+
+| Type | Trigger | Blocking Semantics |
+|------|---------|-------------------|
+| `manual_input` | Agent calls `ask_user` or `request_user_input` | Pauses the requesting step; other steps may continue |
+| `ask_user` | Coordinator needs clarification during planning | Blocks coordinator task/delegation tools while open |
+| `failed_step` | Step exhausts retry budget | Blocks the failed step; coordinator decides next action |
+| `orchestrator_escalation` | Coordinator cannot resolve an issue autonomously | Mission-level pause until user responds |
+| `budget_limit_reached` | Hard budget cap triggered during spawn or execution | Blocks all further spawns; mission pauses |
+| `provider_unreachable` | CLI or API provider is unavailable | Blocks steps targeting that provider |
+| `unrecoverable_error` | Fatal runtime error with no retry path | Mission-level pause |
+| `phase_approval` | `set_current_phase` called on a phase with `requiresApproval: true` | **Blocks the entire phase transition.** The coordinator cannot proceed to the next phase until the user resolves this intervention. Created with `pauseMission: true`, which suspends the orchestrator autopilot loop. The intervention metadata includes `phaseKey`, `phaseName`, `targetPhaseKey`, `targetPhaseName`, and `source: "phase_approval_gate"`. Once the user resolves the intervention (via the mission detail UI), the coordinator retries `set_current_phase` and the transition succeeds. |
+
+The `phase_approval` intervention type was introduced in M4/M5 to support the approval gate pattern. It differs from other intervention types in that it blocks at the phase-transition level rather than the step level — no work in the target phase can begin until approval is granted, regardless of how many steps are ready to execute.
+
+#### Error Classification and Benign Failure Handling
+
+The orchestrator classifies worker errors and warnings to distinguish genuinely blocking failures from benign noise that should not trigger retries or mission-level escalation.
+
+**`classifyBlockingWarnings()`** (in `orchestratorQueries.ts`) scans all warnings and the attempt summary for patterns that indicate real failures versus expected noise:
+
+- **External MCP noise**: Warnings matching `EXTERNAL_MCP_NOISE_PATTERNS` (e.g., Slack/claude.ai connection chatter) are silently skipped — they originate from external MCP servers and do not reflect worker failure.
+- **Benign sandbox blocks** (`BENIGN_SANDBOX_BLOCK_PATTERNS`): Provider-native planning features sometimes attempt writes that the sandbox intentionally blocks. Two categories are treated as benign:
+  1. **`.claude/plans/` path blocks**: The planning worker prompt directs plan artifacts to `.ade/plans/`, so sandbox blocks on the provider-native `~/.claude/plans/` path are expected and intentional.
+  2. **ExitPlanMode Zod/validation errors**: Workers are instructed not to use `ExitPlanMode` (the provider-native plan approval flow), but if a worker attempts it anyway, the resulting Zod schema mismatch or validation error is classified as benign. The patterns `ExitPlanMode.*(?:Zod|validation|schema|parse)` and the reverse match order both suppress these errors from triggering step failure or retry.
+- **Blocking patterns**: Warnings that survive the noise and benign filters are matched against `BLOCKING_WARNING_PATTERNS` which categorize genuine failures (sandbox blocks on disallowed paths, permission violations, tool crashes, etc.).
+
+This classification is critical for planning workers: without benign pattern filtering, ExitPlanMode errors would cause spurious retry loops, wasting budget on repeated planning attempts that were actually successful.
 
 #### Orchestrator Configuration
 
@@ -739,6 +787,54 @@ The meta-reasoner (`metaReasoner.ts`) adds AI-driven dispatch intelligence to th
 **Integration**: The meta-reasoner is invoked within the autopilot tick loop (`aiOrchestratorService.ts`). When the autopilot detects that multiple steps could run concurrently but are currently sequenced, it consults the meta-reasoner before dispatching.
 
 **Configuration**: The meta-reasoner model and fan-out limits are configurable in `.ade/local.yaml` under `ai.orchestrator.metaReasoner`.
+
+### Adaptive Runtime
+
+The adaptive runtime module (`adaptiveRuntime.ts`, introduced in M5) provides heuristic-driven scaling of parallelism and model cost based on mission complexity and budget utilization. It operates as a pure-function layer consumed by the coordinator tools and orchestrator service — it does not maintain state itself.
+
+#### Task Complexity Classification
+
+`classifyTaskComplexity(description: string): TaskComplexity` analyzes a mission or step description and returns one of four complexity buckets: `trivial`, `simple`, `moderate`, or `complex`. Classification uses a multi-signal heuristic:
+
+- **Word count**: Short descriptions (< 20 words with trivial indicators) are classified as trivial; long descriptions (> 120 words) as complex.
+- **Complexity indicators**: Keywords like "parallel", "distributed", "migration", "architecture", "overhaul", "cross-cutting", and "end-to-end" push toward `complex`.
+- **Moderate indicators**: Keywords like "integrate", "service", "endpoint", "feature", "module", "refactor", and "ci/cd" push toward `moderate`.
+- **Simple/trivial indicators**: Keywords like "fix bug", "rename", "typo", "formatting", and "docs" push toward simpler buckets.
+- **File reference density**: More than 10 file references in the description suggests complex scope; more than 4 suggests moderate.
+
+The complexity classification feeds into parallelism scaling and is also available for coordinator prompt construction.
+
+#### Parallelism Cap Scaling
+
+`scaleParallelismCap(estimatedScope: TeamComplexityAssessment["estimatedScope"]): number` maps the mission's estimated scope to a concrete worker concurrency limit:
+
+| Estimated Scope | Parallelism Cap | Rationale |
+|----------------|----------------|-----------|
+| `small` | 1 | Serial execution; coordination overhead exceeds parallelism benefit |
+| `medium` | 2 | Modest parallelism for moderately scoped work |
+| `large` | 4 | Full parallel fan-out for multi-workstream missions |
+| `very_large` | 6 | Maximum parallelism for large-scale refactors and multi-service work |
+
+The parallelism cap is enforced at spawn time — the coordinator's `spawn_worker` and `delegate_parallel` tools check the current active worker count against the scaled cap before proceeding.
+
+#### Model Downgrade at Usage Thresholds
+
+`evaluateModelDowngrade(args)` checks whether current provider usage exceeds a configurable threshold and, if so, substitutes a cheaper model for subsequent worker spawns:
+
+- **Inputs**: `currentModelId`, `downgradeThresholdPct` (e.g., 70%), `currentUsagePct` (from budget telemetry), and an optional `cheaperModelId` override.
+- **Downgrade heuristic** (`resolveCheaperModel`): Anthropic models downgrade along the Opus → Sonnet → Haiku chain; OpenAI models downgrade along GPT-5 → GPT-4o → GPT-4o-mini. If no cheaper model is available (already at the cheapest tier), the original model is retained with a logged warning.
+- **Output**: A `ModelDowngradeResult` struct indicating whether a downgrade occurred, the original and resolved model IDs, and a human-readable reason string that is injected into the coordinator's event stream.
+
+Model downgrade is evaluated inside the worker spawn authorization flow (`authorizeWorkerSpawnPolicy`) so that the coordinator receives the downgraded model transparently — it does not need to implement its own cost-optimization logic.
+
+#### Budget Enforcement Gates
+
+Budget enforcement operates at two levels:
+
+1. **Soft pressure signals**: The `onBudgetWarning` callback emits `"warning"` or `"critical"` signals to the coordinator's event stream, guiding it to reduce parallelism or finalize early. These are advisory — the coordinator can choose how to respond.
+2. **Hard cap blocks**: The `checkBudgetHardCaps()` function in `coordinatorTools.ts` queries `getMissionBudgetStatus()` and rejects spawns if any hard cap is triggered (5-hour rolling window, weekly rolling window, or absolute API key spend). Hard cap violations create a `budget_limit_reached` intervention with `pauseMission: true`.
+
+This layered approach allows missions to gracefully degrade under budget pressure (using cheaper models, reducing parallelism) before hitting the hard stop that pauses execution entirely.
 
 ### Context Compaction Engine
 
@@ -992,6 +1088,10 @@ External MCP Request           User (CTO Tab)
 - It maintains awareness of all active missions, lane states, and recent agent outputs
 
 **CTO State**: The CTO maintains its state in `.ade/cto/`, separate from unified memory tables in `.ade/ade.db`. This includes persistent project context, learned routing patterns, decision history, and user corrections. Over time, the CTO becomes more effective at anticipating project needs and dispatching work autonomously.
+
+**Approval gate interaction** (M4/M5): When a mission phase has `requiresApproval: true`, the CTO is notified of pending `phase_approval` interventions through the same mission event stream it uses for general mission awareness. The CTO can surface these approval requests to the user in the CTO chat interface, providing context about the planning output and recommending whether to approve or request revisions. The CTO does not resolve approval gates autonomously — it always routes them to the human user for final decision.
+
+**Retrospective patterns → CTO memory**: The reflection protocol that workers and the coordinator use during mission execution (via `reflection_add`) produces structured observations about friction points, reusable patterns, and improvement recommendations. These reflections are persisted as episodic memory entries. When the same pattern appears across multiple missions, the CTO's memory system promotes them into project-level procedural knowledge. This creates a feedback loop: the CTO learns from mission retrospectives and incorporates those lessons into future mission planning guidance, routing decisions, and proactive project recommendations.
 
 **Use Cases**:
 - Primary interface for project-level AI interactions via the CTO tab
@@ -1596,8 +1696,13 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Chat session integration | Complete | `codex-chat`, `claude-chat`, and `ai-chat` tool types in `terminal_sessions` |
 | MCP server (`apps/mcp-server`) | Complete | JSON-RPC 2.0 server with 35 tools, dual-mode architecture (headless + embedded) |
 | MCP dual-mode architecture | Complete | Transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding (.ade/mcp.sock), smart entry point auto-detection |
-| AI orchestrator (Claude + MCP) | Complete | Tasks 1-7 shipped; Orchestrator Overhaul Phases 1-7 complete (reflection protocol closure with deterministic retrospectives, trend persistence, and candidate promotion gating). Task 8 integration soak remains as verification hardening. |
+| AI orchestrator (Claude + MCP) | Complete | Tasks 1-7 shipped; Orchestrator Overhaul Phases 1-7 complete (reflection protocol closure with deterministic retrospectives, trend persistence, and candidate promotion gating). Task 8 integration soak remains as verification hardening. M4/M5 additions: approval gates, mandatory planning enforcement, multi-round deliberation, adaptive runtime, model downgrade, budget-gated spawns, benign error classification. |
 | Phase 4 orchestrator delegation/team runtime | Complete | `delegate_parallel`, push sub-agent progress/completion rollups, native teammate auto-registration + allocation cap guardrails, single team-member data path |
+| Adaptive Runtime (M5) | Complete | `adaptiveRuntime.ts` — `classifyTaskComplexity`, `scaleParallelismCap`, `evaluateModelDowngrade`; budget hard cap enforcement in coordinator tools |
+| Approval Gates (M4/M5) | Complete | `phase_approval` intervention type, `requiresApproval` on PhaseCard, blocking phase transitions until user approval |
+| Mandatory Planning Enforcement (M4/M5) | Complete | `CoordinatorAgent` constructor injects planning phase if missing; first-turn planning watchdog force-spawns planner |
+| Multi-Round Deliberation (M4/M5) | Complete | `canLoop`/`loopTarget` on PhaseCardOrderingConstraints, `maxQuestions` bounds per phase |
+| Error Classification Hardening (M4/M5) | Complete | `BENIGN_SANDBOX_BLOCK_PATTERNS` for ExitPlanMode/Zod errors, `classifyBlockingWarnings` in `orchestratorQueries.ts` |
 | Mission phase engine + profiles (Task 3) | Complete | `phase_cards`/`phase_profiles`/`mission_phase_overrides`, profile CRUD/import/export, phase transition telemetry |
 | Mission UI overhaul (Task 4) | Complete | Plan/Work tabs, mission home dashboard, phase-aware details, launch/settings profile workflows |
 | Pre-flight + intervention/HITL (Task 5) | Complete | Launch-gate checklist, granular worker-level interventions, coordinator `ask_user`/`request_user_input` escalation wiring |
@@ -1631,7 +1736,7 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Task agents (lane artifacts) | Planned | Phase 4 -- specialized agents for artifact production within lanes |
 | Chat-to-mission escalation | Planned | Phase 4 -- promote a chat conversation into a full mission with pre-filled context |
 
-**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestrator implementation is functionally complete through Orchestrator Overhaul Phases 1-7. Phase 4 W1-W4, W6, W6½, and W7a are complete. Memory engine now includes lifecycle sweeps, batch consolidation, pre-compaction flush, local embedding pipeline (`@huggingface/transformers` all-MiniLM-L6-v2), and hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking) with graceful lexical fallback. Remaining Phase 4 workstreams: W-UX, W7b, W7c, W5b, W8, W9, W10. MCP dual-mode architecture shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
+**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestrator implementation is functionally complete through Orchestrator Overhaul Phases 1-7. Phase 4 W1-W4, W6, W6½, and W7a are complete. M4 and M5 are complete, adding approval gates (`phase_approval` intervention type with blocking phase transition semantics), mandatory planning enforcement (constructor-injected planning phase with first-turn watchdog), multi-round deliberation (`canLoop`/`loopTarget`/`maxQuestions` on phase ordering constraints), adaptive runtime (`classifyTaskComplexity` → parallelism scaling, `evaluateModelDowngrade` → cheaper models under budget pressure), budget-gated spawns (hard cap checks before every worker spawn), and benign error classification (`BENIGN_SANDBOX_BLOCK_PATTERNS` for ExitPlanMode/Zod noise). Memory engine now includes lifecycle sweeps, batch consolidation, pre-compaction flush, local embedding pipeline (`@huggingface/transformers` all-MiniLM-L6-v2), and hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking) with graceful lexical fallback. Remaining Phase 4 workstreams: W-UX, W7b, W7c, W5b, W8, W9, W10. MCP dual-mode architecture shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
 
 ---
 

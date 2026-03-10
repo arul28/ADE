@@ -114,7 +114,7 @@ Key UI subsystems:
 | PRs | PR creation/linking, checks/reviews, stacked + integration flows |
 | History | Operation/checkpoint/event timeline |
 | Agents | Autonomous agent system: automation, Night Shift, watcher, and review agents with identity/policy profiles |
-| Missions | AI orchestrator control center: mission intake, lifecycle board, phase-aware mission detail tabs (Plan, Work, DAG, Chat, Activity, Details), global summary chat, detailed worker/orchestrator threads, interventions, artifacts, outcomes |
+| Missions | AI orchestrator control center: mission intake, lifecycle board, phase-aware mission detail tabs (Plan, Work, DAG, Chat, Activity, Details), global summary chat, detailed worker/orchestrator threads, interventions (including `phase_approval`), artifacts, outcomes, usage meters (`CompactUsageMeter`), intervention panel, consolidated IPC (`getFullMissionView`) |
 | Settings | Provider config (CLI/API/local/OpenRouter), trust levels, keybindings, terminal profiles, and data controls |
 
 ### 2. Local Core Engine
@@ -281,6 +281,10 @@ Key orchestrator responsibilities:
 - Delivers inter-agent messages via `workerDeliveryService.ts` (PTY write for terminal agents, conversation injection for SDK agents).
 - Routes @mention-based messaging through `chatMessageService.ts` with `parseMentions()` and `routeMessage()`.
 - Resolves model configuration per call type with 30s TTL caching via `modelConfigResolver.ts`.
+- **Adaptive runtime**: `classifyTaskComplexity` evaluates task characteristics to select appropriate model tier. Model downgrade automatically falls back to cheaper/faster models for routine sub-tasks while preserving high-capability models for complex reasoning.
+- **Approval gates**: Phase transitions can require explicit human approval via `phase_approval` intervention events, preventing the orchestrator from advancing past critical checkpoints without user sign-off.
+- **Multi-round deliberation**: The orchestrator supports iterative refinement cycles where planning and validation phases can loop multiple rounds before proceeding, improving output quality for complex missions.
+- **Completion gates**: Structured criteria that must be satisfied before a phase or mission can be marked complete, preventing premature advancement.
 - Stays mostly event-driven after delegation, waking back up for actionable worker/runtime signals rather than continuous idle reasoning.
 
 #### Per-Task-Type Routing
@@ -420,6 +424,13 @@ Mission created --> missionService
             --> appendRunNarrative() generates rolling narrative after step completion
               --> deliverMessageToAgent() routes inter-agent @mention messages
 
+Phase transition with approval gate --> orchestratorService
+  --> phase_approval intervention created
+    --> ade.missions.event broadcast to renderer
+      --> InterventionPanel surfaces approval request to user
+        --> User approves/rejects via IPC
+          --> orchestratorService advances or halts phase transition
+
 Agent step completed --> orchestratorService
   --> appendRunNarrative() updates run narrative
   --> shared facts extracted and stored in orchestrator_shared_facts
@@ -485,7 +496,7 @@ Current codebase status is feature-rich across lanes, files, terminals, conflict
 | MCP server (`apps/mcp-server`) — dual-mode (headless + embedded) | Complete |
 | MCP permission/policy layer | Complete |
 | MCP call audit logging | Complete |
-| AI orchestrator (Claude session + MCP) | ~90% Complete (Phase 3) — orchestrator evolution shipped |
+| AI orchestrator (Claude session + MCP) | Complete (Phase 3–5) — orchestrator evolution, adaptive runtime, approval gates, multi-round deliberation shipped |
 | Meta-reasoner + smart fan-out | Complete |
 | Context compaction engine | Complete |
 | Session persistence + resume | Complete |
@@ -505,6 +516,6 @@ Current codebase status is feature-rich across lanes, files, terminals, conflict
 | Play Runtime Isolation (Phase 5) — laneEnvironmentService, laneProxyService, portAllocationService, laneTemplateService, oauthRedirectService, runtimeDiagnosticsService | Complete |
 | Compute backend abstraction (Phase 5.5) | Dropped (VPS is just another machine running ADE) |
 
-Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is ~90% complete — orchestrator evolution shipped (meta-reasoner, compaction engine, session persistence, inter-agent messaging, mission chat workspace, scoped memory architecture, shared facts, run narrative, phase-based planning runtime, PR strategies). MCP dual-mode architecture shipped: transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding at `.ade/mcp.sock`, smart entry point auto-detection, 35 tools available in both modes. Phase 4 W1-W4, W6, W6½, and W7a are complete. Memory engine now includes lifecycle sweeps (temporal decay, tier demotion, hard limits, orphan cleanup), batch consolidation (Jaccard trigram clustering + LLM merge), pre-compaction flush, local embedding pipeline (`@huggingface/transformers` all-MiniLM-L6-v2), and hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking) with graceful lexical fallback. Memory Health dashboard in Settings provides visibility into entry counts, sweep/consolidation logs, embedding progress, and hard limit usage. Remaining Phase 4 workstreams: W-UX, W7b, W7c, W5b, W8, W9, W10. Phase 5 (Play Runtime Isolation) is complete. Phase 5.5 (Compute Backend Abstraction) was dropped — VPS is just another machine running ADE. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
+Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is complete — orchestrator evolution shipped (meta-reasoner, compaction engine, session persistence, inter-agent messaging, mission chat workspace, scoped memory architecture, shared facts, run narrative, phase-based planning runtime, PR strategies, adaptive runtime with `classifyTaskComplexity` and model downgrade, approval gates with `phase_approval` events, multi-round deliberation, completion gates). MCP dual-mode architecture shipped: transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding at `.ade/mcp.sock`, smart entry point auto-detection, 35 tools available in both modes. Phase 4 W1-W4, W6, W6½, and W7a are complete. Memory engine now includes lifecycle sweeps (temporal decay, tier demotion, hard limits, orphan cleanup), batch consolidation (Jaccard trigram clustering + LLM merge), pre-compaction flush, local embedding pipeline (`@huggingface/transformers` all-MiniLM-L6-v2), and hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking) with graceful lexical fallback. Memory Health dashboard in Settings provides visibility into entry counts, sweep/consolidation logs, embedding progress, and hard limit usage. Remaining Phase 4 workstreams: W-UX, W7b, W7c, W5b, W8, W9, W10. Phase 5 (Play Runtime Isolation) is complete. Phase 5.5 (Compute Backend Abstraction) was dropped — VPS is just another machine running ADE. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
 
 - `docs/final-plan/README.md`
