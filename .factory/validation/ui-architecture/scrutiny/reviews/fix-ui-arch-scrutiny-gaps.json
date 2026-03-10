@@ -1,0 +1,28 @@
+{
+  "featureId": "fix-ui-arch-scrutiny-gaps",
+  "reviewedAt": "2026-03-10T08:09:11Z",
+  "commitId": "58031506273a03a5b9e2a451653115ecf5664180",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "I reviewed the prior failed feature (`missions-store-and-decomposition` / `03076ea`) together with the fix feature (`fix-ui-arch-scrutiny-gaps` / `5803150`). The fix does close the first two scrutiny gaps: mission selection now routes through `window.ade.missions.getFullMissionView(...)`, and the timer/event-subscription logic called out in the prior review has been moved out of `MissionsPage.tsx` into store/shared-coordinator paths. However, the third gap is only partially addressed. `MissionHeader` and `MissionTabContainer` now use grouped shallow selectors, but `MissionsPage` still subscribes to whole `runGraph` and `selectedMission` objects rather than derived minimal slices, so the page can still rerender on unrelated mission/run-graph updates. That means VAL-ARCH-008 is not fully satisfied yet.",
+    "issues": [
+      {
+        "file": "apps/desktop/src/renderer/components/missions/MissionsPage.tsx",
+        "line": 83,
+        "severity": "blocking",
+        "description": "VAL-ARCH-008 is still not fully closed. The fix adds `useShallow` selectors in `MissionHeader` and `MissionTabContainer`, but `MissionsPage` still subscribes to broad objects via `const runGraph = useMissionsStore((s) => s.runGraph);` at line 83 and `const selectedMission = useMissionsStore((s) => s.selectedMission);` at line 119, and the attention-toast effect still depends on the full `selectedMission` object at line 150. This page only needs narrow derived data (`runGraph.run.status`, `runGraph.run.id`, `runGraph.steps`, and the selected mission's status/openInterventions/title/id), so these whole-object subscriptions still let unrelated run timeline/attempt/detail updates rerender the shell instead of limiting it to the minimal slice required by the feature contract."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The `ui-worker` skill still overstates procedure compliance for UI features. It requires reading `.factory/library/user-testing.md` and doing agent-browser verification, but the fix worker transcript/handoff shows neither step while `skillFeedback.followedProcedure` is still true.",
+      "evidence": "`/Users/admin/Projects/ADE/.factory/skills/ui-worker/SKILL.md:28,76-78` requires reading `.factory/library/user-testing.md` and running `npm run dev` plus `agent-browser connect 9222`. In the fix worker transcript skeleton for session `1d243604-453a-4874-b330-0f73c7efb1e1`, the skeleton includes `/Users/admin/Projects/ADE/.factory/services.yaml` but does not include `.factory/library/user-testing.md`, `npm run dev`, or `agent-browser`. The handoff file `/Users/admin/.factory/missions/bec1a09c-aff3-43cd-8217-ed3013414884/handoffs/2026-03-10T08-01-22-218Z__fix-ui-arch-scrutiny-gaps__1d243604-453a-4874-b330-0f73c7efb1e1.json` has no `interactiveChecks` section while `skillFeedback.followedProcedure` remains true."
+    }
+  ],
+  "addressesFailureFrom": "/Users/admin/Projects/ADE/.factory/validation/ui-architecture/scrutiny/reviews/missions-store-and-decomposition.json",
+  "summary": "Fail. The fix adequately addresses the prior VAL-ARCH-004 and VAL-ARCH-007 findings, but it does not fully resolve VAL-ARCH-008 because `MissionsPage` still subscribes to broad store objects instead of minimal derived slices."
+}

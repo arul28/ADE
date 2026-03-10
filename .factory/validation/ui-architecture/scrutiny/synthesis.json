@@ -1,13 +1,13 @@
 {
   "milestone": "ui-architecture",
-  "round": 1,
+  "round": 2,
   "status": "fail",
   "validatorsRun": {
     "test": {
       "passed": true,
       "command": "cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run --reporter=verbose",
       "exitCode": 1,
-      "notes": "Full suite exited with only the 2 known pre-existing failures documented in AGENTS.md: aiOrchestratorService single-lane integration closing strategy and orchestratorService unified-attempt laneId handling. No additional failures were observed (1119 passed, 2 failed)."
+      "notes": "Full suite exited with only the 2 known pre-existing failures documented in AGENTS.md: aiOrchestratorService single-lane integration closing strategy and orchestratorService unified-attempt laneId handling. No additional failures were observed (1125 passed, 2 failed)."
     },
     "typecheck": {
       "passed": true,
@@ -23,48 +23,30 @@
     }
   },
   "reviewsSummary": {
-    "total": 2,
-    "passed": 1,
+    "total": 1,
+    "passed": 0,
     "failed": 1,
     "failedFeatures": [
-      "missions-store-and-decomposition"
+      "fix-ui-arch-scrutiny-gaps"
     ]
   },
   "blockingIssues": [
     {
-      "featureId": "missions-store-and-decomposition",
+      "featureId": "fix-ui-arch-scrutiny-gaps",
       "severity": "blocking",
-      "description": "VAL-ARCH-004 remains unmet: although `getFullMissionView` was added in the IPC layer, the renderer/store still loads mission selection data through the legacy waterfall (`missions.get`, `orchestrator.listRuns`, `orchestrator.getRunGraph`, `orchestrator.listArtifacts`, `orchestrator.listWorkerCheckpoints`) instead of using the consolidated call.",
-      "sourceReview": ".factory/validation/ui-architecture/scrutiny/reviews/missions-store-and-decomposition.json"
-    },
-    {
-      "featureId": "missions-store-and-decomposition",
-      "severity": "blocking",
-      "description": "VAL-ARCH-007 remains unmet: `MissionsPage.tsx` still owns refresh/debounce timers via `window.setTimeout` and directly registers mission/orchestrator event subscriptions, so polling/event orchestration was not fully moved into the store/shared coordinator layer.",
-      "sourceReview": ".factory/validation/ui-architecture/scrutiny/reviews/missions-store-and-decomposition.json"
-    },
-    {
-      "featureId": "missions-store-and-decomposition",
-      "severity": "blocking",
-      "description": "VAL-ARCH-008 remains unmet: major containers such as `MissionTabContainer`, `MissionHeader`, and `MissionsPage` subscribe to broad sets of store slices/actions, so unrelated updates can still rerender large UI sections instead of being isolated by fine-grained selectors.",
-      "sourceReview": ".factory/validation/ui-architecture/scrutiny/reviews/missions-store-and-decomposition.json"
+      "description": "VAL-ARCH-008 remains unmet on re-review. `MissionsPage.tsx` still subscribes to broad `runGraph` and `selectedMission` objects instead of minimal derived slices, so unrelated mission/run-graph updates can still rerender the page shell.",
+      "sourceReview": ".factory/validation/ui-architecture/scrutiny/reviews/fix-ui-arch-scrutiny-gaps.json"
     }
   ],
-  "appliedUpdates": [
-    {
-      "target": "library",
-      "description": "Updated `.factory/library/architecture.md` to reflect the decomposed MissionsPage/MissionChatV2 architecture and document that chat message virtualization already flows through `AgentChatMessageList` while sidebar virtualization lives in `MissionSidebar`.",
-      "sourceFeature": "chat-decomposition-and-virtualization"
-    }
-  ],
+  "appliedUpdates": [],
   "suggestedGuidanceUpdates": [
     {
       "target": ".factory/skills/ui-worker/SKILL.md",
       "suggestion": "Require workers to record agent-browser startup/interaction evidence explicitly in handoffs, and mark missing browser validation as a procedure deviation instead of allowing `followedProcedure: true` with only test/typecheck/grep verification.",
-      "evidence": "The missions-store-and-decomposition review found that the UI feature handoff listed only vitest/tsc/wc/grep commands and no `npm run dev`, agent-browser usage, or interactive checks even though the current ui-worker skill says browser validation is the primary UI verification path.",
-      "isSystemic": false
+      "evidence": "This mismatch was observed in both the original `missions-store-and-decomposition` review and the re-review of `fix-ui-arch-scrutiny-gaps`: the ui-worker skill requires reading `.factory/library/user-testing.md` plus agent-browser verification, but the worker transcript skeletons/handoffs lacked those steps while still marking `followedProcedure: true`.",
+      "isSystemic": true
     }
   ],
   "rejectedObservations": [],
-  "previousRound": null
+  "previousRound": ".factory/validation/ui-architecture/scrutiny/synthesis.round-1.json"
 }
