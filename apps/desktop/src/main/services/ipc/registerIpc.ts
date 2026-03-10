@@ -437,6 +437,12 @@ import { readCoordinatorCheckpoint } from "../orchestrator/missionStateDoc";
 import type { createMemoryService } from "../memory/memoryService";
 import type { createBatchConsolidationService } from "../memory/batchConsolidationService";
 import type { createMemoryLifecycleService } from "../memory/memoryLifecycleService";
+import type { createMemoryBriefingService } from "../memory/memoryBriefingService";
+import type { createMissionMemoryLifecycleService } from "../memory/missionMemoryLifecycleService";
+import type { createEpisodicSummaryService } from "../memory/episodicSummaryService";
+import type { createHumanWorkDigestService } from "../memory/humanWorkDigestService";
+import type { createProceduralLearningService } from "../memory/proceduralLearningService";
+import type { createSkillRegistryService } from "../memory/skillRegistryService";
 import type { createEmbeddingService } from "../memory/embeddingService";
 import type { createEmbeddingWorkerService } from "../memory/embeddingWorkerService";
 import type { createCtoStateService } from "../cto/ctoStateService";
@@ -507,6 +513,12 @@ export type AppContext = {
   memoryService?: ReturnType<typeof createMemoryService> | null;
   batchConsolidationService?: ReturnType<typeof createBatchConsolidationService> | null;
   memoryLifecycleService?: ReturnType<typeof createMemoryLifecycleService> | null;
+  memoryBriefingService?: ReturnType<typeof createMemoryBriefingService> | null;
+  missionMemoryLifecycleService?: ReturnType<typeof createMissionMemoryLifecycleService> | null;
+  episodicSummaryService?: ReturnType<typeof createEpisodicSummaryService> | null;
+  humanWorkDigestService?: ReturnType<typeof createHumanWorkDigestService> | null;
+  proceduralLearningService?: ReturnType<typeof createProceduralLearningService> | null;
+  skillRegistryService?: ReturnType<typeof createSkillRegistryService> | null;
   embeddingService?: ReturnType<typeof createEmbeddingService> | null;
   embeddingWorkerService?: ReturnType<typeof createEmbeddingWorkerService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
@@ -4221,6 +4233,69 @@ export function registerIpc({
     const ctx = getCtx();
     if (!ctx.memoryService) return;
     ctx.memoryService.archiveMemory(arg.id);
+  });
+
+  ipcMain.handle(IPC.memoryPromoteMissionEntry, async (_event, arg: { id: string; missionId: string; runId?: string | null }) => {
+    const ctx = getCtx();
+    if (!ctx.missionMemoryLifecycleService) return null;
+    return ctx.missionMemoryLifecycleService.promoteMissionMemoryEntry({
+      memoryId: arg.id,
+      missionId: arg.missionId,
+    });
+  });
+
+  ipcMain.handle(IPC.memoryListMissionEntries, async (_event, arg: { missionId: string; runId?: string | null; status?: "candidate" | "promoted" | "archived" | "all" }) => {
+    const ctx = getCtx();
+    if (!ctx.missionMemoryLifecycleService) return [];
+    return ctx.missionMemoryLifecycleService.listMissionEntries({
+      projectId: ctx.projectId,
+      missionId: arg.missionId,
+      runId: arg.runId,
+      status: arg.status ?? "all",
+    });
+  });
+
+  ipcMain.handle(IPC.memoryListProcedures, async (_event, arg: { status?: "candidate" | "promoted" | "archived" | "all"; scope?: "project" | "mission" | "agent"; query?: string } = {}) => {
+    const ctx = getCtx();
+    return ctx.proceduralLearningService?.listProcedures(arg) ?? [];
+  });
+
+  ipcMain.handle(IPC.memoryGetProcedureDetail, async (_event, arg: { id: string }) => {
+    const ctx = getCtx();
+    return ctx.proceduralLearningService?.getProcedureDetail(arg.id) ?? null;
+  });
+
+  ipcMain.handle(IPC.memoryExportProcedureSkill, async (_event, arg: { id: string; name?: string | null }) => {
+    const ctx = getCtx();
+    return ctx.skillRegistryService?.exportProcedureSkill(arg) ?? null;
+  });
+
+  ipcMain.handle(IPC.memoryListIndexedSkills, async () => {
+    const ctx = getCtx();
+    return ctx.skillRegistryService?.listIndexedSkills() ?? [];
+  });
+
+  ipcMain.handle(IPC.memoryReindexSkills, async (_event, arg: { paths?: string[] } = {}) => {
+    const ctx = getCtx();
+    return ctx.skillRegistryService?.reindexSkills(arg) ?? [];
+  });
+
+  ipcMain.handle(IPC.memorySyncKnowledge, async () => {
+    const ctx = getCtx();
+    return ctx.humanWorkDigestService?.syncKnowledge() ?? null;
+  });
+
+  ipcMain.handle(IPC.memoryGetKnowledgeSyncStatus, async () => {
+    const ctx = getCtx();
+    return ctx.humanWorkDigestService?.getKnowledgeSyncStatus() ?? {
+      syncing: false,
+      lastSeenHeadSha: null,
+      currentHeadSha: null,
+      diverged: false,
+      lastDigestAt: null,
+      lastDigestMemoryId: null,
+      lastError: null,
+    };
   });
 
   ipcMain.handle(

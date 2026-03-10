@@ -6,6 +6,7 @@ export {
 export type {
   AddCandidateMemoryOpts,
   AddMemoryOpts,
+  ListMemoriesOpts,
   Memory,
   MemoryBudgetLevel,
   MemoryCategory,

@@ -111,6 +111,20 @@ export type SearchMemoryOpts = {
   tiers?: MemoryTier[];
 };
 
+export type ListMemoriesOpts = {
+  projectId: string;
+  scope?: UnifiedMemoryScope;
+  scopeOwnerId?: string | null;
+  scopeOwnerIds?: ReadonlyArray<string | null>;
+  status?: MemoryStatus | ReadonlyArray<MemoryStatus>;
+  categories?: ReadonlyArray<MemoryCategory>;
+  tiers?: ReadonlyArray<MemoryTier>;
+  sourceRunId?: string | null;
+  sourceType?: MemorySourceType | ReadonlyArray<MemorySourceType>;
+  sourceId?: string | null;
+  limit?: number;
+};
+
 export type WriteMemoryOpts = {
   projectId: string;
   scope: MemoryScope;
@@ -371,6 +385,27 @@ function mapSharedFactRow(row: Record<string, unknown>): SharedFact {
     content: String(row.content ?? ""),
     createdAt: String(row.created_at ?? ""),
   };
+}
+
+function mapMemoryCategoryToSharedFactType(category: MemoryCategory): SharedFact["factType"] {
+  switch (category) {
+    case "gotcha":
+      return "gotcha";
+    case "convention":
+    case "preference":
+    case "digest":
+      return "config";
+    case "pattern":
+    case "procedure":
+      return "api_pattern";
+    case "decision":
+    case "fact":
+    case "handoff":
+    case "episode":
+      return "architectural";
+    default:
+      return "architectural";
+  }
 }
 
 export type UnifiedMemoryService = ReturnType<typeof createUnifiedMemoryService>;
@@ -1048,6 +1083,38 @@ export function createUnifiedMemoryService(db: AdeDb, serviceOpts: CreateUnified
     return scored;
   }
 
+  async function searchAcrossScopeOwners(opts: SearchMemoryOpts & { scopeOwnerIds: ReadonlyArray<string | null> }): Promise<Memory[]> {
+    const ownerIds = [...new Set(opts.scopeOwnerIds.map((value) => String(value ?? "").trim()))];
+    if (!ownerIds.length) {
+      return await search({ ...opts, scopeOwnerId: null });
+    }
+
+    const merged = new Map<string, Memory>();
+    for (const ownerId of ownerIds) {
+      const hits = await search({
+        ...opts,
+        scopeOwnerId: ownerId.length ? ownerId : null,
+        limit: Math.max(opts.limit ?? 10, 20),
+      });
+      for (const hit of hits) {
+        const existing = merged.get(hit.id);
+        if (!existing || hit.compositeScore > existing.compositeScore) {
+          merged.set(hit.id, hit);
+        }
+      }
+    }
+
+    return [...merged.values()]
+      .sort((left, right) => {
+        if (right.compositeScore !== left.compositeScore) {
+          return right.compositeScore - left.compositeScore;
+        }
+        if (left.tier !== right.tier) return left.tier - right.tier;
+        return String(right.lastAccessedAt).localeCompare(String(left.lastAccessedAt));
+      })
+      .slice(0, Math.max(1, Math.min(100, opts.limit ?? 10)));
+  }
+
   async function searchMemories(
     query: string,
     projectId: string,
@@ -1095,6 +1162,81 @@ export function createUnifiedMemoryService(db: AdeDb, serviceOpts: CreateUnified
     });
   }
 
+  function listMemories(opts: ListMemoriesOpts): Memory[] {
+    const limit = Math.max(1, Math.min(500, Math.floor(opts.limit ?? 100)));
+    const statuses = Array.isArray(opts.status)
+      ? [...opts.status]
+      : opts.status
+        ? [opts.status]
+        : undefined;
+    const scopeOwnerIds = opts.scopeOwnerIds != null
+      ? [...new Set(opts.scopeOwnerIds.map((value) => String(value ?? "").trim()))]
+      : opts.scopeOwnerId !== undefined
+        ? [String(opts.scopeOwnerId ?? "").trim()]
+        : [];
+    const sourceTypes = Array.isArray(opts.sourceType)
+      ? [...opts.sourceType]
+      : opts.sourceType
+        ? [opts.sourceType]
+        : undefined;
+
+    const params: Array<string | number | null> = [opts.projectId];
+    let sql = `
+      SELECT m.*, EXISTS(
+        SELECT 1
+        FROM unified_memory_embeddings e
+        WHERE e.memory_id = m.id
+      ) AS embedded
+      FROM unified_memories m
+      WHERE m.project_id = ?
+    `;
+
+    if (opts.scope) {
+      sql += ` AND m.scope = ?`;
+      params.push(opts.scope);
+    }
+
+    if (scopeOwnerIds.length > 0) {
+      sql += ` AND COALESCE(m.scope_owner_id, '') IN (${scopeOwnerIds.map(() => "?").join(",")})`;
+      params.push(...scopeOwnerIds);
+    }
+
+    if (statuses?.length) {
+      sql += ` AND m.status IN (${statuses.map(() => "?").join(",")})`;
+      params.push(...statuses);
+    }
+
+    if (opts.categories?.length) {
+      sql += ` AND m.category IN (${opts.categories.map(() => "?").join(",")})`;
+      params.push(...opts.categories);
+    }
+
+    if (opts.tiers?.length) {
+      sql += ` AND m.tier IN (${opts.tiers.map(() => "?").join(",")})`;
+      params.push(...opts.tiers);
+    }
+
+    if (opts.sourceRunId !== undefined) {
+      sql += ` AND COALESCE(m.source_run_id, '') = ?`;
+      params.push(String(opts.sourceRunId ?? ""));
+    }
+
+    if (sourceTypes?.length) {
+      sql += ` AND m.source_type IN (${sourceTypes.map(() => "?").join(",")})`;
+      params.push(...sourceTypes);
+    }
+
+    if (opts.sourceId !== undefined) {
+      sql += ` AND COALESCE(m.source_id, '') = ?`;
+      params.push(String(opts.sourceId ?? ""));
+    }
+
+    sql += ` ORDER BY m.pinned DESC, m.tier ASC, m.updated_at DESC LIMIT ?`;
+    params.push(limit);
+
+    return db.all<Record<string, unknown>>(sql, params).map(mapMemoryRow);
+  }
+
   function addSharedFact(opts: {
     runId: string;
     stepId?: string;
@@ -1122,6 +1264,15 @@ export function createUnifiedMemoryService(db: AdeDb, serviceOpts: CreateUnified
   }
 
   function getSharedFacts(runId: string, limit = 20): SharedFact[] {
+    const runRow = db.get<{ mission_id: string | null; project_id: string | null }>(
+      `
+        select mission_id, project_id
+        from orchestrator_runs
+        where id = ?
+        limit 1
+      `,
+      [runId]
+    );
     const rows = db.all<Record<string, unknown>>(
       `
         SELECT *
@@ -1132,12 +1283,39 @@ export function createUnifiedMemoryService(db: AdeDb, serviceOpts: CreateUnified
       `,
       [runId, limit]
     );
-    return rows.map(mapSharedFactRow);
+    const legacy = rows.map(mapSharedFactRow);
+    const missionScopeFacts = runRow?.mission_id && runRow?.project_id
+      ? listMemories({
+          projectId: String(runRow.project_id),
+          scope: "mission",
+          scopeOwnerIds: [String(runRow.mission_id), runId],
+          status: ["promoted", "candidate"],
+          categories: ["fact", "decision", "gotcha", "handoff", "digest", "pattern", "procedure"],
+          limit,
+        }).map((memory) => ({
+          id: `mission:${memory.id}`,
+          runId,
+          stepId: null,
+          factType: mapMemoryCategoryToSharedFactType(memory.category),
+          content: memory.content,
+          createdAt: memory.createdAt,
+        } satisfies SharedFact))
+      : [];
+    const merged = new Map<string, SharedFact>();
+    for (const fact of [...missionScopeFacts, ...legacy]) {
+      if (!merged.has(fact.id)) merged.set(fact.id, fact);
+    }
+    return [...merged.values()]
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(0, limit);
   }
 
   return {
     writeMemory,
+    getMemory: readById,
+    listMemories,
     search,
+    searchAcrossScopeOwners,
     addMemory,
     addCandidateMemory,
     promoteMemory,

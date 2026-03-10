@@ -120,6 +120,7 @@ export function buildFullPrompt(
     memoryService?: ReturnType<typeof createMemoryService>;
     projectId?: string;
     workerRuntime?: "tracked_session" | "in_process";
+    memoryBriefing?: OrchestratorExecutorStartArgs["memoryBriefing"];
   }
 ): {
   prompt: string;
@@ -350,7 +351,7 @@ export function buildFullPrompt(
 
   // Shared facts from other agents in this run
   const memoryService = opts?.memoryService;
-  const sharedFacts = memoryService?.getSharedFacts?.(run.id, 20) ?? [];
+  const sharedFacts = opts?.memoryBriefing?.sharedFacts ?? memoryService?.getSharedFacts?.(run.id, 20) ?? [];
   if (sharedFacts.length > 0) {
     systemParts.push(
       [
@@ -363,7 +364,35 @@ export function buildFullPrompt(
 
   // Project memories (high importance only)
   const memProjectId = opts?.projectId;
-  if (memoryService && memProjectId) {
+  const briefing = opts?.memoryBriefing ?? args.memoryBriefing ?? null;
+  if (briefing) {
+    if (briefing.mission.entries.length > 0) {
+      systemParts.push(
+        [
+          "## Mission Memory",
+          ...briefing.mission.entries.map((mem) => `- [${mem.category}] ${mem.content}`)
+        ].join("\n")
+      );
+    }
+    const projectKnowledge = [...briefing.l0.entries, ...briefing.l1.entries]
+      .filter((entry, index, all) => all.findIndex((candidate) => candidate.id === entry.id) === index);
+    if (projectKnowledge.length > 0) {
+      systemParts.push(
+        [
+          "## Project Knowledge",
+          ...projectKnowledge.map((mem) => `- [${mem.category}] ${mem.content}`)
+        ].join("\n")
+      );
+    }
+    if (briefing.l2.entries.length > 0) {
+      systemParts.push(
+        [
+          "## Agent Memory",
+          ...briefing.l2.entries.map((mem) => `- [${mem.category}] ${mem.content}`)
+        ].join("\n")
+      );
+    }
+  } else if (memoryService && memProjectId) {
     const missionMemories = memoryService.getMemoryBudget(memProjectId, "lite", {
       scope: "mission",
       scopeOwnerId: run.id,
@@ -691,6 +720,7 @@ export function createBaseOrchestratorAdapter(config: BaseAdapterConfig): Orches
         const { prompt, filePatterns, steeringDirectiveCount } = buildFullPrompt(args, executorKind, {
           memoryService: args.memoryService as ReturnType<typeof createMemoryService> | undefined,
           projectId: args.memoryProjectId,
+          memoryBriefing: args.memoryBriefing,
         });
 
         // 3. Determine model (strict cutover: modelId is required)

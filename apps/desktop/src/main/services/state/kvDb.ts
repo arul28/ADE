@@ -1473,6 +1473,69 @@ function migrate(db: Database) {
   db.run("create index if not exists idx_unified_memory_embeddings_memory on unified_memory_embeddings(memory_id)");
 
   db.run(`
+    create table if not exists memory_procedure_details (
+      memory_id text primary key,
+      trigger text not null,
+      procedure_markdown text not null,
+      success_count integer not null default 0,
+      failure_count integer not null default 0,
+      last_used_at text,
+      exported_skill_path text,
+      exported_at text,
+      superseded_by_memory_id text,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(memory_id) references unified_memories(id),
+      foreign key(superseded_by_memory_id) references unified_memories(id)
+    )
+  `);
+  db.run("create index if not exists idx_memory_procedure_details_updated on memory_procedure_details(updated_at desc)");
+  db.run("create index if not exists idx_memory_procedure_details_exported on memory_procedure_details(exported_at desc)");
+
+  db.run(`
+    create table if not exists memory_procedure_sources (
+      procedure_memory_id text not null,
+      episode_memory_id text not null,
+      created_at text not null,
+      primary key (procedure_memory_id, episode_memory_id),
+      foreign key(procedure_memory_id) references unified_memories(id),
+      foreign key(episode_memory_id) references unified_memories(id)
+    )
+  `);
+  db.run("create index if not exists idx_memory_procedure_sources_episode on memory_procedure_sources(episode_memory_id)");
+
+  db.run(`
+    create table if not exists memory_procedure_history (
+      id text primary key,
+      procedure_memory_id text not null,
+      confidence real not null,
+      outcome text not null,
+      reason text,
+      recorded_at text not null,
+      foreign key(procedure_memory_id) references unified_memories(id)
+    )
+  `);
+  db.run("create index if not exists idx_memory_procedure_history_procedure on memory_procedure_history(procedure_memory_id, recorded_at desc)");
+
+  db.run(`
+    create table if not exists memory_skill_index (
+      id text primary key,
+      path text not null unique,
+      kind text not null,
+      source text not null,
+      memory_id text,
+      content_hash text not null,
+      last_modified_at text,
+      archived_at text,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(memory_id) references unified_memories(id)
+    )
+  `);
+  db.run("create index if not exists idx_memory_skill_index_memory on memory_skill_index(memory_id)");
+  db.run("create index if not exists idx_memory_skill_index_archived on memory_skill_index(archived_at)");
+
+  db.run(`
     create table if not exists memory_sweep_log (
       sweep_id text primary key,
       project_id text not null,
@@ -1592,6 +1655,31 @@ function migrate(db: Database) {
   } catch {
     db.run("delete from unified_memories_fts");
     db.run("insert into unified_memories_fts(rowid, content) select rowid, content from unified_memories");
+  }
+
+  // Canonicalize mission memory ownership from run ids to mission ids where possible.
+  try {
+    db.run(`
+      update unified_memories
+      set scope_owner_id = (
+        select r.mission_id
+        from orchestrator_runs r
+        where r.id = unified_memories.scope_owner_id
+          and coalesce(r.mission_id, '') != ''
+        limit 1
+      ),
+      updated_at = datetime('now')
+      where scope = 'mission'
+        and coalesce(scope_owner_id, '') != ''
+        and exists (
+          select 1
+          from orchestrator_runs r
+          where r.id = unified_memories.scope_owner_id
+            and coalesce(r.mission_id, '') != ''
+        )
+    `);
+  } catch {
+    // Best-effort migration for older databases.
   }
 
   // CTO persistent identity/core-memory/session-log state.
