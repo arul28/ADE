@@ -1,20 +1,9 @@
 import React, { useMemo, useCallback } from "react";
 import { Brain, Robot, Plus, CaretRight } from "@phosphor-icons/react";
 import type { AgentIdentity, AgentBudgetSnapshot } from "../../../shared/types";
+import { AgentStatusDot } from "./shared/AgentStatusBadge";
 import { Button } from "../ui/Button";
-import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
-
-function statusColor(status: AgentIdentity["status"]): string {
-  if (status === "running") return "bg-info";
-  if (status === "active") return "bg-success";
-  if (status === "paused") return "bg-warning";
-  return "bg-muted-fg/40";
-}
-
-function statusLabel(status: AgentIdentity["status"]): string {
-  return status.charAt(0).toUpperCase() + status.slice(1);
-}
 
 function dollars(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
@@ -52,7 +41,7 @@ const AgentRow = React.memo(function AgentRow({
       style={{ paddingLeft: `${12 + depth * 16}px` }}
     >
       <div className="flex items-center gap-2.5 min-w-0">
-        <div className={cn("h-2 w-2 shrink-0 rounded-full", statusColor(agent.status))} />
+        <AgentStatusDot status={agent.status} />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className={cn(

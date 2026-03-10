@@ -52,6 +52,9 @@ import type {
   CtoGetAgentCoreMemoryArgs,
   CtoUpdateAgentCoreMemoryArgs,
   CtoListAgentSessionLogsArgs,
+  CtoOnboardingState,
+  CtoSystemPromptPreview,
+  CtoLinearProject,
   LinearConnectionStatus,
   CtoSetLinearTokenArgs,
   CtoSaveFlowPolicyArgs,
@@ -1433,5 +1436,17 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.ctoListAgentTaskSessions, args),
     clearAgentTaskSession: async (args: CtoClearAgentTaskSessionArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.ctoClearAgentTaskSession, args),
+    getOnboardingState: async (): Promise<CtoOnboardingState> =>
+      ipcRenderer.invoke(IPC.ctoGetOnboardingState),
+    completeOnboardingStep: async (args: { stepId: string }): Promise<CtoOnboardingState> =>
+      ipcRenderer.invoke(IPC.ctoCompleteOnboardingStep, args),
+    dismissOnboarding: async (): Promise<CtoOnboardingState> =>
+      ipcRenderer.invoke(IPC.ctoDismissOnboarding),
+    resetOnboarding: async (): Promise<CtoOnboardingState> =>
+      ipcRenderer.invoke(IPC.ctoResetOnboarding),
+    previewSystemPrompt: async (args: { identityOverride?: Record<string, unknown> } = {}): Promise<CtoSystemPromptPreview> =>
+      ipcRenderer.invoke(IPC.ctoPreviewSystemPrompt, args),
+    getLinearProjects: async (): Promise<CtoLinearProject[]> =>
+      ipcRenderer.invoke(IPC.ctoGetLinearProjects),
   }
 });

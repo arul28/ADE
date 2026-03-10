@@ -429,7 +429,13 @@ export const IPC = {
   ctoGetLinearSyncDashboard: "ade.cto.getLinearSyncDashboard",
   ctoRunLinearSyncNow: "ade.cto.runLinearSyncNow",
   ctoListLinearSyncQueue: "ade.cto.listLinearSyncQueue",
-  ctoResolveLinearSyncQueueItem: "ade.cto.resolveLinearSyncQueueItem"
+  ctoResolveLinearSyncQueueItem: "ade.cto.resolveLinearSyncQueueItem",
+  ctoGetOnboardingState: "ade.cto.getOnboardingState",
+  ctoCompleteOnboardingStep: "ade.cto.completeOnboardingStep",
+  ctoDismissOnboarding: "ade.cto.dismissOnboarding",
+  ctoResetOnboarding: "ade.cto.resetOnboarding",
+  ctoPreviewSystemPrompt: "ade.cto.previewSystemPrompt",
+  ctoGetLinearProjects: "ade.cto.getLinearProjects"
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];

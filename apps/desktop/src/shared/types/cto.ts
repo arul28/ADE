@@ -3,10 +3,24 @@ import type { AgentChatPermissionMode } from "./chat";
 
 export type CtoCapabilityMode = "full_mcp" | "fallback";
 
+export type CtoPersonalityPreset = "professional" | "casual" | "minimal" | "custom";
+
+export type CtoCommunicationStyle = {
+  verbosity: "concise" | "detailed" | "adaptive";
+  proactivity: "reactive" | "balanced" | "proactive";
+  escalationThreshold: "low" | "medium" | "high";
+};
+
 export type CtoIdentity = {
   name: string;
   version: number;
   persona: string;
+  personality?: CtoPersonalityPreset;
+  customPersonality?: string;
+  communicationStyle?: CtoCommunicationStyle;
+  constraints?: string[];
+  systemPromptExtension?: string;
+  onboardingState?: CtoOnboardingState;
   modelPreferences: {
     provider: string;
     model: string;
@@ -80,4 +94,40 @@ export type CtoUpdateCoreMemoryArgs = {
 
 export type CtoListSessionLogsArgs = {
   limit?: number;
+};
+
+/* ── Onboarding ── */
+
+export type CtoOnboardingState = {
+  completedSteps: string[];
+  dismissedAt?: string;
+  completedAt?: string;
+};
+
+export type CtoSystemPromptPreview = {
+  prompt: string;
+  tokenEstimate: number;
+};
+
+export type CtoGetOnboardingStateResult = CtoOnboardingState;
+
+export type CtoCompleteOnboardingStepArgs = {
+  stepId: string;
+};
+
+export type CtoDismissOnboardingArgs = Record<string, never>;
+
+export type CtoResetOnboardingArgs = Record<string, never>;
+
+export type CtoPreviewSystemPromptArgs = {
+  identityOverride?: Partial<CtoIdentity>;
+};
+
+export type CtoGetLinearProjectsArgs = Record<string, never>;
+
+export type CtoLinearProject = {
+  id: string;
+  name: string;
+  slug: string;
+  teamName: string;
 };

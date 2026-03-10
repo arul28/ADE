@@ -684,12 +684,29 @@ export type AiOrchestratorConfig = {
   laneExclusivity?: boolean;
 };
 
+/** Unified config for AI-generated titles and summaries across all session types (chat, CLI, terminal). */
+export type SessionIntelligenceConfig = {
+  titles?: {
+    enabled?: boolean;
+    modelId?: ModelId;
+    /** Whether to regenerate the title when the session completes */
+    refreshOnComplete?: boolean;
+  };
+  summaries?: {
+    enabled?: boolean;
+    modelId?: ModelId;
+  };
+};
+
 export type AiChatConfig = {
   defaultProvider?: "codex" | "claude" | "last_used";
   defaultApprovalPolicy?: "auto" | "approve_mutations" | "approve_all";
   sendOnEnter?: boolean;
+  /** @deprecated Use ai.sessionIntelligence.titles instead */
   autoTitleEnabled?: boolean;
+  /** @deprecated Use ai.sessionIntelligence.titles.modelId instead */
   autoTitleModelId?: ModelId;
+  /** @deprecated Use ai.sessionIntelligence.titles.refreshOnComplete instead */
   autoTitleRefreshOnComplete?: boolean;
   codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
   claudePermissionMode?: "plan" | "acceptEdits" | "bypassPermissions";
@@ -714,6 +731,8 @@ export type AiConfig = {
   mcpServers?: Record<string, unknown>;
   /** Per-feature model overrides, e.g. { mission_planning: "claude-sonnet-4-6" } */
   featureModelOverrides?: Partial<Record<AiFeatureKey, string>>;
+  /** Unified title + summary intelligence config for all session types */
+  sessionIntelligence?: SessionIntelligenceConfig;
 };
 
 export type AiIntegrationStatus = {
@@ -754,6 +773,8 @@ export type ProjectConfigFile = {
   defaultLaneTemplate?: string;
   providers?: Record<string, unknown>;
   linearSync?: LinearSyncConfig;
+  /** Event-based checklist for context doc auto-regeneration */
+  contextRefreshEvents?: import("./packs").ContextRefreshEvents;
 };
 
 export type ProjectConfigCandidate = {

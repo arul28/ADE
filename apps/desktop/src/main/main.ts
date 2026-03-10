@@ -713,6 +713,7 @@ app.whenReady().then(async () => {
       projectConfigService,
       operationService,
       aiIntegrationService,
+      sessionService,
       conflictPacksDir: path.join(adePaths.packsDir, "conflicts"),
       onEvent: (event) => {
         emitProjectEvent(projectRoot, IPC.conflictsEvent, event);
@@ -818,6 +819,7 @@ app.whenReady().then(async () => {
       laneService,
       sessionService,
       aiIntegrationService,
+      projectConfigService,
       logger,
       broadcastData: (ev) => emitProjectEvent(projectRoot, IPC.ptyData, ev),
       broadcastExit: (ev) => emitProjectEvent(projectRoot, IPC.ptyExit, ev),

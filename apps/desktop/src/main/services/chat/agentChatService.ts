@@ -241,6 +241,8 @@ type ResolvedChatConfig = {
   autoTitleEnabled: boolean;
   autoTitleModelId: string | null;
   autoTitleRefreshOnComplete: boolean;
+  summaryEnabled: boolean;
+  summaryModelId: string | null;
 };
 
 const DEFAULT_CODEX_DESCRIPTOR = getDefaultModelDescriptor("codex");
@@ -1018,6 +1020,7 @@ export function createAgentChatService(args: {
     const ai = snapshot.effective.ai ?? {};
     const permissions = ai.permissions ?? {};
     const chat = ai.chat ?? {};
+    const si = ai.sessionIntelligence;
     const cliMode = permissions.cli?.mode ?? "edit";
     const inProcessMode = permissions.inProcess?.mode ?? "edit";
 
@@ -1057,8 +1060,20 @@ export function createAgentChatService(args: {
 
     const budget = Number(chat.sessionBudgetUsd ?? permissions.cli?.maxBudgetUsd ?? NaN);
     const sessionBudgetUsd = Number.isFinite(budget) && budget > 0 ? budget : null;
-    const autoTitleModelId = typeof chat.autoTitleModelId === "string" && chat.autoTitleModelId.trim().length
-      ? chat.autoTitleModelId.trim()
+
+    // Unified sessionIntelligence.titles.* with legacy chat.autoTitle* fallback
+    const autoTitleEnabled = si?.titles?.enabled ?? chat.autoTitleEnabled ?? true;
+    const autoTitleModelIdRaw = si?.titles?.modelId ?? chat.autoTitleModelId;
+    const autoTitleModelId = typeof autoTitleModelIdRaw === "string" && autoTitleModelIdRaw.trim().length
+      ? autoTitleModelIdRaw.trim()
+      : null;
+    const autoTitleRefreshOnComplete = si?.titles?.refreshOnComplete ?? chat.autoTitleRefreshOnComplete ?? true;
+
+    // Unified sessionIntelligence.summaries.*
+    const summaryEnabled = si?.summaries?.enabled ?? true;
+    const summaryModelIdRaw = si?.summaries?.modelId;
+    const summaryModelId = typeof summaryModelIdRaw === "string" && summaryModelIdRaw.trim().length
+      ? summaryModelIdRaw.trim()
       : null;
 
     return {
@@ -1067,9 +1082,11 @@ export function createAgentChatService(args: {
       claudePermissionMode,
       unifiedPermissionMode,
       sessionBudgetUsd,
-      autoTitleEnabled: chat.autoTitleEnabled === true,
+      autoTitleEnabled,
       autoTitleModelId,
-      autoTitleRefreshOnComplete: chat.autoTitleRefreshOnComplete !== false,
+      autoTitleRefreshOnComplete,
+      summaryEnabled,
+      summaryModelId,
     };
   };
 
@@ -1416,6 +1433,77 @@ export function createAgentChatService(args: {
     }
   };
 
+  const maybeGenerateSessionSummary = async (
+    managed: ManagedChatSession,
+    deterministicSummary: string | null
+  ): Promise<void> => {
+    const config = resolveChatConfig();
+    if (!config.summaryEnabled) return;
+
+    // Set the deterministic summary first (always available immediately)
+    const session = sessionService.get(managed.session.id);
+    if (!session) return;
+
+    const deterministicText = deterministicSummary?.trim() || managed.preview?.trim() || null;
+    if (deterministicText && !session.summary) {
+      sessionService.setSummary(managed.session.id, deterministicText);
+    }
+
+    // Fire-and-forget AI summary enhancement
+    const auth = await detectAuth();
+    const availableModels = getRegistryModels(auth).filter((d) => !d.deprecated);
+    if (!availableModels.length) return;
+
+    const preferredModelId =
+      [
+        config.summaryModelId,
+        DEFAULT_AUTO_TITLE_MODEL_ID,
+        "anthropic/claude-haiku-4-5",
+        "openai/codex-mini-latest",
+        availableModels[0]?.id,
+      ].find((candidate) => {
+        const modelId = typeof candidate === "string" ? candidate.trim() : "";
+        return modelId.length > 0 && availableModels.some((d) => d.id === modelId);
+      }) ?? null;
+
+    if (!preferredModelId) return;
+    const descriptor = getModelById(preferredModelId);
+    if (!descriptor) return;
+
+    const baseSummary = session.summary ?? deterministicText ?? "";
+    const prompt = [
+      "You are ADE's session summary assistant.",
+      "Rewrite this chat session into a concise 1-3 sentence summary describing what was accomplished and any outcome.",
+      "Do not invent actions or outcomes not mentioned. Return only the summary text.",
+      "",
+      `Session title: ${session.title}`,
+      session.goal ? `Goal: ${session.goal}` : null,
+      baseSummary ? `Current summary: ${baseSummary}` : null,
+      session.lastOutputPreview ? `Latest output: ${session.lastOutputPreview}` : null,
+    ].filter(Boolean).join("\n");
+
+    try {
+      const resolvedModel = await resolveModel(descriptor.id, auth, {
+        cwd: managed.laneWorktreePath,
+        middleware: false,
+      });
+      const result = await generateText({
+        model: resolvedModel,
+        prompt,
+      });
+      const text = result.text.trim();
+      if (text.length) {
+        sessionService.setSummary(managed.session.id, text);
+      }
+    } catch (error) {
+      logger.warn("agent_chat.session_summary_failed", {
+        sessionId: managed.session.id,
+        modelId: descriptor.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   const finishSession = async (
     managed: ManagedChatSession,
     status: TerminalSessionStatus,
@@ -1432,6 +1520,8 @@ export function createAgentChatService(args: {
       stage: "final",
       summary: options?.summary ?? managed.preview,
     });
+
+    void maybeGenerateSessionSummary(managed, options?.summary ?? null);
 
     const endedAt = nowIso();
     sessionService.end({

@@ -411,13 +411,27 @@ export type ContextStatus = {
 
 export type ContextDocProvider = "codex" | "claude" | "unified";
 
+/** @deprecated Use ContextRefreshEvents instead */
 export type ContextRefreshTrigger = "manual" | "per_mission" | "per_pr" | "per_lane_refresh";
+
+/** Event-based checklist for context doc regeneration. Users toggle which events trigger regen. */
+export type ContextRefreshEvents = {
+  onSessionEnd?: boolean;
+  onCommit?: boolean;
+  onPrCreate?: boolean;
+  onPrLand?: boolean;
+  onMissionStart?: boolean;
+  onMissionEnd?: boolean;
+  onLaneCreate?: boolean;
+};
 
 export type ContextGenerateDocsArgs = {
   provider?: ContextDocProvider;
   modelId?: string;
   reasoningEffort?: string | null;
+  /** @deprecated Use events instead */
   trigger?: ContextRefreshTrigger;
+  events?: ContextRefreshEvents;
   force?: boolean;
 };
 
