@@ -840,6 +840,15 @@ app.whenReady().then(async () => {
       projectId,
       onStatus: (event) => emitProjectEvent(projectRoot, IPC.memorySweepStatus, event)
     });
+    const batchConsolidationService = createBatchConsolidationService({
+      db,
+      logger,
+      aiIntegrationService,
+      projectConfigService,
+      projectId,
+      projectRoot,
+      onStatus: (event) => emitProjectEvent(projectRoot, IPC.memoryConsolidationStatus, event),
+    });
     const contextDocService = createContextDocService({
       db,
       logger,
@@ -1131,7 +1140,7 @@ app.whenReady().then(async () => {
         error: error instanceof Error ? error.message : String(error)
       });
     });
-    void batchConsolidationService.runAutoConsolidationIfNeeded().catch((error) => {
+    void batchConsolidationService.runAutoConsolidationIfNeeded().catch((error: unknown) => {
       logger.warn("memory.consolidation.startup_check_failed", {
         projectId,
         error: error instanceof Error ? error.message : String(error)

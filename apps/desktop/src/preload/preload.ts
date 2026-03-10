@@ -443,6 +443,7 @@ import type {
   BudgetCapScope,
   BudgetCapProvider,
   BudgetCapConfig,
+  MemoryHealthStats,
   MemoryConsolidationResult,
   MemoryConsolidationStatusEventPayload,
   MemoryLifecycleSweepResult,
@@ -1282,6 +1283,8 @@ contextBridge.exposeInMainWorld("ade", {
       status?: "promoted" | "candidate" | "archived" | "all";
     }): Promise<unknown[]> =>
       ipcRenderer.invoke(IPC.memorySearch, args),
+    getHealthStats: async (): Promise<MemoryHealthStats> =>
+      ipcRenderer.invoke(IPC.memoryHealthStats),
     runSweep: async (): Promise<MemoryLifecycleSweepResult> =>
       ipcRenderer.invoke(IPC.memoryRunSweep),
     onSweepStatus: (cb: (payload: MemorySweepStatusEventPayload) => void) => {

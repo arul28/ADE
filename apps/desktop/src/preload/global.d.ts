@@ -81,6 +81,7 @@ import type {
   BudgetCapScope,
   BudgetCapProvider,
   BudgetCapConfig,
+  MemoryHealthStats,
   MemoryConsolidationResult,
   MemoryConsolidationStatusEventPayload,
   MemoryLifecycleSweepResult,
@@ -924,6 +925,7 @@ declare global {
           limit?: number;
           status?: "promoted" | "candidate" | "archived" | "all";
         }) => Promise<unknown[]>;
+        getHealthStats: () => Promise<MemoryHealthStats>;
         runSweep: () => Promise<MemoryLifecycleSweepResult>;
         onSweepStatus: (cb: (payload: MemorySweepStatusEventPayload) => void) => () => void;
         runConsolidation: () => Promise<MemoryConsolidationResult>;

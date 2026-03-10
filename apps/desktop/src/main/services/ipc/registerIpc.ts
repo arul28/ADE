@@ -577,12 +577,211 @@ function toRecentProjectSummary(entry: { rootPath: string; displayName: string; 
 }
 
 type MemoryScope = "user" | "project" | "lane" | "mission";
+type MemoryHealthScope = "project" | "agent" | "mission";
+
+type MemoryHealthCountRow = {
+  scope: string | null;
+  tier: number | null;
+  status: string | null;
+  count: number | null;
+};
+
+type MemorySweepLogRow = {
+  sweep_id: string;
+  project_id: string;
+  trigger_reason: string | null;
+  started_at: string;
+  completed_at: string;
+  entries_decayed: number | null;
+  entries_demoted: number | null;
+  entries_promoted: number | null;
+  entries_archived: number | null;
+  entries_orphaned: number | null;
+  duration_ms: number | null;
+};
+
+type MemoryConsolidationLogRow = {
+  consolidation_id: string;
+  project_id: string;
+  trigger_reason: string | null;
+  started_at: string;
+  completed_at: string;
+  clusters_found: number | null;
+  entries_merged: number | null;
+  entries_created: number | null;
+  tokens_used: number | null;
+  duration_ms: number | null;
+};
+
+const MEMORY_HEALTH_SCOPES = ["project", "agent", "mission"] as const;
+const MEMORY_HEALTH_LIMITS: Record<MemoryHealthScope, number> = {
+  project: 2000,
+  agent: 500,
+  mission: 200,
+};
 
 function normalizeMemoryScope(rawScope: string): MemoryScope | undefined {
   const trimmed = rawScope.trim();
   if (trimmed === "agent") return "user";
   if (trimmed === "user" || trimmed === "project" || trimmed === "lane" || trimmed === "mission") return trimmed;
   return undefined;
+}
+
+function normalizeMemoryHealthScope(rawScope: unknown): MemoryHealthScope | null {
+  const trimmed = typeof rawScope === "string" ? rawScope.trim() : "";
+  if (trimmed === "project") return "project";
+  if (trimmed === "agent" || trimmed === "user") return "agent";
+  if (trimmed === "mission" || trimmed === "lane") return "mission";
+  return null;
+}
+
+function createEmptyMemoryHealthStats() {
+  return {
+    scopes: MEMORY_HEALTH_SCOPES.map((scope) => ({
+      scope,
+      current: 0,
+      max: MEMORY_HEALTH_LIMITS[scope],
+      counts: {
+        tier1: 0,
+        tier2: 0,
+        tier3: 0,
+        archived: 0,
+      },
+    })),
+    lastSweep: null,
+    lastConsolidation: null,
+  } as {
+    scopes: Array<{
+      scope: MemoryHealthScope;
+      current: number;
+      max: number;
+      counts: {
+        tier1: number;
+        tier2: number;
+        tier3: number;
+        archived: number;
+      };
+    }>;
+    lastSweep: {
+      sweepId: string;
+      projectId: string;
+      reason: "manual" | "startup";
+      startedAt: string;
+      completedAt: string;
+      entriesDecayed: number;
+      entriesDemoted: number;
+      entriesPromoted: number;
+      entriesArchived: number;
+      entriesOrphaned: number;
+      durationMs: number;
+    } | null;
+    lastConsolidation: {
+      consolidationId: string;
+      projectId: string;
+      reason: "manual" | "auto";
+      startedAt: string;
+      completedAt: string;
+      clustersFound: number;
+      entriesMerged: number;
+      entriesCreated: number;
+      tokensUsed: number;
+      durationMs: number;
+    } | null;
+  };
+}
+
+function getMemoryHealthStats(ctx: AppContext) {
+  const stats = createEmptyMemoryHealthStats();
+  const scopes = new Map(stats.scopes.map((entry) => [entry.scope, entry] as const));
+
+  const rows = ctx.db.all<MemoryHealthCountRow>(
+    `
+      SELECT scope, tier, status, COUNT(*) AS count
+      FROM unified_memories
+      WHERE project_id = ?
+      GROUP BY scope, tier, status
+    `,
+    [ctx.projectId],
+  );
+
+  for (const row of rows) {
+    const scope = normalizeMemoryHealthScope(row.scope);
+    if (!scope) continue;
+    const target = scopes.get(scope);
+    if (!target) continue;
+    const count = Number(row.count ?? 0);
+    if (!Number.isFinite(count) || count <= 0) continue;
+
+    if (String(row.status ?? "").trim() === "archived") {
+      target.counts.archived += count;
+      continue;
+    }
+
+    const tier = Number(row.tier ?? 0);
+    if (tier === 1) target.counts.tier1 += count;
+    else if (tier === 2) target.counts.tier2 += count;
+    else target.counts.tier3 += count;
+  }
+
+  for (const scope of stats.scopes) {
+    scope.current = scope.counts.tier1 + scope.counts.tier2 + scope.counts.tier3;
+  }
+
+  const lastSweep = ctx.db.get<MemorySweepLogRow>(
+    `
+      SELECT sweep_id, project_id, trigger_reason, started_at, completed_at,
+             entries_decayed, entries_demoted, entries_promoted, entries_archived,
+             entries_orphaned, duration_ms
+      FROM memory_sweep_log
+      WHERE project_id = ?
+      ORDER BY completed_at DESC
+      LIMIT 1
+    `,
+    [ctx.projectId],
+  );
+  if (lastSweep) {
+    stats.lastSweep = {
+      sweepId: lastSweep.sweep_id,
+      projectId: lastSweep.project_id,
+      reason: lastSweep.trigger_reason === "startup" ? "startup" : "manual",
+      startedAt: lastSweep.started_at,
+      completedAt: lastSweep.completed_at,
+      entriesDecayed: Number(lastSweep.entries_decayed ?? 0),
+      entriesDemoted: Number(lastSweep.entries_demoted ?? 0),
+      entriesPromoted: Number(lastSweep.entries_promoted ?? 0),
+      entriesArchived: Number(lastSweep.entries_archived ?? 0),
+      entriesOrphaned: Number(lastSweep.entries_orphaned ?? 0),
+      durationMs: Number(lastSweep.duration_ms ?? 0),
+    };
+  }
+
+  const lastConsolidation = ctx.db.get<MemoryConsolidationLogRow>(
+    `
+      SELECT consolidation_id, project_id, trigger_reason, started_at, completed_at,
+             clusters_found, entries_merged, entries_created, tokens_used, duration_ms
+      FROM memory_consolidation_log
+      WHERE project_id = ?
+      ORDER BY completed_at DESC
+      LIMIT 1
+    `,
+    [ctx.projectId],
+  );
+  if (lastConsolidation) {
+    stats.lastConsolidation = {
+      consolidationId: lastConsolidation.consolidation_id,
+      projectId: lastConsolidation.project_id,
+      reason: lastConsolidation.trigger_reason === "auto" ? "auto" : "manual",
+      startedAt: lastConsolidation.started_at,
+      completedAt: lastConsolidation.completed_at,
+      clustersFound: Number(lastConsolidation.clusters_found ?? 0),
+      entriesMerged: Number(lastConsolidation.entries_merged ?? 0),
+      entriesCreated: Number(lastConsolidation.entries_created ?? 0),
+      tokensUsed: Number(lastConsolidation.tokens_used ?? 0),
+      durationMs: Number(lastConsolidation.duration_ms ?? 0),
+    };
+  }
+
+  return stats;
 }
 
 async function resolveFirstAvailableLaneId(
@@ -3906,6 +4105,11 @@ export function registerIpc({
     return ctx.memoryService.searchMemories(arg.query, pid, scope, arg?.limit ?? 10, status, scopeOwnerId);
     }
   );
+
+  ipcMain.handle(IPC.memoryHealthStats, async () => {
+    const ctx = getCtx();
+    return getMemoryHealthStats(ctx);
+  });
 
   ipcMain.handle(IPC.memoryRunSweep, async () => {
     const ctx = getCtx();
