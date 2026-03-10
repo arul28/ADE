@@ -8112,6 +8112,12 @@ export function createOrchestratorService({
       // Append run narrative entry for step completion
       appendRunNarrative(run.id, step.stepKey, `${status}: ${envelope.summary.slice(0, 200)}`);
 
+      // VAL-STATE-002: When a step completes, check if it is a fan-out child
+      // and all siblings are terminal. If so, update the parent step status.
+      if (status === "succeeded" || status === "failed") {
+        this.checkFanOutCompletion({ runId: run.id, completedStepKey: step.stepKey });
+      }
+
       const updatedRun = this.tick({ runId: run.id });
       // When the run transitions to "completing" (all steps terminal) or is already terminal,
       // mark worker state as disposed for cleanup.
@@ -8864,9 +8870,16 @@ export function createOrchestratorService({
 
       if (allDone && parentMeta.fanOutComplete !== true) {
         const updatedMeta = { ...parentMeta, fanOutComplete: true };
+        const now = nowIso();
+        const succeededCount = childKeys.filter((key) => allSteps.find((s) => s.stepKey === key)?.status === "succeeded").length;
+        const failedCount = childKeys.filter((key) => allSteps.find((s) => s.stepKey === key)?.status === "failed").length;
+
+        // VAL-STATE-002: Update parent step status to reflect variant outcomes.
+        // If any child succeeded → parent succeeded; if all failed → parent failed.
+        const parentTerminalStatus = succeededCount > 0 ? "succeeded" : "failed";
         db.run(
-          `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ? and run_id = ? and project_id = ?`,
-          [JSON.stringify(updatedMeta), nowIso(), parentStep.id, runId, projectId]
+          `update orchestrator_steps set status = ?, metadata_json = ?, updated_at = ?, completed_at = coalesce(completed_at, ?) where id = ? and run_id = ? and project_id = ?`,
+          [parentTerminalStatus, JSON.stringify(updatedMeta), now, now, parentStep.id, runId, projectId]
         );
         appendTimelineEvent({
           runId,
@@ -8877,8 +8890,9 @@ export function createOrchestratorService({
             parentStepKey,
             childKeys,
             childCount: childKeys.length,
-            succeeded: childKeys.filter((key) => allSteps.find((s) => s.stepKey === key)?.status === "succeeded").length,
-            failed: childKeys.filter((key) => allSteps.find((s) => s.stepKey === key)?.status === "failed").length
+            succeeded: succeededCount,
+            failed: failedCount,
+            parentTerminalStatus,
           }
         });
         emit({ type: "orchestrator-step-updated", runId, stepId: parentStep.id, reason: "fan_out_complete" });
