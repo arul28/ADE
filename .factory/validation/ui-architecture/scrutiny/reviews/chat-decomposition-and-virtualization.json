@@ -1,0 +1,21 @@
+{
+  "featureId": "chat-decomposition-and-virtualization",
+  "reviewedAt": "2026-03-10T07:45:10.200226Z",
+  "commitId": "5e450b2",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "The reviewed commit does satisfy the targeted UI-architecture contract. MissionChatV2 is reduced to 283 lines and now composes extracted channel, message-area, input, and chat-filter modules. MissionSidebar now applies @tanstack/react-virtual to the list view, so it only renders the virtual window instead of every mission row. For chat messages, the refactor still routes rendering through MissionThreadMessageList into the already-virtualized AgentChatMessageList path, so VAL-ARCH-006 remains satisfied even though that virtualization predates this commit.",
+    "issues": []
+  },
+  "sharedStateObservations": [
+    {
+      "area": "library",
+      "observation": "The shared architecture notes for the missions UI are stale and do not capture the existing virtualized chat-rendering path. That makes it easy for workers to spend time planning message-list virtualization that is already present in AgentChatMessageList.",
+      "evidence": ".factory/library/architecture.md:40-44 still describes `MissionChatV2.tsx` as a ~1755-line component being refactored. The reviewed code now renders chat via `ChatMessageArea.tsx:26,186` -> `MissionThreadMessageList` -> `AgentChatMessageList.tsx:1171-1173,1272,1423`, where the pre-existing `OVERSCAN = 10`, `VIRTUALIZATION_THRESHOLD = 60`, and `rows.slice(startIndex, endIndex)` windowing logic already provide message virtualization."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Pass. The feature cleanly decomposes MissionChatV2, applies real sidebar virtualization, and keeps chat messages on an existing virtualized rendering path that should satisfy the DOM-node constraints for VAL-ARCH-003, VAL-ARCH-005, and VAL-ARCH-006."
+}

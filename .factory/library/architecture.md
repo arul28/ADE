@@ -40,9 +40,11 @@ Architectural decisions, patterns, and key file locations for ADE mission system
 ### Renderer Components
 | File | Lines | Purpose |
 |---|---|---|
-| `MissionsPage.tsx` | ~2437 | Main missions tab (MEGA-COMPONENT — being refactored) |
-| `MissionChatV2.tsx` | ~1755 | Chat component (being refactored) |
+| `MissionsPage.tsx` | ~389 | Missions tab shell that composes store-backed sidebar/detail components |
+| `MissionChatV2.tsx` | ~283 | Mission chat shell composed from extracted channel, message, and input components |
+| `useMissionsStore.ts` | ~900 | Zustand store for missions domain state, selectors, and IPC-backed actions |
 | `MissionRunPanel.tsx` | ~645 | Run status, workers, interventions |
+| `AgentChatMessageList.tsx` | ~1500 | Shared chat renderer with built-in message windowing/virtualization path |
 | `missionHelpers.ts` | ~400 | Constants, types, utilities |
 | `missionControlViewModel.ts` | ~200 | View model derivation |
 
@@ -72,6 +74,11 @@ export function createMyService({ dep1, dep2 }: { dep1: Dep1Type; dep2: Dep2Type
 2. `registerIpc.ts` — Main process handler registration
 3. `preload.ts` — Preload bridge exposure
 4. `global.d.ts` — Type declarations for `window.ade`
+
+### Missions UI Architecture Notes
+- `MissionsPage.tsx` is no longer the mega-component; most missions UI state now lives in `useMissionsStore.ts` and page layout is split across focused child components.
+- Chat message virtualization already exists in the shared renderer path: `ChatMessageArea` → `MissionThreadMessageList` → `AgentChatMessageList`, so mission-chat work should reuse that path instead of re-implementing message windowing.
+- Mission sidebar virtualization is implemented separately in `MissionSidebar.tsx` via `@tanstack/react-virtual`.
 
 ### State Machine
 - `MissionStatus`: queued → planning → in_progress → intervention_required → completed/failed/canceled

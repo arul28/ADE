@@ -1,0 +1,40 @@
+{
+  "featureId": "missions-store-and-decomposition",
+  "reviewedAt": "2026-03-10T07:43:54.601129Z",
+  "commitId": "03076ea",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The commit does achieve the large-scale refactor goals for VAL-ARCH-001 and VAL-ARCH-002: `MissionsPage.tsx` is reduced under 400 lines, domain state is moved into `useMissionsStore`, and the page is split into focused subcomponents. However, the contract is not fully met for IPC consolidation, polling cleanup, or selector granularity. The new `getFullMissionView` IPC handler is registered but never called from the renderer, mission selection still fans out into multiple legacy IPC requests, `MissionsPage` still owns refresh/debounce timers and event subscriptions with `setTimeout`, and several top-level components subscribe to a large number of store slices, so unrelated store updates can still rerender broad sections of the UI.",
+    "issues": [
+      {
+        "file": "apps/desktop/src/renderer/components/missions/MissionsPage.tsx",
+        "line": 112,
+        "severity": "blocking",
+        "description": "VAL-ARCH-004 is still unmet. Mission selection still triggers the old waterfall: `MissionsPage` calls `loadMissionDetail()` and `loadOrchestratorGraph()` on selection (`MissionsPage.tsx:103-121`), and those actions still call `missions.get`, `orchestrator.listRuns`, `orchestrator.getRunGraph`, `orchestrator.listArtifacts`, and `orchestrator.listWorkerCheckpoints` (`useMissionsStore.ts:357-408`). The new `getFullMissionView` IPC exists in the main/preload/type layers, but it is never used anywhere in the renderer for this commit (`git grep -n getFullMissionView 03076ea` only finds the IPC declarations)."
+      },
+      {
+        "file": "apps/desktop/src/renderer/components/missions/MissionsPage.tsx",
+        "line": 146,
+        "severity": "blocking",
+        "description": "VAL-ARCH-007 is not satisfied. The feature description required polling/event work to move out of components, but `MissionsPage` still keeps component-level refresh timers and subscriptions: `window.setTimeout` is used for graph refresh and event debouncing at `MissionsPage.tsx:146-149`, `157-167`, and `182-187`, and the page still registers `window.ade.missions.onEvent` / `window.ade.orchestrator.onEvent` directly at `155-193`. That leaves component-owned refresh orchestration in place instead of consolidating it into the store/shared coordinator layer."
+      },
+      {
+        "file": "apps/desktop/src/renderer/components/missions/MissionTabContainer.tsx",
+        "line": 115,
+        "severity": "blocking",
+        "description": "VAL-ARCH-008 is not met strictly enough. The code uses selector functions, but several top-level components still subscribe to far more than the contract's intended fine-grained scope. `MissionTabContainer` subscribes to roughly 18 store slices/actions at `MissionTabContainer.tsx:115-146`, `MissionHeader` does the same at `MissionHeader.tsx:37-58`, and `MissionsPage` subscribes to a large set at `MissionsPage.tsx:37-67`. With subscriptions this broad, tab changes and other unrelated store updates still rerender entire containers instead of isolating updates to the minimal subtree."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The `ui-worker` skill says agent-browser verification is the primary UI validation method, but this feature handoff records only unit tests/typecheck/grep-style checks and still marks `followedProcedure` as true. That mismatch makes it easy for UI refactors to skip the intended interactive verification step without being surfaced as a deviation.",
+      "evidence": "`/Users/admin/Projects/ADE/.factory/skills/ui-worker/SKILL.md:76-80` requires starting the app, connecting `agent-browser`, navigating to Missions, and taking screenshots. The feature handoff only lists `vitest`, `tsc`, `wc`, and `grep` commands in `verification.commandsRun` with no `npm run dev`, `agent-browser`, or `interactiveChecks` entries (`/Users/admin/.factory/missions/bec1a09c-aff3-43cd-8217-ed3013414884/handoffs/2026-03-10T07-25-58-566Z__missions-store-and-decomposition__5d3c81bd-95bd-451f-87dd-11efbdfe9051.json:13-38`)."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Fail. The refactor successfully shrinks `MissionsPage` and introduces the zustand store/components, but the reviewed commit does not actually use `getFullMissionView`, still keeps component-level refresh timers/subscriptions in `MissionsPage`, and leaves several major containers subscribed to too many store slices to satisfy the selector-granularity contract."
+}
