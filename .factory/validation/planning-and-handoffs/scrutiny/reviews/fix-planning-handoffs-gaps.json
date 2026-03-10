@@ -1,0 +1,34 @@
+{
+  "featureId": "fix-planning-handoffs-gaps",
+  "reviewedAt": "2026-03-10T06:57:31.934070Z",
+  "commitId": "b10b38932afdbc588e04f0b1d305ed5ab8538509",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The rerun closes two of the three original scrutiny failures: planning workers now get `ask_user` at runtime, and ExitPlanMode/Zod warnings are explicitly filtered so they no longer trigger the prior blocking-warning path. The remaining artifact fix is still incomplete: planning completion registers an orchestrator `custom` artifact instead of a mission artifact of type `plan`, and the renderer maps orchestrator artifacts by `kind`, so the Evidence/Artifacts surface will show this entry as `custom` with no URI-backed plan artifact.",
+    "issues": [
+      {
+        "file": "apps/desktop/src/main/services/orchestrator/workerTracking.ts",
+        "line": 849,
+        "severity": "blocking",
+        "description": "VAL-ART-001 remains unmet. The fix calls `register(\"plan\", \"custom\", planValue, ...)`, which only creates an orchestrator artifact. The mission artifact path required by the feature (`missionService.addArtifact()` with type `plan`) is still unused (`missionService.ts:3407-3417`). On the UI side, orchestrator artifacts are normalized as `artifactType: artifact.kind` and only `file|branch|pr` populate `uri` (`missionControlViewModel.ts:251-267`), so this plan entry will surface as type `custom` with the path string in text content rather than as a mission `plan` artifact visible through the intended Evidence/Artifacts contract." 
+      },
+      {
+        "file": "apps/desktop/src/main/services/orchestrator/workerTracking.ts",
+        "line": 836,
+        "severity": "non_blocking",
+        "description": "The new planning-artifact detection is over-broad: any step with `readOnlyExecution === true` is treated as planning. ADE also marks non-planning review lanes as read-only (`orchestratorConstants.ts:61-74`), and the new test suite codifies that behavior (`planningGapsFixes.test.ts:266-277`). That means review/test-review steps can emit bogus `plan` artifacts even when no planner ran." 
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The service-worker guidance and shared architecture notes still do not make the artifact-surface split explicit enough: mission Evidence/Artifacts semantics depend on `missionService.addArtifact()` for mission artifacts, while renderer normalization maps orchestrator artifacts by `kind`, not `artifactKey`. That made it easy for the worker to treat `registerArtifact(... artifactKey: \"plan\")` as equivalent to a mission `plan` artifact when it is not.",
+      "evidence": "The fix feature description itself requires `missionService.addArtifact()`, but the implementation/tests target `orchestratorService.registerArtifact` instead (`planningGapsFixes.test.ts:311-330`). Renderer normalization uses `artifact.kind` as the displayed type and only exposes `uri` for `file|branch|pr` (`apps/desktop/src/renderer/components/missions/missionControlViewModel.ts:251-267`)."
+    }
+  ],
+  "addressesFailureFrom": "/Users/admin/Projects/ADE/.factory/validation/planning-and-handoffs/scrutiny/reviews/planning-flow-and-handoffs.json",
+  "summary": "Fail. The rerun adequately fixes VAL-PLAN-003 and the previously missing ExitPlanMode/Zod warning handling for VAL-PLAN-002, but VAL-ART-001 is still unresolved because planning completion records only an orchestrator `custom` artifact instead of a mission `plan` artifact. A non-blocking follow-on issue is that the new heuristic can tag other read-only review steps as planning artifacts."
+}

@@ -1,0 +1,64 @@
+{
+  "milestone": "planning-and-handoffs",
+  "round": 1,
+  "status": "fail",
+  "validatorsRun": {
+    "test": {
+      "passed": true,
+      "command": "cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run --reporter=verbose",
+      "exitCode": 1,
+      "notes": "Full suite exited with only the 2 known pre-existing failures documented in AGENTS.md: aiOrchestratorService single-lane integration closing strategy and orchestratorService unified-attempt laneId handling. No additional failures were observed (1047 passed, 2 failed)."
+    },
+    "typecheck": {
+      "passed": true,
+      "command": "cd /Users/admin/Projects/ADE/apps/desktop && npx tsc --noEmit",
+      "exitCode": 0,
+      "notes": "Typecheck passed."
+    },
+    "lint": {
+      "passed": true,
+      "command": "echo \"lint not configured (todo)\"",
+      "exitCode": 0,
+      "notes": "Lint is not configured in the project manifest."
+    }
+  },
+  "reviewsSummary": {
+    "total": 1,
+    "passed": 0,
+    "failed": 1,
+    "failedFeatures": [
+      "planning-flow-and-handoffs"
+    ]
+  },
+  "blockingIssues": [
+    {
+      "featureId": "planning-flow-and-handoffs",
+      "severity": "blocking",
+      "description": "VAL-PLAN-003 is not met: planning workers are prompted to use ask_user, but the read-only planning allowlist in unifiedOrchestratorAdapter still omits mcp__ade__ask_user, so the planner cannot actually invoke it at runtime.",
+      "sourceReview": ".factory/validation/planning-and-handoffs/scrutiny/reviews/planning-flow-and-handoffs.json"
+    },
+    {
+      "featureId": "planning-flow-and-handoffs",
+      "severity": "blocking",
+      "description": "VAL-ART-001 is not met: reviewed production paths still register plan output through orchestrator artifacts rather than mission artifacts of type plan, so Evidence/Artifacts mission visibility is not proven.",
+      "sourceReview": ".factory/validation/planning-and-handoffs/scrutiny/reviews/planning-flow-and-handoffs.json"
+    },
+    {
+      "featureId": "planning-flow-and-handoffs",
+      "severity": "blocking",
+      "description": "VAL-PLAN-002 is not fully met: the implementation special-cases ~/.claude/plans sandbox-block text, but the broader ExitPlanMode/Zod validation failure path required by the contract is not cleanly handled or covered.",
+      "sourceReview": ".factory/validation/planning-and-handoffs/scrutiny/reviews/planning-flow-and-handoffs.json"
+    }
+  ],
+  "appliedUpdates": [],
+  "suggestedGuidanceUpdates": [
+    {
+      "target": ".factory/skills/service-worker/SKILL.md",
+      "suggestion": "Tighten service-worker guidance for validation-contract features so workers verify runtime tool allowlists and the actual persistence surface required by the contract, not just prompt text or lower-level artifact registry writes.",
+      "evidence": "The reviewed feature added tests that assert prompt text for ask_user and manual orchestrator artifact registration, while the actual runtime allowlist still omits ask_user for read-only planning workers and mission artifact visibility still depends on missionService.addArtifact.",
+      "isSystemic": false
+    }
+  ],
+  "rejectedObservations": [],
+  "previousRound": null
+}

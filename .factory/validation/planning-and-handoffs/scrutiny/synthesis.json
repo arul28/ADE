@@ -1,19 +1,19 @@
 {
   "milestone": "planning-and-handoffs",
-  "round": 1,
+  "round": 2,
   "status": "fail",
   "validatorsRun": {
     "test": {
       "passed": true,
       "command": "cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run --reporter=verbose",
       "exitCode": 1,
-      "notes": "Full suite exited with only the 2 known pre-existing failures documented in AGENTS.md: aiOrchestratorService single-lane integration closing strategy and orchestratorService unified-attempt laneId handling. No additional failures were observed (1047 passed, 2 failed)."
+      "notes": "Full suite exited with only the 2 known pre-existing failures documented in AGENTS.md: aiOrchestratorService single-lane integration closing strategy and orchestratorService unified-attempt laneId handling. No additional failures were observed (1066 passed, 2 failed)."
     },
     "typecheck": {
       "passed": true,
       "command": "cd /Users/admin/Projects/ADE/apps/desktop && npx tsc --noEmit",
       "exitCode": 0,
-      "notes": "Typecheck passed."
+      "notes": "Typecheck passed with no diagnostics."
     },
     "lint": {
       "passed": true,
@@ -27,38 +27,26 @@
     "passed": 0,
     "failed": 1,
     "failedFeatures": [
-      "planning-flow-and-handoffs"
+      "fix-planning-handoffs-gaps"
     ]
   },
   "blockingIssues": [
     {
-      "featureId": "planning-flow-and-handoffs",
+      "featureId": "fix-planning-handoffs-gaps",
       "severity": "blocking",
-      "description": "VAL-PLAN-003 is not met: planning workers are prompted to use ask_user, but the read-only planning allowlist in unifiedOrchestratorAdapter still omits mcp__ade__ask_user, so the planner cannot actually invoke it at runtime.",
-      "sourceReview": ".factory/validation/planning-and-handoffs/scrutiny/reviews/planning-flow-and-handoffs.json"
-    },
-    {
-      "featureId": "planning-flow-and-handoffs",
-      "severity": "blocking",
-      "description": "VAL-ART-001 is not met: reviewed production paths still register plan output through orchestrator artifacts rather than mission artifacts of type plan, so Evidence/Artifacts mission visibility is not proven.",
-      "sourceReview": ".factory/validation/planning-and-handoffs/scrutiny/reviews/planning-flow-and-handoffs.json"
-    },
-    {
-      "featureId": "planning-flow-and-handoffs",
-      "severity": "blocking",
-      "description": "VAL-PLAN-002 is not fully met: the implementation special-cases ~/.claude/plans sandbox-block text, but the broader ExitPlanMode/Zod validation failure path required by the contract is not cleanly handled or covered.",
-      "sourceReview": ".factory/validation/planning-and-handoffs/scrutiny/reviews/planning-flow-and-handoffs.json"
+      "description": "VAL-ART-001 remains unmet on rerun: the fix registers planning output as an orchestrator artifact via register(\"plan\", \"custom\", ...), but mission Evidence/Artifacts semantics still depend on missionService.addArtifact() with type 'plan'. The renderer normalizes orchestrator artifacts by kind, so the entry surfaces as 'custom' rather than a mission plan artifact.",
+      "sourceReview": ".factory/validation/planning-and-handoffs/scrutiny/reviews/fix-planning-handoffs-gaps.json"
     }
   ],
   "appliedUpdates": [],
   "suggestedGuidanceUpdates": [
     {
       "target": ".factory/skills/service-worker/SKILL.md",
-      "suggestion": "Tighten service-worker guidance for validation-contract features so workers verify runtime tool allowlists and the actual persistence surface required by the contract, not just prompt text or lower-level artifact registry writes.",
-      "evidence": "The reviewed feature added tests that assert prompt text for ask_user and manual orchestrator artifact registration, while the actual runtime allowlist still omits ask_user for read-only planning workers and mission artifact visibility still depends on missionService.addArtifact.",
+      "suggestion": "Explicitly distinguish mission artifacts created through missionService.addArtifact() from orchestrator artifacts created through registerArtifact()/register(...), and require contract-focused workers to validate the actual renderer-facing artifact surface instead of assuming artifactKey equivalence.",
+      "evidence": "The rerun fix targeted registerArtifact with artifactKey 'plan', but renderer normalization still keys off orchestrator artifact.kind and only missionService.addArtifact() satisfies the intended mission Evidence/Artifacts contract for a 'plan' artifact.",
       "isSystemic": false
     }
   ],
   "rejectedObservations": [],
-  "previousRound": null
+  "previousRound": ".factory/validation/planning-and-handoffs/scrutiny/synthesis.round1.json"
 }
