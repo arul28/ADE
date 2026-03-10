@@ -510,14 +510,15 @@ export function asRecord(value: unknown): Record<string, unknown> | null {
 export function isDisplayOnlyTaskStep(
   step: Pick<OrchestratorStep, "metadata"> | null | undefined,
 ): boolean {
-  const metadata = asRecord(step?.metadata);
-  return metadata?.displayOnlyTask === true;
+  void step;
+  return false;
 }
 
 export function filterExecutionSteps<T extends { metadata?: unknown }>(steps: T[]): T[] {
-  return steps.filter((step) =>
-    !isDisplayOnlyTaskStep(step as Pick<OrchestratorStep, "metadata">),
-  );
+  return steps.filter((step) => {
+    const metadata = asRecord(step.metadata);
+    return metadata?.isTask !== true && metadata?.displayOnlyTask !== true;
+  });
 }
 
 export function asBool(value: unknown, fallback = false): boolean {

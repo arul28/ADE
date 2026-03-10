@@ -144,6 +144,7 @@ function toToolEvents(
 ): AgentChatEventEnvelope[] {
   const tool = readString(structuredStream.tool) ?? "tool";
   const itemId = resolveItemId(message, structuredStream, "tool");
+  const parentItemId = readString(structuredStream.parentItemId) ?? undefined;
   const envelopes: AgentChatEventEnvelope[] = [];
 
   if (hasOwn(structuredStream, "args")) {
@@ -155,6 +156,7 @@ function toToolEvents(
         tool,
         args: structuredStream.args,
         itemId,
+        parentItemId,
         turnId,
       },
     });
@@ -169,6 +171,7 @@ function toToolEvents(
         tool,
         result: structuredStream.result,
         itemId,
+        parentItemId,
         turnId,
         status: normalizeToolStatus(readString(structuredStream.status)),
       },
@@ -182,6 +185,7 @@ function toToolEvents(
         tool,
         args: {},
         itemId,
+        parentItemId,
         turnId,
       },
     });
@@ -190,21 +194,37 @@ function toToolEvents(
   return envelopes;
 }
 
+function buildProvenance(message: OrchestratorChatMessage): AgentChatEventEnvelope["provenance"] {
+  return {
+    messageId: message.id,
+    threadId: message.threadId ?? null,
+    role: message.role,
+    targetKind: message.target?.kind ?? null,
+    sourceSessionId: message.sourceSessionId ?? null,
+    attemptId: message.attemptId ?? null,
+    stepKey: message.stepKey ?? null,
+    laneId: message.laneId ?? null,
+    runId: message.runId ?? null,
+  };
+}
+
 function toStructuredEvents(message: OrchestratorChatMessage): AgentChatEventEnvelope[] | null {
   const metadata = readRecord(message.metadata);
+  if (readString(metadata?.source) === "runtime_signal_progress") return null;
   const structuredStream = readRecord(metadata?.structuredStream);
   const kind = readString(structuredStream?.kind);
   if (!structuredStream || !kind) return null;
 
   const sessionId = resolveSessionId(message, structuredStream);
   const turnId = resolveTurnId(message, structuredStream, sessionId);
+  const provenance = buildProvenance(message);
 
   switch (kind) {
     case "text":
-      if (looksLikeLowSignalNoise(message.content)) return null;
       return [{
         sessionId,
         timestamp: message.timestamp,
+        provenance,
         event: {
           type: "text",
           text: message.content,
@@ -213,10 +233,10 @@ function toStructuredEvents(message: OrchestratorChatMessage): AgentChatEventEnv
         },
       }];
     case "reasoning":
-      if (looksLikeLowSignalNoise(message.content)) return null;
       return [{
         sessionId,
         timestamp: message.timestamp,
+        provenance,
         event: {
           type: "reasoning",
           text: message.content,
@@ -226,11 +246,15 @@ function toStructuredEvents(message: OrchestratorChatMessage): AgentChatEventEnv
         },
       }];
     case "tool":
-      return toToolEvents(message, structuredStream, sessionId, turnId);
+      return toToolEvents(message, structuredStream, sessionId, turnId).map((entry) => ({
+        ...entry,
+        provenance,
+      }));
     case "command":
       return [{
         sessionId,
         timestamp: message.timestamp,
+        provenance,
         event: {
           type: "command",
           command: readString(structuredStream.command) ?? "command",
@@ -247,6 +271,7 @@ function toStructuredEvents(message: OrchestratorChatMessage): AgentChatEventEnv
       return [{
         sessionId,
         timestamp: message.timestamp,
+        provenance,
         event: {
           type: "file_change",
           path: readString(structuredStream.path) ?? "(pending file)",
@@ -265,6 +290,7 @@ function toStructuredEvents(message: OrchestratorChatMessage): AgentChatEventEnv
       return [{
         sessionId,
         timestamp: message.timestamp,
+        provenance,
         event: {
           type: "plan",
           turnId,
@@ -287,6 +313,7 @@ function toStructuredEvents(message: OrchestratorChatMessage): AgentChatEventEnv
       return [{
         sessionId,
         timestamp: message.timestamp,
+        provenance,
         event: {
           type: "approval_request",
           itemId: resolveItemId(message, structuredStream, "approval"),
@@ -302,6 +329,7 @@ function toStructuredEvents(message: OrchestratorChatMessage): AgentChatEventEnv
       return [{
         sessionId,
         timestamp: message.timestamp,
+        provenance,
         event: {
           type: "activity",
           activity: normalizeActivity(readString(structuredStream.activity)),
@@ -313,6 +341,7 @@ function toStructuredEvents(message: OrchestratorChatMessage): AgentChatEventEnv
       return [{
         sessionId,
         timestamp: message.timestamp,
+        provenance,
         event: {
           type: "step_boundary",
           stepNumber: typeof structuredStream.stepNumber === "number" ? structuredStream.stepNumber : 1,
@@ -323,6 +352,7 @@ function toStructuredEvents(message: OrchestratorChatMessage): AgentChatEventEnv
       return [{
         sessionId,
         timestamp: message.timestamp,
+        provenance,
         event: {
           type: "user_message",
           text: readString(structuredStream.text) ?? message.content,
@@ -344,6 +374,7 @@ function toStructuredEvents(message: OrchestratorChatMessage): AgentChatEventEnv
       return [{
         sessionId,
         timestamp: message.timestamp,
+        provenance,
         event: {
           type: "status",
           turnStatus: normalizeTurnStatus(readString(structuredStream.status)),
@@ -355,6 +386,7 @@ function toStructuredEvents(message: OrchestratorChatMessage): AgentChatEventEnv
       return [{
         sessionId,
         timestamp: message.timestamp,
+        provenance,
         event: {
           type: "done",
           turnId: turnId ?? `${sessionId}:done:${message.id}`,
@@ -375,6 +407,7 @@ function toStructuredEvents(message: OrchestratorChatMessage): AgentChatEventEnv
       return [{
         sessionId,
         timestamp: message.timestamp,
+        provenance,
         event: {
           type: "error",
           message: readString(structuredStream.message) ?? message.content,
@@ -389,11 +422,14 @@ function toStructuredEvents(message: OrchestratorChatMessage): AgentChatEventEnv
 }
 
 function toFallbackEvent(message: OrchestratorChatMessage): AgentChatEventEnvelope | null {
+  const metadata = readRecord(message.metadata);
+  if (readString(metadata?.source) === "runtime_signal_progress") return null;
   const sessionId = resolveSessionId(message, null);
   if (message.role === "user") {
     return {
       sessionId,
       timestamp: message.timestamp,
+      provenance: buildProvenance(message),
       event: {
         type: "user_message",
         text: message.content,
@@ -408,6 +444,7 @@ function toFallbackEvent(message: OrchestratorChatMessage): AgentChatEventEnvelo
   return {
     sessionId,
     timestamp: message.timestamp,
+    provenance: buildProvenance(message),
     event: {
       type: "text",
       text: message.content,

@@ -315,6 +315,8 @@ export class CoordinatorAgent {
     formattedMessage?: string,
   ): void {
     if (this.dead) return;
+    // Guard: skip event injection if the run is paused
+    if (this.isRunPaused()) return;
     const receivedAt = Date.now();
     const message =
       formattedMessage ?? formatRuntimeEvent(event).summary;
@@ -355,6 +357,25 @@ export class CoordinatorAgent {
     return this.conversationHistory.length;
   }
 
+  // ─── Pause Guard ─────────────────────────────────────────────────
+
+  /**
+   * Check if the associated run is currently paused.
+   * Uses a lightweight DB query to avoid loading the full run graph.
+   */
+  private isRunPaused(): boolean {
+    try {
+      const row = this.deps.db.get<{ status: string }>(
+        `SELECT status FROM orchestrator_runs WHERE id = ? AND project_id = ?`,
+        [this.deps.runId, this.deps.projectId],
+      );
+      return row?.status === "paused";
+    } catch {
+      // If the run can't be queried, treat as not paused (let other guards handle it)
+      return false;
+    }
+  }
+
   // ─── Batch Scheduling ────────────────────────────────────────────
 
   private scheduleBatch(): void {
@@ -368,6 +389,8 @@ export class CoordinatorAgent {
   private async processBatch(): Promise<void> {
     if (this.processing || this.dead || this.eventQueue.length === 0)
       return;
+    // Guard: do not process batches while the run is paused
+    if (this.isRunPaused()) return;
     this.processing = true;
 
     // Take a snapshot of events before removing from queue

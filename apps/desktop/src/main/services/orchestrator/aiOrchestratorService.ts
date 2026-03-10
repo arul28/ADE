@@ -76,10 +76,18 @@ import type {
   MissionStateStepOutcome,
   GetMissionLogsArgs,
   GetMissionLogsResult,
+  GetMissionRunViewArgs,
   MissionLogEntry,
   MissionLogChannel,
   ExportMissionLogsArgs,
   ExportMissionLogsResult,
+  MissionRunView,
+  MissionRunViewDisplayStatus,
+  MissionRunViewHaltReason,
+  MissionRunViewLatestIntervention,
+  MissionRunViewProgressItem,
+  MissionRunViewSeverity,
+  MissionRunViewWorkerSummary,
   OrchestratorArtifact,
   OrchestratorWorkerCheckpoint,
   GetOrchestratorPromptInspectorArgs,
@@ -177,6 +185,7 @@ import {
   parseQuestionLink,
   detectWaitingInputSignal,
   clipTextForContext,
+  parseJsonRecord,
   workerStateFromRuntimeSignal,
   parseTerminalRuntimeState,
   toOptionalString,
@@ -187,7 +196,6 @@ import {
   buildConflictResolutionInstructions,
   extractRunFailureMessage,
   filterExecutionSteps,
-  isDisplayOnlyTaskStep,
   runOrchestratorHookCommand,
   getModelCapabilities,
 } from "./orchestratorContext";
@@ -225,6 +233,7 @@ import {
   maybeDispatchTeammateIdleHookCtx,
 } from "./missionLifecycle";
 import type { HookDispatchDeps } from "./missionLifecycle";
+import { hasMaterialWorkerChatEvent } from "../../../shared/chatTranscript";
 
 // ── Intervention Prompt Builder (inlined from deleted planningPipeline module) ──
 
@@ -1044,6 +1053,7 @@ export function createAiOrchestratorService(args: {
           sessionId,
           turnId: event.turnId ?? null,
           itemId: event.itemId,
+          parentItemId: event.parentItemId ?? null,
           tool: event.tool,
           args: event.args,
           status: "running",
@@ -1059,6 +1069,7 @@ export function createAiOrchestratorService(args: {
           sessionId,
           turnId: event.turnId ?? null,
           itemId: event.itemId,
+          parentItemId: event.parentItemId ?? null,
           tool: event.tool,
           result: event.result,
           status: event.status ?? "completed",
@@ -1390,6 +1401,15 @@ export function createAiOrchestratorService(args: {
       attemptId: workerState.attemptId,
       laneId: step.laneId ?? null,
       event: envelope.event,
+    });
+    if (!hasMaterialWorkerChatEvent([envelope])) return;
+    if (workerState.state !== "initializing" && workerState.state !== "spawned") return;
+    upsertWorkerState(workerState.attemptId, {
+      stepId: workerState.stepId,
+      runId: workerState.runId,
+      sessionId: workerState.sessionId,
+      executorKind: workerState.executorKind,
+      state: "working",
     });
   };
 
@@ -1816,6 +1836,11 @@ Check all worker statuses and continue managing the mission from here. Read work
         null,
         { role: "coordinator_v2", runId },
       );
+      resolveCoordinatorHealthInterventions({
+        runId,
+        note: `Coordinator recovered and resumed mission control on attempt ${nextAttempt}/${maxRecoveries}.`,
+        resolutionReason: "coordinator_recovered",
+      });
 
       return newAgent;
     } catch (error) {
@@ -2573,7 +2598,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     stepId: string
   ): MissionStateStepOutcome | null => {
     const step = graph.steps.find((entry) => entry.id === stepId) ?? null;
-    if (!step || isDisplayOnlyTaskStep(step)) return null;
+    if (!step) return null;
 
     const attemptsForStep = graph.attempts
       .filter((attempt) => attempt.stepId === step.id)
@@ -2697,8 +2722,45 @@ Check all worker statuses and continue managing the mission from here. Read work
     return toOptionalString(laneRow?.id);
   };
 
+  const resolveMissionBaseLaneId = async (missionId?: string | null): Promise<string | null> => {
+    const normalizedMissionId = toOptionalString(missionId);
+    if (normalizedMissionId) {
+      const selectedLaneId = toOptionalString(missionService.get(normalizedMissionId)?.laneId);
+      if (selectedLaneId) return selectedLaneId;
+    }
+    return await resolvePrimaryLaneId(missionId);
+  };
+
+  const resolveLaneBranchName = async (laneId?: string | null): Promise<string | null> => {
+    const normalizedLaneId = toOptionalString(laneId);
+    if (!normalizedLaneId) return null;
+    if (laneService && typeof laneService.list === "function") {
+      const lanes = await laneService.list({ includeArchived: false });
+      const lane = lanes.find((entry) => entry.id === normalizedLaneId) ?? null;
+      if (lane) {
+        return normalizeBranchName(lane.branchRef || lane.baseRef || "") || null;
+      }
+    }
+    const laneRow = db.get<{ branch_ref: string | null; base_ref: string | null }>(
+      `
+        select branch_ref, base_ref
+        from lanes
+        where id = ?
+        limit 1
+      `,
+      [normalizedLaneId]
+    );
+    return normalizeBranchName(laneRow?.branch_ref ?? laneRow?.base_ref ?? "") || null;
+  };
+
+  const resolveMissionBaseBranch = async (missionId?: string | null): Promise<string | null> => {
+    const baseLaneId = await resolveMissionBaseLaneId(missionId);
+    return await resolveLaneBranchName(baseLaneId);
+  };
+
   /**
-   * Create a lane branching from the primary lane.
+   * Create a lane branching from the mission's selected base lane.
+   * Falls back to primary when the mission has no explicit base lane.
    * Used for both initial mission lane creation and dynamic provisioning.
    * Returns { laneId, name } or null if unavailable.
    */
@@ -2707,7 +2769,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     opts: { description?: string; folder?: string; missionId: string },
   ): Promise<{ laneId: string; name: string } | null> => {
     if (!laneService) return null;
-    const baseLaneId = await resolvePrimaryLaneId(opts.missionId);
+    const baseLaneId = await resolveMissionBaseLaneId(opts.missionId);
     if (!baseLaneId) {
       logger.warn("ai_orchestrator.lane_create_skip", { missionId: opts.missionId, reason: "no_base_lane" });
       return null;
@@ -3463,12 +3525,22 @@ Check all worker statuses and continue managing the mission from here. Read work
 
       updateAttemptStagnationTracker(attempt.attemptId, signal.lastOutputPreview);
       const previousWorkerState = workerStates.get(attempt.attemptId)?.state ?? null;
+      const attemptMetadata = parseJsonRecord(attempt.attemptMetadataJson);
+      const workerSessionKind = typeof attemptMetadata?.workerSessionKind === "string"
+        ? attemptMetadata.workerSessionKind.trim()
+        : "";
+      const effectiveRuntimeWorkerState =
+        workerSessionKind === "managed_chat"
+        && !structuredChatSessions.has(sessionId)
+        && runtimeWorkerState === "working"
+          ? "initializing"
+          : runtimeWorkerState;
       upsertWorkerState(attempt.attemptId, {
         runId: attempt.runId,
         stepId: attempt.stepId,
         sessionId,
         executorKind: attempt.executorKind,
-        state: runtimeWorkerState
+        state: effectiveRuntimeWorkerState
       });
       if (attempt.executorKind !== "manual") {
         maybeDispatchTeammateIdleHook({
@@ -3477,7 +3549,7 @@ Check all worker statuses and continue managing the mission from here. Read work
           attemptId: attempt.attemptId,
           sessionId,
           previousState: previousWorkerState,
-          nextState: runtimeWorkerState,
+          nextState: effectiveRuntimeWorkerState,
           reason: waitingForInput ? "waiting_input_signal" : "runtime_idle_signal",
           triggerSource: "runtime_signal",
           runtimeState: signal.runtimeState,
@@ -3863,6 +3935,17 @@ Check all worker statuses and continue managing the mission from here. Read work
             runtimeState: runtimeStateForWorker,
             waitingForInput
           });
+          const attemptMetadata = asRecord(attempt.metadata);
+          const workerSessionKind = typeof attemptMetadata?.workerSessionKind === "string"
+            ? attemptMetadata.workerSessionKind.trim()
+            : "";
+          const effectiveNextWorkerState =
+            workerSessionKind === "managed_chat"
+            && attempt.executorSessionId
+            && !structuredChatSessions.has(attempt.executorSessionId)
+            && nextWorkerState === "working"
+              ? "initializing"
+              : nextWorkerState;
           const stagnationSnapshot = updateAttemptStagnationTracker(attempt.id, effectivePreview);
 
           const previousWorkerState = workerStates.get(attempt.id)?.state ?? null;
@@ -3871,7 +3954,7 @@ Check all worker statuses and continue managing the mission from here. Read work
             stepId: step.id,
             sessionId: attempt.executorSessionId,
             executorKind: attempt.executorKind,
-            state: nextWorkerState
+            state: effectiveNextWorkerState
           });
           maybeDispatchTeammateIdleHook({
             runId: run.id,
@@ -3879,7 +3962,7 @@ Check all worker statuses and continue managing the mission from here. Read work
             attemptId: attempt.id,
             sessionId: attempt.executorSessionId ?? null,
             previousState: previousWorkerState,
-            nextState: nextWorkerState,
+            nextState: effectiveNextWorkerState,
             reason: waitingForInput ? "waiting_input_sweep" : "idle_like_sweep",
             triggerSource: "health_sweep",
             runtimeState: sessionSignal?.runtimeState ?? runtimeStateForWorker,
@@ -4680,7 +4763,6 @@ Check all worker statuses and continue managing the mission from here. Read work
             const resultPreview = latestAttempt?.resultEnvelope?.summary?.slice(0, 200) ?? "";
             const errorMsg = latestAttempt?.errorMessage?.slice(0, 150) ?? "";
             let line = `  ${s.stepKey} [${s.status}] "${s.title}"`;
-            if (isDisplayOnlyTaskStep(s)) line += " plan_only";
             if (deps.length) line += ` deps:[${deps.join(",")}]`;
             if (resultPreview) line += ` result:"${resultPreview}"`;
             if (errorMsg && s.status === "failed") line += ` error:"${errorMsg}"`;
@@ -5540,6 +5622,67 @@ Check all worker statuses and continue managing the mission from here. Read work
   const transitionMissionStatus = (missionId: string, next: MissionStatus, args?: { outcomeSummary?: string | null; lastError?: string | null }) =>
     transitionMissionStatusCtx(ctx, missionId, next, args);
 
+  const COORDINATOR_FAILURE_REASON_CODES = new Set([
+    "coordinator_unavailable",
+    "coordinator_recovery_failed",
+  ]);
+
+  const resolveCoordinatorHealthInterventions = (args: {
+    runId: string;
+    note: string;
+    resolutionReason: "coordinator_recovered" | "run_terminal";
+  }): number => {
+    const missionId = getMissionIdForRun(args.runId);
+    if (!missionId) return 0;
+    const mission = missionService.get(missionId);
+    if (!mission) return 0;
+
+    let resolved = 0;
+    const resolvedAt = nowIso();
+
+    for (const intervention of mission.interventions) {
+      if (intervention.status !== "open" || intervention.interventionType !== "failed_step") continue;
+      const metadata = isRecord(intervention.metadata) ? intervention.metadata : null;
+      const reasonCode = typeof metadata?.reasonCode === "string" ? metadata.reasonCode.trim() : "";
+      const interventionRunId = typeof metadata?.runId === "string" ? metadata.runId.trim() : "";
+      if (!COORDINATOR_FAILURE_REASON_CODES.has(reasonCode)) continue;
+      if (interventionRunId.length > 0 && interventionRunId !== args.runId) continue;
+
+      try {
+        missionService.resolveIntervention({
+          missionId,
+          interventionId: intervention.id,
+          status: "resolved",
+          note: args.note,
+        });
+        recordRuntimeEvent({
+          runId: args.runId,
+          stepId: typeof metadata?.stepId === "string" ? metadata.stepId : null,
+          attemptId: typeof metadata?.attemptId === "string" ? metadata.attemptId : null,
+          sessionId: typeof metadata?.sessionId === "string" ? metadata.sessionId : null,
+          eventType: "intervention_resolved",
+          eventKey: `intervention_resolved:${intervention.id}:${args.resolutionReason}`,
+          payload: {
+            interventionId: intervention.id,
+            reason: args.resolutionReason,
+            reasonCode,
+            resolvedAt,
+          }
+        });
+        resolved += 1;
+      } catch (error) {
+        logger.debug("ai_orchestrator.coordinator_intervention_resolve_failed", {
+          runId: args.runId,
+          interventionId: intervention.id,
+          reasonCode,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return resolved;
+  };
+
   const pauseRunWithIntervention = (args: {
     runId: string;
     missionId: string;
@@ -5894,11 +6037,13 @@ Check all worker statuses and continue managing the mission from here. Read work
         const { settings: runPhaseSettings } = resolveActivePhaseSettings(mission.id);
         const integrationPrPolicy = runPhaseSettings.integrationPr ?? DEFAULT_INTEGRATION_PR_POLICY;
         const laneIdArrayBase = [...new Set(graph.steps.map((s) => s.laneId).filter(Boolean))] as string[];
-        if (laneIdArrayBase.length === 0 && mission.laneId) laneIdArrayBase.push(mission.laneId);
+        const missionLaneId = resolvePersistedMissionLaneIdForRun(runId);
+        if (laneIdArrayBase.length === 0 && missionLaneId) laneIdArrayBase.push(missionLaneId);
         const prStrategy: PrStrategy =
           runPhaseSettings.prStrategy
           ?? { kind: "manual" };
         const finalizationPolicy = resolveMissionFinalizationPolicy(prStrategy);
+        const missionBaseBranch = await resolveMissionBaseBranch(mission.id);
 
         if (skipNormalPrCreation) {
           // Already handled via post-resolution path
@@ -5927,13 +6072,13 @@ Check all worker statuses and continue managing the mission from here. Read work
               contractSatisfied: false,
               blocked: false,
               summary: "Execution finished. Creating integration PR before mission completion.",
-              detail: `Base branch: ${prStrategy.targetBranch ?? mission.laneId ?? "main"}`,
+              detail: `Base branch: ${prStrategy.targetBranch ?? missionBaseBranch ?? "main"}`,
               warnings: [],
             }, { graph });
             try {
               const laneIdArray = laneIdArrayBase;
               const integrationLaneName = `integration/${mission.id.slice(0, 8)}`;
-              const baseBranch = prStrategy.targetBranch ?? mission.laneId ?? "main";
+              const baseBranch = prStrategy.targetBranch ?? missionBaseBranch ?? "main";
               const isDraft = prStrategy.draft ?? integrationPrPolicy.draft ?? true;
 
               const prResult = await prService.createIntegrationPr({
@@ -5973,7 +6118,7 @@ Check all worker statuses and continue managing the mission from here. Read work
                 ?? integrationPrPolicy.prDepth
                 ?? "resolve-conflicts";
               const laneIdArray = laneIdArrayBase;
-              const baseBranch = prStrategy.targetBranch ?? mission.laneId ?? "main";
+              const baseBranch = prStrategy.targetBranch ?? missionBaseBranch ?? "main";
               const isDraft = prStrategy.draft ?? integrationPrPolicy.draft ?? true;
               const integrationLaneName = `integration/${mission.id.slice(0, 8)}`;
 
@@ -6094,7 +6239,7 @@ Check all worker statuses and continue managing the mission from here. Read work
           } else if (prStrategy.kind === "per-lane" && prService) {
             try {
               const laneIdArray = laneIdArrayBase;
-              const baseBranch = prStrategy.targetBranch ?? mission.laneId ?? "main";
+              const baseBranch = prStrategy.targetBranch ?? missionBaseBranch ?? "main";
               const isDraft = prStrategy.draft ?? true;
               const createdPrUrls: string[] = [];
               const laneFailures: string[] = [];
@@ -6184,7 +6329,7 @@ Check all worker statuses and continue managing the mission from here. Read work
           } else if (prStrategy.kind === "queue" && prService) {
             try {
               const laneIdArray = laneIdArrayBase;
-              const targetBranch = prStrategy.targetBranch ?? mission.laneId ?? "main";
+              const targetBranch = prStrategy.targetBranch ?? missionBaseBranch ?? "main";
               const autoLandQueue = prStrategy.autoLand ?? false;
               const rehearseQueue = prStrategy.rehearseQueue ?? false;
               const autoResolveQueueConflicts = prStrategy.autoResolveConflicts ?? false;
@@ -7030,6 +7175,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     const requestedRunId = toOptionalString(cleanupArgs.runId);
     const cleanupLanes = cleanupArgs.cleanupLanes !== false;
     let resolvedRunId: string | null = requestedRunId ?? null;
+    const laneIds = new Set<string>();
 
     if (requestedRunId) {
       const runMissionId = getMissionIdForRun(requestedRunId);
@@ -7039,36 +7185,46 @@ Check all worker statuses and continue managing the mission from here. Read work
       if (runMissionId !== missionId) {
         throw new Error(`Run ${requestedRunId} does not belong to mission ${missionId}.`);
       }
+      const graph = getRunGraphSafe(requestedRunId);
+      for (const laneId of graph?.steps.map((step) => toOptionalString(step.laneId)).filter((value): value is string => Boolean(value)) ?? []) {
+        laneIds.add(laneId);
+      }
+      const missionLaneId = resolvePersistedMissionLaneIdForRun(requestedRunId);
+      if (missionLaneId) laneIds.add(missionLaneId);
     } else {
       const missionRuns = [...orchestratorService.listRuns({ missionId, limit: 200 })]
         .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
       resolvedRunId = missionRuns[0]?.id ?? null;
+      for (const run of missionRuns) {
+        const graph = getRunGraphSafe(run.id);
+        for (const laneId of graph?.steps.map((step) => toOptionalString(step.laneId)).filter((value): value is string => Boolean(value)) ?? []) {
+          laneIds.add(laneId);
+        }
+        const missionLaneId = resolvePersistedMissionLaneIdForRun(run.id);
+        if (missionLaneId) laneIds.add(missionLaneId);
+      }
     }
-
-    const graph = resolvedRunId ? getRunGraphSafe(resolvedRunId) : null;
-    const laneIds = graph
-      ? [...new Set(graph.steps.map((step) => toOptionalString(step.laneId)).filter((value): value is string => Boolean(value)))]
-      : [];
+    const laneIdList = [...laneIds];
 
     const result: CleanupOrchestratorTeamResourcesResult = {
       missionId,
       runId: resolvedRunId,
-      laneIds,
+      laneIds: laneIdList,
       lanesArchived: [],
       lanesSkipped: [],
       laneErrors: []
     };
 
-    if (!cleanupLanes || !laneIds.length) {
+    if (!cleanupLanes || !laneIdList.length) {
       return result;
     }
 
     if (!laneService || typeof laneService.archive !== "function") {
-      result.laneErrors = laneIds.map((laneId) => ({ laneId, error: "Lane service unavailable." }));
+      result.laneErrors = laneIdList.map((laneId) => ({ laneId, error: "Lane service unavailable." }));
       return result;
     }
 
-    for (const laneId of laneIds) {
+    for (const laneId of laneIdList) {
       try {
         await Promise.resolve(laneService.archive({ laneId }));
         result.lanesArchived.push(laneId);
@@ -7089,7 +7245,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     logger.info("ai_orchestrator.team_resources_cleanup_complete", {
       missionId,
       runId: resolvedRunId,
-      laneCount: laneIds.length,
+      laneCount: laneIds.size,
       archivedCount: result.lanesArchived.length,
       skippedCount: result.lanesSkipped.length,
       errorCount: result.laneErrors.length
@@ -7725,6 +7881,547 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (disposed) return;
     persistStructuredWorkerChatEvent(envelope);
     onAgentChatEventCtx(ctx, envelope, { replayQueuedWorkerMessages });
+  };
+
+  const RUN_VIEW_NOISE_EVENT_TYPES = new Set([
+    "scheduler_tick",
+    "claim_heartbeat",
+    "autopilot_parallelism_cap_adjusted",
+    "context_snapshot_created",
+    "context_pack_v2_metrics",
+    "executor_session_attached",
+    "startup_verification_warning",
+    "step_metadata_updated",
+    "step_dependencies_resolved",
+  ]);
+
+  const toRunViewSeverity = (value: string | null | undefined): MissionRunViewSeverity => {
+    const normalized = String(value ?? "").trim().toLowerCase();
+    if (
+      normalized.includes("fail")
+      || normalized.includes("error")
+      || normalized.includes("unavailable")
+      || normalized.includes("blocked")
+      || normalized.includes("cancel")
+    ) {
+      return "error";
+    }
+    if (
+      normalized.includes("warn")
+      || normalized.includes("pause")
+      || normalized.includes("waiting")
+      || normalized.includes("retry")
+      || normalized.includes("review")
+    ) {
+      return "warning";
+    }
+    if (normalized.includes("success") || normalized.includes("complete") || normalized.includes("done")) {
+      return "success";
+    }
+    return "info";
+  };
+
+  const toRunViewLatestIntervention = (mission: MissionDetail): MissionRunViewLatestIntervention | null => {
+    const latest = [...mission.interventions].sort((left, right) => {
+      const leftAt = Date.parse(left.updatedAt || left.createdAt);
+      const rightAt = Date.parse(right.updatedAt || right.createdAt);
+      return (Number.isFinite(rightAt) ? rightAt : 0) - (Number.isFinite(leftAt) ? leftAt : 0);
+    })[0];
+    if (!latest) return null;
+    return {
+      id: latest.id,
+      title: latest.title,
+      body: latest.body,
+      interventionType: latest.interventionType,
+      status: latest.status,
+      requestedAction: latest.requestedAction ?? null,
+      createdAt: latest.updatedAt || latest.createdAt,
+    };
+  };
+
+  const toRunViewWorkerStatus = (
+    worker: OrchestratorWorkerState | null,
+    attemptStatus: string | null,
+  ): MissionRunViewWorkerSummary["status"] => {
+    if (!worker) {
+      if (attemptStatus === "blocked") return "blocked";
+      if (attemptStatus === "failed") return "failed";
+      if (attemptStatus === "succeeded" || attemptStatus === "canceled") return "completed";
+      return "idle";
+    }
+    switch (worker.state) {
+      case "spawned":
+      case "initializing":
+      case "working":
+      case "waiting_input":
+        return "active";
+      case "failed":
+        return "failed";
+      case "completed":
+        return "completed";
+      case "disposed":
+        return attemptStatus === "failed" ? "failed" : attemptStatus === "blocked" ? "blocked" : "idle";
+      default:
+        return "idle";
+    }
+  };
+
+  const buildRunViewHaltReason = (args: {
+    mission: MissionDetail;
+    runStatus: OrchestratorRunStatus | null;
+    coordinatorAvailability: MissionCoordinatorAvailability | null;
+    latestIntervention: MissionRunViewLatestIntervention | null;
+  }): MissionRunViewHaltReason | null => {
+    const openIntervention = [...args.mission.interventions]
+      .filter((entry) => entry.status === "open")
+      .sort((left, right) => Date.parse(right.updatedAt || right.createdAt) - Date.parse(left.updatedAt || left.createdAt))[0];
+    if (openIntervention) {
+      return {
+        source: "intervention",
+        title: openIntervention.title,
+        detail: openIntervention.requestedAction?.trim() || openIntervention.body,
+        severity: "warning",
+        interventionId: openIntervention.id,
+        createdAt: openIntervention.updatedAt || openIntervention.createdAt,
+      };
+    }
+    if (args.coordinatorAvailability && args.coordinatorAvailability.available === false) {
+      return {
+        source: "coordinator",
+        title: "Coordinator unavailable",
+        detail: args.coordinatorAvailability.detail?.trim() || args.coordinatorAvailability.summary,
+        severity: "error",
+        createdAt: args.coordinatorAvailability.updatedAt,
+      };
+    }
+    if (args.runStatus === "failed") {
+      return {
+        source: "run",
+        title: "Run failed",
+        detail: args.mission.lastError?.trim() || "The run stopped with a failure.",
+        severity: "error",
+        createdAt: args.mission.updatedAt,
+      };
+    }
+    if (args.runStatus === "canceled" || args.mission.status === "canceled") {
+      return {
+        source: args.runStatus === "canceled" ? "run" : "mission",
+        title: "Run canceled",
+        detail: args.mission.lastError?.trim() || "Execution was canceled before completion.",
+        severity: "warning",
+        createdAt: args.mission.updatedAt,
+      };
+    }
+    if (args.mission.status === "failed") {
+      return {
+        source: "mission",
+        title: "Mission failed",
+        detail: args.mission.lastError?.trim() || args.latestIntervention?.body || "Mission ended in a failed state.",
+        severity: "error",
+        createdAt: args.mission.updatedAt,
+      };
+    }
+    return null;
+  };
+
+  const buildRunViewTimelineItem = (
+    event: OrchestratorRunGraph["timeline"][number],
+    stepById: Map<string, OrchestratorStep>,
+  ): MissionRunViewProgressItem | null => {
+    if (RUN_VIEW_NOISE_EVENT_TYPES.has(event.eventType)) return null;
+    const step = event.stepId ? stepById.get(event.stepId) ?? null : null;
+    const stepLabel = step?.title ?? step?.stepKey ?? "run";
+    const detailRecord = isRecord(event.detail) ? event.detail : null;
+    const detailSummary = toOptionalString(detailRecord?.summary)
+      ?? toOptionalString(detailRecord?.message)
+      ?? toOptionalString(detailRecord?.reason)
+      ?? null;
+
+    switch (event.eventType) {
+      case "run_created":
+      case "run_activated":
+        return {
+          id: `timeline:${event.id}`,
+          at: event.createdAt,
+          kind: "system",
+          title: event.eventType === "run_created" ? "Run created" : "Run activated",
+          detail: detailSummary ?? event.reason ?? "Mission execution is live.",
+          severity: "info",
+        };
+      case "phase_transition":
+        return {
+          id: `timeline:${event.id}`,
+          at: event.createdAt,
+          kind: "system",
+          title: "Phase advanced",
+          detail: detailSummary
+            ?? `Now working in ${(toOptionalString(detailRecord?.toPhaseName) ?? toOptionalString(detailRecord?.toPhaseKey) ?? "the next phase")}.`,
+          severity: "info",
+          stepId: event.stepId,
+          stepKey: step?.stepKey ?? null,
+          attemptId: event.attemptId,
+        };
+      case "step_status_changed": {
+        if (!["running", "blocked", "failed", "succeeded", "canceled"].includes(event.reason)) return null;
+        const reasonTitle = event.reason === "running"
+          ? "Worker started"
+          : event.reason === "succeeded"
+            ? "Worker completed"
+            : event.reason === "blocked"
+              ? "Worker blocked"
+              : event.reason === "failed"
+                ? "Worker failed"
+                : "Worker canceled";
+        return {
+          id: `timeline:${event.id}`,
+          at: event.createdAt,
+          kind: "worker",
+          title: reasonTitle,
+          detail: detailSummary ?? `${stepLabel} is ${event.reason}.`,
+          severity: toRunViewSeverity(event.reason),
+          stepId: event.stepId,
+          stepKey: step?.stepKey ?? null,
+          attemptId: event.attemptId,
+        };
+      }
+      case "attempt_started":
+      case "attempt_completed":
+        return {
+          id: `timeline:${event.id}`,
+          at: event.createdAt,
+          kind: "worker",
+          title: event.eventType === "attempt_started" ? "Attempt started" : "Attempt completed",
+          detail: detailSummary ?? `${stepLabel} attempt ${event.eventType === "attempt_started" ? "started" : "finished"}.`,
+          severity: "info",
+          stepId: event.stepId,
+          stepKey: step?.stepKey ?? null,
+          attemptId: event.attemptId,
+        };
+      case "worker_status_reported":
+      case "worker_result_reported":
+        return {
+          id: `timeline:${event.id}`,
+          at: event.createdAt,
+          kind: "worker",
+          title: event.eventType === "worker_result_reported" ? "Worker result" : "Worker update",
+          detail: detailSummary ?? `${stepLabel} reported progress.`,
+          severity: toRunViewSeverity(detailSummary ?? event.reason),
+          stepId: event.stepId,
+          stepKey: step?.stepKey ?? null,
+          attemptId: event.attemptId,
+        };
+      case "autopilot_step_skipped":
+        return {
+          id: `timeline:${event.id}`,
+          at: event.createdAt,
+          kind: "system",
+          title: "Step skipped",
+          detail: detailSummary ?? `${stepLabel} was skipped by the orchestrator.`,
+          severity: "warning",
+          stepId: event.stepId,
+          stepKey: step?.stepKey ?? null,
+          attemptId: event.attemptId,
+        };
+      default:
+        if (
+          event.eventType.startsWith("validation_")
+          || event.reason.startsWith("validation_")
+        ) {
+          return {
+            id: `timeline:${event.id}`,
+            at: event.createdAt,
+            kind: "validation",
+            title: "Validation update",
+            detail: detailSummary ?? `${stepLabel} validation changed.`,
+            severity: toRunViewSeverity(event.reason),
+            stepId: event.stepId,
+            stepKey: step?.stepKey ?? null,
+            attemptId: event.attemptId,
+          };
+        }
+        return null;
+    }
+  };
+
+  const buildRunViewRuntimeItem = (
+    event: NonNullable<OrchestratorRunGraph["runtimeEvents"]>[number],
+    stepById: Map<string, OrchestratorStep>,
+  ): MissionRunViewProgressItem | null => {
+    if (
+      RUN_VIEW_NOISE_EVENT_TYPES.has(event.eventType)
+      || event.eventType === "heartbeat"
+      || event.eventType === "progress"
+    ) {
+      return null;
+    }
+    const step = event.stepId ? stepById.get(event.stepId) ?? null : null;
+    const payload = isRecord(event.payload) ? event.payload : null;
+    const detail = toOptionalString(payload?.summary)
+      ?? toOptionalString(payload?.message)
+      ?? toOptionalString(payload?.reason)
+      ?? toOptionalString(payload?.directive)
+      ?? null;
+
+    if (event.eventType === "coordinator_steering" || event.eventType === "coordinator_broadcast") {
+      return {
+        id: `runtime:${event.id}`,
+        at: event.occurredAt,
+        kind: "user",
+        title: event.eventType === "coordinator_broadcast" ? "Broadcast sent" : "Steering applied",
+        detail: detail ?? "Mission steering was applied.",
+        severity: "info",
+        stepId: event.stepId,
+        stepKey: step?.stepKey ?? null,
+        attemptId: event.attemptId,
+      };
+    }
+    if (
+      event.eventType === "validation_report"
+      || event.eventType === "validation_contract_unfulfilled"
+      || event.eventType === "validation_self_check_reminder"
+      || event.eventType === "validation_gate_blocked"
+    ) {
+      return {
+        id: `runtime:${event.id}`,
+        at: event.occurredAt,
+        kind: "validation",
+        title: "Validation signal",
+        detail: detail ?? `${step?.title ?? step?.stepKey ?? "Step"} validation state changed.`,
+        severity: toRunViewSeverity(event.eventType),
+        stepId: event.stepId,
+        stepKey: step?.stepKey ?? null,
+        attemptId: event.attemptId,
+      };
+    }
+    return null;
+  };
+
+  const buildRunViewProgressLog = (args: {
+    mission: MissionDetail;
+    graph: OrchestratorRunGraph | null;
+  }): MissionRunViewProgressItem[] => {
+    const stepById = new Map((args.graph?.steps ?? []).map((step) => [step.id, step] as const));
+    const items: MissionRunViewProgressItem[] = [];
+    for (const event of args.graph?.timeline ?? []) {
+      const item = buildRunViewTimelineItem(event, stepById);
+      if (item) items.push(item);
+    }
+    for (const event of args.graph?.runtimeEvents ?? []) {
+      const item = buildRunViewRuntimeItem(event, stepById);
+      if (item) items.push(item);
+    }
+    for (const intervention of args.mission.interventions) {
+      items.push({
+        id: `intervention:${intervention.id}:${intervention.status}`,
+        at: intervention.updatedAt || intervention.createdAt,
+        kind: "intervention",
+        title: intervention.title,
+        detail: intervention.requestedAction?.trim() || intervention.body,
+        severity: intervention.status === "open" ? "warning" : "info",
+      });
+    }
+    for (const event of args.mission.events) {
+      if (
+        event.eventType !== "mission_intervention_resolved"
+        && event.eventType !== "mission_status_changed"
+        && event.eventType !== "mission_ready_to_start"
+      ) {
+        continue;
+      }
+      items.push({
+        id: `mission:${event.id}`,
+        at: event.createdAt,
+        kind: event.eventType === "mission_intervention_resolved" ? "user" : "system",
+        title: event.eventType === "mission_intervention_resolved" ? "Intervention resolved" : "Mission update",
+        detail: event.summary,
+        severity: toRunViewSeverity(event.eventType),
+      });
+    }
+    return items
+      .sort((left, right) => {
+        const delta = Date.parse(right.at) - Date.parse(left.at);
+        return Number.isFinite(delta) && delta !== 0 ? delta : right.id.localeCompare(left.id);
+      })
+      .slice(0, 80);
+  };
+
+  const getRunView = async (
+    viewArgs: GetMissionRunViewArgs,
+  ): Promise<MissionRunView | null> => {
+    const missionId = String(viewArgs.missionId ?? "").trim();
+    if (!missionId.length) return null;
+    const mission = missionService.get(missionId);
+    if (!mission) return null;
+
+    const requestedRunId = String(viewArgs.runId ?? "").trim();
+    const runs = orchestratorService.listRuns({ missionId, limit: 200 });
+    const run = requestedRunId.length > 0
+      ? runs.find((entry) => entry.id === requestedRunId) ?? null
+      : runs[0] ?? null;
+    const graph = run ? orchestratorService.getRunGraph({ runId: run.id, timelineLimit: 200 }) : null;
+    const stateDoc = run ? await getMissionStateDocument({ runId: run.id }) : null;
+    const workerStates = run ? getWorkerStates({ runId: run.id }) : [];
+    const latestIntervention = toRunViewLatestIntervention(mission);
+    const openIntervention = mission.interventions
+      .filter((entry) => entry.status === "open")
+      .sort((left, right) => Date.parse(right.updatedAt || right.createdAt) - Date.parse(left.updatedAt || left.createdAt))[0] ?? null;
+    const openInterventionReasonCode = toOptionalString(asRecord(openIntervention?.metadata)?.reasonCode);
+    const coordinatorAvailability = stateDoc?.coordinatorAvailability
+      ?? (
+        openInterventionReasonCode === "coordinator_unavailable" || openInterventionReasonCode === "coordinator_recovery_failed"
+          ? {
+              available: false,
+              mode: "continuation_required",
+              summary: openIntervention?.title ?? "Coordinator unavailable",
+              detail: openIntervention?.body ?? null,
+              updatedAt: openIntervention?.updatedAt ?? mission.updatedAt,
+            } satisfies MissionCoordinatorAvailability
+          : null
+      )
+      ?? (
+        run && coordinatorAgents.get(run.id)?.isAlive
+          ? {
+              available: true,
+              mode: "continuation_required",
+              summary: "Coordinator online",
+              detail: null,
+              updatedAt: mission.updatedAt,
+            } satisfies MissionCoordinatorAvailability
+          : null
+      );
+
+    const haltReason = buildRunViewHaltReason({
+      mission,
+      runStatus: run?.status ?? null,
+      coordinatorAvailability,
+      latestIntervention,
+    });
+
+    const activeStep = (() => {
+      const steps = filterExecutionSteps(graph?.steps ?? []);
+      const byPriority = [
+        steps.find((step) => step.status === "running"),
+        steps.find((step) => step.status === "blocked"),
+        steps.find((step) => step.status === "ready" || step.status === "pending"),
+        steps.find((step) => step.status === "failed"),
+      ];
+      return byPriority.find((step): step is OrchestratorStep => Boolean(step)) ?? null;
+    })();
+
+    const phaseRuntime = asRecord(isRecord(graph?.run.metadata) ? graph?.run.metadata.phaseRuntime : null);
+    const activeStepMeta = asRecord(activeStep?.metadata);
+    const displayStatus = (() => {
+      if (openIntervention || coordinatorAvailability?.available === false) return "blocked" satisfies MissionRunViewDisplayStatus;
+      if (run?.status === "failed" || mission.status === "failed") return "failed" satisfies MissionRunViewDisplayStatus;
+      if (run?.status === "canceled" || mission.status === "canceled") return "canceled" satisfies MissionRunViewDisplayStatus;
+      if (run?.status === "succeeded" || mission.status === "completed") return "completed" satisfies MissionRunViewDisplayStatus;
+      if (run?.status === "queued" || run?.status === "bootstrapping" || mission.status === "planning") return "starting" satisfies MissionRunViewDisplayStatus;
+      if (run?.status === "paused") return "blocked" satisfies MissionRunViewDisplayStatus;
+      if (run?.status === "active" || mission.status === "in_progress") return "running" satisfies MissionRunViewDisplayStatus;
+      return "not_started" satisfies MissionRunViewDisplayStatus;
+    })();
+
+    const progressLog = buildRunViewProgressLog({ mission, graph });
+    const stepById = new Map((graph?.steps ?? []).map((step) => [step.id, step] as const));
+    const attemptById = new Map((graph?.attempts ?? []).map((attempt) => [attempt.id, attempt] as const));
+    const workers: MissionRunViewWorkerSummary[] = workerStates.map((worker) => {
+      const step = stepById.get(worker.stepId) ?? null;
+      const attempt = attemptById.get(worker.attemptId) ?? null;
+      return {
+        attemptId: worker.attemptId,
+        stepId: worker.stepId,
+        stepKey: step?.stepKey ?? null,
+        stepTitle: step?.title ?? null,
+        laneId: step?.laneId ?? null,
+        sessionId: worker.sessionId ?? null,
+        executorKind: worker.executorKind ?? null,
+        state: worker.state,
+        status: toRunViewWorkerStatus(worker, attempt?.status ?? null),
+        lastHeartbeatAt: worker.lastHeartbeatAt ?? null,
+        completedAt: worker.completedAt ?? null,
+      };
+    });
+
+    for (const step of filterExecutionSteps(graph?.steps ?? []).filter((entry) => entry.status === "blocked")) {
+      if (workers.some((worker) => worker.stepId === step.id)) continue;
+      const latestAttempt = [...(graph?.attempts ?? [])]
+        .filter((attempt) => attempt.stepId === step.id)
+        .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0] ?? null;
+      workers.push({
+        attemptId: latestAttempt?.id ?? null,
+        stepId: step.id,
+        stepKey: step.stepKey,
+        stepTitle: step.title,
+        laneId: step.laneId ?? null,
+        sessionId: latestAttempt?.executorSessionId ?? null,
+        executorKind: latestAttempt?.executorKind ?? null,
+        state: "blocked",
+        status: "blocked",
+        lastHeartbeatAt: latestAttempt?.completedAt ?? latestAttempt?.startedAt ?? latestAttempt?.createdAt ?? null,
+        completedAt: latestAttempt?.completedAt ?? null,
+      });
+    }
+
+    return {
+      missionId,
+      runId: run?.id ?? null,
+      lifecycle: {
+        missionStatus: mission.status,
+        runStatus: run?.status ?? null,
+        displayStatus,
+        summary: haltReason?.detail
+          ?? (
+            displayStatus === "running"
+              ? activeStep?.title
+                ? `Working on ${activeStep.title}.`
+                : "Mission is actively running."
+              : displayStatus === "starting"
+                ? "Preparing mission runtime and coordinator."
+                : displayStatus === "completed"
+                  ? (mission.outcomeSummary?.trim() || "Mission completed.")
+                  : displayStatus === "failed"
+                    ? (mission.lastError?.trim() || "Mission failed.")
+                    : displayStatus === "canceled"
+                      ? "Mission was canceled."
+                      : "Mission has not started yet."
+          ),
+        startedAt: run?.startedAt ?? mission.startedAt ?? null,
+        completedAt: run?.completedAt ?? mission.completedAt ?? null,
+      },
+      active: {
+        phaseKey: toOptionalString(activeStepMeta?.phaseKey)
+          ?? toOptionalString(phaseRuntime?.currentPhaseKey)
+          ?? toOptionalString(stateDoc?.progress.currentPhase)
+          ?? null,
+        phaseName: toOptionalString(activeStepMeta?.phaseName)
+          ?? toOptionalString(phaseRuntime?.currentPhaseName)
+          ?? toOptionalString(stateDoc?.progress.currentPhase)
+          ?? null,
+        stepId: activeStep?.id ?? null,
+        stepKey: activeStep?.stepKey ?? null,
+        stepTitle: activeStep?.title ?? null,
+        featureLabel: toOptionalString(activeStepMeta?.featureLabel)
+          ?? toOptionalString(activeStepMeta?.featureKey)
+          ?? toOptionalString(activeStepMeta?.phaseName)
+          ?? null,
+      },
+      coordinator: {
+        available: coordinatorAvailability?.available ?? null,
+        mode: coordinatorAvailability?.mode ?? null,
+        summary: coordinatorAvailability?.summary ?? null,
+        detail: coordinatorAvailability?.detail ?? null,
+        updatedAt: coordinatorAvailability?.updatedAt ?? null,
+      },
+      latestIntervention,
+      haltReason,
+      workers: workers.sort((left, right) => {
+        const leftAt = Date.parse(left.completedAt || left.lastHeartbeatAt || "");
+        const rightAt = Date.parse(right.completedAt || right.lastHeartbeatAt || "");
+        return (Number.isFinite(rightAt) ? rightAt : 0) - (Number.isFinite(leftAt) ? leftAt : 0);
+      }),
+      progressLog,
+      lastMeaningfulProgress: progressLog[0] ?? null,
+    };
   };
 
   // ── Execution Plan Preview ──────────────────────────────────
@@ -8459,6 +9156,12 @@ Check all worker statuses and continue managing the mission from here. Read work
               }
             });
           }
+        } else if (runStatus === "succeeded" || runStatus === "failed" || runStatus === "canceled") {
+          resolveCoordinatorHealthInterventions({
+            runId,
+            note: `Run reached terminal state (${runStatus}) and stale coordinator availability intervention was closed.`,
+            resolutionReason: "run_terminal",
+          });
         }
         logger.warn("ai_orchestrator.coordinator_unavailable", {
           runId,
@@ -8469,8 +9172,22 @@ Check all worker statuses and continue managing the mission from here. Read work
         return;
       }
 
+      resolveCoordinatorHealthInterventions({
+        runId,
+        note: "Coordinator runtime is healthy again; closed stale coordinator availability intervention.",
+        resolutionReason: "coordinator_recovered",
+      });
+
       // Run finalized — coordinator's job is done, shut it down
       if (event.reason === "finalized") {
+        const terminalRunStatus = getEventGraph().run.status;
+        if (terminalRunStatus === "succeeded" || terminalRunStatus === "failed" || terminalRunStatus === "canceled") {
+          resolveCoordinatorHealthInterventions({
+            runId,
+            note: `Run reached terminal state (${terminalRunStatus}) and stale coordinator availability intervention was closed.`,
+            resolutionReason: "run_terminal",
+          });
+        }
         void syncMissionFromRun(runId, event.reason);
         endCoordinatorAgentV2(runId);
         return;
@@ -8620,6 +9337,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     setMissionMetricsConfig,
     getExecutionPlanPreview,
     getMissionStateDocument,
+    getRunView,
     getAggregatedUsage,
     getTeamManifest: (tmArgs: { runId: string }): TeamManifest | null => {
       return runTeamManifests.get(tmArgs.runId) ?? null;

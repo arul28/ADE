@@ -48,6 +48,7 @@ import type {
   PlannerClarifyingQuestion,
   PlannerClarifyingAnswer,
   ResolveMissionInterventionArgs,
+  ArchiveMissionArgs,
   DeleteMissionArgs,
   UpdateMissionArgs,
   UpdateMissionStepArgs
@@ -724,6 +725,16 @@ export function createMissionService({
     ...DEFAULT_CONCURRENCY_CONFIG,
     ...concurrencyConfig
   };
+
+  const ensureMissionSchemaCompatibility = () => {
+    const missionColumns = db.all<{ name: string }>("pragma table_info(missions)");
+    const hasArchivedAt = missionColumns.some((column) => column.name === "archived_at");
+    if (!hasArchivedAt) {
+      db.run("alter table missions add column archived_at text");
+    }
+  };
+
+  ensureMissionSchemaCompatibility();
 
   // Late-bound reference to the service object for use in internal helpers.
   // Assigned after the return object is created. Uses a minimal interface
@@ -1652,6 +1663,9 @@ export function createMissionService({
     list(args: ListMissionsArgs = {}): MissionSummary[] {
       const where: string[] = [];
       const params: Array<string | number> = [projectId];
+      if (args.includeArchived !== true) {
+        where.push("m.archived_at is null");
+      }
 
       const laneId = typeof args.laneId === "string" ? args.laneId.trim() : "";
       if (laneId.length) {
@@ -2243,6 +2257,7 @@ export function createMissionService({
 
       const recentRows = db.all<MissionRow>(
         `${baseMissionSelect}
+         and m.archived_at is null
          and m.status in ('completed', 'failed', 'canceled')
          order by coalesce(m.completed_at, m.updated_at) desc
          limit 12`,
@@ -2267,6 +2282,7 @@ export function createMissionService({
       const weekStart = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
       const weeklyRows = db.all<MissionRow>(
         `${baseMissionSelect}
+         and m.archived_at is null
          and m.created_at >= ?
          order by m.created_at desc`,
         [projectId, weekStart]
@@ -2871,6 +2887,53 @@ export function createMissionService({
         [JSON.stringify(next), nowIso(), id, projectId]
       );
       db.flushNow();
+    },
+
+    archive(args: ArchiveMissionArgs): void {
+      const missionId = args.missionId.trim();
+      if (!missionId.length) throw new Error("missionId is required.");
+      const row = db.get<{ id: string; status: string; archived_at: string | null }>(
+        `
+          select id, status, archived_at
+          from missions
+          where id = ?
+            and project_id = ?
+          limit 1
+        `,
+        [missionId, projectId]
+      );
+      if (!row?.id) throw new Error(`Mission not found: ${missionId}`);
+      if (row.archived_at) return;
+
+      const status = normalizeMissionStatus(row.status);
+      if (!TERMINAL_MISSION_STATUSES.has(status)) {
+        throw new Error("Only completed, failed, or canceled missions can be archived.");
+      }
+
+      const archivedAt = nowIso();
+      recordEvent({
+        missionId,
+        eventType: "mission_archived",
+        actor: "user",
+        summary: "Mission archived from the Missions tab.",
+        payload: {
+          archivedAt,
+          status,
+        }
+      });
+      db.run(
+        `
+          update missions
+          set archived_at = ?,
+              updated_at = ?
+          where id = ?
+            and project_id = ?
+            and archived_at is null
+        `,
+        [archivedAt, archivedAt, missionId, projectId]
+      );
+      db.flushNow();
+      emit({ missionId, reason: "archived" });
     },
 
     delete(args: DeleteMissionArgs): void {

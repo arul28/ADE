@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect, useRef } from "react";
+import { useState, useCallback, useMemo, useEffect, useRef, type MouseEvent as ReactMouseEvent } from "react";
 import {
   Clock,
   SpinnerGap,
@@ -19,6 +19,7 @@ import {
   List,
   Kanban,
   Trash,
+  WarningCircle,
 } from "@phosphor-icons/react";
 import { motion, AnimatePresence, LazyMotion, domAnimation } from "motion/react";
 import type {
@@ -81,7 +82,7 @@ import { PlanTab } from "./PlanTab";
 import { StepDetailPanel } from "./StepDetailPanel";
 import { ActivityNarrativeHeader } from "./ActivityNarrativeHeader";
 import { MissionsHomeDashboard } from "./MissionsHomeDashboard";
-import { MissionStateSummary } from "./MissionStateSummary";
+import { MissionRunPanel } from "./MissionRunPanel";
 import { ClarificationQuizModal } from "./ClarificationQuizModal";
 import { ManualInputResponseModal } from "./ManualInputResponseModal";
 import { MissionLogsTab } from "./MissionLogsTab";
@@ -90,13 +91,19 @@ import { MissionArtifactsTab } from "./MissionArtifactsTab";
 import { MissionActivePhasePanel } from "./MissionActivePhasePanel";
 import { PromptInspectorCard } from "./PromptInspectorCard";
 import { buildMissionArtifactGroups, deriveActivePhaseViewModel } from "./missionControlViewModel";
-import { useMissionStateDocument } from "./useMissionStateDocument";
+import { useMissionRunView } from "./useMissionRunView";
 import { openMissionCreateDialog } from "./missionCreateDialogStore";
 
 /* Re-export helpers used by tests */
 export { collapsePlannerStreamMessages, resolveStepHeartbeatAt } from "./missionHelpers";
 
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "canceled"]);
+
+type MissionContextMenuState = {
+  mission: MissionSummary;
+  x: number;
+  y: number;
+} | null;
 
 type OrchestratorCheckpointStatus = {
   savedAt: string;
@@ -134,6 +141,14 @@ function buildQuizDirective(quiz: ClarificationQuiz): string {
   ].join("\n");
 }
 
+type MissionAttentionToast = {
+  id: string;
+  missionTitle: string;
+  message: string;
+  severity: "warning" | "error";
+  missionId: string;
+};
+
 /* ════════════════════ MAIN COMPONENT ════════════════════ */
 
 export default function MissionsPage() {
@@ -161,10 +176,16 @@ export default function MissionsPage() {
   const [missionSettingsSnapshot, setMissionSettingsSnapshot] = useState<ProjectConfigSnapshot | null>(null);
   const [missionSettingsDraft, setMissionSettingsDraft] = useState<MissionSettingsDraft>(DEFAULT_MISSION_SETTINGS_DRAFT);
 
-  const [activeTab, setActiveTab] = useState<WorkspaceTab>("overview");
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>("chat");
   const [planSubview, setPlanSubview] = useState<"board" | "dag">("board");
   const [searchFilter, setSearchFilter] = useState("");
   const [missionListView, setMissionListView] = useState<MissionListViewMode>("list");
+  const [missionContextMenu, setMissionContextMenu] = useState<MissionContextMenuState>(null);
+  const [manageMission, setManageMission] = useState<MissionSummary | null>(null);
+  const [manageMissionOpen, setManageMissionOpen] = useState(false);
+  const [manageMissionCleanupLanes, setManageMissionCleanupLanes] = useState(false);
+  const [manageMissionBusy, setManageMissionBusy] = useState(false);
+  const [manageMissionError, setManageMissionError] = useState<string | null>(null);
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const [chatJumpTarget, setChatJumpTarget] = useState<OrchestratorChatTarget | null>(null);
   const [logsFocusInterventionId, setLogsFocusInterventionId] = useState<string | null>(null);
@@ -188,6 +209,12 @@ export default function MissionsPage() {
   /* ── Intervention modal state ── */
   const [activeInterventionId, setActiveInterventionId] = useState<string | null>(null);
   const autoOpenedInterventionIdsRef = useRef<Set<string>>(new Set());
+
+  /* ── Mission attention toast state ── */
+  const [attentionToasts, setAttentionToasts] = useState<MissionAttentionToast[]>([]);
+  const attentionToastTimersRef = useRef<Map<string, number>>(new Map());
+  const prevMissionStatusRef = useRef<string | null>(null);
+  const prevOpenInterventionCountRef = useRef<number>(0);
 
   /* ── Track original step count for dynamic step indicator ── */
   const [originalStepCount, setOriginalStepCount] = useState<number | null>(null);
@@ -220,6 +247,11 @@ export default function MissionsPage() {
     );
   }, [missions, searchFilter]);
 
+  const selectedMissionSummary = useMemo(() => {
+    if (!selectedMissionId) return null;
+    return missions.find((mission) => mission.id === selectedMissionId) ?? null;
+  }, [missions, selectedMissionId]);
+
   const runAutopilotState = useMemo(() => {
     const autopilot =
       runGraph?.run.metadata && typeof runGraph.run.metadata.autopilot === "object" && !Array.isArray(runGraph.run.metadata.autopilot)
@@ -250,7 +282,12 @@ export default function MissionsPage() {
     runGraph,
     modelCapabilities,
   }), [modelCapabilities, runGraph, selectedMission]);
-  const { stateDoc: missionStateDoc, loading: missionStateLoading, error: missionStateError } = useMissionStateDocument(runGraph?.run.id ?? null);
+  const { runView } = useMissionRunView(selectedMissionId, runGraph?.run.id ?? null);
+  const primaryWorkspaceTab = useMemo(() => {
+    if (activeTab === "overview") return "intake" as const;
+    if (activeTab === "plan" || activeTab === "chat") return "run" as const;
+    return "evidence" as const;
+  }, [activeTab]);
 
   const groupedArtifacts = useMemo(() => buildMissionArtifactGroups({
     mission: selectedMission,
@@ -561,6 +598,13 @@ export default function MissionsPage() {
   }, []);
 
   useEffect(() => {
+    if (!missionContextMenu) return;
+    const handleClose = () => setMissionContextMenu(null);
+    document.addEventListener("mousedown", handleClose);
+    return () => document.removeEventListener("mousedown", handleClose);
+  }, [missionContextMenu]);
+
+  useEffect(() => {
     if (!selectedMissionId) {
       if (graphRefreshTimerRef.current !== null) {
         window.clearTimeout(graphRefreshTimerRef.current);
@@ -814,15 +858,12 @@ export default function MissionsPage() {
   /* ── Lane cleanup for failed/canceled missions ── */
   const [cleanupBusy, setCleanupBusy] = useState(false);
   const handleCleanupLanes = useCallback(async () => {
-    if (!selectedMission || !runGraph?.steps) return;
-    const laneIds = [...new Set(runGraph.steps.map((s) => s.laneId).filter(Boolean))] as string[];
-    if (!laneIds.length) return;
-    if (!window.confirm(`Archive ${laneIds.length} lane(s) created by this mission?`)) return;
+    if (!selectedMission) return;
+    if (!window.confirm("Archive ADE-managed lanes created by this mission?")) return;
     setCleanupBusy(true);
     try {
       const result = await window.ade.orchestrator.cleanupTeamResources({
         missionId: selectedMission.id,
-        runId: runGraph.run.id,
         cleanupLanes: true
       });
       await refreshLanes();
@@ -839,7 +880,96 @@ export default function MissionsPage() {
     } finally {
       setCleanupBusy(false);
     }
-  }, [runGraph, selectedMission, refreshLanes]);
+  }, [selectedMission, refreshLanes]);
+
+  const openManageMissionDialog = useCallback((mission: MissionSummary) => {
+    setMissionContextMenu(null);
+    setManageMission(mission);
+    setManageMissionCleanupLanes(false);
+    setManageMissionError(null);
+    setManageMissionOpen(true);
+  }, []);
+
+  const closeManageMissionDialog = useCallback((force = false) => {
+    if (manageMissionBusy && !force) return;
+    setManageMissionOpen(false);
+    setManageMissionError(null);
+    setManageMissionCleanupLanes(false);
+    setManageMission(null);
+  }, [manageMissionBusy]);
+
+  const requestCloseManageMissionDialog = useCallback(() => {
+    closeManageMissionDialog(false);
+  }, [closeManageMissionDialog]);
+
+  const handleMissionContextMenu = useCallback((mission: MissionSummary, event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    setSelectedMissionId(mission.id);
+    setMissionContextMenu({
+      mission,
+      x: event.clientX,
+      y: event.clientY,
+    });
+  }, []);
+
+  const handleArchiveMission = useCallback(async () => {
+    if (!manageMission) return;
+    if (!TERMINAL_MISSION_STATUSES.has(manageMission.status)) {
+      setManageMissionError("Only completed, failed, or canceled missions can be archived.");
+      return;
+    }
+    setManageMissionBusy(true);
+    setManageMissionError(null);
+    try {
+      let cleanupWarning: string | null = null;
+      if (manageMissionCleanupLanes) {
+        const result = await window.ade.orchestrator.cleanupTeamResources({
+          missionId: manageMission.id,
+          cleanupLanes: true,
+        });
+        await refreshLanes();
+        if (result.laneErrors.length > 0) {
+          cleanupWarning =
+            `Mission archived, but lane cleanup archived ${result.lanesArchived.length}/${result.laneIds.length} lane(s). `
+            + `${result.laneErrors.length} lane(s) failed to archive.`;
+        }
+      }
+      await window.ade.missions.archive({ missionId: manageMission.id });
+      closeManageMissionDialog(true);
+      await Promise.all([
+        refreshMissionList({ preserveSelection: true, silent: true }),
+        loadDashboard(),
+      ]);
+      setError(cleanupWarning);
+    } catch (err) {
+      setManageMissionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setManageMissionBusy(false);
+    }
+  }, [closeManageMissionDialog, loadDashboard, manageMission, manageMissionCleanupLanes, refreshLanes, refreshMissionList]);
+
+  const handleCancelManagedMission = useCallback(async () => {
+    if (!manageMission) return;
+    if (TERMINAL_MISSION_STATUSES.has(manageMission.status)) return;
+    setManageMissionBusy(true);
+    setManageMissionError(null);
+    try {
+      const runs = await window.ade.orchestrator.listRuns({ missionId: manageMission.id, limit: 5 });
+      const activeRun = runs.find((r) => r.status === "active" || r.status === "paused" || r.status === "bootstrapping" || r.status === "queued");
+      if (activeRun) {
+        await window.ade.orchestrator.cancelRun({ runId: activeRun.id, reason: "Canceled from Manage Mission dialog." });
+      }
+      closeManageMissionDialog(true);
+      await Promise.all([
+        refreshMissionList({ preserveSelection: true, silent: true }),
+        loadDashboard(),
+      ]);
+    } catch (err) {
+      setManageMissionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setManageMissionBusy(false);
+    }
+  }, [closeManageMissionDialog, loadDashboard, manageMission, refreshMissionList]);
 
   const handleInterventionResponse = useCallback(async (interventionId: string, directiveText: string) => {
     if (!selectedMission) return;
@@ -861,6 +991,65 @@ export default function MissionsPage() {
       setSteerBusy(false);
     }
   }, [loadMissionDetail, loadOrchestratorGraph, refreshMissionList, selectedMission]);
+
+  const handleOpenIntervention = useCallback((interventionId: string) => {
+    if (!selectedMission) return;
+    const intervention = selectedMission.interventions.find((entry) => entry.id === interventionId) ?? null;
+    if (!intervention || intervention.status !== "open") return;
+
+    if (intervention.interventionType === "manual_input") {
+      setActiveInterventionId(intervention.id);
+      return;
+    }
+
+    const metadata = isRecord(intervention.metadata) ? intervention.metadata : {};
+    const interventionRunId = typeof metadata.runId === "string" && metadata.runId.trim().length > 0 ? metadata.runId.trim() : null;
+    const interventionStepId = typeof metadata.stepId === "string" && metadata.stepId.trim().length > 0 ? metadata.stepId.trim() : null;
+    const interventionStepKey = typeof metadata.stepKey === "string" && metadata.stepKey.trim().length > 0 ? metadata.stepKey.trim() : null;
+    const interventionAttemptId = typeof metadata.attemptId === "string" && metadata.attemptId.trim().length > 0 ? metadata.attemptId.trim() : null;
+    const reasonCode = typeof metadata.reasonCode === "string" && metadata.reasonCode.trim().length > 0 ? metadata.reasonCode.trim() : null;
+    const currentRunId = runGraph?.run.id ?? null;
+    const sameRun = interventionRunId ? interventionRunId === currentRunId : Boolean(currentRunId);
+    const resolvedStepId =
+      sameRun && interventionStepId && runGraph?.steps.some((step) => step.id === interventionStepId)
+        ? interventionStepId
+        : null;
+
+    if (reasonCode === "coordinator_unavailable" || reasonCode === "coordinator_recovery_failed") {
+      setLogsFocusInterventionId(null);
+      setChatJumpTarget({
+        kind: "coordinator",
+        runId: interventionRunId ?? currentRunId,
+      });
+      setActiveTab("chat");
+      return;
+    }
+
+    if (intervention.interventionType === "failed_step") {
+      if (resolvedStepId) {
+        setSelectedStepId(resolvedStepId);
+        setPlanSubview("board");
+      }
+      if (sameRun && (interventionAttemptId || resolvedStepId || interventionStepKey)) {
+        setLogsFocusInterventionId(null);
+        setChatJumpTarget({
+          kind: "worker",
+          runId: interventionRunId ?? currentRunId,
+          stepId: resolvedStepId,
+          stepKey: interventionStepKey,
+          attemptId: interventionAttemptId,
+        });
+        setActiveTab("chat");
+        return;
+      }
+      setLogsFocusInterventionId(intervention.id);
+      setActiveTab("history");
+      return;
+    }
+
+    setLogsFocusInterventionId(intervention.id);
+    setActiveTab("history");
+  }, [runGraph, selectedMission]);
 
   const attemptsByStep = useMemo(() => {
     const map = new Map<string, OrchestratorAttempt[]>();
@@ -981,6 +1170,67 @@ export default function MissionsPage() {
     setCoordinatorPromptInspector(null);
     setWorkerPromptInspector(null);
   }, [selectedMissionId]);
+
+  /* ── Mission attention toast notifications ── */
+  useEffect(() => {
+    if (!selectedMission) {
+      prevMissionStatusRef.current = null;
+      prevOpenInterventionCountRef.current = 0;
+      return;
+    }
+
+    const prevStatus = prevMissionStatusRef.current;
+    const prevOpenCount = prevOpenInterventionCountRef.current;
+    const currentStatus = selectedMission.status;
+    const currentOpenCount = selectedMission.openInterventions;
+
+    prevMissionStatusRef.current = currentStatus;
+    prevOpenInterventionCountRef.current = currentOpenCount;
+
+    // Skip the initial mount to avoid spurious toasts
+    if (prevStatus === null) return;
+
+    const dismissToast = (id: string) => {
+      setAttentionToasts((prev) => prev.filter((t) => t.id !== id));
+      const timer = attentionToastTimersRef.current.get(id);
+      if (timer != null) window.clearTimeout(timer);
+      attentionToastTimersRef.current.delete(id);
+    };
+
+    const addToast = (message: string, severity: "warning" | "error") => {
+      const id = globalThis.crypto?.randomUUID
+        ? globalThis.crypto.randomUUID()
+        : `${Date.now()}-${Math.random()}`;
+      setAttentionToasts((prev) => [{ id, missionTitle: selectedMission.title, message, severity, missionId: selectedMission.id }, ...prev].slice(0, 3));
+      const timer = window.setTimeout(() => dismissToast(id), 12_000);
+      attentionToastTimersRef.current.set(id, timer);
+    };
+
+    // Status transitioned to intervention_required
+    if (currentStatus === "intervention_required" && prevStatus !== "intervention_required") {
+      addToast("Mission requires intervention", "warning");
+    }
+    // Status transitioned to failed
+    else if (currentStatus === "failed" && prevStatus !== "failed") {
+      addToast("Mission has failed", "error");
+    }
+    // New open interventions appeared (while still in_progress)
+    else if (currentOpenCount > prevOpenCount && currentStatus === "in_progress") {
+      addToast(
+        `${currentOpenCount - prevOpenCount} new intervention${currentOpenCount - prevOpenCount === 1 ? "" : "s"} opened`,
+        "warning",
+      );
+    }
+  }, [selectedMission?.status, selectedMission?.openInterventions, selectedMission?.id, selectedMission?.title]);
+
+  useEffect(() => {
+    return () => {
+      for (const timer of attentionToastTimersRef.current.values()) {
+        window.clearTimeout(timer);
+      }
+      attentionToastTimersRef.current.clear();
+    };
+  }, []);
 
   // Reconcile selection only against displayed cards — no auto-reset mismatch
   useEffect(() => {
@@ -1138,6 +1388,7 @@ export default function MissionsPage() {
                           <button
                             key={m.id}
                             onClick={() => setSelectedMissionId(m.id)}
+                            onContextMenu={(event) => handleMissionContextMenu(m, event)}
                             className="w-full text-left p-2.5 transition-colors"
                             style={m.id === selectedMissionId
                               ? {
@@ -1151,14 +1402,41 @@ export default function MissionsPage() {
                             }
                           >
                             <div className="flex items-center gap-1.5">
+                              {(m.status === "intervention_required" || m.status === "failed" || (m.status === "in_progress" && m.openInterventions > 0)) && (
+                                <span
+                                  className="shrink-0"
+                                  style={{
+                                    width: 6,
+                                    height: 6,
+                                    borderRadius: "50%",
+                                    background: m.status === "intervention_required"
+                                      ? "#F59E0B"
+                                      : m.status === "failed"
+                                        ? "#EF4444"
+                                        : "#3B82F6",
+                                    boxShadow: m.status === "intervention_required"
+                                      ? "0 0 6px #F59E0B60"
+                                      : m.status === "failed"
+                                        ? "0 0 6px #EF444460"
+                                        : "0 0 6px #3B82F660",
+                                  }}
+                                  title={
+                                    m.status === "intervention_required"
+                                      ? "Needs attention"
+                                      : m.status === "failed"
+                                        ? "Failed"
+                                        : `${m.openInterventions} open intervention${m.openInterventions === 1 ? "" : "s"}`
+                                  }
+                                />
+                              )}
                               <div className="text-xs font-medium truncate flex-1" style={{ color: COLORS.textPrimary }}>{m.title}</div>
                               {m.openInterventions > 0 && (
                                 <span
                                 className="shrink-0 px-1 py-0.5 text-[9px] font-bold"
                                 style={{ color: COLORS.warning, background: `${COLORS.warning}18`, border: `1px solid ${COLORS.warning}30`, fontFamily: MONO_FONT }}
-                                title="Has pending interventions"
+                                title={`${m.openInterventions} pending intervention${m.openInterventions === 1 ? "" : "s"}`}
                               >
-                                  !
+                                  {m.openInterventions > 1 ? `${m.openInterventions}!` : "!"}
                               </span>
                             )}
                             </div>
@@ -1188,6 +1466,7 @@ export default function MissionsPage() {
                     <button
                       key={m.id}
                       onClick={() => setSelectedMissionId(m.id)}
+                      onContextMenu={(event) => handleMissionContextMenu(m, event)}
                       className={cn(
                         "w-full text-left px-2.5 py-2 transition-colors",
                         isActive && !isSelected && "ade-glow-pulse-blue"
@@ -1204,7 +1483,41 @@ export default function MissionsPage() {
                       }
                     >
                       <div className="flex items-start gap-2">
-                        <span className="mt-1 h-2 w-2 shrink-0" style={{ background: STATUS_DOT_HEX[m.status], borderRadius: 0 }} />
+                        <span
+                          className={cn(
+                            "mt-1 h-2 w-2 shrink-0",
+                            (m.status === "intervention_required" || (m.status === "in_progress" && m.openInterventions > 0)) && "ade-glow-pulse-amber",
+                            m.status === "failed" && "ade-glow-pulse-red",
+                          )}
+                          style={{
+                            background: m.status === "intervention_required"
+                              ? "#F59E0B"
+                              : m.status === "in_progress" && m.openInterventions > 0
+                                ? "#3B82F6"
+                                : m.status === "failed"
+                                  ? "#EF4444"
+                                  : STATUS_DOT_HEX[m.status],
+                            borderRadius: (m.status === "intervention_required" || m.status === "failed" || (m.status === "in_progress" && m.openInterventions > 0))
+                              ? "50%"
+                              : 0,
+                            boxShadow: m.status === "intervention_required"
+                              ? "0 0 6px #F59E0B60"
+                              : m.status === "failed"
+                                ? "0 0 6px #EF444460"
+                                : (m.status === "in_progress" && m.openInterventions > 0)
+                                  ? "0 0 6px #3B82F660"
+                                  : "none",
+                          }}
+                          title={
+                            m.status === "intervention_required"
+                              ? "Needs attention: intervention required"
+                              : m.status === "failed"
+                                ? "Mission failed"
+                                : m.status === "in_progress" && m.openInterventions > 0
+                                  ? `${m.openInterventions} open intervention${m.openInterventions === 1 ? "" : "s"}`
+                                  : undefined
+                          }
+                        />
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-xs font-medium" style={{ color: COLORS.textPrimary }}>{m.title}</div>
                           <div className="mt-0.5 flex items-center gap-1.5">
@@ -1215,9 +1528,9 @@ export default function MissionsPage() {
                               <span
                                 className="px-1 py-0.5 text-[9px] font-bold"
                                 style={{ color: COLORS.warning, background: `${COLORS.warning}18`, border: `1px solid ${COLORS.warning}30`, fontFamily: MONO_FONT }}
-                                title="Has pending interventions"
+                                title={`${m.openInterventions} pending intervention${m.openInterventions === 1 ? "" : "s"}`}
                               >
-                                !
+                                {m.openInterventions > 1 ? `${m.openInterventions}!` : "!"}
                               </span>
                             )}
                           </div>
@@ -1301,6 +1614,16 @@ export default function MissionsPage() {
 
                 {/* Quick actions */}
                 <div className="flex items-center gap-1.5">
+                  {selectedMissionSummary && (
+                    <button
+                      style={outlineButton()}
+                      onClick={() => openManageMissionDialog(selectedMissionSummary)}
+                      disabled={manageMissionBusy}
+                    >
+                      <GearSix className="h-3 w-3" />
+                      MANAGE
+                    </button>
+                  )}
                   {!chatFocused && hasNonTerminalRun && (
                     <span
                       className="px-1 text-[9px] uppercase tracking-[0.5px]"
@@ -1446,7 +1769,7 @@ export default function MissionsPage() {
                   promptLoading={coordinatorPromptLoading}
                   promptError={coordinatorPromptError}
                   onInspectPrompt={() => void loadCoordinatorPromptInspector()}
-                  coordinatorAvailability={missionStateDoc?.coordinatorAvailability ?? null}
+                  coordinatorAvailability={runView?.coordinator.available != null ? { available: runView.coordinator.available, mode: runView.coordinator.mode ?? "offline", summary: runView.coordinator.summary ?? null } : null}
                   compact={compactPhaseChrome}
                 />
               )}
@@ -1456,17 +1779,15 @@ export default function MissionsPage() {
               {/* ── Tab Navigation ── */}
               <div className="flex items-center gap-0 px-3" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
                 {([
-                  { key: "overview" as WorkspaceTab, label: "Overview", icon: SquaresFour },
-                  { key: "plan" as WorkspaceTab, label: "Plan", icon: Graph },
-                  { key: "chat" as WorkspaceTab, label: "Chat", icon: ChatCircle },
-                  { key: "artifacts" as WorkspaceTab, label: "Artifacts", icon: Lightning },
-                  { key: "history" as WorkspaceTab, label: "History", icon: Pulse }
+                  { key: "intake" as const, tab: "overview" as WorkspaceTab, label: "Intake", icon: SquaresFour },
+                  { key: "run" as const, tab: "chat" as WorkspaceTab, label: "Run", icon: ChatCircle },
+                  { key: "evidence" as const, tab: "history" as WorkspaceTab, label: "Evidence", icon: Pulse }
                 ]).map((tab) => {
-                  const isActive = activeTab === tab.key;
+                  const isActive = primaryWorkspaceTab === tab.key;
                   return (
                     <button
                       key={tab.key}
-                      onClick={() => setActiveTab(tab.key)}
+                      onClick={() => setActiveTab(tab.tab)}
                       className="flex items-center gap-1.5 px-2.5 py-2 text-[11px] transition-colors"
                       style={{
                         color: isActive ? COLORS.textPrimary : COLORS.textMuted,
@@ -1481,6 +1802,60 @@ export default function MissionsPage() {
                     </button>
                   );
                 })}
+                <div className="ml-auto flex items-center gap-1">
+                  {primaryWorkspaceTab === "run" ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("chat")}
+                        className="px-2 py-1 text-[10px] font-bold uppercase tracking-[1px]"
+                        style={activeTab === "chat"
+                          ? { background: `${COLORS.accent}18`, border: `1px solid ${COLORS.accent}35`, color: COLORS.accent, fontFamily: MONO_FONT }
+                          : { background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, color: COLORS.textMuted, fontFamily: MONO_FONT }
+                        }
+                      >
+                        Feed
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("plan")}
+                        className="px-2 py-1 text-[10px] font-bold uppercase tracking-[1px]"
+                        style={activeTab === "plan"
+                          ? { background: `${COLORS.accent}18`, border: `1px solid ${COLORS.accent}35`, color: COLORS.accent, fontFamily: MONO_FONT }
+                          : { background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, color: COLORS.textMuted, fontFamily: MONO_FONT }
+                        }
+                      >
+                        Plan
+                      </button>
+                    </>
+                  ) : null}
+                  {primaryWorkspaceTab === "evidence" ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("history")}
+                        className="px-2 py-1 text-[10px] font-bold uppercase tracking-[1px]"
+                        style={activeTab === "history"
+                          ? { background: `${COLORS.accent}18`, border: `1px solid ${COLORS.accent}35`, color: COLORS.accent, fontFamily: MONO_FONT }
+                          : { background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, color: COLORS.textMuted, fontFamily: MONO_FONT }
+                        }
+                      >
+                        Timeline
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("artifacts")}
+                        className="px-2 py-1 text-[10px] font-bold uppercase tracking-[1px]"
+                        style={activeTab === "artifacts"
+                          ? { background: `${COLORS.accent}18`, border: `1px solid ${COLORS.accent}35`, color: COLORS.accent, fontFamily: MONO_FONT }
+                          : { background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, color: COLORS.textMuted, fontFamily: MONO_FONT }
+                        }
+                      >
+                        Artifacts
+                      </button>
+                    </>
+                  ) : null}
+                </div>
               </div>
 
               {/* ── Completion Banner ── */}
@@ -1490,10 +1865,31 @@ export default function MissionsPage() {
                     status={runGraph.run.status}
                     evaluation={runGraph.completionEvaluation}
                     runId={runGraph.run.id}
-                    stateDoc={missionStateDoc}
                   />
                 </div>
               )}
+
+              {runView?.haltReason ? (
+                <div className="px-4 pt-3">
+                  <div
+                    className="space-y-1 p-3"
+                    style={{
+                      background: runView.haltReason.severity === "error" ? `${COLORS.danger}12` : `${COLORS.warning}12`,
+                      border: `1px solid ${runView.haltReason.severity === "error" ? `${COLORS.danger}35` : `${COLORS.warning}35`}`,
+                    }}
+                  >
+                    <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                      Why did this stop?
+                    </div>
+                    <div className="text-[12px] font-semibold" style={{ color: COLORS.textPrimary }}>
+                      {runView.haltReason.title}
+                    </div>
+                    <div className="text-[11px]" style={{ color: COLORS.textSecondary }}>
+                      {runView.haltReason.detail}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
 
               {/* ── Tab Content ── */}
               <div className={cn(
@@ -1514,13 +1910,11 @@ export default function MissionsPage() {
                       </div>
                     </div>
 
-                    {/* State summary */}
-                    <MissionStateSummary
-                      runId={runGraph?.run.id ?? null}
-                      stateDoc={missionStateDoc}
-                      loading={missionStateLoading}
-                      error={missionStateError}
-                      onOpenIntervention={(interventionId) => setActiveInterventionId(interventionId)}
+                    {/* Run view status */}
+                    <MissionRunPanel
+                      runView={runView}
+                      interventions={selectedMission.interventions}
+                      onOpenIntervention={handleOpenIntervention}
                     />
 
                     {/* Failed steps — only if there are failures */}
@@ -1540,47 +1934,6 @@ export default function MissionsPage() {
                       </div>
                     )}
 
-                    {/* Interventions — only if there are any */}
-                    {selectedMission.interventions.length > 0 && (
-                      <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-                        <div className="flex items-center justify-between">
-                          <div className="text-[10px] font-semibold" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                            Interventions ({selectedMission.interventions.length})
-                          </div>
-                          <button
-                            type="button"
-                            className="text-[9px]"
-                            style={{ color: COLORS.textDim, fontFamily: MONO_FONT, background: "none", border: "none", cursor: "pointer" }}
-                            onClick={() => setActiveTab("history")}
-                          >
-                            View history →
-                          </button>
-                        </div>
-                        <div className="mt-1.5 space-y-1">
-                          {selectedMission.interventions.slice(0, 6).map((iv) => (
-                            <div key={iv.id} className="flex items-center justify-between gap-3 px-2 py-1.5" style={{ background: COLORS.recessedBg }}>
-                              <div className="flex items-center gap-2 min-w-0">
-                                <span
-                                  className="px-1 py-0.5 text-[8px] font-bold uppercase shrink-0"
-                                  style={{
-                                    color: iv.status === "open" ? COLORS.warning : COLORS.success,
-                                    border: `1px solid ${iv.status === "open" ? COLORS.warning : COLORS.success}40`,
-                                    background: `${iv.status === "open" ? COLORS.warning : COLORS.success}12`,
-                                    fontFamily: MONO_FONT,
-                                  }}
-                                >
-                                  {iv.status === "open" ? "open" : "resolved"}
-                                </span>
-                                <span className="text-[11px] truncate" style={{ color: COLORS.textPrimary }}>{iv.title}</span>
-                              </div>
-                              <span className="text-[9px] shrink-0" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
-                                {iv.interventionType.replace(/_/g, " ")}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
                   </div>
                 )}
 
@@ -1725,21 +2078,39 @@ export default function MissionsPage() {
                 )}
 
                 {activeTab === "chat" && selectedMissionId && (
-                  <MissionChatV2
-                    missionId={selectedMissionId}
-                    missionStatus={selectedMission?.status ?? null}
-                    runId={runGraph?.run.id ?? null}
-                    runStatus={runGraph?.run.status ?? null}
-                    runMetadata={runGraph?.run.metadata ?? null}
-                    jumpTarget={chatJumpTarget}
-                    onJumpHandled={() => setChatJumpTarget(null)}
-                  />
+                  <div className="flex flex-1 min-h-0 overflow-hidden">
+                    <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+                      <MissionChatV2
+                        missionId={selectedMissionId}
+                        missionStatus={selectedMission?.status ?? null}
+                        runId={runGraph?.run.id ?? null}
+                        runStatus={runGraph?.run.status ?? null}
+                        runMetadata={runGraph?.run.metadata ?? null}
+                        runView={runView}
+                        jumpTarget={chatJumpTarget}
+                        onJumpHandled={() => setChatJumpTarget(null)}
+                      />
+                    </div>
+                    {/* Run status sidebar — compact operational overview */}
+                    {runView && (
+                      <div
+                        className="w-[280px] shrink-0 overflow-y-auto p-2"
+                        style={{ borderLeft: `1px solid ${COLORS.border}`, background: COLORS.pageBg }}
+                      >
+                        <MissionRunPanel
+                          runView={runView}
+                          interventions={selectedMission?.interventions}
+                          onOpenIntervention={handleOpenIntervention}
+                        />
+                      </div>
+                    )}
+                  </div>
                 )}
 
                 {activeTab === "artifacts" && (
                   <MissionArtifactsTab
                     groupedArtifacts={groupedArtifacts}
-                    closeoutRequirements={missionStateDoc?.finalization?.requirements ?? []}
+                    closeoutRequirements={[]}
                   />
                 )}
               </div>
@@ -1747,6 +2118,179 @@ export default function MissionsPage() {
           )}
         </div>
       </div>
+
+      {missionContextMenu ? (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setMissionContextMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setMissionContextMenu(null);
+            }}
+          />
+          <div
+            className="fixed z-50 min-w-[180px] py-1"
+            style={{
+              left: missionContextMenu.x,
+              top: missionContextMenu.y,
+              background: COLORS.cardBg,
+              border: `1px solid ${COLORS.border}`,
+              boxShadow: "0 12px 40px rgba(15, 23, 42, 0.28)",
+            }}
+            onPointerDown={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-[11px] transition-colors"
+              style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}
+              onClick={() => {
+                setSelectedMissionId(missionContextMenu.mission.id);
+                setMissionContextMenu(null);
+              }}
+            >
+              Open Mission
+            </button>
+            <button
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-[11px] transition-colors"
+              style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}
+              onClick={() => openManageMissionDialog(missionContextMenu.mission)}
+            >
+              Manage Mission
+            </button>
+          </div>
+        </>
+      ) : null}
+
+      <AnimatePresence>
+        {manageMissionOpen && manageMission ? (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50"
+              style={{ background: "rgba(2, 6, 23, 0.45)", backdropFilter: "blur(6px)" }}
+              onClick={requestCloseManageMissionDialog}
+            />
+            <motion.div
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 12 }}
+              className="fixed left-1/2 top-[16%] z-[60] w-[min(520px,calc(100vw-24px))] -translate-x-1/2 p-4"
+              style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, boxShadow: "0 16px 48px rgba(15, 23, 42, 0.32)" }}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
+                    Manage Mission
+                  </div>
+                  <div className="mt-1 text-sm font-semibold" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
+                    {manageMission.title}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="p-1 transition-colors"
+                  style={{ color: COLORS.textMuted }}
+                  onClick={requestCloseManageMissionDialog}
+                  disabled={manageMissionBusy}
+                  aria-label="Close manage mission dialog"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="mt-3 flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                <span
+                  className="px-1.5 py-0.5 font-bold uppercase tracking-[1px]"
+                  style={{
+                    background: STATUS_BADGE_STYLES[manageMission.status].background,
+                    color: STATUS_BADGE_STYLES[manageMission.status].color,
+                    border: STATUS_BADGE_STYLES[manageMission.status].border,
+                  }}
+                >
+                  {STATUS_LABELS[manageMission.status]}
+                </span>
+                {manageMission.laneName ? <span>BASE {manageMission.laneName}</span> : null}
+              </div>
+
+              <div className="mt-4 space-y-3">
+                {TERMINAL_MISSION_STATUSES.has(manageMission.status) ? (
+                  <>
+                    <div className="p-3 text-[12px]" style={{ background: COLORS.pageBg, border: `1px solid ${COLORS.border}`, color: COLORS.textSecondary }}>
+                      Archiving removes this mission from the Missions UI. It does not change the selected base lane, and any new mission work must stay on child lanes created from that base lane.
+                    </div>
+
+                    <label
+                      className="flex items-start gap-3 p-3 text-[12px]"
+                      style={{ background: COLORS.pageBg, border: `1px solid ${COLORS.border}`, color: COLORS.textPrimary }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={manageMissionCleanupLanes}
+                        onChange={(event) => setManageMissionCleanupLanes(event.target.checked)}
+                        disabled={manageMissionBusy}
+                      />
+                      <div>
+                        <div className="font-medium">Also archive lanes created by this mission</div>
+                        <div className="mt-1 text-[11px]" style={{ color: COLORS.textMuted }}>
+                          ADE will archive every managed lane it can find across this mission&apos;s runs.
+                        </div>
+                      </div>
+                    </label>
+                  </>
+                ) : (
+                  <div className="p-3 text-[12px]" style={{ background: COLORS.pageBg, border: `1px solid ${COLORS.border}`, color: COLORS.textSecondary }}>
+                    {manageMission.status === "intervention_required"
+                      ? "This mission is waiting for intervention. You can cancel it to stop all active work."
+                      : "This mission is currently active. You can cancel it to stop all active work."}
+                  </div>
+                )}
+
+                {manageMissionError ? (
+                  <div className="p-3 text-[11px]" style={{ background: `${COLORS.danger}10`, border: `1px solid ${COLORS.danger}35`, color: COLORS.danger }}>
+                    {manageMissionError}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="mt-4 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  style={outlineButton()}
+                  onClick={requestCloseManageMissionDialog}
+                  disabled={manageMissionBusy}
+                >
+                  CLOSE
+                </button>
+                {TERMINAL_MISSION_STATUSES.has(manageMission.status) ? (
+                  <button
+                    type="button"
+                    style={dangerButton()}
+                    onClick={() => void handleArchiveMission()}
+                    disabled={manageMissionBusy}
+                  >
+                    {manageMissionBusy ? <SpinnerGap className="h-3 w-3 animate-spin" /> : <Trash className="h-3 w-3" />}
+                    ARCHIVE MISSION
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    style={dangerButton()}
+                    onClick={() => void handleCancelManagedMission()}
+                    disabled={manageMissionBusy}
+                  >
+                    {manageMissionBusy ? <SpinnerGap className="h-3 w-3 animate-spin" /> : <Stop className="h-3 w-3" />}
+                    CANCEL MISSION
+                  </button>
+                )}
+              </div>
+            </motion.div>
+          </>
+        ) : null}
+      </AnimatePresence>
 
       {/* ════════════ CREATE DIALOG ════════════ */}
       <MissionCreateDialogHost
@@ -1802,6 +2346,88 @@ export default function MissionsPage() {
           />
         );
       })()}
+
+      {/* ════════════ ATTENTION TOASTS ════════════ */}
+      {attentionToasts.length > 0 && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 12,
+            right: 12,
+            zIndex: 95,
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
+            width: "min(340px, calc(100vw - 20px))",
+            pointerEvents: "none",
+          }}
+        >
+          {attentionToasts.map((toast) => {
+            const color = toast.severity === "error" ? COLORS.danger : COLORS.warning;
+            return (
+              <div
+                key={toast.id}
+                style={{
+                  pointerEvents: "auto",
+                  background: COLORS.cardBg,
+                  border: `1px solid ${color}40`,
+                  borderLeft: `3px solid ${color}`,
+                  padding: "8px 12px",
+                  fontFamily: MONO_FONT,
+                  fontSize: 11,
+                  boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                    <WarningCircle weight="bold" style={{ color, width: 14, height: 14, flexShrink: 0 }} />
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, color, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.8px" }}>
+                        {toast.message}
+                      </div>
+                      <div
+                        style={{
+                          color: COLORS.textSecondary,
+                          fontSize: 11,
+                          fontFamily: SANS_FONT,
+                          marginTop: 2,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {toast.missionTitle}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAttentionToasts((prev) => prev.filter((t) => t.id !== toast.id));
+                      const timer = attentionToastTimersRef.current.get(toast.id);
+                      if (timer != null) window.clearTimeout(timer);
+                      attentionToastTimersRef.current.delete(toast.id);
+                    }}
+                    style={{
+                      flexShrink: 0,
+                      background: "transparent",
+                      border: "none",
+                      color: COLORS.textMuted,
+                      cursor: "pointer",
+                      padding: 0,
+                      fontSize: 14,
+                      lineHeight: 1,
+                    }}
+                    title="Dismiss"
+                  >
+                    {"\u00D7"}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </LazyMotion>
   );
 }

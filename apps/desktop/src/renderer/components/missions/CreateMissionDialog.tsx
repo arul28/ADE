@@ -24,6 +24,8 @@ import type {
   MergeMethod,
   TeamRuntimeConfig,
   MissionPermissionConfig,
+  CreateMissionArgs,
+  MissionPreflightResult,
 } from "../../../shared/types";
 import { BUILT_IN_PROFILES } from "../../../shared/modelProfiles";
 import { getDefaultModelDescriptor, MODEL_REGISTRY, resolveModelDescriptor } from "../../../shared/modelRegistry";
@@ -168,6 +170,38 @@ export function buildCreateMissionDraft(
   };
 }
 
+export function buildMissionLaunchRequest(args: {
+  draft: CreateDraft;
+  activePhases: PhaseCard[];
+  defaultLaneId?: string | null;
+}): CreateMissionArgs {
+  const resolvedLaneId = resolveLaunchLaneId({
+    draftLaneId: args.draft.laneId,
+    defaultLaneId: args.defaultLaneId,
+  });
+  return {
+    title: args.draft.title.trim() || undefined,
+    prompt: args.draft.prompt.trim(),
+    laneId: resolvedLaneId || undefined,
+    priority: args.draft.priority,
+    agentRuntime: args.draft.agentRuntime,
+    teamRuntime: args.draft.teamRuntime,
+    executionPolicy: {
+      prStrategy: args.draft.prStrategy,
+      ...(args.draft.teamRuntime ? { teamRuntime: args.draft.teamRuntime } : {}),
+    },
+    modelConfig: {
+      ...args.draft.modelConfig,
+      decisionTimeoutCapHours: args.draft.modelConfig.decisionTimeoutCapHours ?? 24,
+    },
+    phaseProfileId: args.draft.phaseProfileId,
+    phaseOverride: args.activePhases,
+    permissionConfig: args.draft.permissionConfig,
+    autostart: true,
+    launchMode: "autopilot",
+  };
+}
+
 function validatePhaseOrder(cards: PhaseCard[]): string[] {
   if (!cards.length) return ["At least one phase is required."];
   const errors: string[] = [];
@@ -271,6 +305,10 @@ function CreateMissionDialogInner({
   const [selectedPhaseItemKey, setSelectedPhaseItemKey] = useState<string>("");
   const [phaseNotice, setPhaseNotice] = useState<string | null>(null);
   const [teamBudgetGuardrailConfirmed, setTeamBudgetGuardrailConfirmed] = useState(false);
+  const [preflightLoading, setPreflightLoading] = useState(false);
+  const [preflightError, setPreflightError] = useState<string | null>(null);
+  const [preflightResult, setPreflightResult] = useState<MissionPreflightResult | null>(null);
+  const [preflightFingerprint, setPreflightFingerprint] = useState<string | null>(null);
   const [draft, setDraft] = useState<CreateDraft>(initialDraft);
   const [nonCriticalReady, setNonCriticalReady] = useState(false);
   const initializedResetVersionRef = useRef<number | undefined>(undefined);
@@ -662,18 +700,28 @@ function CreateMissionDialogInner({
     && draft.modelConfig.smartBudget?.enabled !== true;
   const teamBudgetGuardrailEnabled = draft.teamRuntime?.enabled === true;
   const teamBudgetGuardrailSmartBudget = draft.modelConfig.smartBudget?.enabled === true;
+  const launchRequest = useMemo(
+    () => buildMissionLaunchRequest({ draft, activePhases, defaultLaneId }),
+    [activePhases, defaultLaneId, draft],
+  );
+  const launchFingerprint = useMemo(() => JSON.stringify(launchRequest), [launchRequest]);
+  const preflightCurrent = preflightResult && preflightFingerprint === launchFingerprint ? preflightResult : null;
+  const checklistFailures = preflightCurrent?.checklist.filter((item) => item.severity === "fail") ?? [];
+  const checklistWarnings = preflightCurrent?.checklist.filter((item) => item.severity === "warning") ?? [];
 
   useEffect(() => {
     setTeamBudgetGuardrailConfirmed(false);
   }, [teamBudgetGuardrailEnabled, teamBudgetGuardrailTeammateCount, teamBudgetGuardrailSmartBudget]);
 
-  const handleLaunch = useCallback(() => {
+  useEffect(() => {
+    setPreflightError(null);
+    setPreflightResult(null);
+    setPreflightFingerprint(null);
+  }, [launchFingerprint]);
+
+  const handleLaunch = useCallback(async () => {
     if (!draft.prompt.trim()) return;
     if (validatePhaseOrder(activePhases).length > 0) return;
-    const resolvedLaneId = resolveLaunchLaneId({
-      draftLaneId: draft.laneId,
-      defaultLaneId
-    });
     if (teamBudgetGuardrailActive && !teamBudgetGuardrailConfirmed) {
       const confirmed = window.confirm(
         `Team runtime is configured with ${teamBudgetGuardrailTeammateCount} teammates while Smart Budget is disabled. This can increase token/cost burn quickly. Continue?`
@@ -681,15 +729,32 @@ function CreateMissionDialogInner({
       if (!confirmed) return;
       setTeamBudgetGuardrailConfirmed(true);
     }
-    onLaunch({ ...draft, laneId: resolvedLaneId, phaseOverride: activePhases });
+    if (!preflightCurrent) {
+      try {
+        setPreflightLoading(true);
+        const result = await window.ade.missions.preflight({ launch: launchRequest });
+        setPreflightResult(result);
+        setPreflightFingerprint(launchFingerprint);
+        setPreflightError(null);
+      } catch (error) {
+        setPreflightError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setPreflightLoading(false);
+      }
+      return;
+    }
+    if (!preflightCurrent.canLaunch) return;
+    onLaunch({ ...draft, laneId: launchRequest.laneId ?? "", phaseOverride: activePhases });
   }, [
-    draft,
     activePhases,
+    draft,
+    launchFingerprint,
+    launchRequest,
     onLaunch,
+    preflightCurrent,
     teamBudgetGuardrailActive,
     teamBudgetGuardrailConfirmed,
     teamBudgetGuardrailTeammateCount,
-    defaultLaneId,
   ]);
 
   const shouldRenderBody = hasMountedBody || open;
@@ -1605,6 +1670,83 @@ function CreateMissionDialogInner({
                   dlgLabelStyle={dlgLabelStyle}
                   dlgInputStyle={dlgInputStyle}
                 />
+                {(preflightCurrent || preflightError) ? (
+                  <div
+                    className="space-y-2 p-3"
+                    style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          Launch Review
+                        </div>
+                        <div className="mt-1 text-[12px]" style={{ color: COLORS.textPrimary }}>
+                          {preflightCurrent?.approvalSummary?.missionGoal ?? "Review launch assumptions before starting the mission."}
+                        </div>
+                      </div>
+                      {preflightCurrent ? (
+                        <div
+                          className="px-2 py-1 text-[10px] font-bold uppercase tracking-[1px]"
+                          style={{
+                            color: preflightCurrent.canLaunch ? COLORS.success : COLORS.warning,
+                            border: `1px solid ${preflightCurrent.canLaunch ? `${COLORS.success}35` : `${COLORS.warning}35`}`,
+                            background: preflightCurrent.canLaunch ? `${COLORS.success}12` : `${COLORS.warning}12`,
+                            fontFamily: MONO_FONT,
+                          }}
+                        >
+                          {preflightCurrent.canLaunch ? "Ready to launch" : "Fix launch blockers"}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    {preflightCurrent?.approvalSummary ? (
+                      <div className="grid gap-2 md:grid-cols-2">
+                        <div className="space-y-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          <div>Lane: {preflightCurrent.approvalSummary.laneLabel ?? preflightCurrent.approvalSummary.laneId ?? "default active lane"}</div>
+                          <div>Execution: {preflightCurrent.approvalSummary.recommendedExecution.strategy}</div>
+                          <div>Model: {preflightCurrent.approvalSummary.recommendedExecution.orchestratorModelId ?? "not configured"}</div>
+                        </div>
+                        <div className="space-y-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          <div>Phases: {preflightCurrent.approvalSummary.phaseLabels.join(" -> ")}</div>
+                          <div>Warnings: {preflightCurrent.warnings}</div>
+                          <div>Failures: {preflightCurrent.hardFailures}</div>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {preflightError ? (
+                      <div className="text-[10px]" style={{ color: COLORS.danger, fontFamily: MONO_FONT }}>
+                        {preflightError}
+                      </div>
+                    ) : null}
+
+                    {checklistFailures.length > 0 ? (
+                      <div className="space-y-1">
+                        <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.warning, fontFamily: MONO_FONT }}>
+                          Blocking Issues
+                        </div>
+                        {checklistFailures.slice(0, 4).map((item) => (
+                          <div key={item.id} className="text-[10px]" style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT }}>
+                            {item.title}: {item.summary}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    {checklistWarnings.length > 0 ? (
+                      <div className="space-y-1">
+                        <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          Runtime Warnings
+                        </div>
+                        {checklistWarnings.slice(0, 3).map((item) => (
+                          <div key={item.id} className="text-[10px]" style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT }}>
+                            {item.title}: {item.summary}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
           </div>
 
         </div>
@@ -1614,10 +1756,12 @@ function CreateMissionDialogInner({
           <button
             style={primaryButton()}
             onClick={handleLaunch}
-            disabled={busy || !draft.prompt.trim() || phaseValidationErrors.length > 0}
+            disabled={busy || preflightLoading || !draft.prompt.trim() || phaseValidationErrors.length > 0 || Boolean(preflightCurrent && !preflightCurrent.canLaunch)}
           >
-            {busy ? <SpinnerGap className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
-            LAUNCH MISSION
+            {busy || preflightLoading ? <SpinnerGap className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
+            {preflightCurrent
+              ? (preflightCurrent.canLaunch ? "LAUNCH MISSION" : "FIX FAILURES")
+              : "REVIEW LAUNCH"}
           </button>
         </div>
       </motion.div>

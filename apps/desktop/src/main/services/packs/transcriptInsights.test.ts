@@ -39,6 +39,35 @@ describe("transcriptInsights", () => {
     expect(parsed?.files).toContain("src/main.ts");
   });
 
+  it("recognizes worker closeout phrasing used by live missions", () => {
+    const raw = [
+      "thinking",
+      "Accomplished: verified the Test tab feature is already fully implemented and committed on this lane branch; no source code changes were required.",
+      "",
+      "What I verified:",
+      "- [TabNav.tsx](/tmp/TabNav.tsx) includes `Test` with `Flask` and `/test`.",
+      "- [TestPage.tsx](/tmp/TestPage.tsx) exists and renders 'Coming Soon'.",
+    ].join("\n");
+
+    const parsed = parseTranscriptSummary(raw);
+    expect(parsed?.source).toBe("explicit_final_block");
+    expect(parsed?.summary).toContain("Accomplished:");
+    expect(parsed?.files.some((file) => file.endsWith("TabNav.tsx"))).toBe(true);
+  });
+
+  it("recognizes planning-worker closeout phrasing", () => {
+    const raw = [
+      "noise",
+      "Research is complete. The \"Test\" tab with \"Coming Soon\" screen is already fully implemented in the codebase from a previous mission run.",
+      "",
+      "No code changes are needed to complete this task.",
+    ].join("\n");
+
+    const summary = deriveSessionSummaryFromText(raw);
+    expect(summary).toContain("Research is complete.");
+    expect(summary).toContain("No code changes are needed");
+  });
+
   it("falls back to heuristic tail summary when no explicit block exists", () => {
     const raw = [
       "starting",

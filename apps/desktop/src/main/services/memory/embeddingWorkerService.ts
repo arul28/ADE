@@ -143,6 +143,7 @@ export function createEmbeddingWorkerService(opts: CreateEmbeddingWorkerServiceO
   }
 
   function queueMemory(memoryId: string) {
+    if (!embeddingService.isAvailable()) return;
     const normalized = String(memoryId ?? "").trim();
     if (!normalized || queuedIds.has(normalized)) return;
     queuedIds.add(normalized);
@@ -279,6 +280,7 @@ export function createEmbeddingWorkerService(opts: CreateEmbeddingWorkerServiceO
   async function start() {
     if (started) return getStatus();
     started = true;
+    if (!embeddingService.isAvailable()) return getStatus();
     for (const id of listBackfillIds()) {
       queueMemory(id);
     }

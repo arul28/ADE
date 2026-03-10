@@ -850,7 +850,7 @@ app.whenReady().then(async () => {
         batchConsolidationServiceRef?.scheduleAutoConsolidationCheck();
       },
       onMemoryUpserted: (event) => {
-        if (event.created || event.contentChanged) {
+        if ((event.created || event.contentChanged) && embeddingService.isAvailable()) {
           embeddingWorkerServiceRef?.queueMemory(event.memory.id);
         }
       },

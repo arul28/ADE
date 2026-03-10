@@ -22,6 +22,7 @@ import type {
   OrchestratorChatTarget,
   ActiveAgentInfo,
   MissionStatus,
+  MissionRunView,
   OrchestratorRunStatus,
   TeamRuntimeConfig,
 } from "../../../shared/types";
@@ -56,6 +57,7 @@ type Channel = {
   label: string;
   fullLabel: string;
   threadId: string | null;
+  sessionId: string | null;
   status: "active" | "closed";
   stepKey: string | null;
   attemptId: string | null;
@@ -69,6 +71,7 @@ type MissionChatV2Props = {
   runId: string | null;
   runStatus: OrchestratorRunStatus | null;
   runMetadata: OrchestratorMetadata | null;
+  runView?: MissionRunView | null;
   jumpTarget: OrchestratorChatTarget | null;
   onJumpHandled: () => void;
 };
@@ -203,6 +206,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   runId,
   runStatus,
   runMetadata,
+  runView = null,
   jumpTarget,
   onJumpHandled,
 }: MissionChatV2Props) {
@@ -239,9 +243,10 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
     result.push({
       id: "global",
       kind: "global",
-      label: "Global",
-      fullLabel: "Global",
+      label: "Mission Feed",
+      fullLabel: "Mission Feed",
       threadId: null,
+      sessionId: null,
       status: "active",
       stepKey: null,
       attemptId: null,
@@ -258,6 +263,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
         label: "Orchestrator",
         fullLabel: "Orchestrator",
         threadId: coordThread.id,
+        sessionId: coordThread.sessionId ?? null,
         status: coordThread.status,
         stepKey: null,
         attemptId: null,
@@ -275,6 +281,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
         label: t.title || "Teammate",
         fullLabel: t.title || "Teammate",
         threadId: t.id,
+        sessionId: t.sessionId ?? null,
         status: t.status,
         stepKey: t.stepKey ?? null,
         attemptId: t.attemptId ?? null,
@@ -296,6 +303,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
         label: presentation.label,
         fullLabel: presentation.fullLabel,
         threadId: t.id,
+        sessionId: t.sessionId ?? null,
         status: t.status,
         stepKey: t.stepKey ?? null,
         attemptId: t.attemptId ?? null,
@@ -644,27 +652,49 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   const displayMessages = useMemo(() => {
     let msgs: OrchestratorChatMessage[];
     if (selectedChannel?.kind === "global") {
-      msgs = [...globalMessages].sort(
-        (a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)
-      );
-      msgs = msgs.filter((msg) => {
-        const metadata = readRecord(msg.metadata);
-        if (metadata?.missionChatMode !== "thread_only") return true;
-        const target = msg.target;
-        if (target?.kind === "coordinator") return true;
-        return msg.threadId === `mission:${missionId}`;
-      });
-      if (globalViewMode === "signal") {
-        msgs = msgs.filter((msg) => isSignalMessage(msg));
+      if (globalViewMode === "signal" && runView?.progressLog?.length) {
+        msgs = [...runView.progressLog]
+          .sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+          .map((item) => ({
+            id: `mission-feed:${item.id}`,
+            missionId,
+            role: item.kind === "worker" ? "worker" : item.kind === "user" ? "user" : "orchestrator",
+            content: item.detail.trim().length > 0 ? `${item.title}\n${item.detail}` : item.title,
+            timestamp: item.at,
+            stepKey: item.stepKey ?? null,
+            attemptId: item.attemptId ?? null,
+            runId: runId ?? null,
+            metadata: {
+              missionFeed: true,
+              structuredStream: {
+                kind: "text",
+                itemId: item.id,
+              },
+              title: item.title,
+              severity: item.severity,
+              feedKind: item.kind,
+            },
+          } satisfies OrchestratorChatMessage));
+      } else {
+        msgs = [...globalMessages].sort(
+          (a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)
+        );
+        msgs = msgs.filter((msg) => {
+          const metadata = readRecord(msg.metadata);
+          if (metadata?.missionChatMode !== "thread_only") return true;
+          const target = msg.target;
+          if (target?.kind === "coordinator") return true;
+          return msg.threadId === `mission:${missionId}`;
+        });
+        if (globalViewMode === "signal") {
+          msgs = msgs.filter((msg) => isSignalMessage(msg));
+        }
       }
     } else {
       msgs = threadMessages;
-      if (selectedChannel?.kind === "worker" || selectedChannel?.kind === "orchestrator") {
-        msgs = msgs.filter((msg) => isSignalMessage(msg));
-      }
     }
     return msgs;
-  }, [selectedChannel, globalMessages, threadMessages, missionId, globalViewMode]);
+  }, [selectedChannel, globalMessages, threadMessages, missionId, globalViewMode, runId, runView]);
 
   // ── Attempt name map ──
   const attemptNameMap = useMemo(() => {
@@ -676,6 +706,16 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
     }
     return map;
   }, [threads]);
+
+  const chatNotice = useMemo(() => {
+    if (runStatus === "paused" || missionStatus === "intervention_required") {
+      return {
+        reason: "Mission is waiting on an intervention.",
+        action: "You can still message the coordinator or an active worker here while you decide how to recover.",
+      };
+    }
+    return null;
+  }, [missionStatus, runStatus]);
 
   const chatBlocked = useMemo(() => {
     if (missionStatus === "completed" || missionStatus === "failed" || missionStatus === "canceled") {
@@ -711,12 +751,6 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
           action: "Read the thread for history, or message @orchestrator to redirect the mission.",
         };
       }
-    }
-    if (runStatus === "paused" || missionStatus === "intervention_required") {
-      return {
-        reason: "Mission is waiting on an intervention.",
-        action: "Resolve the open intervention, then continue from the coordinator or an active worker.",
-      };
     }
     if (runStatus === "succeeded" || runStatus === "failed" || runStatus === "canceled") {
       return {
@@ -899,7 +933,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   const channelHeaderName = (() => {
     if (!selectedChannel) return "...";
     switch (selectedChannel.kind) {
-      case "global": return "Global";
+      case "global": return "Mission Feed";
       case "orchestrator": return "Orchestrator";
       default: return selectedChannel.fullLabel;
     }
@@ -941,7 +975,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
           {/* Global channel */}
           <ChannelButton
             icon={<Globe size={12} weight="regular" />}
-            label="Global"
+            label="Mission Feed"
             statusColor={STATUS_GREEN}
             isSelected={selectedChannelId === "global"}
             onClick={() => setSelectedChannelId("global")}
@@ -1139,7 +1173,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
         )}
 
         {/* Runtime availability banner */}
-        {chatBlocked && (
+        {(chatNotice || chatBlocked) && (
           <div
             style={{
               background: `${WARNING}12`,
@@ -1154,13 +1188,14 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
             }}
           >
             <span style={{ fontSize: "14px" }}>{"\u26A0"}</span>
-            <span>{chatBlocked.reason} {chatBlocked.action}</span>
+            <span>{(chatBlocked ?? chatNotice)?.reason} {(chatBlocked ?? chatNotice)?.action}</span>
           </div>
         )}
 
         {/* Message list */}
         <MissionThreadMessageList
           messages={displayMessages}
+          sessionId={selectedChannel?.sessionId ?? null}
           showStreamingIndicator={selectedChannel?.kind === "global" ? false : selectedThreadShowStreamingIndicator}
           className="flex-1"
           onApproval={handleApproval}

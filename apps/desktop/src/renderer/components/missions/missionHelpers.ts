@@ -90,8 +90,15 @@ export const EXECUTOR_BADGE_HEX: Record<string, string> = {
 export const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>(["completed", "failed", "canceled"]);
 
 export const NOISY_EVENT_TYPES = new Set([
+  "scheduler_tick",
   "claim_heartbeat",
   "autopilot_parallelism_cap_adjusted",
+  "context_snapshot_created",
+  "context_pack_v2_metrics",
+  "executor_session_attached",
+  "startup_verification_warning",
+  "step_metadata_updated",
+  "step_dependencies_resolved",
   "tick",
   "dynamic_cap",
 ]);
@@ -205,14 +212,15 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 export function isDisplayOnlyTaskStep(
   step: Pick<OrchestratorStep, "metadata"> | null | undefined,
 ): boolean {
-  const metadata = isRecord(step?.metadata) ? step.metadata : null;
-  return metadata?.displayOnlyTask === true;
+  void step;
+  return false;
 }
 
 export function filterExecutionSteps<T extends { metadata?: unknown }>(steps: T[]): T[] {
-  return steps.filter((step) =>
-    !isDisplayOnlyTaskStep(step as Pick<OrchestratorStep, "metadata">),
-  );
+  return steps.filter((step) => {
+    const metadata = isRecord(step.metadata) ? step.metadata : null;
+    return metadata?.isTask !== true && metadata?.displayOnlyTask !== true;
+  });
 }
 
 export function readBool(primary: unknown, fallback: unknown, defaultValue: boolean): boolean {

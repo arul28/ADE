@@ -104,9 +104,11 @@ export type OrchestratorErrorClass =
   | "deterministic"
   | "policy"
   | "claim_conflict"
+  | "startup_failure"
   | "executor_failure"
   | "canceled"
-  | "resume_recovered";
+  | "resume_recovered"
+  | "soft_success_blocking_failure";
 
 export type OrchestratorClaimScope = "lane" | "file" | "env" | "task";
 

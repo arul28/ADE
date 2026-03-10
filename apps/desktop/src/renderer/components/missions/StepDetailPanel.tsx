@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState } from "react";
 import {
   SpinnerGap,
   Warning,
@@ -19,7 +19,6 @@ import {
   stepIntentSummary,
   resolveStepHeartbeatAt,
   heartbeatAgeMinutes,
-  isDisplayOnlyTaskStep,
   STEP_STATUS_HEX,
   EXECUTOR_BADGE_HEX,
   STALE_HEARTBEAT_THRESHOLD_MINUTES,
@@ -53,21 +52,17 @@ export const StepDetailPanel = React.memo(function StepDetailPanel({
 
   const latestAttempt = attempts[0] ?? null;
   const meta = isRecord(step.metadata) ? step.metadata : {};
-  const isPlanNode = isDisplayOnlyTaskStep(step);
-  const stepType = typeof meta.stepType === "string" ? meta.stepType : "unknown";
+  const stepType = typeof meta.stepType === "string" ? meta.stepType : "worker";
   const expectedSignals = Array.isArray(meta.expectedSignals)
     ? meta.expectedSignals
         .map((entry) => String(entry ?? "").trim())
         .filter(Boolean)
     : [];
   const doneCriteria = typeof meta.doneCriteria === "string" ? meta.doneCriteria.trim() : "";
-  const dependencyLabels = useMemo(
-    () => step.dependencyStepIds
-      .map((depId) => allSteps.find((candidate) => candidate.id === depId))
-      .filter((dep): dep is OrchestratorStep => Boolean(dep))
-      .map((dep) => dep.title.trim() || dep.stepKey),
-    [step.dependencyStepIds, allSteps]
-  );
+  const dependencyLabels = step.dependencyStepIds
+    .map((depId) => allSteps.find((candidate) => candidate.id === depId))
+    .filter((dep): dep is OrchestratorStep => Boolean(dep))
+    .map((dep) => dep.title.trim() || dep.stepKey);
   const latestHeartbeatAt = resolveStepHeartbeatAt({ step, attempts, claims });
   const resultEnvelope = latestAttempt && isRecord(latestAttempt.metadata)
     ? latestAttempt.metadata.resultEnvelope
@@ -142,14 +137,6 @@ export const StepDetailPanel = React.memo(function StepDetailPanel({
       <div className="mt-2">
         <div className="text-xs font-medium" style={{ color: COLORS.textPrimary }}>{step.title}</div>
         <div className="mt-1 min-h-[28px] text-[10px] leading-snug" style={{ color: COLORS.textMuted }}>{stepIntentSummary(step)}</div>
-        {isPlanNode && (
-          <div
-            className="mt-2 px-2 py-1.5 text-[10px]"
-            style={{ background: `${COLORS.warning}14`, border: `1px solid ${COLORS.warning}28`, color: COLORS.warning }}
-          >
-            This is a plan node. It shapes the visible work breakdown, but it does not run as a worker session.
-          </div>
-        )}
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2 text-[10px]">
@@ -159,7 +146,7 @@ export const StepDetailPanel = React.memo(function StepDetailPanel({
         </div>
         <div style={detailCellStyle}>
           <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", fontSize: 9 }}>TYPE</div>
-          <div className="font-medium" style={{ color: COLORS.textPrimary }}>{isPlanNode ? "plan" : stepType}</div>
+          <div className="font-medium" style={{ color: COLORS.textPrimary }}>{stepType}</div>
         </div>
         <div style={detailCellStyle}>
           <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", fontSize: 9 }}>ATTEMPTS</div>
@@ -235,55 +222,53 @@ export const StepDetailPanel = React.memo(function StepDetailPanel({
         </div>
       )}
 
-      {!isPlanNode && (
-        <div className="mt-3 px-2 py-2 text-[10px]" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
-          <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", fontSize: 9 }}>LATEST WORKER ATTEMPT</div>
-          {latestAttempt ? (
-            <div className="mt-1 space-y-1">
-              <div className="flex items-center justify-between">
-                <span style={{ color: COLORS.textMuted }}>Executor</span>
-                <span className="px-1 py-0.5 text-[9px] font-bold uppercase tracking-[1px]" style={inlineBadge(EXECUTOR_BADGE_HEX[latestAttempt.executorKind] ?? COLORS.textMuted)}>
-                  {latestAttempt.executorKind}
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span style={{ color: COLORS.textMuted }}>Status</span>
-                <span style={{ color: COLORS.textPrimary }}>{latestAttempt.status}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span style={{ color: COLORS.textMuted }}>Started</span>
-                <span style={{ color: COLORS.textPrimary }}>{latestAttempt.startedAt ? relativeWhen(latestAttempt.startedAt) : "--"}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span style={{ color: COLORS.textMuted }}>Heartbeat age</span>
-                <span
-                  className="flex items-center gap-1"
-                  style={{ color: isHeartbeatStale ? COLORS.warning : COLORS.textPrimary }}
-                >
-                  {isHeartbeatStale && <Warning size={11} weight="fill" />}
-                  {latestHeartbeatAt ? relativeWhen(latestHeartbeatAt) : "--"}
-                </span>
-              </div>
-              {latestAttempt.errorMessage && (
-                <div className="px-1.5 py-1" style={{ border: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}18`, color: COLORS.danger }}>
-                  {compactText(latestAttempt.errorMessage, 160)}
-                </div>
-              )}
+      <div className="mt-3 px-2 py-2 text-[10px]" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+        <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", fontSize: 9 }}>LATEST WORKER ATTEMPT</div>
+        {latestAttempt ? (
+          <div className="mt-1 space-y-1">
+            <div className="flex items-center justify-between">
+              <span style={{ color: COLORS.textMuted }}>Executor</span>
+              <span className="px-1 py-0.5 text-[9px] font-bold uppercase tracking-[1px]" style={inlineBadge(EXECUTOR_BADGE_HEX[latestAttempt.executorKind] ?? COLORS.textMuted)}>
+                {latestAttempt.executorKind}
+              </span>
             </div>
-          ) : (
-            <div className="mt-1 flex items-center gap-2" style={{ color: COLORS.textMuted }}>
-              {isRunning ? (
-                <>
-                  <SpinnerGap size={12} weight="regular" className="animate-spin" />
-                  <span>Waiting for worker allocation...</span>
-                </>
-              ) : (
-                <span>No attempt has started yet.</span>
-              )}
+            <div className="flex items-center justify-between">
+              <span style={{ color: COLORS.textMuted }}>Status</span>
+              <span style={{ color: COLORS.textPrimary }}>{latestAttempt.status}</span>
             </div>
-          )}
-        </div>
-      )}
+            <div className="flex items-center justify-between">
+              <span style={{ color: COLORS.textMuted }}>Started</span>
+              <span style={{ color: COLORS.textPrimary }}>{latestAttempt.startedAt ? relativeWhen(latestAttempt.startedAt) : "--"}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span style={{ color: COLORS.textMuted }}>Heartbeat age</span>
+              <span
+                className="flex items-center gap-1"
+                style={{ color: isHeartbeatStale ? COLORS.warning : COLORS.textPrimary }}
+              >
+                {isHeartbeatStale && <Warning size={11} weight="fill" />}
+                {latestHeartbeatAt ? relativeWhen(latestHeartbeatAt) : "--"}
+              </span>
+            </div>
+            {latestAttempt.errorMessage && (
+              <div className="px-1.5 py-1" style={{ border: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}18`, color: COLORS.danger }}>
+                {compactText(latestAttempt.errorMessage, 160)}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="mt-1 flex items-center gap-2" style={{ color: COLORS.textMuted }}>
+            {isRunning ? (
+              <>
+                <SpinnerGap size={12} weight="regular" className="animate-spin" />
+                <span>Waiting for worker allocation...</span>
+              </>
+            ) : (
+              <span>No attempt has started yet.</span>
+            )}
+          </div>
+        )}
+      </div>
 
       {resultText && (
         <div className="mt-3 px-2 py-2 text-[10px]" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
@@ -304,7 +289,7 @@ export const StepDetailPanel = React.memo(function StepDetailPanel({
       )}
 
       <div className="mt-3 space-y-1.5">
-        {!isPlanNode && onInspectPrompt && (
+        {onInspectPrompt && (
           <button
             type="button"
             onClick={() => onInspectPrompt(step.id)}
@@ -314,7 +299,7 @@ export const StepDetailPanel = React.memo(function StepDetailPanel({
             INSPECT EFFECTIVE PROMPT
           </button>
         )}
-        {!isPlanNode && latestAttempt && (
+        {latestAttempt && (
           <button
             onClick={() => onOpenWorkerThread({
               kind: "worker",

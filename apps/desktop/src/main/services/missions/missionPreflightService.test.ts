@@ -124,6 +124,9 @@ describe("missionPreflightService", () => {
     expect(result.checklist.find((item) => item.id === "permissions")?.severity).toBe("pass");
     expect(result.checklist.find((item) => item.id === "worktrees")?.severity).toBe("pass");
     expect(result.checklist.find((item) => item.id === "budget")?.severity).toBe("warning");
+    expect(result.approvalSummary?.missionGoal).toBe("Implement mission orchestration improvements.");
+    expect(result.approvalSummary?.recommendedExecution.teamRuntimeEnabled).toBe(true);
+    expect(result.approvalSummary?.phaseLabels.length).toBeGreaterThan(0);
   });
 
   it("blocks launch when budget estimate exceeds API-key envelope", async () => {

@@ -818,7 +818,47 @@ describe("orchestratorService", () => {
     }
   });
 
-  it("ignores display-only task cards when scanning ready autopilot steps", async () => {
+  it("rejects executor-backed attempts before scaffolding when laneId is missing", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "missing-lane",
+            title: "Missing lane",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "unified",
+          }
+        ]
+      });
+      const createdStep = fixture.service.listSteps(started.run.id)[0];
+      if (!createdStep) throw new Error("Missing step");
+
+      fixture.db.run(
+        `update orchestrator_steps set lane_id = null, updated_at = ? where id = ? and project_id = ?`,
+        [new Date().toISOString(), createdStep.id, fixture.projectId],
+      );
+      const refreshedStep = fixture.service.listSteps(started.run.id)[0];
+      expect(refreshedStep?.laneId).toBeNull();
+
+      await expect(
+        fixture.service.startAttempt({
+          runId: started.run.id,
+          stepId: refreshedStep?.id ?? createdStep.id,
+          ownerId: "owner",
+          executorKind: "unified",
+        }),
+      ).rejects.toThrow(/laneId is missing/i);
+      expect(fixture.service.listAttempts({ runId: started.run.id })).toHaveLength(0);
+      expect(fixture.ptyCreateCalls).toHaveLength(0);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("still launches ready workers even when manual task steps are present", async () => {
     const fixture = await createFixture();
     try {
       const started = fixture.service.startRun({
@@ -838,8 +878,7 @@ describe("orchestratorService", () => {
             stepIndex: 0,
             executorKind: "manual",
             metadata: {
-              isTask: true,
-              displayOnlyTask: true
+              stepType: "task"
             }
           },
           {
@@ -869,14 +908,6 @@ describe("orchestratorService", () => {
       expect(attempts).toHaveLength(1);
       expect(attempts[0]?.stepId).toBe(planningWorkerStep?.id);
 
-      const timeline = fixture.service.listTimeline({ runId: started.run.id, limit: 100 });
-      const manualSkipEvents = timeline.filter((entry) =>
-        entry.eventType === "autopilot_step_skipped"
-        && entry.reason === "manual_step_requires_operator"
-        && (entry.detail as Record<string, unknown> | null)?.stepKey === "plan"
-      );
-
-      expect(manualSkipEvents).toHaveLength(0);
     } finally {
       fixture.dispose();
     }
@@ -2933,6 +2964,12 @@ describe("orchestratorService", () => {
       expect(firstAttempt?.status).toBe("running");
       expect(firstAttempt?.executorSessionId).toBeTruthy();
       if (!firstAttempt?.executorSessionId) throw new Error("Expected running session-backed attempt");
+      const transcriptPath = path.join(transcriptDir, `${firstAttempt.executorSessionId}.log`);
+      fs.writeFileSync(
+        transcriptPath,
+        "Implemented the first step and verified the result before exiting.\n",
+        "utf8"
+      );
 
       const reconciled = await fixture.service.onTrackedSessionEnded({
         sessionId: firstAttempt.executorSessionId,
@@ -3079,7 +3116,8 @@ describe("orchestratorService", () => {
 
       const after = fixture.service.listAttempts({ runId: started.run.id }).find((entry) => entry.id === attempt.id);
       expect(after?.status).toBe("failed");
-      expect(after?.errorMessage).toBe("Planning worker exited without reporting a usable plan.");
+      expect(after?.errorMessage).toBe("Planning worker exited before producing any assistant or tool activity.");
+      expect(after?.errorClass).toBe("startup_failure");
     } finally {
       fixture.dispose();
     }
@@ -3124,6 +3162,11 @@ describe("orchestratorService", () => {
         ownerId: "operator"
       });
       if (!firstAttempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+      fs.writeFileSync(
+        path.join(transcriptDir, `${firstAttempt.executorSessionId}.log`),
+        "Completed the worker step and reported the outcome.\n",
+        "utf8"
+      );
 
       // Update the pre-inserted row to simulate a completed session (for deriving status).
       fixture.db.run(

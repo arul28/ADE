@@ -147,6 +147,85 @@ function buildWorkerLifecycleFailureMessage(attempt: {
   return `I hit an issue while working on this task and reported it back: ${errorText.slice(0, 180)}`;
 }
 
+function resolveRecoveredFailedStepInterventions(args: {
+  ctx: OrchestratorContext;
+  deps: UpdateWorkerStateDeps;
+  missionId: string;
+  attempt: OrchestratorRunGraph["attempts"][number];
+  step: OrchestratorRunGraph["steps"][number];
+}): void {
+  const mission = args.ctx.missionService.get(args.missionId);
+  if (!mission) return;
+
+  const stepMeta = isRecord(args.step.metadata) ? args.step.metadata : {};
+  const phaseKey = typeof stepMeta.phaseKey === "string" ? stepMeta.phaseKey.trim() : "";
+  const stepType = typeof stepMeta.stepType === "string" ? stepMeta.stepType.trim() : "";
+  const planningLike =
+    stepMeta.readOnlyExecution === true
+    || phaseKey.toLowerCase() === "planning"
+    || stepType.toLowerCase() === "planning";
+  const resolvedAt = nowIso();
+
+  for (const intervention of mission.interventions) {
+    if (intervention.status !== "open" || intervention.interventionType !== "failed_step") continue;
+
+    const meta = isRecord(intervention.metadata) ? intervention.metadata : {};
+    const interventionRunId = typeof meta.runId === "string" ? meta.runId.trim() : "";
+    const interventionStepId = typeof meta.stepId === "string" ? meta.stepId.trim() : "";
+    const interventionPhaseKey = typeof meta.phaseKey === "string" ? meta.phaseKey.trim() : "";
+    const interventionStepType = typeof meta.stepType === "string" ? meta.stepType.trim() : "";
+    const legacyPlanningFailure =
+      planningLike
+      && /planning worker exited without reporting a usable plan/i.test(
+        `${intervention.title} ${intervention.body}`,
+      );
+    const sameRun = interventionRunId.length === 0 || interventionRunId === args.attempt.runId;
+    const exactStepMatch = interventionStepId.length > 0 && interventionStepId === args.step.id;
+    const replacementStepMatch =
+      !exactStepMatch
+      && sameRun
+      && planningLike
+      && interventionPhaseKey.length > 0
+      && interventionStepType.length > 0
+      && interventionPhaseKey === phaseKey
+      && interventionStepType === stepType;
+
+    if (!sameRun || (!exactStepMatch && !replacementStepMatch && !legacyPlanningFailure)) continue;
+
+    try {
+      args.ctx.missionService.resolveIntervention({
+        missionId: args.missionId,
+        interventionId: intervention.id,
+        status: "resolved",
+        note: `Auto-resolved after recovery step "${stepTitleForMessage(args.step)}" succeeded.`,
+      });
+      args.deps.recordRuntimeEvent({
+        runId: args.attempt.runId,
+        stepId: args.step.id,
+        attemptId: args.attempt.id,
+        sessionId: args.attempt.executorSessionId,
+        eventType: "intervention_resolved",
+        eventKey: `intervention_resolved:${intervention.id}:recovery_success`,
+        payload: {
+          interventionId: intervention.id,
+          reason: "recovery_step_succeeded",
+          recoveredByStepId: args.step.id,
+          recoveredByStepKey: args.step.stepKey,
+          resolvedAt,
+        },
+      });
+    } catch (error) {
+      args.ctx.logger.debug("ai_orchestrator.recovery_intervention_resolve_failed", {
+        missionId: args.missionId,
+        runId: args.attempt.runId,
+        stepId: args.step.id,
+        interventionId: intervention.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
 function appendWorkerThreadLifecycleMessage(args: {
   ctx: OrchestratorContext;
   deps: UpdateWorkerStateDeps;
@@ -815,14 +894,17 @@ export function updateWorkerStateFromEventCtx(
     const stepKey = stepForAttempt?.stepKey ?? null;
 
     if (attempt.status === "running") {
+      const attemptMeta = isRecord(attempt.metadata) ? attempt.metadata : {};
+      const workerSessionKind = typeof attemptMeta.workerSessionKind === "string" ? attemptMeta.workerSessionKind.trim() : "";
+      const nextWorkerState = workerSessionKind === "managed_chat" ? "initializing" : "working";
       const existing = ctx.workerStates.get(attempt.id);
-      const shouldAnnounceStart = !existing || existing.state !== "working";
+      const shouldAnnounceStart = !existing || (existing.state !== "working" && existing.state !== "initializing");
       upsertWorkerState(ctx, attempt.id, {
         stepId: attempt.stepId,
         runId: attempt.runId,
         sessionId: attempt.executorSessionId,
         executorKind: attempt.executorKind,
-        state: "working"
+        state: nextWorkerState
       });
       if (shouldAnnounceStart) {
         emitOrchestratorMessage(
@@ -942,6 +1024,15 @@ export function updateWorkerStateFromEventCtx(
 
       // Evaluation loop: evaluate step based on active runtime profile.
       const step = graph.steps.find((s) => s.id === attempt.stepId);
+      if (step) {
+        resolveRecoveredFailedStepInterventions({
+          ctx,
+          deps,
+          missionId: graph.run.missionId,
+          attempt,
+          step,
+        });
+      }
       if (step && ctx.aiIntegrationService) {
         const runtimeProfile = ctx.runRuntimeProfiles.get(attempt.runId) ?? resolveActiveRuntimeProfile(ctx, graph.run.missionId);
         const isFinalStep = graph.steps.every(
@@ -1078,6 +1169,9 @@ export function updateWorkerStateFromEventCtx(
       }
       if (step && step.status === "failed" && step.retryCount >= step.retryLimit) {
         try {
+          const stepMetadata = isRecord(step.metadata) ? step.metadata : {};
+          const phaseKey = typeof stepMetadata.phaseKey === "string" ? stepMetadata.phaseKey.trim() : "";
+          const stepType = typeof stepMetadata.stepType === "string" ? stepMetadata.stepType.trim() : "";
           // Emit retry_exhausted event
           deps.recordRuntimeEvent({
             runId: attempt.runId,
@@ -1097,7 +1191,14 @@ export function updateWorkerStateFromEventCtx(
             interventionType: "failed_step",
             title: `Step "${stepTitleForMessage(step)}" failed after ${step.retryCount} retries`,
             body: `Step ${step.stepKey} (${stepTitleForMessage(step)}) exhausted all ${step.retryLimit} retries. Last error: ${attempt.errorMessage ?? "unknown"}`,
-            requestedAction: "Review and decide whether to retry, skip, or add a workaround."
+            requestedAction: "Review and decide whether to retry, skip, or add a workaround.",
+            metadata: {
+              runId: attempt.runId,
+              stepId: step.id,
+              stepKey: step.stepKey,
+              ...(phaseKey.length > 0 ? { phaseKey } : {}),
+              ...(stepType.length > 0 ? { stepType } : {}),
+            }
           });
           deps.recordRuntimeEvent({
             runId: attempt.runId,

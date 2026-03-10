@@ -136,6 +136,17 @@ export type AgentChatEventEnvelope = {
   sessionId: string;
   timestamp: string;
   event: AgentChatEvent;
+  provenance?: {
+    messageId?: string;
+    threadId?: string | null;
+    role?: "user" | "orchestrator" | "worker" | "agent" | null;
+    targetKind?: string | null;
+    sourceSessionId?: string | null;
+    attemptId?: string | null;
+    stepKey?: string | null;
+    laneId?: string | null;
+    runId?: string | null;
+  };
 };
 
 export type AgentChatPermissionMode = "default" | "plan" | "edit" | "full-auto" | "config-toml";

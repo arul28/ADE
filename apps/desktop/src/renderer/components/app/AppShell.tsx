@@ -326,6 +326,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       "/automations": "tab-tint-automations",
       "/missions": "tab-tint-missions",
       "/test": "tab-tint-test",
+      "/deets": "tab-tint-deets",
       "/settings": "tab-tint-settings",
     };
     return tintMap[location.pathname] ?? "";

@@ -416,7 +416,7 @@ describe("coordinatorTools get_worker_output running workers", () => {
   });
 });
 
-describe("coordinatorTools display-only planning tasks", () => {
+describe("coordinatorTools task planning", () => {
   it("spawn_worker tolerates omitted dependsOn arrays from provider tool calls", async () => {
     const graph = {
       run: { metadata: {} },
@@ -549,7 +549,7 @@ describe("coordinatorTools display-only planning tasks", () => {
     }));
   });
 
-  it("create_task creates a display-only manual plan node", async () => {
+  it("create_task creates a manual task step without placeholder metadata", async () => {
     const graph = {
       run: { metadata: {} },
       steps: [],
@@ -573,15 +573,13 @@ describe("coordinatorTools display-only planning tasks", () => {
           stepKey: "plan-sidebar",
           executorKind: "manual",
           metadata: expect.objectContaining({
-            isTask: true,
-            displayOnlyTask: true,
+            stepType: "task",
           }),
         }),
       ],
     }));
     expect(harnessGraph.steps[0]?.metadata).toEqual(expect.objectContaining({
-      isTask: true,
-      displayOnlyTask: true,
+      stepType: "task",
       requestedDependencyStepKeys: [],
     }));
   });
@@ -868,7 +866,7 @@ describe("coordinatorTools display-only planning tasks", () => {
     }));
   });
 
-  it("spawn_worker resolves display-only task dependencies onto executable workers", async () => {
+  it("spawn_worker resolves manual task dependencies onto executable workers", async () => {
     const graph = {
       run: { metadata: {} },
       steps: [
@@ -893,7 +891,7 @@ describe("coordinatorTools display-only planning tasks", () => {
           completedAt: null,
           metadata: {
             isTask: true,
-            displayOnlyTask: true,
+            stepType: "task",
             assignedTo: "research-sidebar",
           },
         },
@@ -945,7 +943,7 @@ describe("coordinatorTools display-only planning tasks", () => {
     }));
   });
 
-  it("read_mission_status excludes display-only task nodes from execution counts", async () => {
+  it("read_mission_status excludes legacy task shells from execution counts", async () => {
     const graph = {
       run: { metadata: {}, status: "active" },
       steps: [
@@ -970,7 +968,7 @@ describe("coordinatorTools display-only planning tasks", () => {
           completedAt: null,
           metadata: {
             isTask: true,
-            displayOnlyTask: true,
+            stepType: "task",
           },
         },
         {

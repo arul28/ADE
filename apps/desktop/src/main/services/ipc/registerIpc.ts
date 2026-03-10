@@ -1894,10 +1894,27 @@ export function registerIpc({
 
   ipcMain.handle(IPC.orchestratorPauseRun, async (_event, arg: PauseOrchestratorRunArgs): Promise<OrchestratorRun> => {
     const ctx = getCtx();
-    return ctx.orchestratorService.pauseRun({
+    const pausedRun = ctx.orchestratorService.pauseRun({
       runId: arg.runId,
       reason: arg.reason ?? "Paused from Missions UI.",
     });
+    // Also update the mission status to reflect the pause
+    if (pausedRun.status === "paused" && pausedRun.missionId) {
+      try {
+        ctx.missionService.addIntervention({
+          missionId: pausedRun.missionId,
+          interventionType: "orchestrator_escalation",
+          title: "Run paused",
+          body: arg.reason ?? "Paused from Missions UI.",
+          requestedAction: "resume",
+          pauseMission: true,
+          metadata: { runId: pausedRun.id, source: "ui_pause" },
+        });
+      } catch {
+        // Mission may already be in intervention_required or a terminal state
+      }
+    }
+    return pausedRun;
   });
 
   ipcMain.handle(IPC.orchestratorResumeRun, async (_event, arg: ResumeOrchestratorRunArgs): Promise<OrchestratorRun> => {

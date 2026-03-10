@@ -37,7 +37,6 @@ import type { createMissionService } from "../missions/missionService";
 import {
   asRecord,
   filterExecutionSteps,
-  isDisplayOnlyTaskStep,
   nowIso,
   TERMINAL_STEP_STATUSES,
 } from "./orchestratorContext";
@@ -279,6 +278,11 @@ function normalizeText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function isTaskShellStep(step: OrchestratorStep | null | undefined): boolean {
+  const metadata = asRecord(step?.metadata) ?? {};
+  return metadata.isTask === true;
+}
+
 function resolveExecutableDependencyKeys(graph: OrchestratorRunGraph, dependencyKeys: string[]): string[] {
   const visited = new Set<string>();
   const resolved: string[] = [];
@@ -293,7 +297,7 @@ function resolveExecutableDependencyKeys(graph: OrchestratorRunGraph, dependency
       resolved.push(normalizedKey);
       return;
     }
-    if (!isDisplayOnlyTaskStep(step)) {
+    if (!isTaskShellStep(step)) {
       resolved.push(step.stepKey);
       return;
     }
@@ -829,9 +833,9 @@ export function createCoordinatorToolSet(deps: {
     const inferredDependencyStepKeys = dedupeKeys(args.inferredDependsOn);
     const resolvedDependencyStepKeys = dedupeKeys(args.dependsOn);
     const executableDependencyStepKeys = resolveExecutableDependencyKeys(g, resolvedDependencyStepKeys);
-    const displayDependencyTaskKeys = requestedDependencyStepKeys.filter((dependencyKey) => {
+    const taskShellDependencyKeys = requestedDependencyStepKeys.filter((dependencyKey) => {
       const dependencyStep = resolveStep(g, dependencyKey);
-      return Boolean(dependencyStep && isDisplayOnlyTaskStep(dependencyStep));
+      return Boolean(dependencyStep && isTaskShellStep(dependencyStep));
     });
     const teamRuntime = resolveTeamRuntimeConfig(g);
     const roleDef = args.roleName ? resolveRoleDefinition(teamRuntime, args.roleName) : null;
@@ -871,20 +875,20 @@ export function createCoordinatorToolSet(deps: {
         : `worker_${args.name.replace(/[^a-zA-Z0-9_-]/g, "_")}_${Date.now()}`;
     const missionPhases = resolveMissionPhases();
     const phaseMetadata = buildPhaseMetadataForNewStep(g, missionPhases);
-    const reusableDisplayTask =
+    const reusableTaskShell =
       !replacementSourceStep
         ? (() => {
             const candidate = resolveStep(g, stepKey);
             if (!candidate) return null;
-            if (!isDisplayOnlyTaskStep(candidate)) return null;
+            if (!isTaskShellStep(candidate)) return null;
             if (TERMINAL_STEP_STATUSES.has(candidate.status)) return null;
             return candidate;
           })()
         : null;
-    if (reusableDisplayTask) {
+    if (reusableTaskShell) {
       let preparedStep = orchestratorService.updateStepMetadata({
         runId,
-        stepId: reusableDisplayTask.id,
+        stepId: reusableTaskShell.id,
         metadata: {
           ...phaseMetadata,
           executorKind: "unified",
@@ -892,7 +896,7 @@ export function createCoordinatorToolSet(deps: {
           workerName: args.name,
           requestedDependencyStepKeys,
           ...(inferredDependencyStepKeys.length > 0 ? { inferredDependencyStepKeys } : {}),
-          planningTaskDependencies: displayDependencyTaskKeys,
+          planningTaskDependencies: taskShellDependencyKeys,
           spawnedByCoordinator: true,
           modelId: resolvedModelId,
           modelProviderHint: resolvedProvider,
@@ -901,9 +905,8 @@ export function createCoordinatorToolSet(deps: {
           roleCapabilities: roleDef?.capabilities ?? [],
           toolProfile: toolProfile ?? null,
           mcpServerAllowlist: teamRuntime?.mcpServerAllowlist ?? [],
-          displayOnlyTask: false,
           isTask: false,
-          convertedFromDisplayTask: true,
+          convertedFromTaskShell: true,
           ...(args.validationContract ? { validationContract: args.validationContract } : {}),
         }
       });
@@ -912,7 +915,7 @@ export function createCoordinatorToolSet(deps: {
           runId,
           stepId: preparedStep.id,
           laneId: effectiveLaneId,
-          reason: "Converted display-only task into an executable worker step.",
+          reason: "Converted task shell into an executable worker step.",
           transferredBy: "coordinator",
         });
       }
@@ -946,7 +949,7 @@ export function createCoordinatorToolSet(deps: {
             workerName: args.name,
             requestedDependencyStepKeys,
             ...(inferredDependencyStepKeys.length > 0 ? { inferredDependencyStepKeys } : {}),
-            planningTaskDependencies: displayDependencyTaskKeys,
+            planningTaskDependencies: taskShellDependencyKeys,
             spawnedByCoordinator: true,
             modelId: resolvedModelId,
             modelProviderHint: resolvedProvider,
@@ -1229,7 +1232,7 @@ export function createCoordinatorToolSet(deps: {
   }
 
   function isImplicitDependencyCandidate(step: OrchestratorStep): boolean {
-    if (isDisplayOnlyTaskStep(step)) return false;
+    if (isTaskShellStep(step)) return false;
     return step.status === "succeeded" || step.status === "running" || step.status === "blocked";
   }
 
@@ -1407,8 +1410,7 @@ export function createCoordinatorToolSet(deps: {
     const stepMeta = asRecord(step.metadata);
     const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
     const stepPhaseName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim().toLowerCase() : "";
-    const isDisplayOnly = stepMeta?.displayOnlyTask === true || stepMeta?.isTask === true;
-    return !isDisplayOnly && (stepPhaseKey === "planning" || stepPhaseName === "planning");
+    return !isTaskShellStep(step) && (stepPhaseKey === "planning" || stepPhaseName === "planning");
   }
 
   function phaseHasCompletionEligibleStep(
@@ -1829,8 +1831,7 @@ export function createCoordinatorToolSet(deps: {
               const stepMeta = asRecord(step.metadata);
               const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
               const stepPhaseName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim().toLowerCase() : "";
-              const isDisplayOnly = stepMeta?.displayOnlyTask === true || stepMeta?.isTask === true;
-              return !isDisplayOnly
+              return !isTaskShellStep(step)
                 && (stepPhaseKey === "planning" || stepPhaseName === "planning")
                 && step.status === "succeeded";
             });
@@ -4210,8 +4211,7 @@ export function createCoordinatorToolSet(deps: {
               metadata: {
                 ...phaseMetadata,
                 instructions: normalizedDescription,
-                isTask: true,
-                displayOnlyTask: true,
+                stepType: "task",
                 requestedDependencyStepKeys: requestedDependsOn,
                 ...(inferredDependsOn.length > 0 ? { inferredDependencyStepKeys: inferredDependsOn } : {}),
               },
@@ -4345,7 +4345,7 @@ export function createCoordinatorToolSet(deps: {
             assignedTo: meta.assignedTo ?? null,
             hasRunningWorker: !!attempt,
             retryCount: s.retryCount,
-            displayOnly: isDisplayOnlyTaskStep(s),
+            stepType: typeof meta.stepType === "string" ? meta.stepType : null,
           };
         });
         return {
@@ -4785,7 +4785,7 @@ export function createCoordinatorToolSet(deps: {
       requestedAction: args.canProceedWithoutAnswer
         ? "Optional: provide guidance. Coordinator may continue with best-effort assumptions."
         : "Provide guidance to unblock coordinator execution.",
-      pauseMission: false,
+      pauseMission: args.canProceedWithoutAnswer !== true,
       metadata: {
         source: args.source,
         runId,
@@ -4793,10 +4793,26 @@ export function createCoordinatorToolSet(deps: {
         context: context.length > 0 ? context : null,
         urgency,
         canProceedWithoutAnswer: args.canProceedWithoutAnswer === true,
+        blocking: args.canProceedWithoutAnswer !== true,
+        category: "user_input" as const,
         phase: currentPhase?.phaseKey ?? null,
         phaseName: currentPhase?.name ?? null
       }
     });
+
+    // If the intervention is blocking, also pause the orchestrator run
+    if (args.canProceedWithoutAnswer !== true) {
+      try {
+        orchestratorService.pauseRun({
+          runId,
+          reason: `Blocking user input required: ${question.slice(0, 100)}`,
+          metadata: { interventionSource: args.source, interventionId: intervention.id },
+        });
+      } catch (e) {
+        // Run may already be paused or in a terminal state
+        logger.warn(`Could not pause run for blocking intervention: ${e}`);
+      }
+    }
 
     orchestratorService.appendRuntimeEvent({
       runId,
@@ -4810,6 +4826,8 @@ export function createCoordinatorToolSet(deps: {
         context: context.length > 0 ? context : null,
         urgency,
         canProceedWithoutAnswer: args.canProceedWithoutAnswer === true,
+        blocking: args.canProceedWithoutAnswer !== true,
+        category: "user_input",
         phase: currentPhase?.phaseKey ?? null
       },
     });
@@ -4820,7 +4838,8 @@ export function createCoordinatorToolSet(deps: {
       detail: {
         interventionId: intervention.id,
         source: args.source,
-        urgency
+        urgency,
+        blocking: args.canProceedWithoutAnswer !== true
       }
     });
     logger.info("coordinator.user_input_requested", {
@@ -4828,7 +4847,8 @@ export function createCoordinatorToolSet(deps: {
       missionId,
       interventionId: intervention.id,
       source: args.source,
-      urgency
+      urgency,
+      blocking: args.canProceedWithoutAnswer !== true
     });
     return { ok: true as const, interventionId: intervention.id, question, deduped: false };
   };
@@ -5067,17 +5087,31 @@ export function createCoordinatorToolSet(deps: {
           title,
           body,
           requestedAction: "Answer the planning questions to unblock coordinator execution.",
-          pauseMission: false,
+          pauseMission: true,
           metadata: {
             source: "ask_user",
             runId,
             quizMode: true,
             canProceedWithoutAnswer: false,
+            blocking: true,
+            category: "user_input" as const,
             questions,
             phase: phase ?? policy.phaseKey ?? null,
             questionCount: questions.length,
           }
         });
+
+        // ask_user is always blocking (planning phase) — pause the run
+        try {
+          orchestratorService.pauseRun({
+            runId,
+            reason: `Blocking planning questions (${questions.length}): ${firstQuestion.slice(0, 100)}`,
+            metadata: { interventionSource: "ask_user", interventionId: intervention.id },
+          });
+        } catch (e) {
+          // Run may already be paused or in a terminal state
+          logger.warn(`Could not pause run for ask_user intervention: ${e}`);
+        }
 
         orchestratorService.appendRuntimeEvent({
           runId,
@@ -5088,6 +5122,8 @@ export function createCoordinatorToolSet(deps: {
             interventionType: intervention.interventionType,
             source: "ask_user",
             quizMode: true,
+            blocking: true,
+            category: "user_input",
             questionCount: questions.length,
             phase: phase ?? policy.phaseKey ?? null,
           },
@@ -5100,6 +5136,7 @@ export function createCoordinatorToolSet(deps: {
             interventionId: intervention.id,
             source: "ask_user",
             quizMode: true,
+            blocking: true,
             questionCount: questions.length,
           }
         });
@@ -5108,6 +5145,7 @@ export function createCoordinatorToolSet(deps: {
           missionId,
           interventionId: intervention.id,
           questionCount: questions.length,
+          blocking: true,
           phase: phase ?? policy.phaseKey ?? null,
         });
         return { ok: true as const, interventionId: intervention.id, questionCount: questions.length, deduped: false };

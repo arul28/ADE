@@ -10,6 +10,7 @@ import type {
   AgentChatSessionSummary,
   ContextPackOption
 } from "../../../shared/types";
+import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { getDefaultModelDescriptor, MODEL_REGISTRY, getModelById, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { AgentChatComposer } from "./AgentChatComposer";
@@ -92,27 +93,6 @@ function getExecutionModeOptions(model: ModelDescriptor | null | undefined): Exe
     ];
   }
   return [];
-}
-
-function parseChatTranscript(raw: string): AgentChatEventEnvelope[] {
-  const out: AgentChatEventEnvelope[] = [];
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed.length) continue;
-    try {
-      const parsed = JSON.parse(trimmed) as unknown;
-      if (!parsed || typeof parsed !== "object") continue;
-      const record = parsed as Partial<AgentChatEventEnvelope>;
-      const sessionId = typeof record.sessionId === "string" ? record.sessionId : "";
-      const timestamp = typeof record.timestamp === "string" ? record.timestamp : new Date().toISOString();
-      const event = record.event as AgentChatEvent | undefined;
-      if (!sessionId || !event || typeof event !== "object") continue;
-      out.push({ sessionId, timestamp, event });
-    } catch {
-      // Ignore malformed lines.
-    }
-  }
-  return out;
 }
 
 function readRecord(value: unknown): Record<string, unknown> | null {
@@ -567,7 +547,7 @@ export function AgentChatPane({
         maxBytes: 1_800_000,
         raw: true
       });
-      const parsed = parseChatTranscript(raw).filter((entry) => entry.sessionId === sessionId);
+      const parsed = parseAgentChatTranscript(raw).filter((entry) => entry.sessionId === sessionId);
       const derived = deriveRuntimeState(parsed);
       setEventsBySession((prev) => ({ ...prev, [sessionId]: parsed }));
       setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: derived.turnActive }));

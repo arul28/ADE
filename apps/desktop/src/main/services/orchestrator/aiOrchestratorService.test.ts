@@ -279,22 +279,8 @@ describe("deriveMissionPhaseSyncTarget", () => {
       },
       steps: [
         {
-          id: "display-1",
-          stepIndex: 0,
-          stepKey: "implement-test-tab",
-          title: "Implement Test tab",
-          status: "ready",
-          metadata: {
-            displayOnlyTask: true,
-            phaseKey: "planning",
-            phaseName: "Planning",
-            phasePosition: 0,
-            stepType: "planning",
-          },
-        },
-        {
           id: "worker-1",
-          stepIndex: 1,
+          stepIndex: 0,
           stepKey: "plan-test-tab",
           title: "Plan Test tab",
           status: "succeeded",
@@ -337,21 +323,8 @@ describe("deriveMissionPhaseSyncTarget", () => {
       },
       steps: [
         {
-          id: "display-1",
-          stepIndex: 0,
-          stepKey: "implement-test-tab",
-          title: "Implement Test tab",
-          status: "ready",
-          metadata: {
-            displayOnlyTask: true,
-            phaseKey: "planning",
-            phaseName: "Planning",
-            phasePosition: 0,
-          },
-        },
-        {
           id: "worker-1",
-          stepIndex: 1,
+          stepIndex: 0,
           stepKey: "worker-impl",
           title: "Implementation worker",
           status: "running",
@@ -2627,6 +2600,191 @@ describe("aiOrchestratorService", () => {
     }
   });
 
+  it("auto-resolves exhausted planning interventions when a recovery planning step succeeds", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Recover a failed planning step with a follow-up planning worker.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.addSteps({
+        runId,
+        steps: [
+          {
+            stepKey: "planner-primary",
+            title: "Primary planner",
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            executorKind: "manual",
+            retryLimit: 0,
+            metadata: {
+              instructions: "Plan the work.",
+              phaseKey: "planning",
+              phaseName: "Planning",
+              stepType: "planning",
+              readOnlyExecution: true,
+            }
+          }
+        ]
+      });
+      fixture.orchestratorService.tick({ runId });
+      let graph = fixture.orchestratorService.getRunGraph({ runId });
+      const failedPlanner = graph.steps.find((step) => step.stepKey === "planner-primary" && step.status === "ready");
+      if (!failedPlanner) throw new Error("Expected primary planner step to be ready");
+
+      const failedAttempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: failedPlanner.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+      await fixture.orchestratorService.completeAttempt({
+        attemptId: failedAttempt.id,
+        status: "failed",
+        errorClass: "startup_failure",
+        errorMessage: "Planning worker exited before producing any assistant or tool activity.",
+      });
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-attempt-updated",
+        runId,
+        stepId: failedPlanner.id,
+        attemptId: failedAttempt.id,
+        at: new Date().toISOString(),
+        reason: "failed"
+      });
+
+      let refreshedMission = fixture.missionService.get(mission.id);
+      const openPlanningIntervention = refreshedMission?.interventions.find((entry) =>
+        entry.status === "open"
+        && entry.interventionType === "failed_step"
+        && entry.body.includes("Planning worker exited before producing any assistant or tool activity.")
+      );
+      expect(openPlanningIntervention).toBeTruthy();
+      expect(refreshedMission?.status).toBe("intervention_required");
+
+      fixture.orchestratorService.addSteps({
+        runId,
+        steps: [
+          {
+            stepKey: "planner-recovery",
+            title: "Recovery planner",
+            stepIndex: 1,
+            dependencyStepKeys: [],
+            executorKind: "manual",
+            metadata: {
+              instructions: "Recover the planning pass and report back.",
+              phaseKey: "planning",
+              phaseName: "Planning",
+              stepType: "planning",
+              readOnlyExecution: true,
+            }
+          }
+        ]
+      });
+      fixture.orchestratorService.tick({ runId });
+      graph = fixture.orchestratorService.getRunGraph({ runId });
+      const recoveryPlanner = graph.steps.find((step) => step.stepKey === "planner-recovery" && step.status === "ready");
+      if (!recoveryPlanner) throw new Error("Expected recovery planner step to be ready");
+
+      const recoveryAttempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: recoveryPlanner.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+      await fixture.orchestratorService.completeAttempt({
+        attemptId: recoveryAttempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "Recovered the plan and reported the next steps.",
+          outputs: null,
+          warnings: [],
+          sessionId: null,
+          trackedSession: false,
+        },
+      });
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-attempt-updated",
+        runId,
+        stepId: recoveryPlanner.id,
+        attemptId: recoveryAttempt.id,
+        at: new Date().toISOString(),
+        reason: "succeeded"
+      });
+
+      refreshedMission = fixture.missionService.get(mission.id);
+      const resolvedPlanningIntervention = refreshedMission?.interventions.find((entry) => entry.id === openPlanningIntervention?.id);
+      expect(resolvedPlanningIntervention?.status).toBe("resolved");
+      expect(refreshedMission?.status).toBe("in_progress");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("auto-resolves stale coordinator availability interventions once the coordinator is healthy again", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Close stale coordinator availability interventions after recovery.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      const intervention = fixture.missionService.addIntervention({
+        missionId: mission.id,
+        interventionType: "failed_step",
+        title: "Coordinator unavailable",
+        body: "Coordinator agent is not available for this run.",
+        requestedAction: "Resume after coordinator runtime is healthy.",
+        metadata: {
+          runId,
+          reasonCode: "coordinator_unavailable",
+        },
+      });
+
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-run-updated",
+        runId,
+        at: new Date().toISOString(),
+        reason: "heartbeat",
+      } as any);
+
+      const refreshedMission = fixture.missionService.get(mission.id);
+      const refreshedIntervention = refreshedMission?.interventions.find((entry) => entry.id === intervention.id);
+      expect(refreshedIntervention?.status).toBe("resolved");
+
+      const resolvedEvent = fixture.orchestratorService.listRuntimeEvents({
+        runId,
+        eventTypes: ["intervention_resolved"],
+        limit: 10,
+      }).find((entry) =>
+        entry.eventType === "intervention_resolved"
+        && String((entry.payload as Record<string, unknown> | null)?.interventionId ?? "") === intervention.id
+      );
+      expect(resolvedEvent).toBeTruthy();
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("reconciles running attempts when tracked sessions already ended", async () => {
     const fixture = await createFixture();
     try {
@@ -2698,6 +2856,12 @@ describe("aiOrchestratorService", () => {
           "2026-02-20T00:05:00.000Z",
           path.join(fixture.projectRoot, ".ade", "transcripts", "session-ended-1.log")
         ]
+      );
+      fs.mkdirSync(path.join(fixture.projectRoot, ".ade", "transcripts"), { recursive: true });
+      fs.writeFileSync(
+        path.join(fixture.projectRoot, ".ade", "transcripts", "session-ended-1.log"),
+        "Worker completed the requested changes and exited cleanly.\n",
+        "utf8"
       );
 
       const sweep = await fixture.aiOrchestratorService.runHealthSweep("session_ended_test");
@@ -3228,6 +3392,12 @@ describe("aiOrchestratorService", () => {
           "2026-02-20T00:05:00.000Z",
           path.join(fixture.projectRoot, ".ade", "transcripts", "session-runtime-ended-1.log")
         ]
+      );
+      fs.mkdirSync(path.join(fixture.projectRoot, ".ade", "transcripts"), { recursive: true });
+      fs.writeFileSync(
+        path.join(fixture.projectRoot, ".ade", "transcripts", "session-runtime-ended-1.log"),
+        "Worker finished the task and confirmed completion before exit.\n",
+        "utf8"
       );
 
       fixture.aiOrchestratorService.onSessionRuntimeSignal({
@@ -6692,6 +6862,56 @@ describe("aiOrchestratorService", () => {
     } finally {
       fixture.dispose();
       vi.useRealTimers();
+    }
+  });
+
+  it("projects coordinator-loss interventions as blocked run views instead of canceled runs", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Recover the coordinator if it disappears.",
+        laneId: fixture.laneId,
+      });
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [
+          {
+            stepKey: "worker-alpha",
+            title: "Worker alpha",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "manual",
+          },
+        ],
+      });
+      fixture.missionService.update({
+        missionId: mission.id,
+        status: "planning",
+      });
+
+      fixture.missionService.addIntervention({
+        missionId: mission.id,
+        interventionType: "unrecoverable_error",
+        title: "Coordinator unavailable",
+        body: "Coordinator agent is not available for this run.",
+        requestedAction: "Resume after coordinator runtime is healthy.",
+        metadata: { reasonCode: "coordinator_unavailable" },
+        pauseMission: true,
+      });
+      fixture.orchestratorService.cancelRun({ runId: started.run.id, reason: "operator cleanup" });
+
+      const runView = await fixture.aiOrchestratorService.getRunView({
+        missionId: mission.id,
+        runId: started.run.id,
+      });
+
+      expect(runView).not.toBeNull();
+      expect(runView?.lifecycle.displayStatus).toBe("blocked");
+      expect(runView?.haltReason?.source).toBe("intervention");
+      expect(runView?.coordinator.available).toBe(false);
+      expect(runView?.haltReason?.title).toMatch(/coordinator unavailable/i);
+    } finally {
+      fixture.dispose();
     }
   });
 });

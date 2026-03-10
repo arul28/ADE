@@ -4,7 +4,14 @@
 
 import type { ModelConfig, MissionModelConfig } from "./models";
 import type { PrStrategy } from "./prs";
-import type { OrchestratorExecutorKind, TeamRuntimeConfig, RecoveryLoopPolicy, IntegrationPrPolicy } from "./orchestrator";
+import type {
+  OrchestratorExecutorKind,
+  OrchestratorRunStatus,
+  OrchestratorWorkerStatus,
+  TeamRuntimeConfig,
+  RecoveryLoopPolicy,
+  IntegrationPrPolicy,
+} from "./orchestrator";
 import type { AiCliPermissionMode, AiCliSandboxPermissions, AiInProcessPermissionMode } from "./config";
 import type { AgentChatPermissionMode } from "./chat";
 
@@ -607,6 +614,7 @@ export type ListMissionsArgs = {
   status?: MissionStatus | "active";
   laneId?: string;
   limit?: number;
+  includeArchived?: boolean;
 };
 
 export type CreateMissionArgs = {
@@ -689,10 +697,121 @@ export type MissionPreflightResult = {
   warnings: number;
   checklist: MissionPreflightChecklistItem[];
   budgetEstimate: MissionPreflightBudgetEstimate | null;
+  approvalSummary?: MissionPreflightApprovalSummary | null;
 };
 
 export type MissionPreflightRequest = {
   launch: CreateMissionArgs;
+};
+
+export type MissionPreflightApprovalSummary = {
+  missionGoal: string;
+  laneId: string | null;
+  laneLabel: string | null;
+  recommendedExecution: {
+    orchestratorModelId: string | null;
+    strategy: string;
+    teamRuntimeEnabled: boolean;
+    teammateCount: number;
+  };
+  phaseLabels: string[];
+  validationApproach: string[];
+  conflictAssumptions: string[];
+  knownBlockers: string[];
+};
+
+export type MissionRunViewDisplayStatus =
+  | "not_started"
+  | "starting"
+  | "running"
+  | "blocked"
+  | "completed"
+  | "failed"
+  | "canceled";
+
+export type MissionRunViewSeverity = "info" | "warning" | "error" | "success";
+
+export type MissionRunViewHaltReason = {
+  source: "intervention" | "coordinator" | "run" | "mission";
+  title: string;
+  detail: string;
+  severity: MissionRunViewSeverity;
+  interventionId?: string | null;
+  createdAt?: string | null;
+};
+
+export type MissionRunViewLatestIntervention = {
+  id: string;
+  title: string;
+  body: string;
+  interventionType: MissionInterventionType;
+  status: MissionInterventionStatus;
+  requestedAction: string | null;
+  createdAt: string;
+};
+
+export type MissionRunViewWorkerSummary = {
+  attemptId: string | null;
+  stepId: string | null;
+  stepKey: string | null;
+  stepTitle: string | null;
+  laneId: string | null;
+  sessionId: string | null;
+  executorKind: OrchestratorExecutorKind | null;
+  state: OrchestratorWorkerStatus | "blocked" | "unknown";
+  status: "active" | "blocked" | "completed" | "failed" | "idle";
+  lastHeartbeatAt: string | null;
+  completedAt: string | null;
+};
+
+export type MissionRunViewProgressItem = {
+  id: string;
+  at: string;
+  kind: "system" | "worker" | "validation" | "intervention" | "user";
+  title: string;
+  detail: string;
+  severity: MissionRunViewSeverity;
+  stepId?: string | null;
+  stepKey?: string | null;
+  attemptId?: string | null;
+};
+
+export type MissionRunView = {
+  missionId: string;
+  runId: string | null;
+  lifecycle: {
+    missionStatus: MissionStatus;
+    runStatus: OrchestratorRunStatus | null;
+    displayStatus: MissionRunViewDisplayStatus;
+    summary: string;
+    startedAt: string | null;
+    completedAt: string | null;
+  };
+  active: {
+    phaseKey: string | null;
+    phaseName: string | null;
+    stepId: string | null;
+    stepKey: string | null;
+    stepTitle: string | null;
+    featureLabel: string | null;
+  };
+  coordinator: {
+    available: boolean | null;
+    mode: "offline" | "consult_only" | "continuation_required" | null;
+    summary: string | null;
+    detail: string | null;
+    updatedAt: string | null;
+  };
+  latestIntervention: MissionRunViewLatestIntervention | null;
+  haltReason: MissionRunViewHaltReason | null;
+  workers: MissionRunViewWorkerSummary[];
+  progressLog: MissionRunViewProgressItem[];
+  lastMeaningfulProgress: MissionRunViewProgressItem | null;
+};
+
+export type GetMissionRunViewArgs = {
+  missionId: string;
+  runId?: string | null;
 };
 
 export type PlanMissionArgs = {
@@ -767,6 +886,10 @@ export type ResolveMissionInterventionArgs = {
 };
 
 export type DeleteMissionArgs = {
+  missionId: string;
+};
+
+export type ArchiveMissionArgs = {
   missionId: string;
 };
 

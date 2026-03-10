@@ -7,7 +7,7 @@ import {
   Eye,
 } from "@phosphor-icons/react";
 import type { ActivePhaseViewModel } from "./missionControlViewModel";
-import type { MissionCoordinatorAvailability, OrchestratorPromptInspector, PhaseCard } from "../../../shared/types";
+import type { OrchestratorPromptInspector, PhaseCard } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 import { PromptInspectorCard } from "./PromptInspectorCard";
 
@@ -102,7 +102,7 @@ export function MissionActivePhasePanel({
   promptLoading?: boolean;
   promptError?: string | null;
   onInspectPrompt?: () => void;
-  coordinatorAvailability?: MissionCoordinatorAvailability | null;
+  coordinatorAvailability?: { available: boolean; mode: string; summary: string | null } | null;
   compact?: boolean;
 }) {
   const [showDetails, setShowDetails] = useState(false);

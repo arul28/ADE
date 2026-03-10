@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCreateMissionDraft, resolveLaunchLaneId } from "./CreateMissionDialog";
+import { buildCreateMissionDraft, buildMissionLaunchRequest, resolveLaunchLaneId } from "./CreateMissionDialog";
 
 describe("CreateMissionDialog helpers", () => {
   it("resolves launch lane with explicit draft lane first", () => {
@@ -26,5 +26,23 @@ describe("CreateMissionDialog helpers", () => {
     const draft = buildCreateMissionDraft(undefined, [] as any);
     expect(draft.modelConfig.intelligenceConfig).toBeUndefined();
     expect(draft.modelConfig.profileId).toBeUndefined();
+  });
+
+  it("builds a launch request that preflight and create both can reuse", () => {
+    const draft = buildCreateMissionDraft({ plannerProvider: "claude" });
+    draft.prompt = "Implement the missions reset.";
+    draft.title = "Missions reset";
+    draft.laneId = "";
+
+    const request = buildMissionLaunchRequest({
+      draft,
+      activePhases: [],
+      defaultLaneId: "lane-default",
+    });
+
+    expect(request.prompt).toBe("Implement the missions reset.");
+    expect(request.laneId).toBe("lane-default");
+    expect(request.launchMode).toBe("autopilot");
+    expect(request.autostart).toBe(true);
   });
 });

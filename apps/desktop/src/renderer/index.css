@@ -1737,6 +1737,7 @@ button:active, [role="button"]:active {
   .ade-glow-pulse,
   .ade-glow-pulse-blue,
   .ade-glow-pulse-red,
+  .ade-glow-pulse-amber,
   .ade-conflict-breathe,
   .ade-float {
     animation: none !important;

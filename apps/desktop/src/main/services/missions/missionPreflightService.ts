@@ -605,6 +605,52 @@ export function createMissionPreflightService(args: {
 
     const hardFailures = checklist.filter((item) => item.severity === "fail").length;
     const warnings = checklist.filter((item) => item.severity === "warning").length;
+    const teamRuntimeConfig = launch.teamRuntime ?? launch.executionPolicy?.teamRuntime ?? null;
+    const selectedLaneId = toNonEmptyString(launch.laneId);
+    const selectedLaneLabel = selectedLaneId
+      ? activeLanes.find((lane) => lane.id === selectedLaneId)?.name ?? null
+      : null;
+    const approvalSummary: MissionPreflightResult["approvalSummary"] = {
+      missionGoal:
+        toNonEmptyString(launch.title)
+        ?? launch.prompt.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0)
+        ?? "Mission",
+      laneId: selectedLaneId,
+      laneLabel: selectedLaneLabel,
+      recommendedExecution: {
+        orchestratorModelId,
+        strategy: teamRuntimeConfig?.enabled
+          ? `Team runtime with ${Math.max(1, teamRuntimeConfig.teammateCount ?? 2)} teammate${Math.max(1, teamRuntimeConfig.teammateCount ?? 2) === 1 ? "" : "s"}`
+          : selected.phases.length > 1
+            ? `Phased execution across ${selected.phases.length} stages`
+            : "Single-run mission execution",
+        teamRuntimeEnabled: teamRuntimeConfig?.enabled === true,
+        teammateCount: teamRuntimeConfig?.enabled === true ? Math.max(1, teamRuntimeConfig.teammateCount ?? 2) : 0,
+      },
+      phaseLabels: selected.phases.map((phase) => phase.name),
+      validationApproach: selected.phases.map((phase) => {
+        const gate = phase.validationGate;
+        const tier = gate.tier === "dedicated" ? "dedicated review" : gate.tier === "self" ? "self-check" : "no formal gate";
+        return `${phase.name}: ${gate.required ? "required" : "optional"} ${tier}`;
+      }),
+      conflictAssumptions: [
+        selectedLaneId
+          ? `Primary mission lane: ${selectedLaneLabel ?? selectedLaneId}.`
+          : "Mission will attach to the default active lane if no explicit lane is selected.",
+        worktreeItem.severity === "warning"
+          ? "Parallel fan-out may be reduced because available worktrees are below the ideal concurrency target."
+          : "ADE can provision or reuse enough active lanes for the expected worker fan-out.",
+        selectedPrStrategy?.kind === "queue"
+          ? "Queue finalization will respect the configured rehearse/auto-land settings and surface conflicts if automation is blocked."
+          : selectedPrStrategy?.kind === "integration"
+            ? "Integration finalization will open or land PRs using the configured PR depth and conflict policy."
+            : "Mission will complete without a special PR/queue finalization contract.",
+      ],
+      knownBlockers: checklist
+        .filter((item) => item.severity === "fail")
+        .flatMap((item) => [item.summary, ...item.details])
+        .slice(0, 8),
+    };
 
     return {
       canLaunch: hardFailures === 0,
@@ -615,6 +661,7 @@ export function createMissionPreflightService(args: {
       warnings,
       checklist,
       budgetEstimate: budget.estimate,
+      approvalSummary,
     };
   };
 

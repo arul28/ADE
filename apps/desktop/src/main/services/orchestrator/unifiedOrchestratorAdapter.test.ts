@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildClaudeReadOnlyWorkerAllowedTools,
   buildCodexMcpConfigFlags,
@@ -58,6 +58,72 @@ describe("buildClaudeReadOnlyWorkerAllowedTools", () => {
 });
 
 describe("createUnifiedOrchestratorAdapter", () => {
+  it("creates managed chat sessions for orchestrated workers when agent chat is available", async () => {
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-unified-managed-"));
+    const createSession = vi.fn(async () => ({ id: "session-managed-1" }));
+    const adapter = createUnifiedOrchestratorAdapter({
+      workspaceRoot,
+      runtimeRoot: path.join(workspaceRoot, "runtime"),
+      agentChatService: {
+        createSession,
+      } as any,
+    });
+
+    const result = await adapter.start({
+      run: {
+        id: "run-1",
+        missionId: "mission-1",
+        metadata: {
+          missionGoal: "Implement the worker step",
+        },
+      } as any,
+      step: {
+        id: "step-1",
+        title: "Implementation worker",
+        stepKey: "implementation-worker",
+        laneId: "lane-1",
+        metadata: {
+          modelId: "openai/gpt-5.3-codex",
+          stepType: "implementation",
+        },
+        dependencyStepIds: [],
+        joinPolicy: "all_success",
+      } as any,
+      attempt: { id: "attempt-1" } as any,
+      allSteps: [],
+      contextProfile: {} as any,
+      laneExport: null,
+      projectExport: { content: "" } as any,
+      docsRefs: [],
+      fullDocs: [],
+      permissionConfig: {
+        _providers: {
+          codex: "full-auto",
+        },
+      } as any,
+      createTrackedSession: vi.fn(),
+    } as any);
+
+    expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.3-codex",
+      modelId: "openai/gpt-5.3-codex",
+    }));
+    expect(result).toMatchObject({
+      status: "accepted",
+      sessionId: "session-managed-1",
+      launch: expect.objectContaining({
+        displayText: 'Execute worker step "Implementation worker".',
+      }),
+      metadata: expect.objectContaining({
+        workerSessionKind: "managed_chat",
+        workerStreamSource: "agent_chat",
+        startupCommandPreview: "[managed chat session]",
+      }),
+    });
+  });
+
   it("forces Codex planning steps into a read-only sandbox", async () => {
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-unified-codex-"));
     const adapter = createUnifiedOrchestratorAdapter({

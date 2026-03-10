@@ -9,7 +9,6 @@ import type {
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
 import {
   filterExecutionSteps,
-  isDisplayOnlyTaskStep,
   isRecord,
   PLAN_DONE_STATUSES,
   statusGlyph,
@@ -33,7 +32,6 @@ function resolvePhase(step: OrchestratorStep): { key: string; name: string; posi
 }
 
 function stepLabel(step: OrchestratorStep): string {
-  if (isDisplayOnlyTaskStep(step)) return "Plan";
   const meta = isRecord(step.metadata) ? step.metadata : {};
   const stepType = typeof meta.stepType === "string" && meta.stepType.trim().length > 0 ? meta.stepType.trim() : "Worker";
   return stepType.replace(/_/g, " ");
@@ -114,7 +112,6 @@ export const PlanTab = React.memo(function PlanTab({
               const attempts = attemptsByStep.get(step.id) ?? [];
               const latestAttempt = attempts[0] ?? null;
               const isSelected = selectedStepId === step.id;
-              const isPlanNode = isDisplayOnlyTaskStep(step);
               const meta = isRecord(step.metadata) ? step.metadata : {};
               const assignedTo = typeof meta.assignedTo === "string" ? meta.assignedTo.trim() : "";
               return (
@@ -137,9 +134,9 @@ export const PlanTab = React.memo(function PlanTab({
                     <span
                       className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[1px]"
                       style={{
-                        background: isPlanNode ? `${COLORS.warning}16` : `${COLORS.accent}16`,
-                        border: `1px solid ${isPlanNode ? COLORS.warning : COLORS.accent}33`,
-                        color: isPlanNode ? COLORS.warning : COLORS.accent,
+                        background: `${COLORS.accent}16`,
+                        border: `1px solid ${COLORS.accent}33`,
+                        color: COLORS.accent,
                         fontFamily: MONO_FONT,
                       }}
                     >
@@ -150,7 +147,7 @@ export const PlanTab = React.memo(function PlanTab({
                   <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                     <span>Status: {step.status}</span>
                     {assignedTo ? <span>Assigned to: {assignedTo}</span> : null}
-                    {!isPlanNode && latestAttempt?.executorKind ? <span>Executor: {latestAttempt.executorKind}</span> : null}
+                    {latestAttempt?.executorKind ? <span>Executor: {latestAttempt.executorKind}</span> : null}
                     {step.dependencyStepIds.length > 0 ? <span>Depends on: {step.dependencyStepIds.length}</span> : null}
                   </div>
                 </button>
