@@ -271,6 +271,45 @@ export class CoordinatorAgent {
   private lastEventTimestampMs: number | null = null;
 
   constructor(deps: CoordinatorAgentDeps) {
+    // ── VAL-PLAN-005 / Mandatory planning enforcement ──
+    // If phases are provided but don't include planning, inject it.
+    // This ensures the coordinator always starts with a planning phase.
+    if (deps.phases && deps.phases.length > 0) {
+      const hasPlanningPhase = deps.phases.some(
+        (p) => p.phaseKey.trim().toLowerCase() === "planning"
+      );
+      if (!hasPlanningPhase) {
+        const now = new Date().toISOString();
+        const planningCard: PhaseCard = {
+          id: `builtin:planning`,
+          phaseKey: "planning",
+          name: "Planning",
+          description: "Research, clarify requirements, and design the execution DAG.",
+          instructions:
+            "Investigate the codebase, identify dependencies/risks, and produce a concrete execution plan before implementation.",
+          model: { modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
+          budget: {},
+          orderingConstraints: { mustBeFirst: true },
+          askQuestions: { enabled: true, mode: "auto_if_uncertain", maxQuestions: 5 },
+          validationGate: { tier: "none", required: false },
+          requiresApproval: true,
+          isBuiltIn: true,
+          isCustom: false,
+          position: 0,
+          createdAt: now,
+          updatedAt: now,
+        };
+        // Insert planning as the first phase, shift others down
+        deps.phases = [
+          planningCard,
+          ...deps.phases.map((p) => ({ ...p, position: p.position + 1 })),
+        ];
+        deps.logger.warn("coordinator_agent.mandatory_planning_injected", {
+          runId: deps.runId,
+          reason: "phases_missing_planning",
+        });
+      }
+    }
     this.deps = deps;
     this.tools = createCoordinatorToolSet({
       orchestratorService: deps.orchestratorService,

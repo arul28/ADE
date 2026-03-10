@@ -87,7 +87,8 @@ export type MissionInterventionType =
   | "orchestrator_escalation"
   | "budget_limit_reached"
   | "provider_unreachable"
-  | "unrecoverable_error";
+  | "unrecoverable_error"
+  | "phase_approval";
 
 export type MissionInterventionStatus = "open" | "resolved" | "dismissed";
 

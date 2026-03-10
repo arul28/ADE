@@ -1774,7 +1774,7 @@ export function createCoordinatorToolSet(deps: {
           }
           return { ok: false, error: spawnPolicy.error };
         }
-        const resolvedModelId = spawnPolicy.resolvedModelId;
+        let resolvedModelId = spawnPolicy.resolvedModelId;
         const resolvedProvider = spawnPolicy.resolvedProvider;
 
         // Hard cap check: refuse to spawn if budget hard caps are triggered
@@ -1807,6 +1807,49 @@ export function createCoordinatorToolSet(deps: {
             }
           } catch {
             // Non-blocking — budget warning is best-effort
+          }
+        }
+
+        // ── VAL-USAGE-003: Model downgrade runtime ──
+        // Check if usage exceeds the configured model downgrade threshold.
+        // If so, override the resolved model ID with a cheaper alternative.
+        if (getMissionBudgetStatus) {
+          try {
+            const usageSnap = await getMissionBudgetStatus();
+            if (usageSnap) {
+              const runMeta = asRecord(g.run.metadata);
+              const budgetConfig = asRecord(runMeta?.budgetConfig);
+              const thresholdPct = Number(budgetConfig?.modelDowngradeThresholdPct ?? 0);
+              if (thresholdPct > 0) {
+                const maxUsagePct = Math.max(
+                  ...(usageSnap.perProvider ?? []).map((p: any) =>
+                    Math.max(Number(p.fiveHour?.usedPct ?? 0), Number(p.weekly?.usedPct ?? 0))
+                  ),
+                  0
+                );
+                if (maxUsagePct >= thresholdPct) {
+                  const { evaluateModelDowngrade } = await import("./adaptiveRuntime");
+                  const downgradeResult = evaluateModelDowngrade({
+                    currentModelId: resolvedModelId,
+                    downgradeThresholdPct: thresholdPct,
+                    currentUsagePct: maxUsagePct,
+                  });
+                  if (downgradeResult.downgraded) {
+                    logger.info("coordinator.spawn_worker.model_downgrade", {
+                      name,
+                      originalModel: downgradeResult.originalModelId,
+                      downgradedModel: downgradeResult.resolvedModelId,
+                      reason: downgradeResult.reason,
+                      usagePct: Math.round(maxUsagePct),
+                      thresholdPct,
+                    });
+                    resolvedModelId = downgradeResult.resolvedModelId;
+                  }
+                }
+              }
+            }
+          } catch {
+            // Non-blocking — downgrade check is best-effort
           }
         }
 
@@ -4048,6 +4091,46 @@ export function createCoordinatorToolSet(deps: {
           }
         }
 
+        // ── VAL-PLAN-005 / VAL-PLAN-007: Approval gate ──
+        // Before leaving any phase with requiresApproval=true, require user approval.
+        if (currentPhase && currentPhase.requiresApproval === true) {
+          const mission = missionService.get(missionId);
+          const approvalInterventions = (mission?.interventions ?? []).filter((entry: any) => {
+            if (entry.interventionType !== "phase_approval") return false;
+            const meta = asRecord(entry.metadata);
+            const phase = typeof meta?.phaseKey === "string" ? meta.phaseKey.trim() : "";
+            return phase === currentPhase.phaseKey || phase === "";
+          });
+          const hasResolvedApproval = approvalInterventions.some((entry: any) => entry.status === "resolved");
+          if (!hasResolvedApproval) {
+            // Create a blocking phase_approval intervention if none exists yet
+            const hasOpenApproval = approvalInterventions.some((entry: any) => entry.status === "open");
+            if (!hasOpenApproval) {
+              missionService.addIntervention({
+                missionId,
+                interventionType: "phase_approval",
+                title: `Approve transition from "${currentPhase.name}" phase`,
+                body: `The "${currentPhase.name}" phase requires manual approval before the mission can proceed to "${targetPhase.name}". Please review the phase output and approve to continue.`,
+                requestedAction: `Approve the "${currentPhase.name}" output to proceed to "${targetPhase.name}".`,
+                pauseMission: true,
+                metadata: {
+                  phaseKey: currentPhase.phaseKey,
+                  phaseName: currentPhase.name,
+                  targetPhaseKey: targetPhase.phaseKey,
+                  targetPhaseName: targetPhase.name,
+                  source: "phase_approval_gate",
+                },
+              });
+            }
+            return {
+              ok: false,
+              error: `Phase "${currentPhase.name}" requires manual approval before transitioning to "${targetPhase.name}". A phase_approval intervention has been created. Wait for the user to approve.`,
+              pendingApproval: true,
+              phaseKey: currentPhase.phaseKey,
+            };
+          }
+        }
+
         const now = nowIso();
         const runRow = db.get<{ metadata_json: string | null }>(
           `select metadata_json from orchestrator_runs where id = ? limit 1`,
@@ -5059,7 +5142,10 @@ export function createCoordinatorToolSet(deps: {
         if (!policy.enabled || policy.mode === "never") {
           return { ok: false as const, error: "Ask Questions is disabled for this Planning phase." };
         }
-        if (priorInterventions.length >= policy.maxQuestions) {
+        // VAL-PLAN-006: Multi-round deliberation — when phase has canLoop=true,
+        // bypass the maxQuestions ceiling to allow unbounded ask_user + re-plan cycles.
+        const phaseCanLoop = policy.phase?.orderingConstraints?.canLoop === true;
+        if (!phaseCanLoop && priorInterventions.length >= policy.maxQuestions) {
           return {
             ok: false as const,
             error: `This Planning phase already reached its Ask Questions limit (${policy.maxQuestions}). Continue with the best grounded assumptions you can.`,

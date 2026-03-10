@@ -559,7 +559,8 @@ function normalizeInterventionType(value: string): MissionInterventionType {
     value === "orchestrator_escalation" ||
     value === "budget_limit_reached" ||
     value === "provider_unreachable" ||
-    value === "unrecoverable_error"
+    value === "unrecoverable_error" ||
+    value === "phase_approval"
   ) {
     return value;
   }
