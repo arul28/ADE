@@ -45,12 +45,6 @@ export type UnifiedExecutorOpts = {
   runId?: string;
   stepId?: string;
   enableCompaction?: boolean;
-  addSharedFact?: (opts: {
-    runId: string;
-    stepId?: string;
-    factType: "api_pattern" | "schema_change" | "config" | "architectural" | "gotcha";
-    content: string;
-  }) => unknown;
   /** Optional memory service for wiring memory tools into the coding tool set. */
   memoryService?: unknown;
   compactionFlushService?: Pick<CompactionFlushService, "beforeCompaction">;
@@ -357,14 +351,43 @@ export async function* executeUnified(
                   modelId: opts.modelId,
                 });
 
-                // Pre-compaction writeback: save extracted facts
-                if (compactionResult.factsExtracted.length > 0 && opts.addSharedFact) {
+                // Pre-compaction writeback: save extracted facts into mission memory.
+                const missionId = opts.db && opts.runId
+                  ? (opts.db.get<{ mission_id: string | null }>(
+                      "select mission_id from orchestrator_runs where id = ? limit 1",
+                      [opts.runId]
+                    )?.mission_id ?? null)
+                  : null;
+                const memoryWriter = opts.memoryService as {
+                  writeMemory?: (opts: {
+                    projectId: string;
+                    scope: "mission";
+                    scopeOwnerId: string;
+                    category: "fact" | "gotcha" | "preference";
+                    content: string;
+                    importance: "medium" | "high";
+                    confidence: number;
+                    status: "promoted";
+                    sourceRunId: string;
+                    sourceType: "system";
+                    sourceId: string;
+                    writeGateMode: "strict";
+                  }) => unknown;
+                } | null;
+                if (
+                  compactionResult.factsExtracted.length > 0
+                  && opts.projectId
+                  && opts.runId
+                  && opts.stepId
+                  && typeof memoryWriter?.writeMemory === "function"
+                ) {
                   await preCompactionWriteback({
-                    db: opts.db,
-                    runId: opts.runId!,
-                    stepId: opts.stepId!,
+                    projectId: opts.projectId,
+                    missionId,
+                    runId: opts.runId,
+                    stepId: opts.stepId,
                     facts: compactionResult.factsExtracted,
-                    addSharedFact: opts.addSharedFact,
+                    writeMemory: memoryWriter.writeMemory.bind(opts.memoryService),
                   });
                 }
 

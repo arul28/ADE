@@ -16,7 +16,6 @@ export type {
   MemoryStatus,
   MemoryTier,
   SearchMemoryOpts,
-  SharedFact,
   UnifiedMemoryScope,
   UnifiedMemoryService,
   WriteGateMode,

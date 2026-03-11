@@ -1747,19 +1747,6 @@ function migrate(db: Database) {
   `);
   db.run("create index if not exists idx_agent_identities_project on agent_identities(project_id)");
 
-  db.run(`
-    create table if not exists orchestrator_shared_facts (
-      id text primary key,
-      run_id text not null,
-      step_id text,
-      fact_type text not null,
-      content text not null,
-      created_at text not null
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_shared_facts_run on orchestrator_shared_facts(run_id)");
-  db.run("create index if not exists idx_orchestrator_shared_facts_run_type on orchestrator_shared_facts(run_id, fact_type)");
-
   // Team runtime: persistent team member registry for agent-team orchestration.
   db.run(`
     create table if not exists orchestrator_team_members (

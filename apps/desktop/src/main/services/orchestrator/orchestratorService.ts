@@ -216,7 +216,7 @@ export type OrchestratorExecutorStartArgs = {
   previousCheckpoint?: string;
   /** Summary/error from the previous attempt on the same step (for retry context). */
   previousAttemptSummary?: string;
-  /** Optional memory service for injecting shared facts and project memories into prompts. */
+  /** Optional memory service for injecting project memory into prompts and supporting memory tools. */
   memoryService?: unknown;
   /** Project ID for memory service scoping. */
   memoryProjectId?: string;
@@ -2311,53 +2311,6 @@ export function createOrchestratorService({
       return "completing";
     }
     return evaluation.status;
-  };
-
-  /**
-   * Promote shared facts from a completed run into the memory system.
-   * High-confidence facts (>= 0.8 mapped from fact type) are auto-promoted;
-   * others are stored as candidates for manual review.
-   */
-  const promoteRunFactsToMemory = (runId: string, runProjectId: string): void => {
-    if (!memoryService) return;
-    const facts = memoryService.getSharedFacts(runId, 50);
-    if (!facts.length) return;
-
-    const factTypeConfidence: Record<string, number> = {
-      architectural: 0.9,
-      schema_change: 0.85,
-      config: 0.8,
-      api_pattern: 0.75,
-      gotcha: 0.7
-    };
-
-    for (const fact of facts) {
-      const confidence = factTypeConfidence[fact.factType] ?? 0.5;
-      const category = fact.factType === "gotcha" ? "gotcha" as const
-        : fact.factType === "config" ? "preference" as const
-        : "fact" as const;
-
-      if (confidence >= 0.8) {
-        memoryService.addMemory({
-          projectId: runProjectId,
-          scope: "project",
-          category,
-          content: fact.content,
-          importance: confidence >= 0.85 ? "high" : "medium",
-          sourceRunId: runId
-        });
-      } else {
-        memoryService.addCandidateMemory({
-          projectId: runProjectId,
-          scope: "project",
-          category,
-          content: fact.content,
-          importance: "medium",
-          confidence,
-          sourceRunId: runId
-        });
-      }
-    }
   };
 
   const createContextSnapshotForAttempt = async (args: {
@@ -6634,11 +6587,16 @@ export function createOrchestratorService({
           const briefingFilePatterns = Array.isArray(stepWithWorktree.metadata?.fileScopes)
             ? stepWithWorktree.metadata.fileScopes.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
             : [];
+          const employeeAgentId =
+            typeof run.metadata?.employeeAgentId === "string" && run.metadata.employeeAgentId.trim().length > 0
+              ? run.metadata.employeeAgentId.trim()
+              : null;
           const memoryBriefing = memoryBriefingService
             ? await memoryBriefingService.buildBriefing({
                 projectId,
                 missionId: run.missionId,
                 runId: run.id,
+                ...(employeeAgentId ? { agentId: employeeAgentId, includeAgentMemory: true } : {}),
                 taskDescription: stepWithWorktree.title,
                 phaseContext: typeof stepWithWorktree.metadata?.phaseInstructions === "string"
                   ? stepWithWorktree.metadata.phaseInstructions
@@ -7013,11 +6971,16 @@ export function createOrchestratorService({
           }
           return s;
         })();
+        const employeeAgentId =
+          typeof run.metadata?.employeeAgentId === "string" && run.metadata.employeeAgentId.trim().length > 0
+            ? run.metadata.employeeAgentId.trim()
+            : null;
         const memoryBriefing = memoryBriefingService
           ? await memoryBriefingService.buildBriefing({
               projectId,
               missionId: run.missionId,
               runId: run.id,
+              ...(employeeAgentId ? { agentId: employeeAgentId, includeAgentMemory: true } : {}),
               taskDescription: stepForExecutor.title,
               phaseContext: typeof stepForExecutor.metadata?.phaseInstructions === "string"
                 ? stepForExecutor.metadata.phaseInstructions
@@ -10530,7 +10493,17 @@ export function createOrchestratorService({
         runId,
         status: "all",
       }) ?? [];
-      const sharedFacts = memoryService?.getSharedFacts(runId, 50) ?? [];
+      const sharedFacts = missionEntries
+        .filter((entry) =>
+          entry.category === "fact"
+          || entry.category === "decision"
+          || entry.category === "gotcha"
+          || entry.category === "handoff"
+          || entry.category === "digest"
+          || entry.category === "pattern"
+          || entry.category === "procedure"
+        )
+        .map((entry) => `[${entry.category}] ${entry.content}`);
       try {
         missionMemoryLifecycleService?.finalizeMission({
           projectId,
@@ -10557,7 +10530,7 @@ export function createOrchestratorService({
           finalStatus: finalStatus === "succeeded" ? "success" : finalStatus === "failed" ? "failure" : "partial",
           startedAt: run.startedAt,
           endedAt: updatedMeta.finalizedAt,
-          sharedFacts: sharedFacts.map((fact) => `[${fact.factType}] ${fact.content}`),
+          sharedFacts,
           decisions,
           gotchas,
           workerOutputs: steps

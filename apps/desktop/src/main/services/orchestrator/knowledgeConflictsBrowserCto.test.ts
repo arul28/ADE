@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // Consolidated M5 tests:
-//   (1) KNOWLEDGE: addSharedFact, all fact types, write-gate dedup, search, scope isolation
+//   (1) KNOWLEDGE: mission-memory-derived shared facts, write-gate dedup, search, scope isolation
 //   (2) CONFLICTS: runPrediction, simulateMerge, external resolver lifecycle, rebase detection, chips
 //   (3) PR: createIntegrationPr, failed merge cleanup, createQueuePrs, stack landing, finalization policy
 //   (4) AGENT-BROWSER: PhaseCard capabilities, browser_verification closeout, RoleToolProfile
@@ -16,7 +16,8 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { openKvDb } from "../../services/state/kvDb";
-import { createUnifiedMemoryService, type SharedFact } from "../../services/memory/unifiedMemoryService";
+import { createUnifiedMemoryService } from "../../services/memory/unifiedMemoryService";
+import { createMemoryBriefingService } from "../../services/memory/memoryBriefingService";
 import { createCtoStateService } from "../../services/cto/ctoStateService";
 import type {
   PhaseCard,
@@ -125,41 +126,95 @@ function makePhaseCard(overrides?: Partial<PhaseCard>): PhaseCard {
 // ═══════════════════════════════════════════════════════════════════════════
 describe("Knowledge: shared facts and memory", () => {
   // VAL-ENH-020
-  it("addSharedFact persists structured facts with UUID and timestamp", async () => {
-    const { memoryService, db } = await createMemoryFixture();
-    const runId = randomUUID();
-    const fact = memoryService.addSharedFact({
-      runId,
-      stepId: "step-1",
-      factType: "api_pattern",
+  it("derives shared team knowledge from mission memories with stable ids and timestamps", async () => {
+    const { memoryService, db, seedProject } = await createMemoryFixture();
+    const projectId = "proj-shared-facts";
+    const missionId = "mission-1";
+    seedProject(projectId);
+    memoryService.writeMemory({
+      projectId,
+      scope: "mission",
+      scopeOwnerId: missionId,
+      category: "pattern",
       content: "REST endpoints use /api/v2 prefix",
+      importance: "medium",
+      sourceType: "system",
+      sourceRunId: "run-1",
     });
-    expect(fact.id).toBeTruthy();
-    expect(fact.runId).toBe(runId);
-    expect(fact.stepId).toBe("step-1");
-    expect(fact.factType).toBe("api_pattern");
-    expect(fact.content).toBe("REST endpoints use /api/v2 prefix");
-    expect(fact.createdAt).toBeTruthy();
 
-    // Verify retrieval
-    const facts = memoryService.getSharedFacts(runId);
-    expect(facts.length).toBe(1);
-    expect(facts[0]!.id).toBe(fact.id);
+    const briefingService = createMemoryBriefingService({ memoryService });
+    const briefing = await briefingService.buildBriefing({
+      projectId,
+      missionId,
+      runId: "run-1",
+      mode: "mission_worker",
+    });
+
+    expect(briefing.sharedFacts).toHaveLength(1);
+    expect(briefing.sharedFacts[0]?.id).toBeTruthy();
+    expect(briefing.sharedFacts[0]?.factType).toBe("api_pattern");
+    expect(briefing.sharedFacts[0]?.content).toBe("REST endpoints use /api/v2 prefix");
+    expect(briefing.sharedFacts[0]?.createdAt).toBeTruthy();
     db.close();
   });
 
   // VAL-ENH-021
-  it("supports all 5 shared fact types", async () => {
-    const { memoryService, db } = await createMemoryFixture();
-    const runId = randomUUID();
-    const types: SharedFact["factType"][] = ["api_pattern", "schema_change", "config", "architectural", "gotcha"];
-    for (const factType of types) {
-      memoryService.addSharedFact({ runId, factType, content: `Fact of type ${factType}` });
-    }
-    const facts = memoryService.getSharedFacts(runId);
-    expect(facts.length).toBe(5);
-    const retrievedTypes = facts.map((f) => f.factType).sort();
-    expect(retrievedTypes).toEqual(types.sort());
+  it("maps mission-memory categories into shared fact types for prompt assembly", async () => {
+    const { memoryService, db, seedProject } = await createMemoryFixture();
+    const projectId = "proj-shared-fact-types";
+    const missionId = "mission-2";
+    seedProject(projectId);
+    memoryService.writeMemory({
+      projectId,
+      scope: "mission",
+      scopeOwnerId: missionId,
+      category: "pattern",
+      content: "Pattern fact",
+      importance: "medium",
+    });
+    memoryService.writeMemory({
+      projectId,
+      scope: "mission",
+      scopeOwnerId: missionId,
+      category: "digest",
+      content: "Digest fact",
+      importance: "medium",
+    });
+    memoryService.writeMemory({
+      projectId,
+      scope: "mission",
+      scopeOwnerId: missionId,
+      category: "preference",
+      content: "Preference fact",
+      importance: "medium",
+    });
+    memoryService.writeMemory({
+      projectId,
+      scope: "mission",
+      scopeOwnerId: missionId,
+      category: "fact",
+      content: "Architectural fact",
+      importance: "medium",
+    });
+    memoryService.writeMemory({
+      projectId,
+      scope: "mission",
+      scopeOwnerId: missionId,
+      category: "gotcha",
+      content: "Gotcha fact",
+      importance: "high",
+    });
+
+    const briefing = await createMemoryBriefingService({ memoryService }).buildBriefing({
+      projectId,
+      missionId,
+      runId: "run-2",
+      mode: "mission_worker",
+    });
+
+    expect(briefing.sharedFacts.map((f) => f.factType).sort()).toEqual(
+      ["api_pattern", "architectural", "config", "gotcha", "schema_change"].sort()
+    );
     db.close();
   });
 
@@ -775,19 +830,32 @@ describe("Cross-area integration", () => {
   });
 
   // VAL-CROSS-005 - Shared fact from worker → memory search
-  it("worker addSharedFact → getSharedFacts retrieves the fact", async () => {
-    const { memoryService, db } = await createMemoryFixture();
-    const runId = randomUUID();
-    const fact = memoryService.addSharedFact({
-      runId,
-      factType: "gotcha",
+  it("worker mission memory is exposed as shared team knowledge in the derived briefing", async () => {
+    const { memoryService, db, seedProject } = await createMemoryFixture();
+    const projectId = "proj-1";
+    const missionId = "mission-1";
+    seedProject(projectId);
+    memoryService.writeMemory({
+      projectId,
+      scope: "mission",
+      scopeOwnerId: missionId,
+      category: "gotcha",
       content: "SQLite WASM does not support FTS5",
+      importance: "high",
+      sourceType: "system",
+      sourceRunId: "run-1",
     });
 
-    const retrieved = memoryService.getSharedFacts(runId);
-    expect(retrieved.length).toBe(1);
-    expect(retrieved[0]!.content).toBe("SQLite WASM does not support FTS5");
-    expect(retrieved[0]!.factType).toBe("gotcha");
+    const briefing = await createMemoryBriefingService({ memoryService }).buildBriefing({
+      projectId,
+      missionId,
+      runId: "run-1",
+      mode: "mission_worker",
+    });
+
+    expect(briefing.sharedFacts).toHaveLength(1);
+    expect(briefing.sharedFacts[0]!.content).toBe("SQLite WASM does not support FTS5");
+    expect(briefing.sharedFacts[0]!.factType).toBe("gotcha");
 
     db.close();
   });

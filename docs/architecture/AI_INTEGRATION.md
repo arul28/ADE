@@ -844,7 +844,7 @@ The compaction engine (`compactionEngine.ts`, integrated via `unifiedExecutor.ts
 
 **Compaction Flow**:
 
-1. **Pre-compaction writeback**: Before compacting, the engine extracts durable facts (shared facts, discovered patterns, key decisions) from the conversation and writes them to the `orchestrator_shared_facts` table.
+1. **Pre-compaction writeback**: Before compacting, the engine extracts durable facts (discovered patterns, key decisions, gotchas, configuration notes) from the conversation and writes them to mission-scoped entries in `unified_memories` using strict write-gate rules and `sourceRunId` lineage.
 2. **Self-summarization**: The agent generates a summary of the conversation so far, preserving key context, decisions, and current task state.
 3. **Conversation replacement**: The full conversation history is replaced with the summary, dramatically reducing token count while preserving essential context.
 4. **Post-compaction**: The compacted summary is written to the `attempt_transcripts` table with `compacted_at` and `compaction_summary` fields.
@@ -910,7 +910,7 @@ Memory tools follow the same MCP permission model as other agent tools. Read ope
 
 ### Shared Facts and Run Narrative
 
-**Shared Facts**: The `orchestrator_shared_facts` table stores facts discovered by agents during a mission run. Facts are typed and scoped to a run and optionally a step. Shared facts are still a live coordination primitive and are injected into prompts via `buildFullPrompt()`.
+**Shared Team Knowledge**: Durable cross-worker coordination now lives in mission-scoped `unified_memories`, not in a separate `orchestrator_shared_facts` table. Prompt-time `sharedFacts` sections are a derived view over mission memories, giving workers the same stable prompt section without maintaining a second storage path.
 
 **Run Narrative**: `appendRunNarrative()` in `orchestratorService.ts` generates a rolling narrative after each step completion. The narrative summarizes what has been accomplished, what is in progress, and what remains. It is stored as `runNarrative` metadata on the orchestrator run and displayed in the Activity tab.
 
@@ -920,7 +920,7 @@ Memory tools follow the same MCP permission model as other agent tools. Read ope
 
 > **Full spec**: `docs/final-plan/phase-4.md` W6 (Unified Memory System) contains the comprehensive implementation plan including schema, write gate, scoring formula, lifecycle algorithms, and pack removal strategy.
 
-The memory system provides agents with durable, searchable long-term memory that persists across sessions and runs. Phase 4 W6, W6½, and W7a are complete: `unifiedMemoryService.ts` is the canonical durable memory backend (project/agent/mission scopes with pinned/hot/cold tiers) with hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking), lifecycle sweeps, batch consolidation, and pre-compaction flush. Persisted `.ade/packs/...` artifacts are no longer required for runtime context assembly. Deterministic context exports (`packService`) and CTO identity state (`ctoStateService`) remain as explicit compatibility and audit surfaces.
+The memory system provides agents with durable, searchable long-term memory that persists across sessions and runs. Phase 4 W6, W6½, W7a, and W7b are complete: `unifiedMemoryService.ts` is the canonical durable memory backend (project/agent/mission scopes with pinned/hot/cold tiers) with hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking), lifecycle sweeps, batch consolidation, pre-compaction flush, and orchestrator mission-memory wiring. Persisted `.ade/packs/...` artifacts are no longer required for runtime context assembly. Deterministic context exports (`packService`) and CTO identity state (`ctoStateService`) remain as explicit compatibility and audit surfaces.
 
 #### Storage Layer
 
@@ -975,7 +975,7 @@ Every agent runtime assembles its context window from a layered budget:
 System prompt + tools definition                    (~5-10K tokens)
 + Tier 1 core memory (persona + working context)    (~2-4K tokens)
 + Tier 2 retrieved memories (budget-dependent)       (~1-3K tokens)
-+ Mission shared facts (if in mission)               (~0.5-1K tokens)
++ Mission shared team knowledge (derived from mission memory) (~0.5-1K tokens)
 + Conversation history                               (remaining budget)
 + Response reserve                                   (~4K tokens)
 ```
@@ -985,7 +985,7 @@ The live memory scopes are:
 - `mission`: Shared across a mission run
 - `agent`: Agent-specific durable memory
 
-`buildFullPrompt()` currently injects shared facts, mission-memory highlights, and project-memory highlights, while structured lane/project context still comes from pack exports.
+`buildFullPrompt()` currently injects mission-derived shared team knowledge, mission-memory highlights, project-memory highlights, and explicit agent-memory highlights when the run carries an exact `employeeAgentId`. Structured lane/project context still comes from pack exports.
 
 #### Prior Art & Design References
 
@@ -1706,6 +1706,7 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Unified Memory System (W6) — replaces context packs + CTO core memory UI surfaces | Complete | Unified memory retrieval and renderer cutover are active |
 | Memory Engine Hardening (W6½) — lifecycle sweeps, batch consolidation, pre-compaction flush | Complete | Temporal decay, tier demotion, hard limits, orphan cleanup, Jaccard+LLM consolidation, pre-compaction flush, Memory Health dashboard |
 | Embeddings Pipeline (W7a) — local embedding + hybrid retrieval | Complete | Local all-MiniLM-L6-v2 via @huggingface/transformers, FTS4 BM25 + cosine similarity + MMR re-ranking, graceful lexical fallback |
+| Orchestrator Memory Wiring (W7b) — mission-memory SSoT + exact employee L2 injection | Complete | Retired `orchestrator_shared_facts`, compaction writes back to mission memory, worker briefings derive shared team knowledge from mission memory, exact `employeeAgentId` launch metadata controls agent-memory injection |
 | Skills + Learning Pipeline (W7) — procedural extraction + skill materialization | Core implemented; advanced capture pending | Phase 4 — episodic→procedural extraction, `.claude/skills/SKILL.md` materialization, and skill ingestion are present; remaining work is knowledge source capture from failures/interventions/repeated errors/PR feedback |
 | CTO Agent — core identity, persistent chat, core memory (W1) | Complete | Phase 4 -- `ctoStateService.ts`, dual-canonical persistence (DB + file), session reconstruction, CtoPage with chat |
 | Worker Agents — org chart, multi-adapter, config versioning, budget (W2) | Complete | Phase 4 -- `workerAgentService.ts`, `workerRevisionService.ts`, `workerBudgetService.ts`, `workerTaskSessionService.ts`, `workerAdapterRuntimeService.ts` |
@@ -1716,7 +1717,7 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Task agents (lane artifacts) | Planned | Phase 4 -- specialized agents for artifact production within lanes |
 | Chat-to-mission escalation | Planned | Phase 4 -- promote a chat conversation into a full mission with pre-filled context |
 
-**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestrator implementation is functionally complete through Orchestrator Overhaul Phases 1-7. Phase 4 W1-W4, W6, W6½, and W7a are complete. M4 and M5 are complete, adding approval gates (`phase_approval` intervention type with blocking phase transition semantics), mandatory planning enforcement (constructor-injected planning phase with first-turn watchdog), multi-round deliberation (`canLoop`/`loopTarget`/`maxQuestions` on phase ordering constraints), adaptive runtime (`classifyTaskComplexity` → parallelism scaling, `evaluateModelDowngrade` → cheaper models under budget pressure), budget-gated spawns (hard cap checks before every worker spawn), and benign error classification (`BENIGN_SANDBOX_BLOCK_PATTERNS` for ExitPlanMode/Zod noise). Memory engine now includes lifecycle sweeps, batch consolidation, pre-compaction flush, local embedding pipeline (`@huggingface/transformers` all-MiniLM-L6-v2), and hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking) with graceful lexical fallback. Remaining major Phase 4 workstreams: W5b, W8, W9, W10. W-UX is partially implemented, W7b is mostly implemented, and W7c has its core pipeline implemented with advanced capture still pending. MCP dual-mode architecture shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
+**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestrator implementation is functionally complete through Orchestrator Overhaul Phases 1-7. Phase 4 W1-W4, W6, W6½, W7a, and W7b are complete. M4 and M5 are complete, adding approval gates (`phase_approval` intervention type with blocking phase transition semantics), mandatory planning enforcement (constructor-injected planning phase with first-turn watchdog), multi-round deliberation (`canLoop`/`loopTarget`/`maxQuestions` on phase ordering constraints), adaptive runtime (`classifyTaskComplexity` → parallelism scaling, `evaluateModelDowngrade` → cheaper models under budget pressure), budget-gated spawns (hard cap checks before every worker spawn), and benign error classification (`BENIGN_SANDBOX_BLOCK_PATTERNS` for ExitPlanMode/Zod noise). Memory engine now includes lifecycle sweeps, batch consolidation, pre-compaction flush, local embedding pipeline (`@huggingface/transformers` all-MiniLM-L6-v2), hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking) with graceful lexical fallback, mission-memory-backed shared team knowledge, and exact employee L2 injection for employee-owned runs. Remaining major Phase 4 workstreams after Wave 1: W8, W9, W10. W-UX is partially implemented, and W7c has its core pipeline implemented with advanced capture still pending. MCP dual-mode architecture shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
 
 ---
 
