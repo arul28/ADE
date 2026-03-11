@@ -3,22 +3,31 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { Button } from "../ui/Button";
 import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
 import { getModelById } from "../../../shared/modelRegistry";
-import type { ContextGenerateDocsResult, ContextRefreshTrigger } from "../../../shared/types";
+import type { ContextGenerateDocsResult, ContextRefreshEvents } from "../../../shared/types";
 
 type Phase = "configure" | "running" | "done";
 
-type RefreshCadence = ContextRefreshTrigger;
-
-const CADENCE_HELP: Record<RefreshCadence, string> = {
-  manual: "Runs only when you click generate.",
-  per_mission: "Runs automatically when missions launch (min spacing applies).",
-  per_pr: "Runs automatically on PR write events like create/update/land (min spacing applies).",
-  per_lane_refresh: "Runs automatically after lane context refresh-worthy changes (min spacing applies)."
+type EventToggle = {
+  key: keyof ContextRefreshEvents;
+  label: string;
+  help: string;
 };
+
+const EVENT_TOGGLES: EventToggle[] = [
+  { key: "onSessionEnd", label: "On session end", help: "Regen when a terminal/agent session ends." },
+  { key: "onCommit", label: "On commit", help: "Regen when a commit is created." },
+  { key: "onPrCreate", label: "On PR create", help: "Regen when a pull request is created or updated." },
+  { key: "onPrLand", label: "On PR land", help: "Regen when a pull request is landed/merged." },
+  { key: "onMissionStart", label: "On mission start", help: "Regen when a mission launches." },
+  { key: "onMissionEnd", label: "On mission end", help: "Regen when a mission completes." },
+  { key: "onLaneCreate", label: "On lane create", help: "Regen when a new lane is created." },
+];
+
+const DEFAULT_EVENTS: ContextRefreshEvents = { onPrCreate: true, onMissionStart: true };
 
 const STORAGE_MODEL_KEY = "ade.contextDocs.modelId";
 const STORAGE_EFFORT_KEY = "ade.contextDocs.reasoningEffort";
-const STORAGE_CADENCE_KEY = "ade.contextDocs.refreshCadence";
+const STORAGE_EVENTS_KEY = "ade.contextDocs.refreshEvents";
 
 function readStoredString(key: string): string | null {
   try {
@@ -54,7 +63,7 @@ export function GenerateDocsModal({
   const [availableModelIds, setAvailableModelIds] = React.useState<string[]>([]);
   const [modelId, setModelId] = React.useState<string>("claude-sonnet-4-6");
   const [reasoningEffort, setReasoningEffort] = React.useState<string | null>(null);
-  const [cadence, setCadence] = React.useState<RefreshCadence>("manual");
+  const [events, setEvents] = React.useState<ContextRefreshEvents>({ ...DEFAULT_EVENTS });
   const [loadingModels, setLoadingModels] = React.useState(false);
   const [result, setResult] = React.useState<ContextGenerateDocsResult | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -65,16 +74,18 @@ export function GenerateDocsModal({
     if (!open) return;
     const storedModel = readStoredString(STORAGE_MODEL_KEY);
     const storedEffort = readStoredString(STORAGE_EFFORT_KEY);
-    const storedCadence = readStoredString(STORAGE_CADENCE_KEY);
+    const storedEventsRaw = readStoredString(STORAGE_EVENTS_KEY);
     if (storedModel) setModelId(storedModel);
     if (storedEffort) setReasoningEffort(storedEffort);
-    if (
-      storedCadence === "manual"
-      || storedCadence === "per_mission"
-      || storedCadence === "per_pr"
-      || storedCadence === "per_lane_refresh"
-    ) {
-      setCadence(storedCadence);
+    if (storedEventsRaw) {
+      try {
+        const parsed = JSON.parse(storedEventsRaw) as ContextRefreshEvents;
+        if (typeof parsed === "object" && parsed !== null) {
+          setEvents(parsed);
+        }
+      } catch {
+        // ignore bad stored JSON
+      }
     }
 
     let cancelled = false;
@@ -111,6 +122,10 @@ export function GenerateDocsModal({
     }
   }, [open, reasoningEffort, reasoningTiers]);
 
+  const toggleEvent = (key: keyof ContextRefreshEvents) => {
+    setEvents((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
   const handleRun = async () => {
     setPhase("running");
     setError(null);
@@ -118,14 +133,14 @@ export function GenerateDocsModal({
 
     writeStoredString(STORAGE_MODEL_KEY, modelId);
     writeStoredString(STORAGE_EFFORT_KEY, reasoningEffort);
-    writeStoredString(STORAGE_CADENCE_KEY, cadence);
+    writeStoredString(STORAGE_EVENTS_KEY, JSON.stringify(events));
 
     try {
       const next = await window.ade.context.generateDocs({
         provider: "unified",
         modelId,
         reasoningEffort,
-        trigger: cadence
+        events
       });
       setResult(next);
       setPhase("done");
@@ -179,21 +194,27 @@ export function GenerateDocsModal({
               </div>
 
               <div>
-                <label className="mb-1 block text-xs font-medium text-fg">Auto Refresh Cadence</label>
-                <select
-                  value={cadence}
-                  onChange={(event) => setCadence(event.target.value as RefreshCadence)}
-                  className="w-full rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-fg focus:border-accent focus:outline-none"
-                >
-                  <option value="manual">Manual only</option>
-                  <option value="per_mission">Every mission launch</option>
-                  <option value="per_pr">Every PR cycle</option>
-                  <option value="per_lane_refresh">On lane context changes</option>
-                </select>
-                <p className="mt-1 text-[11px] text-muted-fg">
-                  {CADENCE_HELP[cadence]}
+                <label className="mb-1 block text-xs font-medium text-fg">Auto Refresh Events</label>
+                <p className="mb-2 text-[11px] text-muted-fg">
+                  Toggle which events trigger automatic context doc regeneration. Min-interval throttling applies.
                 </p>
-                <p className="mt-1 text-[11px] text-muted-fg">
+                <div className="space-y-1.5">
+                  {EVENT_TOGGLES.map((toggle) => (
+                    <label key={toggle.key} className="flex items-start gap-2 cursor-pointer group">
+                      <input
+                        type="checkbox"
+                        checked={!!events[toggle.key]}
+                        onChange={() => toggleEvent(toggle.key)}
+                        className="mt-0.5 h-3.5 w-3.5 rounded border-border accent-accent"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <span className="text-xs text-fg">{toggle.label}</span>
+                        <p className="text-[11px] text-muted-fg leading-tight">{toggle.help}</p>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+                <p className="mt-2 text-[11px] text-muted-fg">
                   Higher frequency can increase token usage and cost. Use lightweight models for aggressive cadences.
                 </p>
               </div>

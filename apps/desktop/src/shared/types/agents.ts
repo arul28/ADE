@@ -84,12 +84,27 @@ export type AgentIdentity = {
   adapterType: AdapterType;
   adapterConfig: AgentAdapterConfig;
   runtimeConfig: AgentRuntimeConfig;
+  personality?: string;
+  communicationStyle?: string;
+  constraints?: string[];
+  systemPromptExtension?: string;
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
   lastHeartbeatAt?: string;
   createdAt: string;
   updatedAt: string;
   deletedAt?: string | null;
+};
+
+export type WorkerTemplate = {
+  id: string;
+  name: string;
+  role: AgentRole;
+  title: string;
+  capabilities: string[];
+  description: string;
+  adapterType: AdapterType;
+  model?: string;
 };
 
 export type AgentCoreMemory = {

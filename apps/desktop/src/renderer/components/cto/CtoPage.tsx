@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Brain,
   ChatCircle,
+  Database,
   Gear,
   GitBranch,
   UsersThree,
@@ -15,6 +16,7 @@ import type {
   AgentSessionLogEntry,
   CtoCoreMemory,
   CtoIdentity,
+  CtoOnboardingState,
   CtoSessionLogEntry,
   HeartbeatPolicy,
   WorkerAgentRun,
@@ -25,18 +27,24 @@ import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
 import { AgentSidebar } from "./AgentSidebar";
-import { WorkerEditorPanel, WorkerDetailPanel, workerDraftFromAgent } from "./TeamPanel";
+import { WorkerEditorPanel, workerDraftFromAgent } from "./TeamPanel";
 import type { WorkerEditorDraft } from "./TeamPanel";
 import { LinearSyncPanel } from "./LinearSyncPanel";
 import { CtoSettingsPanel } from "./CtoSettingsPanel";
+import { OnboardingWizard } from "./OnboardingWizard";
+import { OnboardingBanner } from "./OnboardingBanner";
+import { WorkerCreationWizard } from "./WorkerCreationWizard";
+import { WorkerDetailSlideOut } from "./WorkerDetailSlideOut";
+import { CtoMemoryBrowser } from "./CtoMemoryBrowser";
 
 /* ── Tab types ── */
 
-type TabId = "chat" | "team" | "linear" | "settings";
+type TabId = "chat" | "team" | "memory" | "linear" | "settings";
 
 const TABS: { id: TabId; label: string; icon: React.ElementType }[] = [
   { id: "chat", label: "Chat", icon: ChatCircle },
   { id: "team", label: "Team", icon: UsersThree },
+  { id: "memory", label: "Memory", icon: Database },
   { id: "linear", label: "Linear", icon: GitBranch },
   { id: "settings", label: "Settings", icon: Gear },
 ];
@@ -56,6 +64,10 @@ export function CtoPage() {
   const [coreMemory, setCoreMemory] = useState<CtoCoreMemory | null>(null);
   const [sessionLogs, setSessionLogs] = useState<CtoSessionLogEntry[]>([]);
 
+  // Onboarding state
+  const [onboardingState, setOnboardingState] = useState<CtoOnboardingState | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+
   const [agents, setAgents] = useState<AgentIdentity[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [revisions, setRevisions] = useState<AgentConfigRevision[]>([]);
@@ -67,6 +79,11 @@ export function CtoPage() {
   const [workerWakeStatus, setWorkerWakeStatus] = useState<string | null>(null);
   const [workerWakeError, setWorkerWakeError] = useState<string | null>(null);
   const [wakingWorker, setWakingWorker] = useState(false);
+
+  // Worker creation wizard
+  const [showWorkerWizard, setShowWorkerWizard] = useState(false);
+  // Worker detail slide-out
+  const [showWorkerDetail, setShowWorkerDetail] = useState(false);
 
   const [editorOpen, setEditorOpen] = useState(false);
   const [workerDraft, setWorkerDraft] = useState<WorkerEditorDraft>(workerDraftFromAgent(null));
@@ -83,15 +100,35 @@ export function CtoPage() {
     [agents, selectedAgentId],
   );
 
+  // Onboarding detection
+  const needsOnboarding = onboardingState
+    && onboardingState.completedSteps.length === 0
+    && !onboardingState.dismissedAt
+    && !onboardingState.completedAt;
+
+  const showBanner = onboardingState
+    && !needsOnboarding
+    && !onboardingState.completedAt
+    && onboardingState.dismissedAt
+    && !showOnboarding;
+
   /* ── Data loading ── */
 
   const loadCtoState = useCallback(async () => {
     if (!window.ade?.cto) return;
     try {
-      const snapshot = await window.ade.cto.getState({ recentLimit: 20 });
+      const [snapshot, obState] = await Promise.all([
+        window.ade.cto.getState({ recentLimit: 20 }),
+        window.ade.cto.getOnboardingState(),
+      ]);
       setCtoIdentity(snapshot.identity);
       setCoreMemory(snapshot.coreMemory);
       setSessionLogs(snapshot.recentSessions);
+      setOnboardingState(obState);
+      // Auto-show onboarding if first run
+      if (obState.completedSteps.length === 0 && !obState.dismissedAt && !obState.completedAt) {
+        setShowOnboarding(true);
+      }
     } catch { /* non-fatal */ }
   }, []);
 
@@ -180,11 +217,9 @@ export function CtoPage() {
     setWorkerCoreMemory(updated);
   }, [selectedAgentId]);
 
-  const handleSaveCtoIdentity = useCallback(async (draft: { name: string; persona: string; provider: string; model: string; reasoningEffort: string }) => {
+  const handleSaveCtoIdentity = useCallback(async (patch: Record<string, unknown>) => {
     if (!window.ade?.cto) throw new Error("CTO bridge unavailable.");
-    const snapshot = await window.ade.cto.updateIdentity({
-      patch: { name: draft.name, persona: draft.persona, modelPreferences: { provider: draft.provider, model: draft.model, reasoningEffort: draft.reasoningEffort || null } },
-    });
+    const snapshot = await window.ade.cto.updateIdentity({ patch });
     setCtoIdentity(snapshot.identity);
   }, []);
 
@@ -238,7 +273,10 @@ export function CtoPage() {
   const removeWorker = useCallback(async (agentId: string) => {
     if (!window.ade?.cto) return;
     await window.ade.cto.removeAgent({ agentId });
-    if (selectedAgentId === agentId) setSelectedAgentId(null);
+    if (selectedAgentId === agentId) {
+      setSelectedAgentId(null);
+      setShowWorkerDetail(false);
+    }
     await loadWorkersAndBudget();
   }, [loadWorkersAndBudget, selectedAgentId]);
 
@@ -266,9 +304,7 @@ export function CtoPage() {
   }, [selectedAgentId]);
 
   const handleHireWorker = useCallback(() => {
-    setWorkerDraft(workerDraftFromAgent(null));
-    setWorkerError(null);
-    setEditorOpen(true);
+    setShowWorkerWizard(true);
     setActiveTab("team");
   }, []);
 
@@ -277,7 +313,27 @@ export function CtoPage() {
     setWorkerDraft(workerDraftFromAgent(selectedWorker));
     setWorkerError(null);
     setEditorOpen(true);
+    setShowWorkerDetail(false);
   }, [selectedWorker]);
+
+  const handleOnboardingComplete = useCallback(async () => {
+    setShowOnboarding(false);
+    await loadCtoState();
+  }, [loadCtoState]);
+
+  const handleDismissOnboarding = useCallback(async () => {
+    if (!window.ade?.cto) return;
+    await window.ade.cto.dismissOnboarding();
+    setShowOnboarding(false);
+    await loadCtoState();
+  }, [loadCtoState]);
+
+  const handleResetOnboarding = useCallback(async () => {
+    if (!window.ade?.cto) return;
+    await window.ade.cto.resetOnboarding();
+    setShowOnboarding(true);
+    await loadCtoState();
+  }, [loadCtoState]);
 
   /* ── Render ── */
 
@@ -287,12 +343,25 @@ export function CtoPage() {
 
   return (
     <div className="flex h-full w-full overflow-hidden" style={{ background: "var(--color-bg)", color: "var(--color-fg)" }}>
+      {/* Onboarding wizard overlay */}
+      {showOnboarding && (
+        <OnboardingWizard
+          onComplete={handleOnboardingComplete}
+          onSkip={handleDismissOnboarding}
+          completedSteps={onboardingState?.completedSteps ?? []}
+        />
+      )}
+
       {/* Agent sidebar */}
       <AgentSidebar
         agents={agents}
         selectedAgentId={selectedAgentId}
-        onSelectAgent={(id) => { setSelectedAgentId(id); setActiveTab("chat"); }}
-        onSelectCto={() => { setSelectedAgentId(null); setActiveTab("chat"); }}
+        onSelectAgent={(id) => {
+          setSelectedAgentId(id);
+          setShowWorkerDetail(true);
+          setActiveTab("team");
+        }}
+        onSelectCto={() => { setSelectedAgentId(null); setShowWorkerDetail(false); setActiveTab("chat"); }}
         isCtoSelected={!selectedAgentId}
         budgetSnapshot={budgetSnapshot}
         onHireWorker={handleHireWorker}
@@ -301,6 +370,14 @@ export function CtoPage() {
 
       {/* Main content */}
       <div className="flex flex-1 flex-col min-w-0 min-h-0">
+        {/* Onboarding banner */}
+        {showBanner && (
+          <OnboardingBanner
+            onContinue={() => setShowOnboarding(true)}
+            onDismiss={handleDismissOnboarding}
+          />
+        )}
+
         {/* Tab bar */}
         <div className="shrink-0 flex items-center gap-0 border-b border-border/40" style={{ background: "var(--color-surface)", minHeight: 36 }}>
           {TABS.map(({ id, label, icon: Icon }) => (
@@ -365,7 +442,18 @@ export function CtoPage() {
           {/* Team tab */}
           {activeTab === "team" && (
             <div className="flex flex-col h-full min-h-0 overflow-y-auto">
-              {editorOpen ? (
+              {showWorkerWizard ? (
+                <div className="p-4">
+                  <WorkerCreationWizard
+                    agents={agents}
+                    onComplete={async () => {
+                      setShowWorkerWizard(false);
+                      await loadWorkersAndBudget();
+                    }}
+                    onCancel={() => setShowWorkerWizard(false)}
+                  />
+                </div>
+              ) : editorOpen ? (
                 <div className="p-4">
                   <WorkerEditorPanel
                     draft={workerDraft}
@@ -377,37 +465,82 @@ export function CtoPage() {
                     onCancel={() => setEditorOpen(false)}
                   />
                 </div>
-              ) : selectedWorker ? (
-                <WorkerDetailPanel
-                  worker={selectedWorker}
-                  coreMemory={workerCoreMemory}
-                  sessionLogs={workerSessionLogs}
-                  runs={workerRuns}
-                  revisions={revisions}
-                  opsError={workerOpsError}
-                  wakeStatus={workerWakeStatus}
-                  wakeError={workerWakeError}
-                  waking={wakingWorker}
-                  onWakeNow={() => void wakeSelectedWorker()}
-                  onEdit={handleEditWorker}
-                  onRemove={() => void removeWorker(selectedWorker.id)}
-                  onRollbackRevision={(id) => void rollbackRevision(id)}
-                  onSaveCoreMemory={handleSaveWorkerCoreMemory}
-                />
-              ) : (
+              ) : agents.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full p-8">
                   <UsersThree size={48} weight="thin" className="text-muted-fg/20 mb-4" />
                   <div className="font-sans text-sm font-bold text-fg">Your Team</div>
                   <div className="font-mono text-[10px] text-muted-fg/50 mt-1 text-center max-w-[40ch]">
-                    Select a worker from the sidebar to view their details, or hire a new team member.
+                    Hire workers to handle tasks autonomously. Start from a template or configure from scratch.
                   </div>
                   <Button variant="primary" className="mt-4" onClick={handleHireWorker}>
                     Hire Worker
                   </Button>
                 </div>
+              ) : (
+                <div className="p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="font-mono text-[10px] font-bold uppercase tracking-[1px] text-muted-fg/60">
+                      Workers ({agents.length})
+                    </span>
+                    <Button variant="outline" size="sm" onClick={handleHireWorker}>
+                      Hire Worker
+                    </Button>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {agents.map((agent) => {
+                      const budgetInfo = budgetSnapshot?.workers.find((w) => w.agentId === agent.id);
+                      return (
+                        <button
+                          key={agent.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedAgentId(agent.id);
+                            setShowWorkerDetail(true);
+                          }}
+                          className={cn(
+                            "text-left p-3 border transition-all",
+                            selectedAgentId === agent.id
+                              ? "border-accent/30 bg-accent/5"
+                              : "border-border/10 bg-card/60 hover:border-border/30",
+                          )}
+                        >
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className={cn(
+                              "h-2 w-2 rounded-full shrink-0",
+                              agent.status === "running" ? "bg-info animate-pulse"
+                                : agent.status === "active" ? "bg-success"
+                                : agent.status === "paused" ? "bg-warning"
+                                : "bg-muted-fg/40",
+                            )} />
+                            <span className="font-mono text-xs font-bold text-fg truncate">{agent.name}</span>
+                          </div>
+                          <div className="flex items-center gap-2 text-[9px] font-mono text-muted-fg/50">
+                            <span>{agent.role}</span>
+                            <span className="text-border">·</span>
+                            <span>{agent.adapterType.replace("-local", "")}</span>
+                            {budgetInfo && (
+                              <>
+                                <span className="text-border">·</span>
+                                <span>${(budgetInfo.spentMonthlyCents / 100).toFixed(2)}</span>
+                              </>
+                            )}
+                          </div>
+                          {agent.lastHeartbeatAt && (
+                            <div className="text-[8px] font-mono text-muted-fg/30 mt-1">
+                              Last beat: {new Date(agent.lastHeartbeatAt).toLocaleDateString()}
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
               )}
             </div>
           )}
+
+          {/* Memory tab */}
+          {activeTab === "memory" && <CtoMemoryBrowser />}
 
           {/* Linear tab */}
           {activeTab === "linear" && <LinearSyncPanel />}
@@ -420,10 +553,33 @@ export function CtoPage() {
               sessionLogs={sessionLogs}
               onSaveIdentity={handleSaveCtoIdentity}
               onSaveCoreMemory={handleSaveCoreMemory}
+              onResetOnboarding={handleResetOnboarding}
             />
           )}
         </div>
       </div>
+
+      {/* Worker detail slide-out */}
+      {showWorkerDetail && selectedWorker && (
+        <WorkerDetailSlideOut
+          worker={selectedWorker}
+          coreMemory={workerCoreMemory}
+          sessionLogs={workerSessionLogs}
+          runs={workerRuns}
+          revisions={revisions}
+          opsError={workerOpsError}
+          wakeStatus={workerWakeStatus}
+          wakeError={workerWakeError}
+          waking={wakingWorker}
+          onWakeNow={() => void wakeSelectedWorker()}
+          onEdit={handleEditWorker}
+          onRemove={() => void removeWorker(selectedWorker.id)}
+          onChat={() => { setActiveTab("chat"); setShowWorkerDetail(false); }}
+          onRollbackRevision={(id) => void rollbackRevision(id)}
+          onSaveCoreMemory={handleSaveWorkerCoreMemory}
+          onClose={() => setShowWorkerDetail(false)}
+        />
+      )}
     </div>
   );
 }

@@ -1,27 +1,18 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { PencilSimple } from "@phosphor-icons/react";
+import { ArrowCounterClockwise, PencilSimple } from "@phosphor-icons/react";
 import type { CtoCoreMemory, CtoIdentity, CtoSessionLogEntry } from "../../../shared/types";
+import { IdentityEditor } from "./IdentityEditor";
+import { TimelineEntry } from "./shared/TimelineEntry";
 import { Button } from "../ui/Button";
 import { PaneHeader } from "../ui/PaneHeader";
 import { cn } from "../ui/cn";
+import { inputCls, labelCls, textareaCls, cardCls } from "./shared/designTokens";
 
 /* ── Helpers ── */
-
-function formatDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-  } catch { return iso; }
-}
 
 function splitTrimmed(val: string): string[] {
   return val.split(",").map((s) => s.trim()).filter(Boolean);
 }
-
-const inputCls =
-  "h-8 w-full border border-border/15 bg-surface-recessed px-3 text-xs font-mono text-fg placeholder:text-muted-fg/50 focus:border-accent/40 focus:outline-none transition-colors";
-const textareaCls =
-  "w-full border border-border/15 bg-surface-recessed p-3 text-xs font-mono text-fg placeholder:text-muted-fg/50 focus:border-accent/40 focus:outline-none resize-vertical transition-colors";
-const labelCls = "text-[10px] font-mono font-bold uppercase tracking-[1px] text-muted-fg/60";
 
 type CoreMemoryPatch = Partial<{
   projectSummary: string;
@@ -39,37 +30,17 @@ export function CtoSettingsPanel({
   sessionLogs,
   onSaveIdentity,
   onSaveCoreMemory,
+  onResetOnboarding,
 }: {
   identity: CtoIdentity | null;
   coreMemory: CtoCoreMemory | null;
   sessionLogs: CtoSessionLogEntry[];
-  onSaveIdentity: (draft: { name: string; persona: string; provider: string; model: string; reasoningEffort: string }) => Promise<void>;
+  onSaveIdentity: (patch: Record<string, unknown>) => Promise<void>;
   onSaveCoreMemory: (patch: CoreMemoryPatch) => Promise<void>;
+  onResetOnboarding?: () => void;
 }) {
-  /* Identity editor */
+  /* Identity editor toggle */
   const [identityEditing, setIdentityEditing] = useState(false);
-  const [identityDraft, setIdentityDraft] = useState({ name: "", persona: "", provider: "", model: "", reasoningEffort: "" });
-  const [identitySaving, setIdentitySaving] = useState(false);
-  const [identityError, setIdentityError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!identityEditing && identity) {
-      setIdentityDraft({
-        name: identity.name,
-        persona: identity.persona,
-        provider: identity.modelPreferences.provider,
-        model: identity.modelPreferences.model,
-        reasoningEffort: identity.modelPreferences.reasoningEffort ?? "",
-      });
-    }
-  }, [identity, identityEditing]);
-
-  const handleSaveIdentity = async () => {
-    setIdentitySaving(true); setIdentityError(null);
-    try { await onSaveIdentity(identityDraft); setIdentityEditing(false); }
-    catch (err) { setIdentityError(err instanceof Error ? err.message : "Failed."); }
-    finally { setIdentitySaving(false); }
-  };
 
   /* Memory editor */
   const [memoryEditing, setMemoryEditing] = useState(false);
@@ -107,7 +78,7 @@ export function CtoSettingsPanel({
   return (
     <div className="flex flex-col h-full min-h-0 overflow-y-auto p-4 gap-4">
       {/* CTO Identity */}
-      <div className="border border-border/10 bg-card/60 backdrop-blur-sm shadow-card">
+      <div className={cn(cardCls, "overflow-hidden")}>
         <PaneHeader
           title="CTO Identity"
           right={
@@ -119,38 +90,12 @@ export function CtoSettingsPanel({
           }
         />
         {identityEditing ? (
-          <div className="p-4 space-y-3">
-            <label className="space-y-1 block">
-              <div className={labelCls}>Name</div>
-              <input className={inputCls} value={identityDraft.name} onChange={(e) => setIdentityDraft((d) => ({ ...d, name: e.target.value }))} />
-            </label>
-            <label className="space-y-1 block">
-              <div className={labelCls}>Persona</div>
-              <textarea className={cn(textareaCls, "min-h-[60px]")} value={identityDraft.persona} onChange={(e) => setIdentityDraft((d) => ({ ...d, persona: e.target.value }))} />
-            </label>
-            <div className="grid grid-cols-3 gap-3">
-              <label className="space-y-1">
-                <div className={labelCls}>Provider</div>
-                <input className={inputCls} value={identityDraft.provider} onChange={(e) => setIdentityDraft((d) => ({ ...d, provider: e.target.value }))} />
-              </label>
-              <label className="space-y-1">
-                <div className={labelCls}>Model</div>
-                <input className={inputCls} value={identityDraft.model} onChange={(e) => setIdentityDraft((d) => ({ ...d, model: e.target.value }))} />
-              </label>
-              <label className="space-y-1">
-                <div className={labelCls}>Reasoning</div>
-                <input className={inputCls} placeholder="high/medium/low" value={identityDraft.reasoningEffort} onChange={(e) => setIdentityDraft((d) => ({ ...d, reasoningEffort: e.target.value }))} />
-              </label>
-            </div>
-            {identityError && <div className="text-xs text-error">{identityError}</div>}
-            <div className="flex gap-2">
-              <Button variant="primary" className="flex-1" disabled={identitySaving} onClick={handleSaveIdentity}>
-                {identitySaving ? "Saving..." : "Save"}
-              </Button>
-              <Button variant="outline" className="flex-1" disabled={identitySaving} onClick={() => setIdentityEditing(false)}>
-                Cancel
-              </Button>
-            </div>
+          <div className="p-4">
+            <IdentityEditor
+              identity={identity}
+              onSave={onSaveIdentity}
+              onCancel={() => setIdentityEditing(false)}
+            />
           </div>
         ) : identity ? (
           <div className="p-4 space-y-2">
@@ -159,6 +104,11 @@ export function CtoSettingsPanel({
               <span className="font-mono text-[10px] text-muted-fg/50">v{identity.version}</span>
             </div>
             <div className="font-mono text-[10px] text-muted-fg leading-relaxed">{identity.persona}</div>
+            {identity.personality && (
+              <div className="font-mono text-[9px] text-muted-fg/40">
+                Personality: <span className="text-muted-fg">{identity.personality}{identity.customPersonality ? ` — ${identity.customPersonality}` : ""}</span>
+              </div>
+            )}
             <div className="flex gap-3 mt-1">
               <span className="font-mono text-[9px] text-muted-fg/40">Provider: <span className="text-muted-fg">{identity.modelPreferences.provider}</span></span>
               <span className="font-mono text-[9px] text-muted-fg/40">Model: <span className="text-muted-fg">{identity.modelPreferences.model}</span></span>
@@ -166,6 +116,19 @@ export function CtoSettingsPanel({
                 <span className="font-mono text-[9px] text-muted-fg/40">Reasoning: <span className="text-muted-fg">{identity.modelPreferences.reasoningEffort}</span></span>
               )}
             </div>
+            {identity.communicationStyle && (
+              <div className="flex gap-3 mt-0.5">
+                <span className="font-mono text-[9px] text-muted-fg/40">Verbosity: <span className="text-muted-fg">{identity.communicationStyle.verbosity}</span></span>
+                <span className="font-mono text-[9px] text-muted-fg/40">Proactivity: <span className="text-muted-fg">{identity.communicationStyle.proactivity}</span></span>
+                <span className="font-mono text-[9px] text-muted-fg/40">Escalation: <span className="text-muted-fg">{identity.communicationStyle.escalationThreshold}</span></span>
+              </div>
+            )}
+            {identity.constraints && identity.constraints.length > 0 && (
+              <div className="mt-1">
+                <span className="font-mono text-[9px] text-muted-fg/40">Constraints: </span>
+                <span className="font-mono text-[9px] text-muted-fg/60">{identity.constraints.join(", ")}</span>
+              </div>
+            )}
           </div>
         ) : (
           <div className="p-4 text-xs text-muted-fg/50">Loading identity...</div>
@@ -173,7 +136,7 @@ export function CtoSettingsPanel({
       </div>
 
       {/* Core Memory */}
-      <div className="border border-border/10 bg-card/60 backdrop-blur-sm shadow-card">
+      <div className={cn(cardCls, "overflow-hidden")}>
         <PaneHeader
           title="Core Memory"
           right={
@@ -235,19 +198,38 @@ export function CtoSettingsPanel({
       </div>
 
       {/* Session History */}
-      <div className="border border-border/10 bg-card/60 backdrop-blur-sm shadow-card">
+      <div className={cn(cardCls, "overflow-hidden")}>
         <PaneHeader title="Recent Sessions" meta={`${sessionLogs.length}`} />
-        <div className="p-3 max-h-64 overflow-y-auto space-y-1.5" data-testid="session-history-list">
+        <div className="p-3 max-h-64 overflow-y-auto space-y-1" data-testid="session-history-list">
           {sessionLogs.length === 0 ? (
             <div className="text-[10px] text-muted-fg/50 py-2">No sessions recorded yet.</div>
           ) : sessionLogs.map((s) => (
-            <div key={s.id} className="bg-surface-recessed px-3 py-2">
-              <div className="font-mono text-[9px] text-muted-fg/40">{formatDate(s.createdAt)}</div>
-              <div className="font-mono text-[10px] text-muted-fg mt-0.5 line-clamp-2">{s.summary}</div>
-            </div>
+            <TimelineEntry
+              key={s.id}
+              timestamp={s.createdAt}
+              title={s.summary}
+              status={s.capabilityMode}
+              statusVariant={s.capabilityMode === "full_mcp" ? "success" : "muted"}
+            />
           ))}
         </div>
       </div>
+
+      {/* Re-run Setup Wizard */}
+      {onResetOnboarding && (
+        <div className={cn(cardCls, "overflow-hidden")}>
+          <PaneHeader title="Setup Wizard" />
+          <div className="p-4 flex items-center justify-between">
+            <div className="font-mono text-[10px] text-muted-fg leading-relaxed">
+              Re-run the initial setup wizard to reconfigure identity, project context, and integrations.
+            </div>
+            <Button variant="outline" size="sm" className="shrink-0 ml-4" onClick={onResetOnboarding}>
+              <ArrowCounterClockwise size={10} />
+              Re-run Setup
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

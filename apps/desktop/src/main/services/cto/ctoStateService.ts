@@ -5,9 +5,11 @@ import YAML from "yaml";
 import type {
   CtoCoreMemory,
   CtoIdentity,
+  CtoOnboardingState,
   CtoSessionLogEntry,
   CtoSubordinateActivityEntry,
   CtoSnapshot,
+  CtoSystemPromptPreview,
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
 import { nowIso, parseIsoToEpoch, safeJsonParse, uniqueStrings, writeTextAtomic } from "../shared/utils";
@@ -606,6 +608,132 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     return sections.join("\n").trim();
   };
 
+  /* ── Onboarding state ── */
+
+  const getOnboardingState = (): CtoOnboardingState => {
+    const identity = getIdentity();
+    return identity.onboardingState ?? { completedSteps: [] };
+  };
+
+  const completeOnboardingStep = (stepId: string): CtoOnboardingState => {
+    const identity = getIdentity();
+    const current = identity.onboardingState ?? { completedSteps: [] };
+    if (current.completedSteps.includes(stepId)) return current;
+
+    const next: CtoOnboardingState = {
+      ...current,
+      completedSteps: [...current.completedSteps, stepId],
+    };
+    // If all 3 steps complete, mark completed
+    if (next.completedSteps.length >= 3 && !next.completedAt) {
+      next.completedAt = nowIso();
+    }
+
+    const updated: CtoIdentity = {
+      ...identity,
+      onboardingState: next,
+      version: identity.version + 1,
+      updatedAt: nowIso(),
+    };
+    writeIdentityToFile(updated);
+    writeIdentityToDb(updated);
+    return next;
+  };
+
+  const dismissOnboarding = (): CtoOnboardingState => {
+    const identity = getIdentity();
+    const current = identity.onboardingState ?? { completedSteps: [] };
+    const next: CtoOnboardingState = { ...current, dismissedAt: nowIso() };
+    const updated: CtoIdentity = {
+      ...identity,
+      onboardingState: next,
+      version: identity.version + 1,
+      updatedAt: nowIso(),
+    };
+    writeIdentityToFile(updated);
+    writeIdentityToDb(updated);
+    return next;
+  };
+
+  const resetOnboarding = (): CtoOnboardingState => {
+    const identity = getIdentity();
+    const next: CtoOnboardingState = { completedSteps: [] };
+    const updated: CtoIdentity = {
+      ...identity,
+      onboardingState: next,
+      version: identity.version + 1,
+      updatedAt: nowIso(),
+    };
+    writeIdentityToFile(updated);
+    writeIdentityToDb(updated);
+    return next;
+  };
+
+  /* ── Identity update (full patch) ── */
+
+  const updateIdentity = (patch: Partial<Omit<CtoIdentity, "version" | "updatedAt">>): CtoSnapshot => {
+    const current = getIdentity();
+    const timestamp = nowIso();
+    const next: CtoIdentity = {
+      ...current,
+      ...patch,
+      modelPreferences: { ...current.modelPreferences, ...(patch.modelPreferences ?? {}) },
+      memoryPolicy: { ...current.memoryPolicy, ...(patch.memoryPolicy ?? {}) },
+      version: current.version + 1,
+      updatedAt: timestamp,
+    };
+    writeIdentityToFile(next);
+    writeIdentityToDb(next);
+    return getSnapshot();
+  };
+
+  /* ── System prompt preview ── */
+
+  const previewSystemPrompt = (identityOverride?: Partial<CtoIdentity>): CtoSystemPromptPreview => {
+    const identity = identityOverride
+      ? { ...getIdentity(), ...identityOverride }
+      : getIdentity();
+
+    const sections: string[] = [];
+
+    sections.push(`You are ${identity.name}.`);
+
+    if (identity.persona?.trim()) {
+      sections.push("", identity.persona.trim());
+    }
+
+    if (identity.personality && identity.personality !== "custom") {
+      sections.push("", `Personality: ${identity.personality}`);
+    } else if (identity.customPersonality?.trim()) {
+      sections.push("", `Personality: ${identity.customPersonality.trim()}`);
+    }
+
+    if (identity.communicationStyle) {
+      const cs = identity.communicationStyle;
+      sections.push(
+        "",
+        "Communication Style:",
+        `- Verbosity: ${cs.verbosity}`,
+        `- Proactivity: ${cs.proactivity}`,
+        `- Escalation threshold: ${cs.escalationThreshold}`,
+      );
+    }
+
+    if (identity.constraints?.length) {
+      sections.push("", "Constraints:", ...identity.constraints.map((c) => `- ${c}`));
+    }
+
+    if (identity.systemPromptExtension?.trim()) {
+      sections.push("", identity.systemPromptExtension.trim());
+    }
+
+    const prompt = sections.join("\n").trim();
+    return {
+      prompt,
+      tokenEstimate: Math.ceil(prompt.length / 4),
+    };
+  };
+
   // Ensure the state is initialized as soon as the service is created.
   reconcileAll();
 
@@ -616,9 +744,15 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     getSubordinateActivityLogs,
     getSnapshot,
     updateCoreMemory,
+    updateIdentity,
     appendSessionLog,
     appendSubordinateActivity,
     buildReconstructionContext,
+    getOnboardingState,
+    completeOnboardingStep,
+    dismissOnboarding,
+    resetOnboarding,
+    previewSystemPrompt,
   };
 }
 
