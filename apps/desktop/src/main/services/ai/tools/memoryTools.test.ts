@@ -13,7 +13,6 @@ describe("createMemoryTools", () => {
         },
         deduped: false,
       })),
-      addSharedFact: vi.fn(() => ({ id: "fact-1" })),
       pinMemory: vi.fn(),
       unpinMemory: vi.fn(),
     } as any;
@@ -59,7 +58,6 @@ describe("createMemoryTools", () => {
         },
         deduped: false,
       })),
-      addSharedFact: vi.fn(() => ({ id: "fact-2" })),
       pinMemory: vi.fn(),
       unpinMemory: vi.fn(),
     } as any;

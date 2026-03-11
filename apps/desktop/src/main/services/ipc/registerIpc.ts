@@ -14,7 +14,10 @@ import type {
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
   ArchiveLaneArgs,
+  AutomationIngressEventRecord,
+  AutomationIngressStatus,
   AutomationManualTriggerRequest,
+  NightShiftQueueMutationRequest,
   AutomationQueueActionRequest,
   AutomationQueueItem,
   AutomationQueueListArgs,
@@ -375,6 +378,7 @@ import type {
   CtoListAgentsArgs,
   CtoSaveAgentArgs,
   CtoRemoveAgentArgs,
+  CtoSetAgentStatusArgs,
   CtoListAgentRevisionsArgs,
   CtoRollbackAgentRevisionArgs,
   CtoEnsureAgentSessionArgs,
@@ -446,6 +450,7 @@ import type { createOnboardingService } from "../onboarding/onboardingService";
 import type { createCiService } from "../ci/ciService";
 import type { createAutomationService } from "../automations/automationService";
 import type { createAutomationPlannerService } from "../automations/automationPlannerService";
+import type { createAutomationIngressService } from "../automations/automationIngressService";
 import { type createMissionService } from "../missions/missionService";
 import type { createMissionPreflightService } from "../missions/missionPreflightService";
 
@@ -518,6 +523,7 @@ export type AppContext = {
   jobEngine: ReturnType<typeof createJobEngine>;
   automationService: ReturnType<typeof createAutomationService>;
   automationPlannerService: ReturnType<typeof createAutomationPlannerService>;
+  automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
   missionService: ReturnType<typeof createMissionService>;
   missionPreflightService: ReturnType<typeof createMissionPreflightService>;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
@@ -1620,7 +1626,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.automationsUpdateQueueItem, async (_event, arg: AutomationQueueActionRequest): Promise<AutomationQueueItem | null> => {
     const ctx = getCtx();
-    return ctx.automationService.updateQueueItem(arg);
+    return await ctx.automationService.updateQueueItem(arg);
   });
 
   ipcMain.handle(IPC.automationsGetNightShiftState, async (): Promise<NightShiftState> => {
@@ -1633,6 +1639,11 @@ export function registerIpc({
     return ctx.automationService.updateNightShiftSettings(arg ?? {});
   });
 
+  ipcMain.handle(IPC.automationsMutateNightShiftQueue, async (_event, arg: NightShiftQueueMutationRequest): Promise<NightShiftState> => {
+    const ctx = getCtx();
+    return await ctx.automationService.mutateNightShiftQueue(arg);
+  });
+
   ipcMain.handle(IPC.automationsGetMorningBriefing, async (): Promise<NightShiftBriefing | null> => {
     const ctx = getCtx();
     return ctx.automationService.getMorningBriefing();
@@ -1641,6 +1652,16 @@ export function registerIpc({
   ipcMain.handle(IPC.automationsAcknowledgeMorningBriefing, async (_event, arg: { id: string }): Promise<NightShiftBriefing | null> => {
     const ctx = getCtx();
     return ctx.automationService.acknowledgeMorningBriefing({ id: arg?.id ?? "" });
+  });
+
+  ipcMain.handle(IPC.automationsGetIngressStatus, async (): Promise<AutomationIngressStatus> => {
+    const ctx = getCtx();
+    return ctx.automationService.getIngressStatus();
+  });
+
+  ipcMain.handle(IPC.automationsListIngressEvents, async (_event, arg: { limit?: number } | undefined): Promise<AutomationIngressEventRecord[]> => {
+    const ctx = getCtx();
+    return ctx.automationService.listIngressEvents(arg?.limit);
   });
 
   ipcMain.handle(IPC.automationsParseNaturalLanguage, async (_event, arg: AutomationParseNaturalLanguageRequest): Promise<AutomationParseNaturalLanguageResult> => {
@@ -4537,6 +4558,13 @@ export function registerIpc({
     const ctx = getCtx();
     if (!ctx.workerAgentService) throw new Error("Worker agent service is not available.");
     ctx.workerAgentService.removeAgent(arg.agentId);
+    ctx.workerHeartbeatService?.syncFromConfig();
+  });
+
+  ipcMain.handle(IPC.ctoSetAgentStatus, async (_event, arg: CtoSetAgentStatusArgs): Promise<void> => {
+    const ctx = getCtx();
+    if (!ctx.workerAgentService) throw new Error("Worker agent service is not available.");
+    ctx.workerAgentService.setAgentStatus(arg.agentId, arg.status);
     ctx.workerHeartbeatService?.syncFromConfig();
   });
 

@@ -9,7 +9,10 @@ import type {
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
   ArchiveLaneArgs,
+  AutomationIngressEventRecord,
+  AutomationIngressStatus,
   AutomationManualTriggerRequest,
+  NightShiftQueueMutationRequest,
   AutomationRuleSummary,
   AutomationRun,
   AutomationRunDetail,
@@ -47,6 +50,7 @@ import type {
   CtoListAgentsArgs,
   CtoSaveAgentArgs,
   CtoRemoveAgentArgs,
+  CtoSetAgentStatusArgs,
   CtoListAgentRevisionsArgs,
   CtoRollbackAgentRevisionArgs,
   CtoEnsureAgentSessionArgs,
@@ -582,10 +586,16 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.automationsGetNightShiftState),
     updateNightShiftSettings: async (args: UpdateNightShiftSettingsRequest): Promise<NightShiftState> =>
       ipcRenderer.invoke(IPC.automationsUpdateNightShiftSettings, args),
+    mutateNightShiftQueue: async (args: NightShiftQueueMutationRequest): Promise<NightShiftState> =>
+      ipcRenderer.invoke(IPC.automationsMutateNightShiftQueue, args),
     getMorningBriefing: async (): Promise<NightShiftBriefing | null> =>
       ipcRenderer.invoke(IPC.automationsGetMorningBriefing),
     acknowledgeMorningBriefing: async (args: { id: string }): Promise<NightShiftBriefing | null> =>
       ipcRenderer.invoke(IPC.automationsAcknowledgeMorningBriefing, args),
+    getIngressStatus: async (): Promise<AutomationIngressStatus> =>
+      ipcRenderer.invoke(IPC.automationsGetIngressStatus),
+    listIngressEvents: async (args?: { limit?: number }): Promise<AutomationIngressEventRecord[]> =>
+      ipcRenderer.invoke(IPC.automationsListIngressEvents, args ?? {}),
     parseNaturalLanguage: async (req: AutomationParseNaturalLanguageRequest): Promise<AutomationParseNaturalLanguageResult> =>
       ipcRenderer.invoke(IPC.automationsParseNaturalLanguage, req),
     validateDraft: async (req: AutomationValidateDraftRequest): Promise<AutomationValidateDraftResult> =>
@@ -1457,6 +1467,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.ctoSaveAgent, args),
     removeAgent: async (args: CtoRemoveAgentArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.ctoRemoveAgent, args),
+    setAgentStatus: async (args: CtoSetAgentStatusArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.ctoSetAgentStatus, args),
     listAgentRevisions: async (args: CtoListAgentRevisionsArgs): Promise<AgentConfigRevision[]> =>
       ipcRenderer.invoke(IPC.ctoListAgentRevisions, args),
     rollbackAgentRevision: async (args: CtoRollbackAgentRevisionArgs): Promise<AgentIdentity> =>

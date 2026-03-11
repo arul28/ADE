@@ -4,11 +4,11 @@ import {
   Trash,
   ArrowCounterClockwise,
   Lightning,
-  Warning,
 } from "@phosphor-icons/react";
 import type {
   AgentIdentity,
   AgentRole,
+  AgentStatus,
   AdapterType,
   AgentConfigRevision,
   AgentCoreMemory,
@@ -17,10 +17,10 @@ import type {
   WorkerAgentRun,
 } from "../../../shared/types";
 import { Button } from "../ui/Button";
-import { Chip } from "../ui/Chip";
 import { PaneHeader } from "../ui/PaneHeader";
-import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
+import { AgentStatusBadge } from "./shared/AgentStatusBadge";
+import { WorkerActivityFeed } from "./WorkerActivityFeed";
 
 /* ── Helpers ── */
 
@@ -43,14 +43,6 @@ function splitTrimmed(val: string): string[] {
 
 function dollars(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
-}
-
-function runStatusTone(status: WorkerAgentRun["status"]): string {
-  if (status === "running") return "text-info bg-info/10 border-info/20";
-  if (status === "completed") return "text-success bg-success/10 border-success/20";
-  if (status === "failed") return "text-error bg-error/10 border-error/20";
-  if (status === "deferred") return "text-warning bg-warning/10 border-warning/20";
-  return "";
 }
 
 /* ── Worker Editor Draft ── */
@@ -292,6 +284,7 @@ export function WorkerDetailPanel({
   wakeError,
   waking,
   onWakeNow,
+  onSetStatus,
   onEdit,
   onRemove,
   onRollbackRevision,
@@ -307,6 +300,7 @@ export function WorkerDetailPanel({
   wakeError: string | null;
   waking: boolean;
   onWakeNow: () => void;
+  onSetStatus: (status: AgentStatus) => void;
   onEdit: () => void;
   onRemove: () => void;
   onRollbackRevision: (id: string) => void;
@@ -322,11 +316,7 @@ export function WorkerDetailPanel({
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className="font-sans text-sm font-bold text-fg truncate">{worker.name}</span>
-            <Chip className={cn("text-[9px]",
-              worker.status === "running" ? "text-info" : worker.status === "active" ? "text-success" : worker.status === "paused" ? "text-warning" : "",
-            )}>
-              {worker.status}
-            </Chip>
+            <AgentStatusBadge status={worker.status} />
           </div>
           <div className="font-mono text-[10px] text-muted-fg mt-0.5">
             {worker.role} · {worker.adapterType}
@@ -345,6 +335,15 @@ export function WorkerDetailPanel({
             <Lightning size={10} weight="bold" />
             {waking ? "Waking..." : "Wake"}
           </Button>
+          {worker.status === "paused" ? (
+            <Button variant="outline" size="sm" onClick={() => onSetStatus("idle")} data-testid="worker-resume-btn">
+              Resume
+            </Button>
+          ) : (
+            <Button variant="outline" size="sm" onClick={() => onSetStatus("paused")} data-testid="worker-pause-btn">
+              Pause
+            </Button>
+          )}
           <Button variant="outline" size="sm" onClick={onEdit}>Edit</Button>
           {confirmRemove ? (
             <div className="flex gap-1">
@@ -364,24 +363,11 @@ export function WorkerDetailPanel({
       {opsError && <div className="text-xs text-error" data-testid="worker-ops-error">{opsError}</div>}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Heartbeat runs */}
+        {/* Activity */}
         <div className="border border-border/10 bg-card/60 backdrop-blur-sm shadow-card" data-testid="worker-run-history-list">
-          <PaneHeader title="Heartbeat Runs" meta={`${runs.length}`} />
-          <div className="p-3 max-h-60 overflow-y-auto space-y-1.5">
-            {runs.length === 0 ? (
-              <div className="text-[10px] text-muted-fg/50 py-2">No runs yet.</div>
-            ) : runs.map((run) => (
-              <div key={run.id} className="bg-surface-recessed border border-border/10 px-2.5 py-2" data-testid={`worker-run-row-${run.id}`}>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-mono text-[9px] text-muted-fg/50">{formatDate(run.createdAt)}</span>
-                  <Chip className={cn("text-[8px]", runStatusTone(run.status))}>{run.status}</Chip>
-                </div>
-                <div className="font-mono text-[10px] text-muted-fg mt-1">
-                  {run.wakeupReason}{run.issueKey ? ` · ${run.issueKey}` : ""}{run.taskKey ? ` · ${run.taskKey}` : ""}
-                </div>
-                {run.errorMessage && <div className="text-[9px] text-error mt-1">{run.errorMessage}</div>}
-              </div>
-            ))}
+          <PaneHeader title="Worker Activity" meta={`${runs.length + sessionLogs.length}`} />
+          <div className="p-3 max-h-60 overflow-y-auto">
+            <WorkerActivityFeed runs={runs} sessions={sessionLogs} />
           </div>
         </div>
 
@@ -414,21 +400,6 @@ export function WorkerDetailPanel({
             </div>
           </div>
         )}
-
-        {/* Sessions */}
-        <div className="border border-border/10 bg-card/60 backdrop-blur-sm shadow-card" data-testid="worker-session-history-list">
-          <PaneHeader title="Sessions" meta={`${sessionLogs.length}`} />
-          <div className="p-3 max-h-48 overflow-y-auto space-y-1.5">
-            {sessionLogs.length === 0 ? (
-              <div className="text-[10px] text-muted-fg/50 py-2">No sessions yet.</div>
-            ) : sessionLogs.map((s) => (
-              <div key={s.id} className="bg-surface-recessed px-2.5 py-1.5">
-                <div className="font-mono text-[9px] text-muted-fg/40">{formatDate(s.createdAt)}</div>
-                <div className="font-mono text-[10px] text-muted-fg mt-0.5 line-clamp-2">{s.summary}</div>
-              </div>
-            ))}
-          </div>
-        </div>
 
         {/* Revisions */}
         <div className="border border-border/10 bg-card/60 backdrop-blur-sm shadow-card" data-testid="revision-panel">

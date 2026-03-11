@@ -66,6 +66,22 @@ function uniqueMemories(entries: readonly Memory[]): Memory[] {
   return unique;
 }
 
+function mapMemoryCategoryToFactType(category: Memory["category"]): string {
+  switch (category) {
+    case "pattern":
+      return "api_pattern";
+    case "gotcha":
+      return "gotcha";
+    case "convention":
+    case "preference":
+      return "config";
+    case "digest":
+      return "schema_change";
+    default:
+      return "architectural";
+  }
+}
+
 function pickLevel(mode: BuildMemoryBriefingArgs["mode"]): {
   l0: MemoryBriefingLevel;
   l1: MemoryBriefingLevel;
@@ -85,7 +101,7 @@ function pickLevel(mode: BuildMemoryBriefingArgs["mode"]): {
 }
 
 export function createMemoryBriefingService(args: {
-  memoryService: Pick<UnifiedMemoryService, "getMemoryBudget" | "search" | "searchAcrossScopeOwners" | "listMemories" | "getSharedFacts">;
+  memoryService: Pick<UnifiedMemoryService, "getMemoryBudget" | "search" | "searchAcrossScopeOwners" | "listMemories">;
 }) {
   const { memoryService } = args;
 
@@ -152,9 +168,22 @@ export function createMemoryBriefingService(args: {
         ).slice(0, BUDGET_LIMITS[levels.mission])
       : [];
 
-    const sharedFacts = input.runId
-      ? memoryService.getSharedFacts(input.runId, BUDGET_LIMITS.standard)
-      : [];
+    const sharedFacts = mission
+      .filter((entry) =>
+        entry.category === "fact"
+        || entry.category === "decision"
+        || entry.category === "gotcha"
+        || entry.category === "handoff"
+        || entry.category === "digest"
+        || entry.category === "pattern"
+        || entry.category === "procedure"
+      )
+      .map((entry) => ({
+        id: entry.id,
+        factType: mapMemoryCategoryToFactType(entry.category),
+        content: entry.content,
+        createdAt: entry.createdAt,
+      }));
 
     return {
       l0: { title: "Project Memory", entries: l0 },

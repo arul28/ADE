@@ -14,13 +14,14 @@ Dependencies: **W7a** (embeddings — needed for cosine similarity in episode cl
 | [Paperclip SKILLS.md Injection](https://github.com/paperclipai/paperclip/blob/main/doc/SPEC.md) | §7 Runtime Context, SKILLS.md section | Skills injected into agent system prompt at activation time. Goal hierarchy provides skill selection context. |
 | [CrewAI Memory — Long-Term](https://docs.crewai.com/concepts/memory) | Long-term memory and learning sections | Confidence evolution: success/failure tracking, automatic archival of low-confidence procedures. |
 
-W7c builds the extraction and materialization layer on top of W7a's embeddings and W7b's episodic summaries. A 2026-03-10 code audit shows that the core extraction/materialization loop is already present in the product: procedural learning, confidence/history tracking, skill export, skill ingestion, and Memory Health UI surfaces are implemented. The remaining work is concentrated in the more advanced knowledge-capture sources described below (interventions, repeated-error mining, PR-review mining) and in finishing the end-to-end polish around those flows.
+W7c builds the extraction and materialization layer on top of W7a's embeddings and W7b's episodic summaries. A 2026-03-11 code audit shows that the extraction/materialization loop is already present in the product: procedural learning, confidence/history tracking, skill export, skill ingestion, and Memory Health UI surfaces are implemented, and a dedicated `knowledgeCaptureService` now exists for advanced sources as well. The remaining work is concentrated in validating and polishing those advanced capture flows end to end rather than inventing the pipeline from scratch.
 
-##### Audit Snapshot (2026-03-10)
+##### Audit Snapshot (2026-03-11)
 
 - Implemented in code today: `proceduralLearningService.ts`, `skillRegistryService.ts`, and the Procedures/Skills views in `MemoryHealthTab.tsx`.
 - Episode clustering, procedure creation/update, confidence history, export to `.claude/skills/`, and filesystem re-indexing are all present.
-- Not yet fully implemented: intervention mining, repeated-error escalation, and PR review feedback capture as automatic knowledge sources.
+- `knowledgeCaptureService.ts` now captures resolved interventions, recurring error clusters, and PR feedback, and is wired into current runtime flows.
+- Not yet fully done: validate coverage, close any gaps in automatic source capture, and improve the review/inspection UX around these advanced knowledge sources.
 
 ##### Procedural Memory Extraction
 
@@ -101,6 +102,7 @@ Confirmed procedural memories can be exported as universal skill files, followin
 
 - User reviews procedural memories in Settings > Memory > Procedures tab.
 - User clicks "Export as Skill" on a procedure → system materializes it as `.claude/skills/<name>/SKILL.md`.
+- Phase 4 follow-through should consolidate durable skill exports under `.ade/` so portable project state and learned artifacts live under one root. Treat the current `.claude/skills/` path as transition behavior to be cleaned up rather than the desired long-term destination.
 - **Skill file format**: Plain markdown with trigger description, step-by-step instructions, and context notes. Follows the Vercel/Anthropic skills convention — any agent that reads markdown can consume it:
   ```markdown
   # Auth Migration
@@ -173,7 +175,7 @@ Read existing skill and command files into project memory so that ADE agents can
 
 - **Export flow**: "Export as Skill" button opens a confirmation dialog showing the generated `SKILL.md` content with an editable name field. User confirms → file written → skill tab updated → memory entry linked.
 
-**Implementation status (2026-03-10):** Core implemented; advanced capture still pending.
+**Implementation status (2026-03-11):** Largely implemented; advanced capture follow-through and `.ade/` export consolidation still pending.
 
 **Tests:**
 - Procedural extraction: 3+ similar episodes trigger extraction, LLM extraction call produces valid `ProceduralMemory`, confidence initialized from LLM estimate, source episode IDs recorded.

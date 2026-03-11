@@ -46,6 +46,11 @@ export function HistoryTab() {
     finally { setDetailLoading(false); }
   }, []);
 
+  const refreshSelectedRun = useCallback(async () => {
+    if (!selectedRunId) return;
+    await Promise.all([loadAll(), loadDetail(selectedRunId)]);
+  }, [loadAll, loadDetail, selectedRunId]);
+
   const filtered = useMemo(() => {
     let runs = allRuns;
     if (filterRule) runs = runs.filter((r) => r.ruleName === filterRule);
@@ -95,7 +100,8 @@ export function HistoryTab() {
             <option value="succeeded">succeeded</option>
             <option value="failed">failed</option>
             <option value="running">running</option>
-            <option value="skipped">skipped</option>
+            <option value="needs_review">needs_review</option>
+            <option value="cancelled">cancelled</option>
           </select>
         </div>
 
@@ -119,7 +125,7 @@ export function HistoryTab() {
 
       {/* Right: detail */}
       <div className="flex-1 min-h-0 overflow-y-auto">
-        <RunDetailPanel detail={detail} loading={detailLoading} />
+        <RunDetailPanel detail={detail} loading={detailLoading} onActionComplete={() => void refreshSelectedRun()} />
       </div>
     </motion.div>
   );

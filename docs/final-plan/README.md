@@ -123,7 +123,7 @@ Baseline derived from code in `apps/desktop`.
 
 Not fully implemented yet:
 
-- Automations completion work in `/automations` (external webhook ingress, executor follow-through, and overnight review/polish remain)
+- Final Automations polish in `/automations` (review/publish UX, a few executor edge cases, and external-MCP follow-through remain; core ingress/runtime plumbing is shipped)
 - Multi-device sync (cr-sqlite + WebSocket real-time replication)
 - Device registry and brain management (which machine runs agents)
 - iOS companion app (remote control, push notifications, mission monitoring)
@@ -194,16 +194,16 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Missions Home Dashboard (aggregate stats, history) | Phase 3 | Phase 3 | Implemented (Task 4) |
 | Budget Management (subscription + API key) | Phase 3 | Phase 3 | Implemented (Task 6) |
 | CTO Agent (persistent project-aware assistant) | Phase 4 | Phase 3 | Complete (W1) |
-| Automations Platform + Night Shift | Phase 4 | Phase 3 | Partially implemented (W5a complete; W5b partially implemented) |
-| Learning Packs (auto-curated knowledge) | Phase 4 | Phase 3 | Partially implemented (W7c core pipeline shipped; advanced capture pending) |
-| Memory Architecture Upgrade (vector search, tiers) | Phase 4 | Phase 3 | Mostly complete (W6, W6½, W7a shipped; W7b mostly implemented; W7c core pipeline implemented with advanced capture still pending) |
+| Automations Platform + Night Shift | Phase 4 | Phase 3 | Mostly implemented (W5a complete; W5b runtime largely shipped, polish remains) |
+| Learning Packs (auto-curated knowledge) | Phase 4 | Phase 3 | Mostly implemented (W7c pipeline shipped; advanced capture validation/polish remains) |
+| Memory Architecture Upgrade (vector search, tiers) | Phase 4 | Phase 3 | Complete through W7b, with W7c follow-through still open |
 | Candidate Memory Triage Automation (auto-promote + stale archive sweep) | Phase 4 | Phase 3 memory lifecycle baseline | Complete (W6 + W6½) |
 | Mem0 Sidecar Integration (optional semantic index) | Post-Phase 4 | Phase 4 memory foundation | Deferred (evaluate after native memory upgrade + CTO baseline) |
-| Skill Library (recipe extraction + `.claude/skills/` materialization) | Phase 4 | Phase 4 Learning Packs + PROJ-039 viewer baseline | Partially implemented (W7c core shipped; advanced capture pending) |
-| .ade/ Portable State (git-tracked configs) | Phase 4 | Phase 3 | Planned |
+| Skill Library (recipe extraction + `.claude/skills/` materialization) | Phase 4 | Phase 4 Learning Packs + PROJ-039 viewer baseline | Mostly implemented (export + ingestion shipped; advanced capture follow-through remains) |
+| .ade/ Portable State (git-tracked configs) | Phase 4 | Phase 3 | Partial foundation exists; tracked/shareable model still planned |
 | .ade/ State Sync (cr-sqlite database sync) | Phase 6 | Phase 4 | Planned |
-| External MCP Consumption | Phase 4 | Phase 3 | Planned |
-| OpenClaw Bridge (External Agent Gateway) | Phase 4 | Phase 4 W1 (CTO) + W8 (External MCP) | Planned |
+| External MCP Consumption | Phase 4 | Phase 3 | Planned (not started) |
+| OpenClaw Bridge (External Agent Gateway) | Phase 4 | Phase 4 W1 (CTO) + W8 (External MCP) | Planned (not started) |
 | Worker Agents & Org Chart | Phase 4 | Phase 4 W1 | Complete (W2) |
 | Heartbeat & Activation System (coalescing, deferred promotion) | Phase 4 | Phase 4 W1 | Complete (W3) |
 | Bidirectional Linear Sync (polling, auto-dispatch, reconciliation) | Phase 4 | Phase 4 W2 + W3 | Complete (W4) |

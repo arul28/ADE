@@ -634,9 +634,6 @@ export function createAiIntegrationService(args: {
         ...(hasFullRunContext ? { db, enableCompaction: true } : {}),
         ...(compactionFlushService ? { compactionFlushService } : {}),
         ...(args.memoryService ? { memoryService: args.memoryService } : {}),
-        ...(args.memoryService && args.runId
-          ? { addSharedFact: args.memoryService.addSharedFact.bind(args.memoryService) }
-          : {}),
       }),
       args.feature,
       modelId,

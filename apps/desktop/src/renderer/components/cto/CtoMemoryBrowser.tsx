@@ -13,7 +13,7 @@ import { MemoryEntryCard } from "./shared/MemoryEntryCard";
 import { Button } from "../ui/Button";
 import { PaneHeader } from "../ui/PaneHeader";
 import { cn } from "../ui/cn";
-import { inputCls, labelCls, selectCls, cardCls } from "./shared/designTokens";
+import { inputCls, labelCls, selectCls, cardCls, recessedPanelCls } from "./shared/designTokens";
 
 type MemoryScope = "project" | "agent" | "mission";
 type MemoryTier = 1 | 2 | 3;
@@ -144,7 +144,7 @@ export function CtoMemoryBrowser() {
     <div className="flex h-full min-h-0">
       {/* Left rail: scope selector + health */}
       <div
-        className="shrink-0 flex flex-col border-r border-border/20 overflow-y-auto"
+        className={cn("shrink-0 flex flex-col border-r border-border/20 overflow-y-auto", recessedPanelCls)}
         style={{ width: 200, background: "var(--color-surface-recessed)" }}
       >
         <div className="p-3">
@@ -171,7 +171,7 @@ export function CtoMemoryBrowser() {
         <div className="p-3 space-y-2">
           <div className={cn(labelCls, "mb-1")}>Health</div>
           {healthStats.map((h) => (
-            <div key={h.scope} className="bg-card/40 border border-border/10 p-2">
+            <div key={h.scope} className={cn(cardCls, "p-2")}>
               <div className="flex items-center justify-between mb-1">
                 <span className="font-mono text-[9px] text-fg/70 capitalize">{h.scope}</span>
                 <span className="font-mono text-[8px] text-muted-fg/40">{h.current}/{h.max}</span>
@@ -257,7 +257,7 @@ export function CtoMemoryBrowser() {
 
       {/* Right panel: entry detail */}
       {selectedEntry && (
-        <div className="shrink-0 border-l border-border/20 overflow-y-auto" style={{ width: 260 }}>
+        <div className="shrink-0 overflow-y-auto border-l border-border/20 bg-surface/80" style={{ width: 260 }}>
           <div className="p-3 space-y-3">
             <div className={cn(labelCls, "mb-1")}>Detail</div>
 

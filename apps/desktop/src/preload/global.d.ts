@@ -7,6 +7,8 @@ import type {
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
   ArchiveLaneArgs,
+  AutomationIngressEventRecord,
+  AutomationIngressStatus,
   ConflictProposal,
   ConflictExternalResolverRunSummary,
   ConflictProposalPreview,
@@ -50,6 +52,7 @@ import type {
   ExportHistoryArgs,
   ExportHistoryResult,
   AgentTool,
+  NightShiftQueueMutationRequest,
   AgentChatApproveArgs,
   AgentChatCreateArgs,
   AgentChatDisposeArgs,
@@ -119,6 +122,7 @@ import type {
   CtoListAgentsArgs,
   CtoSaveAgentArgs,
   CtoRemoveAgentArgs,
+  CtoSetAgentStatusArgs,
   CtoListAgentRevisionsArgs,
   CtoRollbackAgentRevisionArgs,
   CtoEnsureAgentSessionArgs,
@@ -133,6 +137,9 @@ import type {
   CtoUpdateAgentCoreMemoryArgs,
   CtoListAgentSessionLogsArgs,
   CtoUpdateIdentityArgs,
+  CtoOnboardingState,
+  CtoSystemPromptPreview,
+  CtoLinearProject,
   LinearConnectionStatus,
   CtoSetLinearTokenArgs,
   CtoSaveFlowPolicyArgs,
@@ -533,8 +540,11 @@ declare global {
         updateQueueItem: (args: AutomationQueueActionRequest) => Promise<AutomationQueueItem | null>;
         getNightShiftState: () => Promise<NightShiftState>;
         updateNightShiftSettings: (args: UpdateNightShiftSettingsRequest) => Promise<NightShiftState>;
+        mutateNightShiftQueue: (args: NightShiftQueueMutationRequest) => Promise<NightShiftState>;
         getMorningBriefing: () => Promise<NightShiftBriefing | null>;
         acknowledgeMorningBriefing: (args: { id: string }) => Promise<NightShiftBriefing | null>;
+        getIngressStatus: () => Promise<AutomationIngressStatus>;
+        listIngressEvents: (args?: { limit?: number }) => Promise<AutomationIngressEventRecord[]>;
         parseNaturalLanguage: (req: AutomationParseNaturalLanguageRequest) => Promise<AutomationParseNaturalLanguageResult>;
         validateDraft: (req: AutomationValidateDraftRequest) => Promise<AutomationValidateDraftResult>;
         saveDraft: (req: AutomationSaveDraftRequest) => Promise<AutomationSaveDraftResult>;
@@ -997,6 +1007,7 @@ declare global {
         listAgents: (args?: CtoListAgentsArgs) => Promise<AgentIdentity[]>;
         saveAgent: (args: CtoSaveAgentArgs) => Promise<AgentIdentity>;
         removeAgent: (args: CtoRemoveAgentArgs) => Promise<void>;
+        setAgentStatus: (args: CtoSetAgentStatusArgs) => Promise<void>;
         listAgentRevisions: (args: CtoListAgentRevisionsArgs) => Promise<AgentConfigRevision[]>;
         rollbackAgentRevision: (args: CtoRollbackAgentRevisionArgs) => Promise<AgentIdentity>;
         ensureAgentSession: (args: CtoEnsureAgentSessionArgs) => Promise<AgentChatSession>;
@@ -1020,6 +1031,12 @@ declare global {
         resolveLinearSyncQueueItem: (args: CtoResolveLinearSyncQueueItemArgs) => Promise<LinearSyncQueueItem | null>;
         listAgentTaskSessions: (args: CtoListAgentTaskSessionsArgs) => Promise<AgentTaskSession[]>;
         clearAgentTaskSession: (args: CtoClearAgentTaskSessionArgs) => Promise<void>;
+        getOnboardingState: () => Promise<CtoOnboardingState>;
+        completeOnboardingStep: (args: { stepId: string }) => Promise<CtoOnboardingState>;
+        dismissOnboarding: () => Promise<CtoOnboardingState>;
+        resetOnboarding: () => Promise<CtoOnboardingState>;
+        previewSystemPrompt: (args?: { identityOverride?: Record<string, unknown> }) => Promise<CtoSystemPromptPreview>;
+        getLinearProjects: () => Promise<CtoLinearProject[]>;
       };
     };
   }

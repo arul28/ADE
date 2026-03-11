@@ -49,6 +49,9 @@ import { createAgentToolsService } from "./services/agentTools/agentToolsService
 import { createOnboardingService } from "./services/onboarding/onboardingService";
 import { createAutomationService } from "./services/automations/automationService";
 import { createAutomationPlannerService } from "./services/automations/automationPlannerService";
+import { createAutomationSecretService } from "./services/automations/automationSecretService";
+import { createAutomationRoutingService } from "./services/automations/automationRoutingService";
+import { createAutomationIngressService } from "./services/automations/automationIngressService";
 import { createUsageTrackingService } from "./services/usage/usageTrackingService";
 import { createBudgetCapService } from "./services/usage/budgetCapService";
 import { createCiService } from "./services/ci/ciService";
@@ -69,6 +72,7 @@ import { createEpisodicSummaryService } from "./services/memory/episodicSummaryS
 import { createHumanWorkDigestService } from "./services/memory/humanWorkDigestService";
 import { createProceduralLearningService } from "./services/memory/proceduralLearningService";
 import { createSkillRegistryService } from "./services/memory/skillRegistryService";
+import { createKnowledgeCaptureService } from "./services/memory/knowledgeCaptureService";
 import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createWorkerAgentService } from "./services/cto/workerAgentService";
 import { createWorkerRevisionService } from "./services/cto/workerRevisionService";
@@ -772,11 +776,20 @@ app.whenReady().then(async () => {
       }
     });
 
+    let knowledgeCaptureServiceRef: ReturnType<typeof createKnowledgeCaptureService> | null = null;
     const prPollingService = createPrPollingService({
       logger,
       prService,
       projectConfigService,
-      onEvent: (event) => emitProjectEvent(projectRoot, IPC.prsEvent, event)
+      onEvent: (event) => emitProjectEvent(projectRoot, IPC.prsEvent, event),
+      onPullRequestsChanged: ({ changedPrs }) => Promise.all(
+        changedPrs.map((pr) =>
+          knowledgeCaptureServiceRef?.capturePrFeedback({
+            prId: pr.id,
+            prNumber: pr.githubPrNumber ?? null,
+          }) ?? Promise.resolve()
+        ),
+      ).then(() => undefined),
     });
 
     let orchestratorServiceRef: ReturnType<typeof createOrchestratorService> | null = null;
@@ -921,6 +934,15 @@ app.whenReady().then(async () => {
       memoryService,
       onEpisodeSaved: (memoryId) => proceduralLearningService.onEpisodeSaved(memoryId),
     });
+    const knowledgeCaptureService = createKnowledgeCaptureService({
+      db,
+      projectId,
+      logger,
+      memoryService,
+      proceduralLearningService,
+      prService,
+    });
+    knowledgeCaptureServiceRef = knowledgeCaptureService;
     humanWorkDigestService = createHumanWorkDigestService({
       projectId,
       projectRoot,
@@ -989,6 +1011,13 @@ app.whenReady().then(async () => {
       memoryBriefingService,
       ctoStateService,
       logger,
+    });
+    const automationSecretService = createAutomationSecretService({
+      adeDir: adePaths.adeDir,
+      logger,
+    });
+    const automationRoutingService = createAutomationRoutingService({
+      workerAgentService,
     });
 
     const linearCredentialService = createLinearCredentialService({
@@ -1092,11 +1121,23 @@ app.whenReady().then(async () => {
       testService,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.automationsEvent, event)
     });
+    const automationIngressService = createAutomationIngressService({
+      logger,
+      automationService,
+      secretService: automationSecretService,
+      listRules: () => projectConfigService.get().effective.automations ?? [],
+    });
 
     const missionService = createMissionService({
       db,
       projectId,
       projectRoot,
+      onInterventionResolved: ({ missionId, intervention }) => {
+        void knowledgeCaptureService.captureResolvedIntervention({
+          missionId,
+          intervention,
+        }).catch(() => {});
+      },
       onEvent: (event) => {
         emitProjectEvent(projectRoot, IPC.missionsEvent, event);
         if (event.missionId) {
@@ -1158,6 +1199,8 @@ app.whenReady().then(async () => {
       memoryBriefingService,
       missionMemoryLifecycleService,
       episodicSummaryService,
+      proceduralLearningService,
+      knowledgeCaptureService,
       onEvent: (event) => {
         aiOrchestratorServiceRef?.onOrchestratorRuntimeEvent(event);
         emitProjectEvent(projectRoot, IPC.orchestratorEvent, event);
@@ -1242,6 +1285,13 @@ app.whenReady().then(async () => {
       memoryBriefingService,
       proceduralLearningService,
       budgetCapService,
+      workerHeartbeatService,
+      automationRoutingService,
+    });
+    void automationIngressService.start().catch((error) => {
+      logger.warn("automations.ingress_start_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
     });
 
     void memoryLifecycleService.runStartupSweepIfDue().catch((error) => {
@@ -1489,6 +1539,7 @@ app.whenReady().then(async () => {
       jobEngine,
       automationService,
       automationPlannerService,
+      automationIngressService,
       usageTrackingService,
       budgetCapService,
       missionService,
@@ -1575,6 +1626,7 @@ app.whenReady().then(async () => {
       jobEngine: null,
       automationService: null,
       automationPlannerService: null,
+      automationIngressService: null,
       usageTrackingService: null,
       budgetCapService: null,
       missionService: null,
@@ -1621,6 +1673,11 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.prPollingService.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.automationIngressService?.dispose();
     } catch {
       // ignore
     }

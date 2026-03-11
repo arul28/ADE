@@ -11,14 +11,14 @@
 | [Symphony §8.4 Retry](https://github.com/openai/symphony/blob/main/SPEC.md) | Retry semantics — clean exit vs crash, context preservation, exponential backoff | Continuation memory (preserve mission memory on clean exit), failure gotcha injection on crash retry |
 | [OpenClaw — Human Work Ingestion](https://docs.openclaw.ai/concepts/memory) | Daily log diffing, change digest, freshness tracking | `lastSeenHeadSha` tracking, change digest generation, worker notification on divergence |
 
-W7b wires the orchestrator into the unified memory system so that missions create, read, write, and promote memories throughout their lifecycle. A 2026-03-10 code audit shows that the core of this workstream is already in place: mission memory lifecycle services, worker memory briefing assembly, episodic summary generation, and human-work digesting are all implemented. The remaining work is now cleanup and follow-through: finish retiring the legacy `orchestrator_shared_facts` compatibility path and fully wire persistent employee L2 briefing injection through every orchestrator call site.
+W7b wires the orchestrator into the unified memory system so that missions create, read, write, and promote memories throughout their lifecycle. As of 2026-03-11, this workstream is complete: mission memory lifecycle services, worker memory briefing assembly, episodic summary generation, human-work digesting, legacy shared-fact retirement, and exact employee L2 briefing injection are all implemented.
 
-##### Audit Snapshot (2026-03-10)
+##### Audit Snapshot (2026-03-11)
 
 - Implemented in code today: `missionMemoryLifecycleService.ts`, `memoryBriefingService.ts`, `episodicSummaryService.ts`, and `humanWorkDigestService.ts`, all wired from `main.ts`.
 - Mission start/end hooks already write lifecycle state and episodic summaries from the orchestrator.
-- Legacy compatibility still exists in `unifiedMemoryService.ts` via `orchestrator_shared_facts` dual-source reads.
-- Persistent employee L2 memory is supported by the briefing layer but not fully passed through current orchestrator briefing calls.
+- `orchestrator_shared_facts` is retired as a write/read path. Mission-scoped unified memory is now the single durable coordination store.
+- Persistent employee L2 memory is injected only when a mission is explicitly launched on behalf of a known `employeeAgentId`, and that exact ID is threaded into orchestrator run metadata and worker briefings.
 
 ##### Mission Memory Lifecycle
 
@@ -44,10 +44,10 @@ Every mission run follows a deterministic memory lifecycle: create scope → acc
   - No auto-promotion to project memory — failures need human review before becoming project knowledge.
   - Mission scope is marked `archived` with `status: "failed"`.
 
-- **`orchestrator_shared_facts` migration**:
-  - New mission-scoped memory entries replace `shared_facts` for cross-worker coordination. The coordinator and workers write to `unified_memories` with `scope: "mission"` instead of inserting into `orchestrator_shared_facts`.
-  - `orchestrator_shared_facts` table retained for backward compatibility during the transition. Existing reads from `orchestrator_shared_facts` are dual-sourced: check `unified_memories` first, fall back to `orchestrator_shared_facts`.
-  - New writes go exclusively to `unified_memories`. After one release cycle with no `orchestrator_shared_facts` reads in telemetry, drop the fallback path.
+- **Shared team knowledge projection**:
+  - Cross-worker coordination facts now live only in mission-scoped entries in `unified_memories`.
+  - The `sharedFacts` section in worker briefings remains, but it is now a prompt-oriented projection derived from mission memory categories such as `fact`, `decision`, `gotcha`, `handoff`, `digest`, `pattern`, and `procedure`.
+  - No dual-source fallback remains. Legacy `orchestrator_shared_facts` rows can be ignored or dropped.
 
 ##### Worker Memory Injection
 
@@ -57,7 +57,7 @@ Worker briefing assembly now pulls from unified memory instead of pack exports. 
 
 - **L1 (per-phase, searched on demand)**: Tier 2 project memory filtered by relevance to the current phase and task description. Retrieved via `memorySearch(scope: "project", tier: 2, query: taskDescription + phaseContext, budget: "standard")`. Returns patterns, gotchas, and decisions relevant to the work at hand.
 
-- **L2 (identity-local, only when briefing a persistent employee rather than a disposable mission worker)**: If the worker is a persistent CTO employee, inject their agent memory. Retrieved via `memorySearch(scope: "agent", scopeOwnerId: agentId, tier: [1, 2], budget: "lite")`. This gives the employee its own identity, domain knowledge, and past run context without implying that all mission workers share one durable `L0/L1/L2` memory store.
+- **L2 (identity-local, only when briefing a persistent employee rather than a disposable mission worker)**: If the mission launch metadata carries an exact `employeeAgentId`, inject that employee's agent memory. Retrieved via `memorySearch(scope: "agent", scopeOwnerId: agentId, tier: [1, 2], budget: "lite")`. Manual or generic missions without an explicit employee target do not receive agent memory.
 
 - **Mission context (always, during active mission)**: Tier 2 mission memory — peer discoveries, coordinator decisions, upstream handoffs. Retrieved via `memorySearch(scope: "mission", scopeOwnerId: missionId, budget: "standard")`. Workers see what their peers have learned and what the coordinator has decided.
 
@@ -172,13 +172,14 @@ humanWorkDigestService.ts         — Git divergence detection, change digest ge
 
 All three services instantiated in `main.ts`. `missionMemoryLifecycleService` is called by `orchestratorService` at mission start/end. `episodicSummaryService` is called async after mission/session completion. `humanWorkDigestService` runs on app startup and before mission dispatch.
 
-**Implementation status (2026-03-10):** Mostly implemented. Remaining work: retire the `orchestrator_shared_facts` fallback path, finish persistent employee L2 memory wiring, and close any cleanup gaps around mission-context continuation behavior.
+**Implementation status (2026-03-11):** Complete. Mission memory is the single coordination store, shared team knowledge is derived from mission memory at prompt time, and persistent employee L2 memory is wired through exact-ID mission launch metadata.
 
 **Tests:**
 - Mission memory lifecycle: scope creation on mission start, coordinator decision write, worker fact write, worker handoff write, cross-worker read via `memorySearch`.
 - Mission success promotion: entries with confidence >= 0.7 promoted to project memory, entries with confidence < 0.7 remain as candidates, scope marked archived after promotion.
 - Mission failure handling: failure gotcha written with high importance, no auto-promotion, scope marked archived with failed status.
-- `orchestrator_shared_facts` migration: new writes go to `unified_memories`, dual-source read falls back to `orchestrator_shared_facts`, backward compatibility with existing shared facts data.
+- Shared team knowledge projection: worker briefings derive `sharedFacts` from mission-scoped unified memory only, with no legacy fallback.
+- Employee L2 injection: only runs with explicit `employeeAgentId` receive agent memory in worker briefings; generic/manual runs stay project+mission memory only.
 - Worker briefing assembly: L0 injects Tier 1 pinned project memory, L1 injects phase-relevant Tier 2 project memory, L2 injects agent memory for persistent employees, mission context injects mission-scoped entries.
 - Budget tiers: Lite returns max 3, Standard returns max 8, Deep returns max 20.
 - Episodic summary generation: mission completion triggers async LLM call, summary saved as project memory episode, failed LLM call does not block mission completion, correct `EpisodicMemory` structure.

@@ -53,8 +53,107 @@ function inferKind(filePath: string): SkillIndexKind {
   return "skill";
 }
 
-function buildProcedureBody(title: string, content: string): string {
-  return [`Imported skill: ${title}`, "", content].join("\n").trim();
+function buildProcedureBody(title: string, content: string, sourcePath?: string): string {
+  return [
+    `Imported skill: ${title}`,
+    ...(sourcePath ? [`Source path: ${sourcePath}`, ""] : [""]),
+    content,
+  ].join("\n").trim();
+}
+
+function normalizeProcedureText(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/^imported skill:\s+.*$/gm, "")
+    .replace(/^source path:\s+.*$/gm, "")
+    .replace(/^#+\s+/gm, "")
+    .replace(/^\d+\.\s+/gm, "")
+    .replace(/^[-*]\s+/gm, "")
+    .replace(/[^a-z0-9\s]+/g, " ")
+    .replace(/\s+/g, " ");
+}
+
+function procedureSimilarity(left: string, right: string): number {
+  const leftTokens = new Set(normalizeProcedureText(left).split(" ").filter(Boolean));
+  const rightTokens = new Set(normalizeProcedureText(right).split(" ").filter(Boolean));
+  if (!leftTokens.size || !rightTokens.size) return 0;
+  let overlap = 0;
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) overlap += 1;
+  }
+  const union = leftTokens.size + rightTokens.size - overlap;
+  return union > 0 ? overlap / union : 0;
+}
+
+function proceduresMatch(left: string, right: string): boolean {
+  const normalizedLeft = normalizeProcedureText(left);
+  const normalizedRight = normalizeProcedureText(right);
+  if (!normalizedLeft || !normalizedRight) return false;
+  return (
+    normalizedLeft.includes(normalizedRight)
+    || normalizedRight.includes(normalizedLeft)
+    || procedureSimilarity(normalizedLeft, normalizedRight) >= 0.72
+  );
+}
+
+function extractMarkdownSection(markdown: string, heading: string): string[] {
+  const lines = normalizeFileContent(markdown).split("\n");
+  const targetHeading = `## ${heading}`.toLowerCase();
+  const collected: string[] = [];
+  let active = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.toLowerCase() === targetHeading) {
+      active = true;
+      continue;
+    }
+    if (active && /^##\s+/i.test(trimmed)) break;
+    if (active) collected.push(line);
+  }
+  return collected
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+function buildSkillMarkdown(input: {
+  title: string;
+  procedureId: string;
+  trigger: string;
+  procedureMarkdown: string;
+}): string {
+  const recommendedSteps = extractMarkdownSection(input.procedureMarkdown, "Recommended Procedure")
+    .map((line) => line.replace(/^\d+\.\s*/, "").trim())
+    .filter((line) => line.length > 0);
+  const usefulTools = extractMarkdownSection(input.procedureMarkdown, "Useful Tools");
+  const keyDecisions = extractMarkdownSection(input.procedureMarkdown, "Key Decisions");
+  const patterns = extractMarkdownSection(input.procedureMarkdown, "Patterns");
+  const watchOuts = extractMarkdownSection(input.procedureMarkdown, "Watch Outs");
+
+  const contextLines = [
+    ...patterns.map((line) => `- Pattern: ${line.replace(/^[-*]\s*/, "")}`),
+    ...watchOuts.map((line) => `- Watch out: ${line.replace(/^[-*]\s*/, "")}`),
+    ...keyDecisions.map((line) => `- Decision: ${line.replace(/^[-*]\s*/, "")}`),
+    ...usefulTools.map((line) => `- Tool: ${line.replace(/^[-*]\s*/, "")}`),
+  ];
+
+  const lines = [
+    `# ${input.title}`,
+    "",
+    "## When to use",
+    `Use this when ${input.trigger.trim() || "the workflow applies"}.`,
+    "",
+    "## Steps",
+    ...(recommendedSteps.length > 0
+      ? recommendedSteps.map((step, index) => `${index + 1}. ${step}`)
+      : ["1. Follow the source procedure below and adapt it to the current task."]),
+    "",
+    "## Context",
+    `- Source procedure memory: ${input.procedureId}`,
+    ...(contextLines.length > 0 ? contextLines : ["- No extra context has been captured yet."]),
+  ];
+
+  return lines.join("\n").trim();
 }
 
 export function createSkillRegistryService(args: {
@@ -66,7 +165,10 @@ export function createSkillRegistryService(args: {
     UnifiedMemoryService,
     "getMemory" | "listMemories" | "addMemory" | "writeMemory" | "archiveMemory"
   >;
-  proceduralLearningService?: Pick<ProceduralLearningService, "markExportedSkill" | "getProcedureDetail"> | null;
+  proceduralLearningService?: Pick<
+    ProceduralLearningService,
+    "markExportedSkill" | "getProcedureDetail" | "markProcedureSuperseded"
+  > | null;
 }) {
   const { db, projectId, projectRoot, memoryService } = args;
   let watcher: FSWatcher | null = null;
@@ -170,6 +272,7 @@ export function createSkillRegistryService(args: {
     const kind = inferKind(absolutePath);
     const existing = readSkillIndexByPath(absolutePath);
     const existingMemory = existing?.memory_id ? memoryService.getMemory(existing.memory_id) : null;
+    const importedProcedureContent = buildProcedureBody(title, content, absolutePath);
     let memoryId = existing?.memory_id ?? null;
 
     if (!existingMemory) {
@@ -177,7 +280,7 @@ export function createSkillRegistryService(args: {
         projectId,
         scope: "project",
         category: "procedure",
-        content: buildProcedureBody(title, content),
+        content: importedProcedureContent,
         importance: "high",
         sourceType: "user",
         sourceId: absolutePath,
@@ -190,7 +293,7 @@ export function createSkillRegistryService(args: {
         scopeOwnerId: existingMemory.scopeOwnerId ?? undefined,
         tier: existingMemory.tier,
         category: existingMemory.category,
-        content: buildProcedureBody(title, content),
+        content: importedProcedureContent,
         importance: existingMemory.importance,
         confidence: 1,
         status: "promoted",
@@ -206,7 +309,24 @@ export function createSkillRegistryService(args: {
       memoryId = existingMemory.id;
     }
 
-      upsertSkillIndex({
+    const duplicateSystemProcedure = memoryService.listMemories({
+      projectId,
+      scope: "project",
+      categories: ["procedure"],
+      limit: 500,
+    }).find((memory) => {
+      if (memory.id === memoryId) return false;
+      if (memory.sourceType !== "system") return false;
+      return proceduresMatch(memory.content, importedProcedureContent);
+    });
+    if (memoryId && duplicateSystemProcedure) {
+      args.proceduralLearningService?.markProcedureSuperseded?.({
+        memoryId: duplicateSystemProcedure.id,
+        supersededByMemoryId: memoryId,
+      });
+    }
+
+    upsertSkillIndex({
       absolutePath,
       contentHash,
       kind,
@@ -270,14 +390,12 @@ export function createSkillRegistryService(args: {
       destinationPath = path.join(destinationDir, "SKILL.md");
     }
     fs.mkdirSync(destinationDir, { recursive: true });
-    const markdown = [
-      `# ${title}`,
-      "",
-      `Source procedure: ${procedure.memory.id}`,
-      "",
-      procedure.procedural.procedure,
-      "",
-    ].join("\n");
+    const markdown = buildSkillMarkdown({
+      title,
+      procedureId: procedure.memory.id,
+      trigger: procedure.procedural.trigger,
+      procedureMarkdown: procedure.procedural.procedure,
+    });
     fs.writeFileSync(destinationPath, markdown, "utf8");
     const skill = indexFile(destinationPath, "exported");
     args.proceduralLearningService?.markExportedSkill(input.id, destinationPath);

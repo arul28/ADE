@@ -287,30 +287,48 @@ export async function compactConversation(opts: {
 }
 
 // ---------------------------------------------------------------------------
-// Pre-compaction writeback — extract and save shared facts
+// Pre-compaction writeback — extract durable facts into mission memory
 // ---------------------------------------------------------------------------
 
 export async function preCompactionWriteback(opts: {
-  db: AdeDb;
+  projectId: string;
+  missionId?: string | null;
   runId: string;
   stepId: string;
   facts: string[];
-  addSharedFact: (opts: {
-    runId: string;
-    stepId?: string;
-    factType: "api_pattern" | "schema_change" | "config" | "architectural" | "gotcha";
+  writeMemory: (opts: {
+    projectId: string;
+    scope: "mission";
+    scopeOwnerId: string;
+    category: "fact" | "gotcha" | "preference";
     content: string;
+    importance: "medium" | "high";
+    confidence: number;
+    status: "promoted";
+    sourceRunId: string;
+    sourceType: "system";
+    sourceId: string;
+    writeGateMode: "strict";
   }) => unknown;
 }): Promise<void> {
-  const { runId, stepId, facts, addSharedFact } = opts;
+  const { projectId, missionId, runId, stepId, facts, writeMemory } = opts;
+  const scopeOwnerId = String(missionId ?? "").trim() || runId;
 
   for (const fact of facts) {
     const factType = classifyFact(fact);
-    addSharedFact({
-      runId,
-      stepId,
-      factType,
+    writeMemory({
+      projectId,
+      scope: "mission",
+      scopeOwnerId,
+      category: factType === "gotcha" ? "gotcha" : factType === "config" ? "preference" : "fact",
       content: fact,
+      importance: factType === "gotcha" ? "high" : "medium",
+      confidence: 0.9,
+      status: "promoted",
+      sourceRunId: runId,
+      sourceType: "system",
+      sourceId: `compaction:${stepId}`,
+      writeGateMode: "strict",
     });
   }
 }

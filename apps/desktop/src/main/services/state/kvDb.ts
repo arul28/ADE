@@ -1545,6 +1545,26 @@ function migrate(db: Database) {
   db.run("create index if not exists idx_memory_skill_index_archived on memory_skill_index(archived_at)");
 
   db.run(`
+    create table if not exists memory_capture_ledger (
+      id text primary key,
+      project_id text not null,
+      source_type text not null,
+      source_key text not null,
+      memory_id text,
+      episode_memory_id text,
+      metadata_json text,
+      created_at text not null,
+      updated_at text not null,
+      unique(project_id, source_type, source_key),
+      foreign key(project_id) references projects(id),
+      foreign key(memory_id) references unified_memories(id),
+      foreign key(episode_memory_id) references unified_memories(id)
+    )
+  `);
+  db.run("create index if not exists idx_memory_capture_ledger_source on memory_capture_ledger(project_id, source_type, updated_at desc)");
+  db.run("create index if not exists idx_memory_capture_ledger_memory on memory_capture_ledger(memory_id)");
+
+  db.run(`
     create table if not exists memory_sweep_log (
       sweep_id text primary key,
       project_id text not null,
@@ -1746,19 +1766,6 @@ function migrate(db: Database) {
     )
   `);
   db.run("create index if not exists idx_agent_identities_project on agent_identities(project_id)");
-
-  db.run(`
-    create table if not exists orchestrator_shared_facts (
-      id text primary key,
-      run_id text not null,
-      step_id text,
-      fact_type text not null,
-      content text not null,
-      created_at text not null
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_shared_facts_run on orchestrator_shared_facts(run_id)");
-  db.run("create index if not exists idx_orchestrator_shared_facts_run_type on orchestrator_shared_facts(run_id, fact_type)");
 
   // Team runtime: persistent team member registry for agent-team orchestration.
   db.run(`

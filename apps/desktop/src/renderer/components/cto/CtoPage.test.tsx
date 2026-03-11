@@ -10,6 +10,7 @@ import type {
   AgentIdentity,
   AgentSessionLogEntry,
   CtoCoreMemory,
+  CtoOnboardingState,
   CtoSnapshot,
   WorkerAgentRun,
   LinearSyncConfig,
@@ -65,6 +66,9 @@ const makeSnapshot = (memoryOverrides?: Partial<CtoCoreMemory>): CtoSnapshot => 
   ],
   recentSubordinateActivity: [],
 });
+
+let mockSnapshot = makeSnapshot();
+let mockOnboardingState: CtoOnboardingState = { completedSteps: ["identity", "project", "integrations"], completedAt: "2026-03-05T00:00:00.000Z" };
 
 const makeSession = () => ({
   id: "cto-session-1",
@@ -146,7 +150,7 @@ function buildCtoBridge() {
   };
 
   return {
-    getState: vi.fn(async () => makeSnapshot()),
+    getState: vi.fn(async () => mockSnapshot),
     ensureSession: vi.fn(async () => makeSession()),
     updateCoreMemory: vi.fn(async ({ patch }: { patch: Partial<CtoCoreMemory> }) => makeSnapshot(patch)),
     listSessionLogs: vi.fn(async () => makeSnapshot().recentSessions),
@@ -154,6 +158,7 @@ function buildCtoBridge() {
     listAgents: vi.fn(async () => [makeWorkerAgent()]),
     saveAgent: vi.fn(async () => makeWorkerAgent()),
     removeAgent: vi.fn(async () => {}),
+    setAgentStatus: vi.fn(async () => {}),
     listAgentRevisions: vi.fn(async () => [] as AgentConfigRevision[]),
     rollbackAgentRevision: vi.fn(async () => makeWorkerAgent()),
     ensureAgentSession: vi.fn(async () => makeSession()),
@@ -224,6 +229,26 @@ function buildCtoBridge() {
     })),
     listLinearSyncQueue: vi.fn(async () => []),
     resolveLinearSyncQueueItem: vi.fn(async () => null),
+    getOnboardingState: vi.fn(async () => mockOnboardingState),
+    dismissOnboarding: vi.fn(async () => {
+      mockOnboardingState = { ...mockOnboardingState, dismissedAt: "2026-03-05T00:00:00.000Z" };
+      return mockOnboardingState;
+    }),
+    resetOnboarding: vi.fn(async () => {
+      mockOnboardingState = { completedSteps: [] };
+      return mockOnboardingState;
+    }),
+    completeOnboardingStep: vi.fn(async ({ stepId }: { stepId: string }) => {
+      mockOnboardingState = {
+        ...mockOnboardingState,
+        completedSteps: Array.from(new Set([...mockOnboardingState.completedSteps, stepId])),
+      };
+      return mockOnboardingState;
+    }),
+    previewSystemPrompt: vi.fn(async () => ({ prompt: "You are CTO.", tokenEstimate: 3 })),
+    getLinearProjects: vi.fn(async () => [
+      { id: "project-1", name: "My Project", slug: "my-project", teamName: "Product" },
+    ]),
   };
 }
 
@@ -239,7 +264,22 @@ describe("CtoPage", () => {
   beforeEach(() => {
     mockLanes = [{ id: "lane-1" }];
     mockSelectedLaneId = "lane-1";
-    (window as any).ade = { cto: buildCtoBridge() };
+    mockSnapshot = makeSnapshot();
+    mockOnboardingState = { completedSteps: ["identity", "project", "integrations"], completedAt: "2026-03-05T00:00:00.000Z" };
+    (window as any).ade = {
+      cto: buildCtoBridge(),
+      onboarding: {
+        detectDefaults: vi.fn(async () => ({
+          projectTypes: ["node", "ci"],
+          indicators: [
+            { file: "package.json", type: "node", confidence: 0.95 },
+            { file: ".github/workflows/test.yml", type: "github-actions", confidence: 0.7 },
+          ],
+          suggestedConfig: { version: 1 },
+          suggestedWorkflows: [],
+        })),
+      },
+    };
   });
 
   afterEach(() => {
@@ -262,6 +302,30 @@ describe("CtoPage", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("cto-capability-badge").textContent).toContain("FULL MCP");
+    });
+  });
+
+  it("auto-opens the onboarding wizard on first run", async () => {
+    mockOnboardingState = { completedSteps: [] };
+
+    render(<CtoPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Configure Your CTO")).toBeTruthy();
+    });
+    expect(screen.getByTestId("cto-onboarding-prompt-preview")).toBeTruthy();
+  });
+
+  it("shows the setup banner when onboarding was dismissed before completion", async () => {
+    mockOnboardingState = {
+      completedSteps: ["identity"],
+      dismissedAt: "2026-03-05T00:00:00.000Z",
+    };
+
+    render(<CtoPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Your CTO setup is incomplete.")).toBeTruthy();
     });
   });
 
@@ -434,6 +498,45 @@ describe("CtoPage", () => {
     });
   });
 
+  it("renders worker activity in the selected worker detail view", async () => {
+    (window as any).ade.cto.listAgentRuns = vi.fn(async () => [
+      {
+        id: "run-1",
+        agentId: "agent-1",
+        status: "completed",
+        wakeupReason: "manual",
+        context: {},
+        createdAt: "2026-03-05T10:30:00.000Z",
+        updatedAt: "2026-03-05T10:31:00.000Z",
+      },
+    ]);
+    (window as any).ade.cto.listAgentSessionLogs = vi.fn(async () => [
+      {
+        id: "session-1",
+        sessionId: "sess-1",
+        summary: "Reviewed auth module",
+        startedAt: "2026-03-05T10:00:00.000Z",
+        endedAt: "2026-03-05T10:10:00.000Z",
+        provider: "claude",
+        modelId: null,
+        capabilityMode: "full_mcp",
+        createdAt: "2026-03-05T10:00:00.000Z",
+      },
+    ]);
+
+    render(<CtoPage />);
+    await waitFor(() => expect(screen.getByTestId("worker-row-agent-1")).toBeTruthy());
+
+    fireEvent.click(screen.getByText("Team"));
+    fireEvent.click(screen.getByTestId("worker-row-agent-1"));
+
+    await waitFor(() => {
+      expect(screen.getByText("Worker Activity")).toBeTruthy();
+      expect(screen.getByText("Heartbeat: manual")).toBeTruthy();
+      expect(screen.getByText("Reviewed auth module")).toBeTruthy();
+    });
+  });
+
   it("triggers Wake Now and shows status", async () => {
     render(<CtoPage />);
 
@@ -463,6 +566,34 @@ describe("CtoPage", () => {
     });
   });
 
+  it("pauses and resumes a selected worker", async () => {
+    render(<CtoPage />);
+
+    await waitFor(() => expect(screen.getByTestId("worker-row-agent-1")).toBeTruthy());
+    fireEvent.click(screen.getByText("Team"));
+    fireEvent.click(screen.getByTestId("worker-row-agent-1"));
+
+    await waitFor(() => expect(screen.getByTestId("worker-pause-btn")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("worker-pause-btn"));
+
+    await waitFor(() => {
+      expect((window as any).ade.cto.setAgentStatus).toHaveBeenCalledWith({ agentId: "agent-1", status: "paused" });
+    });
+  });
+
+  it("re-runs setup from settings", async () => {
+    render(<CtoPage />);
+    clickTab("Settings");
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /re-run setup/i })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /re-run setup/i }));
+
+    await waitFor(() => {
+      expect((window as any).ade.cto.resetOnboarding).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("Configure Your CTO")).toBeTruthy();
+    });
+  });
+
   it("renders linear sync panel in Linear tab", async () => {
     render(<CtoPage />);
 
@@ -472,6 +603,7 @@ describe("CtoPage", () => {
     await waitFor(() => {
       expect(screen.getByTestId("linear-sync-panel")).toBeTruthy();
     });
+    expect(screen.getByTestId("linear-connection-panel")).toBeTruthy();
 
     expect((window as any).ade.cto.getFlowPolicy).toHaveBeenCalled();
     expect((window as any).ade.cto.getLinearSyncDashboard).toHaveBeenCalled();

@@ -1,3 +1,9 @@
+import type {
+  AutomationIngressStatus,
+  NightShiftQueueMutationRequest,
+  NightShiftState,
+} from "../../../shared/types";
+
 /** Shared constants and utilities for the automations UI. */
 
 /** Standard inline styles for text inputs, selects, and textareas. */
@@ -14,4 +20,13 @@ export const CARD_SHADOW_STYLE: React.CSSProperties = {
 /** Extract a human-readable error message from an unknown thrown value. */
 export function extractError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+export type AutomationsRendererBridge = typeof window.ade.automations & {
+  getIngressStatus?: () => Promise<AutomationIngressStatus>;
+  mutateNightShiftQueue?: (args: NightShiftQueueMutationRequest) => Promise<NightShiftState>;
+};
+
+export function getAutomationsBridge(): AutomationsRendererBridge {
+  return window.ade.automations as AutomationsRendererBridge;
 }

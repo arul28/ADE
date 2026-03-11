@@ -15,6 +15,7 @@ export function StepWizard({
   activeStep,
   onStepChange,
   children,
+  onNext,
   onComplete,
   onSkip,
   onBack,
@@ -28,6 +29,7 @@ export function StepWizard({
   activeStep: string;
   onStepChange?: (stepId: string) => void;
   children: React.ReactNode;
+  onNext?: (stepId: string, isLastStep: boolean) => boolean | void | Promise<boolean | void>;
   onComplete?: () => void;
   onSkip?: () => void;
   onBack?: () => void;
@@ -41,7 +43,11 @@ export function StepWizard({
   const isLast = activeIndex === steps.length - 1;
   const isFirst = activeIndex === 0;
 
-  const handleNext = () => {
+  const handleNext = async () => {
+    if (onNext) {
+      const result = await onNext(activeStep, isLast);
+      if (result === false) return;
+    }
     if (isLast) {
       onComplete?.();
     } else {

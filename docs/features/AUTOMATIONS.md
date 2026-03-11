@@ -13,8 +13,8 @@ This document is the canonical product direction for ADE Automations in W5 and b
 - Surface: `/automations` is the first-class UI for creating, simulating, running, and reviewing automations.
 - Settings: Settings holds global defaults, connector auth, and policy presets. It is not the primary automation builder UI.
 - Runtime: automation executions use the same agent/runtime primitives as missions and CTO workers, including guardrails, memory, and audit history.
-- Current baseline: builder UI, Night Shift queue/review surfaces, budget tracking, automation-to-mission dispatch, and backward-compatible legacy actions (`run-command`, `run-tests`, `predict-conflicts`) are shipped.
-- Still pending in `W5b`: true external trigger ingress, tool-palette enforcement, richer executor/runtime specialization, and the “full ADE tool access” contract described below.
+- Current baseline: builder UI, Night Shift queue/review surfaces, budget tracking, automation-to-mission dispatch, local webhook/GitHub ingress, tool-family allowlists, and backward-compatible legacy actions (`run-command`, `run-tests`, `predict-conflicts`) are shipped.
+- Still pending in `W5b`: final review/publish polish, a few executor/runtime edge cases, and the `external-mcp` follow-through that depends on W8.
 
 Implementation note: the current baseline still carries some config-era compatibility fields, but the product contract is the Automations tab as the canonical authoring and operations surface.
 
@@ -35,7 +35,7 @@ This keeps one automation engine while supporting both quick disposable jobs and
 
 ### Core Principle: Full ADE Tool Access (W5b)
 
-Automations are not a limited "run shell command" system. When W5b ships, an automation rule can spawn an AI agent with **the same capabilities as any CTO worker or mission worker** — every single tool that ADE has to offer:
+Automations are not a limited "run shell command" system. In the shipped W5b baseline, an automation rule can already dispatch an AI agent through the same orchestrator/mission substrate used by CTO workers and mission workers, with tool access shaped by rule-level allowlists. The intended end-state remains **the same capabilities as any CTO worker or mission worker**, including every ADE tool family that has been implemented:
 
 - **Repo/code tools**: read files, search code, analyze dependencies
 - **Git operations**: branch, commit, merge, rebase, cherry-pick
@@ -44,12 +44,12 @@ Automations are not a limited "run shell command" system. When W5b ships, an aut
 - **GitHub PR workflows**: open PRs, request reviews, post comments, merge
 - **Linear actions**: create/update issues, transition state, post comments
 - **Browser automation**: navigate, interact, screenshot
-- **External MCP tools** (W8): any user-configured MCP server
+- **External MCP tools** (W8): any user-configured MCP server once W8 lands
 - **Memory tools**: read/write project memory, search knowledge base
 - **Conflict resolution**: detect and resolve merge conflicts
 - **Mission launch**: spawn sub-missions, validate outcomes, generate artifacts
 
-The user configures per rule: which model to use, what permission level, which tools are available, what the agent should do, and how to handle output (open PR, post to Linear, run tests, verify before publishing). The automation executor dispatches through the orchestrator's mission system — the same infrastructure that powers interactive missions.
+The user configures per rule: which model to use, what permission level, which tools are available, what the agent should do, and how to handle output (open PR, post to Linear, run tests, verify before publishing). The automation executor dispatches through the orchestrator's mission system — the same infrastructure that powers interactive missions. The main remaining gaps are polish and the unfinished external-MCP family, not greenfield runtime work.
 
 ## Product Model
 

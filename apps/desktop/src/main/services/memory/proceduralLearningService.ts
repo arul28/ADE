@@ -483,12 +483,56 @@ export function createProceduralLearningService(args: {
     );
   };
 
+  const updateProcedureOutcomes = (inputs: Array<{
+    memoryId: string;
+    outcome: "success" | "failure";
+    reason: string;
+  }>): void => {
+    for (const input of inputs) {
+      updateProcedureOutcome(input);
+    }
+  };
+
+  const markProcedureSuperseded = (input: {
+    memoryId: string;
+    supersededByMemoryId: string;
+    archive?: boolean;
+  }): void => {
+    const detail = db.get<ProcedureDetailRow>(
+      `select * from memory_procedure_details where memory_id = ? limit 1`,
+      [input.memoryId],
+    );
+    const memory = memoryService.getMemory(input.memoryId);
+    if (!memory || memory.category !== "procedure") return;
+    ensureProcedureDetail({
+      memoryId: input.memoryId,
+      trigger: detail?.trigger?.trim() || "repeated workflow",
+      procedureMarkdown: detail?.procedure_markdown?.trim() || memory.content,
+      successCount: Number(detail?.success_count ?? 0) || 0,
+      failureCount: Number(detail?.failure_count ?? 0) || 0,
+      lastUsedAt: detail?.last_used_at ?? null,
+    });
+    db.run(
+      `
+        update memory_procedure_details
+        set superseded_by_memory_id = ?, updated_at = ?
+        where memory_id = ?
+      `,
+      [input.supersededByMemoryId, nowIso(), input.memoryId],
+    );
+    if (input.archive !== false) {
+      memoryService.archiveMemory(input.memoryId);
+    }
+  };
+
   return {
     onEpisodeSaved,
     listProcedures,
     getProcedureDetail,
     updateProcedureOutcome,
+    updateProcedureOutcomes,
     markExportedSkill,
+    markProcedureSuperseded,
   };
 }
 

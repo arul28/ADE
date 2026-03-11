@@ -6764,6 +6764,10 @@ Check all worker statuses and continue managing the mission from here. Read work
           allowSubAgents: true,
           allowClaudeAgentTeams: true
         };
+    const launchEmployeeAgentId =
+      typeof launchMetadata?.employeeAgentId === "string" && launchMetadata.employeeAgentId.trim().length > 0
+        ? launchMetadata.employeeAgentId.trim()
+        : null;
     const missionAfterPlanning = missionService.get(missionId);
     const missionMetadataAfterPlanning = getMissionMetadata(missionId);
     const missionPhaseConfiguration = isRecord(missionMetadataAfterPlanning.phaseConfiguration)
@@ -6881,6 +6885,7 @@ Check all worker statuses and continue managing the mission from here. Read work
             ownerId: autopilotOwnerId,
             parallelismCap: runParallelismCap,
           },
+          ...(launchEmployeeAgentId ? { employeeAgentId: launchEmployeeAgentId } : {}),
           teamRuntime: launchTeamRuntime
             ? {
                 ...launchTeamRuntime,

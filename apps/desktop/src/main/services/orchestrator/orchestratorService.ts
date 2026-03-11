@@ -216,7 +216,7 @@ export type OrchestratorExecutorStartArgs = {
   previousCheckpoint?: string;
   /** Summary/error from the previous attempt on the same step (for retry context). */
   previousAttemptSummary?: string;
-  /** Optional memory service for injecting shared facts and project memories into prompts. */
+  /** Optional memory service for injecting project memory into prompts and supporting memory tools. */
   memoryService?: unknown;
   /** Project ID for memory service scoping. */
   memoryProjectId?: string;
@@ -778,6 +778,8 @@ export function createOrchestratorService({
   memoryBriefingService,
   missionMemoryLifecycleService,
   episodicSummaryService,
+  proceduralLearningService,
+  knowledgeCaptureService,
   onEvent
 }: {
   db: AdeDb;
@@ -794,6 +796,8 @@ export function createOrchestratorService({
   memoryBriefingService?: import("../memory/memoryBriefingService").MemoryBriefingService | null;
   missionMemoryLifecycleService?: import("../memory/missionMemoryLifecycleService").MissionMemoryLifecycleService | null;
   episodicSummaryService?: import("../memory/episodicSummaryService").EpisodicSummaryService | null;
+  proceduralLearningService?: import("../memory/proceduralLearningService").ProceduralLearningService | null;
+  knowledgeCaptureService?: import("../memory/knowledgeCaptureService").KnowledgeCaptureService | null;
   onEvent?: (event: OrchestratorEvent) => void;
 }) {
   const adapters = new Map<OrchestratorExecutorKind, OrchestratorExecutorAdapter>();
@@ -966,6 +970,70 @@ export function createOrchestratorService({
       `update orchestrator_runs set metadata_json = ?, updated_at = ? where id = ? and project_id = ?`,
       [JSON.stringify(updatedMeta), nowIso(), runId, projectId]
     );
+  };
+
+  const persistUsedProcedureIds = (runId: string, usedProcedureIds: string[] | null | undefined): string[] => {
+    const normalized = [...new Set((usedProcedureIds ?? []).map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0))];
+    if (normalized.length === 0) return [];
+    const runRow = getRunRow(runId);
+    if (!runRow) return normalized;
+    const metadata = parseJsonRecord(runRow.metadata_json) ?? {};
+    const existing = Array.isArray(metadata.usedProcedureIds)
+      ? metadata.usedProcedureIds.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
+      : [];
+    const merged = [...new Set([...existing, ...normalized])];
+    if (merged.length === existing.length) return merged;
+    db.run(
+      `update orchestrator_runs set metadata_json = ?, updated_at = ? where id = ? and project_id = ?`,
+      [
+        JSON.stringify({
+          ...metadata,
+          usedProcedureIds: merged,
+        }),
+        nowIso(),
+        runId,
+        projectId,
+      ]
+    );
+    return merged;
+  };
+
+  const applyProcedureOutcomeFeedback = (input: {
+    runId: string;
+    finalStatus: OrchestratorRunStatus;
+    metadata: Record<string, unknown>;
+    reason: string;
+  }): Record<string, unknown> => {
+    if (!proceduralLearningService || (input.finalStatus !== "succeeded" && input.finalStatus !== "failed")) {
+      return input.metadata;
+    }
+    const usedProcedureIds = Array.isArray(input.metadata.usedProcedureIds)
+      ? input.metadata.usedProcedureIds.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
+      : [];
+    if (usedProcedureIds.length === 0) return input.metadata;
+    const existingFeedback = asRecord(input.metadata.procedureOutcomeFeedback) ?? {};
+    const pending = [...new Set(usedProcedureIds)].filter((procedureId) => !asRecord(existingFeedback[procedureId]));
+    if (pending.length === 0) return input.metadata;
+    proceduralLearningService.updateProcedureOutcomes(
+      pending.map((memoryId) => ({
+        memoryId,
+        outcome: input.finalStatus === "succeeded" ? "success" : "failure",
+        reason: input.reason,
+      })),
+    );
+    const appliedAt = nowIso();
+    const nextFeedback = { ...existingFeedback };
+    for (const procedureId of pending) {
+      nextFeedback[procedureId] = {
+        outcome: input.finalStatus,
+        reason: input.reason,
+        appliedAt,
+      };
+    }
+    return {
+      ...input.metadata,
+      procedureOutcomeFeedback: nextFeedback,
+    };
   };
 
   const persistRuntimeEvent = (args: {
@@ -2311,53 +2379,6 @@ export function createOrchestratorService({
       return "completing";
     }
     return evaluation.status;
-  };
-
-  /**
-   * Promote shared facts from a completed run into the memory system.
-   * High-confidence facts (>= 0.8 mapped from fact type) are auto-promoted;
-   * others are stored as candidates for manual review.
-   */
-  const promoteRunFactsToMemory = (runId: string, runProjectId: string): void => {
-    if (!memoryService) return;
-    const facts = memoryService.getSharedFacts(runId, 50);
-    if (!facts.length) return;
-
-    const factTypeConfidence: Record<string, number> = {
-      architectural: 0.9,
-      schema_change: 0.85,
-      config: 0.8,
-      api_pattern: 0.75,
-      gotcha: 0.7
-    };
-
-    for (const fact of facts) {
-      const confidence = factTypeConfidence[fact.factType] ?? 0.5;
-      const category = fact.factType === "gotcha" ? "gotcha" as const
-        : fact.factType === "config" ? "preference" as const
-        : "fact" as const;
-
-      if (confidence >= 0.8) {
-        memoryService.addMemory({
-          projectId: runProjectId,
-          scope: "project",
-          category,
-          content: fact.content,
-          importance: confidence >= 0.85 ? "high" : "medium",
-          sourceRunId: runId
-        });
-      } else {
-        memoryService.addCandidateMemory({
-          projectId: runProjectId,
-          scope: "project",
-          category,
-          content: fact.content,
-          importance: "medium",
-          confidence,
-          sourceRunId: runId
-        });
-      }
-    }
   };
 
   const createContextSnapshotForAttempt = async (args: {
@@ -6634,11 +6655,16 @@ export function createOrchestratorService({
           const briefingFilePatterns = Array.isArray(stepWithWorktree.metadata?.fileScopes)
             ? stepWithWorktree.metadata.fileScopes.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
             : [];
+          const employeeAgentId =
+            typeof run.metadata?.employeeAgentId === "string" && run.metadata.employeeAgentId.trim().length > 0
+              ? run.metadata.employeeAgentId.trim()
+              : null;
           const memoryBriefing = memoryBriefingService
             ? await memoryBriefingService.buildBriefing({
                 projectId,
                 missionId: run.missionId,
                 runId: run.id,
+                ...(employeeAgentId ? { agentId: employeeAgentId, includeAgentMemory: true } : {}),
                 taskDescription: stepWithWorktree.title,
                 phaseContext: typeof stepWithWorktree.metadata?.phaseInstructions === "string"
                   ? stepWithWorktree.metadata.phaseInstructions
@@ -6652,6 +6678,7 @@ export function createOrchestratorService({
                 mode: "mission_worker",
               })
             : null;
+          persistUsedProcedureIds(run.id, memoryBriefing?.usedProcedureIds);
           const promptPack = buildFullPrompt(
             {
               run,
@@ -7013,11 +7040,16 @@ export function createOrchestratorService({
           }
           return s;
         })();
+        const employeeAgentId =
+          typeof run.metadata?.employeeAgentId === "string" && run.metadata.employeeAgentId.trim().length > 0
+            ? run.metadata.employeeAgentId.trim()
+            : null;
         const memoryBriefing = memoryBriefingService
           ? await memoryBriefingService.buildBriefing({
               projectId,
               missionId: run.missionId,
               runId: run.id,
+              ...(employeeAgentId ? { agentId: employeeAgentId, includeAgentMemory: true } : {}),
               taskDescription: stepForExecutor.title,
               phaseContext: typeof stepForExecutor.metadata?.phaseInstructions === "string"
                 ? stepForExecutor.metadata.phaseInstructions
@@ -7033,6 +7065,7 @@ export function createOrchestratorService({
               mode: "mission_worker",
             })
           : null;
+        persistUsedProcedureIds(run.id, memoryBriefing?.usedProcedureIds);
         const result = await adapter.start({
           run,
           step: stepForExecutor,
@@ -7483,6 +7516,20 @@ export function createOrchestratorService({
           content: gotchaLines.join(" "),
           confidence: shouldRetry ? 0.8 : 0.95,
         });
+        void knowledgeCaptureService?.captureFailureGotcha({
+          missionId: run.missionId,
+          runId: run.id,
+          stepId: step.id,
+          attemptId: attempt.id,
+          stepKey: step.stepKey,
+          summary: String(envelope.summary ?? defaultSummary).trim() || defaultSummary,
+          errorMessage: effectiveErrorMessage ?? null,
+          fileScopePattern: typeof stepMetadata.fileScopePattern === "string"
+            ? stepMetadata.fileScopePattern
+            : Array.isArray(stepMetadata.fileScopes)
+              ? String(stepMetadata.fileScopes[0] ?? "").trim() || null
+              : null,
+        }).catch(() => {});
       }
 
       db.run(
@@ -10503,13 +10550,24 @@ export function createOrchestratorService({
 
       // Persist completion diagnostics
       const existingMeta = parseJsonRecord(runRow.metadata_json) ?? {};
-      const updatedMeta = {
-        ...existingMeta,
-        completionDiagnostics: evaluation.diagnostics,
-        completionRiskFactors: evaluation.riskFactors,
-        completionValidation: validation,
-        finalizedAt: nowIso()
-      };
+      const finalizedAt = nowIso();
+      const updatedMeta = applyProcedureOutcomeFeedback({
+        runId,
+        finalStatus,
+        metadata: {
+          ...existingMeta,
+          completionDiagnostics: evaluation.diagnostics,
+          completionRiskFactors: evaluation.riskFactors,
+          completionValidation: validation,
+          finalizedAt,
+        },
+        reason:
+          finalStatus === "succeeded"
+            ? "Mission run completed successfully."
+            : toOptionalNonEmptyString(runRow.last_error)
+              || (evaluation.diagnostics[0] ? JSON.stringify(evaluation.diagnostics[0]) : null)
+              || "Mission run failed.",
+      });
       updateRunStatus(runId, finalStatus, {
         metadata_json: JSON.stringify(updatedMeta)
       });
@@ -10530,7 +10588,17 @@ export function createOrchestratorService({
         runId,
         status: "all",
       }) ?? [];
-      const sharedFacts = memoryService?.getSharedFacts(runId, 50) ?? [];
+      const sharedFacts = missionEntries
+        .filter((entry) =>
+          entry.category === "fact"
+          || entry.category === "decision"
+          || entry.category === "gotcha"
+          || entry.category === "handoff"
+          || entry.category === "digest"
+          || entry.category === "pattern"
+          || entry.category === "procedure"
+        )
+        .map((entry) => `[${entry.category}] ${entry.content}`);
       try {
         missionMemoryLifecycleService?.finalizeMission({
           projectId,

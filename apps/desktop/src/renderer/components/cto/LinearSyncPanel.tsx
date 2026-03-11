@@ -23,7 +23,8 @@ import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { PaneHeader } from "../ui/PaneHeader";
 import { cn } from "../ui/cn";
-import { inputCls, selectCls, labelCls, textareaCls } from "./shared/designTokens";
+import { inputCls, selectCls, labelCls, textareaCls, cardCls, recessedPanelCls } from "./shared/designTokens";
+import { LinearConnectionPanel } from "./LinearConnectionPanel";
 
 /* ── Helpers ── */
 
@@ -88,7 +89,6 @@ export function LinearSyncPanel() {
   const [policy, setPolicy] = useState<LinearSyncConfig>(linearDefaultPolicy());
   const [queue, setQueue] = useState<LinearSyncQueueItem[]>([]);
   const [revisions, setRevisions] = useState<CtoFlowPolicyRevision[]>([]);
-  const [tokenInput, setTokenInput] = useState("");
   const [routeMapText, setRouteMapText] = useState("");
   const [rulesText, setRulesText] = useState("[]");
   const [projectText, setProjectText] = useState("");
@@ -157,21 +157,6 @@ export function LinearSyncPanel() {
       const [dash, q] = await Promise.all([window.ade.cto.runLinearSyncNow(), window.ade.cto.listLinearSyncQueue()]);
       setDashboard(dash); setQueue(q); setStatusNote("Sync cycle executed.");
     } catch (err) { setError(err instanceof Error ? err.message : "Sync failed."); }
-  }, []);
-
-  const setLinearToken = useCallback(async () => {
-    if (!window.ade?.cto || !tokenInput.trim()) return;
-    setError(null); setStatusNote(null);
-    try {
-      const s = await window.ade.cto.setLinearToken({ token: tokenInput.trim() });
-      setConnection(s); setTokenInput(""); setStatusNote(s.connected ? "Token saved and verified." : "Token saved.");
-    } catch (err) { setError(err instanceof Error ? err.message : "Failed."); }
-  }, [tokenInput]);
-
-  const clearToken = useCallback(async () => {
-    if (!window.ade?.cto) return;
-    setError(null); setStatusNote(null);
-    try { const s = await window.ade.cto.clearLinearToken(); setConnection(s); setStatusNote("Token cleared."); } catch (err) { setError(err instanceof Error ? err.message : "Failed."); }
   }, []);
 
   const simulateRoute = useCallback(async () => {
@@ -244,7 +229,7 @@ export function LinearSyncPanel() {
 
       <div className="flex flex-1 min-h-0">
         {/* Step navigation */}
-        <nav className="shrink-0 w-40 border-r border-border/20 py-2" style={{ background: "var(--color-surface-recessed)" }}>
+        <nav className={cn("shrink-0 w-40 border-r border-border/20 py-2", recessedPanelCls)} style={{ background: "var(--color-surface-recessed)" }}>
           {STEPS.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
@@ -286,21 +271,17 @@ export function LinearSyncPanel() {
 
           {step === "connection" && (
             <>
-              <div className="border border-border/10 bg-card/60 backdrop-blur-sm shadow-card p-4 space-y-3">
-                <div className="font-sans text-xs font-bold text-fg">API Token</div>
+              <div className={cn(cardCls, "p-4 space-y-3")}>
+                <div className="font-sans text-xs font-bold text-fg">Connection</div>
                 <label className="flex items-center gap-2 text-xs text-muted-fg cursor-pointer">
                   <input type="checkbox" checked={policy.enabled === true} onChange={(e) => setPolicy((p) => ({ ...p, enabled: e.target.checked }))} />
                   Enable Linear sync
                 </label>
-                <input className={inputCls} type="password" placeholder="lin_api_..." value={tokenInput} onChange={(e) => setTokenInput(e.target.value)} />
-                <div className="flex gap-2">
-                  <Button variant="primary" size="sm" onClick={() => void setLinearToken()}>Save token</Button>
-                  <Button variant="outline" size="sm" onClick={() => void clearToken()}>Clear token</Button>
-                </div>
+                <LinearConnectionPanel onStatusChange={setConnection} />
               </div>
 
               {/* Queue */}
-              <div className="border border-border/10 bg-card/60 backdrop-blur-sm shadow-card">
+              <div className={cardCls}>
                 <PaneHeader title="Escalation Queue" meta={`${pendingQueue.length}`} />
                 <div className="p-3 space-y-1.5" data-testid="linear-queue-list">
                   {pendingQueue.length === 0 ? (
@@ -323,7 +304,7 @@ export function LinearSyncPanel() {
               </div>
 
               {/* Policy history */}
-              <div className="border border-border/10 bg-card/60 backdrop-blur-sm shadow-card">
+              <div className={cardCls}>
                 <PaneHeader title="Policy History" meta={`${revisions.length}`} />
                 <div className="p-3 space-y-1.5" data-testid="linear-history-list">
                   {revisions.length === 0 ? (
@@ -343,7 +324,7 @@ export function LinearSyncPanel() {
           )}
 
           {step === "intake" && (
-            <div className="border border-border/10 bg-card/60 backdrop-blur-sm shadow-card p-4 space-y-3">
+            <div className={cn(cardCls, "p-4 space-y-3")}>
               <div className="font-sans text-xs font-bold text-fg">Intake Configuration</div>
               <label className="space-y-1 block">
                 <div className={labelCls}>Project slugs (comma-separated)</div>
@@ -363,7 +344,7 @@ export function LinearSyncPanel() {
           )}
 
           {step === "routing" && (
-            <div className="border border-border/10 bg-card/60 backdrop-blur-sm shadow-card p-4 space-y-3">
+            <div className={cn(cardCls, "p-4 space-y-3")}>
               <div className="font-sans text-xs font-bold text-fg">Routing Rules</div>
               <label className="space-y-1 block">
                 <div className={labelCls}>Label routes (label=worker, one per line)</div>
@@ -394,7 +375,7 @@ export function LinearSyncPanel() {
           )}
 
           {step === "execution" && (
-            <div className="border border-border/10 bg-card/60 backdrop-blur-sm shadow-card p-4 space-y-3">
+            <div className={cn(cardCls, "p-4 space-y-3")}>
               <div className="font-sans text-xs font-bold text-fg">Concurrency & Assignment</div>
               <div className="grid grid-cols-3 gap-3">
                 <label className="space-y-1">
@@ -418,7 +399,7 @@ export function LinearSyncPanel() {
           )}
 
           {step === "escalation" && (
-            <div className="border border-border/10 bg-card/60 backdrop-blur-sm shadow-card p-4 space-y-3">
+            <div className={cn(cardCls, "p-4 space-y-3")}>
               <div className="font-sans text-xs font-bold text-fg">Escalation & Classification</div>
               <label className="space-y-1 block">
                 <div className={labelCls}>Default action</div>
@@ -446,7 +427,7 @@ export function LinearSyncPanel() {
           )}
 
           {step === "closeout" && (
-            <div className="border border-border/10 bg-card/60 backdrop-blur-sm shadow-card p-4 space-y-3">
+            <div className={cn(cardCls, "p-4 space-y-3")}>
               <div className="font-sans text-xs font-bold text-fg">Closeout & Artifacts</div>
               <label className="space-y-1 block">
                 <div className={labelCls}>Artifacts mode</div>

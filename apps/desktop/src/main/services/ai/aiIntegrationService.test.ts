@@ -280,7 +280,7 @@ describe("aiIntegrationService", () => {
   it("forwards memory context and compaction identifiers to the unified executor when provided", async () => {
     const { service } = makeService();
     const memoryService = {
-      addSharedFact: vi.fn(),
+      writeMemory: vi.fn(),
     } as any;
     const compactionFlushService = {
       beforeCompaction: vi.fn(),
@@ -310,7 +310,6 @@ describe("aiIntegrationService", () => {
     expect(firstCall.memoryService).toBe(memoryService);
     expect(firstCall.enableCompaction).toBe(true);
     expect(firstCall.compactionFlushService).toBe(compactionFlushService);
-    expect(firstCall.addSharedFact).toBeTypeOf("function");
   });
 
   it("fails in guest mode", async () => {
