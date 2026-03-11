@@ -715,13 +715,18 @@ export function createMissionService({
   projectId,
   projectRoot,
   onEvent,
-  concurrencyConfig
+  concurrencyConfig,
+  onInterventionResolved
 }: {
   db: AdeDb;
   projectId: string;
   projectRoot?: string;
   onEvent?: (payload: MissionsEventPayload) => void;
   concurrencyConfig?: Partial<MissionConcurrencyConfig>;
+  onInterventionResolved?: (args: {
+    missionId: string;
+    intervention: MissionIntervention;
+  }) => void | Promise<void>;
 }) {
   let activeConcurrencyConfig: MissionConcurrencyConfig = {
     ...DEFAULT_CONCURRENCY_CONFIG,
@@ -3641,7 +3646,16 @@ export function createMissionService({
         [interventionId, missionId, projectId]
       );
       if (!updated) throw new Error("Intervention update failed");
-      return toMissionIntervention(updated);
+      const intervention = toMissionIntervention(updated);
+      try {
+        void onInterventionResolved?.({
+          missionId,
+          intervention,
+        });
+      } catch {
+        // Knowledge capture should never block intervention resolution.
+      }
+      return intervention;
     },
 
     // ── Concurrency Guard ────────────────────────────────────────

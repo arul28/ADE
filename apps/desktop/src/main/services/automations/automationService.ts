@@ -1376,16 +1376,15 @@ export function createAutomationService({
     const outcome = missionStatus === "completed" ? "success" : missionStatus === "failed" ? "failure" : "observation";
     const reason = summary?.trim() || (missionStatus === "completed" ? "Automation mission completed." : "Automation mission ended.");
     const feedback = linkedProcedureIds.map((procedureId) => ({ procedureId, outcome, reason }));
-    for (const item of feedback) {
-      try {
-        await proceduralLearningServiceRef?.updateProcedureOutcome?.({
-          memoryId: item.procedureId,
-          outcome: item.outcome === "observation" ? "success" : item.outcome,
-          reason: item.reason,
-        });
-      } catch {
-        // ignore
-      }
+    const normalizedFeedback = feedback.map((item) => ({
+      memoryId: item.procedureId,
+      outcome: item.outcome === "observation" ? "success" as const : item.outcome,
+      reason: item.reason,
+    }));
+    try {
+      proceduralLearningServiceRef?.updateProcedureOutcomes?.(normalizedFeedback);
+    } catch {
+      // ignore
     }
     updateRun(runRow.id, { procedure_feedback_json: JSON.stringify(feedback) });
     return feedback;
@@ -1793,12 +1792,14 @@ export function createAutomationService({
         const runRow = loadRunRow(row.run_id);
         if (runRow) {
           const feedback = safeJsonParseArray<AutomationProcedureFeedback>(runRow.procedure_feedback_json);
-          for (const item of feedback) {
-            void proceduralLearningServiceRef?.updateProcedureOutcome?.({
+          try {
+            proceduralLearningServiceRef?.updateProcedureOutcomes?.(feedback.map((item) => ({
               memoryId: item.procedureId,
               outcome: "success",
               reason: `Accepted from automation queue item ${queueItemId}`,
-            }).catch(() => {});
+            })));
+          } catch {
+            // ignore
           }
         }
       }

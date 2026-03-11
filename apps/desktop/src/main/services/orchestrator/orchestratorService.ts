@@ -778,6 +778,8 @@ export function createOrchestratorService({
   memoryBriefingService,
   missionMemoryLifecycleService,
   episodicSummaryService,
+  proceduralLearningService,
+  knowledgeCaptureService,
   onEvent
 }: {
   db: AdeDb;
@@ -794,6 +796,8 @@ export function createOrchestratorService({
   memoryBriefingService?: import("../memory/memoryBriefingService").MemoryBriefingService | null;
   missionMemoryLifecycleService?: import("../memory/missionMemoryLifecycleService").MissionMemoryLifecycleService | null;
   episodicSummaryService?: import("../memory/episodicSummaryService").EpisodicSummaryService | null;
+  proceduralLearningService?: import("../memory/proceduralLearningService").ProceduralLearningService | null;
+  knowledgeCaptureService?: import("../memory/knowledgeCaptureService").KnowledgeCaptureService | null;
   onEvent?: (event: OrchestratorEvent) => void;
 }) {
   const adapters = new Map<OrchestratorExecutorKind, OrchestratorExecutorAdapter>();
@@ -966,6 +970,70 @@ export function createOrchestratorService({
       `update orchestrator_runs set metadata_json = ?, updated_at = ? where id = ? and project_id = ?`,
       [JSON.stringify(updatedMeta), nowIso(), runId, projectId]
     );
+  };
+
+  const persistUsedProcedureIds = (runId: string, usedProcedureIds: string[] | null | undefined): string[] => {
+    const normalized = [...new Set((usedProcedureIds ?? []).map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0))];
+    if (normalized.length === 0) return [];
+    const runRow = getRunRow(runId);
+    if (!runRow) return normalized;
+    const metadata = parseJsonRecord(runRow.metadata_json) ?? {};
+    const existing = Array.isArray(metadata.usedProcedureIds)
+      ? metadata.usedProcedureIds.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
+      : [];
+    const merged = [...new Set([...existing, ...normalized])];
+    if (merged.length === existing.length) return merged;
+    db.run(
+      `update orchestrator_runs set metadata_json = ?, updated_at = ? where id = ? and project_id = ?`,
+      [
+        JSON.stringify({
+          ...metadata,
+          usedProcedureIds: merged,
+        }),
+        nowIso(),
+        runId,
+        projectId,
+      ]
+    );
+    return merged;
+  };
+
+  const applyProcedureOutcomeFeedback = (input: {
+    runId: string;
+    finalStatus: OrchestratorRunStatus;
+    metadata: Record<string, unknown>;
+    reason: string;
+  }): Record<string, unknown> => {
+    if (!proceduralLearningService || (input.finalStatus !== "succeeded" && input.finalStatus !== "failed")) {
+      return input.metadata;
+    }
+    const usedProcedureIds = Array.isArray(input.metadata.usedProcedureIds)
+      ? input.metadata.usedProcedureIds.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
+      : [];
+    if (usedProcedureIds.length === 0) return input.metadata;
+    const existingFeedback = asRecord(input.metadata.procedureOutcomeFeedback) ?? {};
+    const pending = [...new Set(usedProcedureIds)].filter((procedureId) => !asRecord(existingFeedback[procedureId]));
+    if (pending.length === 0) return input.metadata;
+    proceduralLearningService.updateProcedureOutcomes(
+      pending.map((memoryId) => ({
+        memoryId,
+        outcome: input.finalStatus === "succeeded" ? "success" : "failure",
+        reason: input.reason,
+      })),
+    );
+    const appliedAt = nowIso();
+    const nextFeedback = { ...existingFeedback };
+    for (const procedureId of pending) {
+      nextFeedback[procedureId] = {
+        outcome: input.finalStatus,
+        reason: input.reason,
+        appliedAt,
+      };
+    }
+    return {
+      ...input.metadata,
+      procedureOutcomeFeedback: nextFeedback,
+    };
   };
 
   const persistRuntimeEvent = (args: {
@@ -6610,6 +6678,7 @@ export function createOrchestratorService({
                 mode: "mission_worker",
               })
             : null;
+          persistUsedProcedureIds(run.id, memoryBriefing?.usedProcedureIds);
           const promptPack = buildFullPrompt(
             {
               run,
@@ -6996,6 +7065,7 @@ export function createOrchestratorService({
               mode: "mission_worker",
             })
           : null;
+        persistUsedProcedureIds(run.id, memoryBriefing?.usedProcedureIds);
         const result = await adapter.start({
           run,
           step: stepForExecutor,
@@ -7446,6 +7516,20 @@ export function createOrchestratorService({
           content: gotchaLines.join(" "),
           confidence: shouldRetry ? 0.8 : 0.95,
         });
+        void knowledgeCaptureService?.captureFailureGotcha({
+          missionId: run.missionId,
+          runId: run.id,
+          stepId: step.id,
+          attemptId: attempt.id,
+          stepKey: step.stepKey,
+          summary: String(envelope.summary ?? defaultSummary).trim() || defaultSummary,
+          errorMessage: effectiveErrorMessage ?? null,
+          fileScopePattern: typeof stepMetadata.fileScopePattern === "string"
+            ? stepMetadata.fileScopePattern
+            : Array.isArray(stepMetadata.fileScopes)
+              ? String(stepMetadata.fileScopes[0] ?? "").trim() || null
+              : null,
+        }).catch(() => {});
       }
 
       db.run(
@@ -10466,13 +10550,24 @@ export function createOrchestratorService({
 
       // Persist completion diagnostics
       const existingMeta = parseJsonRecord(runRow.metadata_json) ?? {};
-      const updatedMeta = {
-        ...existingMeta,
-        completionDiagnostics: evaluation.diagnostics,
-        completionRiskFactors: evaluation.riskFactors,
-        completionValidation: validation,
-        finalizedAt: nowIso()
-      };
+      const finalizedAt = nowIso();
+      const updatedMeta = applyProcedureOutcomeFeedback({
+        runId,
+        finalStatus,
+        metadata: {
+          ...existingMeta,
+          completionDiagnostics: evaluation.diagnostics,
+          completionRiskFactors: evaluation.riskFactors,
+          completionValidation: validation,
+          finalizedAt,
+        },
+        reason:
+          finalStatus === "succeeded"
+            ? "Mission run completed successfully."
+            : toOptionalNonEmptyString(runRow.last_error)
+              || (evaluation.diagnostics[0] ? JSON.stringify(evaluation.diagnostics[0]) : null)
+              || "Mission run failed.",
+      });
       updateRunStatus(runId, finalStatus, {
         metadata_json: JSON.stringify(updatedMeta)
       });
@@ -10530,7 +10625,7 @@ export function createOrchestratorService({
           finalStatus: finalStatus === "succeeded" ? "success" : finalStatus === "failed" ? "failure" : "partial",
           startedAt: run.startedAt,
           endedAt: updatedMeta.finalizedAt,
-          sharedFacts,
+          sharedFacts: sharedFacts.map((fact) => `[${fact.factType}] ${fact.content}`),
           decisions,
           gotchas,
           workerOutputs: steps

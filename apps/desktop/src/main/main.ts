@@ -69,6 +69,7 @@ import { createEpisodicSummaryService } from "./services/memory/episodicSummaryS
 import { createHumanWorkDigestService } from "./services/memory/humanWorkDigestService";
 import { createProceduralLearningService } from "./services/memory/proceduralLearningService";
 import { createSkillRegistryService } from "./services/memory/skillRegistryService";
+import { createKnowledgeCaptureService } from "./services/memory/knowledgeCaptureService";
 import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createWorkerAgentService } from "./services/cto/workerAgentService";
 import { createWorkerRevisionService } from "./services/cto/workerRevisionService";
@@ -772,11 +773,20 @@ app.whenReady().then(async () => {
       }
     });
 
+    let knowledgeCaptureServiceRef: ReturnType<typeof createKnowledgeCaptureService> | null = null;
     const prPollingService = createPrPollingService({
       logger,
       prService,
       projectConfigService,
-      onEvent: (event) => emitProjectEvent(projectRoot, IPC.prsEvent, event)
+      onEvent: (event) => emitProjectEvent(projectRoot, IPC.prsEvent, event),
+      onPullRequestsChanged: ({ changedPrs }) => Promise.all(
+        changedPrs.map((pr) =>
+          knowledgeCaptureServiceRef?.capturePrFeedback({
+            prId: pr.id,
+            prNumber: pr.githubPrNumber ?? null,
+          }) ?? Promise.resolve()
+        ),
+      ).then(() => undefined),
     });
 
     let orchestratorServiceRef: ReturnType<typeof createOrchestratorService> | null = null;
@@ -921,6 +931,15 @@ app.whenReady().then(async () => {
       memoryService,
       onEpisodeSaved: (memoryId) => proceduralLearningService.onEpisodeSaved(memoryId),
     });
+    const knowledgeCaptureService = createKnowledgeCaptureService({
+      db,
+      projectId,
+      logger,
+      memoryService,
+      proceduralLearningService,
+      prService,
+    });
+    knowledgeCaptureServiceRef = knowledgeCaptureService;
     humanWorkDigestService = createHumanWorkDigestService({
       projectId,
       projectRoot,
@@ -1097,6 +1116,12 @@ app.whenReady().then(async () => {
       db,
       projectId,
       projectRoot,
+      onInterventionResolved: ({ missionId, intervention }) => {
+        void knowledgeCaptureService.captureResolvedIntervention({
+          missionId,
+          intervention,
+        }).catch(() => {});
+      },
       onEvent: (event) => {
         emitProjectEvent(projectRoot, IPC.missionsEvent, event);
         if (event.missionId) {
@@ -1158,6 +1183,8 @@ app.whenReady().then(async () => {
       memoryBriefingService,
       missionMemoryLifecycleService,
       episodicSummaryService,
+      proceduralLearningService,
+      knowledgeCaptureService,
       onEvent: (event) => {
         aiOrchestratorServiceRef?.onOrchestratorRuntimeEvent(event);
         emitProjectEvent(projectRoot, IPC.orchestratorEvent, event);
