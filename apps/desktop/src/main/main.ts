@@ -49,6 +49,9 @@ import { createAgentToolsService } from "./services/agentTools/agentToolsService
 import { createOnboardingService } from "./services/onboarding/onboardingService";
 import { createAutomationService } from "./services/automations/automationService";
 import { createAutomationPlannerService } from "./services/automations/automationPlannerService";
+import { createAutomationSecretService } from "./services/automations/automationSecretService";
+import { createAutomationRoutingService } from "./services/automations/automationRoutingService";
+import { createAutomationIngressService } from "./services/automations/automationIngressService";
 import { createUsageTrackingService } from "./services/usage/usageTrackingService";
 import { createBudgetCapService } from "./services/usage/budgetCapService";
 import { createCiService } from "./services/ci/ciService";
@@ -1009,6 +1012,13 @@ app.whenReady().then(async () => {
       ctoStateService,
       logger,
     });
+    const automationSecretService = createAutomationSecretService({
+      adeDir: adePaths.adeDir,
+      logger,
+    });
+    const automationRoutingService = createAutomationRoutingService({
+      workerAgentService,
+    });
 
     const linearCredentialService = createLinearCredentialService({
       adeDir: adePaths.adeDir,
@@ -1110,6 +1120,12 @@ app.whenReady().then(async () => {
       conflictService,
       testService,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.automationsEvent, event)
+    });
+    const automationIngressService = createAutomationIngressService({
+      logger,
+      automationService,
+      secretService: automationSecretService,
+      listRules: () => projectConfigService.get().effective.automations ?? [],
     });
 
     const missionService = createMissionService({
@@ -1269,6 +1285,13 @@ app.whenReady().then(async () => {
       memoryBriefingService,
       proceduralLearningService,
       budgetCapService,
+      workerHeartbeatService,
+      automationRoutingService,
+    });
+    void automationIngressService.start().catch((error) => {
+      logger.warn("automations.ingress_start_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
     });
 
     void memoryLifecycleService.runStartupSweepIfDue().catch((error) => {
@@ -1516,6 +1539,7 @@ app.whenReady().then(async () => {
       jobEngine,
       automationService,
       automationPlannerService,
+      automationIngressService,
       usageTrackingService,
       budgetCapService,
       missionService,
@@ -1602,6 +1626,7 @@ app.whenReady().then(async () => {
       jobEngine: null,
       automationService: null,
       automationPlannerService: null,
+      automationIngressService: null,
       usageTrackingService: null,
       budgetCapService: null,
       missionService: null,
@@ -1648,6 +1673,11 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.prPollingService.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.automationIngressService?.dispose();
     } catch {
       // ignore
     }

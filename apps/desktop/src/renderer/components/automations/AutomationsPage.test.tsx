@@ -28,33 +28,113 @@ function buildBridge() {
           mode: "review",
           triggers: [{ type: "session-end" }],
           trigger: { type: "session-end" },
-          executor: { mode: "automation-bot", targetId: null },
+          executor: { mode: "automation-bot" },
           reviewProfile: "quick",
           toolPalette: ["repo", "memory", "mission"],
-          contextSources: [],
-          memory: { mode: "automation-plus-project", ruleScopeKey: "rule-1" },
-          guardrails: { maxDurationMin: 20, maxFindings: 5 },
-          outputs: { disposition: "open-task", createArtifact: true },
+          contextSources: [{ type: "project-memory" }],
+          memory: { mode: "automation-plus-project" },
+          guardrails: {},
+          outputs: { disposition: "comment-only", createArtifact: true },
           verification: { verifyBeforePublish: false, mode: "intervention" },
-          billingCode: "auto:session-review",
-          actions: [{ type: "predict-conflicts" }],
+          billingCode: "auto:test",
+          actions: [{ type: "update-packs" }],
           running: false,
-          queueCount: 0,
+          lastRunStatus: "succeeded",
+          lastRunAt: "2026-03-05T00:00:00.000Z",
+          queueCount: 1,
           paused: false,
           ignoredRunCount: 0,
           confidence: null,
-          lastRunStatus: "succeeded",
-          lastRunAt: "2026-03-05T00:00:00.000Z",
         },
       ]),
       onEvent: vi.fn(() => () => {}),
       toggle: vi.fn(async () => []),
-      triggerManually: vi.fn(async () => ({})),
+      triggerManually: vi.fn(async () => ({
+        id: "run-1",
+        automationId: "rule-1",
+        missionId: "mission-1",
+        workerRunId: null,
+        workerAgentId: null,
+        queueItemId: null,
+        triggerType: "manual",
+        startedAt: "2026-03-05T00:00:00.000Z",
+        endedAt: "2026-03-05T00:05:00.000Z",
+        status: "succeeded",
+        queueStatus: "completed-clean",
+        executorMode: "automation-bot",
+        actionsCompleted: 1,
+        actionsTotal: 1,
+        errorMessage: null,
+        spendUsd: 0.25,
+        verificationRequired: false,
+        confidence: null,
+        triggerMetadata: null,
+        summary: "ok",
+        billingCode: "auto:test",
+      })),
       validateDraft: vi.fn(async () => ({ ok: true, issues: [], requiredConfirmations: [] })),
       saveDraft: vi.fn(async () => ({ rule: { id: "rule-1" } })),
       simulate: vi.fn(async () => ({ notes: [], actions: [], issues: [] })),
       getHistory: vi.fn(async () => []),
+      listRuns: vi.fn(async () => []),
       getRunDetail: vi.fn(async () => null),
+      listQueueItems: vi.fn(async () => []),
+      updateQueueItem: vi.fn(async () => null),
+      getNightShiftState: vi.fn(async () => ({
+        settings: {
+          activeHours: { start: "22:00", end: "06:00", timezone: "America/New_York" },
+          utilizationPreset: "conservative",
+          paused: false,
+          updatedAt: "2026-03-05T00:00:00.000Z",
+        },
+        queue: [
+          {
+            id: "night-1",
+            automationId: "rule-1",
+            title: "On session end",
+            reviewProfile: "quick",
+            executorMode: "automation-bot",
+            targetLabel: null,
+            scheduledWindow: "22:00-06:00",
+            status: "queued",
+            position: 0,
+            createdAt: "2026-03-05T00:00:00.000Z",
+            updatedAt: "2026-03-05T00:00:00.000Z",
+          },
+        ],
+        latestBriefing: {
+          id: "briefing-1",
+          createdAt: "2026-03-05T08:00:00.000Z",
+          completedAt: "2026-03-05T08:00:00.000Z",
+          totalRuns: 1,
+          succeededRuns: 1,
+          failedRuns: 0,
+          totalSpendUsd: 0.25,
+          cards: [
+            {
+              queueItemId: "night-1",
+              title: "On session end",
+              summary: "Completed overnight review cleanly.",
+              confidence: { value: 0.9, label: "high", reason: "clean" },
+              spendUsd: 0.25,
+              suggestedActions: ["accept"],
+              procedureSignals: [],
+            },
+          ],
+        },
+      })),
+      updateNightShiftSettings: vi.fn(async () => ({
+        settings: {
+          activeHours: { start: "22:00", end: "06:00", timezone: "America/New_York" },
+          utilizationPreset: "conservative",
+          paused: false,
+          updatedAt: "2026-03-05T00:00:00.000Z",
+        },
+        queue: [],
+        latestBriefing: null,
+      })),
+      getMorningBriefing: vi.fn(async () => null),
+      acknowledgeMorningBriefing: vi.fn(async () => null),
       parseNaturalLanguage: vi.fn(async () => ({})),
       getNightShiftState: vi.fn(async () => ({
         settings: {
@@ -116,6 +196,7 @@ function buildBridge() {
         queue: { queued: 0, retryWaiting: 0, escalated: 0, dispatched: 0, failed: 0 },
         claimsActive: 0,
       })),
+      listAgents: vi.fn(async () => []),
     },
     agentTools: {
       detect: vi.fn(async () => []),
@@ -198,6 +279,40 @@ describe("AutomationsPage", () => {
     mountPage();
     await waitFor(() => expect(screen.getByText("Night Shift")).toBeTruthy());
     fireEvent.click(screen.getByText("Night Shift"));
+    await waitFor(() => expect(screen.getByText("Night Shift Queue")).toBeTruthy());
+    expect(screen.getByText("On session end")).toBeTruthy();
+  });
+
+  it("opens the morning briefing modal when an unacknowledged briefing exists", async () => {
+    const bridge = buildBridge();
+    bridge.automations.getMorningBriefing = vi.fn(async () => ({
+      id: "briefing-1",
+      createdAt: "2026-03-05T08:00:00.000Z",
+      completedAt: "2026-03-05T08:00:00.000Z",
+      totalRuns: 2,
+      succeededRuns: 1,
+      failedRuns: 1,
+      totalSpendUsd: 1.5,
+      cards: [
+        {
+          queueItemId: "night-1",
+          title: "Overnight follow-up",
+          summary: "Prepared a publish draft for review.",
+          confidence: { value: 0.8, label: "high", reason: "clear signal" },
+          spendUsd: 1.5,
+          suggestedActions: ["accept"],
+          procedureSignals: ["release-risk"],
+        },
+      ],
+    }));
+    (window as any).ade = bridge;
+
+    mountPage();
+
     await waitFor(() => expect(screen.getByText("Morning Briefing")).toBeTruthy());
+    expect(screen.getByText("Overnight follow-up")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /acknowledge/i }));
+    await waitFor(() => expect(bridge.automations.acknowledgeMorningBriefing).toHaveBeenCalledTimes(1));
   });
 });

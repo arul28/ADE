@@ -7,6 +7,8 @@ import type {
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
   ArchiveLaneArgs,
+  AutomationIngressEventRecord,
+  AutomationIngressStatus,
   ConflictProposal,
   ConflictExternalResolverRunSummary,
   ConflictProposalPreview,
@@ -50,6 +52,7 @@ import type {
   ExportHistoryArgs,
   ExportHistoryResult,
   AgentTool,
+  NightShiftQueueMutationRequest,
   AgentChatApproveArgs,
   AgentChatCreateArgs,
   AgentChatDisposeArgs,
@@ -537,8 +540,11 @@ declare global {
         updateQueueItem: (args: AutomationQueueActionRequest) => Promise<AutomationQueueItem | null>;
         getNightShiftState: () => Promise<NightShiftState>;
         updateNightShiftSettings: (args: UpdateNightShiftSettingsRequest) => Promise<NightShiftState>;
+        mutateNightShiftQueue: (args: NightShiftQueueMutationRequest) => Promise<NightShiftState>;
         getMorningBriefing: () => Promise<NightShiftBriefing | null>;
         acknowledgeMorningBriefing: (args: { id: string }) => Promise<NightShiftBriefing | null>;
+        getIngressStatus: () => Promise<AutomationIngressStatus>;
+        listIngressEvents: (args?: { limit?: number }) => Promise<AutomationIngressEventRecord[]>;
         parseNaturalLanguage: (req: AutomationParseNaturalLanguageRequest) => Promise<AutomationParseNaturalLanguageResult>;
         validateDraft: (req: AutomationValidateDraftRequest) => Promise<AutomationValidateDraftResult>;
         saveDraft: (req: AutomationSaveDraftRequest) => Promise<AutomationSaveDraftResult>;

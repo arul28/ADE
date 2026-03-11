@@ -18,6 +18,19 @@ function summarizeRule(rule: AutomationRuleSummary): string {
   return `${rule.mode} · ${rule.reviewProfile} · ${triggerLabel}`;
 }
 
+function summarizeExecutor(rule: AutomationRuleSummary): string {
+  if (rule.executor.mode === "employee") {
+    return rule.executor.targetId ? `employee:${rule.executor.targetId}` : "employee";
+  }
+  if (rule.executor.mode === "cto-route") {
+    const capabilities = rule.executor.routingHints?.requiredCapabilities?.length
+      ? ` (${rule.executor.routingHints.requiredCapabilities.join(", ")})`
+      : "";
+    return `cto-route${capabilities}`;
+  }
+  return rule.executor.mode;
+}
+
 export function RuleCard({
   rule,
   selected,
@@ -67,14 +80,10 @@ export function RuleCard({
             <div className="px-1.5 py-0.5 font-mono leading-none" style={{ background: "rgba(59,130,246,0.10)", color: "#60A5FA" }}>
               {rule.reviewProfile}
             </div>
-            {rule.executor.mode === "night-shift" && (
-              <>
-                <Arrow />
-                <div className="px-1.5 py-0.5 font-mono leading-none" style={{ background: "rgba(99,102,241,0.10)", color: "#A5B4FC" }}>
-                  night-shift
-                </div>
-              </>
-            )}
+            <Arrow />
+            <div className="px-1.5 py-0.5 font-mono leading-none" style={{ background: "rgba(99,102,241,0.10)", color: "#A5B4FC" }}>
+              {summarizeExecutor(rule)}
+            </div>
             <Arrow />
             <div className="truncate px-1.5 py-0.5 font-mono leading-none" style={{ background: "rgba(34,197,94,0.10)", color: "#22C55E" }}>
               {summarizeRule(rule)}
@@ -83,6 +92,10 @@ export function RuleCard({
 
           <div className="mt-1.5 text-xs text-[#71717A] truncate font-mono">
             last run: {formatDate(rule.lastRunAt, "Never")} · queue {rule.queueCount}
+          </div>
+          <div className="mt-1 text-[10px] text-[#8B8B9A] font-mono truncate">
+            {rule.outputs.disposition} · {rule.verification.verifyBeforePublish ? `${rule.verification.mode ?? "intervention"} gate` : "publish ungated"}
+            {rule.modelConfig?.orchestratorModel.modelId ? ` · ${rule.modelConfig.orchestratorModel.modelId}` : ""}
           </div>
           {rule.confidence ? (
             <div className="mt-1 text-[10px] text-[#8B8B9A] font-mono">

@@ -2,11 +2,13 @@ import React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { ArrowsClockwise } from "@phosphor-icons/react";
 import { Link } from "react-router-dom";
-import type { AutomationRuleSummary, AutomationRun, AutomationRunDetail } from "../../../shared/types";
+import type { AutomationIngressStatus, AutomationRuleSummary, AutomationRun, AutomationRunDetail } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
 import { statusToneAutomation as statusTone } from "../../lib/format";
+import { RunDetailPanel } from "../automations/components/RunDetailPanel";
+import { getAutomationsBridge } from "../automations/shared";
 
 function formatWhen(ts: string | null): string {
   if (!ts) return "Never";
@@ -24,6 +26,7 @@ export function AutomationsSection() {
   const [rules, setRules] = React.useState<AutomationRuleSummary[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [ingressStatus, setIngressStatus] = React.useState<AutomationIngressStatus | null>(null);
   const [historyDialog, setHistoryDialog] = React.useState<{
     rule: AutomationRuleSummary;
     runs: AutomationRun[];
@@ -37,8 +40,13 @@ export function AutomationsSection() {
     setLoading(true);
     setError(null);
     try {
-      const next = await window.ade.automations.list();
+      const automationsBridge = getAutomationsBridge();
+      const [next, nextIngressStatus] = await Promise.all([
+        window.ade.automations.list(),
+        automationsBridge.getIngressStatus ? automationsBridge.getIngressStatus().catch(() => null) : Promise.resolve(null),
+      ]);
       setRules(next);
+      setIngressStatus(nextIngressStatus);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -116,6 +124,20 @@ export function AutomationsSection() {
       ) : null}
 
       <div className="mt-3 space-y-2">
+        {ingressStatus ? (
+          <div className="rounded-lg border border-border/10 bg-card/80 p-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="text-xs font-semibold text-fg">Ingress</div>
+              <Chip className="text-[11px]">{ingressStatus.githubRelay.status}</Chip>
+              <Chip className="text-[11px]">{ingressStatus.localWebhook.status}</Chip>
+            </div>
+            <div className="mt-1 text-[11px] text-muted-fg">
+              GitHub relay cursor: <span className="font-mono">{ingressStatus.githubRelay.lastCursor ?? "none"}</span>
+              {" · "}
+              Local webhook: <span className="font-mono">{ingressStatus.localWebhook.url ?? "not listening"}</span>
+            </div>
+          </div>
+        ) : null}
         {rules.length === 0 ? (
           <div className="rounded-lg border border-border/10 bg-card/80 p-3 text-xs text-muted-fg">No automation rules configured.</div>
         ) : (
@@ -136,6 +158,11 @@ export function AutomationsSection() {
                   </div>
                   <div className="mt-0.5 text-[11px] text-muted-fg">actions: {summarizeActions(rule)}</div>
                   <div className="mt-0.5 text-[11px] text-muted-fg">last run: {formatWhen(rule.lastRunAt)}</div>
+                  <div className="mt-0.5 text-[11px] text-muted-fg">
+                    executor: <span className="font-mono">{rule.executor.mode}</span>
+                    {rule.executor.targetId ? ` · target ${rule.executor.targetId}` : ""}
+                    {rule.modelConfig?.orchestratorModel.modelId ? ` · ${rule.modelConfig.orchestratorModel.modelId}` : ""}
+                  </div>
                 </div>
                 <div className="flex items-center gap-2">
                   <Button
@@ -229,35 +256,15 @@ export function AutomationsSection() {
                 </div>
 
                 <div className="max-h-[65vh] overflow-auto rounded-lg border border-border/10 bg-card/80 p-3">
-                  {historyDialog.detailBusy ? (
-                    <div className="text-xs text-muted-fg">Loading run detail…</div>
-                  ) : !historyDialog.detail ? (
-                    <div className="text-xs text-muted-fg">Select a run to view action results.</div>
-                  ) : (
-                    <div className="space-y-2">
-                      <div className="text-xs text-muted-fg">
-                        run: <span className="font-mono">{historyDialog.detail.run.id}</span>
-                      </div>
-                      {historyDialog.detail.actions.map((action) => (
-                        <div key={action.id} className="rounded-lg border border-border/10 bg-card/80 p-2">
-                          <div className="flex items-center justify-between gap-2 text-xs">
-                            <div className="font-semibold text-fg">
-                              #{action.actionIndex + 1} {action.actionType}
-                            </div>
-                            <Chip className={cn("text-[11px]", statusTone(action.status))}>{action.status}</Chip>
-                          </div>
-                          {action.errorMessage ? (
-                            <div className="mt-1 text-xs text-red-300">{action.errorMessage}</div>
-                          ) : null}
-                          {action.output ? (
-                            <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-lg border border-border/10 bg-surface-recessed p-2 text-[11px] leading-relaxed text-fg">
-                              {action.output}
-                            </pre>
-                          ) : null}
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                  <RunDetailPanel
+                    detail={historyDialog.detail}
+                    loading={historyDialog.detailBusy}
+                    onActionComplete={() => {
+                      if (historyDialog.selectedRunId) {
+                        void loadRunDetail(historyDialog.selectedRunId);
+                      }
+                    }}
+                  />
                 </div>
               </div>
             ) : null}
