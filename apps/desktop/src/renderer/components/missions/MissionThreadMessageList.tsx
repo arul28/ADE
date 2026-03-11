@@ -5,7 +5,6 @@ import { AgentChatMessageList } from "../chat/AgentChatMessageList";
 import { AgentQuestionModal } from "../chat/AgentQuestionModal";
 import { looksLikeLowSignalNoise } from "./missionHelpers";
 import { adaptMissionThreadMessagesToAgentEvents } from "./missionThreadEventAdapter";
-import { looksLikeLowSignalNoise } from "./missionHelpers";
 import { useMissionPolling } from "./useMissionPolling";
 
 type MissionThreadMessageListProps = {

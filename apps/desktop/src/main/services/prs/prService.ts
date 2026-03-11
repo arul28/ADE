@@ -5,13 +5,16 @@ import type {
   CreatePrFromLaneArgs,
   CreateQueuePrsArgs,
   CreateQueuePrsResult,
-   CreateIntegrationPrArgs,
+  CreateIntegrationPrArgs,
   CreateIntegrationPrResult,
   CreateIntegrationLaneForProposalArgs,
   CreateIntegrationLaneForProposalResult,
   CommitIntegrationArgs,
+  CleanupIntegrationWorkflowArgs,
+  CleanupIntegrationWorkflowResult,
   DeleteIntegrationProposalArgs,
   DeleteIntegrationProposalResult,
+  DismissIntegrationCleanupArgs,
   DraftPrDescriptionArgs,
   DeletePrArgs,
   DeletePrResult,
@@ -24,12 +27,15 @@ import type {
   IntegrationProposalStep,
   IntegrationResolutionState,
   IntegrationStepResolution,
+  IntegrationCleanupState,
+  IntegrationWorkflowDisplayState,
   LandResult,
   LandPrArgs,
   LandQueueNextArgs,
   LandStackArgs,
   LandStackEnhancedArgs,
   LaneSummary,
+  ListIntegrationWorkflowsArgs,
   LinkPrToLaneArgs,
   PrCheck,
   PrComment,
@@ -63,6 +69,8 @@ import type {
   RerunPrChecksArgs,
   AiReviewSummaryArgs,
   AiReviewSummary,
+  GitHubPrListItem,
+  GitHubPrSnapshot,
   PrDetail,
   PrFile,
   PrActionRun,
@@ -109,6 +117,33 @@ type PullRequestRow = {
   updated_at: string;
 };
 
+type IntegrationProposalRow = {
+  id: string;
+  source_lane_ids_json: string;
+  base_branch: string;
+  steps_json: string;
+  overall_outcome: string;
+  created_at: string;
+  title: string | null;
+  body: string | null;
+  draft: number | null;
+  integration_lane_name: string | null;
+  status: string;
+  integration_lane_id: string | null;
+  resolution_state_json: string | null;
+  pairwise_results_json: string | null;
+  lane_summaries_json: string | null;
+  linked_group_id: string | null;
+  linked_pr_id: string | null;
+  workflow_display_state: string | null;
+  cleanup_state: string | null;
+  closed_at: string | null;
+  merged_at: string | null;
+  completed_at: string | null;
+  cleanup_declined_at: string | null;
+  cleanup_completed_at: string | null;
+};
+
 type PrGroupLookupRow = {
   group_id: string;
   group_type: "queue" | "integration";
@@ -133,6 +168,14 @@ function branchNameFromRef(ref: string): string {
 function normalizeGroupMemberRole(raw: string): PrGroupMemberRole {
   if (raw === "source" || raw === "integration" || raw === "target") return raw;
   return "source";
+}
+
+function parseWorkflowDisplayState(raw: string | null | undefined): IntegrationWorkflowDisplayState {
+  return raw === "history" ? "history" : "active";
+}
+
+function parseCleanupState(raw: string | null | undefined): IntegrationCleanupState {
+  return raw === "required" || raw === "declined" || raw === "completed" ? raw : "none";
 }
 
 function createEmptyIntegrationResolutionState(integrationLaneId: string, updatedAt = nowIso()): IntegrationResolutionState {
@@ -576,6 +619,135 @@ export function createPrService({
       if (batch.length < pageSize) break;
     }
     return out;
+  };
+
+  const listIntegrationProposalRows = (args: { where?: string; params?: Array<string | number | null> } = {}): IntegrationProposalRow[] =>
+    db.all<IntegrationProposalRow>(
+      `select * from integration_proposals where project_id = ?${args.where ? ` and ${args.where}` : ""} order by created_at desc`,
+      [projectId, ...(args.params ?? [])]
+    );
+
+  const updateIntegrationProposalColumns = (
+    proposalId: string,
+    changes: Record<string, string | number | null | undefined>
+  ): void => {
+    const entries = Object.entries(changes).filter(([, value]) => value !== undefined);
+    if (!entries.length) return;
+    const sets = entries.map(([column]) => `${column} = ?`);
+    const params = entries.map(([, value]) => value ?? null);
+    params.push(proposalId);
+    db.run(`update integration_proposals set ${sets.join(", ")} where id = ?`, params);
+  };
+
+  const loadIntegrationWorkflowRows = async (): Promise<IntegrationProposalRow[]> => {
+    const rows = listIntegrationProposalRows();
+    const reconciled: IntegrationProposalRow[] = [];
+
+    for (const row of rows) {
+      const cleanupState = parseCleanupState(row.cleanup_state);
+      const workflowDisplayState = parseWorkflowDisplayState(row.workflow_display_state);
+      const linkedPrId = asString(row.linked_pr_id).trim() || null;
+      const linkedPrRow = linkedPrId ? getRow(linkedPrId) : null;
+      const updates: Record<string, string | null> = {};
+
+      let nextCleanupState: IntegrationCleanupState = cleanupState;
+      let nextWorkflowDisplayState: IntegrationWorkflowDisplayState = workflowDisplayState;
+      let nextClosedAt = row.closed_at;
+      let nextMergedAt = row.merged_at;
+      let nextCompletedAt = row.completed_at;
+
+      if (cleanupState === "declined" || cleanupState === "completed") {
+        nextWorkflowDisplayState = "history";
+      } else if (linkedPrRow) {
+        const linkedState = String(linkedPrRow.state ?? "").toLowerCase();
+        const linkedUpdatedAt = asString(linkedPrRow.updated_at) || nowIso();
+
+        if (linkedState === "merged") {
+          nextCleanupState = "required";
+          nextWorkflowDisplayState = "active";
+          nextMergedAt = row.merged_at ?? linkedUpdatedAt;
+          nextCompletedAt = row.completed_at ?? linkedUpdatedAt;
+        } else if (linkedState === "closed") {
+          nextCleanupState = "required";
+          nextWorkflowDisplayState = "active";
+          nextClosedAt = row.closed_at ?? linkedUpdatedAt;
+          nextCompletedAt = row.completed_at ?? linkedUpdatedAt;
+        } else if (linkedState === "open" || linkedState === "draft") {
+          nextClosedAt = null;
+          nextMergedAt = null;
+          nextCompletedAt = null;
+          if (cleanupState === "required") {
+            nextCleanupState = "none";
+          }
+          nextWorkflowDisplayState = "active";
+        }
+      }
+
+      if (nextCleanupState !== cleanupState) updates.cleanup_state = nextCleanupState;
+      if (nextWorkflowDisplayState !== workflowDisplayState) updates.workflow_display_state = nextWorkflowDisplayState;
+      if ((nextClosedAt ?? null) !== (row.closed_at ?? null)) updates.closed_at = nextClosedAt ?? null;
+      if ((nextMergedAt ?? null) !== (row.merged_at ?? null)) updates.merged_at = nextMergedAt ?? null;
+      if ((nextCompletedAt ?? null) !== (row.completed_at ?? null)) updates.completed_at = nextCompletedAt ?? null;
+
+      if (Object.keys(updates).length > 0) {
+        updateIntegrationProposalColumns(row.id, updates);
+        reconciled.push({
+          ...row,
+          cleanup_state: updates.cleanup_state ?? row.cleanup_state,
+          workflow_display_state: updates.workflow_display_state ?? row.workflow_display_state,
+          closed_at: updates.closed_at ?? row.closed_at,
+          merged_at: updates.merged_at ?? row.merged_at,
+          completed_at: updates.completed_at ?? row.completed_at,
+        });
+      } else {
+        reconciled.push(row);
+      }
+    }
+
+    return reconciled;
+  };
+
+  const hydrateIntegrationProposalRow = async (
+    row: IntegrationProposalRow,
+    laneById: Map<string, LaneSummary>
+  ): Promise<IntegrationProposal> => {
+    const integrationLaneId = row.integration_lane_id || null;
+    const parsedResolutionState = row.resolution_state_json
+      ? JSON.parse(String(row.resolution_state_json)) as IntegrationResolutionState
+      : null;
+    const resolutionState = await hydrateIntegrationResolutionState({
+      laneById,
+      resolutionState: parsedResolutionState,
+      integrationLaneId,
+      fallbackUpdatedAt: String(row.created_at),
+    });
+
+    return {
+      proposalId: String(row.id),
+      sourceLaneIds: JSON.parse(String(row.source_lane_ids_json)) as string[],
+      baseBranch: String(row.base_branch),
+      pairwiseResults: parseJsonArrayOrEmpty<IntegrationPairwiseResult>(row.pairwise_results_json),
+      laneSummaries: parseJsonArrayOrEmpty<IntegrationLaneSummary>(row.lane_summaries_json),
+      steps: JSON.parse(String(row.steps_json)) as IntegrationProposalStep[],
+      overallOutcome: String(row.overall_outcome) as IntegrationProposal["overallOutcome"],
+      createdAt: String(row.created_at),
+      title: String(row.title || ""),
+      body: String(row.body || ""),
+      draft: Boolean(row.draft),
+      integrationLaneName: String(row.integration_lane_name || ""),
+      status: String(row.status) as IntegrationProposal["status"],
+      integrationLaneId,
+      linkedGroupId: asString(row.linked_group_id).trim() || null,
+      linkedPrId: asString(row.linked_pr_id).trim() || null,
+      workflowDisplayState: parseWorkflowDisplayState(row.workflow_display_state),
+      cleanupState: parseCleanupState(row.cleanup_state),
+      closedAt: asString(row.closed_at).trim() || null,
+      mergedAt: asString(row.merged_at).trim() || null,
+      completedAt: asString(row.completed_at).trim() || null,
+      cleanupDeclinedAt: asString(row.cleanup_declined_at).trim() || null,
+      cleanupCompletedAt: asString(row.cleanup_completed_at).trim() || null,
+      resolutionState,
+    };
   };
 
   const fetchReviews = async (repo: GitHubRepoRef, prNumber: number): Promise<PrReview[]> => {
@@ -2094,25 +2266,35 @@ export function createPrService({
       steps,
       overallOutcome,
       createdAt: now,
-      status: "proposed"
+      status: "proposed",
+      linkedGroupId: null,
+      linkedPrId: null,
+      workflowDisplayState: "active",
+      cleanupState: "none",
+      closedAt: null,
+      mergedAt: null,
+      completedAt: null,
+      cleanupDeclinedAt: null,
+      cleanupCompletedAt: null,
     };
 
-    // Persist in DB
-    db.run(
-      `insert into integration_proposals(id, project_id, source_lane_ids_json, base_branch, steps_json, pairwise_results_json, lane_summaries_json, overall_outcome, created_at, status) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        proposalId,
-        projectId,
-        JSON.stringify(sourceLaneIds),
-        args.baseBranch,
-        JSON.stringify(steps),
-        JSON.stringify(pairwiseResults),
-        JSON.stringify(laneSummaries),
-        overallOutcome,
-        now,
-        "proposed"
-      ]
-    );
+    if (args.persist !== false) {
+      db.run(
+        `insert into integration_proposals(id, project_id, source_lane_ids_json, base_branch, steps_json, pairwise_results_json, lane_summaries_json, overall_outcome, created_at, status) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          proposalId,
+          projectId,
+          JSON.stringify(sourceLaneIds),
+          args.baseBranch,
+          JSON.stringify(steps),
+          JSON.stringify(pairwiseResults),
+          JSON.stringify(laneSummaries),
+          overallOutcome,
+          now,
+          "proposed"
+        ]
+      );
+    }
 
     return proposal;
   };
@@ -2217,9 +2399,143 @@ export function createPrService({
           allowDirtyWorktree: args.allowDirtyWorktree
         });
 
-    db.run(`update integration_proposals set status = 'committed' where id = ?`, [args.proposalId]);
+    updateIntegrationProposalColumns(args.proposalId, {
+      status: "committed",
+      integration_lane_name: result.integrationLaneId ? (args.integrationLaneName || null) : null,
+      integration_lane_id: result.integrationLaneId,
+      linked_group_id: result.groupId,
+      linked_pr_id: result.pr.id,
+      workflow_display_state: "active",
+      cleanup_state: "none",
+      closed_at: null,
+      merged_at: null,
+      completed_at: null,
+      cleanup_declined_at: null,
+      cleanup_completed_at: null,
+      title: args.title,
+      body: args.body ?? "",
+      draft: args.draft ? 1 : 0,
+    });
 
     return result;
+  };
+
+  const getGithubSnapshot = async (): Promise<GitHubPrSnapshot> => {
+    const githubStatus = await githubService.getStatus();
+    if (!githubStatus.tokenStored) {
+      throw new Error("GitHub token missing. Set it in Settings to sync pull requests.");
+    }
+
+    const repo = githubStatus.repo;
+    if (!repo) {
+      return {
+        repo: null,
+        viewerLogin: githubStatus.userLogin,
+        repoPullRequests: [],
+        externalPullRequests: [],
+        syncedAt: nowIso(),
+      };
+    }
+
+    const lanes = await laneService.list({ includeArchived: true, includeStatus: false });
+    const laneById = new Map(lanes.map((lane) => [lane.id, lane]));
+    const pullRequestRows = listRows();
+    const linkedPrByRepoKey = new Map(
+      pullRequestRows.map((row) => [`${row.repo_owner}/${row.repo_name}#${row.github_pr_number}`, row] as const)
+    );
+    const groupRows = db.all<{ pr_id: string; group_id: string; group_type: "queue" | "integration" }>(
+      `select gm.pr_id, gm.group_id, g.group_type
+       from pr_group_members gm
+       join pr_groups g on g.id = gm.group_id
+       where g.project_id = ?`,
+      [projectId]
+    );
+    const groupByPrId = new Map(groupRows.map((row) => [row.pr_id, row] as const));
+    const workflowRows = await loadIntegrationWorkflowRows();
+    const workflowByPrId = new Map<string, IntegrationProposalRow>();
+    for (const row of workflowRows) {
+      const linkedPrId = asString(row.linked_pr_id).trim();
+      if (linkedPrId) workflowByPrId.set(linkedPrId, row);
+    }
+
+    const toGitHubState = (rawPr: any): PrState => {
+      if (Boolean(rawPr?.draft)) return "draft";
+      if (rawPr?.merged_at) return "merged";
+      return asString(rawPr?.state).toLowerCase() === "closed" ? "closed" : "open";
+    };
+
+    const toGitHubItem = (rawPr: any, scope: "repo" | "external"): GitHubPrListItem => {
+      const rawRepo = rawPr?.base?.repo ?? rawPr?.repository ?? {};
+      const repositoryUrl = asString(rawPr?.repository_url);
+      const repositoryParts = repositoryUrl
+        ? repositoryUrl.split("/").filter(Boolean).slice(-2)
+        : [];
+      const repoOwner = asString(rawRepo?.owner?.login) || repositoryParts[0] || repo.owner;
+      const repoName = asString(rawRepo?.name) || repositoryParts[1] || repo.name;
+      const githubPrNumber = Number(rawPr?.number) || 0;
+      const linkedPrRow = linkedPrByRepoKey.get(`${repoOwner}/${repoName}#${githubPrNumber}`) ?? null;
+      const workflowRow = linkedPrRow ? workflowByPrId.get(linkedPrRow.id) ?? null : null;
+      const groupRow = linkedPrRow ? groupByPrId.get(linkedPrRow.id) ?? null : null;
+
+      return {
+        id: asString(rawPr?.node_id) || `${scope}-${repoOwner}-${repoName}-${githubPrNumber}`,
+        scope,
+        repoOwner,
+        repoName,
+        githubPrNumber,
+        githubUrl: asString(rawPr?.html_url) || "",
+        title: asString(rawPr?.title) || `PR #${githubPrNumber}`,
+        state: toGitHubState(rawPr),
+        isDraft: Boolean(rawPr?.draft),
+        baseBranch: asString(rawPr?.base?.ref) || null,
+        headBranch: asString(rawPr?.head?.ref) || null,
+        author: asString(rawPr?.user?.login) || null,
+        createdAt: asString(rawPr?.created_at) || nowIso(),
+        updatedAt: asString(rawPr?.updated_at) || asString(rawPr?.created_at) || nowIso(),
+        linkedPrId: linkedPrRow?.id ?? null,
+        linkedGroupId: asString(workflowRow?.linked_group_id).trim() || groupRow?.group_id || null,
+        linkedLaneId: linkedPrRow?.lane_id ?? null,
+        linkedLaneName: linkedPrRow ? (laneById.get(linkedPrRow.lane_id)?.name ?? linkedPrRow.lane_id) : null,
+        adeKind: workflowRow
+          ? "integration"
+          : groupRow?.group_type === "queue"
+            ? "queue"
+            : groupRow?.group_type === "integration"
+              ? "integration"
+              : linkedPrRow
+                ? "single"
+                : null,
+        workflowDisplayState: workflowRow ? parseWorkflowDisplayState(workflowRow.workflow_display_state) : null,
+        cleanupState: workflowRow ? parseCleanupState(workflowRow.cleanup_state) : null,
+      };
+    };
+
+    const repoPullRequestsRaw = await fetchAllPages<any>({
+      path: `/repos/${repo.owner}/${repo.name}/pulls`,
+      query: { state: "all", sort: "updated", direction: "desc" },
+    });
+
+    const externalPullRequestsRaw = githubStatus.userLogin
+      ? await fetchAllPages<any>({
+          path: "/search/issues",
+          query: {
+            q: `is:pr involves:${githubStatus.userLogin} archived:false -repo:${repo.owner}/${repo.name}`,
+            sort: "updated",
+            order: "desc",
+          },
+          select: (payload) => Array.isArray(payload?.items) ? payload.items : [],
+        })
+      : [];
+
+    return {
+      repo,
+      viewerLogin: githubStatus.userLogin,
+      repoPullRequests: repoPullRequestsRaw.map((rawPr) => toGitHubItem(rawPr, "repo")),
+      externalPullRequests: externalPullRequestsRaw
+        .filter((rawPr) => rawPr?.pull_request)
+        .map((rawPr) => toGitHubItem(rawPr, "external")),
+      syncedAt: nowIso(),
+    };
   };
 
   const landQueueNext = async (args: LandQueueNextArgs): Promise<LandResult> => {
@@ -2359,48 +2675,119 @@ export function createPrService({
   };
 
   const listIntegrationProposals = async (): Promise<IntegrationProposal[]> => {
-    const rows = db.all<{
-      id: string; source_lane_ids_json: string; base_branch: string;
-      steps_json: string; overall_outcome: string; created_at: string;
-      title: string; body: string; draft: number;
-      integration_lane_name: string; status: string;
-      integration_lane_id: string | null; resolution_state_json: string | null;
-      pairwise_results_json: string | null; lane_summaries_json: string | null;
-    }>(
-      `select * from integration_proposals where project_id = ? and status = 'proposed' order by created_at desc`,
-      [projectId]
+    db.run(
+      `delete from integration_proposals
+       where project_id = ?
+         and status = 'proposed'
+         and (integration_lane_id is null or integration_lane_id = '')
+         and json_array_length(source_lane_ids_json) = 1
+         and json_extract(source_lane_ids_json, '$[0]') in (
+           select lane_id from pull_requests
+           where project_id = ? and state in ('open', 'draft', 'merged')
+         )`,
+      [projectId, projectId],
     );
+    const rows = listIntegrationProposalRows({ where: `status = 'proposed'` });
     const lanes = await laneService.list({ includeArchived: true, includeStatus: false });
     const laneById = new Map(lanes.map((lane) => [lane.id, lane]));
-    return await Promise.all(rows.map(async (row) => {
-      const integrationLaneId = row.integration_lane_id || null;
-      const parsedResolutionState = row.resolution_state_json
-        ? JSON.parse(String(row.resolution_state_json)) as IntegrationResolutionState
-        : null;
-      const resolutionState = await hydrateIntegrationResolutionState({
-        laneById,
-        resolutionState: parsedResolutionState,
-        integrationLaneId,
-        fallbackUpdatedAt: String(row.created_at),
-      });
-      return {
-        proposalId: String(row.id),
-        sourceLaneIds: JSON.parse(String(row.source_lane_ids_json)) as string[],
-        baseBranch: String(row.base_branch),
-        pairwiseResults: parseJsonArrayOrEmpty<IntegrationPairwiseResult>(row.pairwise_results_json),
-        laneSummaries: parseJsonArrayOrEmpty<IntegrationLaneSummary>(row.lane_summaries_json),
-        steps: JSON.parse(String(row.steps_json)) as IntegrationProposalStep[],
-        overallOutcome: String(row.overall_outcome) as IntegrationProposal["overallOutcome"],
-        createdAt: String(row.created_at),
-        title: String(row.title || ""),
-        body: String(row.body || ""),
-        draft: Boolean(row.draft),
-        integrationLaneName: String(row.integration_lane_name || ""),
-        status: String(row.status) as IntegrationProposal["status"],
-        integrationLaneId,
-        resolutionState,
-      };
-    }));
+    return await Promise.all(rows.map((row) => hydrateIntegrationProposalRow(row, laneById)));
+  };
+
+  const listIntegrationWorkflows = async (
+    args: ListIntegrationWorkflowsArgs = {}
+  ): Promise<IntegrationProposal[]> => {
+    const rows = await loadIntegrationWorkflowRows();
+    const lanes = await laneService.list({ includeArchived: true, includeStatus: false });
+    const laneById = new Map(lanes.map((lane) => [lane.id, lane]));
+    const hydrated = await Promise.all(rows.map((row) => hydrateIntegrationProposalRow(row, laneById)));
+    const view = args.view ?? "active";
+    if (view === "all") return hydrated;
+    return hydrated.filter((proposal) => proposal.workflowDisplayState === view);
+  };
+
+  const dismissIntegrationCleanup = async (
+    args: DismissIntegrationCleanupArgs
+  ): Promise<IntegrationProposal> => {
+    const now = nowIso();
+    updateIntegrationProposalColumns(args.proposalId, {
+      cleanup_state: "declined",
+      workflow_display_state: "history",
+      cleanup_declined_at: now,
+    });
+    const rows = listIntegrationProposalRows({ where: `id = ?`, params: [args.proposalId] });
+    const row = rows[0];
+    if (!row) throw new Error(`Proposal not found: ${args.proposalId}`);
+    const lanes = await laneService.list({ includeArchived: true, includeStatus: false });
+    const laneById = new Map(lanes.map((lane) => [lane.id, lane]));
+    return await hydrateIntegrationProposalRow({
+      ...row,
+      cleanup_state: "declined",
+      workflow_display_state: "history",
+      cleanup_declined_at: now,
+    }, laneById);
+  };
+
+  const cleanupIntegrationWorkflow = async (
+    args: CleanupIntegrationWorkflowArgs
+  ): Promise<CleanupIntegrationWorkflowResult> => {
+    const row = db.get<IntegrationProposalRow>(
+      `select * from integration_proposals where id = ? and project_id = ?`,
+      [args.proposalId, projectId]
+    );
+    if (!row) throw new Error(`Proposal not found: ${args.proposalId}`);
+
+    const sourceLaneIds = JSON.parse(String(row.source_lane_ids_json)) as string[];
+    const requestedSourceLaneIds = Array.isArray(args.archiveSourceLaneIds)
+      ? args.archiveSourceLaneIds.filter((laneId): laneId is string => typeof laneId === "string" && laneId.trim().length > 0)
+      : [];
+    const targetLaneIds = new Set<string>();
+    if (args.archiveIntegrationLane !== false) {
+      const integrationLaneId = asString(row.integration_lane_id).trim();
+      if (integrationLaneId) targetLaneIds.add(integrationLaneId);
+    }
+    for (const laneId of requestedSourceLaneIds) {
+      if (sourceLaneIds.includes(laneId)) targetLaneIds.add(laneId);
+    }
+
+    const linkedGroupId = asString(row.linked_group_id).trim();
+    if (linkedGroupId) {
+      db.run(`delete from pr_group_members where group_id = ?`, [linkedGroupId]);
+      db.run(`delete from pr_groups where id = ? and project_id = ?`, [linkedGroupId, projectId]);
+    }
+
+    const laneList = await laneService.list({ includeArchived: true, includeStatus: false });
+    const laneById = new Map(laneList.map((lane) => [lane.id, lane]));
+    const archivedLaneIds: string[] = [];
+    const skippedLaneIds: string[] = [];
+
+    for (const laneId of targetLaneIds) {
+      const lane = laneById.get(laneId);
+      if (!lane || lane.archivedAt) {
+        skippedLaneIds.push(laneId);
+        continue;
+      }
+      try {
+        laneService.archive({ laneId });
+        archivedLaneIds.push(laneId);
+      } catch {
+        skippedLaneIds.push(laneId);
+      }
+    }
+
+    const completedAt = nowIso();
+    updateIntegrationProposalColumns(args.proposalId, {
+      cleanup_state: "completed",
+      workflow_display_state: "history",
+      cleanup_completed_at: completedAt,
+    });
+
+    return {
+      proposalId: args.proposalId,
+      archivedLaneIds,
+      skippedLaneIds,
+      workflowDisplayState: "history",
+      cleanupState: "completed",
+    };
   };
 
   const updateIntegrationProposal = (args: UpdateIntegrationProposalArgs): void => {
@@ -2890,8 +3277,16 @@ export function createPrService({
       return await listWithConflicts();
     },
 
+    async getGithubSnapshot(): Promise<GitHubPrSnapshot> {
+      return await getGithubSnapshot();
+    },
+
     async listIntegrationProposals(): Promise<IntegrationProposal[]> {
       return await listIntegrationProposals();
+    },
+
+    async listIntegrationWorkflows(args: ListIntegrationWorkflowsArgs = {}): Promise<IntegrationProposal[]> {
+      return await listIntegrationWorkflows(args);
     },
 
     updateIntegrationProposal(args: UpdateIntegrationProposalArgs): void {
@@ -2900,6 +3295,14 @@ export function createPrService({
 
     async deleteIntegrationProposal(args: DeleteIntegrationProposalArgs): Promise<DeleteIntegrationProposalResult> {
       return await deleteIntegrationProposal(args);
+    },
+
+    async dismissIntegrationCleanup(args: DismissIntegrationCleanupArgs): Promise<IntegrationProposal> {
+      return await dismissIntegrationCleanup(args);
+    },
+
+    async cleanupIntegrationWorkflow(args: CleanupIntegrationWorkflowArgs): Promise<CleanupIntegrationWorkflowResult> {
+      return await cleanupIntegrationWorkflow(args);
     },
 
     async createIntegrationLaneForProposal(args: CreateIntegrationLaneForProposalArgs): Promise<CreateIntegrationLaneForProposalResult> {

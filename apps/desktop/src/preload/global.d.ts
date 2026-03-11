@@ -860,6 +860,8 @@ declare global {
         getConflictAnalysis: (prId: string) => Promise<import("../shared/types").PrConflictAnalysis>;
         getMergeContext: (prId: string) => Promise<PrMergeContext>;
         listWithConflicts: () => Promise<import("../shared/types").PrWithConflicts[]>;
+        getGitHubSnapshot: () => Promise<import("../shared/types").GitHubPrSnapshot>;
+        listIntegrationWorkflows: (args?: import("../shared/types").ListIntegrationWorkflowsArgs) => Promise<IntegrationProposal[]>;
         onEvent: (cb: (ev: PrEventPayload) => void) => () => void;
         getDetail: (prId: string) => Promise<PrDetail>;
         getFiles: (prId: string) => Promise<PrFile[]>;
@@ -875,6 +877,8 @@ declare global {
         reopen: (args: ReopenPrArgs) => Promise<void>;
         rerunChecks: (args: RerunPrChecksArgs) => Promise<void>;
         aiReviewSummary: (args: AiReviewSummaryArgs) => Promise<AiReviewSummary>;
+        dismissIntegrationCleanup: (args: import("../shared/types").DismissIntegrationCleanupArgs) => Promise<IntegrationProposal>;
+        cleanupIntegrationWorkflow: (args: import("../shared/types").CleanupIntegrationWorkflowArgs) => Promise<import("../shared/types").CleanupIntegrationWorkflowResult>;
       };
       rebase: {
         scanNeeds: () => Promise<RebaseNeed[]>;

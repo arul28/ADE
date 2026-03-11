@@ -269,6 +269,13 @@ function buildInterventionResolverPrompt(args: {
   ].join("\n");
 }
 
+type MissionLaunchFailureStage =
+  | "run_created"
+  | "memory_init"
+  | "lane_create"
+  | "coordinator_start"
+  | "run_activate";
+
 export function buildCoordinatorEvaluationActionHints(graph: OrchestratorRunGraph): string[] {
   const hints: string[] = [];
   const executionSteps = filterExecutionSteps(graph.steps);
@@ -4282,6 +4289,98 @@ Check all worker statuses and continue managing the mission from here. Read work
     }
   };
 
+  const MISSION_LAUNCH_FAILURE_REASON_CODE = "mission_launch_failed";
+
+  const describeMissionLaunchStage = (stage: MissionLaunchFailureStage): string => {
+    switch (stage) {
+      case "run_created":
+        return "run initialization";
+      case "memory_init":
+        return "mission memory initialization";
+      case "lane_create":
+        return "mission lane creation";
+      case "coordinator_start":
+        return "coordinator startup";
+      case "run_activate":
+        return "run activation";
+      default:
+        return stage;
+    }
+  };
+
+  const clipErrorStack = (error: unknown, maxChars = 4_000): string | null => {
+    const stack = error instanceof Error && typeof error.stack === "string" ? error.stack.trim() : "";
+    if (!stack.length) return null;
+    return stack.length > maxChars ? `${stack.slice(0, maxChars - 3)}...` : stack;
+  };
+
+  const buildMissionLaunchFailureMetadata = (args: {
+    runId: string;
+    failureStage: MissionLaunchFailureStage;
+    error: unknown;
+  }): Record<string, unknown> => {
+    const rootError = getErrorMessage(args.error);
+    const rootErrorStack = clipErrorStack(args.error);
+    return {
+      runId: args.runId,
+      reasonCode: MISSION_LAUNCH_FAILURE_REASON_CODE,
+      failureStage: args.failureStage,
+      failureStageLabel: describeMissionLaunchStage(args.failureStage),
+      rootError,
+      ...(rootErrorStack ? { rootErrorStack } : {}),
+      coordinatorState: args.failureStage === "coordinator_start" ? "starting" : "not_started",
+      launchFailureBeforeCoordinator: args.failureStage !== "run_activate",
+    };
+  };
+
+  const isMissionLaunchFailureMetadata = (metadata: Record<string, unknown> | null | undefined, runId?: string | null): boolean => {
+    const reasonCode = typeof metadata?.reasonCode === "string" ? metadata.reasonCode.trim() : "";
+    if (reasonCode !== MISSION_LAUNCH_FAILURE_REASON_CODE) return false;
+    if (!runId) return true;
+    const metadataRunId = typeof metadata?.runId === "string" ? metadata.runId.trim() : "";
+    return metadataRunId.length === 0 || metadataRunId === runId;
+  };
+
+  const hasOpenMissionLaunchFailureIntervention = (args: { missionId: string; runId: string }): boolean => {
+    const mission = missionService.get(args.missionId);
+    if (!mission) return false;
+    return mission.interventions.some((entry) => {
+      if (entry.status !== "open") return false;
+      return isMissionLaunchFailureMetadata(isRecord(entry.metadata) ? entry.metadata : null, args.runId);
+    });
+  };
+
+  const getRunLaunchFailureMetadata = (runId: string): Record<string, unknown> | null => {
+    const metadata = getRunMetadata(runId);
+    const launchFailure = isRecord(metadata.launchFailure) ? metadata.launchFailure : null;
+    return isMissionLaunchFailureMetadata(launchFailure, runId) ? launchFailure : null;
+  };
+
+  const persistRunLaunchFailureMetadata = (runId: string, metadata: Record<string, unknown>): void => {
+    updateRunMetadata(runId, (runMetadata) => {
+      runMetadata.launchFailure = {
+        ...(isRecord(runMetadata.launchFailure) ? runMetadata.launchFailure : {}),
+        ...metadata,
+        updatedAt: nowIso(),
+      };
+    });
+  };
+
+  const toMissionLaunchFailureBody = (args: {
+    failureStage: MissionLaunchFailureStage;
+    error: unknown;
+  }): string => {
+    return `ADE could not finish mission launch during ${describeMissionLaunchStage(args.failureStage)}.\n\n${getErrorMessage(args.error)}`;
+  };
+
+  const toMissionLaunchFailureError = (error: unknown, metadata: Record<string, unknown>): Error => {
+    const base = error instanceof Error ? error : new Error(getErrorMessage(error));
+    Object.assign(base, {
+      missionLaunchFailure: metadata,
+    });
+    return base;
+  };
+
   // ── Team Runtime Manager ─────────────────────────────────────
   // Spawns and manages coordinator + teammates for a run.
 
@@ -4711,6 +4810,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         }
 
         const missionId = graph.run.missionId;
+        const launchFailure = getRunLaunchFailureMetadata(runId);
 
         const existingCoordinator = coordinatorAgents.get(runId) ?? null;
         let coordinator = existingCoordinator?.isAlive ? existingCoordinator : null;
@@ -4719,6 +4819,15 @@ Check all worker statuses and continue managing the mission from here. Read work
           if (recovered?.isAlive) coordinator = recovered;
         }
         if (!coordinator) {
+          if (launchFailure && hasOpenMissionLaunchFailureIntervention({ missionId, runId })) {
+            logger.info("ai_orchestrator.coordinator_unavailable_suppressed", {
+              runId,
+              missionId,
+              reason: "launch_failure_open",
+              failureStage: launchFailure.failureStage ?? null,
+            });
+            return;
+          }
           pauseRunWithIntervention({
             runId,
             missionId,
@@ -5693,6 +5802,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     stepId?: string | null;
     stepKey?: string | null;
     source: "transition_decision";
+    interventionType?: MissionDetail["interventions"][number]["interventionType"];
     reasonCode: string;
     title: string;
     body: string;
@@ -5706,7 +5816,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     let existingInterventionId: string | null = null;
     if (mission) {
       for (const entry of mission.interventions) {
-        if (entry.status !== "open" || entry.interventionType !== "failed_step") continue;
+        if (entry.status !== "open") continue;
         const metadata = isRecord(entry.metadata) ? entry.metadata : null;
         if (metadata?.aiDecisionFailureKey === dedupeKey) {
           existingInterventionId = entry.id;
@@ -5747,7 +5857,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       try {
         const intervention = missionService.addIntervention({
           missionId: args.missionId,
-          interventionType: "failed_step",
+          interventionType: args.interventionType ?? "failed_step",
           title: args.title,
           body: args.body,
           requestedAction: args.requestedAction,
@@ -6698,7 +6808,13 @@ Check all worker statuses and continue managing the mission from here. Read work
           : plannerParallelismCap ?? launchMaxParallel ?? 4
       )
     );
-    const { userRules, projectCtx, availableProviders, phases } = gatherCoordinatorContext(missionId, args);
+    const {
+      userRules,
+      projectCtx: coordinatorProjectContext,
+      availableProviders,
+      phases,
+    } = gatherCoordinatorContext(missionId, args);
+    const missionProjectId = resolveMissionProjectId(missionId);
     const knowledgeStatus = await humanWorkDigestService?.getKnowledgeSyncStatus?.().catch(() => null) ?? null;
     if (knowledgeStatus?.diverged) {
       await humanWorkDigestService?.syncKnowledge?.();
@@ -6739,143 +6855,174 @@ Check all worker statuses and continue managing the mission from here. Read work
         }
       : undefined;
 
-    // ── Create run — just persistence, no planning ──
-    const started = orchestratorService.startRun({
-      missionId,
-      steps: [],
-      metadata: {
-        ...(args.metadata ?? {}),
-        missionGoal,
-        missionPrompt: initialMission.prompt ?? "",
-        runMode: requestedRunMode,
-        maxParallelWorkers: runParallelismCap,
-        planner: {
-          source: "mission_planner",
-          stepCount: missionAfterPlanning?.steps.length ?? 0,
-          strategy: typeof plannerSummary?.strategy === "string" ? plannerSummary.strategy : null,
-          parallelismCap: runParallelismCap,
-        },
-        autopilot: {
-          enabled: autopilotEnabled,
-          executorKind: autopilotEnabled ? autopilotExecutorKind : "manual",
-          ownerId: autopilotOwnerId,
-          parallelismCap: runParallelismCap,
-        },
-        teamRuntime: launchTeamRuntime
-          ? {
-              ...launchTeamRuntime,
-              ...normalizeAgentRuntimeFlags(launchTeamRuntime)
-            }
-          : undefined,
-        agentRuntime: normalizeAgentRuntimeFlags(launchAgentRuntime),
-        aiFirst: true,
-        ...(missionLevelSettings ? { missionLevelSettings } : {}),
-        ...(missionPhaseConfiguration ? { phaseConfiguration: missionPhaseConfiguration } : {}),
-        phaseOverride: effectivePhases,
-        phaseProfileId: typeof missionPhaseConfiguration?.profileId === "string"
-          ? missionPhaseConfiguration.profileId
-          : null,
-        ...(phaseRuntime ? { phaseRuntime } : {}),
-      }
-    });
-    missionMemoryLifecycleService?.startMission({
-      projectId: projectCtx.projectId,
-      missionId,
-      runId: started.run.id,
-      initialDecision: initialMission.prompt ?? initialMission.title,
-    });
+    let startupStage: MissionLaunchFailureStage = "run_created";
+    let started: { run: OrchestratorRun; steps: OrchestratorStep[] } | null = null;
 
-    // ── Create a dedicated mission lane ──
-    const missionLaneId = await ensureMissionLaneForRun({
-      runId: started.run.id,
-      missionId,
-      missionTitle: initialMission.title,
-    });
-    if (!missionLaneId) {
-      pauseRunWithIntervention({
-        runId: started.run.id,
+    try {
+      // ── Create run — just persistence, no planning ──
+      started = orchestratorService.startRun({
         missionId,
-        source: "transition_decision",
-        reasonCode: "mission_lane_unavailable",
-        title: "Mission lane isolation failed",
-        body: "ADE could not create or recover the dedicated mission lane/worktree for this run. The mission has been paused so work does not proceed in an unsafe lane.",
-        requestedAction: "Fix lane/worktree health, then resume the run to retry mission activation.",
+        steps: [],
         metadata: {
-          startupPath: "start_mission_run",
-          isolationRequired: true,
+          ...(args.metadata ?? {}),
+          missionGoal,
+          missionPrompt: initialMission.prompt ?? "",
+          runMode: requestedRunMode,
+          maxParallelWorkers: runParallelismCap,
+          planner: {
+            source: "mission_planner",
+            stepCount: missionAfterPlanning?.steps.length ?? 0,
+            strategy: typeof plannerSummary?.strategy === "string" ? plannerSummary.strategy : null,
+            parallelismCap: runParallelismCap,
+          },
+          autopilot: {
+            enabled: autopilotEnabled,
+            executorKind: autopilotEnabled ? autopilotExecutorKind : "manual",
+            ownerId: autopilotOwnerId,
+            parallelismCap: runParallelismCap,
+          },
+          teamRuntime: launchTeamRuntime
+            ? {
+                ...launchTeamRuntime,
+                ...normalizeAgentRuntimeFlags(launchTeamRuntime)
+              }
+            : undefined,
+          agentRuntime: normalizeAgentRuntimeFlags(launchAgentRuntime),
+          aiFirst: true,
+          ...(missionLevelSettings ? { missionLevelSettings } : {}),
+          ...(missionPhaseConfiguration ? { phaseConfiguration: missionPhaseConfiguration } : {}),
+          phaseOverride: effectivePhases,
+          phaseProfileId: typeof missionPhaseConfiguration?.profileId === "string"
+            ? missionPhaseConfiguration.profileId
+            : null,
+          ...(phaseRuntime ? { phaseRuntime } : {}),
         }
       });
-      const blockedRun = orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === started.run.id) ?? started.run;
+
+      startupStage = "memory_init";
+      if (missionMemoryLifecycleService && missionProjectId.length > 0) {
+        missionMemoryLifecycleService.startMission({
+          projectId: missionProjectId,
+          missionId,
+          runId: started.run.id,
+          initialDecision: initialMission.prompt ?? initialMission.title,
+        });
+      }
+
+      startupStage = "lane_create";
+      const missionLaneId = await ensureMissionLaneForRun({
+        runId: started.run.id,
+        missionId,
+        missionTitle: initialMission.title,
+      });
+      if (!missionLaneId) {
+        pauseRunWithIntervention({
+          runId: started.run.id,
+          missionId,
+          source: "transition_decision",
+          reasonCode: "mission_lane_unavailable",
+          title: "Mission lane isolation failed",
+          body: "ADE could not create or recover the dedicated mission lane/worktree for this run. The mission has been paused so work does not proceed in an unsafe lane.",
+          requestedAction: "Fix lane/worktree health, then resume the run to retry mission activation.",
+          metadata: {
+            startupPath: "start_mission_run",
+            isolationRequired: true,
+          }
+        });
+        const blockedRun = orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === started.run.id) ?? started.run;
+        return {
+          started: {
+            run: blockedRun,
+            steps: orchestratorService.listSteps(started.run.id),
+          },
+          mission: missionService.get(missionId),
+        };
+      }
+
+      startupStage = "coordinator_start";
+      const coordinatorModelConfig = resolveOrchestratorModelConfig(missionId, "coordinator");
+      const coordinatorAgent = startCoordinatorAgentV2(missionId, started.run.id, missionGoal, coordinatorModelConfig, {
+        userRules,
+        projectContext: coordinatorProjectContext,
+        availableProviders,
+        phases: effectivePhases,
+        missionLaneId,
+      });
+      if (!coordinatorAgent?.isAlive) {
+        pauseRunWithIntervention({
+          runId: started.run.id,
+          missionId,
+          source: "transition_decision",
+          reasonCode: "coordinator_start_failed",
+          title: "Coordinator startup failed",
+          body: "Coordinator runtime did not start successfully. Mission activation and autopilot were blocked to prevent non-autonomous fallback behavior.",
+          requestedAction: "Resolve coordinator startup health, then resume the run.",
+          metadata: {
+            startupPath: "start_mission_run"
+          }
+        });
+        const failedRun = orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === started.run.id) ?? started.run;
+        return {
+          started: {
+            run: failedRun,
+            steps: orchestratorService.listSteps(started.run.id)
+          },
+          mission: missionService.get(missionId),
+        };
+      }
+
+      startupStage = "run_activate";
+      const activatedRun = orchestratorService.activateRun(started.run.id);
+      transitionMissionStatus(missionId, "in_progress");
+      emitOrchestratorMessage(
+        missionId,
+        initialPhase?.phaseKey.trim().toLowerCase() === "planning"
+          ? "Mission started. Planning is active, and I’m sending the first planning task out now."
+          : "Mission started. I’m following the enabled phases and will advance workers as each phase opens."
+      );
+
+      const initialGraph = getRunGraphSafe(started.run.id);
+      updateMissionStateDoc(
+        started.run.id,
+        {
+          ...(initialGraph ? { updateProgress: buildMissionStateProgressFromGraph(initialGraph) } : {}),
+          pendingInterventions: pendingInterventionsForMission(missionId),
+        },
+        { graph: initialGraph }
+      );
+
+      void syncMissionFromRun(started.run.id, "mission_run_started");
+
       return {
         started: {
-          run: blockedRun,
+          run: activatedRun,
           steps: orchestratorService.listSteps(started.run.id),
         },
         mission: missionService.get(missionId),
       };
+    } catch (error) {
+      if (started?.run.id) {
+        const launchFailureMetadata = buildMissionLaunchFailureMetadata({
+          runId: started.run.id,
+          failureStage: startupStage,
+          error,
+        });
+        persistRunLaunchFailureMetadata(started.run.id, launchFailureMetadata);
+        pauseRunWithIntervention({
+          runId: started.run.id,
+          missionId,
+          source: "transition_decision",
+          interventionType: "unrecoverable_error",
+          reasonCode: MISSION_LAUNCH_FAILURE_REASON_CODE,
+          title: "Mission launch failed",
+          body: toMissionLaunchFailureBody({ failureStage: startupStage, error }),
+          requestedAction: "Review the launch failure details, fix the runtime or configuration issue, then restart the mission run.",
+          metadata: launchFailureMetadata,
+        });
+        throw toMissionLaunchFailureError(error, launchFailureMetadata);
+      }
+      throw error;
     }
-
-    // ── Spawn the coordinator — the AI brain takes over ──
-    const coordinatorModelConfig = resolveOrchestratorModelConfig(missionId, "coordinator");
-    const coordinatorAgent = startCoordinatorAgentV2(missionId, started.run.id, missionGoal, coordinatorModelConfig, {
-      userRules,
-      projectContext: projectCtx,
-      availableProviders,
-      phases: effectivePhases,
-      missionLaneId,
-    });
-    if (!coordinatorAgent?.isAlive) {
-      pauseRunWithIntervention({
-        runId: started.run.id,
-        missionId,
-        source: "transition_decision",
-        reasonCode: "coordinator_start_failed",
-        title: "Coordinator startup failed",
-        body: "Coordinator runtime did not start successfully. Mission activation and autopilot were blocked to prevent non-autonomous fallback behavior.",
-        requestedAction: "Resolve coordinator startup health, then resume the run.",
-        metadata: {
-          startupPath: "start_mission_run"
-        }
-      });
-      const failedRun = orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === started.run.id) ?? started.run;
-      return {
-        started: {
-          run: failedRun,
-          steps: orchestratorService.listSteps(started.run.id)
-        },
-        mission: missionService.get(missionId),
-      };
-    }
-
-    // Mark run as active only after coordinator startup succeeds.
-    const activatedRun = orchestratorService.activateRun(started.run.id);
-    transitionMissionStatus(missionId, "in_progress");
-    emitOrchestratorMessage(
-      missionId,
-      initialPhase?.phaseKey.trim().toLowerCase() === "planning"
-        ? "Mission started. Planning is active, and I’m sending the first planning task out now."
-        : "Mission started. I’m following the enabled phases and will advance workers as each phase opens."
-    );
-
-    const initialGraph = getRunGraphSafe(started.run.id);
-    updateMissionStateDoc(
-      started.run.id,
-      {
-        ...(initialGraph ? { updateProgress: buildMissionStateProgressFromGraph(initialGraph) } : {}),
-        pendingInterventions: pendingInterventionsForMission(missionId),
-      },
-      { graph: initialGraph }
-    );
-
-    void syncMissionFromRun(started.run.id, "mission_run_started");
-
-    return {
-      started: {
-        run: activatedRun,
-        steps: orchestratorService.listSteps(started.run.id),
-      },
-      mission: missionService.get(missionId),
-    };
   };
 
   /** Gather user rules, project context, and available providers for the coordinator. */
@@ -7997,20 +8144,46 @@ Check all worker statuses and continue managing the mission from here. Read work
     mission: MissionDetail;
     run: OrchestratorRun | null;
   }) => {
-    const sortByUpdatedAtDesc = (left: MissionDetail["interventions"][number], right: MissionDetail["interventions"][number]) =>
-      Date.parse(right.updatedAt || right.createdAt) - Date.parse(left.updatedAt || left.createdAt);
+    const interventionPriority = (entry: MissionDetail["interventions"][number]): number => {
+      const metadata = isRecord(entry.metadata) ? entry.metadata : null;
+      if (isMissionLaunchFailureMetadata(metadata, args.run?.id ?? null)) return 200;
+      const reasonCode = typeof metadata?.reasonCode === "string" ? metadata.reasonCode.trim() : "";
+      if (reasonCode === "coordinator_unavailable" || reasonCode === "coordinator_recovery_failed") return 100;
+      return 0;
+    };
+    const sortByPriority = (left: MissionDetail["interventions"][number], right: MissionDetail["interventions"][number]) => {
+      const priorityDelta = interventionPriority(right) - interventionPriority(left);
+      if (priorityDelta !== 0) return priorityDelta;
+      return Date.parse(right.updatedAt || right.createdAt) - Date.parse(left.updatedAt || left.createdAt);
+    };
     const openEntries = args.mission.interventions.filter((entry) => entry.status === "open");
-    if (!args.run) return [...openEntries].sort(sortByUpdatedAtDesc)[0] ?? null;
+    if (!args.run) return [...openEntries].sort(sortByPriority)[0] ?? null;
     const runScoped = openEntries
       .filter((entry) => toOptionalString(asRecord(entry.metadata)?.runId) === args.run?.id)
-      .sort(sortByUpdatedAtDesc)[0] ?? null;
+      .sort(sortByPriority)[0] ?? null;
     if (runScoped) return runScoped;
     if (args.mission.status === "intervention_required") {
       return [...openEntries]
         .filter((entry) => !toOptionalString(asRecord(entry.metadata)?.runId))
-        .sort(sortByUpdatedAtDesc)[0] ?? null;
+        .sort(sortByPriority)[0] ?? null;
     }
     return null;
+  };
+
+  const formatInterventionHaltDetail = (intervention: MissionDetail["interventions"][number]): string => {
+    const metadata = isRecord(intervention.metadata) ? intervention.metadata : null;
+    if (isMissionLaunchFailureMetadata(metadata)) {
+      const stage = typeof metadata?.failureStageLabel === "string"
+        ? metadata.failureStageLabel.trim()
+        : typeof metadata?.failureStage === "string"
+          ? metadata.failureStage.trim()
+          : "launch";
+      const rootError = typeof metadata?.rootError === "string" ? metadata.rootError.trim() : "";
+      if (rootError.length > 0) {
+        return `Launch failed during ${stage}: ${rootError}`;
+      }
+    }
+    return intervention.requestedAction?.trim() || intervention.body;
   };
 
   const toRunViewLatestIntervention = (mission: MissionDetail): MissionRunViewLatestIntervention | null => {
@@ -8069,11 +8242,12 @@ Check all worker statuses and continue managing the mission from here. Read work
   }): MissionRunViewHaltReason | null => {
     const openIntervention = args.openIntervention;
     if (openIntervention) {
+      const interventionMetadata = isRecord(openIntervention.metadata) ? openIntervention.metadata : null;
       return {
         source: "intervention",
         title: openIntervention.title,
-        detail: openIntervention.requestedAction?.trim() || openIntervention.body,
-        severity: "warning",
+        detail: formatInterventionHaltDetail(openIntervention),
+        severity: isMissionLaunchFailureMetadata(interventionMetadata) ? "error" : "warning",
         interventionId: openIntervention.id,
         createdAt: openIntervention.updatedAt || openIntervention.createdAt,
       };
@@ -9253,6 +9427,17 @@ Check all worker statuses and continue managing the mission from here. Read work
         if (event.reason !== "finalized") {
           const missionId = getMissionIdForRun(runId);
           if (missionId) {
+            const launchFailure = getRunLaunchFailureMetadata(runId);
+            if (launchFailure && hasOpenMissionLaunchFailureIntervention({ missionId, runId })) {
+              logger.info("ai_orchestrator.coordinator_unavailable_suppressed", {
+                runId,
+                missionId,
+                eventType: event.type,
+                reason: event.reason,
+                failureStage: launchFailure.failureStage ?? null,
+              });
+              return;
+            }
             pauseRunWithIntervention({
               runId,
               missionId,

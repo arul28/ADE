@@ -1,16 +1,7 @@
 import { Handle, Node, NodeProps, Position } from "@xyflow/react";
-import { ChatText, CheckCircle, ClockCounterClockwise, GitBranch, Stack } from "@phosphor-icons/react";
+import { ClockCounterClockwise, GitBranch, Stack } from "@phosphor-icons/react";
 import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
-import { COLORS } from "../../lanes/laneDesignTokens";
-import {
-  getPrChecksBadge,
-  getPrCiDotColor,
-  getPrReviewDotColor,
-  getPrReviewsBadge,
-  getPrStateBadge,
-  InlinePrBadge
-} from "../../prs/shared/prVisuals";
 import { iconGlyph, nodeDimensions } from "../graphHelpers";
 import type { GraphNodeData } from "../graphTypes";
 
@@ -29,32 +20,40 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
   const remoteDiverged = Boolean(remoteSync?.diverged);
   const remoteNeedsPublish = Boolean(remoteSync && ((remoteSync.hasUpstream === false) || remoteSync.ahead > 0));
   const remoteNeedsPull = Boolean(remoteSync?.hasUpstream && remoteSync.recommendedAction === "pull");
-  let statusColor: string;
-  if (data.status === "conflict-active" || data.status === "conflict-predicted") {
-    statusColor = "text-red-300";
-  } else if (data.status === "behind-base") {
-    statusColor = "text-amber-300";
-  } else if (data.status === "merge-ready") {
-    statusColor = "text-emerald-300";
-  } else {
-    statusColor = "text-muted-fg";
-  }
-  const prStateBadge = pr ? getPrStateBadge(pr.state) : null;
-  const prChecksBadge = pr ? getPrChecksBadge(pr.checksStatus) : null;
-  const prReviewsBadge = pr ? getPrReviewsBadge(pr.reviewStatus) : null;
-  const ciDotColor = pr ? getPrCiDotColor(pr) : null;
-  const reviewDotColor = pr ? getPrReviewDotColor(pr) : null;
+  const baseBehind = lane.status.behind > 0 || data.status === "behind-base";
+
+  const syncBadge = (() => {
+    if (remoteDiverged) return { label: "Diverged", className: "text-red-300" };
+    if (autoRebase?.state === "rebaseConflict") return { label: "Rebase conflict", className: "text-red-300" };
+    if (autoRebase?.state === "rebasePending") return { label: "Rebase pending", className: "text-amber-300" };
+    if (remoteNeedsPublish) return { label: remoteSync?.hasUpstream === false ? "Publish lane" : "Needs push", className: "text-emerald-300" };
+    if (remoteNeedsPull) return { label: "Needs pull", className: "text-sky-300" };
+    if (baseBehind || stackStale) return { label: "Behind base", className: "text-amber-300" };
+    if (autoRebase?.state === "autoRebased") return { label: "Auto-rebased", className: "text-emerald-300" };
+    return { label: "In sync", className: "text-muted-fg" };
+  })();
+
+  const prBadge = (() => {
+    if (!pr) return null;
+    if (pr.state === "merged") return { label: `Merged PR #${pr.number}`, className: "text-emerald-300" };
+    if (pr.state === "closed") return { label: `Closed PR #${pr.number}`, className: "text-muted-fg" };
+    if (pr.reviewStatus === "changes_requested") return { label: `PR #${pr.number} needs changes`, className: "text-amber-300" };
+    if (pr.checksStatus === "failing") return { label: `PR #${pr.number} checks failing`, className: "text-red-300" };
+    if (pr.reviewStatus === "approved" && pr.checksStatus === "passing") return { label: `PR #${pr.number} ready`, className: "text-emerald-300" };
+    if (pr.pendingCheckCount > 0) return { label: `PR #${pr.number} checks running`, className: "text-sky-300" };
+    return { label: `PR #${pr.number} open`, className: "text-sky-300" };
+  })();
 
   return (
     <div
       className={cn(
-        "group relative rounded-lg border bg-card/90 px-2 py-1.5 text-[11px] shadow-sm transition-all duration-150",
+        "group relative rounded-xl border bg-card/92 px-2.5 py-2 text-[11px] shadow-sm transition-all duration-150",
         lane.laneType === "attached" ? "border-dashed text-muted-fg" : "border-border text-fg",
         lane.laneType === "primary" && "border-[3px] border-accent",
         data.isIntegration && "border-2",
         selected && "ring-2 ring-accent",
-        data.dimmed && "opacity-20 scale-50",
-        data.highlight && "scale-[1.02] shadow-[0_2px_8px_rgba(0,0,0,0.2)]",
+        data.dimmed && "opacity-55",
+        data.highlight && "shadow-[0_4px_14px_rgba(0,0,0,0.18)]",
         data.activityBucket === "high" && "shadow-[0_0_18px_rgba(34,197,94,0.2)]",
         data.rebaseFailed && "border-red-500 ring-1 ring-red-500/80",
         data.rebasePulse && "ade-node-failed-pulse",
@@ -71,7 +70,7 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
     >
       <div className="flex items-center gap-1">
         {iconGlyph(lane.icon)}
-        <span className="truncate font-semibold">{lane.name}</span>
+        <span className="truncate font-semibold text-fg">{lane.name}</span>
         {data.isIntegration ? (
           <span
             className="ml-auto flex items-center gap-0.5 rounded px-1 py-0 text-[9px] font-medium uppercase tracking-wider"
@@ -83,9 +82,9 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
           </span>
         ) : null}
       </div>
-      <div className="truncate text-[11px] text-muted-fg">{lane.branchRef}</div>
+      <div className="mt-0.5 truncate text-[11px] text-muted-fg">{lane.branchRef}</div>
       {data.integrationSources.length > 0 ? (
-        <div className="mt-1">
+        <div className="mt-2">
           <div className="mb-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-[#C4B5FD]">
             Fed By
           </div>
@@ -112,93 +111,21 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
           </div>
         </div>
       ) : null}
-      {pr ? (
-        <div className="mt-1 flex flex-wrap items-center gap-1">
-          <InlinePrBadge {...prStateBadge!} />
-          <InlinePrBadge {...prChecksBadge!} />
-          <InlinePrBadge {...prReviewsBadge!} />
-          <span
-            className={cn(
-              "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
-              pr.activityState === "active" && "ade-pr-badge-pulse"
-            )}
-            style={{
-              color: ciDotColor!,
-              borderColor: `${ciDotColor}40`,
-              background: `${ciDotColor}14`
-            }}
-            title={`CI status: ${pr.checksStatus}`}
-          >
-            <span
-              className={cn("h-1.5 w-1.5 rounded-full", pr.pendingCheckCount > 0 && "ade-pr-ci-pending")}
-              style={{ background: ciDotColor! }}
-            />
-            {pr.pendingCheckCount > 0 ? `${pr.pendingCheckCount} RUNNING` : pr.checksStatus}
-          </span>
-          <span
-            className={cn(
-              "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
-              pr.activityState === "active" && "ade-pr-badge-pulse"
-            )}
-            style={{
-              color: reviewDotColor!,
-              borderColor: `${reviewDotColor}40`,
-              background: `${reviewDotColor}14`
-            }}
-            title={`${pr.reviewCount} total reviews`}
-          >
-            <CheckCircle size={10} weight="fill" />
-            {pr.reviewCount}
-          </span>
-          <span
-            className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
-            style={{
-              color: COLORS.info,
-              borderColor: `${COLORS.info}40`,
-              background: `${COLORS.info}14`
-            }}
-            title={`${pr.commentCount} total comments`}
-          >
-            <ChatText size={10} weight="fill" />
-            {pr.commentCount}
-          </span>
-          {pr.activityState === "stale" ? (
-            <span className="inline-flex items-center gap-1 rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-fg">
-              <ClockCounterClockwise size={10} />
-              stale
-            </span>
-          ) : null}
-        </div>
-      ) : null}
-      <div className="mt-1 flex flex-wrap items-center gap-1">
-        <Chip className="px-1 py-0 text-[10px]">{lane.status.dirty ? "dirty" : "clean"}</Chip>
-        <Chip className="px-1 py-0 text-[10px]" title={`Compared to base ${lane.baseRef}`}>
-          base {lane.status.ahead}↑/{lane.status.behind}↓
+      <div className="mt-2 flex flex-wrap items-center gap-1">
+        <Chip className={cn("px-1.5 py-0 text-[10px]", lane.status.dirty ? "text-amber-300" : "text-emerald-300")}>
+          {lane.status.dirty ? "Dirty" : "Clean"}
         </Chip>
-        {remoteSync ? (
-          remoteSync.hasUpstream ? (
-            <Chip className="px-1 py-0 text-[10px]" title={`Compared to ${remoteSync.upstreamRef ?? "upstream"}`}>
-              remote {remoteSync.ahead}↑/{remoteSync.behind}↓
-            </Chip>
-          ) : (
-            <Chip className="px-1 py-0 text-[10px] text-amber-700" title="No upstream branch configured. Push once to publish this lane.">
-              unpublished
-            </Chip>
-          )
-        ) : (
-          <Chip className="px-1 py-0 text-[10px] text-muted-fg">remote ?</Chip>
-        )}
-        <Chip className={cn("px-1 py-0 text-[10px]", statusColor)}>{data.status}</Chip>
-        {stackStale ? <Chip className="px-1 py-0 text-[10px] text-amber-700">stack stale</Chip> : null}
-        {autoRebase?.state === "autoRebased" ? <Chip className="px-1 py-0 text-[10px] text-emerald-300">auto rebased</Chip> : null}
-        {autoRebase?.state === "rebasePending" ? <Chip className="px-1 py-0 text-[10px] text-amber-700">rebase pending</Chip> : null}
-        {autoRebase?.state === "rebaseConflict" ? <Chip className="px-1 py-0 text-[10px] text-red-300">rebase conflict</Chip> : null}
-        {remoteDiverged ? <Chip className="px-1 py-0 text-[10px] text-red-300">diverged</Chip> : null}
-        {!remoteDiverged && remoteNeedsPublish ? <Chip className="px-1 py-0 text-[10px] text-emerald-300">push</Chip> : null}
-        {!remoteDiverged && !remoteNeedsPublish && remoteNeedsPull ? <Chip className="px-1 py-0 text-[10px] text-sky-300">pull</Chip> : null}
+        <Chip className={cn("px-1.5 py-0 text-[10px]", syncBadge.className)} title={`Compared to base ${lane.baseRef}`}>
+          {syncBadge.label}
+        </Chip>
+        {prBadge ? (
+          <Chip className={cn("px-1.5 py-0 text-[10px]", prBadge.className)} title={pr?.title}>
+            {prBadge.label}
+          </Chip>
+        ) : null}
         {data.environment ? (
           <span
-            className="rounded border px-1 py-0 text-[10px] uppercase tracking-wide"
+            className="rounded border px-1.5 py-0 text-[10px] uppercase tracking-wide"
             style={{
               borderColor: data.environment.color ?? undefined,
               color: data.environment.color ?? "var(--color-muted-fg)",
@@ -209,20 +136,17 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
             {data.environment.env.slice(0, 10)}
           </span>
         ) : null}
-        {data.mergeInProgress ? <Chip className="px-1 py-0 text-[10px] text-accent">merging</Chip> : null}
+        {data.mergeInProgress ? <Chip className="px-1.5 py-0 text-[10px] text-accent">Merging</Chip> : null}
+        {pr?.activityState === "stale" ? (
+          <Chip className="px-1.5 py-0 text-[10px] text-muted-fg">
+            <ClockCounterClockwise size={10} />
+            Stale
+          </Chip>
+        ) : null}
         {data.activeSessions > 0 ? <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" title="Active sessions" /> : null}
       </div>
-      {lane.tags.length > 0 ? (
-        <div className="mt-1 flex flex-wrap gap-1">
-          {lane.tags.slice(0, 3).map((tag) => (
-            <span key={tag} className="rounded bg-surface-recessed px-1 text-[10px] text-muted-fg">
-              {tag}
-            </span>
-          ))}
-        </div>
-      ) : null}
       {data.collapsedChildCount > 0 ? (
-        <div className="mt-1 inline-flex items-center gap-1 rounded border border-border/10 bg-card/60 px-1 text-[11px]">
+        <div className="mt-2 inline-flex items-center gap-1 rounded border border-border/10 bg-card/60 px-1.5 py-0.5 text-[11px]">
           <Stack size={12} weight="regular" />
           {data.collapsedChildCount} children
         </div>
@@ -239,7 +163,7 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
         position={Position.Bottom}
         style={{ width: 8, height: 8, opacity: 0, pointerEvents: "none", border: 0, background: "transparent" }}
       />
-      <div className="pointer-events-none absolute inset-0 rounded-lg opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-hover:shadow-[0_2px_8px_rgba(0,0,0,0.2)]" />
+      <div className="pointer-events-none absolute inset-0 rounded-xl opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-hover:shadow-[0_2px_8px_rgba(0,0,0,0.2)]" />
     </div>
   );
 }

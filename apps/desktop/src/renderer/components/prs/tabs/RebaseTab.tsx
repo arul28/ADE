@@ -321,10 +321,10 @@ export function RebaseTab({
   };
 
   const urgencyGroups: Array<{ key: UrgencyCategory; title: string; color: string; icon: typeof Warning }> = [
-    { key: "attention", title: "Needs Sync", color: S.warning, icon: Warning },
-    { key: "clean", title: "Ready to Sync", color: S.info, icon: ArrowsDownUp },
-    { key: "recent", title: "Recently Synced", color: S.accent, icon: Clock },
-    { key: "upToDate", title: "Up to Date", color: S.success, icon: CheckCircle },
+    { key: "attention", title: "Needs Rebase", color: S.warning, icon: Warning },
+    { key: "clean", title: "Ready To Rebase", color: S.info, icon: ArrowsDownUp },
+    { key: "recent", title: "Deferred", color: S.accent, icon: Clock },
+    { key: "upToDate", title: "Resolved Recently", color: S.success, icon: CheckCircle },
   ];
 
   const resolverTargetLaneId = React.useMemo(() => {

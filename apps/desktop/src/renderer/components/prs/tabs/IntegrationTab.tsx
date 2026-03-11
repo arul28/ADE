@@ -15,6 +15,8 @@ import { PrConflictBadge } from "../PrConflictBadge";
 import { PrRebaseBanner } from "../PrRebaseBanner";
 import { usePrs } from "../state/PrsContext";
 import { ConflictFilePreview } from "../ConflictFilePreview";
+import { PrDetailPane } from "../detail/PrDetailPane";
+import { IntegrationPrContextPanel } from "../shared/IntegrationPrContextPanel";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
 import { normalizeBranchName } from "../shared/prHelpers";
 import { isDirtyWorktreeErrorMessage, stripDirtyWorktreePrefix } from "../shared/dirtyWorktree";
@@ -37,32 +39,6 @@ function OutcomeDot({ outcome }: { outcome: "clean" | "conflict" | "blocked" | "
       style={{ width: 20, height: 20, background: `${config.color}18` }}
     >
       <Icon size={12} weight="fill" style={{ color: config.color }} />
-    </span>
-  );
-}
-
-/* ---- State badge ---- */
-
-function StateBadge({ state }: { state: string }) {
-  const map: Record<string, { label: string; bg: string; fg: string; border: string }> = {
-    draft:  { label: "DRAFT",  bg: "#A78BFA18", fg: "#A78BFA", border: "#A78BFA30" },
-    open:   { label: "OPEN",   bg: "#3B82F618", fg: "#3B82F6", border: "#3B82F630" },
-    merged: { label: "MERGED", bg: "#22C55E18", fg: "#22C55E", border: "#22C55E30" },
-    closed: { label: "CLOSED", bg: "#71717A18", fg: "#71717A", border: "#71717A30" },
-  };
-  const s = map[state] ?? map.closed;
-  return (
-    <span
-      className="font-mono font-bold tracking-[1px] uppercase"
-      style={{
-        fontSize: 10,
-        padding: "2px 8px",
-        background: s.bg,
-        color: s.fg,
-        border: `1px solid ${s.border}`,
-      }}
-    >
-      {s.label}
     </span>
   );
 }
@@ -396,22 +372,6 @@ function getOutcomeColor(outcome: "clean" | "conflict" | "blocked" | "pending"):
   return "#71717A";
 }
 
-function getLaneOutcomeStyles(outcome: "clean" | "conflict" | "blocked" | "pending" | undefined): {
-  borderColor: string;
-  background: string;
-} {
-  if (outcome === "clean") {
-    return { borderColor: "#22C55E", background: "#22C55E06" };
-  }
-  if (outcome === "conflict") {
-    return { borderColor: "#F59E0B", background: "#F59E0B06" };
-  }
-  if (outcome === "blocked") {
-    return { borderColor: "#EF4444", background: "#EF444406" };
-  }
-  return { borderColor: "#27272A", background: "#0C0A10" };
-}
-
 function getSimulationSummaryMessage(args: {
   isCommittedIntegration: boolean;
   overallOutcome: "clean" | "conflict" | "blocked";
@@ -502,7 +462,7 @@ type IntegrationTabProps = {
   refreshNonce?: number;
 };
 
-export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _mergeMethod, selectedPrId, onSelectPr, onRefresh, refreshNonce = 0 }: IntegrationTabProps) {
+export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, selectedPrId, onSelectPr, onRefresh, refreshNonce = 0 }: IntegrationTabProps) {
   const laneById = React.useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
   const resolveTargetLaneId = React.useCallback((baseBranch: string): string | null => {
     const normalizedBase = normalizeBranchName(baseBranch);
@@ -510,6 +470,11 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
     return lanes.find((lane) => normalizeBranchName(lane.branchRef) === normalizedBase)?.id ?? null;
   }, [lanes]);
   const {
+    detailStatus,
+    detailChecks,
+    detailReviews,
+    detailComments,
+    detailBusy,
     rebaseNeeds,
     autoRebaseStatuses,
     setActiveTab,
@@ -676,6 +641,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
       await loadProposals();
       await onRefresh();
       if (committedPrId) {
+        setActiveTab("normal");
         onSelectPr(committedPrId);
       }
     } catch (err: unknown) {
@@ -1210,6 +1176,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
     if (!selectedPr) return [];
     return selectedPrLiveModel?.liveSourceLaneIds ?? [selectedPr.laneId];
   }, [selectedPr, selectedPrLiveModel]);
+  const liveSimulationKey = React.useMemo(() => liveSimulationLaneIds.join("|"), [liveSimulationLaneIds]);
 
   const liveIntegrationLaneId = selectedPrLiveModel?.integrationLaneId ?? null;
 
@@ -1277,7 +1244,11 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
     if (!selectedPr) return;
     setSimulateBusy(true); setSimulateError(null); setSimulateResult(null);
     try {
-      const result = await window.ade.prs.simulateIntegration({ sourceLaneIds: liveSimulationLaneIds, baseBranch: selectedPr.baseBranch });
+      const result = await window.ade.prs.simulateIntegration({
+        sourceLaneIds: liveSimulationLaneIds,
+        baseBranch: selectedPr.baseBranch,
+        persist: false,
+      });
       setSimulateResult(result);
     } catch (err: unknown) {
       setSimulateError(err instanceof Error ? err.message : String(err));
@@ -1296,14 +1267,18 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
     let cancelled = false;
 
     setSimulateBusy(true);
-    window.ade.prs.simulateIntegration({ sourceLaneIds: liveSimulationLaneIds, baseBranch: selectedPr.baseBranch })
+    window.ade.prs.simulateIntegration({
+      sourceLaneIds: liveSimulationLaneIds,
+      baseBranch: selectedPr.baseBranch,
+      persist: false,
+    })
       .then((result) => { if (!cancelled) setSimulateResult(result); })
       .catch((err: unknown) => { if (!cancelled) setSimulateError(err instanceof Error ? err.message : String(err)); })
       .finally(() => { if (!cancelled) setSimulateBusy(false); });
 
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-simulate on PR selection change
-  }, [liveSimulationLaneIds, selectedPrId]);
+  }, [liveSimulationKey, selectedPr?.baseBranch, selectedPrId]);
 
   const handleDelete = async () => {
     if (!selectedPr) return;
@@ -1319,12 +1294,6 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
   };
 
   const hasConflicts = simulateResult?.overallOutcome === "conflict" || simulateResult?.overallOutcome === "blocked";
-
-  /* ---- Build step outcome map for lane status badges ---- */
-  const stepOutcomeByLaneId = React.useMemo(() => {
-    if (!simulateResult) return new Map<string, "clean" | "conflict" | "blocked" | "pending">();
-    return new Map(simulateResult.steps.map((s) => [s.laneId, s.outcome]));
-  }, [simulateResult]);
 
   /* ============================================================
    *  LEFT PANEL — Integration PR List
@@ -1521,239 +1490,78 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
           />
         ) : null}
 
-        {selectedPrLiveModel?.isCommittedIntegration && liveIntegrationLaneId && resolverTargetLaneId ? (
-          <div
-            style={{
-              background: "#A78BFA08",
-              border: "1px solid #A78BFA30",
-              padding: 12,
-              marginBottom: 20,
-            }}
-          >
-            <div className="flex items-start" style={{ gap: 10 }}>
-              <CheckCircle size={14} weight="fill" style={{ color: "#A78BFA", marginTop: 1, flexShrink: 0 }} />
-              <div className="flex flex-col" style={{ gap: 6 }}>
-                <div className="font-mono font-semibold uppercase tracking-[1px]" style={{ fontSize: 10, color: "#C4B5FD" }}>
-                  Proposal Accepted
-                </div>
-                <div className="font-mono" style={{ fontSize: 10, color: "#DDD6FE", lineHeight: "16px" }}>
-                  ADE created this GitHub PR from <span style={{ color: "#FAFAFA" }}>{selectedPr.headBranch}</span>.
-                  {" "}
-                  Live conflict checks and AI resolution now run on the integration lane against <span style={{ color: "#FAFAFA" }}>{selectedPr.baseBranch}</span>.
-                  {" "}
-                  The original source lanes below remain visible as provenance.
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        {/* ---- Header card ---- */}
-        <div
-          style={{
-            background: "#13101A",
-            border: "1px solid #1E1B26",
-            padding: 20,
-            marginBottom: 20,
-          }}
-        >
-          {/* Title row */}
-          <div className="flex items-start justify-between" style={{ gap: 12 }}>
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center" style={{ gap: 8 }}>
-                <span className="font-mono" style={{ fontSize: 18, color: "#71717A" }}>
-                  #{selectedPr.githubPrNumber}
-                </span>
-                <span
-                  className="truncate font-bold"
-                  style={{ fontSize: 18, color: "#FAFAFA", fontFamily: "'Space Grotesk', sans-serif" }}
+        {selectedPrLiveModel?.isCommittedIntegration ? (
+          <IntegrationPrContextPanel
+            pr={selectedPr}
+            lanes={lanes}
+            mergeContext={selectedMergeContext}
+            messages={simulateAdvisories}
+            statusNode={simulateResult
+              ? <OutcomeBadge outcome={simulateResult.overallOutcome} />
+              : !simulateBusy
+                ? (
+                  <PrConflictBadge
+                    riskLevel={selectedPr.conflictAnalysis?.riskLevel ?? null}
+                    overlappingFileCount={selectedPr.conflictAnalysis?.overlapCount}
+                  />
+                )
+                : undefined}
+            actions={(
+              <>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  disabled={simulateBusy}
+                  onClick={() => void handleSimulate()}
                 >
-                  {selectedPr.title}
-                </span>
-              </div>
-              <div className="font-mono" style={{ fontSize: 11, color: "#71717A", marginTop: 6 }}>
-                Merging {mergeSourcesResolved.length} source lane{mergeSourcesResolved.length !== 1 ? "s" : ""} into {selectedPr.baseBranch}
-              </div>
-            </div>
-
-            <div className="flex items-center shrink-0" style={{ gap: 8 }}>
-              <StateBadge state={selectedPr.state} />
-              {simulateResult && <OutcomeBadge outcome={simulateResult.overallOutcome} />}
-              {!simulateResult && !simulateBusy && (
-                <PrConflictBadge
-                  riskLevel={selectedPr.conflictAnalysis?.riskLevel ?? null}
-                  overlappingFileCount={selectedPr.conflictAnalysis?.overlapCount}
-                />
-              )}
-              <button
-                className="flex items-center font-mono font-bold uppercase tracking-[1px]"
-                style={{
-                  fontSize: 9,
-                  gap: 4,
-                  padding: "2px 8px",
-                  background: "#A78BFA18",
-                  color: "#A78BFA",
-                  border: "1px solid #A78BFA30",
-                  cursor: "pointer",
-                }}
-                title="View related lanes in the workspace graph"
-                onClick={() => {
-                  const laneId = selectedPr.laneId;
-                  window.location.hash = laneId
-                    ? `#/graph?focusLane=${encodeURIComponent(laneId)}`
-                    : "#/graph";
-                }}
-              >
-                <ArrowSquareOut size={12} weight="bold" />
-                GRAPH
-              </button>
-            </div>
-          </div>
-
-          {/* Meta row */}
-          <div
-            className="flex items-center flex-wrap"
-            style={{ gap: 12, marginTop: 14, paddingTop: 14, borderTop: "1px solid #1E1B26" }}
-          >
-            <div className="flex items-center" style={{ gap: 4 }}>
-              <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#52525B" }}>HEAD</span>
-              <span className="font-mono" style={{ fontSize: 11, color: "#A1A1AA" }}>{selectedPr.headBranch}</span>
-            </div>
-            <ArrowRight size={10} weight="bold" style={{ color: "#52525B" }} />
-            <div className="flex items-center" style={{ gap: 4 }}>
-              <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#52525B" }}>BASE</span>
-              <span className="font-mono" style={{ fontSize: 11, color: "#A1A1AA" }}>{selectedPr.baseBranch}</span>
-            </div>
-            <span className="font-mono" style={{ fontSize: 11, color: "#71717A" }}>
-              <span style={{ color: "#22C55E" }}>+{selectedPr.additions}</span>{" "}
-              <span style={{ color: "#EF4444" }}>-{selectedPr.deletions}</span>
-            </span>
-
-            <div className="flex items-center ml-auto" style={{ gap: 8 }}>
-              {/* GitHub link — always visible and prominent */}
-              <button
-                type="button"
-                className="inline-flex items-center font-mono font-bold uppercase tracking-[1px] transition-all duration-100"
-                style={{
-                  fontSize: 10,
-                  height: 28,
-                  padding: "0 10px",
-                  background: "#1A1720",
-                  color: "#FAFAFA",
-                  border: "1px solid #27272A",
-                  cursor: "pointer",
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#A78BFA50"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#27272A"; }}
-                onClick={() => void window.ade.prs.openInGitHub(selectedPr.id)}
-              >
-                <GithubLogo size={14} weight="regular" style={{ marginRight: 6 }} />
-                GITHUB
-              </button>
-              <Button
-                size="sm"
-                variant="primary"
-                disabled={simulateBusy}
-                onClick={() => void handleSimulate()}
-              >
-                <Lightning size={12} weight="fill" />
-                <span>{simulateBusy ? "SIMULATING..." : "SIMULATE MERGE"}</span>
-              </Button>
-            </div>
-          </div>
-        </div>
-
-        <AdvisoryPanel messages={simulateAdvisories} />
-
-        {/* ---- Source Lanes section ---- */}
-        <div
-          style={{
-            background: "#13101A",
-            border: "1px solid #1E1B26",
-            padding: 16,
-            marginBottom: 20,
-          }}
-        >
-          <div className="flex items-center justify-between" style={{ marginBottom: 12 }}>
-            <SectionHeader>SOURCE LANES</SectionHeader>
-            <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#A1A1AA" }}>
-              {mergeSourcesResolved.length} LANE{mergeSourcesResolved.length !== 1 ? "S" : ""}
-            </span>
-          </div>
-          {selectedPrLiveModel?.isCommittedIntegration ? (
-            <div className="font-mono" style={{ fontSize: 10, color: "#71717A", marginBottom: 12 }}>
-              These lanes were used to assemble the integration lane. Live merge checks now run on {laneById.get(liveIntegrationLaneId ?? "")?.name ?? selectedPr.headBranch}.
-            </div>
-          ) : null}
-          <div className="flex flex-col" style={{ gap: 4 }}>
-            {mergeSourcesResolved.map((s) => {
-              const outcome = stepOutcomeByLaneId.get(s.laneId);
-              const lane = laneById.get(s.laneId);
-              const laneOutcomeStyles = getLaneOutcomeStyles(outcome);
-              const step = simulateResult?.steps.find((st) => st.laneId === s.laneId);
-              return (
-                <div
-                  key={s.laneId}
+                  <Lightning size={12} weight="fill" />
+                  <span>{simulateBusy ? "CHECKING..." : `CHECK MERGE INTO ${selectedPr.baseBranch.toUpperCase()}`}</span>
+                </Button>
+                <button
+                  type="button"
+                  className="inline-flex items-center font-mono font-bold uppercase tracking-[1px] transition-all duration-100"
                   style={{
-                    padding: "10px 12px",
-                    background: laneOutcomeStyles.background,
-                    borderLeft: `3px solid ${laneOutcomeStyles.borderColor}`,
-                    border: `1px solid ${laneOutcomeStyles.borderColor}20`,
-                    borderLeftWidth: 3,
+                    fontSize: 10,
+                    height: 28,
+                    padding: "0 10px",
+                    background: "transparent",
+                    color: "#A78BFA",
+                    border: "1px solid #A78BFA30",
+                    cursor: "pointer",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = "#A78BFA12"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                  onClick={() => {
+                    setProposalResolverConfig(null);
+                    setResolverOpen(true);
                   }}
                 >
-                  <div className="flex items-center justify-between" style={{ gap: 8 }}>
-                    <div className="flex items-center" style={{ gap: 8 }}>
-                      {outcome && <OutcomeDot outcome={outcome} />}
-                      {!outcome && simulateBusy && (
-                        <span className="inline-flex items-center justify-center" style={{ width: 20, height: 20, background: "#71717A18" }}>
-                          <Clock size={12} weight="regular" style={{ color: "#71717A" }} className="animate-pulse" />
-                        </span>
-                      )}
-                      <span className="font-mono font-semibold" style={{ fontSize: 12, color: "#FAFAFA" }}>
-                        {s.laneName}
-                      </span>
-                      {lane?.branchRef && (
-                        <span className="font-mono" style={{ fontSize: 10, color: "#52525B" }}>
-                          {normalizeBranchName(lane.branchRef)}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center" style={{ gap: 6 }}>
-                      {step && (
-                        <span className="font-mono" style={{ fontSize: 10, color: "#71717A" }}>
-                          {step.diffStat.filesChanged} file{step.diffStat.filesChanged !== 1 ? "s" : ""}
-                        </span>
-                      )}
-                      {outcome && <LaneStatusBadge outcome={outcome} />}
-                      {!outcome && simulateBusy && <LaneStatusBadge outcome="pending" />}
-                    </div>
-                  </div>
-                  {step && (
-                    <div className="font-mono" style={{ marginTop: 4, marginLeft: 28, fontSize: 10, color: "#52525B" }}>
-                      <span style={{ color: "#22C55E" }}>+{step.diffStat.insertions}</span>
-                      {" "}
-                      <span style={{ color: "#EF4444" }}>-{step.diffStat.deletions}</span>
-                      {step.conflictingFiles.length > 0 && (
-                        <span style={{ color: "#F59E0B", marginLeft: 8 }}>
-                          {step.conflictingFiles.length} conflicting file{step.conflictingFiles.length !== 1 ? "s" : ""}
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-          <div className="flex items-center" style={{ gap: 8, marginTop: 8, paddingTop: 8, borderTop: "1px solid #1E1B2680" }}>
-            <ArrowRight size={12} weight="bold" style={{ color: "#52525B" }} />
-            <LaneChip
-              name={laneById.get(resolverTargetLaneId ?? "")?.name ?? "target"}
-              variant="accent"
-            />
-            <span className="font-mono" style={{ fontSize: 10, color: "#52525B" }}>integration target</span>
-          </div>
-        </div>
+                  <Sparkle size={12} weight="regular" style={{ marginRight: 4 }} />
+                  OPEN AI RESOLVER
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex items-center font-mono font-bold uppercase tracking-[1px] transition-all duration-100"
+                  style={{
+                    fontSize: 10,
+                    height: 28,
+                    padding: "0 10px",
+                    background: "transparent",
+                    color: "#EF4444",
+                    border: "1px solid #EF444430",
+                    cursor: "pointer",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = "#EF444412"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                  onClick={() => setDeleteConfirm(true)}
+                >
+                  <Trash size={12} weight="regular" style={{ marginRight: 4 }} />
+                  REMOVE PR
+                </button>
+              </>
+            )}
+          />
+        ) : null}
 
         {/* ---- Merge Simulation section ---- */}
         <div
@@ -1896,69 +1704,17 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
               >
                 <Sparkle size={12} weight="fill" className="mr-1" />
                 <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 10 }}>
-                  FIX WITH AI
+                  OPEN AI RESOLVER
                 </span>
               </Button>
             </div>
           </div>
         )}
 
-        {/* ---- Action bar ---- */}
+        {deleteConfirm && (
           <div style={{ marginBottom: 20 }}>
-            <div className="flex flex-wrap items-center" style={{ gap: 8 }}>
-            {/* Resolve with AI - accent outline */}
-            {!hasConflicts && (
-              <button
-                type="button"
-                className="inline-flex items-center font-mono font-bold uppercase tracking-[1px] transition-all duration-100"
-                style={{
-                  fontSize: 10,
-                  height: 28,
-                  padding: "0 10px",
-                  background: "transparent",
-                  color: "#A78BFA",
-                  border: "1px solid #A78BFA30",
-                  cursor: "pointer",
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = "#A78BFA12"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-                onClick={() => {
-                  setProposalResolverConfig(null);
-                  setResolverOpen(true);
-                }}
-              >
-                <Sparkle size={12} weight="regular" style={{ marginRight: 4 }} />
-                RESOLVE WITH AI
-              </button>
-            )}
-
-            {/* Remove PR - red outline */}
-            <button
-              type="button"
-              className="inline-flex items-center font-mono font-bold uppercase tracking-[1px] transition-all duration-100"
-              style={{
-                fontSize: 10,
-                height: 28,
-                padding: "0 10px",
-                background: "transparent",
-                color: "#EF4444",
-                border: "1px solid #EF444430",
-                cursor: "pointer",
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = "#EF444412"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-              onClick={() => setDeleteConfirm(true)}
-            >
-              <Trash size={12} weight="regular" style={{ marginRight: 4 }} />
-              REMOVE PR
-              </button>
-            </div>
-
-            {/* Delete confirmation panel */}
-            {deleteConfirm && (
             <div
               style={{
-                marginTop: 12,
                 padding: 16,
                 background: "#EF444408",
                 border: "1px solid #EF444420",
@@ -2018,8 +1774,8 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
                 </button>
               </div>
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
         {resolverOpen && resolverTargetLaneId ? (
           <PrAiResolverPanel
@@ -2049,6 +1805,31 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
             onDismiss={() => setResolverOpen(false)}
             startLabel="Start Integration Resolver"
           />
+        ) : null}
+
+        {selectedPrLiveModel?.isCommittedIntegration ? (
+          <div style={{ marginTop: 20 }}>
+            <PrDetailPane
+              pr={selectedPr}
+              status={detailStatus}
+              checks={detailChecks}
+              reviews={detailReviews}
+              comments={detailComments}
+              detailBusy={detailBusy}
+              lanes={lanes}
+              mergeMethod={mergeMethod}
+              onRefresh={onRefresh}
+              onNavigate={(path) => {
+                window.location.hash = path.startsWith("/") ? `#${path}` : path;
+              }}
+              onTabChange={(tab) => setActiveTab(tab as "normal" | "queue" | "integration" | "rebase")}
+              onShowInGraph={(laneId) => {
+                window.location.hash = laneId
+                  ? `#/graph?focusLane=${encodeURIComponent(laneId)}`
+                  : "#/graph";
+              }}
+            />
+          </div>
         ) : null}
       </div>
     </div>
@@ -2936,7 +2717,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
                   ) : (
                     <GithubLogo size={14} weight="regular" style={{ marginRight: 6 }} />
                   )}
-                  {commitBusy ? "CREATING..." : "CREATE PR ON GITHUB"}
+                  {commitBusy ? "CREATING..." : "CREATE PR"}
                 </button>
               );
             })()}
@@ -3185,7 +2966,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
       children: detailPane,
     },
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [prs, selectedPr, selectedPrId, mergeContextByPrId, laneById, mergeSourcesResolved, liveIntegrationLaneId, liveIntegrationRebaseNeed, liveSimulationLaneIds, resolverTargetLaneId, simulateResult, simulateBusy, simulateError, resolverOpen, proposalResolverConfig, deleteConfirm, deleteBusy, deleteCloseGh, hasConflicts, rebaseNeeds, rebaseNeedByLaneId, autoRebaseStatuses, setActiveTab, onSelectPr, onRefresh, stepOutcomeByLaneId, proposals, proposalsLoaded, selectedProposal, selectedProposalId, selectedProposalRebaseLaneIds, selectedPrLiveModel, commitBusy, commitError, resimBusy, deleteProposalBusy, expandedPairKeys, resolutionState, activeWorkerStepId, createLaneBusy, resolvingLaneId, resolutionPanelDismissed, allStepsResolved, proposalLaneCards, proposalConflictingPairs, proposalConflictSteps, totalProposalConflictFiles, urlProposalId, conflictPairCountByLaneId, isLegacySequentialProposal, nextManualResolutionLaneId]);
+  }), [prs, selectedPr, selectedPrId, mergeContextByPrId, laneById, mergeSourcesResolved, liveIntegrationLaneId, liveIntegrationRebaseNeed, liveSimulationLaneIds, resolverTargetLaneId, simulateResult, simulateBusy, simulateError, resolverOpen, proposalResolverConfig, deleteConfirm, deleteBusy, deleteCloseGh, hasConflicts, rebaseNeeds, rebaseNeedByLaneId, autoRebaseStatuses, setActiveTab, onSelectPr, onRefresh, proposals, proposalsLoaded, selectedProposal, selectedProposalId, selectedProposalRebaseLaneIds, selectedPrLiveModel, commitBusy, commitError, resimBusy, deleteProposalBusy, expandedPairKeys, resolutionState, activeWorkerStepId, createLaneBusy, resolvingLaneId, resolutionPanelDismissed, allStepsResolved, proposalLaneCards, proposalConflictingPairs, proposalConflictSteps, totalProposalConflictFiles, urlProposalId, conflictPairCountByLaneId, isLegacySequentialProposal, nextManualResolutionLaneId]);
 
   return <PaneTilingLayout layoutId="prs:integration:v1" tree={PR_TAB_TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
 }

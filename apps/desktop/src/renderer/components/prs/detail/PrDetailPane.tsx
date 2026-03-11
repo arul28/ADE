@@ -1,4 +1,6 @@
 import React from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   GitBranch, GitMerge, GithubLogo, CheckCircle, XCircle, Circle,
   CircleNotch, Sparkle, ArrowRight, Eye, ChatText, Code, ClockCounterClockwise,
@@ -42,6 +44,62 @@ function Avatar({ user, size = 20 }: { user: { login: string; avatarUrl?: string
     <img src={user.avatarUrl} alt={user.login} width={size} height={size} style={{ borderRadius: "50%", border: `1px solid ${COLORS.border}` }} />
   ) : (
     <UserCircle size={size} weight="fill" style={{ color: COLORS.textMuted }} />
+  );
+}
+
+function MarkdownBody({ markdown }: { markdown: string }) {
+  return (
+    <div style={{ fontSize: 12, lineHeight: 1.7, color: COLORS.textSecondary }}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          p: ({ children }) => <p style={{ margin: "0 0 10px", whiteSpace: "pre-wrap" }}>{children}</p>,
+          ul: ({ children }) => <ul style={{ margin: "0 0 10px 18px" }}>{children}</ul>,
+          ol: ({ children }) => <ol style={{ margin: "0 0 10px 18px" }}>{children}</ol>,
+          li: ({ children }) => <li style={{ marginBottom: 4 }}>{children}</li>,
+          pre: ({ children }) => (
+            <pre style={{
+              overflow: "auto",
+              margin: "10px 0",
+              padding: 12,
+              border: `1px solid ${COLORS.border}`,
+              background: COLORS.recessedBg,
+              fontFamily: MONO_FONT,
+              fontSize: 11,
+              lineHeight: 1.6,
+              color: COLORS.textSecondary,
+            }}>
+              {children}
+            </pre>
+          ),
+          code: ({ className, children }) => {
+            const text = String(children ?? "");
+            const isBlock = /\n/.test(text) || (typeof className === "string" && className.length > 0);
+            return isBlock ? (
+              <code style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{children}</code>
+            ) : (
+              <code style={{
+                padding: "1px 4px",
+                border: `1px solid ${COLORS.border}`,
+                background: COLORS.recessedBg,
+                fontFamily: MONO_FONT,
+                fontSize: 11,
+                color: COLORS.accent,
+              }}>
+                {children}
+              </code>
+            );
+          },
+          a: ({ children, href }) => (
+            <a href={href} target="_blank" rel="noreferrer" style={{ color: COLORS.accent, textDecoration: "underline" }}>
+              {children}
+            </a>
+          ),
+        }}
+      >
+        {markdown}
+      </ReactMarkdown>
+    </div>
   );
 }
 
@@ -345,7 +403,9 @@ export function PrDetailPane({ pr, status, checks, reviews, comments, detailBusy
                   color: isActive ? COLORS.textPrimary : COLORS.textMuted,
                   background: isActive ? `${COLORS.accent}18` : "transparent",
                   borderBottom: isActive ? `2px solid ${COLORS.accent}` : "2px solid transparent",
-                  border: "none", borderTop: "none", borderLeft: "none", borderRight: "none",
+                  borderTop: "none",
+                  borderLeft: "none",
+                  borderRight: "none",
                   cursor: "pointer", transition: "all 100ms",
                 }}
               >
@@ -555,8 +615,8 @@ function OverviewTab(props: OverviewTabProps) {
               </div>
             </div>
           ) : (
-            <div style={{ fontFamily: MONO_FONT, fontSize: 12, color: COLORS.textSecondary, whiteSpace: "pre-wrap", lineHeight: 1.6, maxHeight: 300, overflow: "auto" }}>
-              {detail?.body || pr.title || "No description provided."}
+            <div style={{ maxHeight: 300, overflow: "auto" }}>
+              <MarkdownBody markdown={detail?.body || pr.title || "No description provided."} />
             </div>
           )}
         </div>
@@ -629,7 +689,11 @@ function OverviewTab(props: OverviewTabProps) {
                       </span>
                       {review.submittedAt && <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>{formatTs(review.submittedAt)}</span>}
                     </div>
-                    {review.body && <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textSecondary, marginTop: 6, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{review.body}</div>}
+                    {review.body ? (
+                      <div style={{ marginTop: 6 }}>
+                        <MarkdownBody markdown={review.body} />
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               ))}
@@ -652,13 +716,16 @@ function OverviewTab(props: OverviewTabProps) {
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                     <UserCircle size={20} weight="fill" style={{ color: COLORS.textMuted }} />
                     <span style={{ fontFamily: MONO_FONT, fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }}>{comment.author}</span>
+                    <span style={inlineBadge(comment.source === "review" ? COLORS.warning : COLORS.info, { padding: "1px 6px" })}>
+                      {comment.source === "review" ? "review comment" : "issue comment"}
+                    </span>
                     {comment.path && (
                       <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.accent, background: `${COLORS.accent}18`, padding: "1px 6px" }}>{comment.path}{comment.line ? `:${comment.line}` : ""}</span>
                     )}
                     <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>{formatTs(comment.createdAt)}</span>
                   </div>
-                  <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.5, whiteSpace: "pre-wrap", paddingLeft: 28 }}>
-                    {comment.body || "(empty comment)"}
+                  <div style={{ paddingLeft: 28 }}>
+                    <MarkdownBody markdown={comment.body || "(empty comment)"} />
                   </div>
                 </div>
               ))}
@@ -1101,6 +1168,27 @@ function ActivityTab({ activity, comments, reviews, commentDraft, setCommentDraf
     return events.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
   }, [activity, comments, reviews]);
 
+  const activityColor = React.useCallback((event: PrActivityEvent) => {
+    if (event.type === "review") return COLORS.accent;
+    if (event.type === "comment") {
+      return event.metadata?.source === "review" ? COLORS.warning : COLORS.info;
+    }
+    if (event.type === "ci_run") return COLORS.warning;
+    if (event.type === "state_change") return COLORS.success;
+    return COLORS.textMuted;
+  }, []);
+
+  const activityLabel = React.useCallback((event: PrActivityEvent) => {
+    if (event.type === "comment") {
+      return event.metadata?.source === "review" ? "review comment" : "issue comment";
+    }
+    if (event.type === "review") return "review";
+    if (event.type === "ci_run") return "CI";
+    if (event.type === "state_change") return "state change";
+    if (event.type === "review_request") return "review request";
+    return event.type.replace(/_/g, " ");
+  }, []);
+
   return (
     <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
       {/* Comment input at top */}
@@ -1140,27 +1228,28 @@ function ActivityTab({ activity, comments, reviews, commentDraft, setCommentDraf
                 <div style={{
                   position: "absolute", left: -20, top: 4, width: 10, height: 10,
                   borderRadius: "50%",
-                  background: event.type === "review" ? COLORS.accent :
-                    event.type === "comment" ? COLORS.info :
-                    event.type === "commit" ? COLORS.success :
-                    event.type === "ci_run" ? COLORS.warning : COLORS.textMuted,
+                  background: activityColor(event),
                   border: `2px solid ${COLORS.pageBg}`,
                 }} />
                 <div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
                     <span style={{ fontFamily: MONO_FONT, fontSize: 11, fontWeight: 600, color: COLORS.textPrimary }}>{event.author}</span>
-                    <span style={inlineBadge(
-                      event.type === "review" ? COLORS.accent :
-                      event.type === "comment" ? COLORS.info :
-                      event.type === "ci_run" ? COLORS.warning : COLORS.textMuted,
-                    )}>
-                      {event.type === "review" ? (event.metadata?.state as string ?? "REVIEW").toUpperCase() : event.type.toUpperCase()}
+                    <span style={inlineBadge(activityColor(event))}>
+                      {activityLabel(event)}
                     </span>
+                    {event.type === "review" && typeof event.metadata?.state === "string" ? (
+                      <span style={inlineBadge(COLORS.textSecondary)}>{String(event.metadata.state).replace(/_/g, " ")}</span>
+                    ) : null}
+                    {event.type === "comment" && typeof event.metadata?.path === "string" ? (
+                      <span style={inlineBadge(COLORS.textSecondary)}>
+                        {String(event.metadata.path)}{typeof event.metadata?.line === "number" ? `:${event.metadata.line}` : ""}
+                      </span>
+                    ) : null}
                     <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>{formatTs(event.timestamp)}</span>
                   </div>
                   {event.body && (
-                    <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>
-                      {event.body}
+                    <div>
+                      <MarkdownBody markdown={event.body} />
                     </div>
                   )}
                 </div>

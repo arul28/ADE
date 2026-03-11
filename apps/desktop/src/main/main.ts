@@ -1185,13 +1185,6 @@ app.whenReady().then(async () => {
       onDagMutation: (event) => emitProjectEvent(projectRoot, IPC.orchestratorDagMutation, event)
     });
     aiOrchestratorServiceRef = aiOrchestratorService;
-    automationService?.bindMissionRuntime({
-      missionService,
-      aiOrchestratorService,
-      memoryBriefingService,
-      proceduralLearningService,
-      budgetCapService,
-    });
     try {
       missionService.processQueue();
     } catch (error) {
@@ -1242,6 +1235,13 @@ app.whenReady().then(async () => {
       logger,
       projectConfigService,
       usageTrackingService
+    });
+    automationService?.bindMissionRuntime({
+      missionService,
+      aiOrchestratorService,
+      memoryBriefingService,
+      proceduralLearningService,
+      budgetCapService,
     });
 
     void memoryLifecycleService.runStartupSweepIfDue().catch((error) => {

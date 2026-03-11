@@ -10,6 +10,7 @@ import { EmptyState } from "../../ui/EmptyState";
 import { PrConflictBadge } from "../PrConflictBadge";
 import { PrDetailPane } from "../detail/PrDetailPane";
 import { usePrs } from "../state/PrsContext";
+import { IntegrationPrContextPanel } from "../shared/IntegrationPrContextPanel";
 import { COLORS, MONO_FONT, LABEL_STYLE, outlineButton } from "../../lanes/laneDesignTokens";
 import { getPrChecksBadge, getPrReviewsBadge, getPrStateBadge, InlinePrBadge } from "../shared/prVisuals";
 
@@ -52,7 +53,7 @@ type NormalTabProps = {
   onRefresh: () => Promise<void>;
 };
 
-export function NormalTab({ prs, lanes, mergeContextByPrId: _ctx, mergeMethod, selectedPrId, onSelectPr, onRefresh }: NormalTabProps) {
+export function NormalTab({ prs, lanes, mergeContextByPrId, mergeMethod, selectedPrId, onSelectPr, onRefresh }: NormalTabProps) {
   const navigate = useNavigate();
   const laneById = React.useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
   const {
@@ -65,6 +66,15 @@ export function NormalTab({ prs, lanes, mergeContextByPrId: _ctx, mergeMethod, s
   const listRef = React.useRef<HTMLDivElement>(null);
 
   const selectedPr = React.useMemo(() => prs.find((p) => p.id === selectedPrId) ?? null, [prs, selectedPrId]);
+  const selectedMergeContext = React.useMemo(
+    () => (selectedPr ? mergeContextByPrId[selectedPr.id] ?? null : null),
+    [mergeContextByPrId, selectedPr],
+  );
+  const showIntegrationContext = Boolean(
+    selectedPr
+    && selectedMergeContext?.groupType === "integration"
+    && selectedMergeContext.integrationLaneId,
+  );
 
   // Auto-select first PR
   React.useEffect(() => {
@@ -284,20 +294,42 @@ export function NormalTab({ prs, lanes, mergeContextByPrId: _ctx, mergeMethod, s
       {/* ==== RIGHT: PR DETAIL ==== */}
       <div style={{ flex: 1, minWidth: 0 }}>
         {selectedPr ? (
-          <PrDetailPane
-            pr={selectedPr}
-            status={detailStatus}
-            checks={detailChecks}
-            reviews={detailReviews}
-            comments={detailComments}
-            detailBusy={detailBusy}
-            lanes={lanes}
-            mergeMethod={mergeMethod}
-            onRefresh={onRefresh}
-            onNavigate={(path) => navigate(path)}
-            onTabChange={(tab) => setActiveTab(tab as "normal" | "queue" | "integration" | "rebase")}
-            onShowInGraph={(laneId) => navigate(`/graph?focusLane=${encodeURIComponent(laneId)}`)}
-          />
+          <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+            {showIntegrationContext && selectedMergeContext ? (
+              <div style={{ padding: 16, paddingBottom: 0, background: COLORS.pageBg, borderBottom: `1px solid ${COLORS.border}` }}>
+                <IntegrationPrContextPanel
+                  pr={selectedPr}
+                  lanes={lanes}
+                  mergeContext={selectedMergeContext}
+                  actions={(
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("integration")}
+                      style={outlineButton({ height: 28, padding: "0 10px", color: COLORS.accent, borderColor: `${COLORS.accent}40` })}
+                    >
+                      OPEN INTEGRATION VIEW
+                    </button>
+                  )}
+                />
+              </div>
+            ) : null}
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <PrDetailPane
+                pr={selectedPr}
+                status={detailStatus}
+                checks={detailChecks}
+                reviews={detailReviews}
+                comments={detailComments}
+                detailBusy={detailBusy}
+                lanes={lanes}
+                mergeMethod={mergeMethod}
+                onRefresh={onRefresh}
+                onNavigate={(path) => navigate(path)}
+                onTabChange={(tab) => setActiveTab(tab as "normal" | "queue" | "integration" | "rebase")}
+                onShowInGraph={(laneId) => navigate(`/graph?focusLane=${encodeURIComponent(laneId)}`)}
+              />
+            </div>
+          </div>
         ) : (
           <div style={{ display: "flex", height: "100%", alignItems: "center", justifyContent: "center", background: COLORS.pageBg }}>
             <EmptyState title="No PR selected" description="Select a PR to view details, checks, comments, and merge workflow." />

@@ -261,15 +261,8 @@ export type GraphLayoutSnapshot = {
   updatedAt: string;
 };
 
-export type GraphLayoutPreset = {
-  name: string;
-  byViewMode: Record<GraphViewMode, GraphLayoutSnapshot>;
-  updatedAt: string;
-};
-
 export type GraphPersistedState = {
-  presets: GraphLayoutPreset[];
-  activePreset: string;
+  lastViewMode: GraphViewMode;
 };
 
 // --- Lane Environment Init args (Phase 5 W1) ---

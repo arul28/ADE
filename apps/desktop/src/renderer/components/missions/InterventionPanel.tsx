@@ -1,5 +1,5 @@
 import { useMemo, useState, useCallback, useEffect } from "react";
-import { Clock, WarningCircle, Check, X } from "@phosphor-icons/react";
+import { Clock, WarningCircle, Check, X, Copy, Eye } from "@phosphor-icons/react";
 import type { MissionIntervention, ClarificationQuestion } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton } from "../lanes/laneDesignTokens";
 import { useMissionsStore } from "./useMissionsStore";
@@ -27,6 +27,43 @@ function isBlockingManualInputIntervention(intervention: MissionIntervention): b
   return intervention.metadata?.canProceedWithoutAnswer !== true;
 }
 
+function isSystemLaunchFailureIntervention(intervention: MissionIntervention): boolean {
+  return intervention.metadata?.reasonCode === "mission_launch_failed";
+}
+
+function interventionPriority(intervention: MissionIntervention): number {
+  if (isBlockingManualInputIntervention(intervention)) return 300;
+  if (isSystemLaunchFailureIntervention(intervention)) return 200;
+  if (
+    intervention.metadata?.reasonCode === "coordinator_unavailable"
+    || intervention.metadata?.reasonCode === "coordinator_recovery_failed"
+  ) {
+    return 100;
+  }
+  return 0;
+}
+
+function buildTechnicalDetails(intervention: MissionIntervention): string[] {
+  const details: string[] = [];
+  const metadata = isRecord(intervention.metadata) ? intervention.metadata : null;
+  if (!metadata) return details;
+
+  const failureStageLabel =
+    typeof metadata.failureStageLabel === "string" && metadata.failureStageLabel.trim().length > 0
+      ? metadata.failureStageLabel.trim()
+      : typeof metadata.failureStage === "string" && metadata.failureStage.trim().length > 0
+        ? metadata.failureStage.trim()
+        : "";
+  const rootError = typeof metadata.rootError === "string" ? metadata.rootError.trim() : "";
+  const coordinatorState = typeof metadata.coordinatorState === "string" ? metadata.coordinatorState.trim() : "";
+
+  if (failureStageLabel) details.push(`Stage: ${failureStageLabel}`);
+  if (rootError) details.push(`Error: ${rootError}`);
+  if (coordinatorState) details.push(`Coordinator: ${coordinatorState.replace(/_/g, " ")}`);
+
+  return details;
+}
+
 export { isQuizIntervention, isBlockingManualInputIntervention };
 
 /* ════════════════════ INTERVENTION PANEL (VAL-UX-005) ════════════════════ */
@@ -46,7 +83,11 @@ export function InterventionPanel({ compact }: { compact: boolean }) {
     () =>
       (selectedMission?.interventions.filter((i) => i.status === "open") ?? [])
         .slice()
-        .sort((left, right) => Date.parse(right.updatedAt || right.createdAt) - Date.parse(left.updatedAt || left.createdAt)),
+        .sort((left, right) => {
+          const priorityDelta = interventionPriority(right) - interventionPriority(left);
+          if (priorityDelta !== 0) return priorityDelta;
+          return Date.parse(right.updatedAt || right.createdAt) - Date.parse(left.updatedAt || left.createdAt);
+        }),
     [selectedMission],
   );
 
@@ -160,11 +201,41 @@ function InterventionCard({
   remainingOpenCount: number;
 }) {
   const isBlocking = isBlockingManualInputIntervention(intervention);
+  const isSystemLaunchFailure = isSystemLaunchFailureIntervention(intervention);
   const borderColor = isBlocking ? COLORS.warning : COLORS.accentBorder;
   const iconColor = isBlocking ? COLORS.warning : COLORS.accent;
   const ownerLabel = getMissionInterventionOwnerLabel(intervention);
+  const technicalDetails = buildTechnicalDetails(intervention);
+  const stackTrace = typeof intervention.metadata?.rootErrorStack === "string"
+    ? intervention.metadata.rootErrorStack.trim()
+    : "";
+  const canRespondInline = intervention.interventionType === "manual_input";
 
   const typeLabel = intervention.interventionType.replace(/_/g, " ");
+
+  const handleViewDetails = useCallback(() => {
+    const s = useMissionsStore.getState();
+    s.setLogsFocusInterventionId(intervention.id);
+    s.setActiveTab("history");
+  }, [intervention.id]);
+
+  const handleCopyError = useCallback(async () => {
+    const parts = [
+      intervention.title,
+      intervention.body,
+      ...technicalDetails,
+      stackTrace,
+      intervention.requestedAction ? `Requested action: ${intervention.requestedAction}` : "",
+    ].filter((entry) => entry.trim().length > 0);
+    const text = parts.join("\n\n");
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      }
+    } catch {
+      // Ignore clipboard failures in the inline panel.
+    }
+  }, [intervention.body, intervention.requestedAction, intervention.title, stackTrace, technicalDetails]);
 
   return (
     <div
@@ -255,6 +326,70 @@ function InterventionCard({
         {intervention.body}
       </div>
 
+      {technicalDetails.length > 0 ? (
+        <div
+          style={{
+            marginTop: 8,
+            padding: compact ? "6px 8px" : "8px 10px",
+            background: COLORS.recessedBg,
+            border: `1px solid ${COLORS.outlineBorder}`,
+          }}
+        >
+          <div
+            style={{
+              fontFamily: MONO_FONT,
+              fontSize: 9,
+              fontWeight: 700,
+              textTransform: "uppercase",
+              letterSpacing: "0.8px",
+              color: COLORS.textDim,
+              marginBottom: 4,
+            }}
+          >
+            Technical details
+          </div>
+          <div
+            style={{
+              fontFamily: MONO_FONT,
+              fontSize: compact ? 10 : 11,
+              lineHeight: "1.5",
+              color: COLORS.textPrimary,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+            }}
+          >
+            {technicalDetails.join("\n")}
+          </div>
+          {stackTrace ? (
+            <details style={{ marginTop: 6 }}>
+              <summary
+                style={{
+                  cursor: "pointer",
+                  fontFamily: MONO_FONT,
+                  fontSize: 9,
+                  color: COLORS.textDim,
+                }}
+              >
+                Stack trace
+              </summary>
+              <pre
+                style={{
+                  marginTop: 6,
+                  fontFamily: MONO_FONT,
+                  fontSize: 10,
+                  lineHeight: "1.4",
+                  color: COLORS.textSecondary,
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                }}
+              >
+                {stackTrace}
+              </pre>
+            </details>
+          ) : null}
+        </div>
+      ) : null}
+
       {intervention.requestedAction ? (
         <div
           style={{
@@ -308,7 +443,7 @@ function InterventionCard({
       ) : null}
 
       {/* Response input — only for manual_input type */}
-      {intervention.interventionType === "manual_input" && (
+      {canRespondInline && (
         <div style={{ marginTop: 8 }}>
           <textarea
             value={responseText}
@@ -332,23 +467,48 @@ function InterventionCard({
 
       {/* Action buttons */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
-        <button
-          style={primaryButton({ height: 28, padding: "0 12px", fontSize: 10 })}
-          onClick={() => void onResolve(intervention.id)}
-          disabled={busy}
-        >
-          <Check size={12} />
-          RESOLVE
-        </button>
-        {!isBlocking && (
-          <button
-            style={outlineButton({ height: 28, padding: "0 12px", fontSize: 10 })}
-            onClick={() => void onDismiss(intervention.id)}
-            disabled={busy}
-          >
-            <X size={12} />
-            DISMISS
-          </button>
+        {canRespondInline ? (
+          <>
+            <button
+              style={primaryButton({ height: 28, padding: "0 12px", fontSize: 10 })}
+              onClick={() => void onResolve(intervention.id)}
+              disabled={busy}
+            >
+              <Check size={12} />
+              RESOLVE
+            </button>
+            {!isBlocking && (
+              <button
+                style={outlineButton({ height: 28, padding: "0 12px", fontSize: 10 })}
+                onClick={() => void onDismiss(intervention.id)}
+                disabled={busy}
+              >
+                <X size={12} />
+                DISMISS
+              </button>
+            )}
+          </>
+        ) : (
+          <>
+            <button
+              style={primaryButton({ height: 28, padding: "0 12px", fontSize: 10 })}
+              onClick={handleViewDetails}
+              disabled={busy}
+            >
+              <Eye size={12} />
+              VIEW DETAILS
+            </button>
+            {isSystemLaunchFailure ? (
+              <button
+                style={outlineButton({ height: 28, padding: "0 12px", fontSize: 10 })}
+                onClick={() => void handleCopyError()}
+                disabled={busy}
+              >
+                <Copy size={12} />
+                COPY ERROR
+              </button>
+            ) : null}
+          </>
         )}
       </div>
     </div>

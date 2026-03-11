@@ -581,6 +581,15 @@ function migrate(db: Database) {
     )
   `);
   db.run("create index if not exists idx_integration_proposals_project on integration_proposals(project_id)");
+  try { db.run("alter table integration_proposals add column linked_group_id text"); } catch {}
+  try { db.run("alter table integration_proposals add column linked_pr_id text"); } catch {}
+  try { db.run("alter table integration_proposals add column workflow_display_state text not null default 'active'"); } catch {}
+  try { db.run("alter table integration_proposals add column cleanup_state text not null default 'none'"); } catch {}
+  try { db.run("alter table integration_proposals add column closed_at text"); } catch {}
+  try { db.run("alter table integration_proposals add column merged_at text"); } catch {}
+  try { db.run("alter table integration_proposals add column completed_at text"); } catch {}
+  try { db.run("alter table integration_proposals add column cleanup_declined_at text"); } catch {}
+  try { db.run("alter table integration_proposals add column cleanup_completed_at text"); } catch {}
 
   // Queue landing state table (crash recovery for sequential landing)
   db.run(`

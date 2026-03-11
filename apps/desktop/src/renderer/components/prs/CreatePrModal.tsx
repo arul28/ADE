@@ -49,9 +49,9 @@ const MERGE_METHODS: { id: MergeMethod; label: string; desc: string }[] = [
 ];
 
 const MODES: { id: CreateMode; label: string; icon: React.ElementType; desc: string }[] = [
-  { id: "normal", label: "Normal PR", icon: GitPullRequest, desc: "Single lane creates one PR." },
-  { id: "queue", label: "Queue PRs", icon: Layers, desc: "Multiple lanes targeting the same branch, landed sequentially." },
-  { id: "integration", label: "Integration PR", icon: GitMerge, desc: "Merge multiple lanes into one integration branch, then open a PR." },
+  { id: "normal", label: "Single PR", icon: GitPullRequest, desc: "Single lane creates one PR." },
+  { id: "queue", label: "Queue workflow", icon: Layers, desc: "Multiple lanes targeting the same branch, landed sequentially." },
+  { id: "integration", label: "Integration workflow", icon: GitMerge, desc: "Merge multiple lanes into one integration branch, then open a PR." },
 ];
 
 /* ── label style helper ────────────────────────────────────────────── */
@@ -555,7 +555,7 @@ export function CreatePrModal({
         }
         await window.ade.prs.updateProposal({
           proposalId: proposal.proposalId,
-          title: integrationTitle || "Integration PR",
+          title: integrationTitle || "Integration workflow",
           body: integrationBody,
           draft: integrationDraft,
           integrationLaneName: integrationName || `integration/${Date.now().toString(36)}`,
@@ -1562,7 +1562,7 @@ export function CreatePrModal({
                         value={integrationTitle}
                         onChange={(e) => setIntegrationTitle(e.target.value)}
                         style={inputStyle}
-                        placeholder="Integration PR"
+                        placeholder="Integration workflow"
                         onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
                         onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
                       />

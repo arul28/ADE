@@ -867,6 +867,7 @@ async function createFixture(args: {
   aiIntegrationService?: any;
   laneService?: any;
   agentChatService?: any;
+  missionMemoryLifecycleService?: any;
   orchestratorConfig?: Record<string, unknown>;
   logger?: any;
   hookCommandRunner?: any;
@@ -1084,6 +1085,7 @@ async function createFixture(args: {
     laneService,
     projectConfigService,
     aiIntegrationService,
+    missionMemoryLifecycleService: args.missionMemoryLifecycleService ?? null,
     projectRoot,
     hookCommandRunner: args.hookCommandRunner
   });
@@ -1151,6 +1153,106 @@ describe("aiOrchestratorService", () => {
       const refreshed = fixture.missionService.get(mission.id);
       expect(refreshed?.status).toBe("in_progress");
       expect(fixture.orchestratorService.listRuns({ missionId: mission.id }).length).toBe(1);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("initializes mission memory with the resolved mission project id during launch", async () => {
+    const missionMemoryLifecycleService = {
+      startMission: vi.fn(),
+    };
+    const fixture = await createFixture({ missionMemoryLifecycleService });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Start mission memory cleanly.",
+        laneId: fixture.laneId,
+      });
+
+      const launched = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "autopilot",
+        defaultExecutorKind: "unified",
+      });
+
+      expect(launched.started).toBeTruthy();
+      expect(missionMemoryLifecycleService.startMission).toHaveBeenCalledWith({
+        projectId: fixture.projectId,
+        missionId: mission.id,
+        runId: launched.started?.run.id,
+        initialDecision: mission.prompt ?? mission.title,
+      });
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("records a single mission launch failure and suppresses follow-on coordinator unavailable noise", async () => {
+    const missionMemoryLifecycleService = {
+      startMission: vi.fn(() => {
+        throw new Error("Mission memory boot failed.");
+      }),
+    };
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const fixture = await createFixture({ missionMemoryLifecycleService, logger });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Fail during mission launch before coordinator startup.",
+        laneId: fixture.laneId,
+      });
+
+      await expect(
+        fixture.aiOrchestratorService.startMissionRun({
+          missionId: mission.id,
+          runMode: "autopilot",
+          defaultExecutorKind: "unified",
+        })
+      ).rejects.toThrow("Mission memory boot failed.");
+
+      const run = fixture.orchestratorService.listRuns({ missionId: mission.id })[0];
+      expect(run).toBeTruthy();
+
+      const refreshedMission = fixture.missionService.get(mission.id);
+      const openInterventions = refreshedMission?.interventions.filter((entry) => entry.status === "open") ?? [];
+      expect(openInterventions).toHaveLength(1);
+      expect(openInterventions[0]?.interventionType).toBe("unrecoverable_error");
+      expect(openInterventions[0]?.title).toBe("Mission launch failed");
+      expect(openInterventions[0]?.metadata).toMatchObject({
+        runId: run?.id,
+        reasonCode: "mission_launch_failed",
+        failureStage: "memory_init",
+        rootError: "Mission memory boot failed.",
+        coordinatorState: "not_started",
+      });
+
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-run-updated",
+        runId: run!.id,
+        at: new Date().toISOString(),
+        reason: "status_updated",
+      } as any);
+
+      const postEventMission = fixture.missionService.get(mission.id);
+      const postEventInterventions = postEventMission?.interventions.filter((entry) => entry.status === "open") ?? [];
+      expect(postEventInterventions).toHaveLength(1);
+      expect(postEventInterventions[0]?.metadata).toMatchObject({
+        reasonCode: "mission_launch_failed",
+      });
+      expect(logger.info).toHaveBeenCalledWith(
+        "ai_orchestrator.coordinator_unavailable_suppressed",
+        expect.objectContaining({
+          eventType: "orchestrator-run-updated",
+          runId: run?.id,
+          missionId: mission.id,
+          reason: "status_updated",
+          failureStage: "memory_init",
+        })
+      );
     } finally {
       fixture.dispose();
     }
@@ -2780,6 +2882,63 @@ describe("aiOrchestratorService", () => {
         && String((entry.payload as Record<string, unknown> | null)?.interventionId ?? "") === intervention.id
       );
       expect(resolvedEvent).toBeTruthy();
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("prefers mission launch failures over later coordinator-unavailable interventions in run view", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Show the root launch failure first.",
+        laneId: fixture.laneId,
+      });
+
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [],
+      });
+      fixture.missionService.update({
+        missionId: mission.id,
+        status: "in_progress",
+      });
+      fixture.missionService.addIntervention({
+        missionId: mission.id,
+        interventionType: "unrecoverable_error",
+        title: "Mission launch failed",
+        body: "ADE could not finish mission launch during mission memory initialization.",
+        requestedAction: "Fix launch and restart.",
+        metadata: {
+          runId: started.run.id,
+          reasonCode: "mission_launch_failed",
+          failureStage: "memory_init",
+          failureStageLabel: "mission memory initialization",
+          rootError: "Wrong API use : tried to bind a value of an unknown type (undefined).",
+          coordinatorState: "not_started",
+        },
+      });
+      fixture.missionService.addIntervention({
+        missionId: mission.id,
+        interventionType: "failed_step",
+        title: "Coordinator unavailable",
+        body: "Coordinator agent is not available for this run.",
+        requestedAction: "Resume after coordinator runtime is healthy.",
+        metadata: {
+          runId: started.run.id,
+          reasonCode: "coordinator_unavailable",
+        },
+      });
+
+      const runView = await fixture.aiOrchestratorService.getRunView({
+        missionId: mission.id,
+        runId: started.run.id,
+      });
+
+      expect(runView?.haltReason?.title).toBe("Mission launch failed");
+      expect(runView?.haltReason?.detail).toContain("Launch failed during mission memory initialization");
+      expect(runView?.haltReason?.detail).toContain("Wrong API use");
+      expect(runView?.haltReason?.severity).toBe("error");
     } finally {
       fixture.dispose();
     }

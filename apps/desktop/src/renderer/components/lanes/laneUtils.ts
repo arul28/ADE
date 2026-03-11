@@ -137,13 +137,15 @@ export const LANES_TILING_TREE: PaneSplit = {
           { node: { type: "pane", id: "diff-viewer" }, defaultSize: 50, minSize: 15 }
         ]
       },
-      defaultSize: 20,
-      minSize: 12
+      defaultSize: 15,
+      minSize: 10
     },
-    { node: { type: "pane", id: "work" }, defaultSize: 45, minSize: 25 },
-    { node: { type: "pane", id: "git-actions" }, defaultSize: 35, minSize: 20 }
+    { node: { type: "pane", id: "work" }, defaultSize: 30, minSize: 18 },
+    { node: { type: "pane", id: "git-actions" }, defaultSize: 55, minSize: 28 }
   ]
 };
+
+export const LANES_TILING_LAYOUT_VERSION = "v5";
 
 export const GIT_ACTIONS_FULLSCREEN_TREE: PaneSplit = {
   type: "split",

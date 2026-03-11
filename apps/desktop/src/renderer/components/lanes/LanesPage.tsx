@@ -26,6 +26,7 @@ import {
   laneMatchesFilter,
   chipLabel,
   LANES_TILING_TREE,
+  LANES_TILING_LAYOUT_VERSION,
   GIT_ACTIONS_FULLSCREEN_TREE,
   RESIZE_TARGET_MINIMUM_SIZE,
   EMPTY_LANE_PANE_DETAIL,
@@ -1646,7 +1647,7 @@ export function LanesPage() {
         </div>
       ) : visibleLaneIds.length === 1 ? (
         <PaneTilingLayout
-          layoutId={`lanes:tiling:v4:${visibleLaneIds[0]}`}
+          layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}:${visibleLaneIds[0]}`}
           tree={LANES_TILING_TREE}
           panes={getPaneConfigs(visibleLaneIds[0] ?? null)}
           className="flex-1 min-h-0"
@@ -1665,7 +1666,7 @@ export function LanesPage() {
               <Fragment key={laneId}>
                 <Panel id={`lane-column:${laneId}`} minSize="18%" defaultSize={`${defaultSize}%`} className="min-h-0 min-w-0">
                   <PaneTilingLayout
-                    layoutId={`lanes:tiling:v4:${laneId}`}
+                    layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}:${laneId}`}
                     tree={LANES_TILING_TREE}
                     panes={getPaneConfigs(laneId)}
                     className="h-full min-h-0"
@@ -1704,7 +1705,7 @@ export function LanesPage() {
             </button>
           </div>
           <PaneTilingLayout
-            layoutId={`lanes:tiling:v4:${expandedLaneId}`}
+            layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}:${expandedLaneId}`}
             tree={LANES_TILING_TREE}
             panes={getPaneConfigs(expandedLaneId)}
             className="flex-1 min-h-0"

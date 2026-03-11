@@ -1,11 +1,16 @@
 import type {
   GraphFilterState,
-  GraphLayoutPreset,
   GraphLayoutSnapshot,
   GraphPersistedState,
   GraphViewMode,
   LaneSummary
 } from "../../../shared/types";
+
+export type GraphSessionState = Record<GraphViewMode, GraphLayoutSnapshot>;
+
+function isGraphViewMode(value: unknown): value is GraphViewMode {
+  return value === "stack" || value === "risk" || value === "activity" || value === "all";
+}
 
 export function buildDefaultFilter(): GraphFilterState {
   return {
@@ -30,51 +35,64 @@ export function createSnapshot(viewMode: GraphViewMode): GraphLayoutSnapshot {
   };
 }
 
-export function createDefaultState(): GraphPersistedState {
-  const basePreset: GraphLayoutPreset = {
-    name: "__default__",
-    byViewMode: {
-      stack: createSnapshot("stack"),
-      risk: createSnapshot("risk"),
-      activity: createSnapshot("activity"),
-      all: createSnapshot("all")
-    },
-    updatedAt: new Date().toISOString()
-  };
+export function createSessionState(): GraphSessionState {
   return {
-    presets: [basePreset],
-    activePreset: "__default__"
+    stack: createSnapshot("stack"),
+    risk: createSnapshot("risk"),
+    activity: createSnapshot("activity"),
+    all: createSnapshot("all")
   };
 }
 
-export function ensureGraphState(state: GraphPersistedState | null | undefined): GraphPersistedState {
-  if (!state || !Array.isArray(state.presets) || state.presets.length === 0) {
-    return createDefaultState();
+export function createGraphPreferences(lastViewMode: GraphViewMode = "all"): GraphPersistedState {
+  return { lastViewMode };
+}
+
+function readLegacyLastViewMode(state: Record<string, unknown>): GraphViewMode | null {
+  if (isGraphViewMode(state.viewMode)) return state.viewMode;
+  if (!Array.isArray(state.presets)) return null;
+  const presets = state.presets.filter((preset): preset is Record<string, unknown> => Boolean(preset) && typeof preset === "object");
+  if (presets.length === 0) return null;
+  const activePresetName = typeof state.activePreset === "string" ? state.activePreset : null;
+  const activePreset = presets.find((preset) => preset.name === activePresetName) ?? presets[0] ?? null;
+  if (!activePreset) return null;
+  const byViewMode = activePreset.byViewMode;
+  if (!byViewMode || typeof byViewMode !== "object") return null;
+  for (const mode of ["all", "stack", "risk", "activity"] as const) {
+    const snapshot = (byViewMode as Record<string, unknown>)[mode];
+    if (snapshot && typeof snapshot === "object") {
+      const candidate = (snapshot as Record<string, unknown>).viewMode;
+      if (isGraphViewMode(candidate)) return candidate;
+    }
   }
-  const validPreset = state.presets.find((preset) => preset.name === state.activePreset) ?? state.presets[0]!;
-  const normalizeSnapshot = (viewMode: GraphViewMode): GraphLayoutSnapshot => {
-    const existing = validPreset.byViewMode?.[viewMode];
-    if (!existing) return createSnapshot(viewMode);
-    return {
-      nodePositions: existing.nodePositions ?? {},
-      collapsedLaneIds: existing.collapsedLaneIds ?? [],
-      viewMode,
-      filters: existing.filters ?? buildDefaultFilter(),
-      updatedAt: existing.updatedAt ?? new Date().toISOString()
-    };
-  };
+  return null;
+}
+
+export function normalizeGraphPreferences(state: unknown): {
+  preferences: GraphPersistedState;
+  migrated: boolean;
+} {
+  if (state && typeof state === "object") {
+    const record = state as Record<string, unknown>;
+    if (isGraphViewMode(record.lastViewMode)) {
+      return {
+        preferences: createGraphPreferences(record.lastViewMode),
+        migrated: false
+      };
+    }
+
+    const legacyViewMode = readLegacyLastViewMode(record);
+    if (legacyViewMode) {
+      return {
+        preferences: createGraphPreferences(legacyViewMode),
+        migrated: true
+      };
+    }
+  }
+
   return {
-    activePreset: validPreset.name,
-    presets: state.presets.map((preset) => ({
-      name: preset.name,
-      updatedAt: preset.updatedAt ?? new Date().toISOString(),
-      byViewMode: {
-        stack: preset.byViewMode?.stack ? { ...normalizeSnapshot("stack"), ...preset.byViewMode.stack, viewMode: "stack" } : createSnapshot("stack"),
-        risk: preset.byViewMode?.risk ? { ...normalizeSnapshot("risk"), ...preset.byViewMode.risk, viewMode: "risk" } : createSnapshot("risk"),
-        activity: preset.byViewMode?.activity ? { ...normalizeSnapshot("activity"), ...preset.byViewMode.activity, viewMode: "activity" } : createSnapshot("activity"),
-        all: preset.byViewMode?.all ? { ...normalizeSnapshot("all"), ...preset.byViewMode.all, viewMode: "all" } : createSnapshot("all")
-      }
-    }))
+    preferences: createGraphPreferences(),
+    migrated: Boolean(state)
   };
 }
 

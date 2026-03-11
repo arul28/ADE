@@ -91,12 +91,17 @@ import type {
   CreateQueuePrsArgs,
   CreateQueuePrsResult,
   CommitIntegrationArgs,
+  CleanupIntegrationWorkflowArgs,
+  CleanupIntegrationWorkflowResult,
   DeleteIntegrationProposalArgs,
   DeleteIntegrationProposalResult,
   DeletePrArgs,
   DeletePrResult,
+  DismissIntegrationCleanupArgs,
+  GitHubPrSnapshot,
   IntegrationProposal,
   IntegrationResolutionState,
+  ListIntegrationWorkflowsArgs,
   CreateIntegrationLaneForProposalArgs,
   CreateIntegrationLaneForProposalResult,
   StartIntegrationResolutionArgs,
@@ -1827,22 +1832,30 @@ export function registerIpc({
           });
         } catch (error) {
           const message = getErrorMessage(error);
+          const launchFailure = error instanceof Error && isRecord((error as Record<string, unknown>).missionLaunchFailure)
+            ? ((error as Record<string, unknown>).missionLaunchFailure as Record<string, unknown>)
+            : null;
           ctx.logger.warn("missions.autostart_failed", {
             missionId: created.id,
             runMode,
             defaultExecutorKind,
-            error: message
+            error: message,
+            failureStage: typeof launchFailure?.failureStage === "string" ? launchFailure.failureStage : null,
+            runId: typeof launchFailure?.runId === "string" ? launchFailure.runId : null,
+            rootErrorStack: typeof launchFailure?.rootErrorStack === "string" ? launchFailure.rootErrorStack : null,
           });
-          try {
-            ctx.missionService.addIntervention({
-              missionId: created.id,
-              interventionType: "policy_block",
-              title: "Mission launch requires action",
-              body: `Automatic run launch failed: ${message}`,
-              requestedAction: "Review planner/runtime configuration and retry the blocked step."
-            });
-          } catch {
-            // ignore best-effort intervention creation
+          if (!launchFailure) {
+            try {
+              ctx.missionService.addIntervention({
+                missionId: created.id,
+                interventionType: "policy_block",
+                title: "Mission launch requires action",
+                body: `Automatic run launch failed: ${message}`,
+                requestedAction: "Review planner/runtime configuration and retry the blocked step."
+              });
+            } catch {
+              // ignore best-effort intervention creation
+            }
           }
         }
       })();
@@ -3640,6 +3653,10 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsListWithConflicts, async () => getCtx().prService.listWithConflicts());
 
+  ipcMain.handle(IPC.prsGetGitHubSnapshot, async (): Promise<GitHubPrSnapshot> =>
+    await getCtx().prService.getGithubSnapshot()
+  );
+
   ipcMain.handle(IPC.prsCreateQueue, async (_event, arg: CreateQueuePrsArgs): Promise<CreateQueuePrsResult> => {
     const ctx = getCtx();
     const created = await ctx.prService.createQueuePrs(arg);
@@ -3666,12 +3683,24 @@ export function registerIpc({
     await getCtx().prService.listIntegrationProposals(),
   );
 
+  ipcMain.handle(IPC.prsListIntegrationWorkflows, async (_event, arg: ListIntegrationWorkflowsArgs = {}): Promise<IntegrationProposal[]> =>
+    await getCtx().prService.listIntegrationWorkflows(arg),
+  );
+
   ipcMain.handle(IPC.prsUpdateProposal, async (_event, arg: UpdateIntegrationProposalArgs): Promise<void> =>
     getCtx().prService.updateIntegrationProposal(arg),
   );
 
   ipcMain.handle(IPC.prsDeleteProposal, async (_event, arg: DeleteIntegrationProposalArgs): Promise<DeleteIntegrationProposalResult> =>
     await getCtx().prService.deleteIntegrationProposal(arg),
+  );
+
+  ipcMain.handle(IPC.prsDismissIntegrationCleanup, async (_event, arg: DismissIntegrationCleanupArgs): Promise<IntegrationProposal> =>
+    await getCtx().prService.dismissIntegrationCleanup(arg),
+  );
+
+  ipcMain.handle(IPC.prsCleanupIntegrationWorkflow, async (_event, arg: CleanupIntegrationWorkflowArgs): Promise<CleanupIntegrationWorkflowResult> =>
+    await getCtx().prService.cleanupIntegrationWorkflow(arg),
   );
 
   ipcMain.handle(IPC.prsLandQueueNext, async (_event, arg: LandQueueNextArgs): Promise<LandResult> => {

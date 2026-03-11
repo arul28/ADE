@@ -88,12 +88,37 @@ type QueueTabProps = {
   lanes: LaneSummary[];
   mergeContextByPrId: Record<string, PrMergeContext>;
   mergeMethod: MergeMethod;
+  workflowView?: "active" | "history";
   selectedGroupId: string | null;
   onSelectGroup: (id: string | null) => void;
   onRefresh: () => Promise<void>;
 };
 
-export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selectedGroupId, onSelectGroup, onRefresh }: QueueTabProps) {
+function getQueueWorkflowBucket(group: QueueGroup): "active" | "history" {
+  if (group.landingState && (group.landingState.state === "completed" || group.landingState.state === "cancelled")) {
+    return "history";
+  }
+  if (group.rehearsalState && (
+    group.rehearsalState.state === "completed"
+    || group.rehearsalState.state === "failed"
+    || group.rehearsalState.state === "cancelled"
+  )) {
+    return group.landingState ? "active" : "history";
+  }
+  const hasOpenMembers = group.members.some((member) => member.pr?.state === "open" || member.pr?.state === "draft");
+  return hasOpenMembers ? "active" : "history";
+}
+
+export function QueueTab({
+  prs,
+  lanes,
+  mergeContextByPrId,
+  mergeMethod,
+  workflowView = "active",
+  selectedGroupId,
+  onSelectGroup,
+  onRefresh,
+}: QueueTabProps) {
   const laneById = React.useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
   const {
     rebaseNeeds,
@@ -198,7 +223,15 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
     return [...groupMap.values()];
   }, [prs, mergeContextByPrId, laneById, queueStates, queueRehearsals]);
 
-  const selectedGroup = React.useMemo(() => queueGroups.find((g) => g.groupId === selectedGroupId) ?? null, [queueGroups, selectedGroupId]);
+  const visibleQueueGroups = React.useMemo(
+    () => queueGroups.filter((group) => getQueueWorkflowBucket(group) === workflowView),
+    [queueGroups, workflowView],
+  );
+
+  const selectedGroup = React.useMemo(
+    () => visibleQueueGroups.find((g) => g.groupId === selectedGroupId) ?? null,
+    [visibleQueueGroups, selectedGroupId]
+  );
 
   React.useEffect(() => {
     if (selectedGroup?.landingState) {
@@ -214,10 +247,10 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
 
   // Auto-select first group (guard against no-op updates when list is empty and nothing selected)
   React.useEffect(() => {
-    if (queueGroups.length === 0 && selectedGroupId === null) return;
-    if (selectedGroupId && queueGroups.some((g) => g.groupId === selectedGroupId)) return;
-    onSelectGroup(queueGroups[0]?.groupId ?? null);
-  }, [queueGroups, selectedGroupId, onSelectGroup]);
+    if (visibleQueueGroups.length === 0 && selectedGroupId === null) return;
+    if (selectedGroupId && visibleQueueGroups.some((g) => g.groupId === selectedGroupId)) return;
+    onSelectGroup(visibleQueueGroups[0]?.groupId ?? null);
+  }, [visibleQueueGroups, selectedGroupId, onSelectGroup]);
 
   const handleLandNext = async () => {
     if (!selectedGroup) return;
@@ -418,11 +451,11 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
             QUEUE GROUPS
           </div>
 
-          {!queueGroups.length ? (
+          {!visibleQueueGroups.length ? (
             <EmptyState title="No queue groups" description="Create a queue to open sequential PRs across lanes for ordered landing." />
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              {queueGroups.map((group) => {
+              {visibleQueueGroups.map((group) => {
                 const isSelected = group.groupId === selectedGroupId;
                 return (
                   <button
@@ -1186,7 +1219,7 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
       ),
     },
   }), [
-    queueGroups,
+    visibleQueueGroups,
     selectedGroup,
     selectedGroupId,
     landBusy,

@@ -8,6 +8,7 @@ import type {
   ConflictRiskLevel,
   ExternalConflictResolverProvider,
 } from "./conflicts";
+import type { GitHubRepoRef } from "./git";
 
 export type PrState = "draft" | "open" | "merged" | "closed";
 export type PrChecksStatus = "pending" | "passing" | "failing" | "none";
@@ -73,6 +74,38 @@ export type PrComment = {
   line: number | null;
   createdAt: string | null;
   updatedAt: string | null;
+};
+
+export type GitHubPrListItem = {
+  id: string;
+  scope: "repo" | "external";
+  repoOwner: string;
+  repoName: string;
+  githubPrNumber: number;
+  githubUrl: string;
+  title: string;
+  state: PrState;
+  isDraft: boolean;
+  baseBranch: string | null;
+  headBranch: string | null;
+  author: string | null;
+  createdAt: string;
+  updatedAt: string;
+  linkedPrId: string | null;
+  linkedGroupId: string | null;
+  linkedLaneId: string | null;
+  linkedLaneName: string | null;
+  adeKind: "single" | "queue" | "integration" | null;
+  workflowDisplayState: IntegrationWorkflowDisplayState | null;
+  cleanupState: IntegrationCleanupState | null;
+};
+
+export type GitHubPrSnapshot = {
+  repo: GitHubRepoRef | null;
+  viewerLogin: string | null;
+  repoPullRequests: GitHubPrListItem[];
+  externalPullRequests: GitHubPrListItem[];
+  syncedAt: string;
 };
 
 export type PrEventPayload =
@@ -353,6 +386,9 @@ export type IntegrationLaneSummary = {
   diffStat: { insertions: number; deletions: number; filesChanged: number };
 };
 
+export type IntegrationWorkflowDisplayState = "active" | "history";
+export type IntegrationCleanupState = "none" | "required" | "declined" | "completed";
+
 export type IntegrationProposal = {
   proposalId: string;
   sourceLaneIds: string[];
@@ -369,6 +405,15 @@ export type IntegrationProposal = {
   integrationLaneName?: string;
   status: "proposed" | "committed";
   integrationLaneId?: string | null;
+  linkedGroupId?: string | null;
+  linkedPrId?: string | null;
+  workflowDisplayState?: IntegrationWorkflowDisplayState;
+  cleanupState?: IntegrationCleanupState;
+  closedAt?: string | null;
+  mergedAt?: string | null;
+  completedAt?: string | null;
+  cleanupDeclinedAt?: string | null;
+  cleanupCompletedAt?: string | null;
   resolutionState?: IntegrationResolutionState | null;
 };
 
@@ -387,9 +432,14 @@ export type UpdateIntegrationProposalArgs = {
   integrationLaneName?: string;
 };
 
+export type ListIntegrationWorkflowsArgs = {
+  view?: IntegrationWorkflowDisplayState | "all";
+};
+
 export type SimulateIntegrationArgs = {
   sourceLaneIds: string[];
   baseBranch: string;
+  persist?: boolean;
 };
 
 export type CommitIntegrationArgs = {
@@ -424,6 +474,24 @@ export type DeleteIntegrationProposalResult = {
   proposalId: string;
   integrationLaneId: string | null;
   deletedIntegrationLane: boolean;
+};
+
+export type DismissIntegrationCleanupArgs = {
+  proposalId: string;
+};
+
+export type CleanupIntegrationWorkflowArgs = {
+  proposalId: string;
+  archiveIntegrationLane?: boolean;
+  archiveSourceLaneIds?: string[];
+};
+
+export type CleanupIntegrationWorkflowResult = {
+  proposalId: string;
+  archivedLaneIds: string[];
+  skippedLaneIds: string[];
+  workflowDisplayState: IntegrationWorkflowDisplayState;
+  cleanupState: IntegrationCleanupState;
 };
 
 export type CreateIntegrationLaneForProposalArgs = {

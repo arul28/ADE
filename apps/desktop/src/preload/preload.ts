@@ -265,12 +265,16 @@ import type {
   SimulateIntegrationArgs,
   IntegrationProposal,
   IntegrationResolutionState,
+  ListIntegrationWorkflowsArgs,
   CreateIntegrationLaneForProposalArgs,
   CreateIntegrationLaneForProposalResult,
   StartIntegrationResolutionArgs,
   StartIntegrationResolutionResult,
   RecheckIntegrationStepArgs,
   RecheckIntegrationStepResult,
+  DismissIntegrationCleanupArgs,
+  CleanupIntegrationWorkflowArgs,
+  CleanupIntegrationWorkflowResult,
   PrAiResolutionStartArgs,
   PrAiResolutionStartResult,
   PrAiResolutionInputArgs,
@@ -284,6 +288,7 @@ import type {
   StartQueueRehearsalArgs,
   QueueLandingState,
   QueueRehearsalState,
+  GitHubPrSnapshot,
   PrConflictAnalysis,
   PrMergeContext,
   PrHealth,
@@ -1226,6 +1231,10 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.prsGetMergeContext, { prId }),
     listWithConflicts: (): Promise<PrWithConflicts[]> =>
       ipcRenderer.invoke(IPC.prsListWithConflicts),
+    getGitHubSnapshot: (): Promise<GitHubPrSnapshot> =>
+      ipcRenderer.invoke(IPC.prsGetGitHubSnapshot),
+    listIntegrationWorkflows: (args: ListIntegrationWorkflowsArgs = {}): Promise<IntegrationProposal[]> =>
+      ipcRenderer.invoke(IPC.prsListIntegrationWorkflows, args),
     createIntegrationLaneForProposal: (args: CreateIntegrationLaneForProposalArgs): Promise<CreateIntegrationLaneForProposalResult> =>
       ipcRenderer.invoke(IPC.prsCreateIntegrationLaneForProposal, args),
     startIntegrationResolution: (args: StartIntegrationResolutionArgs): Promise<StartIntegrationResolutionResult> =>
@@ -1263,7 +1272,11 @@ contextBridge.exposeInMainWorld("ade", {
     close: async (args: ClosePrArgs): Promise<void> => ipcRenderer.invoke(IPC.prsClose, args),
     reopen: async (args: ReopenPrArgs): Promise<void> => ipcRenderer.invoke(IPC.prsReopen, args),
     rerunChecks: async (args: RerunPrChecksArgs): Promise<void> => ipcRenderer.invoke(IPC.prsRerunChecks, args),
-    aiReviewSummary: async (args: AiReviewSummaryArgs): Promise<AiReviewSummary> => ipcRenderer.invoke(IPC.prsAiReviewSummary, args)
+    aiReviewSummary: async (args: AiReviewSummaryArgs): Promise<AiReviewSummary> => ipcRenderer.invoke(IPC.prsAiReviewSummary, args),
+    dismissIntegrationCleanup: async (args: DismissIntegrationCleanupArgs): Promise<IntegrationProposal> =>
+      ipcRenderer.invoke(IPC.prsDismissIntegrationCleanup, args),
+    cleanupIntegrationWorkflow: async (args: CleanupIntegrationWorkflowArgs): Promise<CleanupIntegrationWorkflowResult> =>
+      ipcRenderer.invoke(IPC.prsCleanupIntegrationWorkflow, args),
   },
   rebase: {
     scanNeeds: async (): Promise<RebaseNeed[]> => ipcRenderer.invoke(IPC.rebaseScanNeeds),

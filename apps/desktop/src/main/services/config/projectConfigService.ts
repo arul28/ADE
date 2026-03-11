@@ -1714,7 +1714,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
       ...(action.continueOnFailure != null ? { continueOnFailure: action.continueOnFailure } : {}),
       ...(action.timeoutMs != null ? { timeoutMs: action.timeoutMs } : {}),
       ...(action.retry != null ? { retry: action.retry } : {}),
-    }),
+    })),
     legacy: {
       ...(entry.trigger ? { trigger: entry.trigger } : {}),
       ...(entry.actions ? {

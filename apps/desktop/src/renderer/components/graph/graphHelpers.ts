@@ -2,6 +2,7 @@ import React from "react";
 import { Flag, Lightning, Shield, Star, Tag } from "@phosphor-icons/react";
 import type {
   ConflictStatus,
+  GraphFilterState,
   GraphStatusFilter,
   GraphViewMode,
   IntegrationProposal,
@@ -12,6 +13,24 @@ import type { GraphEdgeData, GraphNodeData, GraphPrOverlay } from "./graphTypes"
 import { getPrCiDotColor, getPrEdgeColor } from "../prs/shared/prVisuals";
 
 export const VIEW_MODES: GraphViewMode[] = ["stack", "risk", "activity", "all"];
+export const VIEW_MODE_META: Record<GraphViewMode, { label: string; helper: string }> = {
+  all: {
+    label: "Overview",
+    helper: "See the full workspace map with dependencies, environments, and active pull requests."
+  },
+  stack: {
+    label: "Dependencies",
+    helper: "Follow parent-child lane relationships and drag lanes to change how work is stacked."
+  },
+  risk: {
+    label: "Conflict Risk",
+    helper: "Highlight overlapping work and jump into the pair matrix when you need file-level conflict detail."
+  },
+  activity: {
+    label: "Activity",
+    helper: "Surface the lanes with the most recent work, sessions, and movement."
+  }
+};
 
 export const ICON_OPTIONS: Array<{ key: LaneIcon; label: string; icon: React.ReactNode }> = [
   { key: null, label: "None", icon: React.createElement("span", { className: "text-xs" }, "\u25CB") },
@@ -23,8 +42,6 @@ export const ICON_OPTIONS: Array<{ key: LaneIcon; label: string; icon: React.Rea
 ];
 
 export const COLOR_PALETTE = ["#dc2626", "#ea580c", "#ca8a04", "#16a34a", "#2563eb", "#9333ea", "#1f2937", "#f8fafc"];
-
-export const DEFAULT_PRESET = "__default__";
 
 export const BATCH_OPERATION_LABELS: Record<string, string> = {
   rebase: "Rebase",
@@ -96,6 +113,19 @@ export function laneStatusGroup(status: ConflictStatus["status"] | undefined): G
   if (status === "behind-base") return "at-risk";
   if (status === "merge-ready") return "clean";
   return "unknown";
+}
+
+export function activeGraphFilterCount(filters: GraphFilterState): number {
+  let count = 0;
+  if (filters.status.length > 0) count += 1;
+  if (filters.laneTypes.length > 0) count += 1;
+  if (filters.tags.length > 0) count += 1;
+  if (filters.hidePrimary) count += 1;
+  if (filters.hideAttached) count += 1;
+  if (filters.hideArchived !== true) count += 1;
+  if (filters.rootLaneId) count += 1;
+  if (filters.search.trim().length > 0) count += 1;
+  return count;
 }
 
 export function riskStrokeColor(level: GraphEdgeData["riskLevel"]): string {
