@@ -427,6 +427,7 @@ export const IPC = {
   ctoListAgents: "ade.cto.listAgents",
   ctoSaveAgent: "ade.cto.saveAgent",
   ctoRemoveAgent: "ade.cto.removeAgent",
+  ctoSetAgentStatus: "ade.cto.setAgentStatus",
   ctoListAgentRevisions: "ade.cto.listAgentRevisions",
   ctoRollbackAgentRevision: "ade.cto.rollbackAgentRevision",
   ctoEnsureAgentSession: "ade.cto.ensureAgentSession",

@@ -14,10 +14,10 @@ export function OnboardingBanner({
   return (
     <div
       className={cn(
-        "flex items-center gap-3 px-4 py-2 border-b border-accent/20",
+        "flex items-center gap-3 border-b border-accent/20 px-4 py-2",
         className,
       )}
-      style={{ background: "linear-gradient(90deg, var(--color-accent)08, transparent)" }}
+      style={{ background: "linear-gradient(90deg, color-mix(in srgb, var(--color-accent) 16%, transparent) 0%, transparent 75%)" }}
     >
       <div className="flex-1 min-w-0">
         <span className="font-mono text-[10px] text-fg/80">

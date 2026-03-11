@@ -16,6 +16,18 @@ export const textareaCls =
 export const cardCls =
   "border border-border/10 bg-card/60 backdrop-blur-sm shadow-card";
 
+export const surfaceCardCls =
+  "border border-border/10 bg-surface/80 backdrop-blur-sm shadow-card";
+
+export const recessedPanelCls =
+  "border border-border/10 bg-surface-recessed/80 backdrop-blur-sm";
+
+export const shellTabBarCls =
+  "shrink-0 flex items-center gap-0 border-b border-border/40 bg-surface";
+
+export const shellBodyCls =
+  "flex h-full w-full overflow-hidden bg-bg text-fg";
+
 /* ── Agent status colors ── */
 
 export const agentStatusMap: Record<

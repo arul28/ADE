@@ -151,6 +151,13 @@ describe("AutomationsPage", () => {
     expect(screen.getByText("Night Shift")).toBeTruthy();
   });
 
+  it("uses shared theme classes instead of hard-coded page colors", async () => {
+    mountPage();
+    await waitFor(() => expect(screen.getByTestId("automations-page")).toBeTruthy());
+    expect(screen.getByTestId("automations-page").className).toContain("bg-bg");
+    expect(screen.getByTestId("automations-page").className).toContain("text-fg");
+  });
+
   it("renders linear intake policy card with connection and queue status", async () => {
     mountPage();
 

@@ -39,11 +39,11 @@ export function AutomationsPage() {
   }, []);
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden" style={{ background: "#09080C", color: "#FAFAFA" }}>
+    <div className="flex h-full w-full flex-col overflow-hidden bg-bg text-fg" data-testid="automations-page">
       {/* Tab bar */}
       <div
         className="shrink-0 flex items-center gap-0"
-        style={{ background: "#14111D", borderBottom: "1px solid #2D284060", minHeight: 36 }}
+        style={{ background: "var(--color-surface)", borderBottom: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)", minHeight: 36 }}
       >
         {TABS.map(({ id, label, icon: Icon }) => (
           <button
@@ -53,8 +53,8 @@ export function AutomationsPage() {
             className={cn(
               "flex items-center gap-1.5 px-4 py-2 font-mono text-[10px] font-bold uppercase tracking-[1px] transition-all duration-100 border-b-2",
               activeTab === id
-                ? "border-b-[#A78BFA] text-[#A78BFA]"
-                : "border-b-transparent text-[#8B8B9A] hover:text-[#FAFAFA]",
+                ? "border-b-accent text-accent"
+                : "border-b-transparent text-muted-fg hover:text-fg",
             )}
           >
             <Icon size={12} weight={activeTab === id ? "bold" : "regular"} />
@@ -64,8 +64,8 @@ export function AutomationsPage() {
 
         {/* Right side: page context */}
         <div className="ml-auto flex items-center gap-2 pr-4">
-          <Lightning size={10} weight="fill" className="text-[#A78BFA]" />
-          <span className="font-mono text-[9px] text-[#71717A]">AUTOMATIONS</span>
+          <Lightning size={10} weight="fill" className="text-accent" />
+          <span className="font-mono text-[9px] text-muted-fg/70">AUTOMATIONS</span>
         </div>
       </div>
 

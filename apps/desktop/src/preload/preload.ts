@@ -47,6 +47,7 @@ import type {
   CtoListAgentsArgs,
   CtoSaveAgentArgs,
   CtoRemoveAgentArgs,
+  CtoSetAgentStatusArgs,
   CtoListAgentRevisionsArgs,
   CtoRollbackAgentRevisionArgs,
   CtoEnsureAgentSessionArgs,
@@ -1457,6 +1458,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.ctoSaveAgent, args),
     removeAgent: async (args: CtoRemoveAgentArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.ctoRemoveAgent, args),
+    setAgentStatus: async (args: CtoSetAgentStatusArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.ctoSetAgentStatus, args),
     listAgentRevisions: async (args: CtoListAgentRevisionsArgs): Promise<AgentConfigRevision[]> =>
       ipcRenderer.invoke(IPC.ctoListAgentRevisions, args),
     rollbackAgentRevision: async (args: CtoRollbackAgentRevisionArgs): Promise<AgentIdentity> =>

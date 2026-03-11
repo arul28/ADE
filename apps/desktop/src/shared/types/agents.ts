@@ -259,6 +259,11 @@ export type CtoRemoveAgentArgs = {
   actor?: string;
 };
 
+export type CtoSetAgentStatusArgs = {
+  agentId: string;
+  status: AgentStatus;
+};
+
 export type CtoListAgentRevisionsArgs = {
   agentId: string;
   limit?: number;

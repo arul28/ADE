@@ -375,6 +375,7 @@ import type {
   CtoListAgentsArgs,
   CtoSaveAgentArgs,
   CtoRemoveAgentArgs,
+  CtoSetAgentStatusArgs,
   CtoListAgentRevisionsArgs,
   CtoRollbackAgentRevisionArgs,
   CtoEnsureAgentSessionArgs,
@@ -4537,6 +4538,13 @@ export function registerIpc({
     const ctx = getCtx();
     if (!ctx.workerAgentService) throw new Error("Worker agent service is not available.");
     ctx.workerAgentService.removeAgent(arg.agentId);
+    ctx.workerHeartbeatService?.syncFromConfig();
+  });
+
+  ipcMain.handle(IPC.ctoSetAgentStatus, async (_event, arg: CtoSetAgentStatusArgs): Promise<void> => {
+    const ctx = getCtx();
+    if (!ctx.workerAgentService) throw new Error("Worker agent service is not available.");
+    ctx.workerAgentService.setAgentStatus(arg.agentId, arg.status);
     ctx.workerHeartbeatService?.syncFromConfig();
   });
 

@@ -18,6 +18,8 @@ import type {
   CtoIdentity,
   CtoOnboardingState,
   CtoSessionLogEntry,
+  CtoSubordinateActivityEntry,
+  AgentStatus,
   HeartbeatPolicy,
   WorkerAgentRun,
 } from "../../../shared/types";
@@ -27,15 +29,16 @@ import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
 import { AgentSidebar } from "./AgentSidebar";
-import { WorkerEditorPanel, workerDraftFromAgent } from "./TeamPanel";
+import { WorkerDetailPanel, WorkerEditorPanel, workerDraftFromAgent } from "./TeamPanel";
 import type { WorkerEditorDraft } from "./TeamPanel";
 import { LinearSyncPanel } from "./LinearSyncPanel";
 import { CtoSettingsPanel } from "./CtoSettingsPanel";
 import { OnboardingWizard } from "./OnboardingWizard";
 import { OnboardingBanner } from "./OnboardingBanner";
 import { WorkerCreationWizard } from "./WorkerCreationWizard";
-import { WorkerDetailSlideOut } from "./WorkerDetailSlideOut";
 import { CtoMemoryBrowser } from "./CtoMemoryBrowser";
+import { TimelineEntry } from "./shared/TimelineEntry";
+import { cardCls, shellBodyCls, shellTabBarCls } from "./shared/designTokens";
 
 /* ── Tab types ── */
 
@@ -63,6 +66,7 @@ export function CtoPage() {
   const [ctoIdentity, setCtoIdentity] = useState<CtoIdentity | null>(null);
   const [coreMemory, setCoreMemory] = useState<CtoCoreMemory | null>(null);
   const [sessionLogs, setSessionLogs] = useState<CtoSessionLogEntry[]>([]);
+  const [subordinateActivity, setSubordinateActivity] = useState<CtoSubordinateActivityEntry[]>([]);
 
   // Onboarding state
   const [onboardingState, setOnboardingState] = useState<CtoOnboardingState | null>(null);
@@ -82,8 +86,6 @@ export function CtoPage() {
 
   // Worker creation wizard
   const [showWorkerWizard, setShowWorkerWizard] = useState(false);
-  // Worker detail slide-out
-  const [showWorkerDetail, setShowWorkerDetail] = useState(false);
 
   const [editorOpen, setEditorOpen] = useState(false);
   const [workerDraft, setWorkerDraft] = useState<WorkerEditorDraft>(workerDraftFromAgent(null));
@@ -109,7 +111,7 @@ export function CtoPage() {
   const showBanner = onboardingState
     && !needsOnboarding
     && !onboardingState.completedAt
-    && onboardingState.dismissedAt
+    && Boolean(onboardingState.dismissedAt)
     && !showOnboarding;
 
   /* ── Data loading ── */
@@ -124,6 +126,7 @@ export function CtoPage() {
       setCtoIdentity(snapshot.identity);
       setCoreMemory(snapshot.coreMemory);
       setSessionLogs(snapshot.recentSessions);
+      setSubordinateActivity(snapshot.recentSubordinateActivity);
       setOnboardingState(obState);
       // Auto-show onboarding if first run
       if (obState.completedSteps.length === 0 && !obState.dismissedAt && !obState.completedAt) {
@@ -275,8 +278,13 @@ export function CtoPage() {
     await window.ade.cto.removeAgent({ agentId });
     if (selectedAgentId === agentId) {
       setSelectedAgentId(null);
-      setShowWorkerDetail(false);
     }
+    await loadWorkersAndBudget();
+  }, [loadWorkersAndBudget, selectedAgentId]);
+
+  const setSelectedWorkerStatus = useCallback(async (status: AgentStatus) => {
+    if (!window.ade?.cto || !selectedAgentId) return;
+    await window.ade.cto.setAgentStatus({ agentId: selectedAgentId, status });
     await loadWorkersAndBudget();
   }, [loadWorkersAndBudget, selectedAgentId]);
 
@@ -313,7 +321,6 @@ export function CtoPage() {
     setWorkerDraft(workerDraftFromAgent(selectedWorker));
     setWorkerError(null);
     setEditorOpen(true);
-    setShowWorkerDetail(false);
   }, [selectedWorker]);
 
   const handleOnboardingComplete = useCallback(async () => {
@@ -341,8 +348,18 @@ export function CtoPage() {
     return mode === "full_mcp" ? "FULL MCP" : "FALLBACK";
   }
 
+  const teamStats = useMemo(() => {
+    const counts = {
+      total: agents.length,
+      active: agents.filter((agent) => agent.status === "active").length,
+      running: agents.filter((agent) => agent.status === "running").length,
+      paused: agents.filter((agent) => agent.status === "paused").length,
+    };
+    return counts;
+  }, [agents]);
+
   return (
-    <div className="flex h-full w-full overflow-hidden" style={{ background: "var(--color-bg)", color: "var(--color-fg)" }}>
+    <div className={shellBodyCls}>
       {/* Onboarding wizard overlay */}
       {showOnboarding && (
         <OnboardingWizard
@@ -358,10 +375,9 @@ export function CtoPage() {
         selectedAgentId={selectedAgentId}
         onSelectAgent={(id) => {
           setSelectedAgentId(id);
-          setShowWorkerDetail(true);
           setActiveTab("team");
         }}
-        onSelectCto={() => { setSelectedAgentId(null); setShowWorkerDetail(false); setActiveTab("chat"); }}
+        onSelectCto={() => { setSelectedAgentId(null); setActiveTab("chat"); }}
         isCtoSelected={!selectedAgentId}
         budgetSnapshot={budgetSnapshot}
         onHireWorker={handleHireWorker}
@@ -379,7 +395,7 @@ export function CtoPage() {
         )}
 
         {/* Tab bar */}
-        <div className="shrink-0 flex items-center gap-0 border-b border-border/40" style={{ background: "var(--color-surface)", minHeight: 36 }}>
+        <div className={shellTabBarCls} style={{ minHeight: 36 }}>
           {TABS.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
@@ -478,62 +494,78 @@ export function CtoPage() {
                 </div>
               ) : (
                 <div className="p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="font-mono text-[10px] font-bold uppercase tracking-[1px] text-muted-fg/60">
-                      Workers ({agents.length})
-                    </span>
-                    <Button variant="outline" size="sm" onClick={handleHireWorker}>
-                      Hire Worker
-                    </Button>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    {agents.map((agent) => {
-                      const budgetInfo = budgetSnapshot?.workers.find((w) => w.agentId === agent.id);
-                      return (
-                        <button
-                          key={agent.id}
-                          type="button"
-                          onClick={() => {
-                            setSelectedAgentId(agent.id);
-                            setShowWorkerDetail(true);
-                          }}
-                          className={cn(
-                            "text-left p-3 border transition-all",
-                            selectedAgentId === agent.id
-                              ? "border-accent/30 bg-accent/5"
-                              : "border-border/10 bg-card/60 hover:border-border/30",
-                          )}
-                        >
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className={cn(
-                              "h-2 w-2 rounded-full shrink-0",
-                              agent.status === "running" ? "bg-info animate-pulse"
-                                : agent.status === "active" ? "bg-success"
-                                : agent.status === "paused" ? "bg-warning"
-                                : "bg-muted-fg/40",
-                            )} />
-                            <span className="font-mono text-xs font-bold text-fg truncate">{agent.name}</span>
+                  {!selectedWorker ? (
+                    <div className="space-y-4" data-testid="team-overview">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="font-sans text-sm font-bold text-fg">Department Overview</div>
+                          <div className="mt-1 font-mono text-[10px] text-muted-fg/60">
+                            Pick a worker from the sidebar to inspect details, or hire a new teammate.
                           </div>
-                          <div className="flex items-center gap-2 text-[9px] font-mono text-muted-fg/50">
-                            <span>{agent.role}</span>
-                            <span className="text-border">·</span>
-                            <span>{agent.adapterType.replace("-local", "")}</span>
-                            {budgetInfo && (
-                              <>
-                                <span className="text-border">·</span>
-                                <span>${(budgetInfo.spentMonthlyCents / 100).toFixed(2)}</span>
-                              </>
-                            )}
+                        </div>
+                        <Button variant="outline" size="sm" onClick={handleHireWorker}>
+                          Hire Worker
+                        </Button>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+                        {[
+                          { label: "Workers", value: String(teamStats.total) },
+                          { label: "Active", value: String(teamStats.active) },
+                          { label: "Running", value: String(teamStats.running) },
+                          { label: "Paused", value: String(teamStats.paused) },
+                        ].map((item) => (
+                          <div key={item.label} className={cn(cardCls, "p-3")}>
+                            <div className="font-mono text-[9px] uppercase tracking-[1px] text-muted-fg/50">{item.label}</div>
+                            <div className="mt-2 font-sans text-2xl font-bold text-fg">{item.value}</div>
                           </div>
-                          {agent.lastHeartbeatAt && (
-                            <div className="text-[8px] font-mono text-muted-fg/30 mt-1">
-                              Last beat: {new Date(agent.lastHeartbeatAt).toLocaleDateString()}
+                        ))}
+                      </div>
+
+                      <div className={cn(cardCls, "p-4")} data-testid="cto-subordinate-activity">
+                        <div className="mb-3 flex items-center justify-between">
+                          <div>
+                            <div className="font-sans text-sm font-bold text-fg">Recent Department Activity</div>
+                            <div className="mt-1 font-mono text-[10px] text-muted-fg/55">
+                              Existing worker runs and direct worker chat activity flowing up to the CTO.
                             </div>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          {subordinateActivity.length === 0 ? (
+                            <div className="py-4 font-mono text-[10px] text-muted-fg/50">No department activity recorded yet.</div>
+                          ) : subordinateActivity.map((entry) => (
+                            <TimelineEntry
+                              key={entry.id}
+                              timestamp={entry.createdAt}
+                              title={`${entry.agentName} · ${entry.activityType === "worker_run" ? "Worker run" : "Chat turn"}`}
+                              subtitle={[entry.summary, entry.issueKey, entry.taskKey].filter(Boolean).join(" · ")}
+                              status={entry.activityType === "worker_run" ? "run" : "chat"}
+                              statusVariant={entry.activityType === "worker_run" ? "info" : "muted"}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <WorkerDetailPanel
+                      worker={selectedWorker}
+                      coreMemory={workerCoreMemory}
+                      sessionLogs={workerSessionLogs}
+                      runs={workerRuns}
+                      revisions={revisions}
+                      opsError={workerOpsError}
+                      wakeStatus={workerWakeStatus}
+                      wakeError={workerWakeError}
+                      waking={wakingWorker}
+                      onWakeNow={() => void wakeSelectedWorker()}
+                      onSetStatus={(status) => void setSelectedWorkerStatus(status)}
+                      onEdit={handleEditWorker}
+                      onRemove={() => void removeWorker(selectedWorker.id)}
+                      onRollbackRevision={(id) => void rollbackRevision(id)}
+                      onSaveCoreMemory={handleSaveWorkerCoreMemory}
+                    />
+                  )}
                 </div>
               )}
             </div>
@@ -559,27 +591,6 @@ export function CtoPage() {
         </div>
       </div>
 
-      {/* Worker detail slide-out */}
-      {showWorkerDetail && selectedWorker && (
-        <WorkerDetailSlideOut
-          worker={selectedWorker}
-          coreMemory={workerCoreMemory}
-          sessionLogs={workerSessionLogs}
-          runs={workerRuns}
-          revisions={revisions}
-          opsError={workerOpsError}
-          wakeStatus={workerWakeStatus}
-          wakeError={workerWakeError}
-          waking={wakingWorker}
-          onWakeNow={() => void wakeSelectedWorker()}
-          onEdit={handleEditWorker}
-          onRemove={() => void removeWorker(selectedWorker.id)}
-          onChat={() => { setActiveTab("chat"); setShowWorkerDetail(false); }}
-          onRollbackRevision={(id) => void rollbackRevision(id)}
-          onSaveCoreMemory={handleSaveWorkerCoreMemory}
-          onClose={() => setShowWorkerDetail(false)}
-        />
-      )}
     </div>
   );
 }
