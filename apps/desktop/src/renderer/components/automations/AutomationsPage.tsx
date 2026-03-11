@@ -1,4 +1,5 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, type ElementType } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
 import {
   Lightning,
   ListBullets,
@@ -6,9 +7,12 @@ import {
   ClockCounterClockwise,
   ChartBar,
   Moon,
+  CheckCircle,
 } from "@phosphor-icons/react";
 import type { AutomationRuleDraft } from "../../../shared/types";
 import { cn } from "../ui/cn";
+import { Button } from "../ui/Button";
+import { Chip } from "../ui/Chip";
 import { RulesTab } from "./RulesTab";
 import { TemplatesTab } from "./TemplatesTab";
 import { HistoryTab } from "./HistoryTab";
@@ -19,7 +23,7 @@ import { NightShiftTab } from "./NightShiftTab";
 
 type TabId = "rules" | "templates" | "history" | "usage" | "nightshift";
 
-const TABS: { id: TabId; label: string; icon: React.ElementType }[] = [
+const TABS: { id: TabId; label: string; icon: ElementType }[] = [
   { id: "rules", label: "Rules", icon: ListBullets },
   { id: "templates", label: "Templates", icon: BookOpen },
   { id: "history", label: "History", icon: ClockCounterClockwise },
@@ -32,11 +36,46 @@ const TABS: { id: TabId; label: string; icon: React.ElementType }[] = [
 export function AutomationsPage() {
   const [activeTab, setActiveTab] = useState<TabId>("rules");
   const [pendingDraft, setPendingDraft] = useState<AutomationRuleDraft | null>(null);
+  const [morningBriefing, setMorningBriefing] = useState<Awaited<ReturnType<typeof window.ade.automations.getMorningBriefing>>>(null);
+  const [briefingOpen, setBriefingOpen] = useState(false);
+  const [briefingBusy, setBriefingBusy] = useState(false);
 
   const handleUseTemplate = useCallback((draft: Omit<AutomationRuleDraft, "id">) => {
     setPendingDraft(draft as AutomationRuleDraft);
     setActiveTab("rules");
   }, []);
+
+  const loadMorningBriefing = useCallback(async () => {
+    try {
+      const briefing = await window.ade.automations.getMorningBriefing();
+      setMorningBriefing(briefing);
+      setBriefingOpen(Boolean(briefing));
+    } catch {
+      setMorningBriefing(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadMorningBriefing();
+    const unsubscribe = window.ade.automations.onEvent((event) => {
+      if (event.type === "night-shift-updated" || event.type === "review-updated") {
+        void loadMorningBriefing();
+      }
+    });
+    return () => unsubscribe();
+  }, [loadMorningBriefing]);
+
+  const acknowledgeBriefing = useCallback(async () => {
+    if (!morningBriefing) return;
+    setBriefingBusy(true);
+    try {
+      await window.ade.automations.acknowledgeMorningBriefing({ id: morningBriefing.id });
+      setMorningBriefing(null);
+      setBriefingOpen(false);
+    } finally {
+      setBriefingBusy(false);
+    }
+  }, [morningBriefing]);
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden" style={{ background: "#09080C", color: "#FAFAFA" }}>
@@ -77,6 +116,76 @@ export function AutomationsPage() {
         {activeTab === "usage" && <UsageTab />}
         {activeTab === "nightshift" && <NightShiftTab />}
       </div>
+
+      <Dialog.Root open={briefingOpen} onOpenChange={setBriefingOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
+          <Dialog.Content
+            className="fixed left-1/2 top-[10%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 p-4 focus:outline-none"
+            style={{ background: "#181423", border: "1px solid #2D284060", boxShadow: "0 8px 32px -8px rgba(0,0,0,0.8)" }}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <Dialog.Title className="text-sm font-semibold text-[#FAFAFA]" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
+                  Morning Briefing
+                </Dialog.Title>
+                <div className="mt-1 text-xs text-[#8B8B9A]">
+                  Review overnight automation outcomes before you clear the queue.
+                </div>
+              </div>
+              {morningBriefing ? <Chip className="text-[9px]">{morningBriefing.totalRuns} runs</Chip> : null}
+            </div>
+
+            {morningBriefing ? (
+              <div className="mt-4 space-y-3">
+                <div className="grid grid-cols-4 gap-2">
+                  <div className="rounded p-3" style={{ background: "#14111D", border: "1px solid #1E1B26" }}>
+                    <div className="font-mono text-[9px] text-[#71717A]">runs</div>
+                    <div className="mt-1 text-lg text-[#FAFAFA]">{morningBriefing.totalRuns}</div>
+                  </div>
+                  <div className="rounded p-3" style={{ background: "#14111D", border: "1px solid #1E1B26" }}>
+                    <div className="font-mono text-[9px] text-[#71717A]">clean</div>
+                    <div className="mt-1 text-lg text-[#22C55E]">{morningBriefing.succeededRuns}</div>
+                  </div>
+                  <div className="rounded p-3" style={{ background: "#14111D", border: "1px solid #1E1B26" }}>
+                    <div className="font-mono text-[9px] text-[#71717A]">follow-up</div>
+                    <div className="mt-1 text-lg text-[#F59E0B]">{morningBriefing.failedRuns}</div>
+                  </div>
+                  <div className="rounded p-3" style={{ background: "#14111D", border: "1px solid #1E1B26" }}>
+                    <div className="font-mono text-[9px] text-[#71717A]">spend</div>
+                    <div className="mt-1 text-lg text-[#FAFAFA]">${morningBriefing.totalSpendUsd.toFixed(2)}</div>
+                  </div>
+                </div>
+
+                <div className="max-h-[40vh] space-y-2 overflow-y-auto">
+                  {morningBriefing.cards.map((card) => (
+                    <div key={card.queueItemId} className="rounded p-3" style={{ background: "#14111D", border: "1px solid #1E1B26" }}>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-xs font-semibold text-[#FAFAFA]">{card.title}</div>
+                        {card.confidence ? <Chip className="text-[9px]">{card.confidence.label}</Chip> : null}
+                      </div>
+                      <div className="mt-1 text-xs text-[#A1A1AA]">{card.summary}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <Button size="sm" variant="outline" onClick={() => { setActiveTab("nightshift"); setBriefingOpen(false); }}>
+                    <Moon size={12} weight="regular" />
+                    Open Night Shift
+                  </Button>
+                  <Button size="sm" variant="primary" disabled={briefingBusy} onClick={() => void acknowledgeBriefing()}>
+                    <CheckCircle size={12} weight="regular" />
+                    Acknowledge
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-4 text-xs text-[#8B8B9A]">No unacknowledged briefing available.</div>
+            )}
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </div>
   );
 }

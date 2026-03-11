@@ -5,8 +5,8 @@
 import type { ProviderMode, ModelId } from "./core";
 import type { AgentChatModelInfo } from "./chat";
 import type { LaneType } from "./lanes";
-import type { MissionExecutionPolicy, MissionProviderPermissions } from "./missions";
-import type { ModelConfig } from "./models";
+import type { MissionExecutionPolicy, MissionPermissionConfig, MissionProviderPermissions } from "./missions";
+import type { MissionModelConfig, ModelConfig } from "./models";
 import type { LinearSyncConfig } from "./linearSync";
 
 // Backward compatible with earlier configs that used `on_crash`.
@@ -561,6 +561,10 @@ export type AutomationAction = {
 export type AutomationExecutor = {
   mode: AutomationExecutorMode;
   targetId?: string | null;
+  routingHints?: {
+    preferredWorkerIds?: string[];
+    requiredCapabilities?: string[];
+  };
 };
 
 export type AutomationContextSource = {
@@ -605,6 +609,8 @@ export type AutomationRule = {
   /** @deprecated Use `triggers[0]` or `legacy?.trigger`. */
   trigger: AutomationTrigger;
   executor: AutomationExecutor;
+  modelConfig?: MissionModelConfig;
+  permissionConfig?: MissionPermissionConfig;
   templateId?: string;
   prompt?: string;
   reviewProfile: AutomationReviewProfile;
@@ -632,6 +638,8 @@ export type ConfigAutomationRule = {
   mode?: AutomationMode;
   triggers?: AutomationTrigger[];
   executor?: AutomationExecutor;
+  modelConfig?: MissionModelConfig;
+  permissionConfig?: MissionPermissionConfig;
   templateId?: string;
   prompt?: string;
   reviewProfile?: AutomationReviewProfile;

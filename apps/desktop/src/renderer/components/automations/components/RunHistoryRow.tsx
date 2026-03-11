@@ -41,7 +41,12 @@ export function RunHistoryRow({
             <span>{formatDate(run.startedAt)}</span>
             <span>{formatDurationMs(durationMs)}</span>
             <span>{run.queueStatus}</span>
-            {run.missionId ? <span>{run.missionId.slice(0, 8)}</span> : <span>{run.actionsCompleted}/{run.actionsTotal} actions</span>}
+            <span>{run.executorMode}</span>
+            {run.workerRunId
+              ? <span>{run.workerRunId.slice(0, 8)}</span>
+              : run.missionId
+                ? <span>{run.missionId.slice(0, 8)}</span>
+                : <span>{run.actionsCompleted}/{run.actionsTotal} actions</span>}
           </div>
           {run.confidence ? (
             <div className="mt-0.5 font-mono text-[9px] text-[#8B8B9A]">

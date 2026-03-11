@@ -19,6 +19,8 @@ import type {
   AutomationTriggerType,
   AutomationVerification,
 } from "./config";
+import type { MissionPermissionConfig } from "./missions";
+import type { MissionModelConfig } from "./models";
 
 export type AutomationRunStatus =
   | "queued"
@@ -47,6 +49,8 @@ export type AutomationRun = {
   id: string;
   automationId: string;
   missionId: string | null;
+  workerRunId: string | null;
+  workerAgentId: string | null;
   queueItemId: string | null;
   triggerType: AutomationTriggerType;
   startedAt: string;
@@ -62,6 +66,7 @@ export type AutomationRun = {
   confidence: AutomationConfidenceScore | null;
   triggerMetadata: Record<string, unknown> | null;
   summary: string | null;
+  billingCode: string | null;
 };
 
 export type AutomationActionResult = {
@@ -112,8 +117,11 @@ export type NightShiftQueueItem = {
   automationId: string;
   title: string;
   reviewProfile: AutomationReviewProfile;
+  executorMode: AutomationExecutor["mode"];
+  targetLabel: string | null;
   scheduledWindow: string | null;
   status: "queued" | "running" | "paused" | "completed" | "failed";
+  position: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -162,6 +170,8 @@ export type AutomationRunDetail = {
   actions: AutomationActionResult[];
   queueItem: AutomationQueueItem | null;
   procedureFeedback: AutomationProcedureFeedback[];
+  ingressEvent: AutomationIngressEventRecord | null;
+  pendingPublish: AutomationPendingPublish | null;
 };
 
 export type AutomationQueueListArgs = {
@@ -174,6 +184,13 @@ export type AutomationQueueActionRequest = {
   queueItemId: string;
   action: "ignore" | "archive" | "accept" | "queue-overnight" | "resolve";
 };
+
+export type NightShiftQueueMutationRequest =
+  | { action: "remove"; queueItemId: string }
+  | { action: "run-now"; queueItemId: string }
+  | { action: "pause"; queueItemId: string }
+  | { action: "resume"; queueItemId: string }
+  | { action: "move"; queueItemId: string; position: number };
 
 export type AutomationManualTriggerRequest = {
   id: string;
@@ -202,10 +219,60 @@ export type AutomationsEventPayload = {
     | "queue-updated"
     | "night-shift-updated"
     | "review-updated"
-    | "webhook-status-updated";
+    | "webhook-status-updated"
+    | "ingress-updated";
   automationId?: string;
   runId?: string;
   queueItemId?: string;
+};
+
+export type AutomationIngressSource = "github-relay" | "local-webhook";
+
+export type AutomationIngressStatus = {
+  githubRelay: {
+    configured: boolean;
+    healthy: boolean;
+    status: "disabled" | "ready" | "polling" | "error";
+    apiBaseUrl: string | null;
+    remoteProjectId: string | null;
+    lastCursor: string | null;
+    lastPolledAt: string | null;
+    lastDeliveryAt: string | null;
+    lastError: string | null;
+  };
+  localWebhook: {
+    configured: boolean;
+    listening: boolean;
+    status: "disabled" | "ready" | "listening" | "error";
+    url: string | null;
+    port: number | null;
+    lastDeliveryAt: string | null;
+    lastError: string | null;
+  };
+};
+
+export type AutomationIngressEventRecord = {
+  id: string;
+  source: AutomationIngressSource;
+  eventKey: string;
+  automationIds: string[];
+  triggerType: AutomationTriggerType;
+  eventName: string | null;
+  status: "received" | "dispatched" | "ignored" | "failed";
+  summary: string | null;
+  errorMessage: string | null;
+  cursor: string | null;
+  receivedAt: string;
+};
+
+export type AutomationPendingPublish = {
+  id: string;
+  runId: string;
+  automationId: string;
+  queueItemId: string | null;
+  summary: string;
+  toolPalette: AutomationToolFamily[];
+  createdAt: string;
 };
 
 export type AutomationPlannerProvider = "codex" | "claude";
@@ -252,6 +319,8 @@ export type AutomationRuleDraft = {
   /** @deprecated Legacy planner/editor compatibility field. */
   trigger: AutomationTrigger;
   executor: AutomationExecutor;
+  modelConfig?: MissionModelConfig;
+  permissionConfig?: MissionPermissionConfig;
   templateId?: string;
   prompt?: string;
   reviewProfile: AutomationReviewProfile;

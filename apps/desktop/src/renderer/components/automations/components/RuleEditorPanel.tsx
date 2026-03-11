@@ -1,17 +1,20 @@
+import { useEffect, useMemo, useState } from "react";
 import {
   FloppyDisk as Save,
   X,
   Flask as FlaskConical,
 } from "@phosphor-icons/react";
 import type {
+  AgentIdentity,
   AutomationDraftConfirmationRequirement,
   AutomationDraftIssue,
+  AutomationIngressStatus,
   AutomationRuleDraft,
   TestSuiteDefinition,
 } from "../../../../shared/types";
 import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
-import { INPUT_CLS, INPUT_STYLE } from "../shared";
+import { getAutomationsBridge, INPUT_CLS, INPUT_STYLE } from "../shared";
 
 const TOOL_OPTIONS: Array<AutomationRuleDraft["toolPalette"][number]> = ["repo", "git", "tests", "github", "linear", "browser", "memory", "mission"];
 const CONTEXT_OPTIONS: Array<AutomationRuleDraft["contextSources"][number]["type"]> = [
@@ -24,6 +27,20 @@ const CONTEXT_OPTIONS: Array<AutomationRuleDraft["contextSources"][number]["type
   "linked-repo",
   "path-rules",
 ];
+const THINKING_OPTIONS = ["none", "minimal", "low", "medium", "high", "max", "xhigh"] as const;
+const PERMISSION_OPTIONS = ["default", "plan", "edit", "full-auto", "config-toml"] as const;
+const SANDBOX_OPTIONS = ["read-only", "workspace-write", "danger-full-access"] as const;
+
+function joinList(values: string[] | undefined | null): string {
+  return Array.isArray(values) ? values.join(", ") : "";
+}
+
+function parseList(value: string): string[] {
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
 
 function IssueList({ issues }: { issues: AutomationDraftIssue[] }) {
   if (!issues.length) return null;
@@ -113,10 +130,53 @@ export function RuleEditorPanel({
 }) {
   const trigger = draft.triggers[0] ?? { type: "manual" as const };
   const legacyActions = draft.legacyActions ?? [];
+  const [agents, setAgents] = useState<AgentIdentity[]>([]);
+  const [agentsLoading, setAgentsLoading] = useState(false);
+  const [ingressStatus, setIngressStatus] = useState<AutomationIngressStatus | null>(null);
+  const [ingressLoading, setIngressLoading] = useState(false);
+
+  const automationsBridge = getAutomationsBridge();
+  const providerPermissions = draft.permissionConfig?.providers ?? {};
+  const selectedAgent = useMemo(
+    () => agents.find((agent) => agent.id === draft.executor.targetId) ?? null,
+    [agents, draft.executor.targetId],
+  );
 
   const updateTrigger = (patch: Partial<typeof trigger>) => {
     const nextTrigger = { ...trigger, ...patch };
     setDraft({ ...draft, trigger: nextTrigger, triggers: [nextTrigger] });
+  };
+
+  const updateExecutor = (patch: Partial<AutomationRuleDraft["executor"]>) => {
+    setDraft({ ...draft, executor: { ...draft.executor, ...patch } });
+  };
+
+  const updateModelConfig = (patch: Partial<NonNullable<AutomationRuleDraft["modelConfig"]>>) => {
+    const current = draft.modelConfig ?? { orchestratorModel: { modelId: "" } };
+    setDraft({
+      ...draft,
+      modelConfig: {
+        ...current,
+        ...patch,
+        orchestratorModel: {
+          ...current.orchestratorModel,
+          ...(patch.orchestratorModel ?? {}),
+        },
+      },
+    });
+  };
+
+  const updateProviderPermissions = (patch: Partial<NonNullable<NonNullable<AutomationRuleDraft["permissionConfig"]>["providers"]>>) => {
+    setDraft({
+      ...draft,
+      permissionConfig: {
+        ...(draft.permissionConfig ?? {}),
+        providers: {
+          ...providerPermissions,
+          ...patch,
+        },
+      },
+    });
   };
 
   const updateLegacyAction = (index: number, patch: Record<string, unknown>) => {
@@ -137,6 +197,51 @@ export function RuleEditorPanel({
     const next = legacyActions.filter((_action, currentIndex) => currentIndex !== index);
     setDraft({ ...draft, actions: next, legacyActions: next });
   };
+
+  useEffect(() => {
+    if (!(draft.executor.mode === "employee" || draft.executor.mode === "cto-route")) {
+      return;
+    }
+    let cancelled = false;
+    setAgentsLoading(true);
+    window.ade.cto
+      .listAgents({})
+      .then((next) => {
+        if (!cancelled) setAgents(next);
+      })
+      .catch(() => {
+        if (!cancelled) setAgents([]);
+      })
+      .finally(() => {
+        if (!cancelled) setAgentsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [draft.executor.mode]);
+
+  useEffect(() => {
+    if (!(trigger.type === "github-webhook" || trigger.type === "webhook") || !automationsBridge.getIngressStatus) {
+      setIngressStatus(null);
+      return;
+    }
+    let cancelled = false;
+    setIngressLoading(true);
+    automationsBridge
+      .getIngressStatus()
+      .then((next) => {
+        if (!cancelled) setIngressStatus(next);
+      })
+      .catch(() => {
+        if (!cancelled) setIngressStatus(null);
+      })
+      .finally(() => {
+        if (!cancelled) setIngressLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [automationsBridge, trigger.type]);
 
   return (
     <div className="flex h-full flex-col" style={{ background: "#14111D" }}>
@@ -188,66 +293,359 @@ export function RuleEditorPanel({
         </label>
 
         {section("Execution", (
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-            <label className="space-y-1">
-              <div className="font-mono text-[9px] text-[#71717A]">Mode</div>
-              <select className={INPUT_CLS} style={INPUT_STYLE} value={draft.mode} onChange={(e) => setDraft({ ...draft, mode: e.target.value as AutomationRuleDraft["mode"] })}>
-                <option value="review">review</option>
-                <option value="fix">fix</option>
-                <option value="monitor">monitor</option>
-              </select>
-            </label>
-            <label className="space-y-1">
-              <div className="font-mono text-[9px] text-[#71717A]">Review profile</div>
-              <select className={INPUT_CLS} style={INPUT_STYLE} value={draft.reviewProfile} onChange={(e) => setDraft({ ...draft, reviewProfile: e.target.value as AutomationRuleDraft["reviewProfile"] })}>
-                <option value="quick">quick</option>
-                <option value="incremental">incremental</option>
-                <option value="full">full</option>
-                <option value="security">security</option>
-                <option value="release-risk">release-risk</option>
-                <option value="cross-repo-contract">cross-repo-contract</option>
-              </select>
-            </label>
-            <label className="space-y-1">
-              <div className="font-mono text-[9px] text-[#71717A]">Run as</div>
-              <select
-                className={INPUT_CLS}
-                style={INPUT_STYLE}
-                value={draft.executor.mode}
-                onChange={(e) => setDraft({ ...draft, executor: { ...draft.executor, mode: e.target.value as AutomationRuleDraft["executor"]["mode"] } })}
-              >
-                <option value="automation-bot">automation-bot</option>
-                <option value="employee">employee</option>
-                <option value="cto-route">cto-route</option>
-                <option value="night-shift">night-shift</option>
-              </select>
-            </label>
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+              <label className="space-y-1">
+                <div className="font-mono text-[9px] text-[#71717A]">Mode</div>
+                <select className={INPUT_CLS} style={INPUT_STYLE} value={draft.mode} onChange={(e) => setDraft({ ...draft, mode: e.target.value as AutomationRuleDraft["mode"] })}>
+                  <option value="review">review</option>
+                  <option value="fix">fix</option>
+                  <option value="monitor">monitor</option>
+                </select>
+              </label>
+              <label className="space-y-1">
+                <div className="font-mono text-[9px] text-[#71717A]">Review profile</div>
+                <select className={INPUT_CLS} style={INPUT_STYLE} value={draft.reviewProfile} onChange={(e) => setDraft({ ...draft, reviewProfile: e.target.value as AutomationRuleDraft["reviewProfile"] })}>
+                  <option value="quick">quick</option>
+                  <option value="incremental">incremental</option>
+                  <option value="full">full</option>
+                  <option value="security">security</option>
+                  <option value="release-risk">release-risk</option>
+                  <option value="cross-repo-contract">cross-repo-contract</option>
+                </select>
+              </label>
+              <label className="space-y-1">
+                <div className="font-mono text-[9px] text-[#71717A]">Run as</div>
+                <select
+                  className={INPUT_CLS}
+                  style={INPUT_STYLE}
+                  value={draft.executor.mode}
+                  onChange={(e) => updateExecutor({ mode: e.target.value as AutomationRuleDraft["executor"]["mode"] })}
+                >
+                  <option value="automation-bot">automation-bot</option>
+                  <option value="employee">employee</option>
+                  <option value="cto-route">cto-route</option>
+                  <option value="night-shift">night-shift</option>
+                </select>
+              </label>
+            </div>
+
+            {(draft.executor.mode === "employee" || draft.executor.mode === "cto-route") && (
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <label className="space-y-1">
+                  <div className="font-mono text-[9px] text-[#71717A]">
+                    {draft.executor.mode === "employee" ? "Target worker" : "Preferred worker"}
+                  </div>
+                  <select
+                    className={INPUT_CLS}
+                    style={INPUT_STYLE}
+                    value={draft.executor.targetId ?? ""}
+                    onChange={(e) => updateExecutor({ targetId: e.target.value || null })}
+                  >
+                    <option value="">{agentsLoading ? "Loading workers..." : draft.executor.mode === "employee" ? "Select worker" : "Auto-route"}</option>
+                    {agents.map((agent) => (
+                      <option key={agent.id} value={agent.id}>
+                        {agent.name} ({agent.role})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {draft.executor.mode === "cto-route" ? (
+                  <label className="space-y-1">
+                    <div className="font-mono text-[9px] text-[#71717A]">Required capabilities</div>
+                    <input
+                      className={INPUT_CLS}
+                      style={INPUT_STYLE}
+                      value={joinList(draft.executor.routingHints?.requiredCapabilities)}
+                      onChange={(e) =>
+                        updateExecutor({
+                          routingHints: {
+                            ...draft.executor.routingHints,
+                            requiredCapabilities: parseList(e.target.value),
+                          },
+                        })
+                      }
+                      placeholder="frontend, review, release"
+                    />
+                  </label>
+                ) : (
+                  <div className="space-y-1">
+                    <div className="font-mono text-[9px] text-[#71717A]">Worker continuity</div>
+                    <div className="rounded px-3 py-2 text-[11px] text-[#A1A1AA]" style={{ background: "#0B0A0F", border: "1px solid #2D284080" }}>
+                      Reuses the selected worker’s task session and memory for recurring follow-through.
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {selectedAgent ? (
+              <div className="rounded px-3 py-2 text-[10px] text-[#A1A1AA]" style={{ background: "#0B0A0F", border: "1px solid #2D284080" }}>
+                {selectedAgent.title ?? selectedAgent.role} · {selectedAgent.status} · capabilities {selectedAgent.capabilities.join(", ") || "none listed"}
+              </div>
+            ) : null}
+
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <label className="space-y-1">
+                <div className="font-mono text-[9px] text-[#71717A]">Model</div>
+                <input
+                  className={INPUT_CLS}
+                  style={INPUT_STYLE}
+                  value={draft.modelConfig?.orchestratorModel.modelId ?? ""}
+                  onChange={(e) => updateModelConfig({ orchestratorModel: { modelId: e.target.value } })}
+                  placeholder="anthropic/claude-sonnet-4-6"
+                />
+              </label>
+              <label className="space-y-1">
+                <div className="font-mono text-[9px] text-[#71717A]">Thinking</div>
+                <select
+                  className={INPUT_CLS}
+                  style={INPUT_STYLE}
+                  value={draft.modelConfig?.orchestratorModel.thinkingLevel ?? ""}
+                  onChange={(e) =>
+                    updateModelConfig({
+                      orchestratorModel: {
+                        modelId: draft.modelConfig?.orchestratorModel.modelId ?? "",
+                        thinkingLevel: (e.target.value || undefined) as (typeof THINKING_OPTIONS)[number] | undefined,
+                      },
+                    })
+                  }
+                >
+                  <option value="">default</option>
+                  {THINKING_OPTIONS.map((level) => (
+                    <option key={level} value={level}>
+                      {level}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+              <label className="space-y-1">
+                <div className="font-mono text-[9px] text-[#71717A]">Unified permissions</div>
+                <select
+                  className={INPUT_CLS}
+                  style={INPUT_STYLE}
+                  value={providerPermissions.unified ?? ""}
+                  onChange={(e) => updateProviderPermissions({ unified: (e.target.value || undefined) as typeof providerPermissions.unified })}
+                >
+                  <option value="">default</option>
+                  {PERMISSION_OPTIONS.map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="space-y-1">
+                <div className="font-mono text-[9px] text-[#71717A]">Claude permissions</div>
+                <select
+                  className={INPUT_CLS}
+                  style={INPUT_STYLE}
+                  value={providerPermissions.claude ?? ""}
+                  onChange={(e) => updateProviderPermissions({ claude: (e.target.value || undefined) as typeof providerPermissions.claude })}
+                >
+                  <option value="">default</option>
+                  {PERMISSION_OPTIONS.map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="space-y-1">
+                <div className="font-mono text-[9px] text-[#71717A]">Codex sandbox</div>
+                <select
+                  className={INPUT_CLS}
+                  style={INPUT_STYLE}
+                  value={providerPermissions.codexSandbox ?? ""}
+                  onChange={(e) => updateProviderPermissions({ codexSandbox: (e.target.value || undefined) as typeof providerPermissions.codexSandbox })}
+                >
+                  <option value="">default</option>
+                  {SANDBOX_OPTIONS.map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <label className="space-y-1">
+                <div className="font-mono text-[9px] text-[#71717A]">Allowed tools</div>
+                <input
+                  className={INPUT_CLS}
+                  style={INPUT_STYLE}
+                  value={joinList(providerPermissions.allowedTools)}
+                  onChange={(e) => updateProviderPermissions({ allowedTools: parseList(e.target.value) })}
+                  placeholder="git, openai, linear"
+                />
+              </label>
+              <label className="space-y-1">
+                <div className="font-mono text-[9px] text-[#71717A]">Writable paths</div>
+                <input
+                  className={INPUT_CLS}
+                  style={INPUT_STYLE}
+                  value={joinList(providerPermissions.writablePaths)}
+                  onChange={(e) => updateProviderPermissions({ writablePaths: parseList(e.target.value) })}
+                  placeholder="/repo/tmp, /repo/reports"
+                />
+              </label>
+            </div>
           </div>
         ))}
 
         {section("Trigger", (
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-            <label className="space-y-1">
-              <div className="font-mono text-[9px] text-[#71717A]">Type</div>
-              <select className={INPUT_CLS} style={INPUT_STYLE} value={trigger.type} onChange={(e) => updateTrigger({ type: e.target.value as any })}>
-                <option value="manual">manual</option>
-                <option value="session-end">session-end</option>
-                <option value="commit">commit</option>
-                <option value="schedule">schedule</option>
-                <option value="github-webhook">github-webhook</option>
-                <option value="webhook">webhook</option>
-              </select>
-            </label>
-            <label className="space-y-1 md:col-span-2">
-              <div className="font-mono text-[9px] text-[#71717A]">{trigger.type === "schedule" ? "Cron" : "Branch / Event filter"}</div>
-              <input
-                className={INPUT_CLS}
-                style={INPUT_STYLE}
-                value={trigger.type === "schedule" ? trigger.cron ?? "" : trigger.branch ?? trigger.event ?? ""}
-                onChange={(e) => trigger.type === "schedule" ? updateTrigger({ cron: e.target.value }) : updateTrigger({ branch: e.target.value, event: e.target.value })}
-                placeholder={trigger.type === "schedule" ? "0 9 * * 1-5" : "main or pull_request"}
-              />
-            </label>
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+              <label className="space-y-1">
+                <div className="font-mono text-[9px] text-[#71717A]">Type</div>
+                <select className={INPUT_CLS} style={INPUT_STYLE} value={trigger.type} onChange={(e) => updateTrigger({ type: e.target.value as typeof trigger.type })}>
+                  <option value="manual">manual</option>
+                  <option value="session-end">session-end</option>
+                  <option value="commit">commit</option>
+                  <option value="schedule">schedule</option>
+                  <option value="github-webhook">github-webhook</option>
+                  <option value="webhook">webhook</option>
+                </select>
+              </label>
+              {trigger.type === "schedule" ? (
+                <label className="space-y-1 md:col-span-2">
+                  <div className="font-mono text-[9px] text-[#71717A]">Cron</div>
+                  <input
+                    className={INPUT_CLS}
+                    style={INPUT_STYLE}
+                    value={trigger.cron ?? ""}
+                    onChange={(e) => updateTrigger({ cron: e.target.value })}
+                    placeholder="0 9 * * 1-5"
+                  />
+                </label>
+              ) : (
+                <>
+                  <label className="space-y-1">
+                    <div className="font-mono text-[9px] text-[#71717A]">Event</div>
+                    <input
+                      className={INPUT_CLS}
+                      style={INPUT_STYLE}
+                      value={trigger.event ?? ""}
+                      onChange={(e) => updateTrigger({ event: e.target.value })}
+                      placeholder={trigger.type === "github-webhook" ? "pull_request" : "push"}
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <div className="font-mono text-[9px] text-[#71717A]">Branch</div>
+                    <input
+                      className={INPUT_CLS}
+                      style={INPUT_STYLE}
+                      value={trigger.branch ?? ""}
+                      onChange={(e) => updateTrigger({ branch: e.target.value })}
+                      placeholder="main"
+                    />
+                  </label>
+                </>
+              )}
+            </div>
+
+            {(trigger.type === "commit" || trigger.type === "github-webhook" || trigger.type === "webhook") && (
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <label className="space-y-1">
+                  <div className="font-mono text-[9px] text-[#71717A]">Author</div>
+                  <input
+                    className={INPUT_CLS}
+                    style={INPUT_STYLE}
+                    value={trigger.author ?? ""}
+                    onChange={(e) => updateTrigger({ author: e.target.value })}
+                    placeholder="octocat"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <div className="font-mono text-[9px] text-[#71717A]">Draft state</div>
+                  <select
+                    className={INPUT_CLS}
+                    style={INPUT_STYLE}
+                    value={trigger.draftState ?? "any"}
+                    onChange={(e) => updateTrigger({ draftState: e.target.value as typeof trigger.draftState })}
+                  >
+                    <option value="any">any</option>
+                    <option value="draft">draft</option>
+                    <option value="ready">ready</option>
+                  </select>
+                </label>
+                <label className="space-y-1">
+                  <div className="font-mono text-[9px] text-[#71717A]">Labels</div>
+                  <input
+                    className={INPUT_CLS}
+                    style={INPUT_STYLE}
+                    value={joinList(trigger.labels)}
+                    onChange={(e) => updateTrigger({ labels: parseList(e.target.value) })}
+                    placeholder="backend, urgent"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <div className="font-mono text-[9px] text-[#71717A]">Changed paths</div>
+                  <input
+                    className={INPUT_CLS}
+                    style={INPUT_STYLE}
+                    value={joinList(trigger.paths)}
+                    onChange={(e) => updateTrigger({ paths: parseList(e.target.value) })}
+                    placeholder="apps/desktop/**, docs/**"
+                  />
+                </label>
+                <label className="space-y-1 md:col-span-2">
+                  <div className="font-mono text-[9px] text-[#71717A]">Keywords</div>
+                  <input
+                    className={INPUT_CLS}
+                    style={INPUT_STYLE}
+                    value={joinList(trigger.keywords)}
+                    onChange={(e) => updateTrigger({ keywords: parseList(e.target.value) })}
+                    placeholder="release note, regression, urgent"
+                  />
+                </label>
+                {trigger.type === "webhook" ? (
+                  <label className="space-y-1 md:col-span-2">
+                    <div className="font-mono text-[9px] text-[#71717A]">Secret ref</div>
+                    <input
+                      className={INPUT_CLS}
+                      style={INPUT_STYLE}
+                      value={trigger.secretRef ?? ""}
+                      onChange={(e) => updateTrigger({ secretRef: e.target.value })}
+                      placeholder="automations.webhooks.github"
+                    />
+                  </label>
+                ) : null}
+              </div>
+            )}
+
+            {(trigger.type === "github-webhook" || trigger.type === "webhook") && (
+              <div className="space-y-2 rounded p-3" style={{ background: "#0B0A0F", border: "1px solid #2D284080" }}>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="font-mono text-[9px] font-bold uppercase tracking-[1px] text-[#A1A1AA]">Ingress status</div>
+                  <div className="text-[10px] text-[#71717A]">{ingressLoading ? "Refreshing..." : "Runtime status"}</div>
+                </div>
+                {ingressStatus ? (
+                  <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                    <div className="rounded px-3 py-2" style={{ background: "#14111D", border: "1px solid #1E1B26" }}>
+                      <div className="font-mono text-[9px] text-[#71717A]">GitHub relay</div>
+                      <div className="mt-1 text-xs text-[#FAFAFA]">{ingressStatus.githubRelay.status}</div>
+                      <div className="mt-1 text-[10px] text-[#8B8B9A]">
+                        {ingressStatus.githubRelay.remoteProjectId ?? "No remote project"} · cursor {ingressStatus.githubRelay.lastCursor ?? "none"}
+                      </div>
+                    </div>
+                    <div className="rounded px-3 py-2" style={{ background: "#14111D", border: "1px solid #1E1B26" }}>
+                      <div className="font-mono text-[9px] text-[#71717A]">Local webhook</div>
+                      <div className="mt-1 text-xs text-[#FAFAFA]">{ingressStatus.localWebhook.status}</div>
+                      <div className="mt-1 text-[10px] text-[#8B8B9A]">{ingressStatus.localWebhook.url ?? "Listener unavailable"}</div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-[#8B8B9A]">
+                    {automationsBridge.getIngressStatus ? "Waiting for ingress runtime to report status." : "Ingress status will appear once the W5b runtime bridge is available."}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         ))}
 
@@ -287,6 +685,27 @@ export function RuleEditorPanel({
                 className="accent-[#A78BFA]"
               />
               verify before publish
+            </label>
+            <label className="space-y-1">
+              <div className="font-mono text-[9px] text-[#71717A]">Verification mode</div>
+              <select
+                className={INPUT_CLS}
+                style={INPUT_STYLE}
+                value={draft.verification.mode ?? "intervention"}
+                onChange={(e) => setDraft({ ...draft, verification: { ...draft.verification, mode: e.target.value as AutomationRuleDraft["verification"]["mode"] } })}
+              >
+                <option value="intervention">intervention</option>
+                <option value="dry-run">dry-run</option>
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-[10px] font-mono text-[#C4B5FD]">
+              <input
+                type="checkbox"
+                checked={Boolean(draft.outputs.createArtifact)}
+                onChange={(e) => setDraft({ ...draft, outputs: { ...draft.outputs, createArtifact: e.target.checked } })}
+                className="accent-[#A78BFA]"
+              />
+              create artifact
             </label>
           </div>
         ))}

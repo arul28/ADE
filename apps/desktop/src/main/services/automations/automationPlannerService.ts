@@ -639,8 +639,14 @@ function normalizeDraft(args: {
       args.draft.executor?.mode === "employee" ||
       args.draft.executor?.mode === "cto-route" ||
       args.draft.executor?.mode === "night-shift"
-        ? { mode: args.draft.executor.mode, ...(args.draft.executor.targetId ? { targetId: safeTrim(args.draft.executor.targetId) } : {}) }
+        ? {
+            mode: args.draft.executor.mode,
+            ...(args.draft.executor.targetId ? { targetId: safeTrim(args.draft.executor.targetId) } : {}),
+            ...(args.draft.executor.routingHints ? { routingHints: args.draft.executor.routingHints } : {}),
+          }
         : { mode: "automation-bot" },
+    ...(args.draft.modelConfig ? { modelConfig: args.draft.modelConfig } : {}),
+    ...(args.draft.permissionConfig ? { permissionConfig: args.draft.permissionConfig } : {}),
     ...(safeTrim(args.draft.templateId) ? { templateId: safeTrim(args.draft.templateId) } : {}),
     ...(safeTrim(args.draft.prompt) ? { prompt: safeTrim(args.draft.prompt) } : {}),
     reviewProfile:

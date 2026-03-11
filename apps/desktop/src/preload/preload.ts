@@ -9,7 +9,10 @@ import type {
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
   ArchiveLaneArgs,
+  AutomationIngressEventRecord,
+  AutomationIngressStatus,
   AutomationManualTriggerRequest,
+  NightShiftQueueMutationRequest,
   AutomationRuleSummary,
   AutomationRun,
   AutomationRunDetail,
@@ -582,10 +585,16 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.automationsGetNightShiftState),
     updateNightShiftSettings: async (args: UpdateNightShiftSettingsRequest): Promise<NightShiftState> =>
       ipcRenderer.invoke(IPC.automationsUpdateNightShiftSettings, args),
+    mutateNightShiftQueue: async (args: NightShiftQueueMutationRequest): Promise<NightShiftState> =>
+      ipcRenderer.invoke(IPC.automationsMutateNightShiftQueue, args),
     getMorningBriefing: async (): Promise<NightShiftBriefing | null> =>
       ipcRenderer.invoke(IPC.automationsGetMorningBriefing),
     acknowledgeMorningBriefing: async (args: { id: string }): Promise<NightShiftBriefing | null> =>
       ipcRenderer.invoke(IPC.automationsAcknowledgeMorningBriefing, args),
+    getIngressStatus: async (): Promise<AutomationIngressStatus> =>
+      ipcRenderer.invoke(IPC.automationsGetIngressStatus),
+    listIngressEvents: async (args?: { limit?: number }): Promise<AutomationIngressEventRecord[]> =>
+      ipcRenderer.invoke(IPC.automationsListIngressEvents, args ?? {}),
     parseNaturalLanguage: async (req: AutomationParseNaturalLanguageRequest): Promise<AutomationParseNaturalLanguageResult> =>
       ipcRenderer.invoke(IPC.automationsParseNaturalLanguage, req),
     validateDraft: async (req: AutomationValidateDraftRequest): Promise<AutomationValidateDraftResult> =>

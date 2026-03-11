@@ -55,6 +55,8 @@ import type {
   ProviderMode,
   LinearAutoDispatchAction,
   LinearSyncConfig,
+  MissionModelConfig,
+  MissionPermissionConfig,
   StackButtonDefinition,
   TestSuiteDefinition,
   TestSuiteTag
@@ -314,9 +316,88 @@ function coerceAutomationExecutor(value: unknown): AutomationExecutor | undefine
       : null;
   if (!mode) return undefined;
   const targetId = asString(value.targetId);
+  const routingHints = isRecord(value.routingHints)
+    ? {
+        ...(asStringArray(value.routingHints.preferredWorkerIds)?.length
+          ? { preferredWorkerIds: asStringArray(value.routingHints.preferredWorkerIds) }
+          : {}),
+        ...(asStringArray(value.routingHints.requiredCapabilities)?.length
+          ? { requiredCapabilities: asStringArray(value.routingHints.requiredCapabilities) }
+          : {}),
+      }
+    : undefined;
   return {
     mode,
     ...(targetId != null ? { targetId } : {}),
+    ...(routingHints && Object.keys(routingHints).length ? { routingHints } : {}),
+  };
+}
+
+function coerceMissionModelConfig(value: unknown): MissionModelConfig | undefined {
+  if (!isRecord(value) || !isRecord(value.orchestratorModel)) return undefined;
+  const modelId = asString(value.orchestratorModel.modelId)?.trim();
+  if (!modelId) return undefined;
+  return {
+    ...(asString(value.profileId)?.trim() ? { profileId: asString(value.profileId)!.trim() } : {}),
+    orchestratorModel: {
+      ...(asString(value.orchestratorModel.provider)?.trim()
+        ? { provider: asString(value.orchestratorModel.provider)!.trim() }
+        : {}),
+      modelId,
+      ...(asString(value.orchestratorModel.thinkingLevel)?.trim()
+        ? { thinkingLevel: asString(value.orchestratorModel.thinkingLevel)!.trim() as MissionModelConfig["orchestratorModel"]["thinkingLevel"] }
+        : {}),
+    },
+    ...(asNumber(value.decisionTimeoutCapHours) != null
+      ? { decisionTimeoutCapHours: asNumber(value.decisionTimeoutCapHours) as MissionModelConfig["decisionTimeoutCapHours"] }
+      : {}),
+  };
+}
+
+function coerceMissionPermissionConfig(value: unknown): MissionPermissionConfig | undefined {
+  if (!isRecord(value)) return undefined;
+  const cli = isRecord(value.cli)
+    ? {
+        ...(asString(value.cli.mode)?.trim() ? { mode: asString(value.cli.mode)!.trim() as NonNullable<MissionPermissionConfig["cli"]>["mode"] } : {}),
+        ...(asString(value.cli.sandboxPermissions)?.trim()
+          ? {
+              sandboxPermissions:
+                asString(value.cli.sandboxPermissions)!.trim() as NonNullable<MissionPermissionConfig["cli"]>["sandboxPermissions"]
+            }
+          : {}),
+        ...(asStringArray(value.cli.writablePaths)?.length ? { writablePaths: asStringArray(value.cli.writablePaths) } : {}),
+        ...(asStringArray(value.cli.allowedTools)?.length ? { allowedTools: asStringArray(value.cli.allowedTools) } : {}),
+      }
+    : undefined;
+  const inProcess = isRecord(value.inProcess) && asString(value.inProcess.mode)?.trim()
+    ? { mode: asString(value.inProcess.mode)!.trim() as NonNullable<MissionPermissionConfig["inProcess"]>["mode"] }
+    : undefined;
+  const providers = isRecord(value.providers)
+    ? {
+        ...(asString(value.providers.claude)?.trim()
+          ? { claude: asString(value.providers.claude)!.trim() as NonNullable<MissionPermissionConfig["providers"]>["claude"] }
+          : {}),
+        ...(asString(value.providers.codex)?.trim()
+          ? { codex: asString(value.providers.codex)!.trim() as NonNullable<MissionPermissionConfig["providers"]>["codex"] }
+          : {}),
+        ...(asString(value.providers.unified)?.trim()
+          ? { unified: asString(value.providers.unified)!.trim() as NonNullable<MissionPermissionConfig["providers"]>["unified"] }
+          : {}),
+        ...(asString(value.providers.codexSandbox)?.trim()
+          ? {
+              codexSandbox:
+                asString(value.providers.codexSandbox)!.trim() as NonNullable<MissionPermissionConfig["providers"]>["codexSandbox"]
+            }
+          : {}),
+        ...(asStringArray(value.providers.writablePaths)?.length ? { writablePaths: asStringArray(value.providers.writablePaths) } : {}),
+        ...(asStringArray(value.providers.allowedTools)?.length ? { allowedTools: asStringArray(value.providers.allowedTools) } : {}),
+      }
+    : undefined;
+  if (!(cli && Object.keys(cli).length) && !inProcess && !(providers && Object.keys(providers).length)) return undefined;
+  return {
+    ...(cli && Object.keys(cli).length ? { cli } : {}),
+    ...(inProcess ? { inProcess } : {}),
+    ...(providers && Object.keys(providers).length ? { providers } : {}),
   };
 }
 
@@ -438,6 +519,8 @@ function coerceAutomationRule(value: unknown): ConfigAutomationRule | null {
     ? value.actions.map(coerceAutomationAction).filter((x): x is AutomationAction => x != null)
     : undefined;
   const executor = coerceAutomationExecutor(value.executor);
+  const modelConfig = coerceMissionModelConfig(value.modelConfig);
+  const permissionConfig = coerceMissionPermissionConfig(value.permissionConfig);
   const templateId = asString(value.templateId);
   const prompt = asString(value.prompt);
   const reviewProfileRaw = asString(value.reviewProfile)?.trim();
@@ -483,6 +566,8 @@ function coerceAutomationRule(value: unknown): ConfigAutomationRule | null {
   if (trigger != null) out.trigger = trigger;
   if (actions != null) out.actions = actions;
   if (executor != null) out.executor = executor;
+  if (modelConfig != null) out.modelConfig = modelConfig;
+  if (permissionConfig != null) out.permissionConfig = permissionConfig;
   if (templateId != null) out.templateId = templateId;
   if (prompt != null) out.prompt = prompt;
   if (reviewProfile != null) out.reviewProfile = reviewProfile;
@@ -1694,6 +1779,8 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     })),
     trigger: entry.trigger ?? (entry.triggers?.[0] ?? { type: "manual" }),
     executor: entry.executor ?? { mode: "automation-bot" },
+    ...(entry.modelConfig ? { modelConfig: entry.modelConfig } : {}),
+    ...(entry.permissionConfig ? { permissionConfig: entry.permissionConfig } : {}),
     ...(entry.templateId?.trim() ? { templateId: entry.templateId.trim() } : {}),
     ...(entry.prompt?.trim() ? { prompt: entry.prompt.trim() } : {}),
     reviewProfile: entry.reviewProfile ?? "quick",
