@@ -4,27 +4,7 @@ import { buildFullPrompt } from "./baseOrchestratorAdapter";
 describe("buildFullPrompt", () => {
   it("injects shared facts, mission memory, and project knowledge into worker prompts", () => {
     const memoryService = {
-      getSharedFacts: () => [
-        {
-          id: "fact-1",
-          runId: "run-1",
-          stepId: "step-1",
-          factType: "gotcha",
-          content: "Peer worker found that the fixture needs a seeded repo.",
-          createdAt: "2026-03-05T12:00:00.000Z",
-        },
-      ],
       getMemoryBudget: (_projectId: string, _level: string, opts?: { scope?: string; scopeOwnerId?: string | null }) => {
-        if (opts?.scope === "mission" && opts.scopeOwnerId === "run-1") {
-          return [
-            {
-              id: "mem-mission-1",
-              category: "pattern",
-              content: "Mission memory stays scoped to the current run.",
-              importance: "medium",
-            },
-          ];
-        }
         return [
           {
             id: "mem-project-1",
@@ -64,6 +44,43 @@ describe("buildFullPrompt", () => {
         docsRefs: [],
         fullDocs: [],
         createTrackedSession: async () => ({ ptyId: "pty-1", sessionId: "session-1" }),
+        memoryBriefing: {
+          l0: { title: "Project Memory", entries: [] },
+          l1: {
+            title: "Relevant Project Knowledge",
+            entries: [
+              {
+                id: "mem-project-1",
+                category: "decision",
+                content: "Project-wide decisions should stay visible across runs.",
+                importance: "high",
+              },
+            ],
+          },
+          l2: { title: "Agent Memory", entries: [] },
+          mission: {
+            title: "Mission Memory",
+            entries: [
+              {
+                id: "mem-mission-1",
+                category: "pattern",
+                content: "Mission memory stays scoped to the current run.",
+                importance: "medium",
+              },
+            ],
+          },
+          sharedFacts: [
+            {
+              id: "mem-mission-1",
+              factType: "api_pattern",
+              content: "Mission memory stays scoped to the current run.",
+              createdAt: "2026-03-05T12:00:00.000Z",
+            },
+          ],
+          usedProcedureIds: [],
+          usedDigestIds: [],
+          usedMissionMemoryIds: ["mem-mission-1"],
+        } as any,
       },
       "unified",
       {

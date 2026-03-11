@@ -653,6 +653,8 @@ export type CreateMissionArgs = {
   teamRuntime?: TeamRuntimeConfig;
   /** Agent runtime capabilities/preferences passed to planner + coordinator. */
   agentRuntime?: MissionAgentRuntimeConfig;
+  /** Exact persistent employee owner for employee-routed missions. */
+  employeeAgentId?: string | null;
   /** Optional phase profile selection for launch */
   phaseProfileId?: string | null;
   /** Optional mission-scoped phase override sequence */

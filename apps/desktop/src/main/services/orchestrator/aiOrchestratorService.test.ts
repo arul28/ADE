@@ -1187,6 +1187,28 @@ describe("aiOrchestratorService", () => {
     }
   });
 
+  it("copies launch employeeAgentId into orchestrator run metadata", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Launch a mission on behalf of a persistent employee.",
+        laneId: fixture.laneId,
+        employeeAgentId: "employee-42",
+      });
+
+      const launched = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "autopilot",
+        defaultExecutorKind: "unified",
+      });
+
+      expect(launched.started).toBeTruthy();
+      expect(launched.started?.run.metadata?.employeeAgentId).toBe("employee-42");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("records a single mission launch failure and suppresses follow-on coordinator unavailable noise", async () => {
     const missionMemoryLifecycleService = {
       startMission: vi.fn(() => {

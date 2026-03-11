@@ -101,7 +101,6 @@ type CreatedFixture = {
   };
   memoryService: {
     addMemory: ReturnType<typeof vi.fn>;
-    addSharedFact: ReturnType<typeof vi.fn>;
     searchMemories: ReturnType<typeof vi.fn>;
   };
   ctoStateService: {
@@ -379,7 +378,6 @@ function createFixture(_provider: AgentChatProvider): CreatedFixture {
       id: "memory-1",
       createdAt: new Date().toISOString()
     })),
-    addSharedFact: vi.fn(() => ({ id: "fact-1" })),
     searchMemories: vi.fn(() => [])
   };
   const ctoStateService = {

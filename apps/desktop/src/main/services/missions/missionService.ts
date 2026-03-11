@@ -2463,6 +2463,7 @@ export function createMissionService({
           runMode: launchMode,
           autopilotExecutor,
           agentRuntime: launchAgentRuntime,
+          employeeAgentId: coerceNullableString(args.employeeAgentId),
           ...(args.modelConfig ? { modelConfig: args.modelConfig } : {}),
           ...(args.modelConfig && typeof args.modelConfig === "object" ? { intelligenceConfig: args.modelConfig.intelligenceConfig } : {}),
           ...(launchTeamRuntime ? { teamRuntime: launchTeamRuntime } : {}),

@@ -20,7 +20,6 @@ function createTestDeps(args: {
       mergedIntoId?: string;
       memory?: { id: string; tier: number };
     };
-    addSharedFact: (opts: Record<string, unknown>) => unknown;
   };
 }) {
   const orchestratorService = {
@@ -78,7 +77,6 @@ describe("coordinator memory tools", () => {
         },
       ])),
       writeMemory: vi.fn(),
-      addSharedFact: vi.fn(),
     };
     const { tools } = createTestDeps({
       graph: { run: { id: "run-1", metadata: {} }, steps: [], attempts: [] },
@@ -110,7 +108,6 @@ describe("coordinator memory tools", () => {
         deduped: false,
         memory: { id: "memory-2", tier: 2 },
       })),
-      addSharedFact: vi.fn(),
     };
     const { tools } = createTestDeps({
       graph: { run: { id: "run-1", metadata: {} }, steps: [], attempts: [] },
@@ -133,10 +130,6 @@ describe("coordinator memory tools", () => {
       sourceRunId: "run-1",
       sourceType: "system",
       sourceId: "coordinator:run-1",
-    }));
-    expect(memoryService.addSharedFact).toHaveBeenCalledWith(expect.objectContaining({
-      runId: "run-1",
-      factType: "gotcha",
     }));
     expect(result.ok).toBe(true);
     expect(result.saved).toBe(true);

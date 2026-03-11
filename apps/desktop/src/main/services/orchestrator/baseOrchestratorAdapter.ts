@@ -381,9 +381,10 @@ export function buildFullPrompt(
     systemParts.push(`Context from upstream steps:\n${handoffSummaries.map((s) => `- ${s}`).join("\n")}`);
   }
 
-  // Shared facts from other agents in this run
+  // Shared team knowledge projected from mission memory
   const memoryService = opts?.memoryService;
-  const sharedFacts = opts?.memoryBriefing?.sharedFacts ?? memoryService?.getSharedFacts?.(run.id, 20) ?? [];
+  const briefing = opts?.memoryBriefing ?? args.memoryBriefing ?? null;
+  const sharedFacts = briefing?.sharedFacts ?? [];
   if (sharedFacts.length > 0) {
     systemParts.push(
       [
@@ -397,7 +398,6 @@ export function buildFullPrompt(
   // Project memories (high importance only, above minimum relevance threshold)
   const MIN_MEMORY_SCORE = 0.3;
   const memProjectId = opts?.projectId;
-  const briefing = opts?.memoryBriefing ?? args.memoryBriefing ?? null;
   if (briefing) {
     if (briefing.mission.entries.length > 0) {
       systemParts.push(
@@ -426,19 +426,6 @@ export function buildFullPrompt(
       );
     }
   } else if (memoryService && memProjectId) {
-    const missionMemories = memoryService.getMemoryBudget(memProjectId, "lite", {
-      scope: "mission",
-      scopeOwnerId: run.id,
-    }).filter((m) => m.compositeScore >= MIN_MEMORY_SCORE);
-    if (missionMemories.length > 0) {
-      systemParts.push(
-        [
-          "## Mission Memory",
-          ...missionMemories.map((mem) => `- [${mem.category}] ${mem.content}`)
-        ].join("\n")
-      );
-    }
-
     const projectMemories = memoryService.getMemoryBudget(memProjectId, "lite");
     const promoted = projectMemories.filter((m) => m.importance === "high" && m.compositeScore >= MIN_MEMORY_SCORE);
     if (promoted.length > 0) {

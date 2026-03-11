@@ -67,15 +67,6 @@ export type Memory = {
   embedded?: boolean;
 };
 
-export type SharedFact = {
-  id: string;
-  runId: string;
-  stepId: string | null;
-  factType: "api_pattern" | "schema_change" | "config" | "architectural" | "gotcha";
-  content: string;
-  createdAt: string;
-};
-
 export type AddMemoryOpts = {
   projectId: string;
   scope: MemoryScope;
@@ -374,38 +365,6 @@ function mapMemoryRow(row: Record<string, unknown>): Memory {
     writeGateReason: row.write_gate_reason ? String(row.write_gate_reason) : null,
     embedded: row.embedded === true || Number(row.embedded ?? 0) === 1 || row.embedding_blob != null,
   };
-}
-
-function mapSharedFactRow(row: Record<string, unknown>): SharedFact {
-  return {
-    id: String(row.id ?? ""),
-    runId: String(row.run_id ?? ""),
-    stepId: row.step_id ? String(row.step_id) : null,
-    factType: String(row.fact_type ?? "architectural") as SharedFact["factType"],
-    content: String(row.content ?? ""),
-    createdAt: String(row.created_at ?? ""),
-  };
-}
-
-function mapMemoryCategoryToSharedFactType(category: MemoryCategory): SharedFact["factType"] {
-  switch (category) {
-    case "gotcha":
-      return "gotcha";
-    case "convention":
-    case "preference":
-    case "digest":
-      return "config";
-    case "pattern":
-    case "procedure":
-      return "api_pattern";
-    case "decision":
-    case "fact":
-    case "handoff":
-    case "episode":
-      return "architectural";
-    default:
-      return "architectural";
-  }
 }
 
 export type UnifiedMemoryService = ReturnType<typeof createUnifiedMemoryService>;
@@ -1237,79 +1196,6 @@ export function createUnifiedMemoryService(db: AdeDb, serviceOpts: CreateUnified
     return db.all<Record<string, unknown>>(sql, params).map(mapMemoryRow);
   }
 
-  function addSharedFact(opts: {
-    runId: string;
-    stepId?: string;
-    factType: SharedFact["factType"];
-    content: string;
-  }): SharedFact {
-    const id = randomUUID();
-    const now = new Date().toISOString();
-    db.run(
-      `
-        INSERT INTO orchestrator_shared_facts (id, run_id, step_id, fact_type, content, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `,
-      [id, opts.runId, opts.stepId ?? null, opts.factType, opts.content, now]
-    );
-
-    return {
-      id,
-      runId: opts.runId,
-      stepId: opts.stepId ?? null,
-      factType: opts.factType,
-      content: opts.content,
-      createdAt: now,
-    };
-  }
-
-  function getSharedFacts(runId: string, limit = 20): SharedFact[] {
-    const runRow = db.get<{ mission_id: string | null; project_id: string | null }>(
-      `
-        select mission_id, project_id
-        from orchestrator_runs
-        where id = ?
-        limit 1
-      `,
-      [runId]
-    );
-    const rows = db.all<Record<string, unknown>>(
-      `
-        SELECT *
-        FROM orchestrator_shared_facts
-        WHERE run_id = ?
-        ORDER BY created_at DESC
-        LIMIT ?
-      `,
-      [runId, limit]
-    );
-    const legacy = rows.map(mapSharedFactRow);
-    const missionScopeFacts = runRow?.mission_id && runRow?.project_id
-      ? listMemories({
-          projectId: String(runRow.project_id),
-          scope: "mission",
-          scopeOwnerIds: [String(runRow.mission_id), runId],
-          status: ["promoted", "candidate"],
-          categories: ["fact", "decision", "gotcha", "handoff", "digest", "pattern", "procedure"],
-          limit,
-        }).map((memory) => ({
-          id: `mission:${memory.id}`,
-          runId,
-          stepId: null,
-          factType: mapMemoryCategoryToSharedFactType(memory.category),
-          content: memory.content,
-          createdAt: memory.createdAt,
-        } satisfies SharedFact))
-      : [];
-    const merged = new Map<string, SharedFact>();
-    for (const fact of [...missionScopeFacts, ...legacy]) {
-      if (!merged.has(fact.id)) merged.set(fact.id, fact);
-    }
-    return [...merged.values()]
-      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-      .slice(0, limit);
-  }
-
   return {
     writeMemory,
     getMemory: readById,
@@ -1325,7 +1211,5 @@ export function createUnifiedMemoryService(db: AdeDb, serviceOpts: CreateUnified
     getCandidateMemories,
     searchMemories,
     getMemoryBudget,
-    addSharedFact,
-    getSharedFacts,
   };
 }

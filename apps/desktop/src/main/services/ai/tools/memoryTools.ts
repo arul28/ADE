@@ -1,24 +1,8 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type {
-  MemoryCategory,
-  SharedFact,
   createUnifiedMemoryService,
 } from "../../memory/unifiedMemoryService";
-
-function mapCategoryToFactType(category: MemoryCategory): SharedFact["factType"] {
-  switch (category) {
-    case "pattern":
-      return "api_pattern";
-    case "gotcha":
-      return "gotcha";
-    case "convention":
-    case "preference":
-      return "config";
-    default:
-      return "architectural";
-  }
-}
 
 export function createMemoryTools(
   memoryService: ReturnType<typeof createUnifiedMemoryService>,
@@ -101,20 +85,6 @@ export function createMemoryTools(
       }
 
       const memory = result.memory;
-
-      if (opts?.runId) {
-        try {
-          memoryService.addSharedFact({
-            runId: opts.runId,
-            ...(opts.stepId ? { stepId: opts.stepId } : {}),
-            factType: mapCategoryToFactType(category),
-            content
-          });
-        } catch {
-          // Best-effort: project memory writes must not fail if shared facts persistence fails.
-        }
-      }
-
       return {
         saved: true,
         id: memory.id,

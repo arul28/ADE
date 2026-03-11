@@ -722,6 +722,7 @@ export function createLinearSyncService(args: {
         priority: mapMissionPriority(issue.priorityLabel),
         autostart: false,
         launchMode: "autopilot",
+        employeeAgentId: routeDecision.workerId,
       });
 
       attachMissionLinearMetadata(mission.id, issue, routeDecision);

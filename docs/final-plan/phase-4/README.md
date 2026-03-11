@@ -17,7 +17,7 @@ Goal: Add the CTO agent as a persistent project-aware assistant with a configura
 | W6½: Memory Engine Hardening | [W6-half.md](W6-half.md) | ✅ Complete |
 | W-UX: CTO + Org Experience Overhaul | [W-UX.md](W-UX.md) | Partially implemented |
 | W7a: Embeddings Pipeline | [W7a.md](W7a.md) | ✅ Complete |
-| W7b: Orchestrator ↔ Memory Integration | [W7b.md](W7b.md) | Mostly implemented |
+| W7b: Orchestrator ↔ Memory Integration | [W7b.md](W7b.md) | ✅ Complete |
 | W7c: Skills + Learning Pipeline | [W7c.md](W7c.md) | Core implemented / advanced capture pending |
 | W8: External MCP Consumption | [W8.md](W8.md) | Not started |
 | W9: OpenClaw Bridge | [W9.md](W9.md) | Not started |
@@ -25,11 +25,11 @@ Goal: Add the CTO agent as a persistent project-aware assistant with a configura
 
 ### Audit Snapshot (2026-03-11)
 
-- Complete: W1-W4, W6, W6½, W7a
-- Mostly/Core implemented: W7b, W7c
-- Partially implemented: W5b, W-UX
+- Complete: W1-W4, W6, W6½, W7a, W7b
+- Mostly/Core implemented: W7c
+- Partially implemented: W-UX
 - Still genuinely pending: W8, W9, W10
-- Highest-value cleanup still open inside shipped work: finish `orchestrator_shared_facts` migration, wire persistent employee L2 briefing injection end-to-end, and complete advanced knowledge capture from interventions/repeated errors/PR feedback
+- Highest-value cleanup still open inside shipped work: complete advanced knowledge capture from interventions/repeated errors/PR feedback
 
 ### Reference docs
 
@@ -58,7 +58,7 @@ This phase draws heavily from three open-source projects. Each workstream credit
 
 ### Execution Order
 
-Workstreams are numbered by topic but executed in dependency order. W1-W4, W5a, W6, W6½, and W7a are complete. A 2026-03-10 code audit showed that W-UX, W7b, and W7c are no longer greenfield workstreams: they have substantial implementation in the codebase and now need status-correct documentation plus targeted follow-through. The orchestrator is still evolving, so the remaining backlog is reordered around what is truly left rather than what was originally planned.
+Workstreams are numbered by topic but executed in dependency order. W1-W4, W5a, W6, W6½, W7a, and W7b are complete. A 2026-03-11 code audit showed that W-UX and W7c are no longer greenfield workstreams: they have substantial implementation in the codebase and now need status-correct documentation plus targeted follow-through. The orchestrator is still evolving, so the remaining backlog is reordered around what is truly left rather than what was originally planned.
 
 **Completed workstreams (locked):**
 - W1: CTO Agent Core ✅
@@ -69,12 +69,11 @@ Workstreams are numbered by topic but executed in dependency order. W1-W4, W5a, 
 - W6: Unified Memory System ✅ (lexical/composite scoring; no embeddings)
 - W6½: Memory Engine Hardening ✅ (lifecycle sweeps, batch consolidation, pre-compaction flush)
 - W7a: Embeddings Pipeline ✅ (local all-MiniLM-L6-v2, hybrid FTS+cosine retrieval, MMR re-ranking)
+- W7b: Orchestrator ↔ Memory Integration ✅ (mission-memory SSoT, shared team knowledge projection, exact employee L2 injection)
 
 **Known gaps in shipped work** (addressed by remaining workstreams):
 - CTO still lacks the intended guided onboarding/setup flow and broader visual/system polish
 - Inconsistent theming and shared component treatment remain across CTO/Automations/Memory surfaces
-- `orchestrator_shared_facts` migration is incomplete, so mission knowledge still has a legacy compatibility path
-- Persistent employee L2 memory is designed in the briefing layer but not fully wired through orchestrator call sites
 - Advanced learning capture from user interventions, repeated errors, and PR feedback is still incomplete even though procedural extraction and skill export are present
 
 ```
@@ -82,17 +81,14 @@ Wave 3 (partially shipped — UX polish still open):
   W6½: Memory Engine Hardening            ✅ Complete
   W-UX: CTO + Org Experience Overhaul     Partially implemented; onboarding/polish still open
 
-Wave 4 (mostly shipped — mission memory cleanup remains):
+Wave 4 (shipped):
   W7a: Embeddings Pipeline                ✅ Complete
-  W7b: Orchestrator ↔ Memory Integration  Mostly implemented; legacy shared-facts cleanup remains
+  W7b: Orchestrator ↔ Memory Integration  ✅ Complete
 
 Wave 5 (core shipped — advanced learning capture remains):
   W7c: Skills + Learning Pipeline         Core implemented; advanced capture/review mining still open
 
-Wave 6 (after stable orchestrator — automations):
-  W5b: Automations — Executors + Night Shift + External Triggers  Partially implemented; webhook ingress + executor follow-through remain
-
-Wave 7 (ecosystem — independent, can parallel):
+Wave 6 (ecosystem — independent, can parallel):
   W8: External MCP Consumption            Pending
   W9: OpenClaw Bridge                     Pending; needs W1, W8
   W10: .ade/ Portable State               Pending; needs W1, W6½
@@ -100,15 +96,12 @@ Wave 7 (ecosystem — independent, can parallel):
 
 Dependency graph:
 ```
-W1-W4 ✅ ──→ W5a ✅ ──→ W5b (Automations Full; partially implemented)
-     │                      ↑
-     │                      │ (needs stable orchestrator)
+W1-W4 ✅
      │
-     ├──→ W6 ✅ ──→ W6½ ✅ ──→ W7a ✅ ──→ W7c (Skills; core shipped, advanced capture pending)
-     │              │                          ↑
-     │              ├──→ W7b (Orch ↔ Memory; mostly shipped) ──┘
-     │              │         ↑ (cleanup + employee L2 wiring remain)
-     │              └──→ W10 (.ade/ State; pending)
+     ├──→ W6 ✅ ──→ W6½ ✅ ──→ W7a ✅ ──→ W7b ✅
+     │                          └──────→ W7c (Skills; core shipped, advanced capture pending)
+     │
+     ├──→ W10 (.ade/ State; pending)
      │
      ├──→ W-UX (CTO + Org UX; partial)
      │
@@ -201,13 +194,14 @@ Phase 4 should enable a "tech department" loop: one persistent agent per employe
 - ✅ Graceful degradation: embedding pipeline disabled → lexical fallback, identical to shipped W6 behavior.
 - ✅ Memory Health dashboard shows embedding progress, model status, and cache stats.
 
-**W7b — Orchestrator ↔ Memory Integration: Mostly implemented (2026-03-10 audit)**
+**W7b — Orchestrator ↔ Memory Integration: ✅ Complete (2026-03-11 audit)**
 - ✅ Mission memory lifecycle exists: scope creation, accumulation, promotion on success, archival on failure.
 - ✅ Worker briefing assembly reads from unified memory for project and mission context.
 - ✅ Episodic summaries are generated asynchronously on mission/session completion.
 - ✅ Human work ingestion/change digest generation exists and is used as a freshness gate before mission work.
 - ✅ Continuation vs failure retry memory exists: clean exit preserves mission state, failure injects gotchas.
-- Remaining: fully retire the `orchestrator_shared_facts` compatibility path and wire persistent employee L2 agent-memory injection all the way through orchestrator briefing call sites.
+- ✅ `orchestrator_shared_facts` is retired; mission-scoped unified memory is now the single coordination store.
+- ✅ Persistent employee L2 agent memory is wired end to end through exact `employeeAgentId` mission launch metadata.
 
 **W7c — Skills + Learning Pipeline: Core implemented / advanced capture pending (2026-03-10 audit)**
 - ✅ Procedural memory extraction from clusters of similar episodic summaries exists.

@@ -417,7 +417,7 @@ Automations are authored in the Automations tab, but the CTO org is a primary ex
 
 - Automations can run as a disposable automation bot, route through the CTO, target a specific persistent employee, or enter the Night Shift queue.
 - Persistent employees bring long-lived identity, memory, budgets, and active-hours policy to recurring automations.
-- Automation-scoped memory stays attached to the rule, while employee memory remains attached to the person. When a persistent employee executes a rule, both scopes are available.
+- Automation-scoped memory stays attached to the rule, while employee memory remains attached to the person. When a persistent employee executes a rule, both scopes are available, and employee memory is injected only when the mission/run was launched with that exact employee's `employeeAgentId`.
 - The CTO can supervise org-wide automations, re-route work to a better employee, or review Night Shift results and follow up the next morning.
 
 ---

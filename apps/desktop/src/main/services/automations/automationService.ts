@@ -1104,6 +1104,7 @@ export function createAutomationService({
       launchMode: "autopilot",
       autopilotExecutor: "unified",
       priority: args.rule.mode === "fix" ? "high" : "normal",
+      employeeAgentId: args.rule.executor.mode === "employee" ? (args.rule.executor.targetId ?? null) : null,
     });
 
     missionServiceRef.patchMetadata(mission.id, {
