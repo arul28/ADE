@@ -58,6 +58,8 @@ import type {
   GitActionResult,
   GitCherryPickArgs,
   GitCommitArgs,
+  GitGenerateCommitMessageArgs,
+  GitGenerateCommitMessageResult,
   GitCommitSummary,
   GitConflictState,
   GitGetCommitMessageArgs,
@@ -408,7 +410,7 @@ import type { SessionDeltaService } from "../sessions/sessionDeltaService";
 import type { createPtyService } from "../pty/ptyService";
 import type { createDiffService } from "../diffs/diffService";
 import type { createFileService } from "../files/fileService";
-import type { createProjectConfigService } from "../config/projectConfigService";
+import { mergeAiConfig, type createProjectConfigService } from "../config/projectConfigService";
 import type { createProcessService } from "../processes/processService";
 import type { createTestService } from "../tests/testService";
 import type { createGitOperationsService } from "../git/gitOperationsService";
@@ -547,6 +549,7 @@ function escapeCsvCell(value: string | null | undefined): string {
 const AI_USAGE_FEATURE_KEYS: AiFeatureKey[] = [
   "narratives",
   "conflict_proposals",
+  "commit_messages",
   "pr_descriptions",
   "terminal_summaries",
   "memory_consolidation",
@@ -1475,14 +1478,7 @@ export function registerIpc({
     const ctx = getCtx();
     const snapshot = ctx.projectConfigService.get();
     const currentAi = snapshot.shared?.ai ?? {};
-    const merged: AiConfig = {
-      ...currentAi,
-      ...partial,
-      features: { ...currentAi.features, ...partial.features },
-      taskRouting: { ...currentAi.taskRouting, ...partial.taskRouting },
-      budgets: { ...currentAi.budgets, ...partial.budgets },
-      featureModelOverrides: { ...currentAi.featureModelOverrides, ...partial.featureModelOverrides },
-    };
+    const merged = mergeAiConfig(currentAi, partial) ?? {};
     ctx.projectConfigService.save({
       shared: { ...snapshot.shared, ai: merged },
       local: snapshot.local ?? {},
@@ -3163,6 +3159,14 @@ export function registerIpc({
     const ctx = getCtx();
     return ctx.gitService.commit(arg);
   });
+
+  ipcMain.handle(
+    IPC.gitGenerateCommitMessage,
+    async (_event, arg: GitGenerateCommitMessageArgs): Promise<GitGenerateCommitMessageResult> => {
+      const ctx = getCtx();
+      return ctx.gitService.generateCommitMessage(arg);
+    }
+  );
 
   ipcMain.handle(IPC.gitListRecentCommits, async (_event, arg: { laneId: string; limit?: number }): Promise<GitCommitSummary[]> => {
     const ctx = getCtx();

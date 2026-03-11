@@ -250,16 +250,16 @@ const ALL_PRS = [...NORMAL_PRS, ...QUEUE_PRS, ...INTEGRATION_PRS];
 // ── Merge Contexts ────────────────────────────────────────────
 const MOCK_MERGE_CONTEXTS: Record<string, any> = {
   // Normal PRs — no group
-  "pr-1": { prId: "pr-1", groupId: null, groupType: null, sourceLaneIds: ["lane-auth"], targetLaneId: "lane-main", members: [] },
-  "pr-2": { prId: "pr-2", groupId: null, groupType: null, sourceLaneIds: ["lane-dashboard"], targetLaneId: "lane-main", members: [] },
-  "pr-3": { prId: "pr-3", groupId: null, groupType: null, sourceLaneIds: ["lane-api"], targetLaneId: "lane-main", members: [] },
-  "pr-4": { prId: "pr-4", groupId: null, groupType: null, sourceLaneIds: ["lane-perf"], targetLaneId: "lane-main", members: [] },
-  "pr-5": { prId: "pr-5", groupId: null, groupType: null, sourceLaneIds: ["lane-onboard"], targetLaneId: "lane-main", members: [] },
+  "pr-1": { prId: "pr-1", groupId: null, groupType: null, sourceLaneIds: ["lane-auth"], targetLaneId: "lane-main", integrationLaneId: null, members: [] },
+  "pr-2": { prId: "pr-2", groupId: null, groupType: null, sourceLaneIds: ["lane-dashboard"], targetLaneId: "lane-main", integrationLaneId: null, members: [] },
+  "pr-3": { prId: "pr-3", groupId: null, groupType: null, sourceLaneIds: ["lane-api"], targetLaneId: "lane-main", integrationLaneId: null, members: [] },
+  "pr-4": { prId: "pr-4", groupId: null, groupType: null, sourceLaneIds: ["lane-perf"], targetLaneId: "lane-main", integrationLaneId: null, members: [] },
+  "pr-5": { prId: "pr-5", groupId: null, groupType: null, sourceLaneIds: ["lane-onboard"], targetLaneId: "lane-main", integrationLaneId: null, members: [] },
 
   // Queue group 1: "Release v3.0 — Commerce"
   "pr-q1": {
     prId: "pr-q1", groupId: "queue-commerce-v3", groupType: "queue",
-    sourceLaneIds: ["lane-payments"], targetLaneId: "lane-main",
+    sourceLaneIds: ["lane-payments"], targetLaneId: "lane-main", integrationLaneId: null,
     members: [
       { prId: "pr-q1", laneId: "lane-payments", laneName: "feature/payments", prNumber: 160, position: 0, role: "source" },
       { prId: "pr-q2", laneId: "lane-checkout", laneName: "feature/checkout-flow", prNumber: 161, position: 1, role: "source" },
@@ -268,7 +268,7 @@ const MOCK_MERGE_CONTEXTS: Record<string, any> = {
   },
   "pr-q2": {
     prId: "pr-q2", groupId: "queue-commerce-v3", groupType: "queue",
-    sourceLaneIds: ["lane-checkout"], targetLaneId: "lane-main",
+    sourceLaneIds: ["lane-checkout"], targetLaneId: "lane-main", integrationLaneId: null,
     members: [
       { prId: "pr-q1", laneId: "lane-payments", laneName: "feature/payments", prNumber: 160, position: 0, role: "source" },
       { prId: "pr-q2", laneId: "lane-checkout", laneName: "feature/checkout-flow", prNumber: 161, position: 1, role: "source" },
@@ -277,7 +277,7 @@ const MOCK_MERGE_CONTEXTS: Record<string, any> = {
   },
   "pr-q3": {
     prId: "pr-q3", groupId: "queue-commerce-v3", groupType: "queue",
-    sourceLaneIds: ["lane-notifications"], targetLaneId: "lane-main",
+    sourceLaneIds: ["lane-notifications"], targetLaneId: "lane-main", integrationLaneId: null,
     members: [
       { prId: "pr-q1", laneId: "lane-payments", laneName: "feature/payments", prNumber: 160, position: 0, role: "source" },
       { prId: "pr-q2", laneId: "lane-checkout", laneName: "feature/checkout-flow", prNumber: 161, position: 1, role: "source" },
@@ -287,7 +287,7 @@ const MOCK_MERGE_CONTEXTS: Record<string, any> = {
   // Queue group 2: "Billing Upgrade"
   "pr-q4": {
     prId: "pr-q4", groupId: "queue-billing-upgrade", groupType: "queue",
-    sourceLaneIds: ["lane-billing"], targetLaneId: "lane-main",
+    sourceLaneIds: ["lane-billing"], targetLaneId: "lane-main", integrationLaneId: null,
     members: [
       { prId: "pr-q4", laneId: "lane-billing", laneName: "feature/billing-v2", prNumber: 170, position: 0, role: "source" },
     ],
@@ -296,16 +296,18 @@ const MOCK_MERGE_CONTEXTS: Record<string, any> = {
   // Integration PRs — multi-source
   "pr-i1": {
     prId: "pr-i1", groupId: "integration-search-analytics", groupType: "integration",
-    sourceLaneIds: ["lane-search", "lane-analytics"], targetLaneId: "lane-main",
+    sourceLaneIds: ["lane-search", "lane-analytics"], targetLaneId: "lane-main", integrationLaneId: "lane-search",
     members: [
+      { prId: "pr-i1", laneId: "lane-search", laneName: "integration/search-analytics", prNumber: 180, position: 0, role: "integration" },
       { prId: "pr-i1", laneId: "lane-search", laneName: "feature/search-v2", prNumber: 180, position: 0, role: "source" },
       { prId: "pr-i1", laneId: "lane-analytics", laneName: "feature/analytics", prNumber: null, position: 1, role: "source" },
     ],
   },
   "pr-i2": {
     prId: "pr-i2", groupId: "integration-i18n-a11y", groupType: "integration",
-    sourceLaneIds: ["lane-i18n", "lane-a11y"], targetLaneId: "lane-main",
+    sourceLaneIds: ["lane-i18n", "lane-a11y"], targetLaneId: "lane-main", integrationLaneId: "lane-i18n",
     members: [
+      { prId: "pr-i2", laneId: "lane-i18n", laneName: "integration/i18n-a11y", prNumber: 185, position: 0, role: "integration" },
       { prId: "pr-i2", laneId: "lane-i18n", laneName: "feature/i18n", prNumber: 185, position: 0, role: "source" },
       { prId: "pr-i2", laneId: "lane-a11y", laneName: "feature/accessibility", prNumber: null, position: 1, role: "source" },
     ],
@@ -1050,7 +1052,12 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       createQueue: resolvedArg({}),
       createIntegration: resolvedArg({}),
       simulateIntegration: resolvedArg(MOCK_INTEGRATION_SIMULATION),
-      commitIntegration: resolvedArg({}),
+      commitIntegration: resolvedArg({
+        groupId: "group-int-mock",
+        integrationLaneId: "lane-search",
+        pr: INTEGRATION_PRS[0],
+        mergeResults: [],
+      }),
       landStackEnhanced: resolvedArg([]),
       landQueueNext: resolvedArg({ success: true, prNumber: 161, sha: "def456" }),
       startQueueAutomation: async (args: { groupId: string; autoResolve?: boolean; archiveLane?: boolean; ciGating?: boolean; method?: string; resolverModel?: string; reasoningEffort?: string }) => {
@@ -1108,7 +1115,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       listQueueRehearsals: async () => Object.values(MOCK_QUEUE_REHEARSAL_STATE),
       getConflictAnalysis: resolvedArg({}),
       getMergeContext: async (prId: string) =>
-        MOCK_MERGE_CONTEXTS[prId] ?? { prId, groupId: null, groupType: null, sourceLaneIds: [], targetLaneId: null, members: [] },
+        MOCK_MERGE_CONTEXTS[prId] ?? { prId, groupId: null, groupType: null, sourceLaneIds: [], targetLaneId: null, integrationLaneId: null, members: [] },
       listWithConflicts: resolved(ALL_PRS),
       aiResolutionStart: async () => ({
         sessionId: "mock-pr-ai-session",
@@ -1139,7 +1146,11 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       listProposals: resolved([]),
       updateProposal: resolvedArg(undefined),
       deleteProposal: resolvedArg(undefined),
-      createIntegrationLaneForProposal: resolvedArg({}),
+      createIntegrationLaneForProposal: resolvedArg({
+        integrationLaneId: "lane-search",
+        mergedCleanLanes: [],
+        conflictingLanes: [],
+      }),
       startIntegrationResolution: resolvedArg({}),
       getIntegrationResolutionState: resolvedArg(null),
       recheckIntegrationStep: resolvedArg({}),

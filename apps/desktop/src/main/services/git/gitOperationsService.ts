@@ -7,6 +7,8 @@ import type {
   GitBranchSummary,
   GitCherryPickArgs,
   GitCommitArgs,
+  GitGenerateCommitMessageArgs,
+  GitGenerateCommitMessageResult,
   GitCommitSummary,
   GitConflictState,
   GitGetCommitMessageArgs,
@@ -26,12 +28,24 @@ import type {
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createOperationService } from "../history/operationService";
+import type { createProjectConfigService } from "../config/projectConfigService";
+import type { createAiIntegrationService } from "../ai/aiIntegrationService";
+import { isRecord } from "../shared/utils";
 
 type LaneInfo = {
   baseRef: string;
   branchRef: string;
   worktreePath: string;
   laneType: LaneType;
+};
+
+type CommitMessagePromptContext = {
+  hasStagedChanges: boolean;
+  stagedFiles: string;
+  stagedStat: string;
+  stagedPatch: string;
+  headSubject: string;
+  headSummary: string;
 };
 
 function localBranchNameFromRemoteRef(ref: string): string {
@@ -80,12 +94,16 @@ async function getAbsoluteGitDir(worktreePath: string): Promise<string | null> {
 export function createGitOperationsService({
   laneService,
   operationService,
+  projectConfigService,
+  aiIntegrationService,
   logger,
   onHeadChanged,
   onWorktreeChanged
 }: {
   laneService: ReturnType<typeof createLaneService>;
   operationService: ReturnType<typeof createOperationService>;
+  projectConfigService: ReturnType<typeof createProjectConfigService>;
+  aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
   logger: Logger;
   onHeadChanged?: (args: {
     laneId: string;
@@ -102,6 +120,125 @@ export function createGitOperationsService({
     postHeadSha: string | null;
   }) => void;
 }) {
+  function extractEffectiveAiConfig(): Record<string, unknown> {
+    const snapshot = projectConfigService.get();
+    return isRecord(snapshot.effective.ai) ? snapshot.effective.ai : {};
+  }
+
+  function getConfiguredCommitMessageModel(): string | null {
+    const aiConfig = extractEffectiveAiConfig();
+    const overrides = isRecord(aiConfig.featureModelOverrides) ? aiConfig.featureModelOverrides : {};
+    const modelId = typeof overrides.commit_messages === "string" ? overrides.commit_messages.trim() : "";
+    return modelId.length ? modelId : null;
+  }
+
+  function normalizeCommitMessage(rawText: string): string {
+    const firstLine = rawText
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean) ?? "";
+    const cleaned = firstLine
+      .replace(/^["'`]+|["'`]+$/g, "")
+      .replace(/^commit message\s*[:\-]\s*/i, "")
+      .replace(/^subject\s*[:\-]\s*/i, "")
+      .replace(/^[-*]\s+/, "")
+      .trim()
+      .replace(/\.$/, "");
+    if (!cleaned.length) {
+      throw new Error("AI returned an empty commit message.");
+    }
+    return cleaned.slice(0, 72).trimEnd();
+  }
+
+  function limitText(value: string, maxChars: number): string {
+    if (value.length <= maxChars) return value;
+    return `${value.slice(0, maxChars)}\n...(truncated)...`;
+  }
+
+  async function assertCommitMessageGenerationEnabled(): Promise<string> {
+    if (!aiIntegrationService.getFeatureFlag("commit_messages")) {
+      throw new Error("AI commit messages are off. Enable Commit Messages in Settings or type a commit message manually.");
+    }
+
+    const model = getConfiguredCommitMessageModel();
+    if (!model) {
+      throw new Error("Choose a Commit Messages model in Settings or type a commit message manually.");
+    }
+
+    const aiStatus = await aiIntegrationService.getStatus().catch(() => null);
+    if (aiStatus?.availableModelIds?.length && !aiStatus.availableModelIds.includes(model)) {
+      throw new Error(`The configured Commit Messages model '${model}' is not currently available. Update Settings or type a commit message manually.`);
+    }
+
+    return model;
+  }
+
+  async function loadCommitMessagePromptContext(lane: LaneInfo): Promise<CommitMessagePromptContext> {
+    const [stagedFilesRes, stagedStatRes, stagedPatchRes, headSubjectRes, headSummaryRes] = await Promise.all([
+      runGit(["diff", "--cached", "--name-status", "--find-renames"], { cwd: lane.worktreePath, timeoutMs: 10_000 }),
+      runGit(["diff", "--cached", "--stat"], { cwd: lane.worktreePath, timeoutMs: 10_000 }),
+      runGit(["diff", "--cached", "--unified=0", "--no-color"], { cwd: lane.worktreePath, timeoutMs: 15_000 }),
+      runGit(["show", "-s", "--format=%s", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 8_000 }),
+      runGit(["show", "--stat", "--name-status", "--format=", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 12_000 })
+    ]);
+
+    const stagedFiles = stagedFilesRes.exitCode === 0 ? stagedFilesRes.stdout.trim() : "";
+    const stagedStat = stagedStatRes.exitCode === 0 ? stagedStatRes.stdout.trim() : "";
+    const stagedPatch = stagedPatchRes.exitCode === 0 ? stagedPatchRes.stdout.trim() : "";
+    const headSubject = headSubjectRes.exitCode === 0 ? headSubjectRes.stdout.trim() : "";
+    const headSummary = headSummaryRes.exitCode === 0 ? headSummaryRes.stdout.trim() : "";
+
+    return {
+      hasStagedChanges: stagedFiles.length > 0 || stagedPatch.length > 0 || stagedStat.length > 0,
+      stagedFiles,
+      stagedStat,
+      stagedPatch,
+      headSubject,
+      headSummary
+    };
+  }
+
+  function buildCommitMessagePrompt(lane: LaneInfo, args: GitGenerateCommitMessageArgs, context: CommitMessagePromptContext): string {
+    return [
+      "Write a single git commit subject for these changes.",
+      "Return plain text only.",
+      "Rules:",
+      "- one line only",
+      "- imperative mood",
+      "- concise and specific",
+      "- 72 characters or fewer",
+      "- no quotes",
+      "- no trailing period",
+      "",
+      `Branch: ${lane.branchRef}`,
+      `Base: ${lane.baseRef}`,
+      `Amend mode: ${args.amend ? "yes" : "no"}`,
+      "",
+      context.hasStagedChanges ? "Staged files:" : "Current HEAD summary:",
+      context.hasStagedChanges
+        ? limitText(context.stagedFiles || "(none)", 2_000)
+        : limitText(context.headSummary || "(none)", 2_000),
+      "",
+      context.hasStagedChanges ? "Staged diff stat:" : "Current HEAD subject:",
+      context.hasStagedChanges
+        ? limitText(context.stagedStat || "(none)", 2_000)
+        : (context.headSubject || "(none)"),
+      "",
+      context.hasStagedChanges ? "Staged patch preview:" : "Current HEAD patch stat:",
+      context.hasStagedChanges
+        ? limitText(context.stagedPatch || "(none)", 8_000)
+        : limitText(context.headSummary || "(none)", 2_000)
+    ].join("\n");
+  }
+
+  function toCommitMessageGenerationError(error: unknown): Error {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/No AI provider is available/i.test(message)) {
+      return new Error("No AI provider is available for Commit Messages. Configure the model/provider in Settings or type a commit message manually.");
+    }
+    return error instanceof Error ? error : new Error(message);
+  }
+
   const runLaneOperation = async <T>({
     laneId,
     kind,
@@ -342,6 +479,30 @@ export function createGitOperationsService({
         }
       });
       return action;
+    },
+
+    async generateCommitMessage(args: GitGenerateCommitMessageArgs): Promise<GitGenerateCommitMessageResult> {
+      const model = await assertCommitMessageGenerationEnabled();
+      const lane = laneService.getLaneBaseAndBranch(args.laneId);
+      const promptContext = await loadCommitMessagePromptContext(lane);
+      if (!promptContext.hasStagedChanges && !args.amend) {
+        throw new Error("Stage changes before generating a commit message.");
+      }
+      const prompt = buildCommitMessagePrompt(lane, args, promptContext);
+
+      try {
+        const result = await aiIntegrationService.generateCommitMessage({
+          cwd: lane.worktreePath,
+          prompt,
+          model
+        });
+        return {
+          message: normalizeCommitMessage(result.text),
+          model: result.model ?? model
+        };
+      } catch (error) {
+        throw toCommitMessageGenerationError(error);
+      }
     },
 
     async listRecentCommits(args: { laneId: string; limit?: number }): Promise<GitCommitSummary[]> {

@@ -112,6 +112,80 @@ function asStringMap(value: unknown): Record<string, string> | undefined {
   return out;
 }
 
+function coerceWorkerSafetyPolicy(value: unknown): AiConfig["workerSafety"] {
+  if (!isRecord(value)) return undefined;
+  const permissionLevel = asString(value.permissionLevel)?.trim();
+  if (permissionLevel !== "read-only" && permissionLevel !== "edit" && permissionLevel !== "full-auto") {
+    return undefined;
+  }
+  const sandbox = asBool(value.sandbox);
+  const allowedTools = asStringArray(value.allowedTools);
+  const deniedTools = asStringArray(value.deniedTools);
+  return {
+    permissionLevel,
+    ...(sandbox != null ? { sandbox } : {}),
+    ...(allowedTools ? { allowedTools } : {}),
+    ...(deniedTools ? { deniedTools } : {}),
+  };
+}
+
+function mergeWorkerSafetyPolicy(
+  sharedWorkerSafety?: AiConfig["workerSafety"],
+  localWorkerSafety?: AiConfig["workerSafety"]
+): AiConfig["workerSafety"] {
+  if (!sharedWorkerSafety && !localWorkerSafety) return undefined;
+  return coerceWorkerSafetyPolicy({
+    ...(sharedWorkerSafety ?? {}),
+    ...(localWorkerSafety ?? {}),
+  });
+}
+
+function coerceAiChatConfig(value: unknown): AiConfig["chat"] {
+  if (!isRecord(value)) return undefined;
+  const chat: NonNullable<AiConfig["chat"]> = {};
+  const chatProvider = asString(value.defaultProvider)?.trim();
+  if (chatProvider === "codex" || chatProvider === "claude" || chatProvider === "last_used") {
+    chat.defaultProvider = chatProvider;
+  }
+  const approvalPolicy = asString(value.defaultApprovalPolicy)?.trim();
+  if (approvalPolicy === "auto" || approvalPolicy === "approve_mutations" || approvalPolicy === "approve_all") {
+    chat.defaultApprovalPolicy = approvalPolicy;
+  }
+  const sendOnEnter = asBool(value.sendOnEnter);
+  if (sendOnEnter != null) chat.sendOnEnter = sendOnEnter;
+  const autoTitleEnabled = asBool(value.autoTitleEnabled);
+  if (autoTitleEnabled != null) chat.autoTitleEnabled = autoTitleEnabled;
+  const autoTitleModelId = asString(value.autoTitleModelId)?.trim();
+  if (autoTitleModelId) chat.autoTitleModelId = autoTitleModelId;
+  const autoTitleRefreshOnComplete = asBool(value.autoTitleRefreshOnComplete);
+  if (autoTitleRefreshOnComplete != null) chat.autoTitleRefreshOnComplete = autoTitleRefreshOnComplete;
+  const codexSandbox = asString(value.codexSandbox)?.trim();
+  if (codexSandbox === "read-only" || codexSandbox === "workspace-write" || codexSandbox === "danger-full-access") {
+    chat.codexSandbox = codexSandbox;
+  }
+  const claudePermissionMode = asString(value.claudePermissionMode)?.trim();
+  if (claudePermissionMode === "plan" || claudePermissionMode === "acceptEdits" || claudePermissionMode === "bypassPermissions") {
+    chat.claudePermissionMode = claudePermissionMode;
+  }
+  const sessionBudgetUsd = asNumber(value.sessionBudgetUsd);
+  if (sessionBudgetUsd != null && sessionBudgetUsd > 0) chat.sessionBudgetUsd = sessionBudgetUsd;
+  const unifiedPermissionMode = asString(value.unifiedPermissionMode)?.trim();
+  if (unifiedPermissionMode === "plan" || unifiedPermissionMode === "edit" || unifiedPermissionMode === "full-auto") {
+    chat.unifiedPermissionMode = unifiedPermissionMode;
+  }
+  return Object.keys(chat).length ? chat : undefined;
+}
+
+function coerceFeatureModelOverrides(value: unknown): AiConfig["featureModelOverrides"] {
+  if (!isRecord(value)) return undefined;
+  const featureModelOverrides: Partial<Record<AiFeatureKey, string>> = {};
+  for (const key of AI_FEATURE_KEYS) {
+    const modelId = asString(value[key])?.trim();
+    if (modelId) featureModelOverrides[key] = modelId;
+  }
+  return Object.keys(featureModelOverrides).length ? featureModelOverrides : undefined;
+}
+
 function parseReadiness(value: unknown): ConfigProcessReadiness | undefined {
   if (!isRecord(value)) return undefined;
   const type = asString(value.type);
@@ -503,6 +577,7 @@ const AI_TASK_KEYS: AiTaskRoutingKey[] = [
 const AI_FEATURE_KEYS: AiFeatureKey[] = [
   "narratives",
   "conflict_proposals",
+  "commit_messages",
   "pr_descriptions",
   "terminal_summaries",
   "memory_consolidation",
@@ -579,6 +654,9 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     }
     if (Object.keys(budgets).length) out.budgets = budgets;
   }
+
+  const featureModelOverrides = coerceFeatureModelOverrides(value.featureModelOverrides);
+  if (featureModelOverrides) out.featureModelOverrides = featureModelOverrides;
 
   const permissionsRaw = isRecord(value.permissions) ? value.permissions : null;
   if (permissionsRaw) {
@@ -737,6 +815,22 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     }
 
     if (Object.keys(orchestrator).length) out.orchestrator = orchestrator;
+  }
+
+  const chat = coerceAiChatConfig(value.chat);
+  if (chat) out.chat = chat;
+
+  const defaultModel = asString(value.defaultModel)?.trim();
+  if (defaultModel) out.defaultModel = defaultModel;
+
+  const apiKeys = asStringMap(value.apiKeys);
+  if (apiKeys && Object.keys(apiKeys).length) out.apiKeys = apiKeys;
+
+  const workerSafety = coerceWorkerSafetyPolicy(value.workerSafety);
+  if (workerSafety) out.workerSafety = workerSafety;
+
+  if (isRecord(value.mcpServers) && Object.keys(value.mcpServers).length) {
+    out.mcpServers = { ...value.mcpServers };
   }
 
   return Object.keys(out).length ? out : undefined;
@@ -972,7 +1066,51 @@ function mergeLinearSync(shared?: LinearSyncConfig, local?: LinearSyncConfig): L
   return Object.keys(out).length ? out : undefined;
 }
 
-function mergeAiConfig(sharedAi?: AiConfig, localAi?: AiConfig): AiConfig | undefined {
+function mergeAiPermissions(
+  sharedPermissions?: AiConfig["permissions"],
+  localPermissions?: AiConfig["permissions"]
+): AiConfig["permissions"] {
+  if (!sharedPermissions && !localPermissions) return undefined;
+  const permissions = {
+    ...(sharedPermissions ?? {}),
+    ...(localPermissions ?? {}),
+    cli: {
+      ...(sharedPermissions?.cli ?? {}),
+      ...(localPermissions?.cli ?? {})
+    },
+    inProcess: {
+      ...(sharedPermissions?.inProcess ?? {}),
+      ...(localPermissions?.inProcess ?? {})
+    },
+    providers: {
+      ...(sharedPermissions?.providers ?? {}),
+      ...(localPermissions?.providers ?? {})
+    }
+  };
+  return Object.keys(permissions).length ? permissions : undefined;
+}
+
+function mergeAiOrchestrator(
+  sharedOrchestrator?: AiConfig["orchestrator"],
+  localOrchestrator?: AiConfig["orchestrator"]
+): AiConfig["orchestrator"] {
+  if (!sharedOrchestrator && !localOrchestrator) return undefined;
+  const orchestrator = {
+    ...(sharedOrchestrator ?? {}),
+    ...(localOrchestrator ?? {}),
+    defaultExecutionPolicy: {
+      ...(sharedOrchestrator?.defaultExecutionPolicy ?? {}),
+      ...(localOrchestrator?.defaultExecutionPolicy ?? {})
+    },
+    hooks: {
+      ...(sharedOrchestrator?.hooks ?? {}),
+      ...(localOrchestrator?.hooks ?? {})
+    }
+  };
+  return Object.keys(orchestrator).length ? orchestrator : undefined;
+}
+
+export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>): AiConfig | undefined {
   if (!sharedAi && !localAi) return undefined;
   const taskRouting: Partial<Record<AiTaskRoutingKey, AiTaskRoutingRule>> = {
     ...(sharedAi?.taskRouting ?? {}),
@@ -986,27 +1124,44 @@ function mergeAiConfig(sharedAi?: AiConfig, localAi?: AiConfig): AiConfig | unde
     ...(sharedAi?.budgets ?? {}),
     ...(localAi?.budgets ?? {})
   };
-  const permissions = {
-    ...(sharedAi?.permissions ?? {}),
-    ...(localAi?.permissions ?? {})
-  };
+  const permissions = mergeAiPermissions(sharedAi?.permissions, localAi?.permissions);
   const conflictResolution = {
     ...(sharedAi?.conflictResolution ?? {}),
     ...(localAi?.conflictResolution ?? {})
   };
-  const orchestrator = {
-    ...(sharedAi?.orchestrator ?? {}),
-    ...(localAi?.orchestrator ?? {})
+  const orchestrator = mergeAiOrchestrator(sharedAi?.orchestrator, localAi?.orchestrator);
+  const chat = {
+    ...(sharedAi?.chat ?? {}),
+    ...(localAi?.chat ?? {})
+  };
+  const featureModelOverrides = {
+    ...(sharedAi?.featureModelOverrides ?? {}),
+    ...(localAi?.featureModelOverrides ?? {})
+  };
+  const apiKeys = {
+    ...(sharedAi?.apiKeys ?? {}),
+    ...(localAi?.apiKeys ?? {})
+  };
+  const workerSafety = mergeWorkerSafetyPolicy(sharedAi?.workerSafety, localAi?.workerSafety);
+  const mcpServers = {
+    ...(sharedAi?.mcpServers ?? {}),
+    ...(localAi?.mcpServers ?? {})
   };
   const out: AiConfig = {
     mode: localAi?.mode ?? sharedAi?.mode,
     defaultProvider: localAi?.defaultProvider ?? sharedAi?.defaultProvider,
+    defaultModel: localAi?.defaultModel ?? sharedAi?.defaultModel,
     ...(Object.keys(taskRouting).length ? { taskRouting } : {}),
     ...(Object.keys(features).length ? { features } : {}),
     ...(Object.keys(budgets).length ? { budgets } : {}),
-    ...(Object.keys(permissions).length ? { permissions } : {}),
+    ...(permissions ? { permissions } : {}),
     ...(Object.keys(conflictResolution).length ? { conflictResolution } : {}),
-    ...(Object.keys(orchestrator).length ? { orchestrator } : {})
+    ...(orchestrator ? { orchestrator } : {}),
+    ...(Object.keys(chat).length ? { chat } : {}),
+    ...(Object.keys(featureModelOverrides).length ? { featureModelOverrides } : {}),
+    ...(Object.keys(apiKeys).length ? { apiKeys } : {}),
+    ...(workerSafety ? { workerSafety } : {}),
+    ...(Object.keys(mcpServers).length ? { mcpServers } : {})
   };
   return Object.keys(out).length ? out : undefined;
 }

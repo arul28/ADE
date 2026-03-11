@@ -24,7 +24,8 @@ import type {
   GitStashSummary,
   GitSyncMode,
   GitUpstreamSyncStatus,
-  AutoRebaseLaneStatus
+  AutoRebaseLaneStatus,
+  LaneSummary
 } from "../../../shared/types";
 
 type LaneTextPromptState = {
@@ -43,6 +44,13 @@ type NextActionHint = {
   detail: string;
 };
 
+type CommitMessageAiState = {
+  enabled: boolean;
+  modelId: string | null;
+};
+
+const AUTO_GENERATE_COMMIT_ACTION = "generate commit message";
+
 function formatRelativeTime(ts: string | null): string {
   if (!ts) return "unknown time";
   const date = new Date(ts);
@@ -56,6 +64,81 @@ function formatRelativeTime(ts: string | null): string {
   const days = Math.floor(hours / 24);
   if (days < 30) return `${days}d ago`;
   return date.toLocaleDateString();
+}
+
+function getLaneHeaderDotColor(lane: LaneSummary | null): string {
+  if (!lane) return "#10B981";
+  if (lane.laneType === "primary") return COLORS.accent;
+  return lane.status.dirty ? COLORS.warning : "#10B981";
+}
+
+function getLaneHeaderDotTitle(lane: LaneSummary | null): string {
+  if (lane?.laneType === "primary") return "Primary lane";
+  if (lane?.status.dirty) return "Lane has uncommitted changes";
+  return "Lane is clean";
+}
+
+function getFileKindColor(kind: FileChange["kind"]): string {
+  if (kind === "modified") return COLORS.info;
+  if (kind === "added") return COLORS.success;
+  if (kind === "deleted") return COLORS.danger;
+  return COLORS.warning;
+}
+
+function getCommitButtonLabel(args: {
+  busyAction: string | null;
+  amendCommit: boolean;
+}): string {
+  if (args.busyAction === AUTO_GENERATE_COMMIT_ACTION) {
+    return "GENERATING...";
+  }
+  const commitActionLabel = args.amendCommit ? "amend commit" : "commit";
+  if (args.busyAction === commitActionLabel) {
+    return "COMMITTING...";
+  }
+  return "COMMIT";
+}
+
+function getCommitHelperText(args: {
+  commitMessage: string;
+  commitMessageAi: CommitMessageAiState;
+}): string {
+  if (args.commitMessage.trim().length > 0) {
+    return "Press Cmd+Enter to commit with the typed message.";
+  }
+  if (args.commitMessageAi.enabled && args.commitMessageAi.modelId) {
+    return `Blank messages will be auto-generated with ${args.commitMessageAi.modelId}.`;
+  }
+  if (args.commitMessageAi.enabled) {
+    return "Commit Messages is enabled, but no model is selected in Settings.";
+  }
+  return "Type a commit message, or enable Commit Messages in Settings to auto-generate one when blank.";
+}
+
+function getAutoRebaseBannerConfig(state: AutoRebaseLaneStatus["state"]): {
+  color: string;
+  label: string;
+  fallbackMessage: string;
+} {
+  if (state === "autoRebased") {
+    return {
+      color: COLORS.success,
+      label: "AUTO REBASED",
+      fallbackMessage: "Lane was rebased automatically."
+    };
+  }
+  if (state === "rebaseConflict") {
+    return {
+      color: COLORS.danger,
+      label: "AUTO REBASE BLOCKED",
+      fallbackMessage: "Conflicts are expected. Resolve manually, then publish."
+    };
+  }
+  return {
+    color: COLORS.warning,
+    label: "AUTO REBASE PENDING",
+    fallbackMessage: "Waiting for manual rebase."
+  };
 }
 
 export function LaneGitActionsPane({
@@ -105,6 +188,7 @@ export function LaneGitActionsPane({
   const [loading, setLoading] = useState(false);
   const [changes, setChanges] = useState<DiffChanges>({ unstaged: [], staged: [] });
   const [commitMessage, setCommitMessage] = useState("");
+  const [commitMessageAi, setCommitMessageAi] = useState<CommitMessageAiState>({ enabled: false, modelId: null });
   const [syncMode, setSyncMode] = useState<GitSyncMode>("merge");
   const [stashes, setStashes] = useState<GitStashSummary[]>([]);
   const [recentCommits, setRecentCommits] = useState<GitCommitSummary[]>([]);
@@ -126,6 +210,8 @@ export function LaneGitActionsPane({
   const pullDropdownRef = useRef<HTMLDivElement>(null);
   const pushDropdownRef = useRef<HTMLDivElement>(null);
   const moreDropdownRef = useRef<HTMLDivElement>(null);
+  const stagedCount = changes.staged.length;
+  const hasStaged = stagedCount > 0;
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -255,6 +341,29 @@ export function LaneGitActionsPane({
     }
   }, [laneId]);
 
+  const refreshCommitMessageAiState = useCallback(async () => {
+    try {
+      const snapshot = await window.ade.projectConfig.get();
+      const effectiveAi = snapshot.effective?.ai;
+      const features = effectiveAi && typeof effectiveAi === "object" && "features" in effectiveAi
+        ? (effectiveAi.features as Record<string, unknown> | undefined)
+        : undefined;
+      const featureModelOverrides = effectiveAi && typeof effectiveAi === "object" && "featureModelOverrides" in effectiveAi
+        ? (effectiveAi.featureModelOverrides as Record<string, unknown> | undefined)
+        : undefined;
+      const enabled = features?.commit_messages === true;
+      const modelIdRaw = typeof featureModelOverrides?.commit_messages === "string"
+        ? featureModelOverrides.commit_messages.trim()
+        : "";
+      setCommitMessageAi({
+        enabled,
+        modelId: modelIdRaw.length ? modelIdRaw : null,
+      });
+    } catch {
+      setCommitMessageAi({ enabled: false, modelId: null });
+    }
+  }, []);
+
   const isNonFastForwardError = useCallback((rawMessage: string): boolean => {
     const lower = rawMessage.toLowerCase();
     return lower.includes("non-fast-forward") || lower.includes("failed to push some refs");
@@ -305,6 +414,51 @@ export function LaneGitActionsPane({
     }
   };
 
+  const completeCommitRefresh = useCallback(async () => {
+    await Promise.all([refreshChanges(), refreshLanes(), refreshGitMeta()]);
+    setCommitTimelineKey((prev) => prev + 1);
+    setCommitMessage("");
+    setAmendCommit(false);
+  }, [refreshChanges, refreshGitMeta, refreshLanes]);
+
+  const submitCommit = useCallback(async () => {
+    if (!laneId || (!hasStaged && !amendCommit) || busyAction != null) return;
+
+    const message = commitMessage.trim();
+    if (message.length > 0) {
+      void runAction(amendCommit ? "amend commit" : "commit", async () => {
+        await window.ade.git.commit({ laneId, message, amend: amendCommit });
+        await completeCommitRefresh();
+      });
+      return;
+    }
+
+    setBusyAction(AUTO_GENERATE_COMMIT_ACTION);
+    setNotice("Generating commit message...");
+    setError(null);
+    try {
+      const generated = await window.ade.git.generateCommitMessage({ laneId, amend: amendCommit });
+      setCommitMessage(generated.message);
+      await window.ade.git.commit({ laneId, message: generated.message, amend: amendCommit });
+      await completeCommitRefresh();
+      setNotice("commit completed");
+      window.setTimeout(() => setNotice(null), 3000);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setNotice(null);
+      setError(message);
+    } finally {
+      setBusyAction(null);
+    }
+  }, [
+    amendCommit,
+    busyAction,
+    commitMessage,
+    completeCommitRefresh,
+    hasStaged,
+    laneId,
+  ]);
+
   useEffect(() => {
     setChanges({ staged: [], unstaged: [] });
     setStashes([]);
@@ -317,12 +471,14 @@ export function LaneGitActionsPane({
     setPushDropdownOpen(false);
     setMoreDropdownOpen(false);
     setAmendCommit(false);
+    setCommitMessageAi({ enabled: false, modelId: null });
     setAutoRebaseStatus(null);
     setStuckRebase(null);
     if (!laneId) return;
     refreshAll().catch((err) => setError(err instanceof Error ? err.message : String(err)));
     void refreshAutoRebaseStatus();
-  }, [laneId, lane?.branchRef, refreshAutoRebaseStatus]);
+    void refreshCommitMessageAiState();
+  }, [laneId, lane?.branchRef, refreshAutoRebaseStatus, refreshCommitMessageAiState]);
 
   useEffect(() => {
     if (!laneId) return;
@@ -379,8 +535,6 @@ export function LaneGitActionsPane({
     return paths.size;
   }, [changes]);
 
-  const stagedCount = changes.staged.length;
-  const hasStaged = stagedCount > 0;
   const stagedPathSet = useMemo(() => new Set(changes.staged.map((file) => file.path)), [changes.staged]);
   const unstagedPathSet = useMemo(() => new Set(changes.unstaged.map((file) => file.path)), [changes.unstaged]);
 
@@ -538,6 +692,9 @@ export function LaneGitActionsPane({
   const rebasePushHighlighted = nextActionHint?.action === "rebase_push";
   const pushButtonTitle = syncStatus?.hasUpstream === false ? "Publish lane (first push)" : "Push to remote";
   const rebaseConflictParentLaneId = autoRebaseStatus?.parentLaneId ?? lane?.parentLaneId ?? null;
+  const isGeneratingCommitMessage = busyAction === AUTO_GENERATE_COMMIT_ACTION;
+  const commitButtonLabel = getCommitButtonLabel({ busyAction, amendCommit });
+  const commitHelperText = getCommitHelperText({ commitMessage, commitMessageAi });
 
   // --- Shared inline style helpers for the new design ---
   const splitBtnLeft = (solid: boolean): React.CSSProperties => ({
@@ -575,17 +732,13 @@ export function LaneGitActionsPane({
     cursor: "pointer",
   });
 
-  const headerDotColor = lane?.laneType === "primary"
-    ? COLORS.accent
-    : lane?.status.dirty
-      ? COLORS.warning
-      : "#10B981";
+  const headerDotColor = getLaneHeaderDotColor(lane);
 
   const renderFileRow = (file: FileChange, mode: "staged" | "unstaged") => {
     const rowSelected = selectedPath === file.path && selectedMode === mode;
     const alsoStaged = mode === "unstaged" && stagedPathSet.has(file.path);
     const alsoUnstaged = mode === "staged" && unstagedPathSet.has(file.path);
-    const kindColor = file.kind === "modified" ? COLORS.info : file.kind === "added" ? COLORS.success : file.kind === "deleted" ? COLORS.danger : COLORS.warning;
+    const kindColor = getFileKindColor(file.kind);
 
     return (
       <div
@@ -634,7 +787,7 @@ export function LaneGitActionsPane({
       {/* Section A -- Lane Header */}
       <div className="shrink-0" style={{ padding: "10px 16px", background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}` }}>
         <div className="flex items-center" style={{ gap: 12 }}>
-          <span className="shrink-0" title={lane?.laneType === "primary" ? "Primary lane" : lane?.status.dirty ? "Lane has uncommitted changes" : "Lane is clean"} style={{
+          <span className="shrink-0" title={getLaneHeaderDotTitle(lane)} style={{
             width: 10, height: 10, borderRadius: "50%",
             background: headerDotColor,
           }} />
@@ -1008,66 +1161,79 @@ export function LaneGitActionsPane({
       </div>
 
       {/* Section C -- Commit Area */}
-      <div className="shrink-0 flex items-center" style={{ padding: "8px 16px", gap: 8, borderBottom: `1px solid ${COLORS.border}` }}>
-        <span title="Create a git commit with staged changes" style={{ ...LABEL_STYLE, color: COLORS.textDim, fontSize: 10, fontWeight: 600 }}>COMMIT</span>
-        <input
-          style={{
-            height: 32, flex: 1,
-            padding: "0 12px", fontSize: 10, fontFamily: MONO_FONT,
-            letterSpacing: "0.5px",
-            background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`,
-            color: COLORS.textSecondary, outline: "none",
-          }}
-          title="Type a commit message, then press Cmd+Enter or click COMMIT. Stage files first using the checkboxes below."
-          placeholder="COMMIT MESSAGE..."
-          value={commitMessage}
-          onChange={(e) => setCommitMessage(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-              if (laneId && commitMessage.trim() && (hasStaged || amendCommit)) {
-                runAction(amendCommit ? "amend commit" : "commit", async () => {
-                  await window.ade.git.commit({ laneId, message: commitMessage.trim(), amend: amendCommit });
-                  setCommitMessage("");
-                  setAmendCommit(false);
-                });
+      <div className="shrink-0" style={{ padding: "8px 16px", borderBottom: `1px solid ${COLORS.border}` }}>
+        <div className="flex items-center" style={{ gap: 8 }}>
+          <span title="Create a git commit with staged changes" style={{ ...LABEL_STYLE, color: COLORS.textDim, fontSize: 10, fontWeight: 600 }}>COMMIT</span>
+          <input
+            disabled={busyAction != null}
+            style={{
+              height: 32, flex: 1,
+              padding: "0 12px", fontSize: 10, fontFamily: MONO_FONT,
+              letterSpacing: "0.5px",
+              background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`,
+              color: COLORS.textSecondary, outline: "none",
+              opacity: busyAction != null ? 0.7 : 1,
+            }}
+            title="Type a commit message, then press Cmd+Enter or click COMMIT. If left blank, ADE can auto-generate one when Commit Messages AI is enabled."
+            placeholder="COMMIT MESSAGE (AUTOGENERATED IF EMPTY)..."
+            value={commitMessage}
+            onChange={(e) => setCommitMessage(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                void submitCommit();
               }
+            }}
+          />
+          <button
+            type="button"
+            style={{
+              ...outlineButton({ height: 32, padding: "0 12px", fontSize: 10 }),
+              color: amendCommit ? COLORS.warning : COLORS.textSecondary,
+              borderColor: amendCommit ? `${COLORS.warning}40` : COLORS.outlineBorder,
+              background: amendCommit ? `${COLORS.warning}10` : "transparent",
+            }}
+            title={amendCommit ? "Amend mode ON: the next commit will replace the latest commit instead of creating a new one. Click to toggle off." : "Toggle amend mode: rewrite the latest commit with new staged changes and/or a new message"}
+            disabled={busyAction != null}
+            onClick={() => setAmendCommit((prev) => !prev)}
+          >
+            AMEND
+          </button>
+          <button
+            type="button"
+            style={{
+              ...primaryButton({ height: 32, padding: "0 18px", fontSize: 11 }),
+              opacity: ((!hasStaged && !amendCommit) || busyAction != null) ? 0.4 : 1,
+              pointerEvents: ((!hasStaged && !amendCommit) || busyAction != null) ? "none" : "auto",
+            }}
+            title={
+              amendCommit
+                ? "Amend the latest commit. If the message is blank, ADE will try to generate one first."
+                : "Create a new commit with the staged changes. If the message is blank, ADE will try to generate one first."
             }
-          }}
-        />
-        <button
-          type="button"
-          style={{
-            ...outlineButton({ height: 32, padding: "0 12px", fontSize: 10 }),
-            color: amendCommit ? COLORS.warning : COLORS.textSecondary,
-            borderColor: amendCommit ? `${COLORS.warning}40` : COLORS.outlineBorder,
-            background: amendCommit ? `${COLORS.warning}10` : "transparent",
-          }}
-          title={amendCommit ? "Amend mode ON: the next commit will replace the latest commit instead of creating a new one. Click to toggle off." : "Toggle amend mode: rewrite the latest commit with new staged changes and/or a new message"}
-          disabled={busyAction != null}
-          onClick={() => setAmendCommit((prev) => !prev)}
-        >
-          AMEND
-        </button>
-        <button
-          type="button"
-          style={{
-            ...primaryButton({ height: 32, padding: "0 18px", fontSize: 11 }),
-            opacity: (!commitMessage.trim() || (!hasStaged && !amendCommit) || busyAction != null) ? 0.4 : 1,
-            pointerEvents: (!commitMessage.trim() || (!hasStaged && !amendCommit) || busyAction != null) ? "none" : "auto",
-          }}
-          title={amendCommit ? "Amend the latest commit with this message and staged changes" : "Create a new commit with the staged changes (Cmd+Enter)"}
-          disabled={!commitMessage.trim() || (!hasStaged && !amendCommit) || busyAction != null}
-          onClick={() => {
-            if (laneId)
-              runAction(amendCommit ? "amend commit" : "commit", async () => {
-                await window.ade.git.commit({ laneId, message: commitMessage.trim(), amend: amendCommit });
-                setCommitMessage("");
-                setAmendCommit(false);
-              });
-          }}
-        >
-          COMMIT
-        </button>
+            disabled={(!hasStaged && !amendCommit) || busyAction != null}
+            onClick={() => {
+              void submitCommit();
+            }}
+          >
+            {commitButtonLabel}
+          </button>
+        </div>
+        <div className="flex items-center justify-between" style={{ marginTop: 6, gap: 8 }}>
+          <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: isGeneratingCommitMessage ? COLORS.accent : COLORS.textDim }}>
+            {commitHelperText}
+          </div>
+          {!commitMessage.trim() && (!commitMessageAi.enabled || !commitMessageAi.modelId) ? (
+            <button
+              type="button"
+              style={outlineButton({ height: 24, padding: "0 8px", fontSize: 9 })}
+              onClick={onOpenSettings}
+              disabled={busyAction != null}
+            >
+              AI SETTINGS
+            </button>
+          ) : null}
+        </div>
       </div>
 
       {/* Section D -- Next Action Hint */}
@@ -1129,19 +1295,14 @@ export function LaneGitActionsPane({
       ) : null}
 
       {autoRebaseStatus ? (() => {
-        const arColor = autoRebaseStatus.state === "autoRebased" ? COLORS.success : autoRebaseStatus.state === "rebaseConflict" ? COLORS.danger : COLORS.warning;
+        const bannerConfig = getAutoRebaseBannerConfig(autoRebaseStatus.state);
         return (
-          <div className="shrink-0 flex items-center" style={{ padding: "8px 16px", gap: 12, fontSize: 10, fontFamily: MONO_FONT, borderBottom: `1px solid ${COLORS.border}`, background: `${arColor}08`, color: arColor }}>
+          <div className="shrink-0 flex items-center" style={{ padding: "8px 16px", gap: 12, fontSize: 10, fontFamily: MONO_FONT, borderBottom: `1px solid ${COLORS.border}`, background: `${bannerConfig.color}08`, color: bannerConfig.color }}>
             <span style={{ ...LABEL_STYLE, color: "inherit" }}>
-              {autoRebaseStatus.state === "autoRebased" ? "AUTO REBASED" : autoRebaseStatus.state === "rebaseConflict" ? "AUTO REBASE BLOCKED" : "AUTO REBASE PENDING"}
+              {bannerConfig.label}
             </span>
             <span className="truncate" style={{ color: COLORS.textMuted, letterSpacing: "0.5px" }}>
-              {autoRebaseStatus.message ??
-                (autoRebaseStatus.state === "autoRebased"
-                  ? "Lane was rebased automatically."
-                  : autoRebaseStatus.state === "rebaseConflict"
-                    ? "Conflicts are expected. Resolve manually, then publish."
-                    : "Waiting for manual rebase.")}
+              {autoRebaseStatus.message ?? bannerConfig.fallbackMessage}
             </span>
             {autoRebaseStatus.state !== "autoRebased" ? (
               <div style={{ marginLeft: "auto", flexShrink: 0 }}>

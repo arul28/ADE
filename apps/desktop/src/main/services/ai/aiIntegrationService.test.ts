@@ -167,6 +167,40 @@ describe("aiIntegrationService", () => {
     expect(usageInsertCalls(runCalls)).toHaveLength(1);
   });
 
+  it("treats commit_messages as opt-in until explicitly enabled", () => {
+    const { service } = makeService();
+    const { service: enabledService } = makeService({
+      aiConfig: {
+        features: {
+          commit_messages: true,
+        },
+      },
+    });
+
+    expect(service.getFeatureFlag("commit_messages")).toBe(false);
+    expect(enabledService.getFeatureFlag("commit_messages")).toBe(true);
+  });
+
+  it("routes generated commit messages through the commit_messages feature", async () => {
+    const { service, runCalls } = makeService({
+      aiConfig: {
+        features: {
+          commit_messages: true,
+        },
+      },
+    });
+
+    await service.generateCommitMessage({
+      cwd: "/tmp",
+      prompt: "Write a commit message",
+      model: "anthropic/claude-haiku-4-5",
+    });
+
+    expect(mockState.executeUnified).toHaveBeenCalledTimes(1);
+    const usageCall = usageInsertCalls(runCalls)[0];
+    expect(usageCall?.params[2]).toBe("commit_messages");
+  });
+
   it("uses planning tools for mission planning tasks", async () => {
     const { service } = makeService();
 

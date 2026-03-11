@@ -20,6 +20,16 @@ export type GitCommitArgs = {
   amend?: boolean;
 };
 
+export type GitGenerateCommitMessageArgs = {
+  laneId: string;
+  amend?: boolean;
+};
+
+export type GitGenerateCommitMessageResult = {
+  message: string;
+  model: string | null;
+};
+
 export type GitRevertArgs = {
   laneId: string;
   commitSha: string;

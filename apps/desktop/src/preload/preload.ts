@@ -106,6 +106,8 @@ import type {
   GitCommitSummary,
   GitConflictState,
   GitGetCommitMessageArgs,
+  GitGenerateCommitMessageArgs,
+  GitGenerateCommitMessageResult,
   GitListCommitFilesArgs,
   GitFileActionArgs,
   GitBatchFileActionArgs,
@@ -1039,6 +1041,8 @@ contextBridge.exposeInMainWorld("ade", {
     restoreStagedFile: async (args: GitFileActionArgs): Promise<GitActionResult> =>
       ipcRenderer.invoke(IPC.gitRestoreStagedFile, args),
     commit: async (args: GitCommitArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitCommit, args),
+    generateCommitMessage: async (args: GitGenerateCommitMessageArgs): Promise<GitGenerateCommitMessageResult> =>
+      ipcRenderer.invoke(IPC.gitGenerateCommitMessage, args),
     listRecentCommits: async (args: { laneId: string; limit?: number }): Promise<GitCommitSummary[]> =>
       ipcRenderer.invoke(IPC.gitListRecentCommits, args),
     listCommitFiles: async (args: GitListCommitFilesArgs): Promise<string[]> =>

@@ -11,10 +11,12 @@ import type {
   IntegrationProposalStep,
   CreateQueuePrsResult,
   CreateIntegrationPrResult,
+  GitUpstreamSyncStatus,
 } from "../../../shared/types";
 import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
 import { COLORS, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 import { isDirtyWorktreeErrorMessage, stripDirtyWorktreePrefix } from "./shared/dirtyWorktree";
+import { buildLaneRebaseRecommendedLaneIds, describeLanePrIssues } from "./shared/lanePrWarnings";
 
 type CreateMode = "normal" | "queue" | "integration";
 type WizardStep = "select-type" | "configure" | "execute";
@@ -185,6 +187,134 @@ function Stepper({ currentStep }: { currentStep: number }) {
   );
 }
 
+type LaneWarningSummary = {
+  laneId: string;
+  laneName: string;
+  messages: string[];
+};
+
+async function runWithDirtyWorktreeConfirmation<T>(args: {
+  run: (allowDirtyWorktree: boolean) => Promise<T>;
+  confirmMessage: string;
+}): Promise<T> {
+  try {
+    return await args.run(false);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!isDirtyWorktreeErrorMessage(message) || !window.confirm(`${stripDirtyWorktreePrefix(message)}\n\n${args.confirmMessage}`)) {
+      throw error;
+    }
+    return await args.run(true);
+  }
+}
+
+function buildLaneWarningSummaries(args: {
+  selectedLaneIds: string[];
+  lanes: Array<{ id: string; name: string }>;
+  laneWarningItemsById: Record<string, string[]>;
+}): LaneWarningSummary[] {
+  return args.selectedLaneIds
+    .map((laneId) => {
+      const lane = args.lanes.find((entry) => entry.id === laneId);
+      const messages = args.laneWarningItemsById[laneId] ?? [];
+      if (!lane || messages.length === 0) return null;
+      return { laneId, laneName: lane.name, messages };
+    })
+    .filter((item): item is LaneWarningSummary => item != null);
+}
+
+function getCreateActionLabel(mode: CreateMode, busy: boolean): string {
+  if (busy) {
+    return mode === "integration" ? "SAVING..." : "CREATING...";
+  }
+  return mode === "integration" ? "SAVE PROPOSAL" : "CREATE PR";
+}
+
+function LaneWarningPanel({
+  items,
+  loading,
+  rebaseLaneIds,
+  onOpenRebase,
+}: {
+  items: LaneWarningSummary[];
+  loading: boolean;
+  rebaseLaneIds: string[];
+  onOpenRebase: (laneId: string) => void;
+}) {
+  if (!items.length && !loading) return null;
+  const primaryRebaseLaneId = rebaseLaneIds[0] ?? null;
+  return (
+    <div
+      style={{
+        marginTop: 12,
+        background: `${C.warning}12`,
+        border: `1px solid ${C.warning}30`,
+        padding: 12,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+        <Warning size={14} weight="fill" style={{ color: C.warning, marginTop: 1, flexShrink: 0 }} />
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+          <div
+            style={{
+              fontSize: 10,
+              fontWeight: 700,
+              fontFamily: MONO_FONT,
+              textTransform: "uppercase",
+              letterSpacing: "1px",
+              color: C.warning,
+            }}
+          >
+            Lane Needs Attention
+          </div>
+          {items.map((item) => (
+            <div key={item.laneId} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.textPrimary, fontFamily: MONO_FONT }}>
+                {item.laneName}
+              </div>
+              {item.messages.map((message) => (
+                <div key={`${item.laneId}:${message}`} style={{ fontSize: 11, color: C.textSecondary, lineHeight: "16px" }}>
+                  {message}
+                </div>
+              ))}
+            </div>
+          ))}
+          {loading ? (
+            <div style={{ fontSize: 11, color: C.textMuted, fontFamily: MONO_FONT }}>
+              Checking remote sync status...
+            </div>
+          ) : null}
+          {primaryRebaseLaneId ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+              <button
+                type="button"
+                onClick={() => onOpenRebase(primaryRebaseLaneId)}
+                style={{
+                  background: "transparent",
+                  border: `1px solid ${C.warning}45`,
+                  color: C.warning,
+                  fontFamily: MONO_FONT,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  textTransform: "uppercase",
+                  letterSpacing: "1px",
+                  padding: "4px 10px",
+                  cursor: "pointer",
+                }}
+              >
+                Open Rebase Tab
+              </button>
+              <span style={{ fontSize: 10, color: C.textMuted, fontFamily: MONO_FONT }}>
+                Review rebase status before PR creation{rebaseLaneIds.length > 1 ? ` (${rebaseLaneIds.length} lanes)` : ""}.
+              </span>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── main component ────────────────────────────────────────────────── */
 
 export function CreatePrModal({
@@ -232,6 +362,8 @@ export function CreatePrModal({
   const [integrationDraft, setIntegrationDraft] = React.useState(false);
   const [proposal, setProposal] = React.useState<IntegrationProposal | null>(null);
   const [simulating, setSimulating] = React.useState(false);
+  const [laneSyncStatusById, setLaneSyncStatusById] = React.useState<Record<string, GitUpstreamSyncStatus | null>>({});
+  const [laneSyncLoadingById, setLaneSyncLoadingById] = React.useState<Record<string, boolean>>({});
 
   const handleDraftAI = async (laneId: string) => {
     setDrafting(true);
@@ -257,6 +389,11 @@ export function CreatePrModal({
   const [execError, setExecError] = React.useState<string | null>(null);
   const [results, setResults] = React.useState<PrSummary[] | null>(null);
   const [integrationResult, setIntegrationResult] = React.useState<CreateIntegrationPrResult | null>(null);
+
+  const openRebaseTab = React.useCallback((laneId: string) => {
+    onOpenChange(false);
+    window.location.hash = `#/prs?tab=rebase&laneId=${encodeURIComponent(laneId)}`;
+  }, [onOpenChange]);
 
   // Reset on close
   React.useEffect(() => {
@@ -321,6 +458,40 @@ export function CreatePrModal({
     };
   }, [open]);
 
+  React.useEffect(() => {
+    if (!open) return;
+    const laneIds = lanes.filter((lane) => lane.laneType !== "primary").map((lane) => lane.id);
+    if (laneIds.length === 0) {
+      setLaneSyncStatusById({});
+      setLaneSyncLoadingById({});
+      return;
+    }
+    let cancelled = false;
+    setLaneSyncLoadingById(Object.fromEntries(laneIds.map((laneId) => [laneId, true])));
+    void Promise.allSettled(
+      laneIds.map(async (laneId) => ({
+        laneId,
+        status: await window.ade.git.getSyncStatus({ laneId }),
+      }))
+    ).then((results) => {
+      if (cancelled) return;
+      const nextStatuses: Record<string, GitUpstreamSyncStatus | null> = {};
+      const nextLoading: Record<string, boolean> = {};
+      for (const laneId of laneIds) {
+        nextLoading[laneId] = false;
+      }
+      for (const result of results) {
+        if (result.status !== "fulfilled") continue;
+        nextStatuses[result.value.laneId] = result.value.status;
+      }
+      setLaneSyncStatusById(nextStatuses);
+      setLaneSyncLoadingById(nextLoading);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, lanes]);
+
   const handleSimulate = async () => {
     if (integrationSources.length === 0) return;
     setSimulating(true);
@@ -350,49 +521,28 @@ export function CreatePrModal({
     try {
       if (mode === "normal") {
         const lane = lanes.find((l) => l.id === normalLaneId);
-        let pr: PrSummary;
-        try {
-          pr = await window.ade.prs.createFromLane({
+        const pr = await runWithDirtyWorktreeConfirmation({
+          confirmMessage: "Continue and create the PR anyway?",
+          run: async (allowDirtyWorktree) => await window.ade.prs.createFromLane({
             laneId: normalLaneId,
             title: normalTitle || lane?.name || "PR",
             body: normalBody,
             draft: normalDraft,
-          });
-        } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
-          if (!isDirtyWorktreeErrorMessage(message) || !window.confirm(`${stripDirtyWorktreePrefix(message)}\n\nContinue and create the PR anyway?`)) {
-            throw err;
-          }
-          pr = await window.ade.prs.createFromLane({
-            laneId: normalLaneId,
-            title: normalTitle || lane?.name || "PR",
-            body: normalBody,
-            draft: normalDraft,
-            allowDirtyWorktree: true,
-          });
-        }
+            ...(allowDirtyWorktree ? { allowDirtyWorktree: true } : {})
+          })
+        });
         setResults([pr]);
       } else if (mode === "queue") {
         const baseBranch = primaryLane?.branchRef ?? "main";
-        let result: CreateQueuePrsResult;
-        try {
-          result = await window.ade.prs.createQueue({
+        const result = await runWithDirtyWorktreeConfirmation({
+          confirmMessage: "Continue and create the queue PRs anyway?",
+          run: async (allowDirtyWorktree) => await window.ade.prs.createQueue({
             laneIds: queueLaneIds,
             targetBranch: baseBranch,
             draft: queueDraft,
-          });
-        } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
-          if (!isDirtyWorktreeErrorMessage(message) || !window.confirm(`${stripDirtyWorktreePrefix(message)}\n\nContinue and create the queue PRs anyway?`)) {
-            throw err;
-          }
-          result = await window.ade.prs.createQueue({
-            laneIds: queueLaneIds,
-            targetBranch: baseBranch,
-            draft: queueDraft,
-            allowDirtyWorktree: true,
-          });
-        }
+            ...(allowDirtyWorktree ? { allowDirtyWorktree: true } : {})
+          })
+        });
         if (result.errors.length > 0) {
           setExecError(result.errors.map((e) => `${e.laneId}: ${e.error}`).join("\n"));
         }
@@ -472,6 +622,49 @@ export function CreatePrModal({
   const selectedNormalLane = React.useMemo(
     () => lanes.find((l) => l.id === normalLaneId) ?? null,
     [lanes, normalLaneId],
+  );
+  const laneWarningItemsById = React.useMemo(() => {
+    return Object.fromEntries(
+      nonPrimaryLanes.map((lane) => [
+        lane.id,
+        describeLanePrIssues(lane, laneSyncStatusById[lane.id] ?? null),
+      ])
+    ) as Record<string, string[]>;
+  }, [laneSyncStatusById, nonPrimaryLanes]);
+  const selectedNormalWarnings = React.useMemo<LaneWarningSummary[]>(() => {
+    if (!selectedNormalLane) return [];
+    const messages = laneWarningItemsById[selectedNormalLane.id] ?? [];
+    if (!messages.length) return [];
+    return [{ laneId: selectedNormalLane.id, laneName: selectedNormalLane.name, messages }];
+  }, [laneWarningItemsById, selectedNormalLane]);
+  const selectedQueueWarnings = React.useMemo<LaneWarningSummary[]>(() => {
+    return buildLaneWarningSummaries({
+      selectedLaneIds: queueLaneIds,
+      lanes,
+      laneWarningItemsById
+    });
+  }, [laneWarningItemsById, lanes, queueLaneIds]);
+  const selectedIntegrationWarnings = React.useMemo<LaneWarningSummary[]>(() => {
+    return buildLaneWarningSummaries({
+      selectedLaneIds: integrationSources,
+      lanes,
+      laneWarningItemsById
+    });
+  }, [integrationSources, laneWarningItemsById, lanes]);
+  const selectedNormalLoading = Boolean(normalLaneId) && laneSyncLoadingById[normalLaneId] === true;
+  const selectedQueueLoading = queueLaneIds.some((laneId) => laneSyncLoadingById[laneId] === true);
+  const selectedIntegrationLoading = integrationSources.some((laneId) => laneSyncLoadingById[laneId] === true);
+  const selectedNormalRebaseLaneIds = React.useMemo(
+    () => buildLaneRebaseRecommendedLaneIds({ lanes, selectedLaneIds: normalLaneId ? [normalLaneId] : [] }),
+    [lanes, normalLaneId],
+  );
+  const selectedQueueRebaseLaneIds = React.useMemo(
+    () => buildLaneRebaseRecommendedLaneIds({ lanes, selectedLaneIds: queueLaneIds }),
+    [lanes, queueLaneIds],
+  );
+  const selectedIntegrationRebaseLaneIds = React.useMemo(
+    () => buildLaneRebaseRecommendedLaneIds({ lanes, selectedLaneIds: integrationSources }),
+    [integrationSources, lanes],
   );
 
   return (
@@ -736,6 +929,12 @@ export function CreatePrModal({
                             </div>
                           ))}
                         </div>
+                        <LaneWarningPanel
+                          items={selectedNormalWarnings}
+                          loading={selectedNormalLoading}
+                          rebaseLaneIds={selectedNormalRebaseLaneIds}
+                          onOpenRebase={openRebaseTab}
+                        />
                       </div>
                     )}
                   </>
@@ -755,6 +954,7 @@ export function CreatePrModal({
                     }}>
                       {nonPrimaryLanes.map((lane) => {
                         const checked = queueLaneIds.includes(lane.id);
+                        const warningCount = laneWarningItemsById[lane.id]?.length ?? 0;
                         return (
                           <label
                             key={lane.id}
@@ -795,10 +995,35 @@ export function CreatePrModal({
                             }}>
                               {lane.branchRef}
                             </span>
+                            {warningCount > 0 ? (
+                              <span
+                                title={`${warningCount} readiness warning${warningCount === 1 ? "" : "s"}`}
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 4,
+                                  fontSize: 10,
+                                  fontFamily: MONO_FONT,
+                                  color: C.warning,
+                                  background: `${C.warning}18`,
+                                  border: `1px solid ${C.warning}30`,
+                                  padding: "2px 6px",
+                                }}
+                              >
+                                <Warning size={10} weight="fill" />
+                                {warningCount}
+                              </span>
+                            ) : null}
                           </label>
                         );
                       })}
                     </div>
+                    <LaneWarningPanel
+                      items={selectedQueueWarnings}
+                      loading={selectedQueueLoading}
+                      rebaseLaneIds={selectedQueueRebaseLaneIds}
+                      onOpenRebase={openRebaseTab}
+                    />
                     {queueLaneIds.length > 0 && (
                       <div style={{
                         marginTop: 8,
@@ -827,6 +1052,7 @@ export function CreatePrModal({
                       }}>
                         {nonPrimaryLanes.map((lane) => {
                           const checked = integrationSources.includes(lane.id);
+                          const warningCount = laneWarningItemsById[lane.id]?.length ?? 0;
                           return (
                             <label
                               key={lane.id}
@@ -867,10 +1093,35 @@ export function CreatePrModal({
                               }}>
                                 {lane.branchRef}
                               </span>
+                              {warningCount > 0 ? (
+                                <span
+                                  title={`${warningCount} readiness warning${warningCount === 1 ? "" : "s"}`}
+                                  style={{
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: 4,
+                                    fontSize: 10,
+                                    fontFamily: MONO_FONT,
+                                    color: C.warning,
+                                    background: `${C.warning}18`,
+                                    border: `1px solid ${C.warning}30`,
+                                    padding: "2px 6px",
+                                  }}
+                                >
+                                  <Warning size={10} weight="fill" />
+                                  {warningCount}
+                                </span>
+                              ) : null}
                             </label>
                           );
                         })}
                       </div>
+                      <LaneWarningPanel
+                        items={selectedIntegrationWarnings}
+                        loading={selectedIntegrationLoading}
+                        rebaseLaneIds={selectedIntegrationRebaseLaneIds}
+                        onOpenRebase={openRebaseTab}
+                      />
                     </div>
 
                     {/* Simulate button */}
@@ -1400,7 +1651,9 @@ export function CreatePrModal({
                       fontSize: 12,
                       color: C.textSecondary,
                     }}>
-                      Go to the <span style={{ color: C.accent, fontWeight: 700 }}>INTEGRATION</span> tab to review and create the PR on GitHub.
+                      Lifecycle: <span style={{ color: C.accent, fontWeight: 700 }}>Proposal</span> → <span style={{ color: C.accent, fontWeight: 700 }}>Integration lane</span> → <span style={{ color: C.accent, fontWeight: 700 }}>GitHub PR</span>.
+                      {" "}
+                      ADE has already prepared the integration lane{integrationName ? ` "${integrationName}"` : ""}. Continue in the <span style={{ color: C.accent, fontWeight: 700 }}>INTEGRATION</span> tab to review it and create the GitHub PR.
                     </div>
                   </div>
                 )}
@@ -1655,7 +1908,7 @@ export function CreatePrModal({
                   }}
                 >
                   {busy && <CircleNotch size={12} className="animate-spin" />}
-                  {busy ? (mode === "integration" ? "SAVING..." : "CREATING...") : mode === "integration" ? "SAVE PROPOSAL" : "CREATE PR"}
+                  {getCreateActionLabel(mode, busy)}
                 </button>
               )}
               {numericStep === 3 && results && (

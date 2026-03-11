@@ -28,6 +28,7 @@ export type AiTaskType =
   | "implementation"
   | "review"
   | "conflict_resolution"
+  | "commit_message"
   | "memory_consolidation"
   | "narrative"
   | "pr_description"
@@ -38,6 +39,7 @@ export type AiTaskType =
 export type AiFeatureKey =
   | "narratives"
   | "conflict_proposals"
+  | "commit_messages"
   | "pr_descriptions"
   | "terminal_summaries"
   | "memory_consolidation"
@@ -126,6 +128,10 @@ const TASK_DEFAULTS: Record<AiTaskType, RuntimeTaskDefaults> = {
   conflict_resolution: {
     modelId: DEFAULT_CLAUDE_TASK_MODEL_ID,
     timeoutMs: 60_000
+  },
+  commit_message: {
+    modelId: "anthropic/claude-haiku-4-5",
+    timeoutMs: 20_000
   },
   memory_consolidation: {
     modelId: "anthropic/claude-haiku-4-5",
@@ -406,7 +412,10 @@ export function createAiIntegrationService(args: {
     const aiConfig = extractAiConfig(snapshot);
     const features = isRecord(aiConfig.features) ? aiConfig.features : {};
     const value = features[feature];
-    return value == null ? true : Boolean(value);
+    if (value == null) {
+      return feature === "commit_messages" ? false : true;
+    }
+    return Boolean(value);
   };
 
   const getDailyBudgetLimit = (feature: AiFeatureKey): number | null => {
@@ -747,6 +756,30 @@ export function createAiIntegrationService(args: {
   const STATUS_CACHE_TTL_MS = 30_000; // 30 seconds
   let statusCache: { result: AiIntegrationStatus; cachedAt: number } | null = null;
 
+  const executeReadOnlyOneShotTask = async (args: {
+    feature: AiFeatureKey;
+    taskType: AiTaskType;
+    cwd: string;
+    prompt: string;
+    timeoutMs?: number;
+    model?: string;
+    jsonSchema?: unknown;
+    reasoningEffort?: string | null;
+  }): Promise<ExecuteAiTaskResult> => {
+    return await executeTask({
+      feature: args.feature,
+      taskType: args.taskType,
+      prompt: args.prompt,
+      cwd: args.cwd,
+      timeoutMs: args.timeoutMs,
+      model: args.model,
+      ...(args.jsonSchema ? { jsonSchema: args.jsonSchema } : {}),
+      ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}),
+      permissionMode: "read-only",
+      oneShot: true
+    });
+  };
+
   return {
     getMode,
 
@@ -830,16 +863,14 @@ export function createAiIntegrationService(args: {
       model?: string;
       jsonSchema?: unknown;
     }): Promise<ExecuteAiTaskResult> {
-      return await executeTask({
+      return await executeReadOnlyOneShotTask({
         feature: "conflict_proposals",
         taskType: "conflict_resolution",
-        prompt: args.prompt,
         cwd: args.cwd,
+        prompt: args.prompt,
         timeoutMs: args.timeoutMs,
         model: args.model,
-        jsonSchema: args.jsonSchema,
-        permissionMode: "read-only",
-        oneShot: true
+        jsonSchema: args.jsonSchema
       });
     },
 
@@ -851,16 +882,32 @@ export function createAiIntegrationService(args: {
       model?: string;
       reasoningEffort?: string | null;
     }): Promise<ExecuteAiTaskResult> {
-      return await executeTask({
+      return await executeReadOnlyOneShotTask({
         feature: "pr_descriptions",
         taskType: "pr_description",
-        prompt: args.prompt,
         cwd: args.cwd,
+        prompt: args.prompt,
         timeoutMs: args.timeoutMs,
         model: args.model,
-        ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}),
-        permissionMode: "read-only",
-        oneShot: true
+        reasoningEffort: args.reasoningEffort
+      });
+    },
+
+    async generateCommitMessage(args: {
+      cwd: string;
+      prompt: string;
+      timeoutMs?: number;
+      model?: string;
+      reasoningEffort?: string | null;
+    }): Promise<ExecuteAiTaskResult> {
+      return await executeReadOnlyOneShotTask({
+        feature: "commit_messages",
+        taskType: "commit_message",
+        cwd: args.cwd,
+        prompt: args.prompt,
+        timeoutMs: args.timeoutMs,
+        model: args.model,
+        reasoningEffort: args.reasoningEffort
       });
     },
 
@@ -871,16 +918,14 @@ export function createAiIntegrationService(args: {
       model?: string;
       jsonSchema?: unknown;
     }): Promise<ExecuteAiTaskResult> {
-      return await executeTask({
+      return await executeReadOnlyOneShotTask({
         feature: "terminal_summaries",
         taskType: "terminal_summary",
-        prompt: args.prompt,
         cwd: args.cwd,
+        prompt: args.prompt,
         timeoutMs: args.timeoutMs,
         model: args.model,
-        jsonSchema: args.jsonSchema,
-        permissionMode: "read-only",
-        oneShot: true
+        jsonSchema: args.jsonSchema
       });
     },
 

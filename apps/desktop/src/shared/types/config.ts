@@ -532,6 +532,7 @@ export type AiTaskRoutingRule = {
 export type AiFeatureKey =
   | "narratives"
   | "conflict_proposals"
+  | "commit_messages"
   | "pr_descriptions"
   | "terminal_summaries"
   | "memory_consolidation"

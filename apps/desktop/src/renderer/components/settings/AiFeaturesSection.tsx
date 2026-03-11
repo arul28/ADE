@@ -18,12 +18,14 @@ type FeatureInfo = {
   key: AiFeatureKey;
   label: string;
   description: string;
-  defaultModel: string;
+  defaultModel?: string;
+  requiresExplicitModel?: boolean;
 };
 
 const FEATURES: FeatureInfo[] = [
   { key: "terminal_summaries", label: "Terminal Summaries", description: "Summarize terminal sessions when they close", defaultModel: "anthropic/claude-haiku-4-5" },
   { key: "pr_descriptions", label: "PR Descriptions", description: "Auto-draft PR descriptions from lane changes", defaultModel: "anthropic/claude-haiku-4-5" },
+  { key: "commit_messages", label: "Commit Messages", description: "Generate a brief git commit subject when the field is empty", requiresExplicitModel: true },
   { key: "narratives", label: "Narratives", description: "Generate work narratives for completed tasks", defaultModel: "anthropic/claude-haiku-4-5" },
   { key: "conflict_proposals", label: "Conflict Proposals", description: "Suggest resolutions for merge conflicts", defaultModel: "anthropic/claude-sonnet-4-6" },
   { key: "mission_planning", label: "Mission Planning", description: "AI-powered mission planning", defaultModel: "anthropic/claude-sonnet-4-6" },
@@ -52,6 +54,39 @@ const selectStyle: React.CSSProperties = {
   cursor: "pointer",
   minWidth: 100,
 };
+
+function buildDefaultFeatureModels(): Record<string, string> {
+  const defaults: Record<string, string> = {};
+  for (const feature of FEATURES) {
+    defaults[feature.key] = feature.defaultModel ?? "";
+  }
+  return defaults;
+}
+
+function mergeFeatureModels(
+  defaultFeatureModels: Record<string, string>,
+  effectiveAi: AiConfig | null
+): Record<string, string> {
+  const persistedFeatureModels = effectiveAi?.featureModelOverrides ?? {};
+  const nextFeatureModels: Record<string, string> = { ...defaultFeatureModels };
+
+  for (const feature of FEATURES) {
+    const persistedModel = typeof persistedFeatureModels[feature.key] === "string"
+      ? persistedFeatureModels[feature.key]!.trim()
+      : "";
+    if (persistedModel.length > 0) {
+      nextFeatureModels[feature.key] = persistedModel;
+    }
+  }
+
+  return nextFeatureModels;
+}
+
+function toFeatureModelOverrides(featureModels: Record<string, string>): AiConfig["featureModelOverrides"] {
+  return Object.fromEntries(
+    Object.entries(featureModels).filter(([, value]) => value.trim().length > 0)
+  ) as AiConfig["featureModelOverrides"];
+}
 
 function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
   return (
@@ -91,35 +126,34 @@ export function AiFeaturesSection() {
   const [status, setStatus] = useState<AiSettingsStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const defaultFeatureModels = React.useMemo(buildDefaultFeatureModels, []);
+  const [featureModels, setFeatureModels] = useState<Record<string, string>>(defaultFeatureModels);
 
   const loadStatus = useCallback(async () => {
     try {
-      const s = await window.ade.ai.getStatus();
+      const [s, snapshot] = await Promise.all([
+        window.ade.ai.getStatus(),
+        window.ade.projectConfig.get(),
+      ]);
       setStatus(s);
+      const effectiveAiRaw = snapshot.effective?.ai;
+      const effectiveAi = effectiveAiRaw && typeof effectiveAiRaw === "object" ? (effectiveAiRaw as AiConfig) : null;
+      setFeatureModels(mergeFeatureModels(defaultFeatureModels, effectiveAi));
+      setUnifiedPerm(effectiveAi?.chat?.unifiedPermissionMode ?? "plan");
+      setClaudePerm(effectiveAi?.chat?.claudePermissionMode ?? "plan");
+      setCodexSandbox(effectiveAi?.chat?.codexSandbox ?? "read-only");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [defaultFeatureModels]);
 
   useEffect(() => {
-    loadStatus();
+    void loadStatus();
   }, [loadStatus]);
 
   const allModels: AiModelDescriptor[] = React.useMemo(() => {
     return deriveConfiguredModelOptions(status);
   }, [status]);
-
-  // Track per-feature model overrides locally (loaded from config)
-  const [featureModels, setFeatureModels] = useState<Record<string, string>>({});
-
-  // Load default feature model overrides on mount
-  useEffect(() => {
-    const defaults: Record<string, string> = {};
-    for (const f of FEATURES) {
-      defaults[f.key] = f.defaultModel;
-    }
-    setFeatureModels(defaults);
-  }, []);
 
   const handleToggle = useCallback(async (key: AiFeatureKey, enabled: boolean) => {
     if (saving) return;
@@ -145,18 +179,15 @@ export function AiFeaturesSection() {
     if (saving) return;
     setSaving(true);
     try {
-      let updated: Record<string, string> = {};
-      setFeatureModels((prev) => {
-        updated = { ...prev, [key]: modelId };
-        return updated;
-      });
+      const nextFeatureModels = { ...featureModels, [key]: modelId };
+      setFeatureModels(nextFeatureModels);
       await window.ade.ai.updateConfig({
-        featureModelOverrides: updated as AiConfig["featureModelOverrides"],
+        featureModelOverrides: toFeatureModelOverrides(nextFeatureModels),
       });
     } finally {
       setSaving(false);
     }
-  }, [saving]);
+  }, [featureModels, saving]);
 
   // Permission mode defaults
   const [unifiedPerm, setUnifiedPerm] = useState<AiChatConfig["unifiedPermissionMode"]>("plan");
@@ -222,6 +253,8 @@ export function AiFeaturesSection() {
           const row = status.features.find((r) => r.feature === f.key);
           const enabled = row?.enabled ?? false;
           const dailyUsage = row?.dailyUsage ?? 0;
+          const selectedModel = featureModels[f.key] ?? f.defaultModel ?? "";
+          const needsModelSelection = enabled && f.requiresExplicitModel && !selectedModel;
 
           return (
             <div
@@ -258,6 +291,18 @@ export function AiFeaturesSection() {
                 >
                   {f.description}
                 </div>
+                {needsModelSelection ? (
+                  <div
+                    style={{
+                      fontSize: 10,
+                      fontFamily: MONO_FONT,
+                      color: COLORS.warning,
+                      marginTop: 4,
+                    }}
+                  >
+                    Select a model before blank commit messages can be generated.
+                  </div>
+                ) : null}
               </div>
 
               <select
@@ -266,10 +311,11 @@ export function AiFeaturesSection() {
                   opacity: enabled ? 1 : 0.4,
                   pointerEvents: enabled ? "auto" : "none",
                 }}
-                value={featureModels[f.key] ?? f.defaultModel}
+                value={selectedModel}
                 disabled={!enabled}
                 onChange={(e) => handleModelChange(f.key, e.target.value)}
               >
+                {f.requiresExplicitModel ? <option value="">Select model...</option> : null}
                 {allModels.length > 0 ? (
                   allModels.map((m) => (
                     <option key={m.id} value={m.id}>

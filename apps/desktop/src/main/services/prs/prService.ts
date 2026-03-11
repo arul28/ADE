@@ -1683,15 +1683,18 @@ export function createPrService({
       [projectId, prId]
     );
 
+    const baseMergeContext: PrMergeContext = {
+      prId,
+      groupId: group?.group_id ?? null,
+      groupType: null,
+      sourceLaneIds: [fallbackSourceLaneId],
+      targetLaneId: fallbackTargetLaneId,
+      integrationLaneId: null,
+      members: fallbackMembers
+    };
+
     if (!group) {
-      return {
-        prId,
-        groupId: null,
-        groupType: null,
-        sourceLaneIds: [fallbackSourceLaneId],
-        targetLaneId: fallbackTargetLaneId,
-        members: fallbackMembers
-      };
+      return baseMergeContext;
     }
 
     const members = db
@@ -1731,11 +1734,10 @@ export function createPrService({
       groupType === "integration" ? (members.find((member) => member.role === "integration")?.laneId ?? null) : null;
 
     return {
-      prId,
-      groupId: group.group_id,
+      ...baseMergeContext,
       groupType,
       sourceLaneIds: sourceLaneIds.length > 0 ? sourceLaneIds : [fallbackSourceLaneId],
-      targetLaneId: integrationLaneId ?? fallbackTargetLaneId,
+      integrationLaneId,
       members: members.length > 0 ? members : fallbackMembers
     };
   };

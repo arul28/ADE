@@ -146,6 +146,8 @@ import type {
   GitCommitSummary,
   GitConflictState,
   GitGetCommitMessageArgs,
+  GitGenerateCommitMessageArgs,
+  GitGenerateCommitMessageResult,
   GitListCommitFilesArgs,
   GitFileActionArgs,
   GitBatchFileActionArgs,
@@ -734,6 +736,7 @@ declare global {
         discardFile: (args: GitFileActionArgs) => Promise<GitActionResult>;
         restoreStagedFile: (args: GitFileActionArgs) => Promise<GitActionResult>;
         commit: (args: GitCommitArgs) => Promise<GitActionResult>;
+        generateCommitMessage: (args: GitGenerateCommitMessageArgs) => Promise<GitGenerateCommitMessageResult>;
         listRecentCommits: (args: { laneId: string; limit?: number }) => Promise<GitCommitSummary[]>;
         listCommitFiles: (args: GitListCommitFilesArgs) => Promise<string[]>;
         getCommitMessage: (args: GitGetCommitMessageArgs) => Promise<string>;

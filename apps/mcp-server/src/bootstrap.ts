@@ -211,6 +211,8 @@ export async function createAdeMcpRuntime(projectRootInput: string): Promise<Ade
   const gitService = createGitOperationsService({
     laneService,
     operationService,
+    projectConfigService,
+    aiIntegrationService,
     logger
   });
 

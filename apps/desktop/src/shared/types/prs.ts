@@ -265,6 +265,7 @@ export type PrMergeContext = {
   groupType: PrGroupType | null;
   sourceLaneIds: string[];
   targetLaneId: string | null;
+  integrationLaneId: string | null;
   members: PrGroupContextMember[];
 };
 

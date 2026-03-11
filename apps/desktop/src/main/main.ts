@@ -185,6 +185,7 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
     ? "'self' http://localhost:* http://127.0.0.1:*"
     : "'self' file: app:";
   const cspWsSources = isDevMode ? " ws://localhost:* ws://127.0.0.1:*" : "";
+  const cspImageSources = `${cspSources} https://avatars.githubusercontent.com`;
   const cspPolicy = [
     `default-src ${cspSources}`,
     `base-uri 'self'`,
@@ -193,7 +194,7 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
     `frame-src 'none'`,
     `script-src ${cspSources} 'unsafe-inline'`,
     `style-src ${cspSources} 'unsafe-inline'`,
-    `img-src ${cspSources} data: blob:`,
+    `img-src ${cspImageSources} data: blob:`,
     `font-src ${cspSources} data:`,
     `connect-src ${cspSources}${cspWsSources} https:`,
     `worker-src 'self' blob:`,
@@ -996,6 +997,8 @@ app.whenReady().then(async () => {
     const gitService = createGitOperationsService({
       laneService,
       operationService,
+      projectConfigService,
+      aiIntegrationService,
       logger,
       onWorktreeChanged: ({ laneId, reason }) => {
         jobEngine.onLaneDirtyChanged({ laneId, reason });

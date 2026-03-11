@@ -18,6 +18,7 @@ import { ConflictFilePreview } from "../ConflictFilePreview";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
 import { normalizeBranchName } from "../shared/prHelpers";
 import { isDirtyWorktreeErrorMessage, stripDirtyWorktreePrefix } from "../shared/dirtyWorktree";
+import { deriveIntegrationPrLiveModel } from "../shared/integrationPrModel";
 import { PrAiResolverPanel } from "../shared/PrAiResolverPanel";
 
 /* ---- Outcome dot with design-system colors ---- */
@@ -129,6 +130,81 @@ function AdvisoryPanel({ messages }: { messages: string[] }) {
   );
 }
 
+function RebaseGuidancePanel({
+  laneId,
+  message,
+  onResimulate,
+  resimulateLabel = "RE-SIMULATE",
+}: {
+  laneId: string;
+  message: string;
+  onResimulate?: () => void;
+  resimulateLabel?: string;
+}) {
+  return (
+    <div
+      style={{
+        background: "#3B82F610",
+        border: "1px solid #3B82F630",
+        padding: 12,
+        marginBottom: 20,
+      }}
+    >
+      <div className="flex items-start justify-between" style={{ gap: 12 }}>
+        <div className="flex items-start" style={{ gap: 10 }}>
+          <Warning size={14} weight="fill" style={{ color: "#60A5FA", marginTop: 1, flexShrink: 0 }} />
+          <div className="flex flex-col" style={{ gap: 6 }}>
+            <div className="font-mono font-semibold uppercase tracking-[1px]" style={{ fontSize: 10, color: "#93C5FD" }}>
+              Rebase Recommended
+            </div>
+            <div className="font-mono" style={{ fontSize: 10, color: "#BFDBFE", lineHeight: "16px" }}>
+              {message}
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center" style={{ gap: 8, flexShrink: 0 }}>
+          <button
+            type="button"
+            className="inline-flex items-center font-mono font-bold uppercase tracking-[1px] transition-all duration-100"
+            style={{
+              fontSize: 10,
+              height: 28,
+              padding: "0 10px",
+              background: "transparent",
+              color: "#93C5FD",
+              border: "1px solid #3B82F650",
+              cursor: "pointer",
+            }}
+            onClick={() => {
+              window.location.hash = `#/prs?tab=rebase&laneId=${encodeURIComponent(laneId)}`;
+            }}
+          >
+            OPEN REBASE TAB
+          </button>
+          {onResimulate ? (
+            <button
+              type="button"
+              className="inline-flex items-center font-mono font-bold uppercase tracking-[1px] transition-all duration-100"
+              style={{
+                fontSize: 10,
+                height: 28,
+                padding: "0 10px",
+                background: "transparent",
+                color: "#A78BFA",
+                border: "1px solid #A78BFA40",
+                cursor: "pointer",
+              }}
+              onClick={onResimulate}
+            >
+              {resimulateLabel}
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ---- Lane chip ---- */
 
 function LaneChip({ name, variant = "default" }: { name: string; variant?: "default" | "accent" }) {
@@ -222,6 +298,27 @@ function readQueryParam(name: string): string | null {
   }
 }
 
+function clearProposalIdFromLocation(): void {
+  try {
+    const hash = window.location.hash ?? "";
+    const queryIndex = hash.indexOf("?");
+    if (queryIndex < 0) {
+      return;
+    }
+    const hashPath = hash.slice(0, queryIndex);
+    const params = new URLSearchParams(hash.slice(queryIndex + 1));
+    if (!params.has("proposalId")) {
+      return;
+    }
+    params.delete("proposalId");
+    const nextQuery = params.toString();
+    const nextHash = nextQuery ? `${hashPath}?${nextQuery}` : hashPath;
+    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${nextHash}`);
+  } catch {
+    // Ignore URL cleanup failures; deletion should still succeed.
+  }
+}
+
 function getIntegrationLaneWarningMessages(proposal: IntegrationProposal | null): string[] {
   if (!proposal?.integrationLaneId) return [];
   const laneLabel = proposal.integrationLaneName?.trim() || "integration lane";
@@ -290,6 +387,106 @@ function toConflictPreviewFile(file: unknown): ConflictPreviewFile | null {
     theirsExcerpt: asString(rec.theirsExcerpt),
     diffHunk: asString(rec.diffHunk ?? rec.patch),
   };
+}
+
+function getOutcomeColor(outcome: "clean" | "conflict" | "blocked" | "pending"): string {
+  if (outcome === "clean") return "#22C55E";
+  if (outcome === "conflict") return "#F59E0B";
+  if (outcome === "blocked") return "#EF4444";
+  return "#71717A";
+}
+
+function getLaneOutcomeStyles(outcome: "clean" | "conflict" | "blocked" | "pending" | undefined): {
+  borderColor: string;
+  background: string;
+} {
+  if (outcome === "clean") {
+    return { borderColor: "#22C55E", background: "#22C55E06" };
+  }
+  if (outcome === "conflict") {
+    return { borderColor: "#F59E0B", background: "#F59E0B06" };
+  }
+  if (outcome === "blocked") {
+    return { borderColor: "#EF4444", background: "#EF444406" };
+  }
+  return { borderColor: "#27272A", background: "#0C0A10" };
+}
+
+function getSimulationSummaryMessage(args: {
+  isCommittedIntegration: boolean;
+  overallOutcome: "clean" | "conflict" | "blocked";
+  baseBranch: string;
+  stepCount: number;
+}): string {
+  if (args.isCommittedIntegration) {
+    if (args.overallOutcome === "clean") {
+      return `The integration lane merges cleanly into ${args.baseBranch}`;
+    }
+    if (args.overallOutcome === "conflict") {
+      return `Conflicts detected while replaying the integration lane into ${args.baseBranch}`;
+    }
+    return "Merge blocked";
+  }
+
+  if (args.overallOutcome === "clean") {
+    return `All ${args.stepCount} lanes merge cleanly`;
+  }
+  if (args.overallOutcome === "conflict") {
+    return "Conflicts detected — resolve before merging";
+  }
+  return "Merge blocked";
+}
+
+function getConflictMatrixCellStyle(args: {
+  isSelf: boolean;
+  pairOutcome: "conflict" | "blocked" | null;
+}): { background: string; border: string; iconColor: string } {
+  if (args.isSelf) {
+    return { background: "#1E1B26", border: "#27272A", iconColor: "#52525B" };
+  }
+  if (args.pairOutcome === "blocked") {
+    return { background: "#EF444430", border: "#EF444450", iconColor: "#EF4444" };
+  }
+  if (args.pairOutcome === "conflict") {
+    return { background: "#F59E0B30", border: "#F59E0B50", iconColor: "#F59E0B" };
+  }
+  return { background: "#22C55E15", border: "#22C55E30", iconColor: "#22C55E" };
+}
+
+function getResolutionStatusConfig(status: IntegrationResolutionState["stepResolutions"][string] | undefined): {
+  label: string;
+  color: string;
+  bg: string;
+} {
+  if (status === "resolved") {
+    return { label: "RESOLVED", color: "#22C55E", bg: "#22C55E18" };
+  }
+  if (status === "merged-clean") {
+    return { label: "CLEAN", color: "#22C55E", bg: "#22C55E18" };
+  }
+  if (status === "resolving") {
+    return { label: "AI RUNNING", color: "#A78BFA", bg: "#A78BFA18" };
+  }
+  if (status === "failed") {
+    return { label: "FAILED", color: "#EF4444", bg: "#EF444418" };
+  }
+  return { label: "PENDING", color: "#71717A", bg: "#71717A18" };
+}
+
+function getDeleteProposalActionLabel(deleteProposalBusy: boolean, deleteProposalLaneToo: boolean): string {
+  if (deleteProposalBusy) return "DELETING...";
+  if (deleteProposalLaneToo) return "DELETE PROPOSAL + LANE";
+  return "DELETE PROPOSAL ONLY";
+}
+
+function getIntegrationDetailTitle(selectedPr: PrWithConflicts | null, selectedProposal: IntegrationProposal | null): string {
+  if (selectedPr) {
+    return `Integration: #${selectedPr.githubPrNumber}`;
+  }
+  if (selectedProposal) {
+    return `Proposal: ${selectedProposal.title || "Untitled"}`;
+  }
+  return "Integration Detail";
 }
 
 /* ======== Main component ======== */
@@ -385,6 +582,14 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
 
   const selectedPr = React.useMemo(() => prs.find((p) => p.id === selectedPrId) ?? null, [prs, selectedPrId]);
   const selectedMergeContext = selectedPr ? mergeContextByPrId[selectedPr.id] ?? null : null;
+  const selectedPrLiveModel = React.useMemo(
+    () => (selectedPr ? deriveIntegrationPrLiveModel({ prLaneId: selectedPr.laneId, mergeContext: selectedMergeContext }) : null),
+    [selectedMergeContext, selectedPr],
+  );
+  const rebaseNeedByLaneId = React.useMemo(
+    () => new Map(rebaseNeeds.filter((need) => need.behindBy > 0 && !need.dismissedAt).map((need) => [need.laneId, need] as const)),
+    [rebaseNeeds],
+  );
 
   React.useEffect(() => {
     setProposalResolverConfig(null);
@@ -434,35 +639,45 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
     }
   }, [onSelectPr, proposals, proposalsLoaded, prs, selectedPrId, selectedProposalId, urlProposalId]);
 
+  const commitProposalWithOptionalDirtyWorktree = React.useCallback(
+    async (proposal: IntegrationProposal): Promise<string> => {
+      const commitArgs = {
+        proposalId: proposal.proposalId,
+        integrationLaneName: proposal.integrationLaneName || `integration/${Date.now().toString(36)}`,
+        title: proposal.title || "Integration PR",
+        body: proposal.body || "",
+        draft: proposal.draft ?? false
+      };
+
+      try {
+        const result = await window.ade.prs.commitIntegration(commitArgs);
+        return result.pr.id;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!isDirtyWorktreeErrorMessage(message) || !window.confirm(`${stripDirtyWorktreePrefix(message)}\n\nContinue and create the integration PR anyway?`)) {
+          throw error;
+        }
+        const result = await window.ade.prs.commitIntegration({
+          ...commitArgs,
+          allowDirtyWorktree: true
+        });
+        return result.pr.id;
+      }
+    },
+    []
+  );
+
   const handleCommitProposal = async (p: IntegrationProposal) => {
     setCommitBusy(true);
     setCommitError(null);
     try {
-      try {
-        await window.ade.prs.commitIntegration({
-          proposalId: p.proposalId,
-          integrationLaneName: p.integrationLaneName || `integration/${Date.now().toString(36)}`,
-          title: p.title || "Integration PR",
-          body: p.body || "",
-          draft: p.draft ?? false,
-        });
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (!isDirtyWorktreeErrorMessage(message) || !window.confirm(`${stripDirtyWorktreePrefix(message)}\n\nContinue and create the integration PR anyway?`)) {
-          throw err;
-        }
-        await window.ade.prs.commitIntegration({
-          proposalId: p.proposalId,
-          integrationLaneName: p.integrationLaneName || `integration/${Date.now().toString(36)}`,
-          title: p.title || "Integration PR",
-          body: p.body || "",
-          draft: p.draft ?? false,
-          allowDirtyWorktree: true,
-        });
-      }
+      const committedPrId = await commitProposalWithOptionalDirtyWorktree(p);
       setSelectedProposalId(null);
       await loadProposals();
       await onRefresh();
+      if (committedPrId) {
+        onSelectPr(committedPrId);
+      }
     } catch (err: unknown) {
       setCommitError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -508,9 +723,12 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
         proposalId: proposal.proposalId,
         deleteIntegrationLane: deleteProposalLaneToo && Boolean(proposal.integrationLaneId),
       });
+      setProposals((prev) => prev.filter((entry) => entry.proposalId !== proposal.proposalId));
       setDeleteProposalConfirm(false);
       setDeleteProposalLaneToo(false);
-      setSelectedProposalId(null);
+      setSelectedProposalId((current) => (current === proposal.proposalId ? null : current));
+      setUrlProposalId((current) => (current === proposal.proposalId ? null : current));
+      clearProposalIdFromLocation();
       await loadProposals();
     } catch (err: unknown) {
       setCommitError(err instanceof Error ? err.message : String(err));
@@ -984,20 +1202,35 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
 
   const mergeSourcesResolved = React.useMemo(() => {
     if (!selectedPr) return [];
-    const sourceIds = selectedMergeContext?.sourceLaneIds ?? [selectedPr.laneId];
+    const sourceIds = selectedPrLiveModel?.provenanceLaneIds ?? [selectedPr.laneId];
     return sourceIds.map((id) => ({ laneId: id, laneName: laneById.get(id)?.name ?? id }));
-  }, [selectedPr, selectedMergeContext, laneById]);
+  }, [laneById, selectedPr, selectedPrLiveModel]);
+
+  const liveSimulationLaneIds = React.useMemo(() => {
+    if (!selectedPr) return [];
+    return selectedPrLiveModel?.liveSourceLaneIds ?? [selectedPr.laneId];
+  }, [selectedPr, selectedPrLiveModel]);
+
+  const liveIntegrationLaneId = selectedPrLiveModel?.integrationLaneId ?? null;
 
   const resolverTargetLaneId = React.useMemo(() => {
-    if (selectedMergeContext?.targetLaneId) return selectedMergeContext.targetLaneId;
+    if (selectedPrLiveModel?.baseLaneId) return selectedPrLiveModel.baseLaneId;
     if (!selectedPr) return null;
     return resolveTargetLaneId(selectedPr.baseBranch);
-  }, [resolveTargetLaneId, selectedPr, selectedMergeContext]);
+  }, [resolveTargetLaneId, selectedPr, selectedPrLiveModel]);
 
   const selectedProposalTargetLaneId = React.useMemo(() => {
     if (!selectedProposal) return null;
     return resolveTargetLaneId(selectedProposal.baseBranch);
   }, [resolveTargetLaneId, selectedProposal]);
+  const selectedProposalRebaseLaneIds = React.useMemo(
+    () => (selectedProposal?.sourceLaneIds ?? []).filter((laneId) => rebaseNeedByLaneId.has(laneId)),
+    [rebaseNeedByLaneId, selectedProposal?.sourceLaneIds],
+  );
+  const liveIntegrationRebaseNeed = React.useMemo(
+    () => (liveIntegrationLaneId ? rebaseNeedByLaneId.get(liveIntegrationLaneId) ?? null : null),
+    [liveIntegrationLaneId, rebaseNeedByLaneId],
+  );
 
   const proposalAdvisories = React.useMemo(() => {
     if (!selectedProposal) return [];
@@ -1011,16 +1244,22 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
     if (selectedProposal.pairwiseResults.some((pair) => pair.outcome === "conflict" && pair.conflictingFiles.length === 0)) {
       advisories.push("Some conflict pairs are missing detailed file paths/hunks, so review the resulting integration lane carefully before landing.");
     }
+    if (selectedProposalRebaseLaneIds.length > 0) {
+      advisories.push("One or more source lanes are behind their base branch. Rebase is recommended before you finalize this proposal.");
+    }
     advisories.push("The AI resolver edits the integration lane with bounded project/lane/conflict context. Treat the Run tab as the final validation gate before merging the resulting PR.");
     return advisories;
-  }, [selectedProposal, selectedProposalTargetLaneId]);
+  }, [selectedProposal, selectedProposalRebaseLaneIds.length, selectedProposalTargetLaneId]);
 
   const simulateAdvisories = React.useMemo(() => {
     if (!selectedPr || !simulateResult) return [];
     const advisories: string[] = [];
-    const sourceCount = selectedMergeContext?.sourceLaneIds?.length ?? 1;
+    const sourceCount = liveSimulationLaneIds.length;
     if (sourceCount > 1) {
       advisories.push("Simulation is pairwise, but commit uses sequential merges in source order. Keep the ordering intentional.");
+    }
+    if (selectedPrLiveModel?.isCommittedIntegration && liveIntegrationLaneId) {
+      advisories.push(`Live merge checks now run from ${laneById.get(liveIntegrationLaneId)?.name ?? liveIntegrationLaneId} into ${selectedPr.baseBranch}. The original source lanes below are provenance only.`);
     }
     if (!resolverTargetLaneId) {
       advisories.push(`No active lane currently maps to base branch "${selectedPr.baseBranch}". Create or attach that lane before trying AI-assisted integration.`);
@@ -1028,15 +1267,17 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
     if (simulateResult.pairwiseResults.some((pair) => pair.outcome === "conflict" && pair.conflictingFiles.length === 0)) {
       advisories.push("At least one conflict pair has limited file detail. Validate the integration lane carefully after resolution.");
     }
+    if (liveIntegrationRebaseNeed) {
+      advisories.push(`The integration lane is ${liveIntegrationRebaseNeed.behindBy} commit${liveIntegrationRebaseNeed.behindBy === 1 ? "" : "s"} behind ${selectedPr.baseBranch}. Rebase, then re-simulate before merging.`);
+    }
     return advisories;
-  }, [resolverTargetLaneId, selectedMergeContext?.sourceLaneIds, selectedPr, simulateResult]);
+  }, [laneById, liveIntegrationLaneId, liveIntegrationRebaseNeed, liveSimulationLaneIds.length, resolverTargetLaneId, selectedPr, selectedPrLiveModel?.isCommittedIntegration, simulateResult]);
 
   const handleSimulate = async () => {
     if (!selectedPr) return;
-    const sourceIds = selectedMergeContext?.sourceLaneIds ?? [selectedPr.laneId];
     setSimulateBusy(true); setSimulateError(null); setSimulateResult(null);
     try {
-      const result = await window.ade.prs.simulateIntegration({ sourceLaneIds: sourceIds, baseBranch: selectedPr.baseBranch });
+      const result = await window.ade.prs.simulateIntegration({ sourceLaneIds: liveSimulationLaneIds, baseBranch: selectedPr.baseBranch });
       setSimulateResult(result);
     } catch (err: unknown) {
       setSimulateError(err instanceof Error ? err.message : String(err));
@@ -1053,17 +1294,16 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
 
     // Auto-run merge simulation so the user sees status immediately
     let cancelled = false;
-    const sourceIds = selectedMergeContext?.sourceLaneIds ?? [selectedPr.laneId];
 
     setSimulateBusy(true);
-    window.ade.prs.simulateIntegration({ sourceLaneIds: sourceIds, baseBranch: selectedPr.baseBranch })
+    window.ade.prs.simulateIntegration({ sourceLaneIds: liveSimulationLaneIds, baseBranch: selectedPr.baseBranch })
       .then((result) => { if (!cancelled) setSimulateResult(result); })
       .catch((err: unknown) => { if (!cancelled) setSimulateError(err instanceof Error ? err.message : String(err)); })
       .finally(() => { if (!cancelled) setSimulateBusy(false); });
 
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-simulate on PR selection change
-  }, [selectedPrId]);
+  }, [liveSimulationLaneIds, selectedPrId]);
 
   const handleDelete = async () => {
     if (!selectedPr) return;
@@ -1120,7 +1360,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
             {/* Proposals */}
             {proposals.map((p) => {
               const isSelected = p.proposalId === selectedProposalId;
-              const outcomeColor = p.overallOutcome === "clean" ? "#22C55E" : p.overallOutcome === "conflict" ? "#F59E0B" : "#EF4444";
+              const outcomeColor = getOutcomeColor(p.overallOutcome);
               return (
                 <button
                   key={`proposal-${p.proposalId}`}
@@ -1271,6 +1511,43 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
           </div>
         ))}
 
+        {liveIntegrationRebaseNeed ? (
+          <RebaseGuidancePanel
+            laneId={liveIntegrationRebaseNeed.laneId}
+            message={`The live integration lane is ${liveIntegrationRebaseNeed.behindBy} commit${liveIntegrationRebaseNeed.behindBy === 1 ? "" : "s"} behind ${selectedPr.baseBranch}. Rebase it before merge, then re-simulate to verify the updated integration state.`}
+            onResimulate={() => {
+              void handleSimulate();
+            }}
+          />
+        ) : null}
+
+        {selectedPrLiveModel?.isCommittedIntegration && liveIntegrationLaneId && resolverTargetLaneId ? (
+          <div
+            style={{
+              background: "#A78BFA08",
+              border: "1px solid #A78BFA30",
+              padding: 12,
+              marginBottom: 20,
+            }}
+          >
+            <div className="flex items-start" style={{ gap: 10 }}>
+              <CheckCircle size={14} weight="fill" style={{ color: "#A78BFA", marginTop: 1, flexShrink: 0 }} />
+              <div className="flex flex-col" style={{ gap: 6 }}>
+                <div className="font-mono font-semibold uppercase tracking-[1px]" style={{ fontSize: 10, color: "#C4B5FD" }}>
+                  Proposal Accepted
+                </div>
+                <div className="font-mono" style={{ fontSize: 10, color: "#DDD6FE", lineHeight: "16px" }}>
+                  ADE created this GitHub PR from <span style={{ color: "#FAFAFA" }}>{selectedPr.headBranch}</span>.
+                  {" "}
+                  Live conflict checks and AI resolution now run on the integration lane against <span style={{ color: "#FAFAFA" }}>{selectedPr.baseBranch}</span>.
+                  {" "}
+                  The original source lanes below remain visible as provenance.
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         {/* ---- Header card ---- */}
         <div
           style={{
@@ -1403,23 +1680,25 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
               {mergeSourcesResolved.length} LANE{mergeSourcesResolved.length !== 1 ? "S" : ""}
             </span>
           </div>
+          {selectedPrLiveModel?.isCommittedIntegration ? (
+            <div className="font-mono" style={{ fontSize: 10, color: "#71717A", marginBottom: 12 }}>
+              These lanes were used to assemble the integration lane. Live merge checks now run on {laneById.get(liveIntegrationLaneId ?? "")?.name ?? selectedPr.headBranch}.
+            </div>
+          ) : null}
           <div className="flex flex-col" style={{ gap: 4 }}>
             {mergeSourcesResolved.map((s) => {
               const outcome = stepOutcomeByLaneId.get(s.laneId);
               const lane = laneById.get(s.laneId);
-              const borderColor =
-                outcome === "clean" ? "#22C55E" :
-                outcome === "conflict" ? "#F59E0B" :
-                outcome === "blocked" ? "#EF4444" : "#27272A";
+              const laneOutcomeStyles = getLaneOutcomeStyles(outcome);
               const step = simulateResult?.steps.find((st) => st.laneId === s.laneId);
               return (
                 <div
                   key={s.laneId}
                   style={{
                     padding: "10px 12px",
-                    background: outcome === "clean" ? "#22C55E06" : outcome === "conflict" ? "#F59E0B06" : outcome === "blocked" ? "#EF444406" : "#0C0A10",
-                    borderLeft: `3px solid ${borderColor}`,
-                    border: `1px solid ${borderColor}20`,
+                    background: laneOutcomeStyles.background,
+                    borderLeft: `3px solid ${laneOutcomeStyles.borderColor}`,
+                    border: `1px solid ${laneOutcomeStyles.borderColor}20`,
                     borderLeftWidth: 3,
                   }}
                 >
@@ -1498,11 +1777,12 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
               <div style={{ marginBottom: 16 }}>
                 <OutcomeBadge outcome={simulateResult.overallOutcome} />
                 <span className="font-mono" style={{ fontSize: 11, color: "#A1A1AA", marginLeft: 10 }}>
-                  {simulateResult.overallOutcome === "clean"
-                    ? `All ${simulateResult.steps.length} lanes merge cleanly`
-                    : simulateResult.overallOutcome === "conflict"
-                    ? "Conflicts detected — resolve before merging"
-                    : "Merge blocked"}
+                  {getSimulationSummaryMessage({
+                    isCommittedIntegration: selectedPrLiveModel?.isCommittedIntegration ?? false,
+                    overallOutcome: simulateResult.overallOutcome,
+                    baseBranch: selectedPr.baseBranch,
+                    stepCount: simulateResult.steps.length
+                  })}
                 </span>
               </div>
 
@@ -1750,11 +2030,12 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
             sessionShellClassName="flex h-[620px] min-h-[540px] max-h-[70vh] flex-col"
             context={{
               sourceTab: "integration",
-              sourceLaneId: mergeSourcesResolved[0]?.laneId ?? selectedPr.laneId,
-              sourceLaneIds: mergeSourcesResolved.length > 1 ? mergeSourcesResolved.map((source) => source.laneId) : undefined,
+              sourceLaneId: liveSimulationLaneIds[0] ?? selectedPr.laneId,
+              sourceLaneIds: liveSimulationLaneIds,
               targetLaneId: resolverTargetLaneId,
-              laneId: resolverTargetLaneId,
-              scenario: mergeSourcesResolved.length > 1 ? "integration-merge" : "single-merge",
+              laneId: liveIntegrationLaneId ?? selectedPr.laneId,
+              integrationLaneId: liveIntegrationLaneId ?? selectedPr.laneId,
+              scenario: selectedPrLiveModel?.liveScenario ?? "single-merge",
             }}
             modelId={resolverModel}
             reasoningEffort={resolverReasoningLevel}
@@ -1883,6 +2164,16 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
         </div>
 
         <AdvisoryPanel messages={proposalAdvisories} />
+
+        {selectedProposalRebaseLaneIds.length > 0 ? (
+          <RebaseGuidancePanel
+            laneId={selectedProposalRebaseLaneIds[0]!}
+            message={`${selectedProposalRebaseLaneIds.length} source lane${selectedProposalRebaseLaneIds.length === 1 ? "" : "s"} are behind their base branch. Rebase before finalizing this proposal, then re-simulate the integration plan.`}
+            onResimulate={() => {
+              void handleResimulate(selectedProposal);
+            }}
+          />
+        ) : null}
 
         {isLegacySequentialProposal && (
           <div
@@ -2094,16 +2385,10 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
                               (p.laneAId === col.laneId && p.laneBId === row.laneId)
                           );
                           const hasConflictCell = Boolean(pair);
-                          const cellBg = isSelf
-                            ? "#1E1B26"
-                            : hasConflictCell
-                              ? pair?.outcome === "blocked" ? "#EF444430" : "#F59E0B30"
-                              : "#22C55E15";
-                          const cellBorder = isSelf
-                            ? "#27272A"
-                            : hasConflictCell
-                              ? pair?.outcome === "blocked" ? "#EF444450" : "#F59E0B50"
-                              : "#22C55E30";
+                          const cellStyle = getConflictMatrixCellStyle({
+                            isSelf,
+                            pairOutcome: pair?.outcome ?? null
+                          });
                           return (
                             <td
                               key={`matrix-cell-${row.laneId}-${col.laneId}`}
@@ -2112,8 +2397,8 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
                                 height: 28,
                                 padding: 0,
                                 textAlign: "center",
-                                background: cellBg,
-                                border: `1px solid ${cellBorder}`,
+                                background: cellStyle.background,
+                                border: `1px solid ${cellStyle.border}`,
                                 cursor: hasConflictCell ? "pointer" : "default",
                               }}
                               title={
@@ -2130,7 +2415,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
                               {isSelf ? (
                                 <span style={{ color: "#52525B", fontSize: 10 }}>--</span>
                               ) : hasConflictCell ? (
-                                <Warning size={12} weight="fill" style={{ color: pair?.outcome === "blocked" ? "#EF4444" : "#F59E0B" }} />
+                                <Warning size={12} weight="fill" style={{ color: cellStyle.iconColor }} />
                               ) : (
                                 <CheckCircle size={12} weight="fill" style={{ color: "#22C55E" }} />
                               )}
@@ -2568,13 +2853,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
                   .map((lane) => {
                     const status = resolutionState.stepResolutions[lane.laneId];
                     const isActive = resolutionState.activeLaneId === lane.laneId;
-                    const statusConfig = {
-                      "resolved":     { label: "RESOLVED",    color: "#22C55E", bg: "#22C55E18" },
-                      "merged-clean": { label: "CLEAN",       color: "#22C55E", bg: "#22C55E18" },
-                      "resolving":    { label: "AI RUNNING", color: "#A78BFA", bg: "#A78BFA18" },
-                      "failed":       { label: "FAILED",      color: "#EF4444", bg: "#EF444418" },
-                      "pending":      { label: "PENDING",     color: "#71717A", bg: "#71717A18" },
-                    }[status ?? "pending"] ?? { label: "PENDING", color: "#71717A", bg: "#71717A18" };
+                    const statusConfig = getResolutionStatusConfig(status);
                     return (
                       <div
                         key={`progress-${lane.laneId}`}
@@ -2820,7 +3099,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
                   }}
                   onClick={() => void handleDeleteProposal(selectedProposal)}
                 >
-                  {deleteProposalBusy ? "DELETING..." : deleteProposalLaneToo ? "DELETE PROPOSAL + LANE" : "DELETE PROPOSAL ONLY"}
+                  {getDeleteProposalActionLabel(deleteProposalBusy, deleteProposalLaneToo)}
                 </button>
                 <button
                   type="button"
@@ -2900,13 +3179,13 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
       children: listPane,
     },
     detail: {
-      title: selectedPr ? `Integration: #${selectedPr.githubPrNumber}` : selectedProposal ? `Proposal: ${selectedProposal.title || "Untitled"}` : "Integration Detail",
+      title: getIntegrationDetailTitle(selectedPr, selectedProposal),
       icon: Eye,
       bodyClassName: "overflow-auto",
       children: detailPane,
     },
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [prs, selectedPr, selectedPrId, mergeContextByPrId, laneById, mergeSourcesResolved, resolverTargetLaneId, simulateResult, simulateBusy, simulateError, resolverOpen, proposalResolverConfig, deleteConfirm, deleteBusy, deleteCloseGh, hasConflicts, rebaseNeeds, autoRebaseStatuses, setActiveTab, onSelectPr, onRefresh, stepOutcomeByLaneId, proposals, proposalsLoaded, selectedProposal, selectedProposalId, commitBusy, commitError, resimBusy, deleteProposalBusy, expandedPairKeys, resolutionState, activeWorkerStepId, createLaneBusy, resolvingLaneId, resolutionPanelDismissed, allStepsResolved, proposalLaneCards, proposalConflictingPairs, proposalConflictSteps, totalProposalConflictFiles, urlProposalId, conflictPairCountByLaneId, isLegacySequentialProposal, nextManualResolutionLaneId]);
+  }), [prs, selectedPr, selectedPrId, mergeContextByPrId, laneById, mergeSourcesResolved, liveIntegrationLaneId, liveIntegrationRebaseNeed, liveSimulationLaneIds, resolverTargetLaneId, simulateResult, simulateBusy, simulateError, resolverOpen, proposalResolverConfig, deleteConfirm, deleteBusy, deleteCloseGh, hasConflicts, rebaseNeeds, rebaseNeedByLaneId, autoRebaseStatuses, setActiveTab, onSelectPr, onRefresh, stepOutcomeByLaneId, proposals, proposalsLoaded, selectedProposal, selectedProposalId, selectedProposalRebaseLaneIds, selectedPrLiveModel, commitBusy, commitError, resimBusy, deleteProposalBusy, expandedPairKeys, resolutionState, activeWorkerStepId, createLaneBusy, resolvingLaneId, resolutionPanelDismissed, allStepsResolved, proposalLaneCards, proposalConflictingPairs, proposalConflictSteps, totalProposalConflictFiles, urlProposalId, conflictPairCountByLaneId, isLegacySequentialProposal, nextManualResolutionLaneId]);
 
   return <PaneTilingLayout layoutId="prs:integration:v1" tree={PR_TAB_TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
 }

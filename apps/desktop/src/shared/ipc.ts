@@ -131,6 +131,7 @@ export const IPC = {
   gitDiscardFile: "ade.git.discardFile",
   gitRestoreStagedFile: "ade.git.restoreStagedFile",
   gitCommit: "ade.git.commit",
+  gitGenerateCommitMessage: "ade.git.generateCommitMessage",
   gitListRecentCommits: "ade.git.listRecentCommits",
   gitListCommitFiles: "ade.git.listCommitFiles",
   gitGetCommitMessage: "ade.git.getCommitMessage",
