@@ -220,6 +220,8 @@ export type OrchestratorExecutorStartArgs = {
   memoryService?: unknown;
   /** Project ID for memory service scoping. */
   memoryProjectId?: string;
+  /** Precomputed shared memory briefing for prompt assembly. */
+  memoryBriefing?: import("../memory/memoryBriefingService").MemoryBriefing | null;
 };
 
 export type OrchestratorExecutorAdapter = {
@@ -773,6 +775,9 @@ export function createOrchestratorService({
   projectConfigService,
   aiIntegrationService,
   memoryService,
+  memoryBriefingService,
+  missionMemoryLifecycleService,
+  episodicSummaryService,
   onEvent
 }: {
   db: AdeDb;
@@ -786,6 +791,9 @@ export function createOrchestratorService({
   projectConfigService?: ReturnType<typeof createProjectConfigService> | null;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   memoryService?: ReturnType<typeof createMemoryService> | null;
+  memoryBriefingService?: import("../memory/memoryBriefingService").MemoryBriefingService | null;
+  missionMemoryLifecycleService?: import("../memory/missionMemoryLifecycleService").MissionMemoryLifecycleService | null;
+  episodicSummaryService?: import("../memory/episodicSummaryService").EpisodicSummaryService | null;
   onEvent?: (event: OrchestratorEvent) => void;
 }) {
   const adapters = new Map<OrchestratorExecutorKind, OrchestratorExecutorAdapter>();
@@ -6623,6 +6631,27 @@ export function createOrchestratorService({
             : step;
 
           const allSteps = listStepRows(run.id).map(toStep);
+          const briefingFilePatterns = Array.isArray(stepWithWorktree.metadata?.fileScopes)
+            ? stepWithWorktree.metadata.fileScopes.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
+            : [];
+          const memoryBriefing = memoryBriefingService
+            ? await memoryBriefingService.buildBriefing({
+                projectId,
+                missionId: run.missionId,
+                runId: run.id,
+                taskDescription: stepWithWorktree.title,
+                phaseContext: typeof stepWithWorktree.metadata?.phaseInstructions === "string"
+                  ? stepWithWorktree.metadata.phaseInstructions
+                  : typeof stepWithWorktree.metadata?.instructions === "string"
+                    ? stepWithWorktree.metadata.instructions
+                    : null,
+                handoffSummaries: Array.isArray(stepWithWorktree.metadata?.handoffSummaries)
+                  ? stepWithWorktree.metadata.handoffSummaries.map((entry) => String(entry ?? ""))
+                  : [],
+                filePatterns: briefingFilePatterns,
+                mode: "mission_worker",
+              })
+            : null;
           const promptPack = buildFullPrompt(
             {
               run,
@@ -6637,10 +6666,11 @@ export function createOrchestratorService({
               createTrackedSession: async () => {
                 throw new Error("In-process execution does not create tracked terminal sessions.");
               },
+              ...(memoryBriefing ? { memoryBriefing } : {}),
             },
             "unified",
             memoryService
-              ? { memoryService, projectId, workerRuntime: "in_process" }
+              ? { memoryService, projectId, workerRuntime: "in_process", memoryBriefing }
               : { projectId, workerRuntime: "in_process" },
           );
 
@@ -6983,6 +7013,26 @@ export function createOrchestratorService({
           }
           return s;
         })();
+        const memoryBriefing = memoryBriefingService
+          ? await memoryBriefingService.buildBriefing({
+              projectId,
+              missionId: run.missionId,
+              runId: run.id,
+              taskDescription: stepForExecutor.title,
+              phaseContext: typeof stepForExecutor.metadata?.phaseInstructions === "string"
+                ? stepForExecutor.metadata.phaseInstructions
+                : typeof stepForExecutor.metadata?.instructions === "string"
+                  ? stepForExecutor.metadata.instructions
+                  : null,
+              handoffSummaries: Array.isArray(stepForExecutor.metadata?.handoffSummaries)
+                ? stepForExecutor.metadata.handoffSummaries.map((entry) => String(entry ?? ""))
+                : [],
+              filePatterns: Array.isArray(stepForExecutor.metadata?.fileScopes)
+                ? stepForExecutor.metadata.fileScopes.map((entry) => String(entry ?? ""))
+                : [],
+              mode: "mission_worker",
+            })
+          : null;
         const result = await adapter.start({
           run,
           step: stepForExecutor,
@@ -7000,6 +7050,7 @@ export function createOrchestratorService({
             }),
           permissionConfig,
           ...recoveryContext,
+          ...(memoryBriefing ? { memoryBriefing } : {}),
           ...(memoryService ? { memoryService, memoryProjectId: projectId } : {})
         });
         if (result.status === "accepted") {
@@ -7412,9 +7463,27 @@ export function createOrchestratorService({
 	      if (reservationWarns && fileReservationMessage && !envelope.warnings.includes(fileReservationMessage)) {
 	        envelope.warnings.push(fileReservationMessage);
 	      }
-	      const workerState = status === "succeeded" ? "idle" : "disposed";
+      const workerState = status === "succeeded" ? "idle" : "disposed";
       let validationContractUnfulfilledSignal = false;
       let validationSelfCheckReminder = false;
+
+      if (status === "failed") {
+        const gotchaLines = [
+          `Step "${step.stepKey}" failed.`,
+          `Summary: ${String(envelope.summary ?? effectiveErrorMessage ?? defaultSummary).trim() || "Unknown failure."}`,
+          `Error class: ${errorClass}`,
+          shouldRetry
+            ? `Retry scheduled (${step.retryCount + 1}/${step.retryLimit}).`
+            : "No retries remain for this failure.",
+        ];
+        missionMemoryLifecycleService?.recordFailureGotcha({
+          projectId,
+          missionId: run.missionId,
+          runId: run.id,
+          content: gotchaLines.join(" "),
+          confidence: shouldRetry ? 0.8 : 0.95,
+        });
+      }
 
       db.run(
         `
@@ -10455,13 +10524,46 @@ export function createOrchestratorService({
         });
       }
 
-      // Auto-promote shared facts to memory on success
-      if (finalStatus === "succeeded") {
-        try {
-          promoteRunFactsToMemory(runId, projectId);
-        } catch {
-          // Memory promotion is best-effort; don't fail finalization
-        }
+      const missionEntries = missionMemoryLifecycleService?.listMissionEntries({
+        projectId,
+        missionId: run.missionId,
+        runId,
+        status: "all",
+      }) ?? [];
+      const sharedFacts = memoryService?.getSharedFacts(runId, 50) ?? [];
+      try {
+        missionMemoryLifecycleService?.finalizeMission({
+          projectId,
+          missionId: run.missionId,
+          runId,
+          finalStatus: finalStatus === "succeeded" ? "succeeded" : finalStatus === "failed" ? "failed" : "canceled",
+        });
+      } catch {
+        // Mission lifecycle cleanup is best-effort.
+      }
+      if (episodicSummaryService) {
+        const decisions = missionEntries
+          .filter((entry) => entry.category === "decision")
+          .map((entry) => entry.content);
+        const gotchas = missionEntries
+          .filter((entry) => entry.category === "gotcha")
+          .map((entry) => entry.content);
+        episodicSummaryService.enqueueMissionSummary({
+          missionId: run.missionId,
+          runId,
+          taskDescription: typeof run.metadata?.missionGoal === "string" && run.metadata.missionGoal.trim().length > 0
+            ? run.metadata.missionGoal.trim()
+            : `Mission ${run.missionId}`,
+          finalStatus: finalStatus === "succeeded" ? "success" : finalStatus === "failed" ? "failure" : "partial",
+          startedAt: run.startedAt,
+          endedAt: updatedMeta.finalizedAt,
+          sharedFacts: sharedFacts.map((fact) => `[${fact.factType}] ${fact.content}`),
+          decisions,
+          gotchas,
+          workerOutputs: steps
+            .filter((step) => step.status === "succeeded" || step.status === "failed")
+            .map((step) => `${step.stepKey}: ${step.title} (${step.status})`),
+        });
       }
 
       appendTimelineEvent({

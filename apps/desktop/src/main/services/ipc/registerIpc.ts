@@ -14,9 +14,14 @@ import type {
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
   ArchiveLaneArgs,
+  AutomationManualTriggerRequest,
+  AutomationQueueActionRequest,
+  AutomationQueueItem,
+  AutomationQueueListArgs,
   AutomationRuleSummary,
   AutomationRun,
   AutomationRunDetail,
+  AutomationRunListArgs,
   AutomationParseNaturalLanguageRequest,
   AutomationParseNaturalLanguageResult,
   AutomationValidateDraftRequest,
@@ -25,6 +30,9 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  NightShiftBriefing,
+  NightShiftState,
+  UpdateNightShiftSettingsRequest,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   ConflictProposal,
@@ -443,6 +451,12 @@ import { readCoordinatorCheckpoint } from "../orchestrator/missionStateDoc";
 import type { createMemoryService } from "../memory/memoryService";
 import type { createBatchConsolidationService } from "../memory/batchConsolidationService";
 import type { createMemoryLifecycleService } from "../memory/memoryLifecycleService";
+import type { createMemoryBriefingService } from "../memory/memoryBriefingService";
+import type { createMissionMemoryLifecycleService } from "../memory/missionMemoryLifecycleService";
+import type { createEpisodicSummaryService } from "../memory/episodicSummaryService";
+import type { createHumanWorkDigestService } from "../memory/humanWorkDigestService";
+import type { createProceduralLearningService } from "../memory/proceduralLearningService";
+import type { createSkillRegistryService } from "../memory/skillRegistryService";
 import type { createEmbeddingService } from "../memory/embeddingService";
 import type { createEmbeddingWorkerService } from "../memory/embeddingWorkerService";
 import type { createCtoStateService } from "../cto/ctoStateService";
@@ -513,6 +527,12 @@ export type AppContext = {
   memoryService?: ReturnType<typeof createMemoryService> | null;
   batchConsolidationService?: ReturnType<typeof createBatchConsolidationService> | null;
   memoryLifecycleService?: ReturnType<typeof createMemoryLifecycleService> | null;
+  memoryBriefingService?: ReturnType<typeof createMemoryBriefingService> | null;
+  missionMemoryLifecycleService?: ReturnType<typeof createMissionMemoryLifecycleService> | null;
+  episodicSummaryService?: ReturnType<typeof createEpisodicSummaryService> | null;
+  humanWorkDigestService?: ReturnType<typeof createHumanWorkDigestService> | null;
+  proceduralLearningService?: ReturnType<typeof createProceduralLearningService> | null;
+  skillRegistryService?: ReturnType<typeof createSkillRegistryService> | null;
   embeddingService?: ReturnType<typeof createEmbeddingService> | null;
   embeddingWorkerService?: ReturnType<typeof createEmbeddingWorkerService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
@@ -1562,9 +1582,15 @@ export function registerIpc({
     return ctx.automationService.toggle({ id: arg?.id ?? "", enabled: Boolean(arg?.enabled) });
   });
 
-  ipcMain.handle(IPC.automationsTriggerManually, async (_event, arg: { id: string; laneId?: string | null }): Promise<AutomationRun> => {
+  ipcMain.handle(IPC.automationsTriggerManually, async (_event, arg: AutomationManualTriggerRequest): Promise<AutomationRun> => {
     const ctx = getCtx();
-    return await ctx.automationService.triggerManually({ id: arg?.id ?? "", laneId: arg?.laneId ?? null });
+    return await ctx.automationService.triggerManually({
+      id: arg?.id ?? "",
+      laneId: arg?.laneId ?? null,
+      reviewProfileOverride: arg?.reviewProfileOverride ?? null,
+      queueInstead: Boolean(arg?.queueInstead),
+      verboseTrace: Boolean(arg?.verboseTrace),
+    });
   });
 
   ipcMain.handle(IPC.automationsGetHistory, async (_event, arg: { id: string; limit?: number }): Promise<AutomationRun[]> => {
@@ -1572,9 +1598,44 @@ export function registerIpc({
     return ctx.automationService.getHistory({ id: arg?.id ?? "", limit: arg?.limit });
   });
 
+  ipcMain.handle(IPC.automationsListRuns, async (_event, arg: AutomationRunListArgs = {}): Promise<AutomationRun[]> => {
+    const ctx = getCtx();
+    return ctx.automationService.listRuns(arg);
+  });
+
   ipcMain.handle(IPC.automationsGetRunDetail, async (_event, arg: { runId: string }): Promise<AutomationRunDetail | null> => {
     const ctx = getCtx();
     return ctx.automationService.getRunDetail({ runId: arg?.runId ?? "" });
+  });
+
+  ipcMain.handle(IPC.automationsListQueueItems, async (_event, arg: AutomationQueueListArgs = {}): Promise<AutomationQueueItem[]> => {
+    const ctx = getCtx();
+    return ctx.automationService.listQueueItems(arg);
+  });
+
+  ipcMain.handle(IPC.automationsUpdateQueueItem, async (_event, arg: AutomationQueueActionRequest): Promise<AutomationQueueItem | null> => {
+    const ctx = getCtx();
+    return ctx.automationService.updateQueueItem(arg);
+  });
+
+  ipcMain.handle(IPC.automationsGetNightShiftState, async (): Promise<NightShiftState> => {
+    const ctx = getCtx();
+    return ctx.automationService.getNightShiftState();
+  });
+
+  ipcMain.handle(IPC.automationsUpdateNightShiftSettings, async (_event, arg: UpdateNightShiftSettingsRequest): Promise<NightShiftState> => {
+    const ctx = getCtx();
+    return ctx.automationService.updateNightShiftSettings(arg ?? {});
+  });
+
+  ipcMain.handle(IPC.automationsGetMorningBriefing, async (): Promise<NightShiftBriefing | null> => {
+    const ctx = getCtx();
+    return ctx.automationService.getMorningBriefing();
+  });
+
+  ipcMain.handle(IPC.automationsAcknowledgeMorningBriefing, async (_event, arg: { id: string }): Promise<NightShiftBriefing | null> => {
+    const ctx = getCtx();
+    return ctx.automationService.acknowledgeMorningBriefing({ id: arg?.id ?? "" });
   });
 
   ipcMain.handle(IPC.automationsParseNaturalLanguage, async (_event, arg: AutomationParseNaturalLanguageRequest): Promise<AutomationParseNaturalLanguageResult> => {
@@ -4239,6 +4300,69 @@ export function registerIpc({
     const ctx = getCtx();
     if (!ctx.memoryService) return;
     ctx.memoryService.archiveMemory(arg.id);
+  });
+
+  ipcMain.handle(IPC.memoryPromoteMissionEntry, async (_event, arg: { id: string; missionId: string; runId?: string | null }) => {
+    const ctx = getCtx();
+    if (!ctx.missionMemoryLifecycleService) return null;
+    return ctx.missionMemoryLifecycleService.promoteMissionMemoryEntry({
+      memoryId: arg.id,
+      missionId: arg.missionId,
+    });
+  });
+
+  ipcMain.handle(IPC.memoryListMissionEntries, async (_event, arg: { missionId: string; runId?: string | null; status?: "candidate" | "promoted" | "archived" | "all" }) => {
+    const ctx = getCtx();
+    if (!ctx.missionMemoryLifecycleService) return [];
+    return ctx.missionMemoryLifecycleService.listMissionEntries({
+      projectId: ctx.projectId,
+      missionId: arg.missionId,
+      runId: arg.runId,
+      status: arg.status ?? "all",
+    });
+  });
+
+  ipcMain.handle(IPC.memoryListProcedures, async (_event, arg: { status?: "candidate" | "promoted" | "archived" | "all"; scope?: "project" | "mission" | "agent"; query?: string } = {}) => {
+    const ctx = getCtx();
+    return ctx.proceduralLearningService?.listProcedures(arg) ?? [];
+  });
+
+  ipcMain.handle(IPC.memoryGetProcedureDetail, async (_event, arg: { id: string }) => {
+    const ctx = getCtx();
+    return ctx.proceduralLearningService?.getProcedureDetail(arg.id) ?? null;
+  });
+
+  ipcMain.handle(IPC.memoryExportProcedureSkill, async (_event, arg: { id: string; name?: string | null }) => {
+    const ctx = getCtx();
+    return ctx.skillRegistryService?.exportProcedureSkill(arg) ?? null;
+  });
+
+  ipcMain.handle(IPC.memoryListIndexedSkills, async () => {
+    const ctx = getCtx();
+    return ctx.skillRegistryService?.listIndexedSkills() ?? [];
+  });
+
+  ipcMain.handle(IPC.memoryReindexSkills, async (_event, arg: { paths?: string[] } = {}) => {
+    const ctx = getCtx();
+    return ctx.skillRegistryService?.reindexSkills(arg) ?? [];
+  });
+
+  ipcMain.handle(IPC.memorySyncKnowledge, async () => {
+    const ctx = getCtx();
+    return ctx.humanWorkDigestService?.syncKnowledge() ?? null;
+  });
+
+  ipcMain.handle(IPC.memoryGetKnowledgeSyncStatus, async () => {
+    const ctx = getCtx();
+    return ctx.humanWorkDigestService?.getKnowledgeSyncStatus() ?? {
+      syncing: false,
+      lastSeenHeadSha: null,
+      currentHeadSha: null,
+      diverged: false,
+      lastDigestAt: null,
+      lastDigestMemoryId: null,
+      lastError: null,
+    };
   });
 
   ipcMain.handle(

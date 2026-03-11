@@ -10,9 +10,20 @@ import type {
   AiTaskRoutingRule,
   AutomationAction,
   AutomationActionType,
+  AutomationActiveHours,
+  AutomationContextSource,
+  AutomationExecutor,
+  AutomationGuardrails,
+  AutomationMemoryConfig,
+  AutomationMode,
+  AutomationOutputs,
   AutomationRule,
+  AutomationReviewProfile,
+  AutomationRunQueueStatus,
+  AutomationToolFamily,
   AutomationTrigger,
   AutomationTriggerType,
+  AutomationVerification,
   ConfigAutomationRule,
   ConfigLaneOverlayPolicy,
   ConfigLaneTemplate,
@@ -57,6 +68,17 @@ const TRUSTED_SHARED_HASH_KEY = "project_config:trusted_shared_hash";
 const VERSION = 1;
 const DEFAULT_GRACEFUL_MS = 7000;
 const EMPTY_CONTENT_HASH = createHash("sha256").update("").digest("hex");
+const AUTOMATION_TOOL_FAMILIES: AutomationToolFamily[] = [
+  "repo",
+  "git",
+  "tests",
+  "github",
+  "linear",
+  "browser",
+  "memory",
+  "mission",
+  "external-mcp",
+];
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
@@ -205,7 +227,12 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
   if (!isRecord(value)) return undefined;
   const typeRaw = asString(value.type)?.trim() ?? "";
   const type: AutomationTriggerType | null =
-    typeRaw === "session-end" || typeRaw === "commit" || typeRaw === "schedule" || typeRaw === "manual"
+    typeRaw === "session-end" ||
+    typeRaw === "commit" ||
+    typeRaw === "schedule" ||
+    typeRaw === "manual" ||
+    typeRaw === "github-webhook" ||
+    typeRaw === "webhook"
       ? (typeRaw as AutomationTriggerType)
       : null;
   if (!type) return undefined;
@@ -213,9 +240,34 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
   const out: AutomationTrigger = { type };
   const cron = asString(value.cron);
   const branch = asString(value.branch);
+  const event = asString(value.event);
+  const author = asString(value.author);
+  const labels = asStringArray(value.labels);
+  const paths = asStringArray(value.paths);
+  const keywords = asStringArray(value.keywords);
+  const secretRef = asString(value.secretRef);
+  const draftStateRaw = asString(value.draftState)?.trim();
+  const activeHours = coerceAutomationActiveHours(value.activeHours);
   if (cron != null) out.cron = cron;
   if (branch != null) out.branch = branch;
+  if (event != null) out.event = event;
+  if (author != null) out.author = author;
+  if (labels != null) out.labels = labels;
+  if (paths != null) out.paths = paths;
+  if (keywords != null) out.keywords = keywords;
+  if (secretRef != null) out.secretRef = secretRef;
+  if (draftStateRaw === "draft" || draftStateRaw === "ready" || draftStateRaw === "any") out.draftState = draftStateRaw;
+  if (activeHours) out.activeHours = activeHours;
   return out;
+}
+
+function coerceAutomationActiveHours(value: unknown): AutomationActiveHours | undefined {
+  if (!isRecord(value)) return undefined;
+  const start = asString(value.start);
+  const end = asString(value.end);
+  const timezone = asString(value.timezone);
+  if (!start || !end || !timezone) return undefined;
+  return { start, end, timezone };
 }
 
 function coerceAutomationAction(value: unknown): AutomationAction | null {
@@ -250,22 +302,198 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
   return out;
 }
 
+function coerceAutomationExecutor(value: unknown): AutomationExecutor | undefined {
+  if (!isRecord(value)) return undefined;
+  const modeRaw = asString(value.mode)?.trim() ?? "";
+  const mode =
+    modeRaw === "automation-bot" ||
+    modeRaw === "employee" ||
+    modeRaw === "cto-route" ||
+    modeRaw === "night-shift"
+      ? modeRaw
+      : null;
+  if (!mode) return undefined;
+  const targetId = asString(value.targetId);
+  return {
+    mode,
+    ...(targetId != null ? { targetId } : {}),
+  };
+}
+
+function coerceAutomationContextSource(value: unknown): AutomationContextSource | undefined {
+  if (!isRecord(value)) return undefined;
+  const typeRaw = asString(value.type)?.trim() ?? "";
+  const validTypes = new Set([
+    "project-memory",
+    "automation-memory",
+    "worker-memory",
+    "procedures",
+    "skills",
+    "linked-doc",
+    "linked-repo",
+    "path-rules",
+  ]);
+  if (!validTypes.has(typeRaw)) return undefined;
+  const out: AutomationContextSource = { type: typeRaw as AutomationContextSource["type"] };
+  const pathValue = asString(value.path);
+  const repoId = asString(value.repoId);
+  const label = asString(value.label);
+  const required = asBool(value.required);
+  if (pathValue != null) out.path = pathValue;
+  if (repoId != null) out.repoId = repoId;
+  if (label != null) out.label = label;
+  if (required != null) out.required = required;
+  return out;
+}
+
+function coerceAutomationMemory(value: unknown): AutomationMemoryConfig | undefined {
+  if (!isRecord(value)) return undefined;
+  const modeRaw = asString(value.mode)?.trim() ?? "";
+  const mode =
+    modeRaw === "none" ||
+    modeRaw === "project" ||
+    modeRaw === "automation" ||
+    modeRaw === "automation-plus-project" ||
+    modeRaw === "automation-plus-employee"
+      ? modeRaw
+      : null;
+  if (!mode) return undefined;
+  const ruleScopeKey = asString(value.ruleScopeKey);
+  return {
+    mode,
+    ...(ruleScopeKey != null ? { ruleScopeKey } : {}),
+  };
+}
+
+function coerceAutomationGuardrails(value: unknown): AutomationGuardrails | undefined {
+  if (!isRecord(value)) return undefined;
+  const out: AutomationGuardrails = {};
+  const budgetUsd = asNumber(value.budgetUsd);
+  const maxDurationMin = asNumber(value.maxDurationMin);
+  const confidenceThreshold = asNumber(value.confidenceThreshold);
+  const maxFindings = asNumber(value.maxFindings);
+  const reserveBudget = asBool(value.reserveBudget);
+  const activeHours = coerceAutomationActiveHours(value.activeHours);
+  if (budgetUsd != null) out.budgetUsd = budgetUsd;
+  if (maxDurationMin != null) out.maxDurationMin = maxDurationMin;
+  if (confidenceThreshold != null) out.confidenceThreshold = confidenceThreshold;
+  if (maxFindings != null) out.maxFindings = maxFindings;
+  if (reserveBudget != null) out.reserveBudget = reserveBudget;
+  if (activeHours) out.activeHours = activeHours;
+  return Object.keys(out).length ? out : undefined;
+}
+
+function coerceAutomationOutputs(value: unknown): AutomationOutputs | undefined {
+  if (!isRecord(value)) return undefined;
+  const dispositionRaw = asString(value.disposition)?.trim() ?? "";
+  const disposition =
+    dispositionRaw === "comment-only" ||
+    dispositionRaw === "open-task" ||
+    dispositionRaw === "open-lane" ||
+    dispositionRaw === "prepare-patch" ||
+    dispositionRaw === "open-pr-draft" ||
+    dispositionRaw === "queue-overnight"
+      ? dispositionRaw
+      : null;
+  if (!disposition) return undefined;
+  const createArtifact = asBool(value.createArtifact);
+  const notificationChannel = asString(value.notificationChannel);
+  return {
+    disposition,
+    ...(createArtifact != null ? { createArtifact } : {}),
+    ...(notificationChannel != null ? { notificationChannel } : {}),
+  };
+}
+
+function coerceAutomationVerification(value: unknown): AutomationVerification | undefined {
+  if (!isRecord(value)) return undefined;
+  const verifyBeforePublish = asBool(value.verifyBeforePublish);
+  const modeRaw = asString(value.mode)?.trim();
+  const mode = modeRaw === "intervention" || modeRaw === "dry-run" ? modeRaw : undefined;
+  if (verifyBeforePublish == null && !mode) return undefined;
+  return {
+    verifyBeforePublish: Boolean(verifyBeforePublish),
+    ...(mode ? { mode } : {}),
+  };
+}
+
 function coerceAutomationRule(value: unknown): ConfigAutomationRule | null {
   if (!isRecord(value)) return null;
   const id = asString(value.id)?.trim() ?? "";
   const out: ConfigAutomationRule = { id };
 
   const name = asString(value.name);
+  const description = asString(value.description);
   const enabled = asBool(value.enabled);
+  const modeRaw = asString(value.mode)?.trim();
+  const mode: AutomationMode | undefined =
+    modeRaw === "review" || modeRaw === "fix" || modeRaw === "monitor"
+      ? modeRaw
+      : undefined;
   const trigger = coerceAutomationTrigger(value.trigger);
+  const triggers = Array.isArray(value.triggers)
+    ? value.triggers.map(coerceAutomationTrigger).filter((x): x is AutomationTrigger => x != null)
+    : undefined;
   const actions = Array.isArray(value.actions)
     ? value.actions.map(coerceAutomationAction).filter((x): x is AutomationAction => x != null)
     : undefined;
+  const executor = coerceAutomationExecutor(value.executor);
+  const templateId = asString(value.templateId);
+  const prompt = asString(value.prompt);
+  const reviewProfileRaw = asString(value.reviewProfile)?.trim();
+  const reviewProfile: AutomationReviewProfile | undefined =
+    reviewProfileRaw === "quick" ||
+    reviewProfileRaw === "incremental" ||
+    reviewProfileRaw === "full" ||
+    reviewProfileRaw === "security" ||
+    reviewProfileRaw === "release-risk" ||
+    reviewProfileRaw === "cross-repo-contract"
+      ? reviewProfileRaw
+      : undefined;
+  const toolPalette = Array.isArray(value.toolPalette)
+    ? value.toolPalette
+        .map((entry) => asString(entry)?.trim())
+        .filter((entry): entry is AutomationToolFamily => Boolean(entry && AUTOMATION_TOOL_FAMILIES.includes(entry as AutomationToolFamily)))
+    : undefined;
+  const contextSources = Array.isArray(value.contextSources)
+    ? value.contextSources.map(coerceAutomationContextSource).filter((x): x is AutomationContextSource => x != null)
+    : undefined;
+  const memory = coerceAutomationMemory(value.memory);
+  const guardrails = coerceAutomationGuardrails(value.guardrails);
+  const outputs = coerceAutomationOutputs(value.outputs);
+  const verification = coerceAutomationVerification(value.verification);
+  const billingCode = asString(value.billingCode);
+  const queueStatusRaw = asString(value.queueStatus)?.trim();
+  const queueStatus: AutomationRunQueueStatus | undefined =
+    queueStatusRaw === "pending-review" ||
+    queueStatusRaw === "actionable-findings" ||
+    queueStatusRaw === "verification-required" ||
+    queueStatusRaw === "completed-clean" ||
+    queueStatusRaw === "queued-for-night-shift" ||
+    queueStatusRaw === "ignored" ||
+    queueStatusRaw === "archived"
+      ? queueStatusRaw
+      : undefined;
 
   if (name != null) out.name = name;
+  if (description != null) out.description = description;
   if (enabled != null) out.enabled = enabled;
+  if (mode != null) out.mode = mode;
+  if (triggers != null) out.triggers = triggers;
   if (trigger != null) out.trigger = trigger;
   if (actions != null) out.actions = actions;
+  if (executor != null) out.executor = executor;
+  if (templateId != null) out.templateId = templateId;
+  if (prompt != null) out.prompt = prompt;
+  if (reviewProfile != null) out.reviewProfile = reviewProfile;
+  if (toolPalette != null) out.toolPalette = toolPalette;
+  if (contextSources != null) out.contextSources = contextSources;
+  if (memory != null) out.memory = memory;
+  if (guardrails != null) out.guardrails = guardrails;
+  if (outputs != null) out.outputs = outputs;
+  if (verification != null) out.verification = verification;
+  if (billingCode != null) out.billingCode = billingCode;
+  if (queueStatus != null) out.queueStatus = queueStatus;
 
   return out;
 }
@@ -1369,8 +1597,16 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
   const mergedAutomations = mergeById(shared.automations ?? [], local.automations ?? [], (base, over) => ({
     ...base,
     ...over,
+    ...(over.triggers != null ? { triggers: over.triggers } : base.triggers != null ? { triggers: base.triggers } : {}),
     ...(over.trigger != null ? { trigger: over.trigger } : base.trigger != null ? { trigger: base.trigger } : {}),
-    ...(over.actions != null ? { actions: over.actions } : base.actions != null ? { actions: base.actions } : {})
+    ...(over.actions != null ? { actions: over.actions } : base.actions != null ? { actions: base.actions } : {}),
+    ...(over.executor != null ? { executor: over.executor } : base.executor != null ? { executor: base.executor } : {}),
+    ...(over.toolPalette != null ? { toolPalette: over.toolPalette } : base.toolPalette != null ? { toolPalette: base.toolPalette } : {}),
+    ...(over.contextSources != null ? { contextSources: over.contextSources } : base.contextSources != null ? { contextSources: base.contextSources } : {}),
+    ...(over.memory != null ? { memory: over.memory } : base.memory != null ? { memory: base.memory } : {}),
+    ...(over.guardrails != null ? { guardrails: over.guardrails } : base.guardrails != null ? { guardrails: base.guardrails } : {}),
+    ...(over.outputs != null ? { outputs: over.outputs } : base.outputs != null ? { outputs: base.outputs } : {}),
+    ...(over.verification != null ? { verification: over.verification } : base.verification != null ? { verification: base.verification } : {})
   }));
   const laneEnvInit = mergeLaneEnvInit(shared.laneEnvInit, local.laneEnvInit);
 
@@ -1441,11 +1677,34 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
   const automations: AutomationRule[] = mergedAutomations.map((entry) => ({
     id: entry.id.trim(),
     name: entry.name?.trim() ?? entry.id.trim(),
-    trigger: {
-      type: entry.trigger?.type ?? "manual",
-      ...(entry.trigger?.cron ? { cron: entry.trigger.cron.trim() } : {}),
-      ...(entry.trigger?.branch ? { branch: entry.trigger.branch.trim() } : {})
-    },
+    ...(entry.description?.trim() ? { description: entry.description.trim() } : {}),
+    mode: entry.mode ?? "review",
+    triggers: (entry.triggers?.length ? entry.triggers : entry.trigger ? [entry.trigger] : [{ type: "manual" }]).map((trigger) => ({
+      type: trigger.type,
+      ...(trigger.cron ? { cron: trigger.cron.trim() } : {}),
+      ...(trigger.branch ? { branch: trigger.branch.trim() } : {}),
+      ...(trigger.event ? { event: trigger.event.trim() } : {}),
+      ...(trigger.author ? { author: trigger.author.trim() } : {}),
+      ...(trigger.labels?.length ? { labels: trigger.labels.map((value) => value.trim()).filter(Boolean) } : {}),
+      ...(trigger.paths?.length ? { paths: trigger.paths.map((value) => value.trim()).filter(Boolean) } : {}),
+      ...(trigger.keywords?.length ? { keywords: trigger.keywords.map((value) => value.trim()).filter(Boolean) } : {}),
+      ...(trigger.draftState ? { draftState: trigger.draftState } : {}),
+      ...(trigger.secretRef ? { secretRef: trigger.secretRef.trim() } : {}),
+      ...(trigger.activeHours ? { activeHours: trigger.activeHours } : {}),
+    })),
+    trigger: entry.trigger ?? (entry.triggers?.[0] ?? { type: "manual" }),
+    executor: entry.executor ?? { mode: "automation-bot" },
+    ...(entry.templateId?.trim() ? { templateId: entry.templateId.trim() } : {}),
+    ...(entry.prompt?.trim() ? { prompt: entry.prompt.trim() } : {}),
+    reviewProfile: entry.reviewProfile ?? "quick",
+    toolPalette: entry.toolPalette?.length ? [...new Set(entry.toolPalette)] : ["repo", "memory", "mission"],
+    contextSources: entry.contextSources?.length ? entry.contextSources : [{ type: "project-memory" }, { type: "procedures" }],
+    memory: entry.memory ?? { mode: "automation-plus-project", ruleScopeKey: entry.id.trim() },
+    guardrails: entry.guardrails ?? {},
+    outputs: entry.outputs ?? { disposition: "comment-only", createArtifact: true },
+    verification: entry.verification ?? { verifyBeforePublish: false, mode: "intervention" },
+    billingCode: entry.billingCode?.trim() || `auto:${entry.id.trim()}`,
+    ...(entry.queueStatus ? { queueStatus: entry.queueStatus } : {}),
     actions: (entry.actions ?? []).map((action) => ({
       type: action.type,
       ...(action.suiteId ? { suiteId: action.suiteId.trim() } : {}),
@@ -1454,8 +1713,23 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
       ...(action.condition ? { condition: action.condition.trim() } : {}),
       ...(action.continueOnFailure != null ? { continueOnFailure: action.continueOnFailure } : {}),
       ...(action.timeoutMs != null ? { timeoutMs: action.timeoutMs } : {}),
-      ...(action.retry != null ? { retry: action.retry } : {})
-    })),
+      ...(action.retry != null ? { retry: action.retry } : {}),
+    }),
+    legacy: {
+      ...(entry.trigger ? { trigger: entry.trigger } : {}),
+      ...(entry.actions ? {
+        actions: entry.actions.map((action) => ({
+          type: action.type,
+          ...(action.suiteId ? { suiteId: action.suiteId.trim() } : {}),
+          ...(action.command ? { command: action.command } : {}),
+          ...(action.cwd ? { cwd: action.cwd.trim() } : {}),
+          ...(action.condition ? { condition: action.condition.trim() } : {}),
+          ...(action.continueOnFailure != null ? { continueOnFailure: action.continueOnFailure } : {}),
+          ...(action.timeoutMs != null ? { timeoutMs: action.timeoutMs } : {}),
+          ...(action.retry != null ? { retry: action.retry } : {}),
+        })),
+      } : {}),
+    },
     enabled: entry.enabled ?? true
   }));
 
@@ -1910,61 +2184,87 @@ function validateEffectiveConfig(
     // Disabled rules are allowed to be incomplete (e.g. local toggles that refer to missing shared rules).
     if (!rule.enabled) continue;
 
-    const triggerType = rule.trigger?.type;
-    if (triggerType !== "session-end" && triggerType !== "commit" && triggerType !== "schedule" && triggerType !== "manual") {
-      issues.push({ path: `${p}.trigger.type`, message: "Invalid trigger type" });
+    if (rule.mode !== "review" && rule.mode !== "fix" && rule.mode !== "monitor") {
+      issues.push({ path: `${p}.mode`, message: `Unknown automation mode '${String(rule.mode)}'` });
     }
 
-    if (triggerType === "schedule") {
-      const expr = (rule.trigger?.cron ?? "").trim();
-      if (!expr) {
-        issues.push({ path: `${p}.trigger.cron`, message: "Schedule trigger requires cron" });
-      } else if (!cron.validate(expr)) {
-        issues.push({ path: `${p}.trigger.cron`, message: `Invalid cron expression '${expr}'` });
-      }
+    if (!rule.triggers.length) {
+      issues.push({ path: `${p}.triggers`, message: "Enabled automation must declare at least one trigger." });
     }
 
-    if (!rule.actions.length) {
-      issues.push({ path: `${p}.actions`, message: "Enabled automation must have at least one action" });
-      continue;
-    }
-
-    for (let actionIdx = 0; actionIdx < rule.actions.length; actionIdx += 1) {
-      const action = rule.actions[actionIdx]!;
-      const ap = `${p}.actions[${actionIdx}]`;
-      const type = action.type as AutomationActionType;
-
+    for (let triggerIdx = 0; triggerIdx < rule.triggers.length; triggerIdx += 1) {
+      const trigger = rule.triggers[triggerIdx]!;
+      const tp = `${p}.triggers[${triggerIdx}]`;
       if (
-        type !== "update-packs" &&
-        type !== "predict-conflicts" &&
-        type !== "run-tests" &&
-        type !== "run-command"
+        trigger.type !== "session-end" &&
+        trigger.type !== "commit" &&
+        trigger.type !== "schedule" &&
+        trigger.type !== "manual" &&
+        trigger.type !== "github-webhook" &&
+        trigger.type !== "webhook"
       ) {
-        issues.push({ path: `${ap}.type`, message: `Unknown action type '${String((action as any).type)}'` });
-        continue;
+        issues.push({ path: `${tp}.type`, message: "Invalid trigger type" });
       }
-
-      if (type === "run-tests") {
-        const suiteId = (action.suiteId ?? "").trim();
-        if (!suiteId) {
-          issues.push({ path: `${ap}.suiteId`, message: "run-tests requires suiteId" });
-        } else if (!suiteIds.has(suiteId)) {
-          issues.push({ path: `${ap}.suiteId`, message: `Unknown suiteId '${suiteId}'` });
+      if (trigger.type === "schedule") {
+        const expr = (trigger.cron ?? "").trim();
+        if (!expr) {
+          issues.push({ path: `${tp}.cron`, message: "Schedule trigger requires cron" });
+        } else if (!cron.validate(expr)) {
+          issues.push({ path: `${tp}.cron`, message: `Invalid cron expression '${expr}'` });
         }
       }
+      if ((trigger.type === "github-webhook" || trigger.type === "webhook") && !(trigger.secretRef ?? "").trim()) {
+        issues.push({ path: `${tp}.secretRef`, message: "Webhook triggers require secretRef" });
+      }
+    }
 
-      if (type === "run-command") {
-        const command = (action.command ?? "").trim();
-        if (!command) {
-          issues.push({ path: `${ap}.command`, message: "run-command requires command" });
+    if (
+      rule.executor.mode !== "automation-bot" &&
+      rule.executor.mode !== "employee" &&
+      rule.executor.mode !== "cto-route" &&
+      rule.executor.mode !== "night-shift"
+    ) {
+      issues.push({ path: `${p}.executor.mode`, message: `Unknown executor mode '${String(rule.executor.mode)}'` });
+    }
+
+    if (!rule.toolPalette.length) {
+      issues.push({ path: `${p}.toolPalette`, message: "At least one tool family is required." });
+    }
+
+    if (rule.reviewProfile === "cross-repo-contract" && !rule.contextSources.some((source) => source.type === "linked-repo")) {
+      issues.push({ path: `${p}.contextSources`, message: "cross-repo-contract review requires at least one linked-repo context source." });
+    }
+
+    if (rule.guardrails.confidenceThreshold != null && (rule.guardrails.confidenceThreshold < 0 || rule.guardrails.confidenceThreshold > 1)) {
+      issues.push({ path: `${p}.guardrails.confidenceThreshold`, message: "confidenceThreshold must be between 0 and 1." });
+    }
+
+    if (rule.guardrails.maxFindings != null && (!Number.isFinite(rule.guardrails.maxFindings) || rule.guardrails.maxFindings < 1)) {
+      issues.push({ path: `${p}.guardrails.maxFindings`, message: "maxFindings must be >= 1 when provided." });
+    }
+
+    if (rule.legacy?.actions?.length) {
+      for (let actionIdx = 0; actionIdx < rule.legacy.actions.length; actionIdx += 1) {
+        const action = rule.legacy.actions[actionIdx]!;
+        const ap = `${p}.legacy.actions[${actionIdx}]`;
+        const type = action.type as AutomationActionType;
+        if (
+          type !== "update-packs" &&
+          type !== "predict-conflicts" &&
+          type !== "run-tests" &&
+          type !== "run-command"
+        ) {
+          issues.push({ path: `${ap}.type`, message: `Unknown action type '${String((action as any).type)}'` });
+          continue;
         }
-      }
-
-      if (action.timeoutMs != null && (!Number.isFinite(action.timeoutMs) || action.timeoutMs <= 0)) {
-        issues.push({ path: `${ap}.timeoutMs`, message: "timeoutMs must be > 0 when provided" });
-      }
-      if (action.retry != null && (!Number.isFinite(action.retry) || action.retry < 0)) {
-        issues.push({ path: `${ap}.retry`, message: "retry must be >= 0 when provided" });
+        if (type === "run-tests") {
+          const suiteId = (action.suiteId ?? "").trim();
+          if (!suiteId) {
+            issues.push({ path: `${ap}.suiteId`, message: "run-tests requires suiteId" });
+          } else if (!suiteIds.has(suiteId)) {
+            issues.push({ path: `${ap}.suiteId`, message: `Unknown suiteId '${suiteId}'` });
+          }
+        }
       }
     }
   }

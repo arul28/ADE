@@ -13,36 +13,31 @@ import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 import { INPUT_CLS, INPUT_STYLE } from "../shared";
 
+const TOOL_OPTIONS: Array<AutomationRuleDraft["toolPalette"][number]> = ["repo", "git", "tests", "github", "linear", "browser", "memory", "mission"];
+const CONTEXT_OPTIONS: Array<AutomationRuleDraft["contextSources"][number]["type"]> = [
+  "project-memory",
+  "automation-memory",
+  "worker-memory",
+  "procedures",
+  "skills",
+  "linked-doc",
+  "linked-repo",
+  "path-rules",
+];
+
 function IssueList({ issues }: { issues: AutomationDraftIssue[] }) {
   if (!issues.length) return null;
-  const errors = issues.filter((i) => i.level === "error");
-  const warnings = issues.filter((i) => i.level === "warning");
   return (
     <div className="space-y-2">
-      {errors.length ? (
-        <div className="p-2 text-xs text-red-200" style={{ background: "rgba(239,68,68,0.10)" }}>
-          <div className="font-semibold">Errors</div>
-          <ul className="mt-1 list-disc pl-4">
-            {errors.slice(0, 8).map((e, idx) => (
-              <li key={`${e.path}-${idx}`}>
-                <span className="font-mono">{e.path}</span>: {e.message}
-              </li>
-            ))}
-          </ul>
+      {issues.map((issue, index) => (
+        <div
+          key={`${issue.path}-${index}`}
+          className={cn("p-2 text-xs", issue.level === "error" ? "text-red-200" : "text-amber-200")}
+          style={{ background: issue.level === "error" ? "rgba(239,68,68,0.10)" : "rgba(245,158,11,0.10)" }}
+        >
+          <span className="font-mono">{issue.path}</span>: {issue.message}
         </div>
-      ) : null}
-      {warnings.length ? (
-        <div className="p-2 text-xs text-amber-200" style={{ background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.30)" }}>
-          <div className="font-semibold">Warnings</div>
-          <ul className="mt-1 list-disc pl-4">
-            {warnings.slice(0, 8).map((w, idx) => (
-              <li key={`${w.path}-${idx}`}>
-                <span className="font-mono">{w.path}</span>: {w.message}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
+      ))}
     </div>
   );
 }
@@ -61,21 +56,32 @@ function ConfirmationsChecklist({
     <div className="p-3 shadow-card" style={{ background: "#181423", border: "1px solid #2D2840" }}>
       <div className="text-xs font-semibold text-[#FAFAFA]">Confirmations</div>
       <div className="mt-2 space-y-2">
-        {required.map((r) => (
-          <label key={r.key} className="flex items-start gap-2 text-xs">
+        {required.map((requirement) => (
+          <label key={requirement.key} className="flex items-start gap-2 text-xs">
             <input
               type="checkbox"
-              checked={accepted.has(r.key)}
-              onChange={(e) => onToggle(r.key, e.target.checked)}
+              checked={accepted.has(requirement.key)}
+              onChange={(event) => onToggle(requirement.key, event.target.checked)}
               className="accent-[#A78BFA] mt-0.5"
             />
             <div className="min-w-0">
-              <div className={cn("font-semibold", r.severity === "danger" ? "text-red-200" : "text-amber-200")}>{r.title}</div>
-              <div className="text-[#8B8B9A]">{r.message}</div>
+              <div className={cn("font-semibold", requirement.severity === "danger" ? "text-red-200" : "text-amber-200")}>
+                {requirement.title}
+              </div>
+              <div className="text-[#8B8B9A]">{requirement.message}</div>
             </div>
           </label>
         ))}
       </div>
+    </div>
+  );
+}
+
+function section(title: string, children: import("react").ReactNode) {
+  return (
+    <div className="p-3 space-y-2" style={{ background: "#181423", border: "1px solid #2D2840" }}>
+      <div className="font-mono text-[9px] font-bold uppercase tracking-[1px] text-[#A1A1AA]">{title}</div>
+      {children}
     </div>
   );
 }
@@ -105,48 +111,41 @@ export function RuleEditorPanel({
   onSimulate: () => void;
   onClose: () => void;
 }) {
-  const updateAction = (idx: number, patch: Record<string, unknown>) => {
-    const nextActions = [...draft.actions];
-    nextActions[idx] = { ...(nextActions[idx] as any), ...patch } as any;
-    setDraft({ ...draft, actions: nextActions });
+  const trigger = draft.triggers[0] ?? { type: "manual" as const };
+  const legacyActions = draft.legacyActions ?? [];
+
+  const updateTrigger = (patch: Partial<typeof trigger>) => {
+    const nextTrigger = { ...trigger, ...patch };
+    setDraft({ ...draft, trigger: nextTrigger, triggers: [nextTrigger] });
   };
 
-  const removeAction = (idx: number) => {
-    setDraft({ ...draft, actions: draft.actions.filter((_a, i) => i !== idx) });
+  const updateLegacyAction = (index: number, patch: Record<string, unknown>) => {
+    const next = [...legacyActions];
+    next[index] = { ...(next[index] as Record<string, unknown>), ...patch } as any;
+    setDraft({ ...draft, actions: next, legacyActions: next });
   };
 
-  const addAction = (type: string) => {
-    const nextActions = [...draft.actions];
-    if (type === "run-tests") {
-      nextActions.push({ type: "run-tests", suite: suites[0]?.id ?? "" } as any);
-    } else if (type === "run-command") {
-      nextActions.push({ type: "run-command", command: "" } as any);
-    } else if (type === "update-packs" || type === "predict-conflicts") {
-      nextActions.push({ type } as any);
-    }
-    setDraft({ ...draft, actions: nextActions });
+  const addLegacyAction = (type: string) => {
+    const next = [...legacyActions];
+    if (type === "run-tests") next.push({ type: "run-tests", suite: suites[0]?.id ?? "" } as any);
+    else if (type === "run-command") next.push({ type: "run-command", command: "" } as any);
+    else next.push({ type } as any);
+    setDraft({ ...draft, actions: next, legacyActions: next });
+  };
+
+  const removeLegacyAction = (index: number) => {
+    const next = legacyActions.filter((_action, currentIndex) => currentIndex !== index);
+    setDraft({ ...draft, actions: next, legacyActions: next });
   };
 
   return (
-    <div
-      className="flex flex-col h-full"
-      style={{ background: "#14111D" }}
-    >
-      {/* Header */}
-      <div
-        className="shrink-0 flex items-center justify-between px-4 py-3"
-        style={{ borderBottom: "1px solid #2D2840" }}
-      >
+    <div className="flex h-full flex-col" style={{ background: "#14111D" }}>
+      <div className="shrink-0 flex items-center justify-between px-4 py-3" style={{ borderBottom: "1px solid #2D2840" }}>
         <div className="min-w-0">
-          <div
-            className="text-[13px] font-bold text-[#FAFAFA] tracking-[-0.3px]"
-            style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-          >
+          <div className="text-[13px] font-bold text-[#FAFAFA] tracking-[-0.3px]" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
             {draft.id ? "Edit Rule" : "Create Rule"}
           </div>
-          {draft.id && (
-            <div className="mt-0.5 font-mono text-[9px] text-[#71717A]">{draft.id}</div>
-          )}
+          {draft.id ? <div className="mt-0.5 font-mono text-[9px] text-[#71717A]">{draft.id}</div> : null}
         </div>
         <div className="flex items-center gap-2">
           <Button size="sm" variant="outline" onClick={onSimulate}>
@@ -157,196 +156,236 @@ export function RuleEditorPanel({
             <Save size={12} weight="regular" />
             Save
           </Button>
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-1 text-[#71717A] hover:text-[#FAFAFA] transition-colors"
-          >
+          <button type="button" onClick={onClose} className="p-1 text-[#71717A] hover:text-[#FAFAFA] transition-colors">
             <X size={14} weight="regular" />
           </button>
         </div>
       </div>
 
-      {/* Body */}
       <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
         <IssueList issues={issues} />
 
-        {/* Name + enabled */}
         <div className="grid grid-cols-[1fr_auto] gap-3 items-end">
           <label className="space-y-1">
             <div className="font-mono text-[9px] font-bold uppercase tracking-[1px] text-[#71717A]">Name</div>
-            <input
-              className={INPUT_CLS}
-              style={INPUT_STYLE}
-              value={draft.name}
-              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-              placeholder="My automation"
-            />
+            <input className={INPUT_CLS} style={INPUT_STYLE} value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
           </label>
           <label className="flex items-center gap-2 text-[9px] font-mono uppercase tracking-[1px] text-[#71717A] h-8">
-            <input
-              type="checkbox"
-              checked={draft.enabled}
-              onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })}
-              className="accent-[#A78BFA]"
-            />
+            <input type="checkbox" checked={draft.enabled} onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })} className="accent-[#A78BFA]" />
             enabled
           </label>
         </div>
 
-        {/* Trigger */}
-        <div className="p-3 space-y-2" style={{ background: "#181423", border: "1px solid #2D2840" }}>
-          <div className="font-mono text-[9px] font-bold uppercase tracking-[1px] text-[#A1A1AA]">Trigger</div>
+        <label className="space-y-1 block">
+          <div className="font-mono text-[9px] font-bold uppercase tracking-[1px] text-[#71717A]">Description</div>
+          <input
+            className={INPUT_CLS}
+            style={INPUT_STYLE}
+            value={draft.description ?? ""}
+            onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+            placeholder="Optional summary for the rule card"
+          />
+        </label>
+
+        {section("Execution", (
           <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
             <label className="space-y-1">
-              <div className="font-mono text-[9px] text-[#71717A]">Type</div>
+              <div className="font-mono text-[9px] text-[#71717A]">Mode</div>
+              <select className={INPUT_CLS} style={INPUT_STYLE} value={draft.mode} onChange={(e) => setDraft({ ...draft, mode: e.target.value as AutomationRuleDraft["mode"] })}>
+                <option value="review">review</option>
+                <option value="fix">fix</option>
+                <option value="monitor">monitor</option>
+              </select>
+            </label>
+            <label className="space-y-1">
+              <div className="font-mono text-[9px] text-[#71717A]">Review profile</div>
+              <select className={INPUT_CLS} style={INPUT_STYLE} value={draft.reviewProfile} onChange={(e) => setDraft({ ...draft, reviewProfile: e.target.value as AutomationRuleDraft["reviewProfile"] })}>
+                <option value="quick">quick</option>
+                <option value="incremental">incremental</option>
+                <option value="full">full</option>
+                <option value="security">security</option>
+                <option value="release-risk">release-risk</option>
+                <option value="cross-repo-contract">cross-repo-contract</option>
+              </select>
+            </label>
+            <label className="space-y-1">
+              <div className="font-mono text-[9px] text-[#71717A]">Run as</div>
               <select
                 className={INPUT_CLS}
                 style={INPUT_STYLE}
-                value={draft.trigger.type}
-                onChange={(e) => setDraft({ ...draft, trigger: { ...draft.trigger, type: e.target.value as any } })}
+                value={draft.executor.mode}
+                onChange={(e) => setDraft({ ...draft, executor: { ...draft.executor, mode: e.target.value as AutomationRuleDraft["executor"]["mode"] } })}
               >
+                <option value="automation-bot">automation-bot</option>
+                <option value="employee">employee</option>
+                <option value="cto-route">cto-route</option>
+                <option value="night-shift">night-shift</option>
+              </select>
+            </label>
+          </div>
+        ))}
+
+        {section("Trigger", (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            <label className="space-y-1">
+              <div className="font-mono text-[9px] text-[#71717A]">Type</div>
+              <select className={INPUT_CLS} style={INPUT_STYLE} value={trigger.type} onChange={(e) => updateTrigger({ type: e.target.value as any })}>
                 <option value="manual">manual</option>
                 <option value="session-end">session-end</option>
                 <option value="commit">commit</option>
                 <option value="schedule">schedule</option>
+                <option value="github-webhook">github-webhook</option>
+                <option value="webhook">webhook</option>
               </select>
             </label>
-            {draft.trigger.type === "schedule" ? (
-              <label className="space-y-1 md:col-span-2">
-                <div className="font-mono text-[9px] text-[#71717A]">Cron</div>
-                <input
-                  className={INPUT_CLS}
-                  style={INPUT_STYLE}
-                  value={draft.trigger.cron ?? ""}
-                  onChange={(e) => setDraft({ ...draft, trigger: { ...draft.trigger, cron: e.target.value } })}
-                  placeholder="0 9 * * 1-5"
-                />
-              </label>
-            ) : (
-              <label className="space-y-1 md:col-span-2">
-                <div className="font-mono text-[9px] text-[#71717A]">Branch (optional)</div>
-                <input
-                  className={INPUT_CLS}
-                  style={INPUT_STYLE}
-                  value={draft.trigger.branch ?? ""}
-                  onChange={(e) => setDraft({ ...draft, trigger: { ...draft.trigger, branch: e.target.value } })}
-                  placeholder="main"
-                />
-              </label>
-            )}
+            <label className="space-y-1 md:col-span-2">
+              <div className="font-mono text-[9px] text-[#71717A]">{trigger.type === "schedule" ? "Cron" : "Branch / Event filter"}</div>
+              <input
+                className={INPUT_CLS}
+                style={INPUT_STYLE}
+                value={trigger.type === "schedule" ? trigger.cron ?? "" : trigger.branch ?? trigger.event ?? ""}
+                onChange={(e) => trigger.type === "schedule" ? updateTrigger({ cron: e.target.value }) : updateTrigger({ branch: e.target.value, event: e.target.value })}
+                placeholder={trigger.type === "schedule" ? "0 9 * * 1-5" : "main or pull_request"}
+              />
+            </label>
           </div>
-        </div>
+        ))}
 
-        {/* Actions */}
-        <div className="p-3 space-y-2" style={{ background: "#181423", border: "1px solid #2D2840" }}>
-          <div className="flex items-center justify-between gap-2">
-            <div className="font-mono text-[9px] font-bold uppercase tracking-[1px] text-[#A1A1AA]">Actions</div>
-            <select
-              className="h-7 px-2 font-mono text-[9px] text-[#FAFAFA]"
-              style={INPUT_STYLE}
-              value=""
-              onChange={(e) => { if (e.target.value) addAction(e.target.value); e.target.value = ""; }}
-            >
-              <option value="">Add action...</option>
-              <option value="update-packs">update-packs</option>
-              <option value="predict-conflicts">predict-conflicts</option>
-              <option value="run-tests">run-tests</option>
-              <option value="run-command">run-command</option>
-            </select>
+        {section("Prompt", (
+          <textarea
+            className="min-h-[120px] w-full p-3 text-xs text-[#FAFAFA] placeholder:text-[#71717A50]"
+            style={INPUT_STYLE}
+            value={draft.prompt ?? ""}
+            onChange={(e) => setDraft({ ...draft, prompt: e.target.value })}
+            placeholder="Describe how this automation should review, fix, or monitor work."
+          />
+        ))}
+
+        {section("Outputs", (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <label className="space-y-1">
+              <div className="font-mono text-[9px] text-[#71717A]">Disposition</div>
+              <select
+                className={INPUT_CLS}
+                style={INPUT_STYLE}
+                value={draft.outputs.disposition}
+                onChange={(e) => setDraft({ ...draft, outputs: { ...draft.outputs, disposition: e.target.value as AutomationRuleDraft["outputs"]["disposition"] } })}
+              >
+                <option value="comment-only">comment-only</option>
+                <option value="open-task">open-task</option>
+                <option value="open-lane">open-lane</option>
+                <option value="prepare-patch">prepare-patch</option>
+                <option value="open-pr-draft">open-pr-draft</option>
+                <option value="queue-overnight">queue-overnight</option>
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-[10px] font-mono text-[#C4B5FD]">
+              <input
+                type="checkbox"
+                checked={Boolean(draft.verification.verifyBeforePublish)}
+                onChange={(e) => setDraft({ ...draft, verification: { ...draft.verification, verifyBeforePublish: e.target.checked } })}
+                className="accent-[#A78BFA]"
+              />
+              verify before publish
+            </label>
           </div>
+        ))}
 
-          {draft.actions.length === 0 ? (
-            <div className="text-xs text-[#71717A]">No actions yet.</div>
-          ) : (
-            <div className="space-y-2">
-              {draft.actions.map((action: any, idx: number) => (
-                <div key={idx} className="p-3" style={{ background: "#14111D", border: "1px solid #1E1B26" }}>
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="text-xs font-semibold text-[#FAFAFA]">{action.type}</div>
-                      {action.type === "run-tests" && (
-                        <div className="mt-2">
-                          <select
-                            className={cn(INPUT_CLS, "h-7")}
-                            style={INPUT_STYLE}
-                            value={action.suite ?? ""}
-                            onChange={(e) => updateAction(idx, { suite: e.target.value })}
-                          >
-                            <option value="">Select suite</option>
-                            {suites.map((s) => (
-                              <option key={s.id} value={s.id}>{s.name || s.id}</option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-                      {action.type === "run-command" && (
-                        <div className="mt-2 space-y-2">
-                          <textarea
-                            className="min-h-[72px] w-full p-2 text-xs font-mono text-[#FAFAFA] placeholder:text-[#71717A50]"
-                            style={INPUT_STYLE}
-                            value={action.command ?? ""}
-                            onChange={(e) => updateAction(idx, { command: e.target.value })}
-                            placeholder='codex exec "..."'
-                          />
-                          <input
-                            className={cn(INPUT_CLS, "h-7")}
-                            style={INPUT_STYLE}
-                            value={action.cwd ?? ""}
-                            onChange={(e) => updateAction(idx, { cwd: e.target.value })}
-                            placeholder="cwd (optional)"
-                          />
-                        </div>
-                      )}
-                      <details className="mt-2">
-                        <summary className="cursor-pointer font-mono text-[9px] text-[#71717A]">Advanced</summary>
-                        <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
-                          <input
-                            className={cn(INPUT_CLS, "h-7")}
-                            style={INPUT_STYLE}
-                            value={action.condition ?? ""}
-                            onChange={(e) => updateAction(idx, { condition: e.target.value })}
-                            placeholder="Condition"
-                          />
-                          <input
-                            className={cn(INPUT_CLS, "h-7")}
-                            style={INPUT_STYLE}
-                            value={action.timeoutMs ?? ""}
-                            onChange={(e) => updateAction(idx, { timeoutMs: e.target.value ? Number(e.target.value) : undefined })}
-                            placeholder="Timeout (ms)"
-                          />
-                          <input
-                            className={cn(INPUT_CLS, "h-7")}
-                            style={INPUT_STYLE}
-                            value={action.retry ?? ""}
-                            onChange={(e) => updateAction(idx, { retry: e.target.value ? Number(e.target.value) : undefined })}
-                            placeholder="Retry"
-                          />
-                          <label className="flex items-center gap-2 text-[9px] font-mono text-[#71717A]">
-                            <input
-                              type="checkbox"
-                              checked={Boolean(action.continueOnFailure)}
-                              onChange={(e) => updateAction(idx, { continueOnFailure: e.target.checked })}
-                              className="accent-[#A78BFA]"
-                            />
-                            continue on failure
-                          </label>
-                        </div>
-                      </details>
-                    </div>
-                    <Button size="sm" variant="ghost" onClick={() => removeAction(idx)}>Remove</Button>
-                  </div>
-                </div>
-              ))}
+        {section("Tools", (
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+            {TOOL_OPTIONS.map((tool) => {
+              const active = draft.toolPalette.includes(tool);
+              return (
+                <label key={tool} className="flex items-center gap-2 text-[10px] font-mono text-[#D4D4D8]">
+                  <input
+                    type="checkbox"
+                    checked={active}
+                    onChange={(e) => {
+                      const next = e.target.checked
+                        ? [...draft.toolPalette, tool]
+                        : draft.toolPalette.filter((value) => value !== tool);
+                      setDraft({ ...draft, toolPalette: [...new Set(next)] });
+                    }}
+                    className="accent-[#A78BFA]"
+                  />
+                  {tool}
+                </label>
+              );
+            })}
+          </div>
+        ))}
+
+        {section("Context", (
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+            {CONTEXT_OPTIONS.map((type) => {
+              const active = draft.contextSources.some((source) => source.type === type);
+              return (
+                <label key={type} className="flex items-center gap-2 text-[10px] font-mono text-[#D4D4D8]">
+                  <input
+                    type="checkbox"
+                    checked={active}
+                    onChange={(e) => {
+                      const next = e.target.checked
+                        ? [...draft.contextSources, { type }]
+                        : draft.contextSources.filter((source) => source.type !== type);
+                      setDraft({ ...draft, contextSources: next });
+                    }}
+                    className="accent-[#A78BFA]"
+                  />
+                  {type}
+                </label>
+              );
+            })}
+          </div>
+        ))}
+
+        {section("Compatibility Actions", (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[10px] text-[#8B8B9A]">Optional legacy actions. Leave empty for fully mission-powered execution.</div>
+              <select className="h-7 px-2 font-mono text-[9px] text-[#FAFAFA]" style={INPUT_STYLE} value="" onChange={(e) => { if (e.target.value) addLegacyAction(e.target.value); e.target.value = ""; }}>
+                <option value="">Add legacy action...</option>
+                <option value="update-packs">update-packs</option>
+                <option value="predict-conflicts">predict-conflicts</option>
+                <option value="run-tests">run-tests</option>
+                <option value="run-command">run-command</option>
+              </select>
             </div>
-          )}
-        </div>
+            {legacyActions.map((action: any, index) => (
+              <div key={`${action.type}-${index}`} className="p-3" style={{ background: "#14111D", border: "1px solid #1E1B26" }}>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex-1 space-y-2">
+                    <div className="text-xs font-semibold text-[#FAFAFA]">{action.type}</div>
+                    {action.type === "run-command" ? (
+                      <textarea
+                        className="min-h-[72px] w-full p-2 text-xs font-mono text-[#FAFAFA]"
+                        style={INPUT_STYLE}
+                        value={action.command ?? ""}
+                        onChange={(e) => updateLegacyAction(index, { command: e.target.value })}
+                        placeholder="npm test"
+                      />
+                    ) : null}
+                    {action.type === "run-tests" ? (
+                      <select className={INPUT_CLS} style={INPUT_STYLE} value={action.suite ?? ""} onChange={(e) => updateLegacyAction(index, { suite: e.target.value })}>
+                        <option value="">Select suite</option>
+                        {suites.map((suite) => (
+                          <option key={suite.id} value={suite.id}>{suite.name || suite.id}</option>
+                        ))}
+                      </select>
+                    ) : null}
+                  </div>
+                  <Button size="sm" variant="ghost" onClick={() => removeLegacyAction(index)}>Remove</Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ))}
 
         <ConfirmationsChecklist
           required={requiredConfirmations}
           accepted={acceptedConfirmations}
           onToggle={(key, checked) => {
-            const next = new Set([...acceptedConfirmations]);
+            const next = new Set(acceptedConfirmations);
             if (checked) next.add(key);
             else next.delete(key);
             setAcceptedConfirmations(next);

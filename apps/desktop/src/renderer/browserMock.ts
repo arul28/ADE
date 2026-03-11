@@ -39,6 +39,73 @@ const twoDaysAgo = new Date(Date.now() - 172800000).toISOString();
 const threeDaysAgo = new Date(Date.now() - 259200000).toISOString();
 const fourHoursFromNow = new Date(Date.now() + 4 * 3600000).toISOString();
 
+function createMockMemoryHealthStats(overrides: Partial<any> = {}): any {
+  return {
+    scopes: [
+      { scope: "project", current: 0, max: 2000, counts: { tier1: 0, tier2: 0, tier3: 0, archived: 0 } },
+      { scope: "agent", current: 0, max: 500, counts: { tier1: 0, tier2: 0, tier3: 0, archived: 0 } },
+      { scope: "mission", current: 0, max: 200, counts: { tier1: 0, tier2: 0, tier3: 0, archived: 0 } },
+    ],
+    lastSweep: null,
+    lastConsolidation: null,
+    embeddings: {
+      entriesEmbedded: 0,
+      entriesTotal: 0,
+      queueDepth: 0,
+      processing: false,
+      lastBatchProcessedAt: null,
+      cacheEntries: 0,
+      cacheHits: 0,
+      cacheMisses: 0,
+      cacheHitRate: 0,
+      model: {
+        modelId: "Xenova/all-MiniLM-L6-v2",
+        state: "idle",
+        progress: null,
+        loaded: null,
+        total: null,
+        file: null,
+        error: null,
+      },
+    },
+    ...overrides,
+  };
+}
+
+function createMockSweepResult(overrides: Partial<any> = {}): any {
+  return {
+    sweepId: "browser-mock-sweep",
+    projectId: MOCK_PROJECT.id,
+    reason: "manual",
+    startedAt: now,
+    completedAt: now,
+    halfLifeDays: 30,
+    entriesDecayed: 0,
+    entriesDemoted: 0,
+    entriesPromoted: 0,
+    entriesArchived: 0,
+    entriesOrphaned: 0,
+    durationMs: 0,
+    ...overrides,
+  };
+}
+
+function createMockConsolidationResult(overrides: Partial<any> = {}): any {
+  return {
+    consolidationId: "browser-mock-consolidation",
+    projectId: MOCK_PROJECT.id,
+    reason: "manual",
+    startedAt: now,
+    completedAt: now,
+    clustersFound: 0,
+    entriesMerged: 0,
+    entriesCreated: 0,
+    tokensUsed: 0,
+    durationMs: 0,
+    ...overrides,
+  };
+}
+
 // ── Lane defaults (fields required by LaneSummary) ────────────
 function makeLane(id: string, name: string, branchRef: string, opts?: Partial<any>): any {
   return {
@@ -1208,6 +1275,61 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       save: resolvedArg({ effective: { providerMode: "guest" }, overrides: {} }),
       diffAgainstDisk: resolved({ changed: false }),
       confirmTrust: resolved({ trusted: true }),
+    },
+    memory: {
+      pin: resolvedArg(undefined),
+      updateCore: resolvedArg({
+        identity: { name: "CTO", version: 1, persona: "Mock CTO persona", modelPreferences: { provider: "claude", model: "sonnet" }, memoryPolicy: { autoCompact: true, compactionThreshold: 0.7, preCompactionFlush: true, temporalDecayHalfLifeDays: 30 }, updatedAt: now },
+        recent: [],
+        coreMemory: { responsibilities: [], activePriorities: [], constraints: [], preferences: [] },
+      }),
+      getBudget: resolved([]),
+      getCandidates: resolved([]),
+      promote: resolvedArg(undefined),
+      archive: resolvedArg(undefined),
+      promoteMissionEntry: resolvedArg(null),
+      listMissionEntries: resolvedArg([]),
+      listProcedures: resolvedArg([]),
+      getProcedureDetail: resolvedArg(null),
+      exportProcedureSkill: resolvedArg(null),
+      listIndexedSkills: resolved([]),
+      reindexSkills: resolvedArg([]),
+      syncKnowledge: resolved(null),
+      getKnowledgeSyncStatus: resolved({
+        syncing: false,
+        lastSeenHeadSha: null,
+        currentHeadSha: null,
+        diverged: false,
+        lastDigestAt: null,
+        lastDigestMemoryId: null,
+        lastError: null,
+      }),
+      search: resolvedArg([]),
+      getHealthStats: resolved(createMockMemoryHealthStats()),
+      downloadEmbeddingModel: resolved(createMockMemoryHealthStats({
+        embeddings: {
+          entriesEmbedded: 0,
+          entriesTotal: 0,
+          queueDepth: 0,
+          processing: false,
+          lastBatchProcessedAt: null,
+          cacheEntries: 0,
+          cacheHits: 0,
+          cacheMisses: 0,
+          cacheHitRate: 0,
+          model: {
+            modelId: "Xenova/all-MiniLM-L6-v2",
+            state: "ready",
+            progress: 100,
+            loaded: 1,
+            total: 1,
+            file: "/tmp/mock-model.onnx",
+            error: null,
+          },
+        },
+      })),
+      runSweep: resolved(createMockSweepResult()),
+      runConsolidation: resolved(createMockConsolidationResult()),
     },
     zoom: {
       getLevel: () => 0,

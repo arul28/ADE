@@ -602,6 +602,7 @@ export function createUnifiedOrchestratorAdapter(options?: {
         memoryService: args.memoryService as any,
         projectId: args.memoryProjectId,
         workerRuntime: "in_process",
+        memoryBriefing: args.memoryBriefing,
       });
       let provider: "claude" | "codex" | "unified" = "unified";
       if (descriptor.isCliWrapped) {
