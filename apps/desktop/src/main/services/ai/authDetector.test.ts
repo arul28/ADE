@@ -20,6 +20,17 @@ function fakeChild(result: { status: number | null; stdout?: string; stderr?: st
   return child;
 }
 
+/** Helper: simulate ENOENT (command not found) — emits "error" so spawnAsync resolves with status: null. */
+function fakeError() {
+  const child = new EventEmitter() as any;
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  queueMicrotask(() => {
+    child.emit("error", new Error("spawn ENOENT"));
+  });
+  return child;
+}
+
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
   return {
@@ -62,14 +73,15 @@ describe("authDetector", () => {
 
   it("reports installed-but-unauthenticated CLI providers", async () => {
     spawnMock.mockImplementation((command: string, args: string[] = []) => {
-      if (command === "sh" && args[0] === "-lc") {
-        const script = args[1] ?? "";
-        if (script.includes("command -v claude >/dev/null")) return fakeChild({ status: 0 });
-        if (script.includes("command -v codex >/dev/null")) return fakeChild({ status: 1 });
-        if (script.includes("command -v gemini >/dev/null")) return fakeChild({ status: 1 });
-        if (script.trim() === "command -v claude") {
-          return fakeChild({ status: 0, stdout: "/usr/local/bin/claude\n" });
-        }
+      // commandExists: direct spawn strategy
+      if (args[0] === "--version") {
+        if (command === "claude") return fakeChild({ status: 0, stdout: "1.0.0\n" });
+        return fakeError();
+      }
+      // commandPath: which strategy
+      if (command === "which") {
+        if (args[0] === "claude") return fakeChild({ status: 0, stdout: "/usr/local/bin/claude\n" });
+        return fakeChild({ status: 1 });
       }
       if (command === "claude" && args[0] === "auth") {
         return fakeChild({ status: 1, stderr: "Not logged in. Run `claude auth login`." });
@@ -99,14 +111,13 @@ describe("authDetector", () => {
     process.env.GROQ_API_KEY = "env-groq";
 
     spawnMock.mockImplementation((command: string, args: string[] = []) => {
-      if (command === "sh" && args[0] === "-lc") {
-        const script = args[1] ?? "";
-        if (script.includes("command -v claude >/dev/null")) return fakeChild({ status: 0 });
-        if (script.includes("command -v codex >/dev/null")) return fakeChild({ status: 1 });
-        if (script.includes("command -v gemini >/dev/null")) return fakeChild({ status: 1 });
-        if (script.trim() === "command -v claude") {
-          return fakeChild({ status: 0, stdout: "/usr/local/bin/claude\n" });
-        }
+      if (args[0] === "--version") {
+        if (command === "claude") return fakeChild({ status: 0, stdout: "1.0.0\n" });
+        return fakeError();
+      }
+      if (command === "which") {
+        if (args[0] === "claude") return fakeChild({ status: 0, stdout: "/usr/local/bin/claude\n" });
+        return fakeChild({ status: 1 });
       }
       if (command === "claude" && args[0] === "auth") {
         return fakeChild({ status: 0, stdout: "Authenticated as test-user\n" });
@@ -205,14 +216,13 @@ describe("authDetector", () => {
 
   it("marks unsupported CLI auth checks as unverified", async () => {
     spawnMock.mockImplementation((command: string, args: string[] = []) => {
-      if (command === "sh" && args[0] === "-lc") {
-        const script = args[1] ?? "";
-        if (script.includes("command -v claude >/dev/null")) return fakeChild({ status: 0 });
-        if (script.includes("command -v codex >/dev/null")) return fakeChild({ status: 1 });
-        if (script.includes("command -v gemini >/dev/null")) return fakeChild({ status: 1 });
-        if (script.trim() === "command -v claude") {
-          return fakeChild({ status: 0, stdout: "/usr/local/bin/claude\n" });
-        }
+      if (args[0] === "--version") {
+        if (command === "claude") return fakeChild({ status: 0, stdout: "1.0.0\n" });
+        return fakeError();
+      }
+      if (command === "which") {
+        if (args[0] === "claude") return fakeChild({ status: 0, stdout: "/usr/local/bin/claude\n" });
+        return fakeChild({ status: 1 });
       }
       if (command === "claude") {
         return fakeChild({ status: 1, stderr: "unknown command 'auth'" });

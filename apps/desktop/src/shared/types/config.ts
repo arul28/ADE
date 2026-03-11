@@ -460,17 +460,91 @@ export type RunHealthCheckArgs = { laneId: string };
 export type ActivateFallbackArgs = { laneId: string };
 export type DeactivateFallbackArgs = { laneId: string };
 
-export type AutomationTriggerType = "session-end" | "commit" | "schedule" | "manual";
+export type AutomationTriggerType =
+  | "session-end"
+  | "commit"
+  | "schedule"
+  | "manual"
+  | "github-webhook"
+  | "webhook";
 export type AutomationActionType =
   | "update-packs"
   | "predict-conflicts"
   | "run-tests"
   | "run-command";
 
+export type AutomationMode = "review" | "fix" | "monitor";
+
+export type AutomationReviewProfile =
+  | "quick"
+  | "incremental"
+  | "full"
+  | "security"
+  | "release-risk"
+  | "cross-repo-contract";
+
+export type AutomationExecutorMode =
+  | "automation-bot"
+  | "employee"
+  | "cto-route"
+  | "night-shift";
+
+export type AutomationToolFamily =
+  | "repo"
+  | "git"
+  | "tests"
+  | "github"
+  | "linear"
+  | "browser"
+  | "memory"
+  | "mission"
+  | "external-mcp";
+
+export type AutomationContextSourceType =
+  | "project-memory"
+  | "automation-memory"
+  | "worker-memory"
+  | "procedures"
+  | "skills"
+  | "linked-doc"
+  | "linked-repo"
+  | "path-rules";
+
+export type AutomationOutputDisposition =
+  | "comment-only"
+  | "open-task"
+  | "open-lane"
+  | "prepare-patch"
+  | "open-pr-draft"
+  | "queue-overnight";
+
+export type AutomationRunQueueStatus =
+  | "pending-review"
+  | "actionable-findings"
+  | "verification-required"
+  | "completed-clean"
+  | "queued-for-night-shift"
+  | "ignored"
+  | "archived";
+
+export type AutomationActiveHours = {
+  start: string;
+  end: string;
+  timezone: string;
+};
+
 export type AutomationTrigger = {
   type: AutomationTriggerType;
   cron?: string;
   branch?: string;
+  event?: string;
+  author?: string;
+  labels?: string[];
+  paths?: string[];
+  keywords?: string[];
+  draftState?: "draft" | "ready" | "any";
+  secretRef?: string;
+  activeHours?: AutomationActiveHours;
 };
 
 export type AutomationAction = {
@@ -484,17 +558,91 @@ export type AutomationAction = {
   retry?: number;
 };
 
+export type AutomationExecutor = {
+  mode: AutomationExecutorMode;
+  targetId?: string | null;
+};
+
+export type AutomationContextSource = {
+  type: AutomationContextSourceType;
+  path?: string;
+  repoId?: string;
+  label?: string;
+  required?: boolean;
+};
+
+export type AutomationMemoryConfig = {
+  mode: "none" | "project" | "automation" | "automation-plus-project" | "automation-plus-employee";
+  ruleScopeKey?: string | null;
+};
+
+export type AutomationGuardrails = {
+  budgetUsd?: number;
+  maxDurationMin?: number;
+  activeHours?: AutomationActiveHours;
+  confidenceThreshold?: number;
+  maxFindings?: number;
+  reserveBudget?: boolean;
+};
+
+export type AutomationOutputs = {
+  disposition: AutomationOutputDisposition;
+  createArtifact?: boolean;
+  notificationChannel?: string | null;
+};
+
+export type AutomationVerification = {
+  verifyBeforePublish: boolean;
+  mode?: "intervention" | "dry-run";
+};
+
 export type AutomationRule = {
   id: string;
   name: string;
+  description?: string;
+  mode: AutomationMode;
+  triggers: AutomationTrigger[];
+  /** @deprecated Use `triggers[0]` or `legacy?.trigger`. */
   trigger: AutomationTrigger;
+  executor: AutomationExecutor;
+  templateId?: string;
+  prompt?: string;
+  reviewProfile: AutomationReviewProfile;
+  toolPalette: AutomationToolFamily[];
+  contextSources: AutomationContextSource[];
+  memory: AutomationMemoryConfig;
+  guardrails: AutomationGuardrails;
+  outputs: AutomationOutputs;
+  verification: AutomationVerification;
+  billingCode: string;
+  queueStatus?: AutomationRunQueueStatus;
+  /** @deprecated Legacy compatibility shim for action-list surfaces. */
   actions: AutomationAction[];
+  legacy?: {
+    trigger?: AutomationTrigger;
+    actions?: AutomationAction[];
+  };
   enabled: boolean;
 };
 
 export type ConfigAutomationRule = {
   id: string;
   name?: string;
+  description?: string;
+  mode?: AutomationMode;
+  triggers?: AutomationTrigger[];
+  executor?: AutomationExecutor;
+  templateId?: string;
+  prompt?: string;
+  reviewProfile?: AutomationReviewProfile;
+  toolPalette?: AutomationToolFamily[];
+  contextSources?: AutomationContextSource[];
+  memory?: AutomationMemoryConfig;
+  guardrails?: AutomationGuardrails;
+  outputs?: AutomationOutputs;
+  verification?: AutomationVerification;
+  billingCode?: string;
+  queueStatus?: AutomationRunQueueStatus;
   trigger?: AutomationTrigger;
   actions?: AutomationAction[];
   enabled?: boolean;
@@ -557,7 +705,7 @@ export type AiFeatureUsageRow = {
 
 export type AiDetectedAuth = {
   type: "cli-subscription" | "api-key" | "openrouter" | "local";
-  cli?: "claude" | "codex" | "gemini";
+  cli?: "claude" | "codex";
   provider?: string;
   source?: "config" | "env" | "store";
   path?: string;
@@ -684,12 +832,29 @@ export type AiOrchestratorConfig = {
   laneExclusivity?: boolean;
 };
 
+/** Unified config for AI-generated titles and summaries across all session types (chat, CLI, terminal). */
+export type SessionIntelligenceConfig = {
+  titles?: {
+    enabled?: boolean;
+    modelId?: ModelId;
+    /** Whether to regenerate the title when the session completes */
+    refreshOnComplete?: boolean;
+  };
+  summaries?: {
+    enabled?: boolean;
+    modelId?: ModelId;
+  };
+};
+
 export type AiChatConfig = {
   defaultProvider?: "codex" | "claude" | "last_used";
   defaultApprovalPolicy?: "auto" | "approve_mutations" | "approve_all";
   sendOnEnter?: boolean;
+  /** @deprecated Use ai.sessionIntelligence.titles instead */
   autoTitleEnabled?: boolean;
+  /** @deprecated Use ai.sessionIntelligence.titles.modelId instead */
   autoTitleModelId?: ModelId;
+  /** @deprecated Use ai.sessionIntelligence.titles.refreshOnComplete instead */
   autoTitleRefreshOnComplete?: boolean;
   codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
   claudePermissionMode?: "plan" | "acceptEdits" | "bypassPermissions";
@@ -714,6 +879,8 @@ export type AiConfig = {
   mcpServers?: Record<string, unknown>;
   /** Per-feature model overrides, e.g. { mission_planning: "claude-sonnet-4-6" } */
   featureModelOverrides?: Partial<Record<AiFeatureKey, string>>;
+  /** Unified title + summary intelligence config for all session types */
+  sessionIntelligence?: SessionIntelligenceConfig;
 };
 
 export type AiIntegrationStatus = {
@@ -754,6 +921,8 @@ export type ProjectConfigFile = {
   defaultLaneTemplate?: string;
   providers?: Record<string, unknown>;
   linearSync?: LinearSyncConfig;
+  /** Event-based checklist for context doc auto-regeneration */
+  contextRefreshEvents?: import("./packs").ContextRefreshEvents;
 };
 
 export type ProjectConfigCandidate = {

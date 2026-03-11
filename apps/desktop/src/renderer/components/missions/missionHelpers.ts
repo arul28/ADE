@@ -25,6 +25,7 @@ import type {
   MissionMetricSample,
   OrchestratorStepStatus,
   SmartBudgetConfig,
+  MissionIntervention,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { COLORS } from "../lanes/laneDesignTokens";
@@ -320,6 +321,50 @@ export function looksLikeLowSignalNoise(text: string): boolean {
   if (!/\s/.test(trimmed) && trimmed.length < 24 && !/[.!?]/.test(trimmed)) return true;
   if (/^[A-Za-z]+$/.test(trimmed) && trimmed.length < 24) return true;
   return false;
+}
+
+function titleCaseQuestionLabel(raw: string): string {
+  return raw
+    .split(/[\s_-]+/)
+    .map((token) => token ? `${token.charAt(0).toUpperCase()}${token.slice(1).toLowerCase()}` : "")
+    .join(" ")
+    .trim();
+}
+
+export function getQuestionOwnerLabelFromMetadata(metadata: unknown): string | null {
+  const meta = isRecord(metadata) ? metadata : null;
+  if (!meta) return null;
+  const explicitLabel = typeof meta.questionOwnerLabel === "string" ? meta.questionOwnerLabel.trim() : "";
+  if (explicitLabel.length > 0) return explicitLabel;
+
+  const ownerKind = typeof meta.questionOwnerKind === "string" ? meta.questionOwnerKind.trim().toLowerCase() : "";
+  if (ownerKind === "coordinator") return "Coordinator question";
+  if (ownerKind === "planner") return "Planner question";
+  if (ownerKind === "developer") return "Developer question";
+  if (ownerKind === "validator") return "Validator question";
+  if (ownerKind === "tester") return "Tester question";
+
+  const phaseName = typeof meta.phaseName === "string" ? meta.phaseName.trim() : "";
+  const phase = typeof meta.phase === "string" ? meta.phase.trim() : "";
+  const normalizedPhase = (phase || phaseName).toLowerCase();
+  if (normalizedPhase === "planning") return "Planner question";
+  if (normalizedPhase === "development") return "Developer question";
+  if (normalizedPhase === "validation") return "Validator question";
+  if (normalizedPhase === "testing") return "Tester question";
+
+  const source = typeof meta.source === "string" ? meta.source.trim().toLowerCase() : "";
+  if (source === "request_user_input") return "Coordinator question";
+  if ((source === "ask_user" || source === "manual_input") && (phaseName || phase)) {
+    return `${titleCaseQuestionLabel(phaseName || phase)} question`;
+  }
+  return null;
+}
+
+export function getMissionInterventionOwnerLabel(
+  intervention: Pick<MissionIntervention, "interventionType" | "metadata"> | null | undefined,
+): string | null {
+  if (!intervention || intervention.interventionType !== "manual_input") return null;
+  return getQuestionOwnerLabelFromMetadata(intervention.metadata);
 }
 
 function titleizeMissionWorkerToken(value: string): string {

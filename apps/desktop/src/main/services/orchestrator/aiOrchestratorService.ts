@@ -737,6 +737,8 @@ export function createAiOrchestratorService(args: {
   queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   queueRehearsalService?: ReturnType<typeof createQueueRehearsalService> | null;
   missionBudgetService?: import("./missionBudgetService").MissionBudgetService | null;
+  humanWorkDigestService?: import("../memory/humanWorkDigestService").HumanWorkDigestService | null;
+  missionMemoryLifecycleService?: import("../memory/missionMemoryLifecycleService").MissionMemoryLifecycleService | null;
   projectRoot?: string;
   onThreadEvent?: (event: OrchestratorThreadEvent) => void;
   onDagMutation?: (event: DagMutationEvent) => void;
@@ -756,6 +758,8 @@ export function createAiOrchestratorService(args: {
     queueLandingService,
     queueRehearsalService,
     missionBudgetService,
+    humanWorkDigestService,
+    missionMemoryLifecycleService,
     projectRoot,
     onThreadEvent,
     onDagMutation,
@@ -4701,8 +4705,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         const graph = orchestratorService.getRunGraph({ runId, timelineLimit: 10 });
         if (
           graph.run.status !== "active" && graph.run.status !== "bootstrapping" &&
-          graph.run.status !== "queued" &&
-          graph.run.status !== "paused"
+          graph.run.status !== "queued"
         ) {
           return;
         }
@@ -5725,6 +5728,11 @@ Check all worker statuses and continue managing the mission from here. Read work
           }
         }
       });
+      const evalTimer = pendingCoordinatorEvals.get(args.runId);
+      if (evalTimer) {
+        clearTimeout(evalTimer);
+        pendingCoordinatorEvals.delete(args.runId);
+      }
     } catch (error) {
       logger.debug("ai_orchestrator.pause_run_failed", {
         runId: args.runId,
@@ -6691,6 +6699,10 @@ Check all worker statuses and continue managing the mission from here. Read work
       )
     );
     const { userRules, projectCtx, availableProviders, phases } = gatherCoordinatorContext(missionId, args);
+    const knowledgeStatus = await humanWorkDigestService?.getKnowledgeSyncStatus?.().catch(() => null) ?? null;
+    if (knowledgeStatus?.diverged) {
+      await humanWorkDigestService?.syncKnowledge?.();
+    }
     const activePolicy = resolveActivePolicy(missionId);
     const sortedPhases = [...phases].sort((a, b) => a.position - b.position);
     const runtimePhases = activePolicy.planning.mode === "off"
@@ -6765,6 +6777,12 @@ Check all worker statuses and continue managing the mission from here. Read work
           : null,
         ...(phaseRuntime ? { phaseRuntime } : {}),
       }
+    });
+    missionMemoryLifecycleService?.startMission({
+      projectId: projectCtx.projectId,
+      missionId,
+      runId: started.run.id,
+      initialDecision: initialMission.prompt ?? initialMission.title,
     });
 
     // ── Create a dedicated mission lane ──
@@ -8002,6 +8020,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       return (Number.isFinite(rightAt) ? rightAt : 0) - (Number.isFinite(leftAt) ? leftAt : 0);
     })[0];
     if (!latest) return null;
+    const metadata = asRecord(latest.metadata);
     return {
       id: latest.id,
       title: latest.title,
@@ -8009,6 +8028,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       interventionType: latest.interventionType,
       status: latest.status,
       requestedAction: latest.requestedAction ?? null,
+      ownerLabel: toOptionalString(metadata?.questionOwnerLabel),
       createdAt: latest.updatedAt || latest.createdAt,
     };
   };

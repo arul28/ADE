@@ -197,9 +197,7 @@ export function PhaseCardEditor({
           ) : null}
           <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
             {phase.model.modelId}
-            {isPlanningPhase
-              ? ` · Ask Questions ${phase.askQuestions.enabled ? "on" : "off"}`
-              : ""}
+            {` · Ask Questions ${phase.askQuestions.enabled ? "on" : "off"}`}
           </div>
         </div>
 
@@ -326,54 +324,54 @@ export function PhaseCardEditor({
           </div>
 
           {isPlanningPhase ? (
-            <>
-              <div className="space-y-1 text-[10px]">
-                <span style={labelStyle}>EXACT COMPOSED PLANNER PROMPT</span>
-                <PromptInspectorCard
-                  inspector={planningInspector}
-                  loading={planningInspectorLoading}
-                  error={planningInspectorError}
-                  title="Read-only system / composed planner prompt"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <span style={labelStyle}>ASK QUESTIONS</span>
-                <div className="flex flex-wrap items-center gap-3">
-                  <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                    <input
-                      type="checkbox"
-                      checked={phase.askQuestions.enabled}
-                      onChange={(e) => {
-                        updateField("askQuestions", { ...phase.askQuestions, enabled: e.target.checked });
-                      }}
-                      disabled={readOnly}
-                    />
-                    Enabled
-                  </label>
-                  <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                    {phase.askQuestions.enabled ? "Planner must ask at least one question before finalizing." : "Planner will proceed without asking questions."}
-                  </div>
-                  <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                    <span style={{ fontSize: 9 }}>Max questions</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={10}
-                      value={Math.max(1, Math.min(10, Number(phase.askQuestions.maxQuestions ?? 5) || 5))}
-                      onChange={(e) => {
-                        const maxQuestions = Math.max(1, Math.min(10, Number(e.target.value) || 5));
-                        updateField("askQuestions", { ...phase.askQuestions, maxQuestions });
-                      }}
-                      className="h-6 w-16 px-1 text-[10px] text-center outline-none"
-                      style={inputStyle}
-                      disabled={readOnly}
-                    />
-                  </label>
-                </div>
-              </div>
-            </>
+            <div className="space-y-1 text-[10px]">
+              <span style={labelStyle}>EXACT COMPOSED PLANNER PROMPT</span>
+              <PromptInspectorCard
+                inspector={planningInspector}
+                loading={planningInspectorLoading}
+                error={planningInspectorError}
+                title="Read-only system / composed planner prompt"
+              />
+            </div>
           ) : null}
+
+          <div className="space-y-1">
+            <span style={labelStyle}>ASK QUESTIONS</span>
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                <input
+                  type="checkbox"
+                  checked={phase.askQuestions.enabled}
+                  onChange={(e) => {
+                    updateField("askQuestions", { ...phase.askQuestions, enabled: e.target.checked });
+                  }}
+                  disabled={readOnly}
+                />
+                Enabled
+              </label>
+              <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                {phase.askQuestions.enabled
+                  ? `${phase.name || "Active phase"} worker may ask blocking clarification questions when needed.`
+                  : `${phase.name || "Active phase"} will proceed without asking questions.`}
+              </div>
+              <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                <span style={{ fontSize: 9 }}>Max questions</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={Math.max(1, Math.min(10, Number(phase.askQuestions.maxQuestions ?? 5) || 5))}
+                  onChange={(e) => {
+                    const maxQuestions = Math.max(1, Math.min(10, Number(e.target.value) || 5));
+                    updateField("askQuestions", { ...phase.askQuestions, maxQuestions });
+                  }}
+                  className="h-6 w-16 px-1 text-[10px] text-center outline-none"
+                  style={inputStyle}
+                  disabled={readOnly || !phase.askQuestions.enabled}
+                />
+              </label>
+            </div>
+          </div>
         </div>
       ) : null}
     </div>

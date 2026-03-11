@@ -16,6 +16,7 @@ import type { MissionBudgetService } from "../orchestrator/missionBudgetService"
 import { normalizeMissionPermissions } from "../orchestrator/permissionMapping";
 import type { MissionPermissionConfig } from "../../../shared/types/missions";
 import { isRecord, nowIso } from "../shared/utils";
+import type { HumanWorkDigestService } from "../memory/humanWorkDigestService";
 
 function toNonEmptyString(value: unknown): string | null {
   const text = typeof value === "string" ? value.trim() : "";
@@ -92,6 +93,7 @@ export function createMissionPreflightService(args: {
   aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   missionBudgetService: MissionBudgetService;
+  humanWorkDigestService?: HumanWorkDigestService | null;
 }) {
   const {
     projectRoot,
@@ -154,6 +156,32 @@ export function createMissionPreflightService(args: {
             summary: "Ordering constraints are invalid.",
             details: orderingErrors,
             fixHint: "Reorder phases or update mustFollow/mustPrecede constraints to remove conflicts.",
+        }),
+    );
+
+    const knowledgeSyncStatus = await args.humanWorkDigestService?.getKnowledgeSyncStatus?.().catch(() => null) ?? null;
+    checklist.push(
+      knowledgeSyncStatus?.diverged
+        ? toChecklistItem({
+            id: "knowledge_sync",
+            severity: "warning",
+            title: "Knowledge sync",
+            summary: "Human-authored work has changed since the last knowledge digest.",
+            details: [
+              `Current HEAD: ${knowledgeSyncStatus.currentHeadSha ?? "unknown"}`,
+              `Last digested HEAD: ${knowledgeSyncStatus.lastSeenHeadSha ?? "none"}`,
+              "Launch will pause to refresh knowledge before workers start.",
+            ],
+          })
+        : toChecklistItem({
+            id: "knowledge_sync",
+            severity: "pass",
+            title: "Knowledge sync",
+            summary: "Knowledge digest is current for the project HEAD.",
+            details: [
+              `Current HEAD: ${knowledgeSyncStatus?.currentHeadSha ?? "unknown"}`,
+              `Last digested HEAD: ${knowledgeSyncStatus?.lastSeenHeadSha ?? knowledgeSyncStatus?.currentHeadSha ?? "unknown"}`,
+            ],
           }),
     );
 

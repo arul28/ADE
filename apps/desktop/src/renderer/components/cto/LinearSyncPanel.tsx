@@ -18,10 +18,12 @@ import type {
   LinearSyncDashboard,
   LinearSyncQueueItem,
 } from "../../../shared/types";
+import { ConnectionStatusDot } from "./shared/ConnectionStatusDot";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { PaneHeader } from "../ui/PaneHeader";
 import { cn } from "../ui/cn";
+import { inputCls, selectCls, labelCls, textareaCls } from "./shared/designTokens";
 
 /* ── Helpers ── */
 
@@ -64,15 +66,6 @@ export function linearDefaultPolicy(): LinearSyncConfig {
     artifacts: { mode: "links" },
   };
 }
-
-/* ── Shared styles ── */
-
-const inputCls =
-  "h-8 w-full border border-border/15 bg-surface-recessed px-3 text-xs font-mono text-fg placeholder:text-muted-fg/50 focus:border-accent/40 focus:outline-none transition-colors";
-const selectCls = `${inputCls} appearance-none`;
-const labelCls = "text-[10px] font-mono font-bold uppercase tracking-[1px] text-muted-fg/60";
-const textareaCls =
-  "w-full border border-border/15 bg-surface-recessed p-3 text-xs font-mono text-fg placeholder:text-muted-fg/50 focus:border-accent/40 focus:outline-none resize-vertical transition-colors";
 
 /* ── Step nav icons ── */
 
@@ -218,9 +211,10 @@ export function LinearSyncPanel() {
           <div className="flex items-center gap-2">
             <span className="font-sans text-sm font-bold text-fg">Linear Sync</span>
             {connection && (
-              <Chip className={cn("text-[9px]", connection.connected ? "text-success" : "text-warning")}>
-                {connection.connected ? "Connected" : "Disconnected"}
-              </Chip>
+              <ConnectionStatusDot
+                status={connection.connected ? "connected" : connection.tokenStored ? "degraded" : "disconnected"}
+                label={connection.connected ? "Connected" : connection.tokenStored ? "Degraded" : "Disconnected"}
+              />
             )}
           </div>
           <div className="font-mono text-[10px] text-muted-fg mt-0.5">

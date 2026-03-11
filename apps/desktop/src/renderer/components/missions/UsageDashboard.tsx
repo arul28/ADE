@@ -94,14 +94,14 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
     const family = desc?.family ?? provider;
     return detectedAuth.some((a) =>
       a.type === "cli-subscription" && a.authenticated &&
-      a.cli && ({ claude: "anthropic", codex: "openai", gemini: "google" } as Record<string, string>)[a.cli] === family
+      a.cli && ({ claude: "anthropic", codex: "openai" } as Record<string, string>)[a.cli] === family
     );
   }, [detectedAuth]);
 
   const isSubscriptionProvider = useCallback((provider: string) => {
     return detectedAuth.some((a) =>
       a.type === "cli-subscription" && a.authenticated &&
-      a.cli && ({ claude: "anthropic", codex: "openai", gemini: "google" } as Record<string, string>)[a.cli] === provider
+      a.cli && ({ claude: "anthropic", codex: "openai" } as Record<string, string>)[a.cli] === provider
     );
   }, [detectedAuth]);
 

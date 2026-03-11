@@ -8,9 +8,14 @@ import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
 import { formatDate, statusToneAutomation as statusTone } from "../../../lib/format";
 
-function summarizeActions(rule: { actions: Array<{ type: string }> }): string {
-  if (!rule.actions.length) return "(no actions)";
-  return rule.actions.map((a) => a.type).join(", ");
+function summarizeRule(rule: AutomationRuleSummary): string {
+  const trigger = rule.triggers[0];
+  const triggerLabel = trigger
+    ? trigger.type === "schedule" && trigger.cron
+      ? `${trigger.type} ${trigger.cron}`
+      : trigger.type
+    : "manual";
+  return `${rule.mode} · ${rule.reviewProfile} · ${triggerLabel}`;
 }
 
 export function RuleCard({
@@ -56,25 +61,34 @@ export function RuleCard({
 
           <div className="mt-2 flex items-center gap-0 text-[11px]">
             <div className="px-1.5 py-0.5 font-mono leading-none" style={{ background: "rgba(249,115,22,0.10)", color: "#F97316" }}>
-              {rule.trigger.type}{rule.trigger.type === "schedule" && rule.trigger.cron ? ` ${rule.trigger.cron}` : ""}
+              {rule.mode}
             </div>
-            {rule.trigger.branch && (
+            <Arrow />
+            <div className="px-1.5 py-0.5 font-mono leading-none" style={{ background: "rgba(59,130,246,0.10)", color: "#60A5FA" }}>
+              {rule.reviewProfile}
+            </div>
+            {rule.executor.mode === "night-shift" && (
               <>
                 <Arrow />
-                <div className="px-1.5 py-0.5 font-mono leading-none" style={{ background: "rgba(245,158,11,0.10)", color: "#F59E0B" }}>
-                  {rule.trigger.branch}
+                <div className="px-1.5 py-0.5 font-mono leading-none" style={{ background: "rgba(99,102,241,0.10)", color: "#A5B4FC" }}>
+                  night-shift
                 </div>
               </>
             )}
             <Arrow />
             <div className="truncate px-1.5 py-0.5 font-mono leading-none" style={{ background: "rgba(34,197,94,0.10)", color: "#22C55E" }}>
-              {summarizeActions(rule)}
+              {summarizeRule(rule)}
             </div>
           </div>
 
           <div className="mt-1.5 text-xs text-[#71717A] truncate font-mono">
-            last run: {formatDate(rule.lastRunAt, "Never")}
+            last run: {formatDate(rule.lastRunAt, "Never")} · queue {rule.queueCount}
           </div>
+          {rule.confidence ? (
+            <div className="mt-1 text-[10px] text-[#8B8B9A] font-mono">
+              confidence: {rule.confidence.label} ({Math.round(rule.confidence.value * 100)}%)
+            </div>
+          ) : null}
         </div>
 
         <div className="shrink-0 flex flex-col items-end gap-1.5">

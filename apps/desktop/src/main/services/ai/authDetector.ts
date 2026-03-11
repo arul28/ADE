@@ -4,7 +4,7 @@
 
 import { spawn } from "node:child_process";
 
-type CliName = "claude" | "codex" | "gemini";
+type CliName = "claude" | "codex";
 
 type ApiKeySource = "config" | "env" | "store";
 
@@ -49,10 +49,6 @@ const CLI_AUTH_PROBES: Record<CliName, string[][]> = {
   ],
   codex: [
     ["login", "status"],
-  ],
-  gemini: [
-    ["auth", "status"],
-    ["whoami"],
   ],
 };
 
@@ -107,6 +103,17 @@ function spawnAsync(
 }
 
 async function commandExists(command: string): Promise<boolean> {
+  // Strategy 1: Direct spawn — bypasses shell init (.zshrc errors, slow profiles).
+  // If the binary exists, --version will produce *some* exit code.
+  // A spawn error (ENOENT) means the binary isn't on PATH → status is null.
+  try {
+    const direct = await spawnAsync(command, ["--version"], 5_000);
+    if (direct.status !== null) return true;
+  } catch {
+    // fall through to shell-based check
+  }
+
+  // Strategy 2: Shell-based lookup (fallback for edge cases)
   try {
     if (process.platform === "win32") {
       const result = await spawnAsync("where", [command], 5_000);
@@ -125,6 +132,12 @@ async function commandPath(command: string): Promise<string> {
       const result = await spawnAsync("where", [command], 5_000);
       return result.stdout?.trim().split(/\r?\n/)[0] ?? command;
     }
+    // Try which first (simpler, doesn't load full login shell)
+    const which = await spawnAsync("which", [command], 3_000);
+    if (which.status === 0 && which.stdout?.trim()) {
+      return which.stdout.trim();
+    }
+    // Fallback to login shell lookup
     const result = await spawnAsync("sh", ["-lc", `command -v ${command}`], 5_000);
     return result.stdout?.trim() || command;
   } catch {
@@ -520,7 +533,7 @@ export async function detectCliAuthStatuses(): Promise<CliAuthStatus[]> {
     return cachedCliAuth.statuses;
   }
 
-  const cliChecks: CliName[] = ["claude", "codex", "gemini"];
+  const cliChecks: CliName[] = ["claude", "codex"];
 
   // Probe all CLIs in parallel
   const statuses = await Promise.all(

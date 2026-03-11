@@ -40,9 +40,24 @@ function toDraftFromRule(rule: AutomationRuleSummary): AutomationRuleDraft {
   return {
     id: rule.id,
     name: rule.name,
+    description: rule.description ?? "",
     enabled: rule.enabled,
-    trigger: rule.trigger,
-    actions: rule.actions.map((a) => {
+    mode: rule.mode,
+    triggers: rule.triggers,
+    trigger: rule.trigger ?? rule.triggers[0],
+    executor: rule.executor,
+    templateId: rule.templateId,
+    prompt: rule.prompt ?? "",
+    reviewProfile: rule.reviewProfile,
+    toolPalette: rule.toolPalette,
+    contextSources: rule.contextSources,
+    memory: rule.memory,
+    guardrails: rule.guardrails,
+    outputs: rule.outputs,
+    verification: rule.verification,
+    billingCode: rule.billingCode,
+    queueStatus: rule.queueStatus,
+    actions: (rule.legacy?.actions ?? rule.actions ?? []).map((a) => {
       const shared = {
         ...(a.condition ? { condition: a.condition } : {}),
         ...(a.continueOnFailure != null ? { continueOnFailure: a.continueOnFailure } : {}),
@@ -57,6 +72,44 @@ function toDraftFromRule(rule: AutomationRuleSummary): AutomationRuleDraft {
       }
       return { type: a.type, ...shared };
     }) as any,
+    legacyActions: (rule.legacy?.actions ?? rule.actions ?? []).map((a) => {
+      const shared = {
+        ...(a.condition ? { condition: a.condition } : {}),
+        ...(a.continueOnFailure != null ? { continueOnFailure: a.continueOnFailure } : {}),
+        ...(a.timeoutMs != null ? { timeoutMs: a.timeoutMs } : {}),
+        ...(a.retry != null ? { retry: a.retry } : {}),
+      };
+      if (a.type === "run-tests") {
+        return { type: a.type, suite: a.suiteId ?? "", ...shared };
+      }
+      if (a.type === "run-command") {
+        return { type: a.type, command: a.command ?? "", ...(a.cwd ? { cwd: a.cwd } : {}), ...shared };
+      }
+      return { type: a.type, ...shared };
+    }) as any,
+  };
+}
+
+function createBlankDraft(): AutomationRuleDraft {
+  return {
+    name: "",
+    description: "",
+    enabled: true,
+    mode: "review",
+    triggers: [{ type: "manual" }],
+    trigger: { type: "manual" },
+    executor: { mode: "automation-bot" },
+    prompt: "",
+    reviewProfile: "quick",
+    toolPalette: ["repo", "memory", "mission"],
+    contextSources: [{ type: "project-memory" }, { type: "procedures" }],
+    memory: { mode: "automation-plus-project" },
+    guardrails: {},
+    outputs: { disposition: "comment-only", createArtifact: true },
+    verification: { verifyBeforePublish: false, mode: "intervention" },
+    billingCode: "auto:new-rule",
+    actions: [],
+    legacyActions: [],
   };
 }
 
@@ -558,7 +611,9 @@ export function RulesTab({
     if (!q) return rules;
     return rules.filter((r) =>
       r.name.toLowerCase().includes(q) || r.id.toLowerCase().includes(q) ||
-      r.trigger.type.toLowerCase().includes(q) || r.actions.map(a => a.type).join(", ").toLowerCase().includes(q)
+      r.mode.toLowerCase().includes(q) ||
+      r.reviewProfile.toLowerCase().includes(q) ||
+      r.triggers.map((trigger) => trigger.type).join(", ").toLowerCase().includes(q)
     );
   }, [rules, search]);
 
@@ -587,14 +642,8 @@ export function RulesTab({
   }, [pendingDraft]);
 
   const openManualCreate = () => {
-    const blankDraft: AutomationRuleDraft = {
-      name: "",
-      enabled: true,
-      trigger: { type: "manual" },
-      actions: [],
-    };
     setSelectedRuleId(null);
-    setDraft(blankDraft);
+    setDraft(createBlankDraft());
     setDraftIssues([]);
     setRequiredConfirmations([]);
     setAcceptedConfirmations(new Set());

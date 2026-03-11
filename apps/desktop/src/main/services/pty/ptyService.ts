@@ -7,6 +7,7 @@ import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
+import type { createProjectConfigService } from "../config/projectConfigService";
 import { runGit } from "../git/git";
 import type {
   PtyDataEvent,
@@ -122,6 +123,7 @@ export function createPtyService({
   laneService,
   sessionService,
   aiIntegrationService,
+  projectConfigService,
   logger,
   broadcastData,
   broadcastExit,
@@ -134,6 +136,7 @@ export function createPtyService({
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
+  projectConfigService?: ReturnType<typeof createProjectConfigService>;
   logger: Logger;
   broadcastData: (ev: PtyDataEvent) => void;
   broadcastExit: (ev: PtyExitEvent) => void;
@@ -151,6 +154,11 @@ export function createPtyService({
   const runtimeStates = new Map<string, RuntimeStateEntry>();
   /** Timers for auto-closing tool-typed PTYs when the CLI tool exits back to shell prompt */
   const toolAutoCloseTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  const getSessionIntelligence = () => {
+    const ai = projectConfigService?.get().effective.ai;
+    return ai?.sessionIntelligence;
+  };
 
   /** Tool types that run a CLI tool inside the shell and should auto-close when the tool exits */
   const TOOL_TYPES_WITH_AUTO_CLOSE = new Set<TerminalToolType>([
@@ -237,6 +245,8 @@ export function createPtyService({
 
         sessionService.setSummary(sessionId, summary);
 
+        const si = getSessionIntelligence();
+        if (si?.summaries?.enabled === false) return;
         if (!aiIntegrationService || aiIntegrationService.getMode() === "guest") return;
 
         const lane = laneService.getLaneBaseAndBranch(session.laneId);
@@ -252,9 +262,14 @@ export function createPtyService({
           transcript.slice(-18_000)
         ].join("\n");
 
+        const summaryModelId = typeof si?.summaries?.modelId === "string" && si.summaries.modelId.trim().length
+          ? si.summaries.modelId.trim()
+          : undefined;
+
         const aiSummary = await aiIntegrationService.summarizeTerminal({
           cwd: lane.worktreePath,
-          prompt
+          prompt,
+          ...(summaryModelId ? { model: summaryModelId } : {}),
         });
         const text = aiSummary.text.trim();
         if (text.length) {
@@ -603,6 +618,10 @@ export function createPtyService({
         const capturedAi = aiIntegrationService;
         setTimeout(() => {
           if (entry.disposed) return;
+
+          const si = getSessionIntelligence();
+          if (si?.titles?.enabled === false) return;
+
           const strippedOutput = stripAnsi(titleOutputBuffer).trim();
           if (strippedOutput.length < 10) return;
 
@@ -621,11 +640,16 @@ export function createPtyService({
             strippedOutput.slice(0, 500)
           ].join("\n");
 
+          const titleModelId = typeof si?.titles?.modelId === "string" && si.titles.modelId.trim().length
+            ? si.titles.modelId.trim()
+            : undefined;
+
           capturedAi
             .summarizeTerminal({
               cwd: lane.worktreePath,
               prompt,
-              timeoutMs: 8_000
+              timeoutMs: 8_000,
+              ...(titleModelId ? { model: titleModelId } : {}),
             })
             .then((result) => {
               const title = result.text.trim().replace(/\s+/g, " ").slice(0, 80);

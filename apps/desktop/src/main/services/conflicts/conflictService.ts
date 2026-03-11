@@ -66,6 +66,7 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createOperationService } from "../history/operationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
+import type { createSessionService } from "../sessions/sessionService";
 import { readDocPaths } from "../orchestrator/stepPolicyResolver";
 import { normalizeConflictType, runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 import { redactSecretsDeep } from "../../utils/redaction";
@@ -522,6 +523,7 @@ export function createConflictService({
   projectConfigService,
   aiIntegrationService,
   operationService,
+  sessionService,
   conflictPacksDir,
   onEvent
 }: {
@@ -533,6 +535,7 @@ export function createConflictService({
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   operationService?: ReturnType<typeof createOperationService>;
+  sessionService?: ReturnType<typeof createSessionService>;
   conflictPacksDir?: string;
   onEvent?: (event: ConflictEventPayload) => void;
 }) {
@@ -707,6 +710,31 @@ export function createConflictService({
     if (lane.tags.length) lines.push(`- Tags: ${lane.tags.join(", ")}`);
     if (lane.description?.trim()) lines.push(`- Description: ${lane.description.trim()}`);
     lines.push("");
+
+    if (sessionService) {
+      try {
+        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+        const allSessions = sessionService.list({ laneId: lane.id, limit: 20 });
+        const sessions = allSessions.filter(
+          (s) => (s.title?.trim() || s.summary?.trim()) && s.startedAt >= thirtyDaysAgo
+        );
+        if (sessions.length > 0) {
+          lines.push("## Recent Sessions");
+          lines.push("");
+          for (const s of sessions) {
+            const label = s.title?.trim() || s.goal?.trim() || "Untitled";
+            const tool = s.toolType ?? "unknown";
+            const timeRange = s.endedAt ? `${s.startedAt} → ${s.endedAt}` : `${s.startedAt} → ongoing`;
+            const summaryText = s.summary?.trim() ? `: ${s.summary.trim()}` : "";
+            lines.push(`- **${label}** (${tool}, ${timeRange})${summaryText}`);
+          }
+          lines.push("");
+        }
+      } catch {
+        // Session query failed — omit section silently
+      }
+    }
+
     return `${lines.join("\n").trim()}\n`;
   };
 

@@ -187,12 +187,27 @@ describe("useMissionsStore", () => {
     });
 
     it("clears selection when mission no longer exists", async () => {
-      useMissionsStore.setState({ selectedMissionId: "m-gone" });
+      useMissionsStore.setState({
+        selectedMissionId: "m-gone",
+        selectedMission: { id: "m-gone", title: "Gone" } as any,
+        runGraph: { run: { id: "run-gone" } } as any,
+        orchestratorArtifacts: [{ id: "artifact-1" }] as any[],
+        workerCheckpoints: [{ id: "checkpoint-1" }] as any[],
+        coordinatorPromptInspector: { sections: [] } as any,
+        workerPromptInspector: { sections: [] } as any,
+      });
       const missions = [{ id: "m1", title: "Mission 1", status: "in_progress" }];
       mockMissionsList.mockResolvedValueOnce(missions);
 
       await useMissionsStore.getState().refreshMissionList({ preserveSelection: true });
-      expect(useMissionsStore.getState().selectedMissionId).toBeNull();
+      const state = useMissionsStore.getState();
+      expect(state.selectedMissionId).toBeNull();
+      expect(state.selectedMission).toBeNull();
+      expect(state.runGraph).toBeNull();
+      expect(state.orchestratorArtifacts).toEqual([]);
+      expect(state.workerCheckpoints).toEqual([]);
+      expect(state.coordinatorPromptInspector).toBeNull();
+      expect(state.workerPromptInspector).toBeNull();
     });
 
     it("sets error on failure", async () => {

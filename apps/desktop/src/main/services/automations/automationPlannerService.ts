@@ -480,36 +480,64 @@ function normalizeDraft(args: {
 
   const name = safeTrim(args.draft.name) || "New automation";
   const enabled = Boolean(args.draft.enabled);
-
-  const triggerType = safeTrim(args.draft.trigger?.type) as any;
-  const trigger: any = { type: triggerType };
-  if (triggerType !== "session-end" && triggerType !== "commit" && triggerType !== "schedule" && triggerType !== "manual") {
-    issues.push({ level: "error", path: "trigger.type", message: "Invalid trigger type." });
-  }
-
-  const cronExpr = safeTrim(args.draft.trigger?.cron);
-  if (triggerType === "schedule") {
-    if (!cronExpr) {
-      issues.push({ level: "error", path: "trigger.cron", message: "Schedule trigger requires cron." });
-    } else if (!cron.validate(cronExpr)) {
-      issues.push({ level: "error", path: "trigger.cron", message: `Invalid cron expression '${cronExpr}'.` });
-    } else {
-      trigger.cron = cronExpr;
+  const inputTriggers = Array.isArray(args.draft.triggers) && args.draft.triggers.length > 0
+    ? args.draft.triggers
+    : ((args.draft as any).trigger ? [(args.draft as any).trigger] : [{ type: "manual" }]);
+  const triggers = inputTriggers.map((raw, index) => {
+    const triggerType = safeTrim(raw?.type) as any;
+    const trigger: Record<string, unknown> = { type: triggerType };
+    if (
+      triggerType !== "session-end" &&
+      triggerType !== "commit" &&
+      triggerType !== "schedule" &&
+      triggerType !== "manual" &&
+      triggerType !== "github-webhook" &&
+      triggerType !== "webhook"
+    ) {
+      issues.push({ level: "error", path: `triggers[${index}].type`, message: "Invalid trigger type." });
     }
-  } else if (cronExpr) {
-    // Ignore cron for non-schedule triggers.
-    trigger.cron = cronExpr;
-  }
-
-  const branch = safeTrim(args.draft.trigger?.branch);
-  if (branch) trigger.branch = branch;
+    const cronExpr = safeTrim(raw?.cron);
+    if (triggerType === "schedule") {
+      if (!cronExpr) {
+        issues.push({ level: "error", path: `triggers[${index}].cron`, message: "Schedule trigger requires cron." });
+      } else if (!cron.validate(cronExpr)) {
+        issues.push({ level: "error", path: `triggers[${index}].cron`, message: `Invalid cron expression '${cronExpr}'.` });
+      } else {
+        trigger.cron = cronExpr;
+      }
+    }
+    const branch = safeTrim(raw?.branch);
+    if (branch) trigger.branch = branch;
+    const event = safeTrim(raw?.event);
+    if (event) trigger.event = event;
+    const author = safeTrim(raw?.author);
+    if (author) trigger.author = author;
+    const labels = Array.isArray(raw?.labels) ? raw.labels.map((value: unknown) => safeTrim(value)).filter(Boolean) : [];
+    if (labels.length) trigger.labels = labels;
+    const paths = Array.isArray(raw?.paths) ? raw.paths.map((value: unknown) => safeTrim(value)).filter(Boolean) : [];
+    if (paths.length) trigger.paths = paths;
+    const keywords = Array.isArray(raw?.keywords) ? raw.keywords.map((value: unknown) => safeTrim(value)).filter(Boolean) : [];
+    if (keywords.length) trigger.keywords = keywords;
+    const secretRef = safeTrim(raw?.secretRef);
+    if ((triggerType === "webhook" || triggerType === "github-webhook") && !secretRef) {
+      issues.push({ level: "error", path: `triggers[${index}].secretRef`, message: "Webhook triggers require secretRef." });
+    } else if (secretRef) {
+      trigger.secretRef = secretRef;
+    }
+    return trigger as AutomationRuleDraftNormalized["triggers"][number];
+  });
 
   const normalizedActions: AutomationAction[] = [];
   const MAX_TIMEOUT_MS = 30 * 60_000;
   const DEFAULT_TIMEOUT_MS = 5 * 60_000;
+  const draftActions = Array.isArray(args.draft.legacyActions)
+    ? args.draft.legacyActions
+    : Array.isArray((args.draft as any).actions)
+      ? (args.draft as any).actions
+      : [];
 
-  for (let idx = 0; idx < (args.draft.actions ?? []).length; idx += 1) {
-    const action = args.draft.actions[idx] as any;
+  for (let idx = 0; idx < draftActions.length; idx += 1) {
+    const action = draftActions[idx] as any;
     const type = safeTrim(action?.type) as AutomationActionType;
     const condition = safeTrim(action?.condition);
     const base = {
@@ -595,10 +623,6 @@ function normalizeDraft(args: {
     normalizedActions.push(base as AutomationAction);
   }
 
-  if (normalizedActions.length === 0) {
-    issues.push({ level: "error", path: "actions", message: "At least one action is required." });
-  }
-
   if (issues.some((i) => i.level === "error")) {
     return { normalized: null, issues, ambiguities, resolutions };
   }
@@ -606,10 +630,82 @@ function normalizeDraft(args: {
   const normalized: AutomationRuleDraftNormalized = {
     ...(args.draft.id ? { id: safeTrim(args.draft.id) } : {}),
     name,
+    description: safeTrim(args.draft.description),
     enabled,
-    trigger,
-    actions: normalizedActions
+    mode: args.draft.mode === "fix" || args.draft.mode === "monitor" ? args.draft.mode : "review",
+    triggers,
+    trigger: triggers[0],
+    executor:
+      args.draft.executor?.mode === "employee" ||
+      args.draft.executor?.mode === "cto-route" ||
+      args.draft.executor?.mode === "night-shift"
+        ? { mode: args.draft.executor.mode, ...(args.draft.executor.targetId ? { targetId: safeTrim(args.draft.executor.targetId) } : {}) }
+        : { mode: "automation-bot" },
+    ...(safeTrim(args.draft.templateId) ? { templateId: safeTrim(args.draft.templateId) } : {}),
+    ...(safeTrim(args.draft.prompt) ? { prompt: safeTrim(args.draft.prompt) } : {}),
+    reviewProfile:
+      args.draft.reviewProfile === "incremental" ||
+      args.draft.reviewProfile === "full" ||
+      args.draft.reviewProfile === "security" ||
+      args.draft.reviewProfile === "release-risk" ||
+      args.draft.reviewProfile === "cross-repo-contract"
+        ? args.draft.reviewProfile
+        : "quick",
+    toolPalette: Array.isArray(args.draft.toolPalette) && args.draft.toolPalette.length
+      ? [...new Set(args.draft.toolPalette)]
+      : ["repo", "memory", "mission"],
+    contextSources: Array.isArray(args.draft.contextSources) && args.draft.contextSources.length
+      ? args.draft.contextSources.map((source) => ({
+          type: source.type,
+          ...(safeTrim(source.path) ? { path: safeTrim(source.path) } : {}),
+          ...(safeTrim(source.repoId) ? { repoId: safeTrim(source.repoId) } : {}),
+          ...(safeTrim(source.label) ? { label: safeTrim(source.label) } : {}),
+          ...(typeof source.required === "boolean" ? { required: source.required } : {}),
+        }))
+      : [{ type: "project-memory" }, { type: "procedures" }],
+    memory: args.draft.memory?.mode
+      ? {
+          mode: args.draft.memory.mode,
+          ...(safeTrim(args.draft.memory.ruleScopeKey) ? { ruleScopeKey: safeTrim(args.draft.memory.ruleScopeKey) } : {}),
+        }
+      : { mode: "automation-plus-project", ruleScopeKey: safeTrim(args.draft.id) || slugify(name) },
+    guardrails: {
+      ...(typeof args.draft.guardrails?.budgetUsd === "number" ? { budgetUsd: args.draft.guardrails.budgetUsd } : {}),
+      ...(typeof args.draft.guardrails?.maxDurationMin === "number" ? { maxDurationMin: args.draft.guardrails.maxDurationMin } : {}),
+      ...(typeof args.draft.guardrails?.confidenceThreshold === "number" ? { confidenceThreshold: args.draft.guardrails.confidenceThreshold } : {}),
+      ...(typeof args.draft.guardrails?.maxFindings === "number" ? { maxFindings: Math.floor(args.draft.guardrails.maxFindings) } : {}),
+      ...(typeof args.draft.guardrails?.reserveBudget === "boolean" ? { reserveBudget: args.draft.guardrails.reserveBudget } : {}),
+      ...(args.draft.guardrails?.activeHours ? { activeHours: args.draft.guardrails.activeHours } : {}),
+    },
+    outputs: {
+      disposition: args.draft.outputs?.disposition ?? "comment-only",
+      ...(typeof args.draft.outputs?.createArtifact === "boolean" ? { createArtifact: args.draft.outputs.createArtifact } : { createArtifact: true }),
+      ...(safeTrim(args.draft.outputs?.notificationChannel) ? { notificationChannel: safeTrim(args.draft.outputs?.notificationChannel) } : {}),
+    },
+    verification: {
+      verifyBeforePublish: Boolean(args.draft.verification?.verifyBeforePublish),
+      mode: args.draft.verification?.mode === "dry-run" ? "dry-run" : "intervention",
+    },
+    billingCode: safeTrim(args.draft.billingCode) || `auto:${slugify(name)}`,
+    ...(args.draft.queueStatus ? { queueStatus: args.draft.queueStatus } : {}),
+    ...(normalizedActions.length > 0
+      ? {
+          actions: normalizedActions,
+          legacy: {
+            trigger: triggers[0],
+            actions: normalizedActions,
+          }
+        }
+      : {}),
   };
+
+  if (!normalized.prompt && normalizedActions.length === 0) {
+    issues.push({
+      level: "warning",
+      path: "prompt",
+      message: "No custom prompt or legacy actions provided. The default mode prompt will be used."
+    });
+  }
 
   return { normalized, issues, ambiguities, resolutions };
 }
@@ -621,7 +717,7 @@ function requiredConfirmationsForDraft(draft: AutomationRuleDraftNormalized): Au
   // these prompts; the confirmations will be required once the rule is enabled.
   if (!draft.enabled) return reqs;
 
-  const runCommands = draft.actions.filter((a) => a.type === "run-command");
+  const runCommands = (draft.legacy?.actions ?? []).filter((a) => a.type === "run-command");
   if (runCommands.length > 0) {
     reqs.push({
       key: "confirm.run-command",
@@ -653,12 +749,42 @@ function requiredConfirmationsForDraft(draft: AutomationRuleDraftNormalized): Au
     }
   }
 
+  if (draft.verification.verifyBeforePublish) {
+    reqs.push({
+      key: "confirm.verify-before-publish",
+      severity: "warning",
+      title: "Verification gate enabled",
+      message: "This automation will stop for intervention before publishing external side effects."
+    });
+  }
+
   return reqs;
 }
 
 function missingConfirmations(required: AutomationDraftConfirmationRequirement[], provided: string[] | undefined): AutomationDraftConfirmationRequirement[] {
   const set = new Set((provided ?? []).map((k) => k.trim()).filter(Boolean));
   return required.filter((r) => !set.has(r.key));
+}
+
+function createEmptyDraft(): AutomationRuleDraft {
+  return {
+    name: "New automation",
+    enabled: true,
+    mode: "review",
+    triggers: [{ type: "manual" }],
+    trigger: { type: "manual" },
+    executor: { mode: "automation-bot" },
+    reviewProfile: "quick",
+    toolPalette: ["repo", "memory", "mission"],
+    contextSources: [{ type: "project-memory" }, { type: "procedures" }],
+    memory: { mode: "automation-plus-project" },
+    guardrails: {},
+    outputs: { disposition: "comment-only", createArtifact: true },
+    verification: { verifyBeforePublish: false, mode: "intervention" },
+    billingCode: "auto:new-automation",
+    actions: [],
+    legacyActions: [],
+  };
 }
 
 export function createAutomationPlannerService({
@@ -688,7 +814,7 @@ export function createAutomationPlannerService({
       const issues: AutomationDraftIssue[] = [];
       if (!intent) {
         return {
-          draft: { name: "New automation", enabled: true, trigger: { type: "manual" }, actions: [] as any },
+          draft: createEmptyDraft(),
           normalized: null,
           confidence: 0,
           ambiguities: [],
@@ -740,7 +866,7 @@ export function createAutomationPlannerService({
         const message = err instanceof Error ? err.message : String(err);
         logger.warn("automations.planner.parse_failed", { err: message });
         return {
-          draft: { name: "New automation", enabled: true, trigger: { type: "manual" }, actions: [] as any },
+          draft: createEmptyDraft(),
           normalized: null,
           confidence: 0,
           ambiguities: [],
@@ -756,7 +882,7 @@ export function createAutomationPlannerService({
       } catch {
         issues.push({ level: "error", path: "planner.output", message: "Planner did not return valid JSON." });
         return {
-          draft: { name: "New automation", enabled: true, trigger: { type: "manual" }, actions: [] as any },
+          draft: createEmptyDraft(),
           normalized: null,
           confidence: 0,
           ambiguities: [],
@@ -767,19 +893,28 @@ export function createAutomationPlannerService({
       }
 
       const draft: AutomationRuleDraft = {
+        ...createEmptyDraft(),
         name: safeTrim(parsed?.name) || "New automation",
         enabled: typeof parsed?.enabled === "boolean" ? parsed.enabled : true,
-        trigger: {
-          type: safeTrim(parsed?.trigger?.type) as any,
+        mode: safeTrim(parsed?.mode) === "fix" || safeTrim(parsed?.mode) === "monitor" ? safeTrim(parsed.mode) as any : "review",
+        triggers: [{
+          type: safeTrim(parsed?.trigger?.type) as any || "manual",
           ...(safeTrim(parsed?.trigger?.cron) ? { cron: safeTrim(parsed.trigger.cron) } : {}),
-          ...(safeTrim(parsed?.trigger?.branch) ? { branch: safeTrim(parsed.trigger.branch) } : {})
+          ...(safeTrim(parsed?.trigger?.branch) ? { branch: safeTrim(parsed.trigger.branch) } : {}),
+        }],
+        trigger: {
+          type: safeTrim(parsed?.trigger?.type) as any || "manual",
+          ...(safeTrim(parsed?.trigger?.cron) ? { cron: safeTrim(parsed.trigger.cron) } : {}),
+          ...(safeTrim(parsed?.trigger?.branch) ? { branch: safeTrim(parsed.trigger.branch) } : {}),
         },
-        actions: Array.isArray(parsed?.actions) ? (parsed.actions as any) : []
+        ...(safeTrim(parsed?.prompt) ? { prompt: safeTrim(parsed.prompt) } : {}),
+        ...(safeTrim(parsed?.templateId) ? { templateId: safeTrim(parsed.templateId) } : {}),
+        ...(safeTrim(parsed?.reviewProfile) ? { reviewProfile: safeTrim(parsed.reviewProfile) as any } : {}),
       };
 
       // Basic guardrails for action shapes coming from the planner.
       // Treat as untrusted JSON and coerce into our draft-action union.
-      draft.actions = (draft.actions as any[])
+      draft.actions = (Array.isArray(parsed?.actions) ? parsed.actions : [])
         .filter((a: any) => a && typeof a === "object" && typeof a.type === "string")
         .map((a: any) => {
           const type = safeTrim(a.type) as AutomationActionType;
@@ -813,6 +948,7 @@ export function createAutomationPlannerService({
             ...(a.retry != null ? { retry: Number(a.retry) } : {})
           };
         }) as any;
+      draft.legacyActions = draft.actions;
 
       const normalizedRes = normalizeDraft({ draft, suites, projectRoot });
       const confidence = clampNumber(1 - normalizedRes.ambiguities.length * 0.18 - normalizedRes.issues.filter((i) => i.level === "warning").length * 0.08, 0, 1);
@@ -876,9 +1012,22 @@ export function createAutomationPlannerService({
       const nextRule = {
         id,
         name: normalized.name,
+        ...(safeTrim(normalized.description) ? { description: safeTrim(normalized.description) } : {}),
         enabled: normalized.enabled,
-        trigger: normalized.trigger,
-        actions: normalized.actions
+        mode: normalized.mode,
+        triggers: normalized.triggers,
+        executor: normalized.executor,
+        ...(safeTrim(normalized.templateId) ? { templateId: safeTrim(normalized.templateId) } : {}),
+        ...(safeTrim(normalized.prompt) ? { prompt: safeTrim(normalized.prompt) } : {}),
+        reviewProfile: normalized.reviewProfile,
+        toolPalette: normalized.toolPalette,
+        contextSources: normalized.contextSources,
+        memory: normalized.memory,
+        guardrails: normalized.guardrails,
+        outputs: normalized.outputs,
+        verification: normalized.verification,
+        billingCode: normalized.billingCode,
+        ...(normalized.queueStatus ? { queueStatus: normalized.queueStatus } : {})
       };
       if (idx >= 0) rules[idx] = nextRule;
       else rules.push(nextRule);
@@ -905,7 +1054,7 @@ export function createAutomationPlannerService({
         return { normalized: null, actions: [], notes: [], issues };
       }
 
-      const actions: AutomationSimulationAction[] = normalized.actions.map((action, index): AutomationSimulationAction => {
+      const actions: AutomationSimulationAction[] = (normalized.legacy?.actions ?? []).map((action, index): AutomationSimulationAction => {
         const warnings: string[] = [];
         if (action.type === "run-command") {
           warnings.push("Shell command execution is potentially dangerous. Review command and cwd.");
@@ -937,13 +1086,32 @@ export function createAutomationPlannerService({
         return { index, type: action.type, summary: action.type, warnings };
       });
 
+      actions.unshift({
+        index: -1,
+        type: "mission-dispatch",
+        summary: `Dispatch ${normalized.mode} mission as ${normalized.executor.mode}`,
+        warnings: normalized.verification.verifyBeforePublish ? ["External publish actions will require intervention approval."] : [],
+      });
+      actions.push({
+        index: actions.length,
+        type: normalized.outputs.disposition === "queue-overnight" ? "queue-result" : "review-summary",
+        summary:
+          normalized.outputs.disposition === "queue-overnight"
+            ? "Queue result for Night Shift review"
+            : `Produce ${normalized.outputs.disposition} output`,
+        warnings: [],
+      });
+
       const notes: string[] = [];
-      if (normalized.trigger.type === "schedule") {
-        notes.push(`Schedule: ${normalized.trigger.cron ?? ""}`);
+      const firstTrigger = normalized.triggers[0];
+      if (firstTrigger?.type === "schedule") {
+        notes.push(`Schedule: ${firstTrigger.cron ?? ""}`);
       }
-      if (normalized.trigger.type === "commit" && normalized.trigger.branch) {
-        notes.push(`Branch filter: ${normalized.trigger.branch}`);
+      if (firstTrigger?.type === "commit" && firstTrigger.branch) {
+        notes.push(`Branch filter: ${firstTrigger.branch}`);
       }
+      notes.push(`Tool palette: ${normalized.toolPalette.join(", ")}`);
+      notes.push(`Context sources: ${normalized.contextSources.map((source) => source.type).join(", ")}`);
 
       return { normalized, actions, notes, issues };
     }

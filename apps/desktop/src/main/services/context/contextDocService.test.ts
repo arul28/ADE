@@ -55,7 +55,20 @@ function createLogger() {
   } as const;
 }
 
-async function createFixture() {
+function createMockProjectConfigService(overrides?: { contextRefreshEvents?: Record<string, boolean> }) {
+  return {
+    get: () => ({
+      shared: { contextRefreshEvents: overrides?.contextRefreshEvents ?? undefined },
+      local: {},
+      effective: {},
+      validation: { ok: true, issues: [] },
+      trust: { sharedHash: "", localHash: "", approvedSharedHash: null, requiresSharedTrust: false },
+      paths: { sharedPath: "", localPath: "" },
+    }),
+  } as any;
+}
+
+async function createFixture(opts?: { contextRefreshEvents?: Record<string, boolean> }) {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-context-doc-service-"));
   const packsDir = path.join(projectRoot, ".ade", "packs");
   fs.mkdirSync(packsDir, { recursive: true });
@@ -68,7 +81,7 @@ async function createFixture() {
     projectId: "project-1",
     packsDir,
     laneService: {} as any,
-    projectConfigService: {} as any,
+    projectConfigService: createMockProjectConfigService(opts),
   });
 
   return { db, projectRoot, service };
@@ -86,14 +99,14 @@ describe("contextDocService", () => {
     vi.useRealTimers();
   });
 
-  it("reuses persisted doc generation preferences for matching auto-refresh cadences", async () => {
+  it("reuses persisted doc generation preferences for matching auto-refresh events", async () => {
     const { db, service } = await createFixture();
 
     await service.generateDocs({
       provider: "codex",
       modelId: "gpt-5",
       reasoningEffort: "medium",
-      trigger: "per_pr",
+      events: { onPrCreate: true },
     });
 
     expect(runContextDocGeneration).toHaveBeenCalledTimes(1);
@@ -103,7 +116,7 @@ describe("contextDocService", () => {
     });
 
     const refreshed = await service.maybeAutoRefreshDocs({
-      trigger: "per_pr",
+      event: "pr_create",
       reason: "pr_closed",
     });
 
@@ -114,7 +127,7 @@ describe("contextDocService", () => {
         provider: "codex",
         modelId: "gpt-5",
         reasoningEffort: "medium",
-        trigger: "per_pr",
+        events: expect.objectContaining({ onPrCreate: true }),
       })
     );
   });
@@ -124,19 +137,82 @@ describe("contextDocService", () => {
 
     await service.generateDocs({
       provider: "claude",
-      trigger: "per_lane_refresh",
+      events: { onSessionEnd: true },
     });
     db.setJson("context:docs:lastRun.v1", {
       generatedAt: "2026-03-05T11:40:00.000Z",
     });
 
     const refreshed = await service.maybeAutoRefreshDocs({
-      trigger: "per_lane_refresh",
+      event: "session_end",
       reason: "lane_refresh",
     });
 
     expect(refreshed).toBeNull();
     expect(runContextDocGeneration).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips auto-refresh when event is not enabled", async () => {
+    const { service } = await createFixture();
+
+    await service.generateDocs({
+      provider: "unified",
+      events: { onPrCreate: true },
+    });
+
+    const refreshed = await service.maybeAutoRefreshDocs({
+      event: "commit",
+      reason: "test_commit",
+    });
+
+    expect(refreshed).toBeNull();
+    // Only the initial generateDocs call
+    expect(runContextDocGeneration).toHaveBeenCalledTimes(1);
+  });
+
+  it("backward compat: old trigger cadence maps to event flags", async () => {
+    const { db, service } = await createFixture();
+
+    // Simulate old-style prefs with cadence but no events
+    await service.generateDocs({
+      provider: "codex",
+      modelId: "gpt-5",
+      trigger: "per_mission",
+    });
+
+    db.setJson("context:docs:lastRun.v1", {
+      generatedAt: "2026-03-05T11:30:00.000Z",
+    });
+
+    const refreshed = await service.maybeAutoRefreshDocs({
+      event: "mission_start",
+      reason: "mission_launch",
+    });
+
+    expect(refreshed?.provider).toBe("codex");
+  });
+
+  it("uses project config contextRefreshEvents when available", async () => {
+    const { db, service } = await createFixture({
+      contextRefreshEvents: { onCommit: true },
+    });
+
+    await service.generateDocs({
+      provider: "unified",
+      events: { onPrCreate: true },
+    });
+
+    db.setJson("context:docs:lastRun.v1", {
+      generatedAt: "2026-03-05T11:30:00.000Z",
+    });
+
+    // commit event is enabled via project config, not stored prefs
+    const refreshed = await service.maybeAutoRefreshDocs({
+      event: "commit",
+      reason: "config_override",
+    });
+
+    expect(refreshed?.provider).toBe("unified");
   });
 
   it("resolves canonical doc paths through the extracted service", async () => {

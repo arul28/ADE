@@ -27,6 +27,42 @@ export function RunDetailPanel({
       <div className="font-mono text-[9px] text-[#71717A]">
         run: <span className="text-[#A1A1AA]">{detail.run.id}</span>
       </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="p-3" style={{ background: "#181423", border: "1px solid #2D2840" }}>
+          <div className="font-mono text-[9px] text-[#71717A]">status</div>
+          <div className="mt-1 flex items-center gap-2">
+            <Chip className={cn("text-[9px]", statusTone(detail.run.status))}>{detail.run.status}</Chip>
+            <Chip className="text-[9px]">{detail.run.queueStatus}</Chip>
+          </div>
+          {detail.run.summary ? <div className="mt-2 text-xs text-[#D4D4D8]">{detail.run.summary}</div> : null}
+          {detail.run.confidence ? (
+            <div className="mt-2 font-mono text-[9px] text-[#8B8B9A]">
+              confidence {detail.run.confidence.label} ({Math.round(detail.run.confidence.value * 100)}%)
+            </div>
+          ) : null}
+        </div>
+        <div className="p-3" style={{ background: "#181423", border: "1px solid #2D2840" }}>
+          <div className="font-mono text-[9px] text-[#71717A]">mission</div>
+          <div className="mt-1 text-xs text-[#FAFAFA]">{detail.run.missionId ?? "legacy/none"}</div>
+          {detail.run.verificationRequired ? (
+            <div className="mt-2 text-[10px] text-[#F59E0B]">verification required before publish</div>
+          ) : null}
+          {detail.queueItem ? (
+            <div className="mt-2 text-[10px] text-[#8B8B9A]">queue item: {detail.queueItem.title}</div>
+          ) : null}
+        </div>
+      </div>
+
+      {detail.procedureFeedback.length ? (
+        <div className="p-3 space-y-2" style={{ background: "#181423", border: "1px solid #2D2840" }}>
+          <div className="font-mono text-[9px] text-[#71717A]">procedure feedback</div>
+          {detail.procedureFeedback.map((feedback) => (
+            <div key={`${feedback.procedureId}-${feedback.outcome}`} className="text-xs text-[#D4D4D8]">
+              {feedback.procedureId}: {feedback.outcome} · {feedback.reason}
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       {detail.actions.map((action) => (
         <div

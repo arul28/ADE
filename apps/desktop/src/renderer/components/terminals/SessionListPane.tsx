@@ -20,7 +20,7 @@ const ENTRY_OPTIONS: Array<{
   color: string;
 }> = [
   { kind: "chat", label: "New Chat", icon: ChatCircleText, color: "#8B5CF6" },
-  { kind: "cli", label: "New CLI", icon: Command, color: "#F97316" },
+  { kind: "cli", label: "CLI Tool", icon: Command, color: "#F97316" },
   { kind: "shell", label: "New Shell", icon: Terminal, color: "#22C55E" },
 ];
 

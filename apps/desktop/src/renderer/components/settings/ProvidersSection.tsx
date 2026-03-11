@@ -28,13 +28,12 @@ import {
 import { deriveConfiguredModelOptions, includeSelectedModelOption } from "../../lib/modelOptions";
 import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 
-type CliName = "claude" | "codex" | "gemini";
+type CliName = "claude" | "codex";
 type ApiKeySource = "config" | "env" | "store";
 
 const CLI_TOOLS: Array<{ cli: CliName; label: string; description: string; loginCmd: string; installHint: string }> = [
   { cli: "claude", label: "Claude Code", description: "Anthropic CLI subscription", loginCmd: "claude auth login", installHint: "npm install -g @anthropic-ai/claude-code" },
   { cli: "codex", label: "Codex", description: "OpenAI Codex subscription", loginCmd: "codex login", installHint: "npm install -g @openai/codex" },
-  { cli: "gemini", label: "Gemini CLI", description: "Google Gemini CLI subscription", loginCmd: "gemini auth login", installHint: "npm install -g @anthropic-ai/gemini-cli" },
 ];
 
 const API_KEY_PROVIDERS: Array<{
@@ -108,25 +107,7 @@ function getStatusTone(args: { connected: boolean; warning?: boolean }): { color
 
 function CliLogo({ cli }: { cli: CliName }) {
   if (cli === "claude") return <ClaudeLogo size={24} />;
-  if (cli === "codex") return <CodexLogo size={24} className="text-zinc-100" />;
-  return (
-    <div
-      style={{
-        width: 24,
-        height: 24,
-        display: "grid",
-        placeItems: "center",
-        fontSize: 10,
-        fontWeight: 700,
-        fontFamily: MONO_FONT,
-        color: COLORS.textPrimary,
-        background: COLORS.recessedBg,
-        border: `1px solid ${COLORS.outlineBorder}`,
-      }}
-    >
-      G
-    </div>
-  );
+  return <CodexLogo size={24} className="text-zinc-100" />;
 }
 
 function SourceBadge({ source }: { source: ApiKeySource }) {
@@ -218,9 +199,8 @@ export function ProvidersSection() {
     cliSandboxPermissions: "workspace-write" as string,
     inProcessMode: "full-auto" as string,
   });
-  const [summaryModel, setSummaryModel] = useState("anthropic/claude-haiku-4-5");
+  const [utilityModel, setUtilityModel] = useState("anthropic/claude-haiku-4-5");
   const [chatAutoTitleEnabled, setChatAutoTitleEnabled] = useState(false);
-  const [chatAutoTitleModel, setChatAutoTitleModel] = useState("");
   const [chatAutoTitleRefresh, setChatAutoTitleRefresh] = useState(true);
 
   const refreshStatus = useCallback(async () => {
@@ -239,9 +219,12 @@ export function ProvidersSection() {
 
       const effectiveAiRaw = snapshot.effective?.ai;
       const effectiveAiConfig = effectiveAiRaw && typeof effectiveAiRaw === "object" ? (effectiveAiRaw as AiConfig) : null;
-      setSummaryModel(normalizeModelSetting(effectiveAiConfig?.featureModelOverrides?.terminal_summaries) || "anthropic/claude-haiku-4-5");
+      setUtilityModel(
+        normalizeModelSetting(effectiveAiConfig?.featureModelOverrides?.terminal_summaries)
+        || normalizeModelSetting(effectiveAiConfig?.chat?.autoTitleModelId)
+        || "anthropic/claude-haiku-4-5",
+      );
       setChatAutoTitleEnabled(effectiveAiConfig?.chat?.autoTitleEnabled === true);
-      setChatAutoTitleModel(normalizeModelSetting(effectiveAiConfig?.chat?.autoTitleModelId));
       setChatAutoTitleRefresh(effectiveAiConfig?.chat?.autoTitleRefreshOnComplete !== false);
 
       const effectiveAi = isRecord(snapshot.effective.ai) ? snapshot.effective.ai : {};
@@ -274,20 +257,16 @@ export function ProvidersSection() {
     () => deriveConfiguredModelOptions(status),
     [status],
   );
-  const summaryModelOptions = useMemo(
-    () => includeSelectedModelOption(configuredModelOptions, summaryModel),
-    [configuredModelOptions, summaryModel],
-  );
-  const autoTitleModelOptions = useMemo(
-    () => includeSelectedModelOption(configuredModelOptions, chatAutoTitleModel),
-    [configuredModelOptions, chatAutoTitleModel],
+  const utilityModelOptions = useMemo(
+    () => includeSelectedModelOption(configuredModelOptions, utilityModel),
+    [configuredModelOptions, utilityModel],
   );
 
   const saveChatTitleSettings = useCallback(async (patch: Partial<NonNullable<AiConfig["chat"]>>) => {
     const nextModelId =
       patch.autoTitleModelId !== undefined
         ? patch.autoTitleModelId
-        : chatAutoTitleModel || autoTitleModelOptions[0]?.id || "";
+        : utilityModel || utilityModelOptions[0]?.id || "";
     const nextEnabled =
       patch.autoTitleEnabled !== undefined ? patch.autoTitleEnabled : chatAutoTitleEnabled;
     const nextRefresh =
@@ -306,9 +285,8 @@ export function ProvidersSection() {
     });
 
     setChatAutoTitleEnabled(nextEnabled);
-    setChatAutoTitleModel(nextModelId || "");
     setChatAutoTitleRefresh(nextRefresh);
-  }, [autoTitleModelOptions, chatAutoTitleEnabled, chatAutoTitleModel, chatAutoTitleRefresh]);
+  }, [utilityModelOptions, chatAutoTitleEnabled, utilityModel, chatAutoTitleRefresh]);
 
   const cliAuthMap = useMemo(() => {
     const map = new Map<CliName, AiDetectedAuth>();
@@ -517,11 +495,11 @@ export function ProvidersSection() {
             const tone = getStatusTone({ connected, warning });
             const verificationText = connected
               ? "Connection verified."
-              : auth?.verified === false
-                ? `CLI detected but could not verify auth. Try: ${tool.loginCmd}`
-                : warning
-                  ? `CLI detected but not signed in. Run: ${tool.loginCmd}`
-                  : `CLI not found. Install: ${tool.installHint}`;
+              : warning && auth?.verified
+                ? `CLI detected but not signed in. Run: ${tool.loginCmd}`
+                : warning && auth?.verified === false
+                  ? `CLI found at ${auth?.path ?? tool.cli} but auth check was inconclusive. If you can use ${tool.cli} from the terminal, this connection should work. Try running: ${tool.loginCmd}`
+                  : `CLI not found in PATH. Install: ${tool.installHint}. If already installed, ensure it's in your shell PATH and restart ADE.`;
 
             return (
               <div
@@ -793,7 +771,8 @@ export function ProvidersSection() {
             lineHeight: 1.5,
           }}
         >
-          These settings control unattended behavior by execution class: CLI workers and in-process workers.
+          Controls how automated background workers execute tasks. CLI workers run via Claude Code or Codex CLI processes.
+          In-process workers use ADE's built-in runtime. These permissions apply to unattended/automated operations, not interactive CLI sessions.
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
           <div
@@ -879,46 +858,46 @@ export function ProvidersSection() {
         </div>
       </section>
 
-      {/* ── Session Summaries ── */}
+      {/* ── AI Utilities ── */}
       <section style={{ marginTop: 24 }}>
-        <div style={{ ...LABEL_STYLE, fontSize: 11, marginBottom: 6 }}>SESSION SUMMARIES</div>
+        <div style={{ ...LABEL_STYLE, fontSize: 11, marginBottom: 6 }}>AI UTILITIES</div>
         <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: MONO_FONT, marginBottom: 10 }}>
-          Model used when summarizing terminal sessions on close.
-        </div>
-        <SelectField
-          label="MODEL"
-          value={summaryModel}
-          onChange={(value) => {
-            setSummaryModel(value);
-            void window.ade.ai.updateConfig({
-              featureModelOverrides: { terminal_summaries: value } as AiConfig["featureModelOverrides"],
-            });
-          }}
-          options={
-            summaryModelOptions.length > 0
-              ? summaryModelOptions.map((m) => ({ value: m.id, label: m.label }))
-              : [
-                  { value: "haiku", label: "Haiku" },
-                  { value: "sonnet", label: "Sonnet" },
-                  { value: "opus", label: "Opus" },
-                ]
-          }
-        />
-      </section>
-
-      <section style={{ marginTop: 24 }}>
-        <div style={{ ...LABEL_STYLE, fontSize: 11, marginBottom: 6 }}>CHAT TITLES</div>
-        <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: MONO_FONT, marginBottom: 10 }}>
-          Generate concise names for chat tabs after the first prompt, then refresh them when a session closes.
+          Choose the model used for lightweight AI tasks — session summaries, auto-naming chat tabs, and generating short metadata.
+          A fast, inexpensive model (e.g. Haiku) is recommended.
         </div>
         <div style={cardStyle({ padding: 16, display: "grid", gap: 14 })}>
+          <SelectField
+            label="UTILITY MODEL"
+            value={utilityModel}
+            onChange={(value) => {
+              setUtilityModel(value);
+              void window.ade.ai.updateConfig({
+                featureModelOverrides: { terminal_summaries: value } as AiConfig["featureModelOverrides"],
+                chat: {
+                  autoTitleEnabled: chatAutoTitleEnabled,
+                  autoTitleModelId: value || undefined,
+                  autoTitleRefreshOnComplete: chatAutoTitleRefresh,
+                } as AiConfig["chat"],
+              });
+            }}
+            options={
+              utilityModelOptions.length > 0
+                ? utilityModelOptions.map((m) => ({ value: m.id, label: m.label }))
+                : [
+                    { value: "haiku", label: "Haiku" },
+                    { value: "sonnet", label: "Sonnet" },
+                    { value: "opus", label: "Opus" },
+                  ]
+            }
+          />
+
           <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
             <input
               type="checkbox"
               checked={chatAutoTitleEnabled}
               onChange={(event) => {
                 const nextEnabled = event.target.checked;
-                const fallbackModelId = chatAutoTitleModel || autoTitleModelOptions[0]?.id || "";
+                const fallbackModelId = utilityModel || utilityModelOptions[0]?.id || "";
                 void saveChatTitleSettings({
                   autoTitleEnabled: nextEnabled,
                   autoTitleModelId: fallbackModelId || undefined,
@@ -930,49 +909,25 @@ export function ProvidersSection() {
             </span>
           </label>
 
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr",
-              gap: 12,
-              opacity: chatAutoTitleEnabled ? 1 : 0.55,
-              pointerEvents: chatAutoTitleEnabled ? "auto" : "none",
-            }}
-          >
-            <SelectField
-              label="MODEL"
-              value={chatAutoTitleModel || autoTitleModelOptions[0]?.id || ""}
-              onChange={(value) => {
-                void saveChatTitleSettings({ autoTitleModelId: value });
+          <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={chatAutoTitleRefresh}
+              onChange={(event) => {
+                void saveChatTitleSettings({
+                  autoTitleRefreshOnComplete: event.target.checked,
+                });
               }}
-              options={
-                autoTitleModelOptions.length > 0
-                  ? autoTitleModelOptions.map((m) => ({ value: m.id, label: m.label }))
-                  : [{ value: "", label: "No configured model available" }]
-              }
-              disabled={autoTitleModelOptions.length === 0}
             />
-
-            <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
-              <input
-                type="checkbox"
-                checked={chatAutoTitleRefresh}
-                onChange={(event) => {
-                  void saveChatTitleSettings({
-                    autoTitleRefreshOnComplete: event.target.checked,
-                  });
-                }}
-              />
-              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary, fontWeight: 600 }}>
-                  Refresh title when session closes
-                </span>
-                <span style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                  Helpful when the work shifts after the initial prompt.
-                </span>
-              </div>
-            </label>
-          </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary, fontWeight: 600 }}>
+                Refresh title when session closes
+              </span>
+              <span style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                Helpful when the work shifts after the initial prompt.
+              </span>
+            </div>
+          </label>
         </div>
       </section>
     </div>

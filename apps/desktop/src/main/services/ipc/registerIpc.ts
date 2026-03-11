@@ -14,9 +14,14 @@ import type {
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
   ArchiveLaneArgs,
+  AutomationManualTriggerRequest,
+  AutomationQueueActionRequest,
+  AutomationQueueItem,
+  AutomationQueueListArgs,
   AutomationRuleSummary,
   AutomationRun,
   AutomationRunDetail,
+  AutomationRunListArgs,
   AutomationParseNaturalLanguageRequest,
   AutomationParseNaturalLanguageResult,
   AutomationValidateDraftRequest,
@@ -25,6 +30,9 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  NightShiftBriefing,
+  NightShiftState,
+  UpdateNightShiftSettingsRequest,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   ConflictProposal,
@@ -404,7 +412,7 @@ import type { createOAuthRedirectService } from "../lanes/oauthRedirectService";
 import type { createRuntimeDiagnosticsService } from "../lanes/runtimeDiagnosticsService";
 import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
 import type { createAutoRebaseService } from "../lanes/autoRebaseService";
-import type { ContextDocService } from "../context/contextDocService";
+import type { ContextDocService, ContextRefreshEventName } from "../context/contextDocService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { SessionDeltaService } from "../sessions/sessionDeltaService";
 import type { createPtyService } from "../pty/ptyService";
@@ -443,6 +451,12 @@ import { readCoordinatorCheckpoint } from "../orchestrator/missionStateDoc";
 import type { createMemoryService } from "../memory/memoryService";
 import type { createBatchConsolidationService } from "../memory/batchConsolidationService";
 import type { createMemoryLifecycleService } from "../memory/memoryLifecycleService";
+import type { createMemoryBriefingService } from "../memory/memoryBriefingService";
+import type { createMissionMemoryLifecycleService } from "../memory/missionMemoryLifecycleService";
+import type { createEpisodicSummaryService } from "../memory/episodicSummaryService";
+import type { createHumanWorkDigestService } from "../memory/humanWorkDigestService";
+import type { createProceduralLearningService } from "../memory/proceduralLearningService";
+import type { createSkillRegistryService } from "../memory/skillRegistryService";
 import type { createEmbeddingService } from "../memory/embeddingService";
 import type { createEmbeddingWorkerService } from "../memory/embeddingWorkerService";
 import type { createCtoStateService } from "../cto/ctoStateService";
@@ -513,6 +527,12 @@ export type AppContext = {
   memoryService?: ReturnType<typeof createMemoryService> | null;
   batchConsolidationService?: ReturnType<typeof createBatchConsolidationService> | null;
   memoryLifecycleService?: ReturnType<typeof createMemoryLifecycleService> | null;
+  memoryBriefingService?: ReturnType<typeof createMemoryBriefingService> | null;
+  missionMemoryLifecycleService?: ReturnType<typeof createMissionMemoryLifecycleService> | null;
+  episodicSummaryService?: ReturnType<typeof createEpisodicSummaryService> | null;
+  humanWorkDigestService?: ReturnType<typeof createHumanWorkDigestService> | null;
+  proceduralLearningService?: ReturnType<typeof createProceduralLearningService> | null;
+  skillRegistryService?: ReturnType<typeof createSkillRegistryService> | null;
   embeddingService?: ReturnType<typeof createEmbeddingService> | null;
   embeddingWorkerService?: ReturnType<typeof createEmbeddingWorkerService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
@@ -1107,17 +1127,17 @@ export function registerIpc({
 
   const triggerAutoContextDocs = (
     ctx: AppContext,
-    args: { trigger: "per_mission" | "per_pr" | "per_lane_refresh"; reason: string }
+    args: { event: ContextRefreshEventName; reason: string }
   ): void => {
     if (!ctx.contextDocService) return;
     void ctx.contextDocService
       .maybeAutoRefreshDocs({
-        trigger: args.trigger,
+        event: args.event,
         reason: args.reason
       })
       .catch((error: unknown) => {
         ctx.logger.debug("ipc.context_docs_auto_refresh_failed", {
-          trigger: args.trigger,
+          event: args.event,
           reason: args.reason,
           error: error instanceof Error ? error.message : String(error)
         });
@@ -1562,9 +1582,15 @@ export function registerIpc({
     return ctx.automationService.toggle({ id: arg?.id ?? "", enabled: Boolean(arg?.enabled) });
   });
 
-  ipcMain.handle(IPC.automationsTriggerManually, async (_event, arg: { id: string; laneId?: string | null }): Promise<AutomationRun> => {
+  ipcMain.handle(IPC.automationsTriggerManually, async (_event, arg: AutomationManualTriggerRequest): Promise<AutomationRun> => {
     const ctx = getCtx();
-    return await ctx.automationService.triggerManually({ id: arg?.id ?? "", laneId: arg?.laneId ?? null });
+    return await ctx.automationService.triggerManually({
+      id: arg?.id ?? "",
+      laneId: arg?.laneId ?? null,
+      reviewProfileOverride: arg?.reviewProfileOverride ?? null,
+      queueInstead: Boolean(arg?.queueInstead),
+      verboseTrace: Boolean(arg?.verboseTrace),
+    });
   });
 
   ipcMain.handle(IPC.automationsGetHistory, async (_event, arg: { id: string; limit?: number }): Promise<AutomationRun[]> => {
@@ -1572,9 +1598,44 @@ export function registerIpc({
     return ctx.automationService.getHistory({ id: arg?.id ?? "", limit: arg?.limit });
   });
 
+  ipcMain.handle(IPC.automationsListRuns, async (_event, arg: AutomationRunListArgs = {}): Promise<AutomationRun[]> => {
+    const ctx = getCtx();
+    return ctx.automationService.listRuns(arg);
+  });
+
   ipcMain.handle(IPC.automationsGetRunDetail, async (_event, arg: { runId: string }): Promise<AutomationRunDetail | null> => {
     const ctx = getCtx();
     return ctx.automationService.getRunDetail({ runId: arg?.runId ?? "" });
+  });
+
+  ipcMain.handle(IPC.automationsListQueueItems, async (_event, arg: AutomationQueueListArgs = {}): Promise<AutomationQueueItem[]> => {
+    const ctx = getCtx();
+    return ctx.automationService.listQueueItems(arg);
+  });
+
+  ipcMain.handle(IPC.automationsUpdateQueueItem, async (_event, arg: AutomationQueueActionRequest): Promise<AutomationQueueItem | null> => {
+    const ctx = getCtx();
+    return ctx.automationService.updateQueueItem(arg);
+  });
+
+  ipcMain.handle(IPC.automationsGetNightShiftState, async (): Promise<NightShiftState> => {
+    const ctx = getCtx();
+    return ctx.automationService.getNightShiftState();
+  });
+
+  ipcMain.handle(IPC.automationsUpdateNightShiftSettings, async (_event, arg: UpdateNightShiftSettingsRequest): Promise<NightShiftState> => {
+    const ctx = getCtx();
+    return ctx.automationService.updateNightShiftSettings(arg ?? {});
+  });
+
+  ipcMain.handle(IPC.automationsGetMorningBriefing, async (): Promise<NightShiftBriefing | null> => {
+    const ctx = getCtx();
+    return ctx.automationService.getMorningBriefing();
+  });
+
+  ipcMain.handle(IPC.automationsAcknowledgeMorningBriefing, async (_event, arg: { id: string }): Promise<NightShiftBriefing | null> => {
+    const ctx = getCtx();
+    return ctx.automationService.acknowledgeMorningBriefing({ id: arg?.id ?? "" });
   });
 
   ipcMain.handle(IPC.automationsParseNaturalLanguage, async (_event, arg: AutomationParseNaturalLanguageRequest): Promise<AutomationParseNaturalLanguageResult> => {
@@ -1749,7 +1810,7 @@ export function registerIpc({
       void (async () => {
         try {
           triggerAutoContextDocs(ctx, {
-            trigger: "per_mission",
+            event: "mission_start",
             reason: `missions_create_autostart:${created.id}`
           });
           const launch = await ctx.aiOrchestratorService.startMissionRun({
@@ -1879,7 +1940,7 @@ export function registerIpc({
     async (_event, arg: StartOrchestratorRunFromMissionArgs): Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }> => {
       const ctx = getCtx();
       triggerAutoContextDocs(ctx, {
-        trigger: "per_mission",
+        event: "mission_start",
         reason: `orchestrator_start_run_from_mission:${arg.missionId}`
       });
       const started = await ctx.aiOrchestratorService.startMissionRun({
@@ -2009,7 +2070,7 @@ export function registerIpc({
     async (_event, arg: StartMissionRunWithAIArgs): Promise<StartMissionRunWithAIResult> => {
       const ctx = getCtx();
       triggerAutoContextDocs(ctx, {
-        trigger: "per_mission",
+        event: "mission_start",
         reason: `orchestrator_start_mission_run:${arg.missionId}`
       });
       return ctx.aiOrchestratorService.startMissionRun(arg);
@@ -2370,6 +2431,10 @@ export function registerIpc({
     const ctx = getCtx();
     const lane = await ctx.laneService.create({ name: arg.name, description: arg.description, parentLaneId: arg.parentLaneId });
     await ensureLanePortLease(ctx, lane.id);
+    triggerAutoContextDocs(ctx, {
+      event: "lane_create",
+      reason: `lanes_create:${lane.id}`,
+    });
     return lane;
   });
 
@@ -2377,6 +2442,10 @@ export function registerIpc({
     const ctx = getCtx();
     const lane = await ctx.laneService.createChild(arg);
     await ensureLanePortLease(ctx, lane.id);
+    triggerAutoContextDocs(ctx, {
+      event: "lane_create",
+      reason: `lanes_create_child:${lane.id}`,
+    });
     return lane;
   });
 
@@ -3015,6 +3084,12 @@ export function registerIpc({
   ipcMain.handle(IPC.ptyDispose, async (_event, arg: { ptyId: string; sessionId?: string }): Promise<void> => {
     const ctx = getCtx();
     ctx.ptyService.dispose(arg);
+    if (arg.sessionId) {
+      triggerAutoContextDocs(ctx, {
+        event: "session_end",
+        reason: `pty_dispose:${arg.sessionId}`,
+      });
+    }
   });
 
   ipcMain.handle(IPC.diffGetChanges, async (_event, arg: GetDiffChangesArgs) => {
@@ -3418,7 +3493,7 @@ export function registerIpc({
     const ctx = getCtx();
     const created = await ctx.prService.createFromLane(arg);
     triggerAutoContextDocs(ctx, {
-      trigger: "per_pr",
+      event: "pr_create",
       reason: `prs_create_from_lane:${created.id}`
     });
     return created;
@@ -3428,7 +3503,7 @@ export function registerIpc({
     const ctx = getCtx();
     const linked = await ctx.prService.linkToLane(arg);
     triggerAutoContextDocs(ctx, {
-      trigger: "per_pr",
+      event: "pr_create",
       reason: `prs_link_to_lane:${linked.id}`
     });
     return linked;
@@ -3494,7 +3569,7 @@ export function registerIpc({
     const ctx = getCtx();
     await ctx.prService.updateDescription(arg);
     triggerAutoContextDocs(ctx, {
-      trigger: "per_pr",
+      event: "pr_create",
       reason: `prs_update_description:${arg.prId}`
     });
   });
@@ -3503,7 +3578,7 @@ export function registerIpc({
     const ctx = getCtx();
     const deleted = await ctx.prService.delete(arg);
     triggerAutoContextDocs(ctx, {
-      trigger: "per_pr",
+      event: "pr_create",
       reason: `prs_delete:${arg.prId}`
     });
     return deleted;
@@ -3518,7 +3593,7 @@ export function registerIpc({
     const ctx = getCtx();
     const landed = await ctx.prService.land(arg);
     triggerAutoContextDocs(ctx, {
-      trigger: "per_pr",
+      event: "pr_land",
       reason: `prs_land:${arg.prId}`
     });
     return landed;
@@ -3528,7 +3603,7 @@ export function registerIpc({
     const ctx = getCtx();
     const landed = await ctx.prService.landStack(arg);
     triggerAutoContextDocs(ctx, {
-      trigger: "per_pr",
+      event: "pr_land",
       reason: `prs_land_stack:${arg.rootLaneId}`
     });
     return landed;
@@ -3543,7 +3618,7 @@ export function registerIpc({
     const ctx = getCtx();
     const created = await ctx.prService.createIntegrationPr(arg);
     triggerAutoContextDocs(ctx, {
-      trigger: "per_pr",
+      event: "pr_create",
       reason: `prs_create_integration:${arg.integrationLaneName}:${arg.baseBranch}`
     });
     return created;
@@ -3553,7 +3628,7 @@ export function registerIpc({
     const ctx = getCtx();
     const landed = await ctx.prService.landStackEnhanced(arg);
     triggerAutoContextDocs(ctx, {
-      trigger: "per_pr",
+      event: "pr_land",
       reason: `prs_land_stack_enhanced:${arg.rootLaneId}`
     });
     return landed;
@@ -3569,7 +3644,7 @@ export function registerIpc({
     const ctx = getCtx();
     const created = await ctx.prService.createQueuePrs(arg);
     triggerAutoContextDocs(ctx, {
-      trigger: "per_pr",
+      event: "pr_create",
       reason: `prs_create_queue:${arg.targetBranch ?? "queue"}`
     });
     return created;
@@ -3581,7 +3656,7 @@ export function registerIpc({
     const ctx = getCtx();
     const committed = await ctx.prService.commitIntegration(arg);
     triggerAutoContextDocs(ctx, {
-      trigger: "per_pr",
+      event: "pr_create",
       reason: `prs_commit_integration:${arg.proposalId}:${arg.integrationLaneName}`
     });
     return committed;
@@ -3603,7 +3678,7 @@ export function registerIpc({
     const ctx = getCtx();
     const landed = await ctx.prService.landQueueNext(arg);
     triggerAutoContextDocs(ctx, {
-      trigger: "per_pr",
+      event: "pr_land",
       reason: `prs_land_queue_next:${arg.groupId}`
     });
     return landed;
@@ -3613,7 +3688,7 @@ export function registerIpc({
     const ctx = getCtx();
     const state = await ctx.queueLandingService.startQueue(arg);
     triggerAutoContextDocs(ctx, {
-      trigger: "per_pr",
+      event: "pr_create",
       reason: `prs_start_queue_automation:${arg.groupId}`,
     });
     return state;
@@ -3625,7 +3700,7 @@ export function registerIpc({
     const ctx = getCtx();
     const state = ctx.queueLandingService.resumeQueue(arg);
     triggerAutoContextDocs(ctx, {
-      trigger: "per_pr",
+      event: "pr_create",
       reason: `prs_resume_queue_automation:${arg.queueId}`,
     });
     return state;
@@ -3637,7 +3712,7 @@ export function registerIpc({
     const ctx = getCtx();
     const state = await ctx.queueRehearsalService.startQueueRehearsal(arg);
     triggerAutoContextDocs(ctx, {
-      trigger: "per_pr",
+      event: "pr_create",
       reason: `prs_start_queue_rehearsal:${arg.groupId}`,
     });
     return state;
@@ -4241,6 +4316,69 @@ export function registerIpc({
     ctx.memoryService.archiveMemory(arg.id);
   });
 
+  ipcMain.handle(IPC.memoryPromoteMissionEntry, async (_event, arg: { id: string; missionId: string; runId?: string | null }) => {
+    const ctx = getCtx();
+    if (!ctx.missionMemoryLifecycleService) return null;
+    return ctx.missionMemoryLifecycleService.promoteMissionMemoryEntry({
+      memoryId: arg.id,
+      missionId: arg.missionId,
+    });
+  });
+
+  ipcMain.handle(IPC.memoryListMissionEntries, async (_event, arg: { missionId: string; runId?: string | null; status?: "candidate" | "promoted" | "archived" | "all" }) => {
+    const ctx = getCtx();
+    if (!ctx.missionMemoryLifecycleService) return [];
+    return ctx.missionMemoryLifecycleService.listMissionEntries({
+      projectId: ctx.projectId,
+      missionId: arg.missionId,
+      runId: arg.runId,
+      status: arg.status ?? "all",
+    });
+  });
+
+  ipcMain.handle(IPC.memoryListProcedures, async (_event, arg: { status?: "candidate" | "promoted" | "archived" | "all"; scope?: "project" | "mission" | "agent"; query?: string } = {}) => {
+    const ctx = getCtx();
+    return ctx.proceduralLearningService?.listProcedures(arg) ?? [];
+  });
+
+  ipcMain.handle(IPC.memoryGetProcedureDetail, async (_event, arg: { id: string }) => {
+    const ctx = getCtx();
+    return ctx.proceduralLearningService?.getProcedureDetail(arg.id) ?? null;
+  });
+
+  ipcMain.handle(IPC.memoryExportProcedureSkill, async (_event, arg: { id: string; name?: string | null }) => {
+    const ctx = getCtx();
+    return ctx.skillRegistryService?.exportProcedureSkill(arg) ?? null;
+  });
+
+  ipcMain.handle(IPC.memoryListIndexedSkills, async () => {
+    const ctx = getCtx();
+    return ctx.skillRegistryService?.listIndexedSkills() ?? [];
+  });
+
+  ipcMain.handle(IPC.memoryReindexSkills, async (_event, arg: { paths?: string[] } = {}) => {
+    const ctx = getCtx();
+    return ctx.skillRegistryService?.reindexSkills(arg) ?? [];
+  });
+
+  ipcMain.handle(IPC.memorySyncKnowledge, async () => {
+    const ctx = getCtx();
+    return ctx.humanWorkDigestService?.syncKnowledge() ?? null;
+  });
+
+  ipcMain.handle(IPC.memoryGetKnowledgeSyncStatus, async () => {
+    const ctx = getCtx();
+    return ctx.humanWorkDigestService?.getKnowledgeSyncStatus() ?? {
+      syncing: false,
+      lastSeenHeadSha: null,
+      currentHeadSha: null,
+      diverged: false,
+      lastDigestAt: null,
+      lastDigestMemoryId: null,
+      lastError: null,
+    };
+  });
+
   ipcMain.handle(
     IPC.memorySearch,
     async (
@@ -4408,8 +4546,7 @@ export function registerIpc({
   ipcMain.handle(IPC.ctoUpdateIdentity, async (_event, arg: { patch: Record<string, unknown> }): Promise<CtoSnapshot> => {
     const ctx = getCtx();
     if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
-    // updateIdentity not yet implemented on ctoStateService — return current snapshot
-    return ctx.ctoStateService.getSnapshot(20);
+    return ctx.ctoStateService.updateIdentity(arg.patch ?? {});
   });
 
   // -- W3: Heartbeat & Activation --
@@ -4570,4 +4707,47 @@ export function registerIpc({
       return ctx.linearSyncService.resolveQueueItem(arg);
     }
   );
+
+  // -- W-UX: Onboarding & Identity --
+
+  ipcMain.handle(IPC.ctoGetOnboardingState, async () => {
+    const ctx = getCtx();
+    if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
+    return ctx.ctoStateService.getOnboardingState();
+  });
+
+  ipcMain.handle(IPC.ctoCompleteOnboardingStep, async (_event, arg: { stepId: string }) => {
+    const ctx = getCtx();
+    if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
+    return ctx.ctoStateService.completeOnboardingStep(arg.stepId);
+  });
+
+  ipcMain.handle(IPC.ctoDismissOnboarding, async () => {
+    const ctx = getCtx();
+    if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
+    return ctx.ctoStateService.dismissOnboarding();
+  });
+
+  ipcMain.handle(IPC.ctoResetOnboarding, async () => {
+    const ctx = getCtx();
+    if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
+    return ctx.ctoStateService.resetOnboarding();
+  });
+
+  ipcMain.handle(IPC.ctoPreviewSystemPrompt, async (_event, arg: { identityOverride?: Record<string, unknown> } = {}) => {
+    const ctx = getCtx();
+    if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
+    return ctx.ctoStateService.previewSystemPrompt(arg.identityOverride as never);
+  });
+
+  ipcMain.handle(IPC.ctoGetLinearProjects, async () => {
+    const ctx = getCtx();
+    if (!ctx.linearIssueTracker) throw new Error("Linear issue tracker is not available.");
+    try {
+      const projects = await ctx.linearIssueTracker.listProjects();
+      return projects;
+    } catch {
+      return [];
+    }
+  });
 }
