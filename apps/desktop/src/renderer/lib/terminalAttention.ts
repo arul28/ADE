@@ -33,6 +33,9 @@ const NEEDS_INPUT_PATTERNS: RegExp[] = [
   /\((?:y\/n|yes\/no)\)/i,
   /\[(?:y\/n|yes\/no)\]/i,
   /\b(?:enter|type)\b.{0,24}:\s*$/i,
+  // Claude Code tool-approval / plan-mode prompts: "(Y)es / (N)o", "(Y)es, (N)o, (A)lways"
+  /\([Yy]\)\w*\s*.{0,12}\([Nn]\)\w*/,
+  /\ballow\b.{0,40}\?\s/i,
 ];
 
 function normalizeInlineWhitespace(raw: string): string {

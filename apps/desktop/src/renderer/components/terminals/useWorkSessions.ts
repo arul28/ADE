@@ -20,7 +20,6 @@ function inferToolFromResumeCommand(command: string): string | null {
   const n = command.trim().toLowerCase();
   if (n.startsWith("claude ")) return "claude";
   if (n.startsWith("codex ")) return "codex";
-  if (n.startsWith("gemini ")) return "gemini";
   return null;
 }
 
@@ -63,6 +62,7 @@ export function useWorkSessions() {
   const hasRunningSessionsRef = useRef(false);
   const backgroundRefreshTimerRef = useRef<number | null>(null);
   const appliedQuerySessionIdRef = useRef<string | null>(null);
+  const hasLoadedOnceRef = useRef(false);
 
   const projectViewState = useMemo(() => {
     if (!projectRoot) return DEFAULT_PROJECT_WORK_STATE;
@@ -225,6 +225,7 @@ export function useWorkSessions() {
     try {
       const rows = await window.ade.sessions.list({ limit: 500 });
       setSessions(rows);
+      hasLoadedOnceRef.current = true;
     } finally {
       if (showLoading) setLoading(false);
       refreshInFlightRef.current = false;
@@ -440,6 +441,10 @@ export function useWorkSessions() {
 
   useEffect(() => {
     if (!projectRoot) return;
+    // Don't prune open tabs until sessions have been fetched at least once.
+    // On remount, sessions starts as [] before the async fetch completes;
+    // pruning against an empty set would wipe all persisted open tabs.
+    if (!hasLoadedOnceRef.current) return;
     const validIds = new Set(sessions.map((session) => session.id));
 
     setProjectViewState((prev) => {

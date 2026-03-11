@@ -61,7 +61,7 @@ export type AiIntegrationStatus = {
   };
   detectedAuth?: Array<{
     type: "cli-subscription" | "api-key" | "openrouter" | "local";
-    cli?: "claude" | "codex" | "gemini";
+    cli?: "claude" | "codex";
     provider?: string;
     source?: "config" | "env" | "store";
     path?: string;

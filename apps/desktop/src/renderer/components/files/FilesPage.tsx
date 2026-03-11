@@ -91,7 +91,11 @@ type FilesPageSessionState = {
   editorTheme: EditorThemeMode;
 };
 
-const filesPageSessionByProject = new Map<string, FilesPageSessionState>();
+const filesPageSessionByScope = new Map<string, FilesPageSessionState>();
+
+function filesSessionKey(projectRoot: string, laneId: string | null): string {
+  return `${projectRoot}::${laneId ?? "__primary__"}`;
+}
 const FILES_EDITOR_THEME_KEY = "ade.files.editorTheme";
 
 function readStoredEditorTheme(): EditorThemeMode {
@@ -303,7 +307,8 @@ export function FilesPage() {
   const location = useLocation();
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const projectRootPath = useAppStore((s) => s.project?.rootPath ?? "__unknown_project__");
-  const initialSession = filesPageSessionByProject.get(projectRootPath);
+  const sessionKey = filesSessionKey(projectRootPath, selectedLaneId);
+  const initialSession = filesPageSessionByScope.get(sessionKey);
 
   const [workspaces, setWorkspaces] = useState<FilesWorkspace[]>([]);
   const [workspaceId, setWorkspaceId] = useState<string>(initialSession?.workspaceId ?? "");
@@ -352,7 +357,7 @@ export function FilesPage() {
   const modelKeyRef = useRef<string | null>(null);
   const editorApplyingRef = useRef(false);
   const activeTabPathRef = useRef<string | null>(null);
-  const currentProjectRootRef = useRef(projectRootPath);
+
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const openInMenuRef = useRef<HTMLDivElement | null>(null);
   const setEditorHostRef = useCallback((node: HTMLDivElement | null) => {
@@ -363,12 +368,24 @@ export function FilesPage() {
   const activeTab = useMemo(() => openTabs.find((tab) => tab.path === activeTabPath) ?? null, [openTabs, activeTabPath]);
   const canEdit = Boolean(activeWorkspace) && (!activeWorkspace?.isReadOnlyByDefault || allowPrimaryEdit);
 
+  const prevSessionKeyRef = useRef(sessionKey);
+
   useEffect(() => {
-    if (currentProjectRootRef.current === projectRootPath) return;
-    const oldProject = currentProjectRootRef.current;
-    currentProjectRootRef.current = projectRootPath;
-    filesPageSessionByProject.delete(oldProject);
-    const session = filesPageSessionByProject.get(projectRootPath);
+    if (prevSessionKeyRef.current === sessionKey) return;
+    // Save current state under the old scope before switching
+    filesPageSessionByScope.set(prevSessionKeyRef.current, {
+      workspaceId,
+      allowPrimaryEdit,
+      selectedNodePath,
+      openTabs: openTabs.map((tab) => ({ ...tab })),
+      activeTabPath,
+      mode,
+      searchQuery,
+      editorTheme,
+    });
+    prevSessionKeyRef.current = sessionKey;
+    // Restore state for the new scope (project + lane)
+    const session = filesPageSessionByScope.get(sessionKey);
     setWorkspaceId(session?.workspaceId ?? "");
     setAllowPrimaryEdit(session?.allowPrimaryEdit ?? false);
     setSelectedNodePath(session?.selectedNodePath ?? null);
@@ -377,13 +394,7 @@ export function FilesPage() {
     setMode(session?.mode ?? "edit");
     setSearchQuery(session?.searchQuery ?? "");
     setEditorTheme(session?.editorTheme ?? readStoredEditorTheme());
-  }, [projectRootPath]);
-
-  useEffect(() => {
-    return () => {
-      filesPageSessionByProject.delete(projectRootPath);
-    };
-  }, [projectRootPath]);
+  }, [sessionKey]);
 
   const hasUnsavedTabs = useMemo(
     () => openTabs.some((tab) => tab.content !== tab.savedContent),
@@ -391,7 +402,7 @@ export function FilesPage() {
   );
 
   useEffect(() => {
-    filesPageSessionByProject.set(projectRootPath, {
+    filesPageSessionByScope.set(sessionKey, {
       workspaceId,
       allowPrimaryEdit,
       selectedNodePath,
@@ -401,7 +412,7 @@ export function FilesPage() {
       searchQuery,
       editorTheme
     });
-  }, [projectRootPath, workspaceId, allowPrimaryEdit, selectedNodePath, openTabs, activeTabPath, mode, searchQuery, editorTheme]);
+  }, [sessionKey, workspaceId, allowPrimaryEdit, selectedNodePath, openTabs, activeTabPath, mode, searchQuery, editorTheme]);
 
   useEffect(() => {
     persistEditorTheme(editorTheme);

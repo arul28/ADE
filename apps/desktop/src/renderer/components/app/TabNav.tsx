@@ -23,8 +23,8 @@ import { layoutTransition } from "../../lib/motion";
 const mainItems = [
   { to: "/project", label: "Run", icon: PlayCircle },
   { to: "/lanes", label: "Lanes", icon: GitBranch },
-  { to: "/files", label: "Files", icon: FileCode },
   { to: "/work", label: "Work", icon: Terminal },
+  { to: "/files", label: "Files", icon: FileCode },
   { to: "/graph", label: "Graph", icon: Graph },
   { to: "/prs", label: "PRs", icon: GitPullRequest },
   { to: "/history", label: "History", icon: ClockCounterClockwise },
