@@ -1097,6 +1097,9 @@ app.whenReady().then(async () => {
       projectRoot,
       onEvent: (event) => {
         emitProjectEvent(projectRoot, IPC.missionsEvent, event);
+        if (event.missionId) {
+          automationService?.onMissionUpdated({ missionId: event.missionId });
+        }
         if (event.reason === "ready_to_start" && event.missionId) {
           void aiOrchestratorServiceRef?.startMissionRun({
             missionId: event.missionId,
@@ -1180,6 +1183,13 @@ app.whenReady().then(async () => {
       onDagMutation: (event) => emitProjectEvent(projectRoot, IPC.orchestratorDagMutation, event)
     });
     aiOrchestratorServiceRef = aiOrchestratorService;
+    automationService?.bindMissionRuntime({
+      missionService,
+      aiOrchestratorService,
+      memoryBriefingService,
+      proceduralLearningService,
+      budgetCapService,
+    });
     try {
       missionService.processQueue();
     } catch (error) {

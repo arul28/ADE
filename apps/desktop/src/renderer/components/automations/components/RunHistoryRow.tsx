@@ -40,8 +40,14 @@ export function RunHistoryRow({
           <div className="mt-0.5 flex items-center gap-3 font-mono text-[9px] text-[#71717A]">
             <span>{formatDate(run.startedAt)}</span>
             <span>{formatDurationMs(durationMs)}</span>
-            <span>{run.actionsCompleted}/{run.actionsTotal} actions</span>
+            <span>{run.queueStatus}</span>
+            {run.missionId ? <span>{run.missionId.slice(0, 8)}</span> : <span>{run.actionsCompleted}/{run.actionsTotal} actions</span>}
           </div>
+          {run.confidence ? (
+            <div className="mt-0.5 font-mono text-[9px] text-[#8B8B9A]">
+              confidence {run.confidence.label} · {Math.round(run.confidence.value * 100)}%
+            </div>
+          ) : null}
           {run.errorMessage && (
             <div className="mt-0.5 font-mono text-[9px] text-red-300 truncate">{run.errorMessage}</div>
           )}

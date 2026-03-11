@@ -26,21 +26,9 @@ export function HistoryTab() {
     try {
       const ruleList = await window.ade.automations.list();
       setRules(ruleList);
-      const allRunsData: (AutomationRun & { ruleName?: string })[] = [];
-      for (const rule of ruleList) {
-        try {
-          const runs = await window.ade.automations.getHistory({ id: rule.id, limit: 50 });
-          for (const run of runs) {
-            allRunsData.push({ ...run, ruleName: rule.name });
-          }
-        } catch { /* skip */ }
-      }
-      allRunsData.sort((a, b) => {
-        const ta = a.startedAt ? Date.parse(a.startedAt) : 0;
-        const tb = b.startedAt ? Date.parse(b.startedAt) : 0;
-        return tb - ta;
-      });
-      setAllRuns(allRunsData);
+      const runs = await window.ade.automations.listRuns({ limit: 120 });
+      const byRule = new Map(ruleList.map((rule) => [rule.id, rule.name]));
+      setAllRuns(runs.map((run) => ({ ...run, ruleName: byRule.get(run.automationId) ?? run.automationId })));
     } catch { /* ignore */ }
     finally { setLoading(false); }
   }, []);
