@@ -3,7 +3,7 @@ import { Clock, WarningCircle, Check, X } from "@phosphor-icons/react";
 import type { MissionIntervention, ClarificationQuestion } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton } from "../lanes/laneDesignTokens";
 import { useMissionsStore } from "./useMissionsStore";
-import { isRecord } from "./missionHelpers";
+import { getMissionInterventionOwnerLabel, isRecord } from "./missionHelpers";
 import { relativeWhen } from "../../lib/format";
 
 /* ════════════════════ INTERVENTION HELPERS ════════════════════ */
@@ -162,6 +162,7 @@ function InterventionCard({
   const isBlocking = isBlockingManualInputIntervention(intervention);
   const borderColor = isBlocking ? COLORS.warning : COLORS.accentBorder;
   const iconColor = isBlocking ? COLORS.warning : COLORS.accent;
+  const ownerLabel = getMissionInterventionOwnerLabel(intervention);
 
   const typeLabel = intervention.interventionType.replace(/_/g, " ");
 
@@ -182,6 +183,21 @@ function InterventionCard({
           style={{ color: iconColor, width: 16, height: 16, flexShrink: 0, marginTop: 1 }}
         />
         <div style={{ flex: 1, minWidth: 0 }}>
+          {ownerLabel ? (
+            <div
+              style={{
+                fontFamily: MONO_FONT,
+                fontSize: 9,
+                fontWeight: 700,
+                textTransform: "uppercase",
+                letterSpacing: "0.8px",
+                color: iconColor,
+                marginBottom: 4,
+              }}
+            >
+              {ownerLabel}
+            </div>
+          ) : null}
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <span
               style={{

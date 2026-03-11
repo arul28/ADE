@@ -4705,8 +4705,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         const graph = orchestratorService.getRunGraph({ runId, timelineLimit: 10 });
         if (
           graph.run.status !== "active" && graph.run.status !== "bootstrapping" &&
-          graph.run.status !== "queued" &&
-          graph.run.status !== "paused"
+          graph.run.status !== "queued"
         ) {
           return;
         }
@@ -5729,6 +5728,11 @@ Check all worker statuses and continue managing the mission from here. Read work
           }
         }
       });
+      const evalTimer = pendingCoordinatorEvals.get(args.runId);
+      if (evalTimer) {
+        clearTimeout(evalTimer);
+        pendingCoordinatorEvals.delete(args.runId);
+      }
     } catch (error) {
       logger.debug("ai_orchestrator.pause_run_failed", {
         runId: args.runId,
@@ -8016,6 +8020,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       return (Number.isFinite(rightAt) ? rightAt : 0) - (Number.isFinite(leftAt) ? leftAt : 0);
     })[0];
     if (!latest) return null;
+    const metadata = asRecord(latest.metadata);
     return {
       id: latest.id,
       title: latest.title,
@@ -8023,6 +8028,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       interventionType: latest.interventionType,
       status: latest.status,
       requestedAction: latest.requestedAction ?? null,
+      ownerLabel: toOptionalString(metadata?.questionOwnerLabel),
       createdAt: latest.updatedAt || latest.createdAt,
     };
   };

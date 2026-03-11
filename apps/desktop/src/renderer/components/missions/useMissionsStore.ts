@@ -263,6 +263,22 @@ export const initialMissionsState: MissionsState = {
 const toastTimers = new Map<string, number>();
 let missionSelectionRequestSeq = 0;
 
+function buildClearedSelectionState(): Partial<MissionsState> {
+  return {
+    selectedMissionId: null,
+    selectedMission: null,
+    runGraph: null,
+    chatJumpTarget: null,
+    logsFocusInterventionId: null,
+    activityPanelMode: "signal",
+    originalStepCount: null,
+    orchestratorArtifacts: [],
+    workerCheckpoints: [],
+    coordinatorPromptInspector: null,
+    workerPromptInspector: null,
+  };
+}
+
 /* ════════════════════ STORE CREATION ════════════════════ */
 
 export const useMissionsStore = create<MissionsStore>((set, get) => ({
@@ -331,17 +347,19 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
     try {
       const list = await window.ade.missions.list({ limit: 300 });
       set((state) => {
+        const selectedStillExists = Boolean(
+          state.selectedMissionId && list.some((mission) => mission.id === state.selectedMissionId),
+        );
         const nextId = preserveSelection
-          ? (state.selectedMissionId && list.some((m) => m.id === state.selectedMissionId)
-              ? state.selectedMissionId
-              : null)
+          ? (selectedStillExists ? state.selectedMissionId : null)
           : (list[0]?.id ?? null);
         return {
           missions: list,
           error: null,
           loading: false,
           refreshing: false,
-          ...(preserveSelection ? { selectedMissionId: nextId } : { selectedMissionId: nextId }),
+          selectedMissionId: nextId,
+          ...(!nextId ? buildClearedSelectionState() : {}),
         };
       });
     } catch (err) {
@@ -616,12 +634,14 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
       if (missionEventTimer !== null) window.clearTimeout(missionEventTimer);
       missionEventTimer = window.setTimeout(() => {
         missionEventTimer = null;
-        void get().refreshMissionList({ preserveSelection: true, silent: true });
-        void get().loadDashboard();
-        const currentSelectedId = get().selectedMissionId;
-        if (payload.missionId && payload.missionId === currentSelectedId) {
-          void get().selectMission(payload.missionId);
-        }
+        void (async () => {
+          await get().refreshMissionList({ preserveSelection: true, silent: true });
+          await get().loadDashboard();
+          const currentSelectedId = get().selectedMissionId;
+          if (payload.missionId && payload.missionId === currentSelectedId) {
+            await get().selectMission(payload.missionId);
+          }
+        })();
       }, 300);
     });
 
@@ -676,18 +696,7 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
   },
 
   /* ── Selection reset ── */
-  clearSelection: () => set({
-    selectedMission: null,
-    runGraph: null,
-    chatJumpTarget: null,
-    logsFocusInterventionId: null,
-    activityPanelMode: "signal",
-    originalStepCount: null,
-    orchestratorArtifacts: [],
-    workerCheckpoints: [],
-    coordinatorPromptInspector: null,
-    workerPromptInspector: null,
-  }),
+  clearSelection: () => set(buildClearedSelectionState()),
 }));
 
 /* ════════════════════ FINE-GRAINED SELECTORS ════════════════════ */

@@ -810,8 +810,8 @@ export class CoordinatorAgent {
             status: part.preliminary ? "running" : "completed",
           });
           if (
-            toolName.toLowerCase().endsWith("ask_user")
-            && toolOutput?.awaitingUserResponse === true
+            toolOutput?.awaitingUserResponse === true
+            && toolOutput?.blocking !== false
           ) {
             awaitingBlockingUserInput = true;
             abortController.abort();
@@ -1049,11 +1049,12 @@ export class CoordinatorAgent {
           if (p.orderingConstraints.canLoop) parts.push(`   Loop: can repeat${p.orderingConstraints.loopTarget ? ` (back to ${p.orderingConstraints.loopTarget})` : ""}`);
           return parts.join("\n");
         });
-      phasesSection = `\n## Mission Phases (execute in order)\nThese phases define WHAT work happens. You decide HOW — how many workers, what prompts, what approach.\nQuestion rules per phase govern when you may use the ask_user tool:
-- If Ask Questions is enabled for a planning phase, you MUST use ask_user for at least one clarification or confirmation round before you finalize the plan or spawn the planning worker.
+      phasesSection = `\n## Mission Phases (execute in order)\nThese phases define WHAT work happens. You decide HOW — how many workers, what prompts, what approach.\nQuestion rules per phase govern the ACTIVE PHASE OWNER for that phase:
+- If Ask Questions is enabled, the worker actively executing that phase may open blocking clarification questions with ask_user when needed.
 - Additional ask_user rounds are allowed up to the phase max question limit. Avoid trivial or low-value questions.
 - If Ask Questions is disabled, do not ask questions in that phase; proceed with reasonable assumptions.
-- When using ask_user, bundle ALL your questions into a single call. The tool accepts an array of structured questions with optional multiple-choice options, context, default assumptions, and impact descriptions.\n${phaseLines.join("\n")}`;
+- ask_user is transport/UI plumbing, not ownership. Coordinator should not ask planning, development, or validation questions on behalf of a worker unless there is no responsible phase worker yet and the mission cannot even be framed.
+- When using ask_user, bundle ALL related questions into a single call. The tool accepts an array of structured questions with optional multiple-choice options, context, default assumptions, and impact descriptions.\n${phaseLines.join("\n")}`;
     }
 
     // Build planning phase guidance
@@ -1062,9 +1063,9 @@ export class CoordinatorAgent {
       planningPhaseSection = `\n## Planning Phase Protocol
 When you enter the Planning phase (your first phase), follow this protocol:
 1. IF the Planning phase has askQuestions enabled:
-   - You MUST use ask_user FIRST to gather clarifying questions from the user BEFORE spawning the planning worker or building the task DAG.
-   - Bundle all questions into one ask_user call. Wait for the user to respond before proceeding.
-   - Once the user has answered, incorporate their responses into your planning.
+   - Spawn the planning worker first. The planner owns planning clarification.
+   - If the planner needs clarification, it should use ask_user itself, then stop. Do NOT ask planning questions on the planner's behalf just because ask_user exists.
+   - While a planner-owned question is open, do not spawn additional planning workers or continue planning actions.
 2. Start the Planning phase immediately:
    - If no planning questions are needed, your first turn should usually be: get_project_context, then spawn ONE planning worker.
    - Do NOT spend the first turn doing coordinator-side repo exploration, shell work, or file-by-file analysis.

@@ -20,6 +20,7 @@ import type {
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
 import { MissionThreadMessageList } from "./MissionThreadMessageList";
 import type { Channel } from "./ChatChannelList";
+import { getMissionInterventionOwnerLabel } from "./missionHelpers";
 
 // ── Design tokens ──
 const MONO = MONO_FONT;
@@ -77,6 +78,10 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
   agentRuntimeConfig,
   onApproval,
 }: ChatMessageAreaProps) {
+  const threadInterventionOwnerLabel = useMemo(
+    () => getMissionInterventionOwnerLabel(threadIntervention),
+    [threadIntervention],
+  );
   const channelHeaderName = (() => {
     if (!selectedChannel) return "...";
     switch (selectedChannel.kind) {
@@ -160,7 +165,9 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
               className="text-[10px] font-bold uppercase tracking-[0.12em]"
               style={{ color: WARNING, fontFamily: MONO }}
             >
-              This conversation needs attention
+              {threadInterventionOwnerLabel
+                ? `${threadInterventionOwnerLabel} needs attention`
+                : "This conversation needs attention"}
             </div>
             <div className="mt-1 text-[11px] font-semibold" style={{ color: TEXT_PRIMARY }}>
               {threadIntervention.title}

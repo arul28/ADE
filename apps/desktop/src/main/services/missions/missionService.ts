@@ -425,17 +425,16 @@ function normalizePhaseCards(phases: PhaseCard[]): PhaseCard[] {
       const phaseKey = String(phase.phaseKey ?? "").trim().toLowerCase();
       const planningPhase = phaseKey === "planning";
       const testingOrValidation = phaseKey === "testing" || phaseKey === "validation";
-      const askQuestions: PhaseCard["askQuestions"] = planningPhase
-        ? {
-            ...phase.askQuestions,
-            enabled: phase.askQuestions.enabled !== false,
-            maxQuestions: Math.max(1, Math.min(10, Number(phase.askQuestions.maxQuestions ?? 5) || 5)),
-          }
-        : {
-            ...phase.askQuestions,
-            enabled: false,
-            maxQuestions: undefined,
-          };
+      const askQuestionsEnabled = planningPhase
+        ? phase.askQuestions.enabled !== false
+        : phase.askQuestions.enabled === true;
+      const askQuestions: PhaseCard["askQuestions"] = {
+        ...phase.askQuestions,
+        enabled: askQuestionsEnabled,
+        maxQuestions: askQuestionsEnabled
+          ? Math.max(1, Math.min(10, Number(phase.askQuestions.maxQuestions ?? 5) || 5))
+          : undefined,
+      };
       const validationGate: PhaseCard["validationGate"] = planningPhase || phaseKey === "development"
         ? {
             ...phase.validationGate,
@@ -813,6 +812,7 @@ export function createMissionService({
     return db.get<MissionRow>(
       `${baseMissionSelect}
        and m.id = ?
+       and m.archived_at is null
        limit 1`,
       [projectId, missionId]
     );

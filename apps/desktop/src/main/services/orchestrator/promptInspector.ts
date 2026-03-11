@@ -475,7 +475,7 @@ function buildCoordinatorPhasesSection(phases: PhaseCard[] | undefined): string 
         lines.push(`   Validation: ${phase.validationGate.tier.replace("-", " ")} ${phase.validationGate.required ? "(required)" : "(optional)"}`);
       }
       if (phase.askQuestions.enabled) {
-        lines.push(`   Ask Questions: enabled (ask at least one question before finalizing this phase, max ${Math.max(1, Math.min(10, Number(phase.askQuestions.maxQuestions ?? 5) || 5))} questions)`);
+        lines.push(`   Ask Questions: enabled (the active phase owner may ask when needed, max ${Math.max(1, Math.min(10, Number(phase.askQuestions.maxQuestions ?? 5) || 5))} questions)`);
       } else {
         lines.push("   Ask Questions: disabled");
       }

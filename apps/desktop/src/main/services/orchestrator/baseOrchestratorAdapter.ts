@@ -170,7 +170,7 @@ export function buildFullPrompt(
 
   // B. Propulsion principle
   systemParts.push(
-    "EXECUTION PROTOCOL: Execute immediately. Do not ask for confirmation or propose a plan and wait for approval. Do not summarize your instructions back. If you encounter a blocker you cannot work around, fail with a clear error message describing the blocker. Never wait for human input — make the best decision you can and document your reasoning."
+    "EXECUTION PROTOCOL: Execute immediately. Do not ask for confirmation or propose a plan and wait for approval. Do not summarize your instructions back. If you encounter a blocker you cannot work around, fail with a clear error message describing the blocker. Make the best decision you can and document your reasoning. The only time you should pause for human input is immediately after opening a blocking ask_user intervention that your phase policy explicitly allows."
   );
 
   // C. Compact plan view
@@ -224,11 +224,43 @@ export function buildFullPrompt(
   const requiresPlanApproval =
     step.metadata?.requiresPlanApproval === true || step.metadata?.coordinationPattern === "plan_then_implement";
   const readOnlyExecution = step.metadata?.readOnlyExecution === true || requiresPlanApproval;
+  const phaseAskQuestionsRaw =
+    step.metadata?.phaseAskQuestions && typeof step.metadata.phaseAskQuestions === "object" && !Array.isArray(step.metadata.phaseAskQuestions)
+      ? step.metadata.phaseAskQuestions as Record<string, unknown>
+      : null;
+  const phaseAllowsQuestions = phaseAskQuestionsRaw?.enabled === true;
+  const phaseMaxQuestionsRaw = Number(phaseAskQuestionsRaw?.maxQuestions ?? Number.NaN);
+  const phaseMaxQuestions = Number.isFinite(phaseMaxQuestionsRaw)
+    ? Math.max(1, Math.min(10, Math.floor(phaseMaxQuestionsRaw)))
+    : null;
+  const phaseLabel =
+    typeof step.metadata?.phaseName === "string" && step.metadata.phaseName.trim().length > 0
+      ? step.metadata.phaseName.trim()
+      : typeof step.metadata?.phaseKey === "string" && step.metadata.phaseKey.trim().length > 0
+        ? step.metadata.phaseKey.trim()
+        : "this";
   if (readOnlyExecution) {
     systemParts.push(
       "IMPORTANT: This step is READ-ONLY. Do NOT modify files, stage changes, or run write operations. Research, review, and return findings or a plan only."
     );
   }
+
+  systemParts.push(
+    phaseAllowsQuestions
+      ? [
+          `PHASE QUESTION POLICY (${phaseLabel.toUpperCase()}):`,
+          "- You own clarification for this phase while this step is active.",
+          "- If you truly need clarification, use `ask_user` yourself rather than asking the coordinator to ask on your behalf.",
+          `- If you open a question, bundle related points into one intervention${phaseMaxQuestions ? ` and keep the total rounds for this step within ${phaseMaxQuestions}` : ""}.`,
+          "- After opening a blocking question, stop and wait. Do not continue execution, speculate in the transcript, or ask for the same input twice.",
+        ].join("\n")
+      : [
+          `PHASE QUESTION POLICY (${phaseLabel.toUpperCase()}):`,
+          "- Ask Questions is disabled for this phase.",
+          "- Do not use `ask_user` here unless the runtime itself opens a separate intervention for delivery or policy recovery.",
+          "- Proceed with the best grounded assumption you can and document it in your result.",
+        ].join("\n")
+  );
 
   // Planning-specific instructions for planning steps
   {
@@ -241,7 +273,7 @@ export function buildFullPrompt(
           "- Write your plan output to `.ade/plans/` in your working directory. Create the `.ade/plans/` directory if it does not exist.",
           "- Do NOT write plans to any provider-specific location (e.g. home-directory plan folders).",
           "- Do NOT use ExitPlanMode or any provider-native plan approval flow. Return your plan directly via `report_result`.",
-          "- If you need clarification from the user, use `ask_user` to surface structured questions.",
+          "- If you need clarification from the user and phase policy allows it, use `ask_user` to surface structured questions yourself.",
         ].join("\n")
       );
     }

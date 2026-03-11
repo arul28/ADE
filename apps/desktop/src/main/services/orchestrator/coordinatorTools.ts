@@ -1269,6 +1269,12 @@ export function createCoordinatorToolSet(deps: {
       phasePosition: current.position,
       phaseModel: current.model,
       phaseInstructions: current.instructions,
+      phaseAskQuestions: {
+        enabled: current.askQuestions.enabled === true,
+        maxQuestions: current.askQuestions.enabled === true
+          ? Math.max(1, Math.min(10, Number(current.askQuestions.maxQuestions ?? 5) || 5))
+          : undefined,
+      },
       phaseValidation: current.validationGate,
       phaseBudget: current.budget ?? {},
       stepType,
@@ -1352,11 +1358,12 @@ export function createCoordinatorToolSet(deps: {
     return `Planning input is still pending. Resolve ${blocking.length === 1 ? "the open question" : "the open questions"} before executing planning actions.`;
   }
 
-  function resolvePlanningQuestionPolicy(g: OrchestratorRunGraph): {
+  function resolveCurrentPhaseQuestionPolicy(g: OrchestratorRunGraph): {
     phase: PhaseCard | null;
     phaseKey: string;
     enabled: boolean;
     maxQuestions: number;
+    isPlanning: boolean;
   } {
     const phases = resolveMissionPhases(g);
     const current = resolveCurrentPhaseCard(g, phases);
@@ -1366,15 +1373,31 @@ export function createCoordinatorToolSet(deps: {
     return {
       phase: current ?? null,
       phaseKey: current?.phaseKey ?? current?.name ?? "",
-      enabled: inPlanning && current?.askQuestions.enabled === true,
+      enabled: current?.askQuestions.enabled === true,
       maxQuestions: Math.max(1, Math.min(10, Number(current?.askQuestions.maxQuestions ?? 5) || 5)),
+      isPlanning: inPlanning,
     };
   }
 
-  function listPlanningQuestionInterventions(g: OrchestratorRunGraph): import("../../../shared/types").MissionIntervention[] {
+  function resolvePlanningQuestionPolicy(g: OrchestratorRunGraph): {
+    phase: PhaseCard | null;
+    phaseKey: string;
+    enabled: boolean;
+    maxQuestions: number;
+  } {
+    const policy = resolveCurrentPhaseQuestionPolicy(g);
+    return {
+      phase: policy.phase,
+      phaseKey: policy.phaseKey,
+      enabled: policy.isPlanning && policy.enabled,
+      maxQuestions: policy.maxQuestions,
+    };
+  }
+
+  function listPhaseQuestionInterventions(g: OrchestratorRunGraph): import("../../../shared/types").MissionIntervention[] {
     const mission = missionService.get(missionId);
     if (!mission) return [];
-    const policy = resolvePlanningQuestionPolicy(g);
+    const policy = resolveCurrentPhaseQuestionPolicy(g);
     const normalizedPhase = policy.phaseKey.trim().toLowerCase();
     return mission.interventions.filter((entry) => {
       if (entry.interventionType !== "manual_input") return false;
@@ -1388,21 +1411,31 @@ export function createCoordinatorToolSet(deps: {
   function getPlanningQuestionPolicyBlockReason(g: OrchestratorRunGraph): string | null {
     const policy = resolvePlanningQuestionPolicy(g);
     if (!policy.enabled) return null;
-    const interventions = listPlanningQuestionInterventions(g);
+    const interventions = listPhaseQuestionInterventions(g);
     const openQuestion = interventions.find((entry) => entry.status === "open") ?? null;
     if (openQuestion) {
       return "Planning questions are still open. Resolve them before spawning the planning worker.";
-    }
-    if (interventions.length === 0) {
-      return "Planning Ask Questions is enabled. Use ask_user first, wait for the user's answers, then spawn the planning worker.";
     }
     return null;
   }
 
   function getQuestionAskingBlockReason(g: OrchestratorRunGraph): string | null {
-    const policy = resolvePlanningQuestionPolicy(g);
+    const policy = resolveCurrentPhaseQuestionPolicy(g);
     if (policy.enabled) return null;
-    return "Ask Questions is disabled for the current phase. Outside Planning, proceed with the best reasonable assumption unless runtime opens its own intervention.";
+    return "Ask Questions is disabled for the current phase. Proceed with the best reasonable assumption unless runtime opens its own intervention.";
+  }
+
+  function buildCoordinatorQuestionOwnerMetadata(args: {
+    phaseKey?: string | null;
+    phaseName?: string | null;
+  }): Record<string, unknown> {
+    return {
+      questionOwnerKind: "coordinator",
+      questionOwnerLabel: "Coordinator question",
+      ownerRole: "coordinator",
+      phase: args.phaseKey ?? null,
+      phaseName: args.phaseName ?? null,
+    };
   }
 
   function getPlanningRepoReadBlockReason(g: OrchestratorRunGraph): string | null {
@@ -5025,7 +5058,9 @@ export function createCoordinatorToolSet(deps: {
         ok: true as const,
         interventionId: existing.id,
         question,
-        deduped: true
+        deduped: true,
+        awaitingUserResponse: args.canProceedWithoutAnswer !== true,
+        blocking: args.canProceedWithoutAnswer !== true,
       };
     }
 
@@ -5042,19 +5077,21 @@ export function createCoordinatorToolSet(deps: {
         ? "Optional: provide guidance. Coordinator may continue with best-effort assumptions."
         : "Provide guidance to unblock coordinator execution.",
       pauseMission: args.canProceedWithoutAnswer !== true,
-      metadata: {
-        source: args.source,
-        runId,
-        question,
-        context: context.length > 0 ? context : null,
-        urgency,
-        canProceedWithoutAnswer: args.canProceedWithoutAnswer === true,
-        blocking: args.canProceedWithoutAnswer !== true,
-        category: "user_input" as const,
-        phase: currentPhase?.phaseKey ?? null,
-        phaseName: currentPhase?.name ?? null
-      }
-    });
+        metadata: {
+          source: args.source,
+          runId,
+          question,
+          context: context.length > 0 ? context : null,
+          urgency,
+          canProceedWithoutAnswer: args.canProceedWithoutAnswer === true,
+          blocking: args.canProceedWithoutAnswer !== true,
+          category: "user_input" as const,
+          ...buildCoordinatorQuestionOwnerMetadata({
+            phaseKey: currentPhase?.phaseKey ?? null,
+            phaseName: currentPhase?.name ?? null,
+          }),
+        }
+      });
 
     // If the intervention is blocking, also pause the orchestrator run
     if (args.canProceedWithoutAnswer !== true) {
@@ -5106,7 +5143,14 @@ export function createCoordinatorToolSet(deps: {
       urgency,
       blocking: args.canProceedWithoutAnswer !== true
     });
-    return { ok: true as const, interventionId: intervention.id, question, deduped: false };
+    return {
+      ok: true as const,
+      interventionId: intervention.id,
+      question,
+      deduped: false,
+      awaitingUserResponse: args.canProceedWithoutAnswer !== true,
+      blocking: args.canProceedWithoutAnswer !== true,
+    };
   };
 
   const get_budget_status = tool({
@@ -5282,7 +5326,7 @@ export function createCoordinatorToolSet(deps: {
 
   const ask_user = tool({
     description:
-      "Ask the user one or more structured questions during Planning. Creates a single quiz-style intervention visible in the UI. Bundle all related questions in one call.",
+      "Open one or more structured blocking questions for the current phase. Prefer letting the active phase worker ask these directly instead of the coordinator. Bundle all related questions in one call.",
     inputSchema: z.object({
       questions: z.array(z.object({
         question: z.string().describe("The question text"),
@@ -5300,8 +5344,8 @@ export function createCoordinatorToolSet(deps: {
         if (questionBlockReason) {
           return { ok: false as const, error: questionBlockReason };
         }
-        const policy = resolvePlanningQuestionPolicy(g);
-        const priorInterventions = listPlanningQuestionInterventions(g);
+        const policy = resolveCurrentPhaseQuestionPolicy(g);
+        const priorInterventions = listPhaseQuestionInterventions(g);
         const openQuestion = priorInterventions.find((entry) => entry.status === "open") ?? null;
         if (openQuestion) {
           const openMeta = asRecord(openQuestion.metadata);
@@ -5310,10 +5354,12 @@ export function createCoordinatorToolSet(deps: {
             interventionId: openQuestion.id,
             questionCount: Math.max(1, Number(openMeta?.questionCount ?? 1) || 1),
             deduped: true,
+            awaitingUserResponse: true as const,
+            blocking: true as const,
           };
         }
         if (!policy.enabled) {
-          return { ok: false as const, error: "Ask Questions is disabled for this Planning phase." };
+          return { ok: false as const, error: "Ask Questions is disabled for the current phase." };
         }
         // VAL-PLAN-006: Multi-round deliberation — when phase has canLoop=true,
         // bypass the maxQuestions ceiling to allow unbounded ask_user + re-plan cycles.
@@ -5355,7 +5401,10 @@ export function createCoordinatorToolSet(deps: {
             blocking: true,
             category: "user_input" as const,
             questions,
-            phase: phase ?? policy.phaseKey ?? null,
+            ...buildCoordinatorQuestionOwnerMetadata({
+              phaseKey: phase ?? policy.phaseKey ?? null,
+              phaseName: policy.phase?.name ?? null,
+            }),
             questionCount: questions.length,
           }
         });
@@ -5407,7 +5456,14 @@ export function createCoordinatorToolSet(deps: {
           blocking: true,
           phase: phase ?? policy.phaseKey ?? null,
         });
-        return { ok: true as const, interventionId: intervention.id, questionCount: questions.length, deduped: false };
+        return {
+          ok: true as const,
+          interventionId: intervention.id,
+          questionCount: questions.length,
+          deduped: false,
+          awaitingUserResponse: true as const,
+          blocking: true as const,
+        };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.error("coordinator.ask_user.error", { error: msg });
@@ -5430,11 +5486,6 @@ export function createCoordinatorToolSet(deps: {
     }),
     execute: async ({ question, context, urgency, canProceedWithoutAnswer }) => {
       try {
-        const g = graph();
-        const questionBlockReason = getQuestionAskingBlockReason(g);
-        if (questionBlockReason) {
-          return { ok: false as const, error: questionBlockReason };
-        }
         return openHumanIntervention({
           source: "request_user_input",
           question,
