@@ -13,11 +13,12 @@ import { EmptyState } from "../../ui/EmptyState";
 import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { PrConflictBadge } from "../PrConflictBadge";
 import { PrRebaseBanner } from "../PrRebaseBanner";
-import { ResolverTerminalModal } from "../../shared/conflictResolver/ResolverTerminalModal";
 import { usePrs } from "../state/PrsContext";
 import { ConflictFilePreview } from "../ConflictFilePreview";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
-import { normalizeBranchName, type BackgroundResolverSession } from "../shared/prHelpers";
+import { normalizeBranchName } from "../shared/prHelpers";
+import { isDirtyWorktreeErrorMessage, stripDirtyWorktreePrefix } from "../shared/dirtyWorktree";
+import { PrAiResolverPanel } from "../shared/PrAiResolverPanel";
 
 /* ---- Outcome dot with design-system colors ---- */
 
@@ -99,6 +100,31 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
       style={{ fontSize: 10, color: "#71717A", marginBottom: 12 }}
     >
       {children}
+    </div>
+  );
+}
+
+function AdvisoryPanel({ messages }: { messages: string[] }) {
+  if (messages.length === 0) return null;
+  return (
+    <div
+      style={{
+        background: "#F59E0B08",
+        border: "1px solid #F59E0B30",
+        padding: 12,
+        marginBottom: 20,
+      }}
+    >
+      <div className="flex items-start" style={{ gap: 10 }}>
+        <Warning size={14} weight="fill" style={{ color: "#F59E0B", marginTop: 1, flexShrink: 0 }} />
+        <div className="flex flex-col" style={{ gap: 6 }}>
+          {messages.map((message) => (
+            <div key={message} className="font-mono" style={{ fontSize: 10, color: "#D4A857" }}>
+              {message}
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -196,6 +222,27 @@ function readQueryParam(name: string): string | null {
   }
 }
 
+function getIntegrationLaneWarningMessages(proposal: IntegrationProposal | null): string[] {
+  if (!proposal?.integrationLaneId) return [];
+  const laneLabel = proposal.integrationLaneName?.trim() || "integration lane";
+  const messages: string[] = [];
+  const changeStatus = proposal.resolutionState?.laneChangeStatus;
+
+  if (changeStatus === "changed") {
+    messages.push(`${laneLabel} has changed since ADE created it. Deleting it will discard any manual or AI resolution work in that lane.`);
+  } else if (changeStatus === "unknown") {
+    messages.push(`${laneLabel} predates lane baseline tracking, so ADE cannot confirm whether it changed after creation.`);
+  } else if (changeStatus === "missing") {
+    messages.push(`${laneLabel} is already missing from the workspace. Deleting the proposal will only remove ADE's proposal record.`);
+  }
+
+  if (proposal.resolutionState?.currentSnapshot?.dirty) {
+    messages.push(`${laneLabel} currently has uncommitted changes.`);
+  }
+
+  return messages;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null) return null;
   return value as Record<string, unknown>;
@@ -255,10 +302,16 @@ type IntegrationTabProps = {
   selectedPrId: string | null;
   onSelectPr: (id: string | null) => void;
   onRefresh: () => Promise<void>;
+  refreshNonce?: number;
 };
 
-export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _mergeMethod, selectedPrId, onSelectPr, onRefresh }: IntegrationTabProps) {
+export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _mergeMethod, selectedPrId, onSelectPr, onRefresh, refreshNonce = 0 }: IntegrationTabProps) {
   const laneById = React.useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
+  const resolveTargetLaneId = React.useCallback((baseBranch: string): string | null => {
+    const normalizedBase = normalizeBranchName(baseBranch);
+    if (!normalizedBase) return null;
+    return lanes.find((lane) => normalizeBranchName(lane.branchRef) === normalizedBase)?.id ?? null;
+  }, [lanes]);
   const {
     rebaseNeeds,
     autoRebaseStatuses,
@@ -273,7 +326,6 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
   const [simulateBusy, setSimulateBusy] = React.useState(false);
   const [simulateError, setSimulateError] = React.useState<string | null>(null);
   const [resolverOpen, setResolverOpen] = React.useState(false);
-  const [backgroundSession, setBackgroundSession] = React.useState<BackgroundResolverSession | null>(null);
   const [proposalResolverConfig, setProposalResolverConfig] = React.useState<ProposalResolverConfig | null>(null);
   const [deleteConfirm, setDeleteConfirm] = React.useState(false);
   const [deleteBusy, setDeleteBusy] = React.useState(false);
@@ -288,6 +340,8 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
   const [commitError, setCommitError] = React.useState<string | null>(null);
   const [resimBusy, setResimBusy] = React.useState(false);
   const [deleteProposalBusy, setDeleteProposalBusy] = React.useState(false);
+  const [deleteProposalConfirm, setDeleteProposalConfirm] = React.useState(false);
+  const [deleteProposalLaneToo, setDeleteProposalLaneToo] = React.useState(false);
 
   // New integration resolution state
   const [expandedPairKeys, setExpandedPairKeys] = React.useState<string[]>([]);
@@ -295,6 +349,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
   const [activeWorkerStepId, setActiveWorkerStepId] = React.useState<string | null>(null);
   const [createLaneBusy, setCreateLaneBusy] = React.useState(false);
   const [resolvingLaneId, setResolvingLaneId] = React.useState<string | null>(null);
+  const [resolutionPanelDismissed, setResolutionPanelDismissed] = React.useState(false);
 
   const loadProposals = React.useCallback(async () => {
     try {
@@ -307,11 +362,15 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
     }
   }, []);
 
-  React.useEffect(() => { void loadProposals(); }, [loadProposals]);
+  React.useEffect(() => { void loadProposals(); }, [loadProposals, refreshNonce]);
 
   const selectedProposal = React.useMemo(
     () => proposals.find((p) => p.proposalId === selectedProposalId) ?? null,
     [proposals, selectedProposalId],
+  );
+  const selectedProposalLaneWarnings = React.useMemo(
+    () => getIntegrationLaneWarningMessages(selectedProposal),
+    [selectedProposal],
   );
 
   const handleSelectPr = (id: string | null) => {
@@ -328,20 +387,11 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
   const selectedMergeContext = selectedPr ? mergeContextByPrId[selectedPr.id] ?? null : null;
 
   React.useEffect(() => {
-    if (!backgroundSession?.ptyId) return;
-    const unsubscribe = window.ade.pty.onExit((event) => {
-      if (event.ptyId !== backgroundSession.ptyId) return;
-      setBackgroundSession((prev) => {
-        if (!prev || prev.ptyId !== event.ptyId) return prev;
-        return { ...prev, exitCode: event.exitCode ?? -1 };
-      });
-    });
-    return unsubscribe;
-  }, [backgroundSession?.ptyId]);
-
-  React.useEffect(() => {
     setProposalResolverConfig(null);
-    setBackgroundSession(null);
+    setResolverOpen(false);
+    setResolutionPanelDismissed(false);
+    setDeleteProposalConfirm(false);
+    setDeleteProposalLaneToo(false);
   }, [selectedPrId, selectedProposalId]);
 
   React.useEffect(() => {
@@ -388,13 +438,28 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
     setCommitBusy(true);
     setCommitError(null);
     try {
-      await window.ade.prs.commitIntegration({
-        proposalId: p.proposalId,
-        integrationLaneName: p.integrationLaneName || `integration/${Date.now().toString(36)}`,
-        title: p.title || "Integration PR",
-        body: p.body || "",
-        draft: p.draft ?? false,
-      });
+      try {
+        await window.ade.prs.commitIntegration({
+          proposalId: p.proposalId,
+          integrationLaneName: p.integrationLaneName || `integration/${Date.now().toString(36)}`,
+          title: p.title || "Integration PR",
+          body: p.body || "",
+          draft: p.draft ?? false,
+        });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!isDirtyWorktreeErrorMessage(message) || !window.confirm(`${stripDirtyWorktreePrefix(message)}\n\nContinue and create the integration PR anyway?`)) {
+          throw err;
+        }
+        await window.ade.prs.commitIntegration({
+          proposalId: p.proposalId,
+          integrationLaneName: p.integrationLaneName || `integration/${Date.now().toString(36)}`,
+          title: p.title || "Integration PR",
+          body: p.body || "",
+          draft: p.draft ?? false,
+          allowDirtyWorktree: true,
+        });
+      }
       setSelectedProposalId(null);
       await loadProposals();
       await onRefresh();
@@ -406,10 +471,22 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
   };
 
   const handleResimulate = async (p: IntegrationProposal) => {
+    const deleteIntegrationLane = p.integrationLaneId
+      ? window.confirm(
+          [
+            "Re-simulating will replace this proposal.",
+            `Also delete the integration lane "${p.integrationLaneName || p.integrationLaneId}" that ADE created for it?`,
+            ...getIntegrationLaneWarningMessages(p),
+          ].join("\n\n"),
+        )
+      : false;
     setResimBusy(true);
     setCommitError(null);
     try {
-      await window.ade.prs.deleteProposal(p.proposalId);
+      await window.ade.prs.deleteProposal({
+        proposalId: p.proposalId,
+        deleteIntegrationLane,
+      });
       const result = await window.ade.prs.simulateIntegration({
         sourceLaneIds: p.sourceLaneIds,
         baseBranch: p.baseBranch,
@@ -423,11 +500,16 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
     }
   };
 
-  const handleDeleteProposal = async (proposalId: string) => {
+  const handleDeleteProposal = async (proposal: IntegrationProposal) => {
     setDeleteProposalBusy(true);
     setCommitError(null);
     try {
-      await window.ade.prs.deleteProposal(proposalId);
+      await window.ade.prs.deleteProposal({
+        proposalId: proposal.proposalId,
+        deleteIntegrationLane: deleteProposalLaneToo && Boolean(proposal.integrationLaneId),
+      });
+      setDeleteProposalConfirm(false);
+      setDeleteProposalLaneToo(false);
       setSelectedProposalId(null);
       await loadProposals();
     } catch (err: unknown) {
@@ -459,9 +541,19 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
   }, [selectedProposal?.proposalId, selectedProposal?.resolutionState]);
 
   React.useEffect(() => {
+    setDeleteProposalConfirm(false);
+    setDeleteProposalLaneToo(false);
+  }, [selectedProposal?.proposalId]);
+
+  React.useEffect(() => {
     if (!selectedProposal) return;
     setExpandedPairKeys([]);
   }, [selectedProposal?.proposalId]);
+
+  React.useEffect(() => {
+    if (!resolutionState || Object.keys(resolutionState.stepResolutions).length === 0) return;
+    setResolutionPanelDismissed(false);
+  }, [resolutionState]);
 
   const proposalLaneCards = React.useMemo<ProposalLaneCard[]>(() => {
     if (!selectedProposal) return [];
@@ -704,6 +796,17 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
   const ensureIntegrationLaneForResolution = React.useCallback(async (): Promise<IntegrationResolutionState | null> => {
     if (!selectedProposal) return null;
     if (resolutionState?.integrationLaneId) return resolutionState;
+    if (selectedProposal.resolutionState?.integrationLaneId) {
+      setResolutionState(selectedProposal.resolutionState);
+      return selectedProposal.resolutionState;
+    }
+    if (selectedProposal.integrationLaneId) {
+      const existingState = await window.ade.prs.getIntegrationResolutionState(selectedProposal.proposalId).catch(() => null);
+      if (existingState?.integrationLaneId) {
+        setResolutionState(existingState);
+        return existingState;
+      }
+    }
     setCreateLaneBusy(true);
     try {
       const result = await window.ade.prs.createIntegrationLaneForProposal({
@@ -723,6 +826,8 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
         nextState.stepResolutions[conflictId] = "pending";
       }
       setResolutionState(nextState);
+      setResolutionPanelDismissed(false);
+      await onRefresh().catch(() => {});
       return nextState;
     } catch (err: unknown) {
       setCommitError(err instanceof Error ? err.message : String(err));
@@ -730,7 +835,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
     } finally {
       setCreateLaneBusy(false);
     }
-  }, [resolutionState, selectedProposal]);
+  }, [onRefresh, resolutionState, selectedProposal]);
 
   const launchProposalResolver = React.useCallback(async (laneIds: string[]) => {
     if (!selectedProposal) return;
@@ -740,33 +845,17 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
       return;
     }
 
+    const targetLaneId = resolveTargetLaneId(selectedProposal.baseBranch);
+    if (!targetLaneId) {
+      setCommitError(`Could not map base branch "${selectedProposal.baseBranch}" to a lane. Create/attach that lane first.`);
+      return;
+    }
+
     setResolvingLaneId(uniqueLaneIds[0] ?? null);
     try {
       const resState = await ensureIntegrationLaneForResolution();
       if (!resState?.integrationLaneId) return;
 
-      const normalizedBase = normalizeBranchName(selectedProposal.baseBranch);
-      const targetLaneId = lanes.find((lane) => normalizeBranchName(lane.branchRef) === normalizedBase)?.id;
-      if (!targetLaneId) {
-        setCommitError(`Could not map base branch "${selectedProposal.baseBranch}" to a lane. Create/attach that lane first.`);
-        return;
-      }
-
-      setResolutionState((prev) => {
-        if (!prev) return prev;
-        const nextStepResolutions = { ...prev.stepResolutions };
-        for (const laneId of uniqueLaneIds) {
-          nextStepResolutions[laneId] = "resolving";
-        }
-        return {
-          ...prev,
-          stepResolutions: nextStepResolutions,
-          activeWorkerStepId: uniqueLaneIds[0] ?? null,
-          activeLaneId: uniqueLaneIds[0] ?? null,
-          updatedAt: new Date().toISOString()
-        };
-      });
-      setActiveWorkerStepId(uniqueLaneIds[0] ?? null);
       setProposalResolverConfig({
         sourceLaneId: uniqueLaneIds[0]!,
         sourceLaneIds: uniqueLaneIds.length > 1 ? uniqueLaneIds : undefined,
@@ -775,13 +864,14 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
         scenario: uniqueLaneIds.length > 1 ? "integration-merge" : "single-merge",
         recheckLaneIds: uniqueLaneIds
       });
+      setResolutionPanelDismissed(false);
       setResolverOpen(true);
     } catch (err: unknown) {
       setCommitError(err instanceof Error ? err.message : String(err));
     } finally {
       setResolvingLaneId(null);
     }
-  }, [ensureIntegrationLaneForResolution, lanes, selectedProposal]);
+  }, [ensureIntegrationLaneForResolution, resolveTargetLaneId, selectedProposal]);
 
   const handleResolveWithAI = async (stepLaneId: string) => {
     await launchProposalResolver([stepLaneId]);
@@ -797,8 +887,8 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
       // Collect unique lane IDs from pairwise conflict pairs
       const seen = new Set<string>();
       for (const pair of proposalConflictingPairs) {
-        seen.add(pair.laneAId);
-        seen.add(pair.laneBId);
+        if (selectedProposal.sourceLaneIds.includes(pair.laneAId)) seen.add(pair.laneAId);
+        if (selectedProposal.sourceLaneIds.includes(pair.laneBId)) seen.add(pair.laneBId);
       }
       conflictLaneIds = Array.from(seen);
     } else if (proposalConflictSteps.length > 0) {
@@ -815,6 +905,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
   const handleRecheck = async (stepLaneId: string) => {
     if (!selectedProposal) return;
     try {
+      setCommitError(null);
       const result = await window.ade.prs.recheckIntegrationStep({
         proposalId: selectedProposal.proposalId,
         laneId: stepLaneId,
@@ -822,8 +913,14 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
       // Update resolution state
       setResolutionState((prev) => prev ? {
         ...prev,
+        activeWorkerStepId: result.resolution === "resolving" ? prev.activeWorkerStepId : null,
+        activeLaneId: result.resolution === "resolving" ? prev.activeLaneId : null,
         stepResolutions: { ...prev.stepResolutions, [stepLaneId]: result.resolution },
       } : prev);
+      if (result.message) {
+        setCommitError(result.message);
+      }
+      setResolutionPanelDismissed(false);
       if (result.allResolved) {
         // Reload proposals to get updated overall outcome
         await loadProposals();
@@ -859,8 +956,8 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
       // Collect unique lane IDs involved in conflicts
       const conflictLaneIds = new Set<string>();
       for (const pair of proposalConflictingPairs) {
-        conflictLaneIds.add(pair.laneAId);
-        conflictLaneIds.add(pair.laneBId);
+        if (selectedProposal.sourceLaneIds.includes(pair.laneAId)) conflictLaneIds.add(pair.laneAId);
+        if (selectedProposal.sourceLaneIds.includes(pair.laneBId)) conflictLaneIds.add(pair.laneBId);
       }
       if (conflictLaneIds.size === 0) return false;
       return Array.from(conflictLaneIds).every((laneId) => {
@@ -877,6 +974,14 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
     });
   }, [selectedProposal, resolutionState, proposalConflictingPairs]);
 
+  const proposalResolutionRunInFlight = Boolean(
+    proposalResolverConfig
+    && (
+      resolverOpen
+      || resolutionState?.activeLaneId
+    ),
+  );
+
   const mergeSourcesResolved = React.useMemo(() => {
     if (!selectedPr) return [];
     const sourceIds = selectedMergeContext?.sourceLaneIds ?? [selectedPr.laneId];
@@ -886,8 +991,45 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
   const resolverTargetLaneId = React.useMemo(() => {
     if (selectedMergeContext?.targetLaneId) return selectedMergeContext.targetLaneId;
     if (!selectedPr) return null;
-    return lanes.find((l) => normalizeBranchName(l.branchRef) === normalizeBranchName(selectedPr.baseBranch))?.id ?? null;
-  }, [lanes, selectedPr, selectedMergeContext]);
+    return resolveTargetLaneId(selectedPr.baseBranch);
+  }, [resolveTargetLaneId, selectedPr, selectedMergeContext]);
+
+  const selectedProposalTargetLaneId = React.useMemo(() => {
+    if (!selectedProposal) return null;
+    return resolveTargetLaneId(selectedProposal.baseBranch);
+  }, [resolveTargetLaneId, selectedProposal]);
+
+  const proposalAdvisories = React.useMemo(() => {
+    if (!selectedProposal) return [];
+    const advisories: string[] = [];
+    if (selectedProposal.sourceLaneIds.length > 1) {
+      advisories.push("ADE applies source lanes sequentially in the listed order when it builds the integration lane. Re-simulate before commit if you change merge precedence.");
+    }
+    if (!selectedProposalTargetLaneId) {
+      advisories.push(`No active lane currently maps to base branch "${selectedProposal.baseBranch}". Create or attach that lane before AI resolution or PR creation.`);
+    }
+    if (selectedProposal.pairwiseResults.some((pair) => pair.outcome === "conflict" && pair.conflictingFiles.length === 0)) {
+      advisories.push("Some conflict pairs are missing detailed file paths/hunks, so review the resulting integration lane carefully before landing.");
+    }
+    advisories.push("The AI resolver edits the integration lane with bounded project/lane/conflict context. Treat the Run tab as the final validation gate before merging the resulting PR.");
+    return advisories;
+  }, [selectedProposal, selectedProposalTargetLaneId]);
+
+  const simulateAdvisories = React.useMemo(() => {
+    if (!selectedPr || !simulateResult) return [];
+    const advisories: string[] = [];
+    const sourceCount = selectedMergeContext?.sourceLaneIds?.length ?? 1;
+    if (sourceCount > 1) {
+      advisories.push("Simulation is pairwise, but commit uses sequential merges in source order. Keep the ordering intentional.");
+    }
+    if (!resolverTargetLaneId) {
+      advisories.push(`No active lane currently maps to base branch "${selectedPr.baseBranch}". Create or attach that lane before trying AI-assisted integration.`);
+    }
+    if (simulateResult.pairwiseResults.some((pair) => pair.outcome === "conflict" && pair.conflictingFiles.length === 0)) {
+      advisories.push("At least one conflict pair has limited file detail. Validate the integration lane carefully after resolution.");
+    }
+    return advisories;
+  }, [resolverTargetLaneId, selectedMergeContext?.sourceLaneIds, selectedPr, simulateResult]);
 
   const handleSimulate = async () => {
     if (!selectedPr) return;
@@ -1244,6 +1386,8 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
           </div>
         </div>
 
+        <AdvisoryPanel messages={simulateAdvisories} />
+
         {/* ---- Source Lanes section ---- */}
         <div
           style={{
@@ -1530,44 +1674,6 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
               </button>
             </div>
 
-            {backgroundSession && !resolverOpen ? (
-              <div
-                className="flex items-center justify-between"
-                style={{ marginTop: 10, padding: "8px 10px", gap: 8, background: "#A78BFA10", border: "1px solid #A78BFA30" }}
-              >
-                <div className="flex items-center" style={{ gap: 8, fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "#A1A1AA" }}>
-                  {backgroundSession.exitCode == null ? (
-                    <CircleNotch size={12} className="animate-spin" style={{ color: "#A78BFA" }} />
-                  ) : (
-                    <CheckCircle size={12} style={{ color: backgroundSession.exitCode === 0 ? "#22C55E" : "#F59E0B" }} />
-                  )}
-                  {backgroundSession.exitCode == null
-                    ? "AI resolver running in background."
-                    : (backgroundSession.exitCode === 0 ? "Background AI resolver finished." : "Background AI resolver exited with errors.")}
-                </div>
-                <div className="flex items-center" style={{ gap: 8 }}>
-                  <button
-                    type="button"
-                    className="inline-flex items-center font-mono font-bold uppercase tracking-[1px]"
-                    style={{ fontSize: 10, height: 26, padding: "0 10px", background: "transparent", color: "#A78BFA", border: "1px solid #A78BFA30", cursor: "pointer" }}
-                    onClick={() => setResolverOpen(true)}
-                  >
-                    REOPEN RUN
-                  </button>
-                  {backgroundSession.exitCode != null ? (
-                    <button
-                      type="button"
-                      className="inline-flex items-center font-mono font-bold uppercase tracking-[1px]"
-                      style={{ fontSize: 10, height: 26, padding: "0 10px", background: "transparent", color: "#71717A", border: "1px solid #27272A", cursor: "pointer" }}
-                      onClick={() => setBackgroundSession(null)}
-                    >
-                      DISMISS
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
-
             {/* Delete confirmation panel */}
             {deleteConfirm && (
             <div
@@ -1635,30 +1741,32 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
           )}
         </div>
 
-        {/* ---- Resolver modal ---- */}
-        {resolverTargetLaneId ? (
-          <ResolverTerminalModal
-            open={resolverOpen}
-            onOpenChange={setResolverOpen}
-            sourceLaneId={mergeSourcesResolved[0]?.laneId ?? selectedPr.laneId}
-            sourceLaneIds={mergeSourcesResolved.length > 1 ? mergeSourcesResolved.map((s) => s.laneId) : undefined}
-            targetLaneId={resolverTargetLaneId}
-            cwdLaneId={resolverTargetLaneId}
-            scenario={mergeSourcesResolved.length > 1 ? "integration-merge" : "single-merge"}
-            sourceTab="integration"
-            initialModel={resolverModel}
-            initialReasoningEffort={resolverReasoningLevel}
+        {resolverOpen && resolverTargetLaneId ? (
+          <PrAiResolverPanel
+            key={`${selectedPr.id}:${resolverTargetLaneId}`}
+            title="INTEGRATION AI RESOLVER"
+            description="Resolve this integration PR inline with the shared chat transcript, tool calls, and follow-up controls."
+            className="mt-4"
+            sessionShellClassName="flex h-[620px] min-h-[540px] max-h-[70vh] flex-col"
+            context={{
+              sourceTab: "integration",
+              sourceLaneId: mergeSourcesResolved[0]?.laneId ?? selectedPr.laneId,
+              sourceLaneIds: mergeSourcesResolved.length > 1 ? mergeSourcesResolved.map((source) => source.laneId) : undefined,
+              targetLaneId: resolverTargetLaneId,
+              laneId: resolverTargetLaneId,
+              scenario: mergeSourcesResolved.length > 1 ? "integration-merge" : "single-merge",
+            }}
+            modelId={resolverModel}
+            reasoningEffort={resolverReasoningLevel}
             onModelChange={(model, effort) => {
               setResolverModel(model);
-              setResolverReasoningLevel(effort ?? resolverReasoningLevel);
-            }}
-            onBackgroundSession={(session) => {
-              setBackgroundSession({ ...session, exitCode: null });
+              setResolverReasoningLevel(effort || resolverReasoningLevel);
             }}
             onCompleted={() => {
-              setBackgroundSession(null);
               void onRefresh();
             }}
+            onDismiss={() => setResolverOpen(false)}
+            startLabel="Start Integration Resolver"
           />
         ) : null}
       </div>
@@ -1773,6 +1881,8 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
             </div>
           </div>
         </div>
+
+        <AdvisoryPanel messages={proposalAdvisories} />
 
         {isLegacySequentialProposal && (
           <div
@@ -2221,7 +2331,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
               </div>
               <div className="font-mono" style={{ fontSize: 10, color: "#71717A", marginTop: 6 }}>
                 {totalProposalConflictFiles} conflict file{totalProposalConflictFiles === 1 ? "" : "s"} across {proposalConflictingPairs.length} lane pair{proposalConflictingPairs.length !== 1 ? "s" : ""}.
-                Launches the same live AI resolver terminal used across PR tabs, with shared model and reasoning controls.
+                Launches the inline AI resolver chat used across PR tabs, with shared model and reasoning controls.
               </div>
             </div>
 
@@ -2285,54 +2395,97 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
                     AI resolver session running
                   </span>
                   <span className="font-mono" style={{ fontSize: 10, color: "#52525B", marginLeft: 4 }}>
-                    Reopen the resolver to watch/edit in real time.
+                    Transcript stays inline below while the worker resolves.
                   </span>
                 </div>
               )}
-
-              {backgroundSession && !resolverOpen ? (
-                <div
-                  className="flex items-center justify-between"
-                  style={{ gap: 8, marginTop: 10, padding: "8px 10px", background: "#A78BFA10", border: "1px solid #A78BFA30" }}
-                >
-                  <div className="flex items-center" style={{ gap: 8, fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "#A1A1AA" }}>
-                    {backgroundSession.exitCode == null ? (
-                      <CircleNotch size={12} className="animate-spin" style={{ color: "#A78BFA" }} />
-                    ) : (
-                      <CheckCircle size={12} style={{ color: backgroundSession.exitCode === 0 ? "#22C55E" : "#F59E0B" }} />
-                    )}
-                    {backgroundSession.exitCode == null
-                      ? "AI resolver running in background."
-                      : (backgroundSession.exitCode === 0 ? "Background AI resolver finished." : "Background AI resolver exited with errors.")}
-                  </div>
-                  <div className="flex items-center" style={{ gap: 8 }}>
-                    <button
-                      type="button"
-                      className="inline-flex items-center font-mono font-bold uppercase tracking-[1px]"
-                      style={{ fontSize: 10, height: 26, padding: "0 10px", background: "transparent", color: "#A78BFA", border: "1px solid #A78BFA30", cursor: "pointer" }}
-                      onClick={() => setResolverOpen(true)}
-                    >
-                      REOPEN RUN
-                    </button>
-                    {backgroundSession.exitCode != null ? (
-                      <button
-                        type="button"
-                        className="inline-flex items-center font-mono font-bold uppercase tracking-[1px]"
-                        style={{ fontSize: 10, height: 26, padding: "0 10px", background: "transparent", color: "#71717A", border: "1px solid #27272A", cursor: "pointer" }}
-                        onClick={() => setBackgroundSession(null)}
-                      >
-                        DISMISS
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              ) : null}
             </div>
           </div>
         )}
 
+        {proposalResolverConfig && resolverOpen ? (
+          <div style={{ marginBottom: 20 }}>
+            <PrAiResolverPanel
+              key={`${selectedProposal.proposalId}:${proposalResolverConfig.targetLaneId}`}
+              title="PROPOSAL AI RESOLVER"
+              description="Resolve the current integration proposal inline with the same chat-style transcript and follow-up controls used elsewhere in ADE."
+              className="min-h-0"
+              sessionShellClassName="flex h-[620px] min-h-[540px] max-h-[70vh] flex-col"
+              context={{
+                sourceTab: "integration",
+                sourceLaneId: proposalResolverConfig.sourceLaneId,
+                sourceLaneIds: proposalResolverConfig.sourceLaneIds,
+                targetLaneId: proposalResolverConfig.targetLaneId,
+                laneId: proposalResolverConfig.cwdLaneId,
+                proposalId: selectedProposal.proposalId,
+                scenario: proposalResolverConfig.scenario,
+              }}
+              modelId={resolverModel}
+              reasoningEffort={resolverReasoningLevel}
+              onModelChange={(model, effort) => {
+                setResolverModel(model);
+                setResolverReasoningLevel(effort || resolverReasoningLevel);
+              }}
+              onStarted={() => {
+                const startedLaneIds = [...proposalResolverConfig.recheckLaneIds];
+                setResolutionPanelDismissed(false);
+                setActiveWorkerStepId(startedLaneIds[0] ?? null);
+                setResolutionState((prev) => {
+                  if (!prev) return prev;
+                  const nextStepResolutions = { ...prev.stepResolutions };
+                  for (const laneId of startedLaneIds) {
+                    nextStepResolutions[laneId] = "resolving";
+                  }
+                  return {
+                    ...prev,
+                    stepResolutions: nextStepResolutions,
+                    activeWorkerStepId: startedLaneIds[0] ?? null,
+                    activeLaneId: startedLaneIds[0] ?? null,
+                    updatedAt: new Date().toISOString(),
+                  };
+                });
+              }}
+              onCompleted={(result) => {
+                const recheckLaneIds = [...proposalResolverConfig.recheckLaneIds];
+                void (async () => {
+                  if (result.status === "completed") {
+                    for (const laneId of recheckLaneIds) {
+                      await handleRecheck(laneId);
+                    }
+                    await loadProposals();
+                    await onRefresh();
+                  } else {
+                    const fallbackStatus = result.status === "failed" ? "failed" : "pending";
+                    setResolutionState((prev) => {
+                      if (!prev) return prev;
+                      const nextStepResolutions = { ...prev.stepResolutions };
+                      for (const laneId of recheckLaneIds) {
+                        if (nextStepResolutions[laneId] === "resolving") {
+                          nextStepResolutions[laneId] = fallbackStatus;
+                        }
+                      }
+                      return {
+                        ...prev,
+                        stepResolutions: nextStepResolutions,
+                        activeWorkerStepId: null,
+                        activeLaneId: null,
+                        updatedAt: new Date().toISOString(),
+                      };
+                    });
+                    if (result.status === "failed" && result.message) {
+                      setCommitError(result.message);
+                    }
+                  }
+                  setActiveWorkerStepId(null);
+                })();
+              }}
+              startLabel="Start Proposal Resolver"
+            />
+          </div>
+        ) : null}
+
         {/* ---- Worker resolution progress (when resolving) ---- */}
-        {resolutionState && Object.keys(resolutionState.stepResolutions).length > 0 && selectedProposal && (
+        {resolutionState && Object.keys(resolutionState.stepResolutions).length > 0 && selectedProposal && (!resolutionPanelDismissed || proposalResolutionRunInFlight) && (
           <div
             style={{
               background: "#13101A",
@@ -2354,12 +2507,13 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
             >
               <div className="flex items-center" style={{ gap: 10 }}>
                 <Robot size={14} weight="fill" style={{ color: "#A78BFA" }} />
-                  <SectionHeader>AI RESOLUTION PROGRESS</SectionHeader>
+                <SectionHeader>AI RESOLUTION PROGRESS</SectionHeader>
               </div>
               <div className="flex items-center" style={{ gap: 8 }}>
                 <Button
                   size="sm"
                   variant="outline"
+                  disabled={!resolutionState?.activeLaneId || proposalResolutionRunInFlight}
                   onClick={() => {
                     if (resolutionState?.activeLaneId) {
                       void handleRecheck(resolutionState.activeLaneId);
@@ -2372,7 +2526,16 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
                 <Button
                   size="sm"
                   variant="ghost"
-                  onClick={() => setActiveWorkerStepId(null)}
+                  onClick={() => {
+                    setActiveWorkerStepId(null);
+                    setResolutionPanelDismissed(true);
+                    setResolutionState((prev) => prev ? {
+                      ...prev,
+                      activeWorkerStepId: null,
+                      activeLaneId: null,
+                      updatedAt: new Date().toISOString(),
+                    } : prev);
+                  }}
                 >
                   DISMISS
                 </Button>
@@ -2400,44 +2563,46 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
                 </span>
               </div>
               <div className="flex flex-wrap items-center" style={{ gap: 6 }}>
-                {selectedProposal.steps.map((step) => {
-                  const status = resolutionState.stepResolutions[step.laneId];
-                  const isActive = resolutionState.activeLaneId === step.laneId;
-                  const statusConfig = {
-                    "resolved":     { label: "RESOLVED",    color: "#22C55E", bg: "#22C55E18" },
-                    "merged-clean": { label: "CLEAN",       color: "#22C55E", bg: "#22C55E18" },
+                {proposalLaneCards
+                  .filter((lane) => Object.prototype.hasOwnProperty.call(resolutionState.stepResolutions, lane.laneId))
+                  .map((lane) => {
+                    const status = resolutionState.stepResolutions[lane.laneId];
+                    const isActive = resolutionState.activeLaneId === lane.laneId;
+                    const statusConfig = {
+                      "resolved":     { label: "RESOLVED",    color: "#22C55E", bg: "#22C55E18" },
+                      "merged-clean": { label: "CLEAN",       color: "#22C55E", bg: "#22C55E18" },
                       "resolving":    { label: "AI RUNNING", color: "#A78BFA", bg: "#A78BFA18" },
-                    "failed":       { label: "FAILED",      color: "#EF4444", bg: "#EF444418" },
-                    "pending":      { label: "PENDING",     color: "#71717A", bg: "#71717A18" },
-                  }[status ?? "pending"] ?? { label: "PENDING", color: "#71717A", bg: "#71717A18" };
-                  return (
-                    <div
-                      key={`progress-${step.laneId}`}
-                      className="flex items-center"
-                      style={{
-                        gap: 6,
-                        padding: "4px 8px",
-                        background: isActive ? "#A78BFA12" : "#0F0D14",
-                        border: isActive ? "1px solid #A78BFA40" : "1px solid #1E1B26",
-                      }}
-                    >
-                      <span className="font-mono font-semibold truncate" style={{ fontSize: 10, color: "#FAFAFA", maxWidth: 100 }}>
-                        {step.laneName}
-                      </span>
-                      <span
-                        className="font-mono font-bold uppercase tracking-[1px]"
+                      "failed":       { label: "FAILED",      color: "#EF4444", bg: "#EF444418" },
+                      "pending":      { label: "PENDING",     color: "#71717A", bg: "#71717A18" },
+                    }[status ?? "pending"] ?? { label: "PENDING", color: "#71717A", bg: "#71717A18" };
+                    return (
+                      <div
+                        key={`progress-${lane.laneId}`}
+                        className="flex items-center"
                         style={{
-                          fontSize: 8,
-                          padding: "1px 4px",
-                          background: statusConfig.bg,
-                          color: statusConfig.color,
+                          gap: 6,
+                          padding: "4px 8px",
+                          background: isActive ? "#A78BFA12" : "#0F0D14",
+                          border: isActive ? "1px solid #A78BFA40" : "1px solid #1E1B26",
                         }}
                       >
-                        {statusConfig.label}
-                      </span>
-                    </div>
-                  );
-                })}
+                        <span className="font-mono font-semibold truncate" style={{ fontSize: 10, color: "#FAFAFA", maxWidth: 100 }}>
+                          {lane.laneName}
+                        </span>
+                        <span
+                          className="font-mono font-bold uppercase tracking-[1px]"
+                          style={{
+                            fontSize: 8,
+                            padding: "1px 4px",
+                            background: statusConfig.bg,
+                            color: statusConfig.color,
+                          }}
+                        >
+                          {statusConfig.label}
+                        </span>
+                      </div>
+                    );
+                  })}
               </div>
               {/* Active lane status bar */}
               {resolutionState.activeLaneId && (
@@ -2469,7 +2634,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
             {/* Create PR on GitHub */}
             {(() => {
               const hasUnresolved = selectedProposal.overallOutcome !== "clean" && !allStepsResolved;
-              const isDisabled = commitBusy || selectedProposal.overallOutcome === "blocked" || hasUnresolved;
+              const isDisabled = commitBusy || selectedProposal.overallOutcome === "blocked" || hasUnresolved || !selectedProposalTargetLaneId;
               return (
                 <button
                   type="button"
@@ -2563,12 +2728,124 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
                 opacity: deleteProposalBusy ? 0.4 : 1,
                 marginLeft: "auto",
               }}
-              onClick={() => void handleDeleteProposal(selectedProposal.proposalId)}
+              onClick={() => setDeleteProposalConfirm((prev) => !prev)}
             >
               <Trash size={14} weight="regular" style={{ marginRight: 6 }} />
               {deleteProposalBusy ? "DELETING..." : "DELETE PROPOSAL"}
             </button>
           </div>
+
+          {selectedProposalLaneWarnings.length > 0 && (
+            <div
+              style={{
+                marginTop: 12,
+                padding: "10px 12px",
+                background: "#F59E0B0C",
+                border: "1px solid #F59E0B24",
+              }}
+            >
+              <div className="font-mono font-semibold uppercase tracking-[1px]" style={{ fontSize: 10, color: "#F59E0B", marginBottom: 8 }}>
+                INTEGRATION LANE STATUS
+              </div>
+              <div className="flex flex-col" style={{ gap: 6 }}>
+                {selectedProposalLaneWarnings.map((message) => (
+                  <span key={message} className="font-mono" style={{ fontSize: 11, color: "#FCD34D" }}>
+                    {message}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {deleteProposalConfirm && (
+            <div
+              style={{
+                marginTop: 12,
+                padding: "12px 14px",
+                background: "#EF444408",
+                border: "1px solid #EF444420",
+              }}
+            >
+              <div className="font-mono font-semibold uppercase tracking-[1px]" style={{ fontSize: 10, color: "#EF4444", marginBottom: 8 }}>
+                DELETE THIS PROPOSAL?
+              </div>
+              <div className="font-mono" style={{ fontSize: 11, color: "#D4D4D8", marginBottom: 10 }}>
+                ADE will remove the saved integration proposal. You can optionally delete the integration lane it created for this proposal too.
+              </div>
+              {selectedProposal.integrationLaneId && (
+                <label className="flex items-start font-mono cursor-pointer" style={{ fontSize: 11, color: "#D4D4D8", gap: 8, marginBottom: 10 }}>
+                  <input
+                    type="checkbox"
+                    checked={deleteProposalLaneToo}
+                    onChange={(e) => setDeleteProposalLaneToo(e.target.checked)}
+                    style={{ accentColor: "#EF4444", marginTop: 2 }}
+                  />
+                  <span>
+                    Also delete integration lane <span style={{ color: "#FAFAFA" }}>{selectedProposal.integrationLaneName || selectedProposal.integrationLaneId}</span>
+                  </span>
+                </label>
+              )}
+              {deleteProposalLaneToo && selectedProposalLaneWarnings.length > 0 && (
+                <div
+                  style={{
+                    marginBottom: 10,
+                    padding: "10px 12px",
+                    background: "#F59E0B10",
+                    border: "1px solid #F59E0B24",
+                  }}
+                >
+                  <div className="flex flex-col" style={{ gap: 6 }}>
+                    {selectedProposalLaneWarnings.map((message) => (
+                      <span key={`delete-${message}`} className="font-mono" style={{ fontSize: 11, color: "#FCD34D" }}>
+                        {message}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div className="flex items-center" style={{ gap: 8 }}>
+                <button
+                  type="button"
+                  disabled={deleteProposalBusy}
+                  className="inline-flex items-center font-mono font-bold uppercase tracking-[1px] transition-all duration-100"
+                  style={{
+                    fontSize: 10,
+                    height: 30,
+                    padding: "0 12px",
+                    background: "transparent",
+                    color: deleteProposalBusy ? "#52525B" : "#EF4444",
+                    border: "1px solid #EF444440",
+                    cursor: deleteProposalBusy ? "not-allowed" : "pointer",
+                    opacity: deleteProposalBusy ? 0.5 : 1,
+                  }}
+                  onClick={() => void handleDeleteProposal(selectedProposal)}
+                >
+                  {deleteProposalBusy ? "DELETING..." : deleteProposalLaneToo ? "DELETE PROPOSAL + LANE" : "DELETE PROPOSAL ONLY"}
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex items-center font-mono font-bold uppercase tracking-[1px] transition-all duration-100"
+                  style={{
+                    fontSize: 10,
+                    height: 30,
+                    padding: "0 12px",
+                    background: "transparent",
+                    color: "#A1A1AA",
+                    border: "1px solid #27272A",
+                    cursor: "pointer",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = "#13101A"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                  onClick={() => {
+                    setDeleteProposalConfirm(false);
+                    setDeleteProposalLaneToo(false);
+                  }}
+                >
+                  CANCEL
+                </button>
+              </div>
+            </div>
+          )}
 
           {commitError && (
             <div
@@ -2583,41 +2860,6 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
             </div>
           )}
         </div>
-
-        {proposalResolverConfig ? (
-          <ResolverTerminalModal
-            open={resolverOpen}
-            onOpenChange={setResolverOpen}
-            sourceLaneId={proposalResolverConfig.sourceLaneId}
-            sourceLaneIds={proposalResolverConfig.sourceLaneIds}
-            targetLaneId={proposalResolverConfig.targetLaneId}
-            cwdLaneId={proposalResolverConfig.cwdLaneId}
-            scenario={proposalResolverConfig.scenario}
-            sourceTab="integration"
-            initialModel={resolverModel}
-            initialReasoningEffort={resolverReasoningLevel}
-            onModelChange={(model, effort) => {
-              setResolverModel(model);
-              setResolverReasoningLevel(effort ?? resolverReasoningLevel);
-            }}
-            onBackgroundSession={(session) => {
-              setBackgroundSession({ ...session, exitCode: null });
-            }}
-            onCompleted={() => {
-              const recheckLaneIds = [...proposalResolverConfig.recheckLaneIds];
-              void (async () => {
-                for (const laneId of recheckLaneIds) {
-                  await handleRecheck(laneId);
-                }
-                setActiveWorkerStepId(null);
-                setBackgroundSession(null);
-                setProposalResolverConfig(null);
-                await loadProposals();
-                await onRefresh();
-              })();
-            }}
-          />
-        ) : null}
 
         {/* ---- Description (if any) ---- */}
         {selectedProposal.body && (
@@ -2664,7 +2906,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod: _m
       children: detailPane,
     },
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [prs, selectedPr, selectedPrId, mergeContextByPrId, laneById, mergeSourcesResolved, resolverTargetLaneId, simulateResult, simulateBusy, simulateError, resolverOpen, deleteConfirm, deleteBusy, deleteCloseGh, hasConflicts, rebaseNeeds, autoRebaseStatuses, setActiveTab, onSelectPr, onRefresh, stepOutcomeByLaneId, proposals, proposalsLoaded, selectedProposal, selectedProposalId, commitBusy, commitError, resimBusy, deleteProposalBusy, expandedPairKeys, resolutionState, activeWorkerStepId, createLaneBusy, resolvingLaneId, allStepsResolved, proposalLaneCards, proposalConflictingPairs, proposalConflictSteps, totalProposalConflictFiles, urlProposalId, conflictPairCountByLaneId, isLegacySequentialProposal, nextManualResolutionLaneId]);
+  }), [prs, selectedPr, selectedPrId, mergeContextByPrId, laneById, mergeSourcesResolved, resolverTargetLaneId, simulateResult, simulateBusy, simulateError, resolverOpen, proposalResolverConfig, deleteConfirm, deleteBusy, deleteCloseGh, hasConflicts, rebaseNeeds, autoRebaseStatuses, setActiveTab, onSelectPr, onRefresh, stepOutcomeByLaneId, proposals, proposalsLoaded, selectedProposal, selectedProposalId, commitBusy, commitError, resimBusy, deleteProposalBusy, expandedPairKeys, resolutionState, activeWorkerStepId, createLaneBusy, resolvingLaneId, resolutionPanelDismissed, allStepsResolved, proposalLaneCards, proposalConflictingPairs, proposalConflictSteps, totalProposalConflictFiles, urlProposalId, conflictPairCountByLaneId, isLegacySequentialProposal, nextManualResolutionLaneId]);
 
   return <PaneTilingLayout layoutId="prs:integration:v1" tree={PR_TAB_TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
 }

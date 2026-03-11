@@ -23,6 +23,7 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  DraftPrDescriptionArgs,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
   CtoUpdateCoreMemoryArgs,
@@ -122,6 +123,8 @@ import type {
   CreatePrFromLaneArgs,
   DeletePrArgs,
   DeletePrResult,
+  DeleteIntegrationProposalArgs,
+  DeleteIntegrationProposalResult,
   LinkPrToLaneArgs,
   PrEventPayload,
   PrCheck,
@@ -1137,8 +1140,8 @@ contextBridge.exposeInMainWorld("ade", {
     getReviews: async (prId: string): Promise<PrReview[]> => ipcRenderer.invoke(IPC.prsGetReviews, { prId }),
     updateDescription: async (args: UpdatePrDescriptionArgs): Promise<void> => ipcRenderer.invoke(IPC.prsUpdateDescription, args),
     delete: async (args: DeletePrArgs): Promise<DeletePrResult> => ipcRenderer.invoke(IPC.prsDelete, args),
-    draftDescription: async (laneId: string, model?: string): Promise<{ title: string; body: string }> =>
-      ipcRenderer.invoke(IPC.prsDraftDescription, { laneId, model }),
+    draftDescription: async (args: DraftPrDescriptionArgs): Promise<{ title: string; body: string }> =>
+      ipcRenderer.invoke(IPC.prsDraftDescription, args),
     land: async (args: LandPrArgs): Promise<LandResult> => ipcRenderer.invoke(IPC.prsLand, args),
     landStack: async (args: LandStackArgs): Promise<LandResult[]> => ipcRenderer.invoke(IPC.prsLandStack, args),
     openInGitHub: async (prId: string): Promise<void> => ipcRenderer.invoke(IPC.prsOpenInGitHub, { prId }),
@@ -1154,8 +1157,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.prsListProposals),
     updateProposal: (args: UpdateIntegrationProposalArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.prsUpdateProposal, args),
-    deleteProposal: (proposalId: string): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsDeleteProposal, proposalId),
+    deleteProposal: (args: DeleteIntegrationProposalArgs): Promise<DeleteIntegrationProposalResult> =>
+      ipcRenderer.invoke(IPC.prsDeleteProposal, args),
     landStackEnhanced: (args: LandStackEnhancedArgs): Promise<LandResult[]> =>
       ipcRenderer.invoke(IPC.prsLandStackEnhanced, args),
     landQueueNext: (args: LandQueueNextArgs): Promise<LandResult> =>

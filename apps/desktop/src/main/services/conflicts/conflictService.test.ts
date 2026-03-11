@@ -682,4 +682,121 @@ describe("conflictService conflict context integrity", () => {
     expect(run.contextGaps.length).toBeGreaterThan(0);
     expect(run.patchPath).toBeNull();
   });
+
+  it("uses proposal pairwise context and reuses the existing integration lane", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-proposal-session-"));
+    seedRepoWithLaneWork(repoRoot);
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const projectId = "proj-proposal-session";
+    await seedProjectAndLane(db, projectId, repoRoot);
+
+    const now = "2026-03-11T05:00:00.000Z";
+    db.run(
+      `
+        insert into lanes(
+          id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      ["lane-integration", projectId, "Integration lane", null, "worktree", "main", "integration/proposal", repoRoot, null, 0, "lane-target", null, null, null, "active", now, null]
+    );
+
+    db.run(
+      `
+        insert into integration_proposals(
+          id, project_id, source_lane_ids_json, base_branch, steps_json, pairwise_results_json,
+          lane_summaries_json, overall_outcome, created_at, status, integration_lane_id, resolution_state_json
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        "proposal-1",
+        projectId,
+        JSON.stringify(["lane-1", "lane-2"]),
+        "main",
+        JSON.stringify([
+          { laneId: "lane-1", laneName: "Lane 1", position: 0, outcome: "conflict", conflictingFiles: [], diffStat: { insertions: 1, deletions: 0, filesChanged: 1 } },
+          { laneId: "lane-2", laneName: "Lane 2", position: 1, outcome: "conflict", conflictingFiles: [], diffStat: { insertions: 1, deletions: 0, filesChanged: 1 } }
+        ]),
+        JSON.stringify([
+          {
+            laneAId: "lane-1",
+            laneAName: "Lane 1",
+            laneBId: "lane-2",
+            laneBName: "Lane 2",
+            outcome: "conflict",
+            conflictingFiles: [
+              {
+                path: "src/a.ts",
+                conflictMarkers: "<<<<<<< ours",
+                oursExcerpt: "export const a = 2;",
+                theirsExcerpt: "export const a = 3;",
+                diffHunk: "@@"
+              }
+            ]
+          }
+        ]),
+        JSON.stringify([]),
+        "conflict",
+        now,
+        "proposed",
+        "lane-integration",
+        JSON.stringify({
+          integrationLaneId: "lane-integration",
+          stepResolutions: { "lane-1": "resolving", "lane-2": "pending" },
+          activeWorkerStepId: "worker-1",
+          activeLaneId: "lane-1",
+          updatedAt: now
+        })
+      ]
+    );
+
+    const lanes = [
+      createLaneSummary(repoRoot, { id: "lane-1", name: "Lane 1", branchRef: "feature/lane-1" }),
+      createLaneSummary(repoRoot, { id: "lane-2", name: "Lane 2", branchRef: "feature/lane-2" }),
+      createLaneSummary(repoRoot, { id: "lane-target", name: "Target Lane", branchRef: "main" }),
+      createLaneSummary(repoRoot, { id: "lane-integration", name: "Integration lane", branchRef: "integration/proposal", parentLaneId: "lane-target" })
+    ];
+
+    const service = createConflictService({
+      db,
+      logger: createLogger(),
+      projectId,
+      projectRoot: repoRoot,
+      laneService: {
+        list: async () => lanes,
+        create: async () => {
+          throw new Error("should not create a generic integration lane");
+        },
+        getLaneBaseAndBranch: ({ laneId }: { laneId: string }) => {
+          const lane = lanes.find((entry) => entry.id === laneId) ?? lanes[0]!;
+          return { worktreePath: lane.worktreePath, baseRef: lane.baseRef, branchRef: lane.branchRef };
+        }
+      } as any,
+      projectConfigService: {
+        get: () => ({ effective: { providerMode: "guest" }, local: {} })
+      } as any,
+    });
+
+    const prepared = await service.prepareResolverSession({
+      provider: "claude",
+      targetLaneId: "lane-target",
+      sourceLaneIds: ["lane-1", "lane-2"],
+      cwdLaneId: "lane-integration",
+      proposalId: "proposal-1",
+      scenario: "integration-merge",
+      originSurface: "integration"
+    });
+
+    expect(prepared.cwdLaneId).toBe("lane-integration");
+    expect(prepared.integrationLaneId).toBe("lane-integration");
+
+    const prompt = fs.readFileSync(prepared.promptFilePath, "utf8");
+    expect(prompt).toContain("### Pair lane-1 -> lane-2");
+    expect(prompt).not.toContain("### Pair lane-1 -> lane-target");
+
+    const runRecordPath = path.join(repoRoot, ".ade", "packs", "external-resolver-runs", prepared.runId, "run.json");
+    const runRecord = JSON.parse(fs.readFileSync(runRecordPath, "utf8"));
+    expect(runRecord.integrationLaneId).toBe("lane-integration");
+    expect(runRecord.sourceLaneIds).toEqual(["lane-1", "lane-2"]);
+  });
 });

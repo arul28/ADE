@@ -598,6 +598,7 @@ function renderEvent(
   options?: {
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
     turnModelLabel?: string | null;
+    compactResolverView?: boolean;
   }
 ) {
   const event = envelope.event;
@@ -776,7 +777,7 @@ function renderEvent(
     const displayReasoning = reasoningText.length > 0 ? event.text : "Thinking...";
     return (
       <CollapsibleCard
-        defaultOpen
+        defaultOpen={!options?.compactResolverView}
         summary={
           <div className="flex items-center gap-2 font-mono text-[11px]">
             <span className="inline-flex h-5 w-5 items-center justify-center border border-violet-500/18 bg-violet-500/[0.08]">
@@ -1111,6 +1112,7 @@ type EventRowProps = {
   turnDividerLabel: string | null;
   turnModelLabel: string | null;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
+  compactResolverView?: boolean;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -1119,6 +1121,7 @@ const EventRow = React.memo(function EventRow({
   turnDividerLabel,
   turnModelLabel,
   onApproval,
+  compactResolverView = false,
 }: EventRowProps) {
   return (
     <div className="space-y-2">
@@ -1131,7 +1134,7 @@ const EventRow = React.memo(function EventRow({
           <div className="h-px flex-1 bg-accent/8" />
         </div>
       ) : null}
-      {renderEvent(envelope, { onApproval, turnModelLabel })}
+      {renderEvent(envelope, { onApproval, turnModelLabel, compactResolverView })}
     </div>
   );
 });
@@ -1177,12 +1180,14 @@ export function AgentChatMessageList({
   events,
   showStreamingIndicator = false,
   className,
-  onApproval
+  onApproval,
+  compactResolverView = false
 }: {
   events: AgentChatEventEnvelope[];
   showStreamingIndicator?: boolean;
   className?: string;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
+  compactResolverView?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const collapseCacheRef = useRef<{ events: AgentChatEventEnvelope[]; rows: RenderEnvelope[] }>({
@@ -1358,6 +1363,7 @@ export function AgentChatMessageList({
           turnDividerLabel={turnDividerLabel}
           turnModelLabel={turnModelLabel}
           onApproval={handleApproval}
+          compactResolverView={compactResolverView}
         />
       );
     }
@@ -1370,9 +1376,10 @@ export function AgentChatMessageList({
         turnDividerLabel={turnDividerLabel}
         turnModelLabel={turnModelLabel}
         onApproval={handleApproval}
+        compactResolverView={compactResolverView}
       />
     );
-  }, [rows, turnModelLabelMap, handleApproval, handleMeasure]);
+  }, [compactResolverView, rows, turnModelLabelMap, handleApproval, handleMeasure]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

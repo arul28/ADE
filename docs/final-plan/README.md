@@ -196,7 +196,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | CTO Agent (persistent project-aware assistant) | Phase 4 | Phase 3 | Complete (W1) |
 | Automations Platform + Night Shift | Phase 4 | Phase 3 | Planned |
 | Learning Packs (auto-curated knowledge) | Phase 4 | Phase 3 | Planned |
-| Memory Architecture Upgrade (vector search, tiers) | Phase 4 | Phase 3 | Complete (W6, W6½, W7a shipped; W7b/W7c remain for higher-level learning flows) |
+| Memory Architecture Upgrade (vector search, tiers) | Phase 4 | Phase 3 | Mostly complete (W6, W6½, W7a shipped; W7b mostly implemented; W7c core pipeline implemented with advanced capture still pending) |
 | Candidate Memory Triage Automation (auto-promote + stale archive sweep) | Phase 4 | Phase 3 memory lifecycle baseline | Complete (W6 + W6½) |
 | Mem0 Sidecar Integration (optional semantic index) | Post-Phase 4 | Phase 4 memory foundation | Deferred (evaluate after native memory upgrade + CTO baseline) |
 | Skill Library (recipe extraction + `.claude/skills/` materialization) | Phase 4 | Phase 4 Learning Packs + PROJ-039 viewer baseline | Planned (covered in Phase 4 W7) |

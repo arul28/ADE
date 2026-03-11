@@ -14,7 +14,13 @@ Dependencies: **W7a** (embeddings — needed for cosine similarity in episode cl
 | [Paperclip SKILLS.md Injection](https://github.com/paperclipai/paperclip/blob/main/doc/SPEC.md) | §7 Runtime Context, SKILLS.md section | Skills injected into agent system prompt at activation time. Goal hierarchy provides skill selection context. |
 | [CrewAI Memory — Long-Term](https://docs.crewai.com/concepts/memory) | Long-term memory and learning sections | Confidence evolution: success/failure tracking, automatic archival of low-confidence procedures. |
 
-W7c builds the extraction and materialization layer on top of W7a's embeddings and W7b's episodic summaries. It turns accumulated mission experience into reusable skills that any agent (Claude, Codex, or any future adapter) can consume.
+W7c builds the extraction and materialization layer on top of W7a's embeddings and W7b's episodic summaries. A 2026-03-10 code audit shows that the core extraction/materialization loop is already present in the product: procedural learning, confidence/history tracking, skill export, skill ingestion, and Memory Health UI surfaces are implemented. The remaining work is concentrated in the more advanced knowledge-capture sources described below (interventions, repeated-error mining, PR-review mining) and in finishing the end-to-end polish around those flows.
+
+##### Audit Snapshot (2026-03-10)
+
+- Implemented in code today: `proceduralLearningService.ts`, `skillRegistryService.ts`, and the Procedures/Skills views in `MemoryHealthTab.tsx`.
+- Episode clustering, procedure creation/update, confidence history, export to `.claude/skills/`, and filesystem re-indexing are all present.
+- Not yet fully implemented: intervention mining, repeated-error escalation, and PR review feedback capture as automatic knowledge sources.
 
 ##### Procedural Memory Extraction
 
@@ -167,7 +173,7 @@ Read existing skill and command files into project memory so that ADE agents can
 
 - **Export flow**: "Export as Skill" button opens a confirmation dialog showing the generated `SKILL.md` content with an editable name field. User confirms → file written → skill tab updated → memory entry linked.
 
-**Implementation status:** Not started.
+**Implementation status (2026-03-10):** Core implemented; advanced capture still pending.
 
 **Tests:**
 - Procedural extraction: 3+ similar episodes trigger extraction, LLM extraction call produces valid `ProceduralMemory`, confidence initialized from LLM estimate, source episode IDs recorded.

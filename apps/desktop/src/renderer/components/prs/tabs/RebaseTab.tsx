@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowsDownUp, Clock, CheckCircle, Warning, Sparkle, Eye, XCircle, CircleNotch } from "@phosphor-icons/react";
+import { ArrowsDownUp, Clock, CheckCircle, Warning, Sparkle, Eye, XCircle } from "@phosphor-icons/react";
 import type { LaneSummary, RebaseNeed, RebaseRun, RebaseScope } from "../../../../shared/types";
 import { Button } from "../../ui/Button";
 import { EmptyState } from "../../ui/EmptyState";
@@ -7,9 +7,8 @@ import { cn } from "../../ui/cn";
 import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { UrgencyGroup } from "../shared/UrgencyGroup";
 import { StatusDot } from "../shared/StatusDot";
-import { ResolverTerminalModal } from "../../shared/conflictResolver/ResolverTerminalModal";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
-import type { BackgroundResolverSession } from "../shared/prHelpers";
+import { PrAiResolverPanel } from "../shared/PrAiResolverPanel";
 
 type RebaseTabProps = {
   rebaseNeeds: RebaseNeed[];
@@ -71,7 +70,6 @@ export function RebaseTab({
   const [activeRun, setActiveRun] = React.useState<RebaseRun | null>(null);
   const [runLogs, setRunLogs] = React.useState<string[]>([]);
   const [selectedPushLaneIds, setSelectedPushLaneIds] = React.useState<string[]>([]);
-  const [backgroundSession, setBackgroundSession] = React.useState<BackgroundResolverSession | null>(null);
 
   const [collapsed, setCollapsed] = React.useState<Record<UrgencyCategory, boolean>>({
     attention: false,
@@ -127,18 +125,6 @@ export function RebaseTab({
   React.useEffect(() => {
     setRebaseError(null);
   }, [selectedItemId]);
-
-  React.useEffect(() => {
-    if (!backgroundSession?.ptyId) return;
-    const unsubscribe = window.ade.pty.onExit((event) => {
-      if (event.ptyId !== backgroundSession.ptyId) return;
-      setBackgroundSession((prev) => {
-        if (!prev || prev.ptyId !== event.ptyId) return prev;
-        return { ...prev, exitCode: event.exitCode ?? -1 };
-      });
-    });
-    return unsubscribe;
-  }, [backgroundSession?.ptyId]);
 
   React.useEffect(() => {
     const unsubscribe = window.ade.lanes.rebaseSubscribe((event) => {
@@ -780,40 +766,6 @@ export function RebaseTab({
               )}
             </div>
 
-            {backgroundSession && !resolverOpen ? (
-              <div
-                style={{
-                  backgroundColor: S.cardBg,
-                  border: `1px solid ${S.accentBorder}`,
-                  borderLeft: `3px solid ${S.accent}`,
-                  borderRadius: 0,
-                  padding: 12,
-                }}
-                className="flex flex-wrap items-center justify-between gap-2"
-              >
-                <div className="flex items-center gap-2" style={{ color: S.textSecondary, fontSize: 11, fontFamily: "JetBrains Mono, monospace" }}>
-                  {backgroundSession.exitCode == null ? (
-                    <CircleNotch size={12} className="animate-spin" style={{ color: S.accent }} />
-                  ) : (
-                    <CheckCircle size={12} style={{ color: backgroundSession.exitCode === 0 ? S.success : S.warning }} />
-                  )}
-                  {backgroundSession.exitCode == null
-                    ? "AI resolver is running in background."
-                    : (backgroundSession.exitCode === 0 ? "Background AI resolver finished." : "Background AI resolver exited with errors.")}
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button size="sm" variant="outline" onClick={() => setResolverOpen(true)}>
-                    REOPEN RUN
-                  </Button>
-                  {backgroundSession.exitCode != null ? (
-                    <Button size="sm" variant="ghost" onClick={() => setBackgroundSession(null)}>
-                      DISMISS
-                    </Button>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
-
             {/* ── Resolution Card ── */}
             <div
               style={{
@@ -835,7 +787,7 @@ export function RebaseTab({
                   RESOLUTION
                 </div>
                 <span className="font-mono" style={{ fontSize: 10, color: S.textMuted }}>
-                  Model + thinking are selected inside the AI resolver modal.
+                  Pick the model here, then it locks once the resolver starts.
                 </span>
               </div>
 
@@ -946,6 +898,31 @@ export function RebaseTab({
                   </span>
                 </div>
               )}
+
+              {resolverOpen && resolverTargetLaneId ? (
+                <div style={{ marginTop: 16 }}>
+                  <PrAiResolverPanel
+                    key={selectedNeed.laneId}
+                    title="REBASE AI RESOLVER"
+                    description="Launch the resolver inline, watch tool calls and reasoning stream into chat, and follow up without leaving this pane."
+                    context={{
+                      sourceTab: "rebase",
+                      sourceLaneId: selectedNeed.laneId,
+                      targetLaneId: resolverTargetLaneId,
+                      laneId: selectedNeed.laneId,
+                      scenario: "single-merge",
+                    }}
+                    modelId={resolverModel}
+                    reasoningEffort={resolverReasoningLevel}
+                    onModelChange={onResolverChange}
+                    onCompleted={() => {
+                      void onRefresh();
+                    }}
+                    onDismiss={() => setResolverOpen(false)}
+                    startLabel="Start Rebase Resolver"
+                  />
+                </div>
+              ) : null}
             </div>
 
             {/* ── Error Banner ── */}
@@ -969,28 +946,6 @@ export function RebaseTab({
               </div>
             )}
 
-            {/* ── Resolver Modal ── */}
-            {resolverTargetLaneId ? (
-              <ResolverTerminalModal
-                open={resolverOpen}
-                onOpenChange={setResolverOpen}
-                sourceLaneId={selectedNeed.laneId}
-                targetLaneId={resolverTargetLaneId}
-                cwdLaneId={selectedNeed.laneId}
-                scenario="single-merge"
-                sourceTab="rebase"
-                initialModel={resolverModel}
-                initialReasoningEffort={resolverReasoningLevel}
-                onModelChange={(model, effort) => onResolverChange(model, effort ?? resolverReasoningLevel)}
-                onBackgroundSession={(session) => {
-                  setBackgroundSession({ ...session, exitCode: null });
-                }}
-                onCompleted={() => {
-                  setBackgroundSession(null);
-                  void onRefresh();
-                }}
-              />
-            ) : null}
           </div>
         ) : (
           <div

@@ -1,7 +1,8 @@
 import React from "react";
-import { ArrowSquareOut } from "@phosphor-icons/react";
+import { ArrowSquareOut, GitMerge } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type { LaneSummary } from "../../../shared/types";
+import type { IntegrationLaneSource } from "../../lib/integrationLanes";
 import { COLORS, LABEL_STYLE, MONO_FONT, outlineButton } from "./laneDesignTokens";
 
 const TREE_ROW_H = 28;
@@ -68,11 +69,13 @@ function StackGraph({
   selectedLaneId,
   onSelect,
   runtimeByLaneId,
+  integrationSourcesByLaneId,
 }: {
   lanes: LaneSummary[];
   selectedLaneId: string | null;
   onSelect: (id: string) => void;
   runtimeByLaneId: LaneRuntimeMap;
+  integrationSourcesByLaneId: Map<string, IntegrationLaneSource[]>;
 }) {
   const layout = React.useMemo(() => {
     const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
@@ -209,6 +212,7 @@ function StackGraph({
 
         {layout.map((node) => {
           const { lane } = node;
+          const integrationSources = integrationSourcesByLaneId.get(lane.id) ?? [];
           const isSelected = selectedLaneId === lane.id;
           return (
             <button
@@ -227,7 +231,9 @@ function StackGraph({
               }}
               onClick={() => onSelect(lane.id)}
               title={
-                lane.parentLaneId
+                integrationSources.length > 0
+                  ? `Integration lane fed by ${integrationSources.map((source) => source.laneName).join(", ")}`
+                  : lane.parentLaneId
                   ? `Child of ${layoutById.get(lane.parentLaneId)?.lane.name ?? "parent"}`
                   : lane.laneType === "primary"
                     ? "Primary lane"
@@ -248,11 +254,24 @@ function StackGraph({
             >
               <LaneRuntimeDot bucket={runtimeByLaneId.get(lane.id)?.bucket ?? "none"} />
               <span className="truncate" style={{
-                maxWidth: 160,
+                maxWidth: integrationSources.length > 0 ? 120 : 160,
                 fontFamily: MONO_FONT,
                 fontSize: 11,
                 fontWeight: isSelected ? 600 : 500,
               }}>{lane.name}</span>
+              {integrationSources.length > 0 ? (
+                <span
+                  className="inline-flex items-center gap-1 rounded border px-1 py-0 text-[9px] uppercase tracking-[0.08em]"
+                  style={{
+                    color: "#C4B5FD",
+                    borderColor: "rgba(167,139,250,0.35)",
+                    background: "rgba(167,139,250,0.10)",
+                  }}
+                >
+                  <GitMerge size={9} weight="bold" />
+                  {integrationSources.length}
+                </span>
+              ) : null}
               <span style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.textDim }} className="shrink-0">
                 {lane.status.ahead}\u2191 {lane.status.behind}\u2193
               </span>
@@ -269,13 +288,23 @@ export function LaneStackPane({
   selectedLaneId,
   onSelect,
   runtimeByLaneId,
+  integrationSourcesByLaneId,
 }: {
   lanes: LaneSummary[];
   selectedLaneId: string | null;
   onSelect: (id: string) => void;
   runtimeByLaneId: LaneRuntimeMap;
+  integrationSourcesByLaneId?: Map<string, IntegrationLaneSource[]>;
 }) {
   const navigate = useNavigate();
+  const effectiveIntegrationSourcesByLaneId = React.useMemo(
+    () => integrationSourcesByLaneId ?? new Map<string, IntegrationLaneSource[]>(),
+    [integrationSourcesByLaneId],
+  );
+  const selectedIntegrationSources = React.useMemo(() => {
+    if (!selectedLaneId) return [];
+    return effectiveIntegrationSourcesByLaneId.get(selectedLaneId) ?? [];
+  }, [effectiveIntegrationSourcesByLaneId, selectedLaneId]);
 
   return (
     <div className="flex h-full flex-col" style={{ background: COLORS.pageBg }}>
@@ -294,11 +323,45 @@ export function LaneStackPane({
           CANVAS
         </button>
       </div>
+      {selectedIntegrationSources.length > 0 ? (
+        <div
+          className="shrink-0"
+          style={{
+            padding: "10px 16px",
+            borderBottom: `1px solid ${COLORS.border}`,
+            background: "rgba(167,139,250,0.08)",
+          }}
+        >
+          <div
+            className="mb-2 flex items-center gap-2"
+            style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", color: "#C4B5FD" }}
+          >
+            <GitMerge size={12} weight="bold" />
+            INTEGRATION LANE
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {selectedIntegrationSources.map((source) => (
+              <span
+                key={source.laneId}
+                className="rounded border px-2 py-0.5 text-[10px] font-medium"
+                style={{
+                  color: "#E9D5FF",
+                  borderColor: "rgba(167,139,250,0.35)",
+                  background: "rgba(167,139,250,0.12)",
+                }}
+              >
+                {source.laneName}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
       <StackGraph
         lanes={lanes}
         selectedLaneId={selectedLaneId}
         onSelect={onSelect}
         runtimeByLaneId={runtimeByLaneId}
+        integrationSourcesByLaneId={effectiveIntegrationSourcesByLaneId}
       />
     </div>
   );

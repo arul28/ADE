@@ -28,10 +28,13 @@ export type GitMergeTreeResult = GitRunResult & {
   branchA: string;
   branchB: string;
   conflicts: GitMergeTreeConflict[];
+  treeOid: string | null;
+  usedMergeBaseFlag: boolean;
   usedWriteTree: boolean;
 };
 
 const DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
+let mergeTreeMergeBaseSupportPromise: Promise<boolean> | null = null;
 
 function appendChunkWithCap(args: {
   current: string;
@@ -215,6 +218,35 @@ function parseMergeTreeConflicts(output: string): GitMergeTreeConflict[] {
   return Array.from(byPath.values());
 }
 
+function parseMergeTreeTreeOid(output: string): string | null {
+  const first = output
+    .replace(/\0/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  if (!first) return null;
+  return /^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(first) ? first : null;
+}
+
+function looksLikeMergeTreeUsage(output: string): boolean {
+  const normalized = output.trim().toLowerCase();
+  if (!normalized.length) return false;
+  return normalized.includes("usage: git merge-tree")
+    || normalized.includes("unknown option")
+    || normalized.includes("unknown switch");
+}
+
+async function supportsMergeTreeMergeBaseFlag(cwd: string): Promise<boolean> {
+  if (!mergeTreeMergeBaseSupportPromise) {
+    mergeTreeMergeBaseSupportPromise = (async () => {
+      const help = await runGit(["merge-tree", "-h"], { cwd, timeoutMs: 10_000 });
+      const combined = `${help.stdout}\n${help.stderr}`.toLowerCase();
+      return combined.includes("--merge-base");
+    })().catch(() => true);
+  }
+  return await mergeTreeMergeBaseSupportPromise;
+}
+
 export async function runGitMergeTree(args: {
   cwd: string;
   mergeBase: string;
@@ -223,24 +255,50 @@ export async function runGitMergeTree(args: {
   timeoutMs?: number;
 }): Promise<GitMergeTreeResult> {
   const timeoutMs = args.timeoutMs ?? 45_000;
-  const writeTreeCmd = [
-    "merge-tree",
-    "--write-tree",
-    "--messages",
-    "--merge-base",
-    args.mergeBase,
-    args.branchA,
-    args.branchB
-  ];
+  const supportsMergeBaseFlag = await supportsMergeTreeMergeBaseFlag(args.cwd);
+  const writeTreeCmd = supportsMergeBaseFlag
+    ? [
+        "merge-tree",
+        "--write-tree",
+        "--messages",
+        "--merge-base",
+        args.mergeBase,
+        args.branchA,
+        args.branchB
+      ]
+    : [
+        "merge-tree",
+        "--write-tree",
+        "--messages",
+        args.branchA,
+        args.branchB
+      ];
 
-  const writeTree = await runGit(writeTreeCmd, { cwd: args.cwd, timeoutMs });
-  const combined = `${writeTree.stdout}\n${writeTree.stderr}`;
+  let writeTree = await runGit(writeTreeCmd, { cwd: args.cwd, timeoutMs });
+  let usedMergeBaseFlag = supportsMergeBaseFlag;
+  let combined = `${writeTree.stdout}\n${writeTree.stderr}`;
+
+  if (
+    supportsMergeBaseFlag
+    && writeTree.exitCode !== 0
+    && looksLikeMergeTreeUsage(combined)
+  ) {
+    writeTree = await runGit(
+      ["merge-tree", "--write-tree", "--messages", args.branchA, args.branchB],
+      { cwd: args.cwd, timeoutMs }
+    );
+    usedMergeBaseFlag = false;
+    combined = `${writeTree.stdout}\n${writeTree.stderr}`;
+  }
+
   return {
     ...writeTree,
     mergeBase: args.mergeBase,
     branchA: args.branchA,
     branchB: args.branchB,
-    conflicts: parseMergeTreeConflicts(combined),
+    conflicts: looksLikeMergeTreeUsage(combined) ? [] : parseMergeTreeConflicts(combined),
+    treeOid: parseMergeTreeTreeOid(writeTree.stdout),
+    usedMergeBaseFlag,
     usedWriteTree: true
   };
 }

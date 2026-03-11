@@ -1,16 +1,20 @@
 import React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { GitPullRequest, GitMerge, Stack as Layers, CheckCircle, Warning, CircleNotch, X, GitBranch, Sparkle, ArrowRight, ArrowLeft, Check } from "@phosphor-icons/react";
+import { getModelById } from "../../../shared/modelRegistry";
 import { useAppStore } from "../../state/appStore";
 import type {
+  AiConfig,
   MergeMethod,
   PrSummary,
   IntegrationProposal,
   IntegrationProposalStep,
+  CreateQueuePrsResult,
   CreateIntegrationPrResult,
 } from "../../../shared/types";
-
+import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
 import { COLORS, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
+import { isDirtyWorktreeErrorMessage, stripDirtyWorktreePrefix } from "./shared/dirtyWorktree";
 
 type CreateMode = "normal" | "queue" | "integration";
 type WizardStep = "select-type" | "configure" | "execute";
@@ -73,6 +77,15 @@ const textareaStyle: React.CSSProperties = {
   ...inputStyle,
   resize: "none" as const,
 };
+
+const DEFAULT_PR_DESCRIPTION_MODEL = "anthropic/claude-haiku-4-5";
+
+function selectReasoningEffort(modelId: string, preferred: string | null): string | null {
+  const tiers = getModelById(modelId)?.reasoningTiers ?? [];
+  if (!tiers.length) return null;
+  if (preferred && tiers.includes(preferred)) return preferred;
+  return tiers.includes("medium") ? "medium" : (tiers[0] ?? null);
+}
 
 function StepOutcome({ outcome }: { outcome: IntegrationProposalStep["outcome"] }) {
   if (outcome === "clean") return <CheckCircle size={14} weight="fill" style={{ color: C.success }} />;
@@ -206,7 +219,9 @@ export function CreatePrModal({
 
   // Body & AI draft
   const [normalBody, setNormalBody] = React.useState("");
-  const [draftModel, setDraftModel] = React.useState("haiku");
+  const [draftModel, setDraftModel] = React.useState(DEFAULT_PR_DESCRIPTION_MODEL);
+  const [draftReasoningEffort, setDraftReasoningEffort] = React.useState<string | null>(null);
+  const [availableDraftModelIds, setAvailableDraftModelIds] = React.useState<string[]>([]);
   const [drafting, setDrafting] = React.useState(false);
 
   // Integration PR
@@ -221,7 +236,11 @@ export function CreatePrModal({
   const handleDraftAI = async (laneId: string) => {
     setDrafting(true);
     try {
-      const result = await window.ade.prs.draftDescription(laneId, draftModel);
+      const result = await window.ade.prs.draftDescription({
+        laneId,
+        model: draftModel,
+        reasoningEffort: draftReasoningEffort,
+      });
       if (mode === "normal") {
         setNormalTitle(result.title);
         setNormalBody(result.body);
@@ -256,7 +275,9 @@ export function CreatePrModal({
       setExecError(null);
       setResults(null);
       setNormalBody("");
-      setDraftModel("haiku");
+      setDraftModel(DEFAULT_PR_DESCRIPTION_MODEL);
+      setDraftReasoningEffort(null);
+      setAvailableDraftModelIds([]);
       setDrafting(false);
       setIntegrationSources([]);
       setIntegrationName("");
@@ -268,6 +289,36 @@ export function CreatePrModal({
       setIntegrationResult(null);
     }, 200);
     return () => clearTimeout(id);
+  }, [open]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    const loadDraftModelState = async () => {
+      try {
+        const [status, snapshot] = await Promise.all([
+          window.ade.ai.getStatus(),
+          window.ade.projectConfig.get(),
+        ]);
+        if (cancelled) return;
+        const effectiveAiRaw = snapshot.effective?.ai;
+        const effectiveAi = effectiveAiRaw && typeof effectiveAiRaw === "object" ? (effectiveAiRaw as AiConfig) : null;
+        const persisted = effectiveAi?.featureModelOverrides?.pr_descriptions;
+        const nextAvailableModelIds = status.availableModelIds ?? [];
+        const nextModelId = persisted || nextAvailableModelIds[0] || status.models.claude[0]?.id || DEFAULT_PR_DESCRIPTION_MODEL;
+        setAvailableDraftModelIds(nextAvailableModelIds);
+        setDraftModel(nextModelId);
+        setDraftReasoningEffort((current) => selectReasoningEffort(nextModelId, current));
+      } catch {
+        if (cancelled) return;
+        setAvailableDraftModelIds([]);
+        setDraftReasoningEffort((current) => selectReasoningEffort(DEFAULT_PR_DESCRIPTION_MODEL, current));
+      }
+    };
+    void loadDraftModelState();
+    return () => {
+      cancelled = true;
+    };
   }, [open]);
 
   const handleSimulate = async () => {
@@ -299,20 +350,49 @@ export function CreatePrModal({
     try {
       if (mode === "normal") {
         const lane = lanes.find((l) => l.id === normalLaneId);
-        const pr = await window.ade.prs.createFromLane({
-          laneId: normalLaneId,
-          title: normalTitle || lane?.name || "PR",
-          body: normalBody,
-          draft: normalDraft,
-        });
+        let pr: PrSummary;
+        try {
+          pr = await window.ade.prs.createFromLane({
+            laneId: normalLaneId,
+            title: normalTitle || lane?.name || "PR",
+            body: normalBody,
+            draft: normalDraft,
+          });
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (!isDirtyWorktreeErrorMessage(message) || !window.confirm(`${stripDirtyWorktreePrefix(message)}\n\nContinue and create the PR anyway?`)) {
+            throw err;
+          }
+          pr = await window.ade.prs.createFromLane({
+            laneId: normalLaneId,
+            title: normalTitle || lane?.name || "PR",
+            body: normalBody,
+            draft: normalDraft,
+            allowDirtyWorktree: true,
+          });
+        }
         setResults([pr]);
       } else if (mode === "queue") {
         const baseBranch = primaryLane?.branchRef ?? "main";
-        const result = await window.ade.prs.createQueue({
-          laneIds: queueLaneIds,
-          targetBranch: baseBranch,
-          draft: queueDraft,
-        });
+        let result: CreateQueuePrsResult;
+        try {
+          result = await window.ade.prs.createQueue({
+            laneIds: queueLaneIds,
+            targetBranch: baseBranch,
+            draft: queueDraft,
+          });
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (!isDirtyWorktreeErrorMessage(message) || !window.confirm(`${stripDirtyWorktreePrefix(message)}\n\nContinue and create the queue PRs anyway?`)) {
+            throw err;
+          }
+          result = await window.ade.prs.createQueue({
+            laneIds: queueLaneIds,
+            targetBranch: baseBranch,
+            draft: queueDraft,
+            allowDirtyWorktree: true,
+          });
+        }
         if (result.errors.length > 0) {
           setExecError(result.errors.map((e) => `${e.laneId}: ${e.error}`).join("\n"));
         }
@@ -329,6 +409,9 @@ export function CreatePrModal({
           body: integrationBody,
           draft: integrationDraft,
           integrationLaneName: integrationName || `integration/${Date.now().toString(36)}`,
+        });
+        await window.ade.prs.createIntegrationLaneForProposal({
+          proposalId: proposal.proposalId,
         });
         // No PR created — proposal saved for later commit from Integration tab
         setResults([]);
@@ -1045,27 +1128,21 @@ export function CreatePrModal({
                       }}>
                         <span style={{ ...labelStyle, marginBottom: 0 }}>DESCRIPTION</span>
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <select
+                          <UnifiedModelSelector
                             value={draftModel}
-                            onChange={(e) => setDraftModel(e.target.value)}
-                            style={{
-                              background: C.bgInput,
-                              border: `1px solid ${C.borderSubtle}`,
-                              color: C.textSecondary,
-                              fontFamily: "'JetBrains Mono', monospace",
-                              fontSize: 10,
-                              padding: "4px 8px",
-                              borderRadius: 0,
-                              outline: "none",
-                              cursor: "pointer",
-                              textTransform: "uppercase" as const,
-                              letterSpacing: "1px",
+                            onChange={(modelId) => {
+                              setDraftModel(modelId);
+                              setDraftReasoningEffort((current) => selectReasoningEffort(modelId, current));
+                              void window.ade.ai.updateConfig({
+                                featureModelOverrides: { pr_descriptions: modelId } as AiConfig["featureModelOverrides"],
+                              });
                             }}
-                          >
-                            <option value="haiku">HAIKU</option>
-                            <option value="sonnet">SONNET</option>
-                            <option value="opus">OPUS</option>
-                          </select>
+                            availableModelIds={availableDraftModelIds.length > 0 ? availableDraftModelIds : undefined}
+                            showReasoning
+                            reasoningEffort={draftReasoningEffort}
+                            onReasoningEffortChange={setDraftReasoningEffort}
+                            className="min-w-[260px]"
+                          />
                           <button
                             disabled={!normalLaneId || drafting}
                             onClick={() => void handleDraftAI(normalLaneId)}

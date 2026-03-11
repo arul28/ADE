@@ -65,9 +65,6 @@ function buildResolverCommand(
   if (opts.model) {
     parts.push("--model", opts.model);
   }
-  if (opts.reasoningEffort) {
-    parts.push("--reasoning-effort", opts.reasoningEffort);
-  }
   parts.push(promptArg);
   return parts.join(" ");
 }
@@ -242,6 +239,7 @@ export function ResolverTerminalModal({
   availableModelIds: availableModelIdsProp,
   onModelChange,
   sourceTab,
+  onStarted,
   onBackgroundSession,
   onCompleted,
 }: {
@@ -258,6 +256,12 @@ export function ResolverTerminalModal({
   availableModelIds?: string[];
   onModelChange?: (model: string, reasoningEffort: string | null) => void;
   sourceTab?: "rebase" | "normal" | "integration" | "queue" | "graph" | "mission";
+  onStarted?: (result: {
+    ptyId: string;
+    sessionId: string;
+    provider: ExternalConflictResolverProvider;
+    startedAt: string;
+  }) => void;
   onBackgroundSession?: (session: {
     ptyId: string;
     sessionId: string;
@@ -307,6 +311,7 @@ export function ResolverTerminalModal({
 
   const ptyIdRef = React.useRef<string | null>(null);
   const prepResultRef = React.useRef<PrepareResolverSessionResult | null>(null);
+  const cancelRequestedRef = React.useRef(false);
 
   // Keep prepResultRef in sync so the exit handler always reads the latest value
   React.useEffect(() => { prepResultRef.current = prepResult; }, [prepResult]);
@@ -485,6 +490,7 @@ export function ResolverTerminalModal({
       setPostActionInfo(null);
       setPostActionError(null);
       ptyIdRef.current = null;
+      cancelRequestedRef.current = false;
       setKeptRunningInBackground(false);
     }, 200);
     return () => clearTimeout(id);
@@ -497,6 +503,10 @@ export function ResolverTerminalModal({
       if (ev.ptyId !== ptyId) return;
       const code = ev.exitCode ?? -1;
       setExitCode(code);
+      if (cancelRequestedRef.current) {
+        cancelRequestedRef.current = false;
+        return;
+      }
 
       const currentPrepResult = prepResultRef.current;
       if (currentPrepResult) {
@@ -556,6 +566,7 @@ export function ResolverTerminalModal({
     setPostActionInfo(null);
     setPostActionError(null);
     setKeptRunningInBackground(false);
+    cancelRequestedRef.current = false;
 
     const sources = sourceLaneIds ?? (sourceLaneId ? [sourceLaneId] : []);
     const scenarioToUse = scenario ?? (sources.length > 1 ? "sequential-merge" : "single-merge");
@@ -613,6 +624,12 @@ export function ResolverTerminalModal({
         sessionId: pty.sessionId,
         command: [cmd],
       });
+      onStarted?.({
+        ptyId: pty.ptyId,
+        sessionId: pty.sessionId,
+        provider,
+        startedAt: new Date().toISOString(),
+      });
       await window.ade.pty.write({ ptyId: pty.ptyId, data: cmd + "\r" });
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
@@ -631,6 +648,7 @@ export function ResolverTerminalModal({
   };
 
   const handleCancel = async () => {
+    cancelRequestedRef.current = true;
     await disposePty();
     if (prepResult?.runId) {
       try {
@@ -664,18 +682,7 @@ export function ResolverTerminalModal({
           onOpenChange(false);
           return;
         }
-        void disposePty().then(() => {
-          setDoneStatus("cancelled");
-          setPhase("done");
-          onCompleted?.({
-            status: "cancelled",
-            laneId: prepResultRef.current?.cwdLaneId ?? null,
-            autoCommitted: false,
-            autoPushed: false,
-            error: null
-          });
-          onOpenChange(false);
-        });
+        void handleCancel().finally(() => onOpenChange(false));
         return;
       }
       void disposePty();

@@ -28,11 +28,12 @@ import type {
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   ConflictProposal,
-  ConflictExternalResolverRunSummary,
-  ConflictProposalPreview,
-  ConflictOverlap,
-  ConflictStatus,
-  CreateLaneArgs,
+   ConflictExternalResolverRunSummary,
+   ConflictProposalPreview,
+   ConflictOverlap,
+   ConflictStatus,
+   DraftPrDescriptionArgs,
+   CreateLaneArgs,
   CreateChildLaneArgs,
   DeleteLaneArgs,
   DockLayout,
@@ -80,6 +81,8 @@ import type {
   CreateQueuePrsArgs,
   CreateQueuePrsResult,
   CommitIntegrationArgs,
+  DeleteIntegrationProposalArgs,
+  DeleteIntegrationProposalResult,
   DeletePrArgs,
   DeletePrResult,
   IntegrationProposal,
@@ -128,6 +131,7 @@ import type {
   AgentChatListArgs,
   AgentChatModelInfo,
   AgentChatModelsArgs,
+  AgentChatPermissionMode,
   AgentChatResumeArgs,
   AgentChatSendArgs,
   AgentChatSession,
@@ -1020,60 +1024,41 @@ function inferPrAiProvider(modelId: string): "codex" | "claude" {
   return descriptor?.family === "anthropic" ? "claude" : "codex";
 }
 
-function collectPrAiSourceLaneIds(context: PrAiResolutionContext): string[] {
+export function collectPrAiSourceLaneIds(context: PrAiResolutionContext): string[] {
   const sourceLaneIds = new Set<string>();
   const add = (value: string | null | undefined) => {
     const normalized = typeof value === "string" ? value.trim() : "";
     if (normalized) sourceLaneIds.add(normalized);
   };
+  for (const laneId of context.sourceLaneIds ?? []) {
+    add(laneId);
+  }
   add(context.sourceLaneId ?? null);
-  add(context.laneId ?? null);
+  if (context.sourceTab !== "integration") {
+    add(context.laneId ?? null);
+  }
   return Array.from(sourceLaneIds);
 }
 
-function buildPrAiResolverCommand(
-  provider: "codex" | "claude",
-  opts: {
-    promptFilePath: string;
-    permissionMode: AiPermissionMode;
-    model: string;
-    reasoning?: string | null;
-  }
-): string {
-  const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
-  const promptArg = `"$(cat ${q(opts.promptFilePath)})"`;
+function mapPrAiPermissionMode(mode: AiPermissionMode): AgentChatPermissionMode {
+  if (mode === "full_edit") return "full-auto";
+  if (mode === "guarded_edit") return "edit";
+  return "plan";
+}
 
-  if (provider === "claude") {
-    const parts: string[] = ["claude"];
-    if (opts.permissionMode === "full_edit") {
-      parts.push("--dangerously-skip-permissions");
-    } else if (opts.permissionMode === "guarded_edit") {
-      parts.push("--permission-mode", "acceptEdits");
-    } else {
-      parts.push("--permission-mode", "plan");
-    }
-    parts.push("--model", opts.model);
-    if (opts.reasoning) {
-      parts.push("--reasoning-effort", opts.reasoning);
-    }
-    parts.push(promptArg);
-    return parts.join(" ");
+function buildPrAiDisplayText(context: PrAiResolutionContext): string {
+  if (context.sourceTab === "rebase") {
+    return "Resolve this rebase with AI.";
   }
-
-  const parts: string[] = ["codex"];
-  if (opts.permissionMode === "full_edit") {
-    parts.push("--full-auto");
-  } else if (opts.permissionMode === "guarded_edit") {
-    parts.push("-c", "approval_policy=on-failure", "-c", "sandbox_mode=workspace-write");
-  } else {
-    parts.push("-c", "approval_policy=untrusted", "-c", "sandbox_mode=read-only");
+  if (context.sourceTab === "queue") {
+    return "Resolve this queued PR with AI.";
   }
-  parts.push("--model", opts.model);
-  if (opts.reasoning) {
-    parts.push("--reasoning-effort", opts.reasoning);
+  if (context.sourceTab === "integration") {
+    return context.proposalId
+      ? "Resolve this integration proposal with AI."
+      : "Resolve this integration PR with AI.";
   }
-  parts.push(promptArg);
-  return parts.join(" ");
+  return "Resolve this PR with AI.";
 }
 
 export function registerIpc({
@@ -1138,7 +1123,7 @@ export function registerIpc({
 
   type PrAiRuntimeSession = {
     sessionId: string;
-    ptyId: string;
+    ptyId: string | null;
     runId: string;
     provider: "codex" | "claude";
     context: PrAiResolutionContext;
@@ -3520,9 +3505,9 @@ export function registerIpc({
     return deleted;
   });
 
-  ipcMain.handle(IPC.prsDraftDescription, async (_event, arg: { laneId: string; model?: string }): Promise<{ title: string; body: string }> => {
+  ipcMain.handle(IPC.prsDraftDescription, async (_event, arg: DraftPrDescriptionArgs): Promise<{ title: string; body: string }> => {
     const ctx = getCtx();
-    return await ctx.prService.draftDescription(arg.laneId, arg.model);
+    return await ctx.prService.draftDescription(arg);
   });
 
   ipcMain.handle(IPC.prsLand, async (_event, arg: LandPrArgs): Promise<LandResult> => {
@@ -3599,15 +3584,15 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.prsListProposals, async (): Promise<IntegrationProposal[]> =>
-    getCtx().prService.listIntegrationProposals(),
+    await getCtx().prService.listIntegrationProposals(),
   );
 
   ipcMain.handle(IPC.prsUpdateProposal, async (_event, arg: UpdateIntegrationProposalArgs): Promise<void> =>
     getCtx().prService.updateIntegrationProposal(arg),
   );
 
-  ipcMain.handle(IPC.prsDeleteProposal, async (_event, proposalId: string): Promise<void> =>
-    getCtx().prService.deleteIntegrationProposal(proposalId),
+  ipcMain.handle(IPC.prsDeleteProposal, async (_event, arg: DeleteIntegrationProposalArgs): Promise<DeleteIntegrationProposalResult> =>
+    await getCtx().prService.deleteIntegrationProposal(arg),
   );
 
   ipcMain.handle(IPC.prsLandQueueNext, async (_event, arg: LandQueueNextArgs): Promise<LandResult> => {
@@ -3692,7 +3677,6 @@ export function registerIpc({
     const reasoning = typeof arg?.reasoning === "string" && arg.reasoning.trim().length > 0
       ? arg.reasoning.trim()
       : null;
-    let pty: PtyCreateResult | null = null;
     let runId = "";
 
     if (!model) {
@@ -3731,6 +3715,7 @@ export function registerIpc({
 
     try {
       const provider = inferPrAiProvider(model);
+      const modelDescriptor = getModelById(model);
       const prep = await ctx.conflictService.prepareResolverSession({
         provider,
         targetLaneId,
@@ -3740,7 +3725,22 @@ export function registerIpc({
           : (typeof context.laneId === "string" && context.laneId.trim().length > 0
             ? context.laneId.trim()
             : undefined),
-        scenario: context.scenario ?? (sourceLaneIds.length > 1 ? "integration-merge" : "single-merge")
+        proposalId: typeof context.proposalId === "string" && context.proposalId.trim().length > 0
+          ? context.proposalId.trim()
+          : undefined,
+        scenario: context.scenario ?? (sourceLaneIds.length > 1 ? "integration-merge" : "single-merge"),
+        model,
+        reasoningEffort: reasoning,
+        permissionMode,
+        originSurface: context.sourceTab === "integration"
+          ? "integration"
+          : context.sourceTab === "rebase"
+            ? "rebase"
+            : context.sourceTab === "queue"
+              ? "manual"
+            : context.sourceTab === "normal"
+              ? "manual"
+              : "manual",
       });
       runId = prep.runId;
       if (prep.status === "blocked") {
@@ -3757,30 +3757,30 @@ export function registerIpc({
         return { sessionId, provider, ptyId: null, status: "failed", error: reason, context };
       }
 
-      pty = await ctx.ptyService.create({
+      const session = await ctx.agentChatService.createSession({
         laneId: prep.cwdLaneId,
-        cwd: prep.cwdWorktreePath,
-        cols: 100,
-        rows: 30,
-        title: `PR AI resolution (${provider})`,
-        tracked: false,
-        toolType: provider
+        provider,
+        model: modelDescriptor?.shortId ?? model,
+        ...(modelDescriptor?.id ? { modelId: modelDescriptor.id } : {}),
+        ...(reasoning ? { reasoningEffort: reasoning } : {}),
+        permissionMode: mapPrAiPermissionMode(permissionMode)
       });
-
-      const command = buildPrAiResolverCommand(provider, {
-        promptFilePath: prep.promptFilePath,
-        permissionMode,
-        model,
-        reasoning
-      });
-      ctx.ptyService.write({ ptyId: pty.ptyId, data: `${command}\r` });
+      const promptText = fs.readFileSync(prep.promptFilePath, "utf8");
+      const runtimeContext: PrAiResolutionContext = {
+        ...context,
+        laneId: prep.cwdLaneId,
+        targetLaneId,
+        sourceLaneId: sourceLaneIds[0] ?? context.sourceLaneId ?? context.laneId ?? null,
+        sourceLaneIds,
+        integrationLaneId: prep.integrationLaneId ?? context.integrationLaneId ?? null,
+      };
 
       const runtime: PrAiRuntimeSession = {
-        sessionId: pty.sessionId,
-        ptyId: pty.ptyId,
+        sessionId: session.id,
+        ptyId: null,
         runId: prep.runId,
         provider,
-        context,
+        context: runtimeContext,
         pollTimer: null,
         finalizing: false
       };
@@ -3798,22 +3798,31 @@ export function registerIpc({
         message: null,
         timestamp: nowIso()
       });
+      void ctx.agentChatService.sendMessage({
+        sessionId: runtime.sessionId,
+        text: promptText,
+        displayText: buildPrAiDisplayText(runtimeContext),
+        ...(reasoning ? { reasoningEffort: reasoning } : {})
+      }).catch(async (error: unknown) => {
+        ctx.logger.warn("ipc.prs_ai_resolution_send_failed", {
+          sessionId: runtime.sessionId,
+          runId: prep.runId,
+          error: getErrorMessage(error)
+        });
+        await finalizePrAiSession(runtime.sessionId, {
+          forceStatus: "failed",
+          message: getErrorMessage(error)
+        });
+      });
       return {
         sessionId: runtime.sessionId,
         provider,
-        ptyId: runtime.ptyId,
+        ptyId: null,
         status: "started",
         error: null,
-        context
+        context: runtimeContext
       };
     } catch (error) {
-      if (pty?.ptyId) {
-        try {
-          ctx.ptyService.dispose({ ptyId: pty.ptyId, sessionId: pty.sessionId });
-        } catch {
-          // ignore dispose failures
-        }
-      }
       if (runId) {
         try {
           await ctx.conflictService.finalizeResolverSession({ runId, exitCode: 1 });
@@ -3821,7 +3830,7 @@ export function registerIpc({
           // ignore finalize failures
         }
       }
-      const sessionId = pty?.sessionId ?? randomUUID();
+      const sessionId = randomUUID();
       const message = getErrorMessage(error);
       emitPrAiResolutionEvent({
         sessionId,
@@ -3832,7 +3841,7 @@ export function registerIpc({
       return {
         sessionId,
         provider: inferPrAiProvider(model),
-        ptyId: pty?.ptyId ?? null,
+        ptyId: null,
         status: "failed",
         error: message,
         context
@@ -3847,7 +3856,12 @@ export function registerIpc({
     const runtime = prAiSessions.get(sessionId);
     if (!runtime) throw new Error(`AI resolution session not found: ${sessionId}`);
     const ctx = getCtx();
-    ctx.ptyService.write({ ptyId: runtime.ptyId, data: text });
+    const sessionDetail = ctx.sessionService.get(sessionId);
+    if (sessionDetail?.status === "running") {
+      await ctx.agentChatService.steer({ sessionId, text });
+      return;
+    }
+    await ctx.agentChatService.sendMessage({ sessionId, text });
   });
 
   ipcMain.handle(IPC.prsAiResolutionStop, async (_event, arg: PrAiResolutionStopArgs): Promise<void> => {
@@ -3856,7 +3870,7 @@ export function registerIpc({
     const runtime = prAiSessions.get(sessionId);
     if (!runtime) return;
     const ctx = getCtx();
-    ctx.ptyService.dispose({ ptyId: runtime.ptyId, sessionId });
+    await ctx.agentChatService.interrupt({ sessionId });
     await finalizePrAiSession(sessionId, {
       forceStatus: "cancelled",
       message: "AI resolution stopped by user."

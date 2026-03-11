@@ -4,6 +4,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
 import { Check, CaretDown, FileCode, GitBranch, House, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
+import { buildIntegrationSourcesByLaneId } from "../../lib/integrationLanes";
 import { EmptyState } from "../ui/EmptyState";
 import { Button } from "../ui/Button";
 import { PaneTilingLayout } from "../ui/PaneTilingLayout";
@@ -44,6 +45,7 @@ import type {
   RebaseScope,
   RebaseSuggestion,
   AutoRebaseLaneStatus,
+  IntegrationProposal,
   TerminalSessionSummary,
   LaneTemplate
 } from "../../../shared/types";
@@ -151,9 +153,14 @@ export function LanesPage() {
   const [expandedLaneId, setExpandedLaneId] = useState<string | null>(null);
   const [expandedGitActionsLaneId, setExpandedGitActionsLaneId] = useState<string | null>(null);
   const [allSessions, setAllSessions] = useState<TerminalSessionSummary[]>([]);
+  const [integrationProposals, setIntegrationProposals] = useState<IntegrationProposal[]>([]);
 
   const sortedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
   const lanesById = useMemo(() => new Map(sortedLanes.map((lane) => [lane.id, lane])), [sortedLanes]);
+  const integrationSourcesByLaneId = useMemo(
+    () => buildIntegrationSourcesByLaneId(integrationProposals, lanesById),
+    [integrationProposals, lanesById],
+  );
   const rebaseByLaneId = useMemo(
     () => new Map(rebaseSuggestions.map((s) => [s.laneId, s] as const)),
     [rebaseSuggestions]
@@ -351,6 +358,15 @@ export function LanesPage() {
     }
   }, []);
 
+  const refreshIntegrationProposals = useCallback(async () => {
+    try {
+      const proposals = await window.ade.prs.listProposals();
+      setIntegrationProposals(proposals);
+    } catch {
+      setIntegrationProposals([]);
+    }
+  }, []);
+
   const pushConflictChips = useCallback((chips: ConflictChip[]) => {
     if (chips.length === 0) return;
     setConflictChipsByLane((prev) => {
@@ -440,6 +456,10 @@ export function LanesPage() {
   useEffect(() => {
     void refreshAllSessions();
   }, [refreshAllSessions, project?.rootPath]);
+
+  useEffect(() => {
+    void refreshIntegrationProposals();
+  }, [refreshIntegrationProposals, lanes.length, project?.rootPath]);
 
   useEffect(() => {
     const unsubPtyData = window.ade.pty.onData(() => { void refreshAllSessions(); });
@@ -1048,6 +1068,7 @@ export function LanesPage() {
             selectedLaneId={laneId}
             onSelect={(id) => handleLaneSelect(id, { extend: false })}
             runtimeByLaneId={laneRuntimeById}
+            integrationSourcesByLaneId={integrationSourcesByLaneId}
           />
         )
       },
@@ -1107,7 +1128,7 @@ export function LanesPage() {
         children: <LaneWorkPane laneId={laneId} />
       },
     };
-  }, [lanePaneDetails, stackGraphLanes, handleLaneSelect, handleSelectFile, handleSelectCommit, expandedGitActionsLaneId, autoRebaseEnabled, openAutoRebaseSettings, runRebaseFlow, openRebaseDetails, openRebaseConflictResolver, laneRuntimeById]);
+  }, [lanePaneDetails, stackGraphLanes, handleLaneSelect, handleSelectFile, handleSelectCommit, expandedGitActionsLaneId, autoRebaseEnabled, openAutoRebaseSettings, runRebaseFlow, openRebaseDetails, openRebaseConflictResolver, laneRuntimeById, integrationSourcesByLaneId]);
 
   /* ---- Render ---- */
 

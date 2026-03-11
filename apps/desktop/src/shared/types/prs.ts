@@ -182,11 +182,18 @@ export type CreatePrFromLaneArgs = {
   baseBranch?: string;
   labels?: string[];
   reviewers?: string[];
+  allowDirtyWorktree?: boolean;
 };
 
 export type LinkPrToLaneArgs = {
   laneId: string;
   prUrlOrNumber: string;
+};
+
+export type DraftPrDescriptionArgs = {
+  laneId: string;
+  model?: string;
+  reasoningEffort?: string | null;
 };
 
 export type UpdatePrDescriptionArgs = {
@@ -269,6 +276,7 @@ export type CreateQueuePrsArgs = {
   autoRebase?: boolean;
   ciGating?: boolean;
   queueName?: string;
+  allowDirtyWorktree?: boolean;
 };
 
 export type CreateQueuePrsResult = {
@@ -284,6 +292,7 @@ export type CreateIntegrationPrArgs = {
   title: string;
   body?: string;
   draft?: boolean;
+  allowDirtyWorktree?: boolean;
 };
 
 export type CreateIntegrationPrResult = {
@@ -362,6 +371,13 @@ export type IntegrationProposal = {
   resolutionState?: IntegrationResolutionState | null;
 };
 
+export type IntegrationLaneSnapshot = {
+  headSha: string | null;
+  dirty: boolean;
+};
+
+export type IntegrationLaneChangeStatus = "unchanged" | "changed" | "unknown" | "missing";
+
 export type UpdateIntegrationProposalArgs = {
   proposalId: string;
   title?: string;
@@ -382,6 +398,7 @@ export type CommitIntegrationArgs = {
   body?: string;
   draft?: boolean;
   pauseOnConflict?: boolean;
+  allowDirtyWorktree?: boolean;
 };
 
 export type IntegrationStepResolution = "pending" | "merged-clean" | "resolving" | "resolved" | "failed";
@@ -391,7 +408,21 @@ export type IntegrationResolutionState = {
   stepResolutions: Record<string, IntegrationStepResolution>; // keyed by laneId
   activeWorkerStepId: string | null;
   activeLaneId: string | null;
+  createdSnapshot?: IntegrationLaneSnapshot | null;
+  currentSnapshot?: IntegrationLaneSnapshot | null;
+  laneChangeStatus?: IntegrationLaneChangeStatus;
   updatedAt: string;
+};
+
+export type DeleteIntegrationProposalArgs = {
+  proposalId: string;
+  deleteIntegrationLane?: boolean;
+};
+
+export type DeleteIntegrationProposalResult = {
+  proposalId: string;
+  integrationLaneId: string | null;
+  deletedIntegrationLane: boolean;
 };
 
 export type CreateIntegrationLaneForProposalArgs = {
@@ -418,8 +449,9 @@ export type StartIntegrationResolutionResult = {
 export type AiPermissionMode = "read_only" | "guarded_edit" | "full_edit";
 
 export type PrAiResolutionContext = {
-  sourceTab: "rebase" | "normal" | "integration" | "conflicts";
+  sourceTab: "rebase" | "normal" | "integration" | "queue" | "conflicts";
   sourceLaneId?: string | null;
+  sourceLaneIds?: string[];
   targetLaneId?: string | null;
   proposalId?: string | null;
   integrationLaneId?: string | null;
@@ -468,6 +500,7 @@ export type RecheckIntegrationStepResult = {
   resolution: IntegrationStepResolution;
   remainingConflictFiles: string[];
   allResolved: boolean;
+  message: string | null;
 };
 
 // --------------------------------

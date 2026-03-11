@@ -361,13 +361,14 @@ export function buildFullPrompt(
     );
   }
 
-  // Project memories (high importance only)
+  // Project memories (high importance only, above minimum relevance threshold)
+  const MIN_MEMORY_SCORE = 0.3;
   const memProjectId = opts?.projectId;
   if (memoryService && memProjectId) {
     const missionMemories = memoryService.getMemoryBudget(memProjectId, "lite", {
       scope: "mission",
       scopeOwnerId: run.id,
-    });
+    }).filter((m) => m.compositeScore >= MIN_MEMORY_SCORE);
     if (missionMemories.length > 0) {
       systemParts.push(
         [
@@ -378,7 +379,7 @@ export function buildFullPrompt(
     }
 
     const projectMemories = memoryService.getMemoryBudget(memProjectId, "lite");
-    const promoted = projectMemories.filter((m) => m.importance === "high");
+    const promoted = projectMemories.filter((m) => m.importance === "high" && m.compositeScore >= MIN_MEMORY_SCORE);
     if (promoted.length > 0) {
       systemParts.push(
         [

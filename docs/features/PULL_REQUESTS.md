@@ -353,7 +353,9 @@ By sharing this module, badge colors in the PR list and edge/node colors on the 
 2. run simulation,
 3. inspect clean/conflict outcomes,
 4. create integration lane when appropriate,
-5. resolve remaining conflicts and proceed to commit/PR.
+5. resolve remaining conflicts in the integration lane,
+6. recheck the integration lane to ensure there are no unmerged files or leftover merge markers,
+7. validate the integration lane in the `Run` tab before creating/merging the final PR.
 
 ### PR Detail Inspection
 
@@ -380,3 +382,6 @@ PR data persists in local ADE state (pull request rows, group rows/members, inte
 - Refresh lane packs before drafting PR descriptions for better summaries.
 - Use integration proposals for multi-lane merges instead of ad hoc manual ordering.
 - Use the detail pane for quick reviews and actions instead of switching to the GitHub web UI.
+- Integration proposals merge source lanes **sequentially in the listed order** when ADE builds the integration lane; re-simulate if you change merge precedence.
+- ADE requires a real active lane for the target/base branch before it can safely build or resolve an integration lane.
+- AI resolution uses bounded project/lane/conflict context and edits the integration lane worktree only; treat `Run`-tab validation as the final gate before landing the resulting PR.

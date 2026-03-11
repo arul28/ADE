@@ -16,10 +16,15 @@ import type { GraphNodeData } from "../graphTypes";
 
 export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>) {
   const lane = data.lane;
-  const dimensions = nodeDimensions(lane, data.activityBucket, data.viewMode);
+  const dimensions = nodeDimensions(lane, data.activityBucket, data.viewMode, {
+    isIntegration: data.isIntegration,
+    integrationSourceCount: data.integrationSources.length,
+  });
   const remoteSync = data.remoteSync;
   const autoRebase = data.autoRebaseStatus;
   const pr = data.pr;
+  const visibleIntegrationSources = data.integrationSources.slice(0, 3);
+  const hiddenIntegrationSourceCount = Math.max(0, data.integrationSources.length - visibleIntegrationSources.length);
   const stackStale = Boolean(lane.parentLaneId && lane.status.behind > 0);
   const remoteDiverged = Boolean(remoteSync?.diverged);
   const remoteNeedsPublish = Boolean(remoteSync && ((remoteSync.hasUpstream === false) || remoteSync.ahead > 0));
@@ -55,7 +60,8 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
         data.rebasePulse && "ade-node-failed-pulse",
         data.mergeInProgress && "ade-node-merging",
         data.mergeDisappearing && "ade-node-disappear",
-        data.focusGlow && "ring-2 ring-purple-400/60 shadow-[0_0_20px_rgba(167,139,250,0.35)]"
+        data.focusGlow && "ring-2 ring-purple-400/60 shadow-[0_0_20px_rgba(167,139,250,0.35)]",
+        data.isIntegration && "bg-[linear-gradient(180deg,rgba(167,139,250,0.14),rgba(24,24,27,0.9))]"
       )}
       style={{
         width: dimensions.width,
@@ -78,6 +84,34 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
         ) : null}
       </div>
       <div className="truncate text-[11px] text-muted-fg">{lane.branchRef}</div>
+      {data.integrationSources.length > 0 ? (
+        <div className="mt-1">
+          <div className="mb-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-[#C4B5FD]">
+            Fed By
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {visibleIntegrationSources.map((source) => (
+              <span
+                key={source.laneId}
+                className="rounded border px-1.5 py-0.5 text-[10px] font-medium text-[#E9D5FF]"
+                style={{ borderColor: "rgba(167,139,250,0.35)", background: "rgba(167,139,250,0.12)" }}
+                title={source.laneName}
+              >
+                {source.laneName}
+              </span>
+            ))}
+            {hiddenIntegrationSourceCount > 0 ? (
+              <span
+                className="rounded border px-1.5 py-0.5 text-[10px] font-medium text-[#DDD6FE]"
+                style={{ borderColor: "rgba(167,139,250,0.28)", background: "rgba(167,139,250,0.08)" }}
+                title={`${hiddenIntegrationSourceCount} more source lanes`}
+              >
+                +{hiddenIntegrationSourceCount}
+              </span>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
       {pr ? (
         <div className="mt-1 flex flex-wrap items-center gap-1">
           <InlinePrBadge {...prStateBadge!} />

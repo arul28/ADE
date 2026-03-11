@@ -5,6 +5,7 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { AgentModelDescriptor, AgentProvider, ExecutorOpts } from "./agentExecutor";
 import type { AiApiKeyVerificationResult } from "../../../shared/types";
 import {
+  createDynamicLocalModelDescriptor,
   getDefaultModelDescriptor,
   getModelById,
   getAvailableModels,
@@ -20,6 +21,7 @@ import { updateModelPricing } from "../../../shared/modelProfiles";
 import { isRecord } from "../shared/utils";
 import type { createMemoryService } from "../memory/memoryService";
 import type { CompactionFlushService } from "../memory/compactionFlushService";
+import { discoverLocalModels } from "./localModelDiscovery";
 
 export type AiTaskType =
   | "planning"
@@ -340,8 +342,29 @@ export function createAiIntegrationService(args: {
     return {
       ...availability,
       detectedAuth: auth,
-      availableModels: getAvailableModels(auth),
+      availableModels: await getResolvedAvailableModels(auth),
     };
+  };
+
+  const getResolvedAvailableModels = async (auth: DetectedAuth[]) => {
+    const available = getAvailableModels(auth);
+    const discoveredLocalModels = await discoverLocalModels(auth);
+    if (discoveredLocalModels.length === 0) {
+      return available;
+    }
+
+    const providersWithDynamicModels = new Set(
+      discoveredLocalModels.map((model) => model.provider),
+    );
+    const filteredStatic = available.filter((descriptor) => !(
+      descriptor.authTypes.includes("local")
+      && providersWithDynamicModels.has(descriptor.family as "ollama" | "lmstudio" | "vllm")
+    ));
+
+    return [
+      ...filteredStatic,
+      ...discoveredLocalModels.map((model) => createDynamicLocalModelDescriptor(model.provider, model.modelId)),
+    ];
   };
 
   const verifyApiKeyConnection = async (provider: string): Promise<AiApiKeyVerificationResult> => {
@@ -698,7 +721,7 @@ export function createAiIntegrationService(args: {
     }
 
     const auth = await detectAuth();
-    const available = getAvailableModels(auth);
+    const available = await getResolvedAvailableModels(auth);
     const family = provider === "codex" ? "openai" : "anthropic";
     const models = available
       .filter((descriptor) => descriptor.family === family)
@@ -733,7 +756,7 @@ export function createAiIntegrationService(args: {
         return statusCache.result;
       }
       const auth = await detectAuth();
-      const available = getAvailableModels(auth);
+      const available = await getResolvedAvailableModels(auth);
       // detectAuth -> detectAllAuth already called detectCliAuthStatuses() and
       // populated the cache, so this reads instantly from cache:
       const cliStatuses = getCachedCliAuthStatuses();
@@ -826,6 +849,7 @@ export function createAiIntegrationService(args: {
       prompt: string;
       timeoutMs?: number;
       model?: string;
+      reasoningEffort?: string | null;
     }): Promise<ExecuteAiTaskResult> {
       return await executeTask({
         feature: "pr_descriptions",
@@ -834,6 +858,7 @@ export function createAiIntegrationService(args: {
         cwd: args.cwd,
         timeoutMs: args.timeoutMs,
         model: args.model,
+        ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}),
         permissionMode: "read-only",
         oneShot: true
       });

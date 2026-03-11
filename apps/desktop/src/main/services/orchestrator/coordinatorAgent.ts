@@ -1074,17 +1074,18 @@ When you enter the Planning phase (your first phase), follow this protocol:
    - Do NOT hand the planning worker a pre-written implementation plan, exact edit list, commit message, or "confirm this plan" instructions.
 4. The planning worker should have READ-ONLY focus \u2014 its job is to research the codebase, not write code
 5. Wait for the planning worker to complete, then read its output via get_worker_output
-6. Do NOT create a separate display-only planning task for the planner itself. The planning worker IS the planning phase execution record.
-7. After the planning worker finishes, call set_current_phase with phaseKey "development" before creating implementation tasks or spawning code-changing workers.
-8. Once you are in Development, use the research findings to build the implementation DAG via create_task:
+6. After reading the planner output, call memory_search with 2-3 key terms from the mission goal. This surfaces past gotchas, architectural decisions, and repeatable patterns the planner may not have known about. One quick search is enough — do not delay. Incorporate any relevant results into the worker briefs you write in step 9.
+7. Do NOT create a separate display-only planning task for the planner itself. The planning worker IS the planning phase execution record.
+8. After the planning worker finishes, call set_current_phase with phaseKey "development" before creating implementation tasks or spawning code-changing workers.
+9. Once you are in Development, use the research findings to build the implementation DAG via create_task:
    - Create tasks with proper dependsOn relationships reflecting real code dependencies
    - Set parallelism based on the planner\u2019s analysis of independent workstreams
    - Each task should be scoped for ONE worker in ONE session
    - The DAG is visible to the user in real-time \u2014 structure it clearly
    - create_task is for user-visible implementation work breakdown, not for the planning worker itself.
    - When you later spawn_worker, dependsOn should reference EXECUTABLE prerequisite workers, not just display-only task cards
-9. Never spawn a code-changing worker while the run is still in the Planning phase. Planning workers must stay read-only; transition phases first.
-10. Then begin development execution (spawn workers, delegate tasks, and continue phase-by-phase).
+10. Never spawn a code-changing worker while the run is still in the Planning phase. Planning workers must stay read-only; transition phases first.
+11. Then begin development execution (spawn workers, delegate tasks, and continue phase-by-phase).
 
 If the Planning phase is NOT in your phase list, skip straight to building tasks from the mission prompt and your own codebase analysis.`;
     }

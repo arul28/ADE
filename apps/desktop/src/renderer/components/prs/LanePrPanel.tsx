@@ -1,12 +1,14 @@
 import React, { useCallback, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import type { AiConfig, CreatePrFromLaneArgs, LandResult, MergeMethod, PrCheck, PrReview, PrStatus, PrSummary } from "../../../shared/types";
+import { getModelById } from "../../../shared/modelRegistry";
 import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
+import { isDirtyWorktreeErrorMessage, stripDirtyWorktreePrefix } from "./shared/dirtyWorktree";
 
 function branchNameFromRef(ref: string): string {
   const trimmed = ref.trim();
@@ -31,6 +33,13 @@ function parseCsvList(raw: string): string[] {
     out.push(value);
   }
   return out;
+}
+
+function selectReasoningEffort(modelId: string, preferred: string | null): string | null {
+  const tiers = getModelById(modelId)?.reasoningTiers ?? [];
+  if (!tiers.length) return null;
+  if (preferred && tiers.includes(preferred)) return preferred;
+  return tiers.includes("medium") ? "medium" : (tiers[0] ?? null);
 }
 
 function stateChip(state: PrSummary["state"]): { label: string; className: string } {
@@ -77,6 +86,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
   const [descPreview, setDescPreview] = React.useState<{ title: string; body: string } | null>(null);
   const [descPreviewBusy, setDescPreviewBusy] = React.useState(false);
   const [prDescModel, setPrDescModel] = React.useState("");
+  const [prDescReasoningEffort, setPrDescReasoningEffort] = React.useState<string | null>(null);
 
   const loadPrDescModel = useCallback(async () => {
     try {
@@ -85,11 +95,11 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
       const effectiveAiRaw = snapshot.effective?.ai;
       const effectiveAi = effectiveAiRaw && typeof effectiveAiRaw === "object" ? (effectiveAiRaw as AiConfig) : null;
       const persisted = effectiveAi?.featureModelOverrides?.pr_descriptions;
-      if (persisted) {
-        setPrDescModel(persisted);
-      } else if (s.models.claude[0]) {
-        setPrDescModel(s.models.claude[0].id);
-      }
+      const fallbackModelId = s.availableModelIds?.[0] ?? s.models.claude[0]?.id ?? "";
+      const nextModelId = persisted || fallbackModelId;
+      if (!nextModelId) return;
+      setPrDescModel(nextModelId);
+      setPrDescReasoningEffort((current) => selectReasoningEffort(nextModelId, current));
     } catch {
       // ignore — model picker will just show empty/default
     }
@@ -196,12 +206,27 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
     try {
       const labels = parseCsvList(labelsDraft);
       const reviewers = parseCsvList(reviewersDraft);
-      const created = await window.ade.prs.createFromLane({
-        ...createDraft,
-        laneId,
-        ...(labels.length ? { labels } : {}),
-        ...(reviewers.length ? { reviewers } : {})
-      });
+      let created: PrSummary;
+      try {
+        created = await window.ade.prs.createFromLane({
+          ...createDraft,
+          laneId,
+          ...(labels.length ? { labels } : {}),
+          ...(reviewers.length ? { reviewers } : {})
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!isDirtyWorktreeErrorMessage(message) || !window.confirm(`${stripDirtyWorktreePrefix(message)}\n\nContinue and create the PR anyway?`)) {
+          throw err;
+        }
+        created = await window.ade.prs.createFromLane({
+          ...createDraft,
+          laneId,
+          allowDirtyWorktree: true,
+          ...(labels.length ? { labels } : {}),
+          ...(reviewers.length ? { reviewers } : {})
+        });
+      }
       setPr(created);
       setShowCreate(false);
       await refresh();
@@ -264,7 +289,11 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
     setLoading(true);
     setError(null);
     try {
-      const drafted = await window.ade.prs.draftDescription(laneId, prDescModel || undefined);
+      const drafted = await window.ade.prs.draftDescription({
+        laneId,
+        model: prDescModel || undefined,
+        reasoningEffort: prDescReasoningEffort,
+      });
       setCreateDraft((prev) => ({ ...prev, title: drafted.title, body: drafted.body }));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -278,7 +307,11 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
     setDescPreviewBusy(true);
     setError(null);
     try {
-      const drafted = await window.ade.prs.draftDescription(laneId, prDescModel || undefined);
+      const drafted = await window.ade.prs.draftDescription({
+        laneId,
+        model: prDescModel || undefined,
+        reasoningEffort: prDescReasoningEffort,
+      });
       setDescPreview(drafted);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -405,10 +438,14 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
                       value={prDescModel}
                       onChange={(modelId) => {
                         setPrDescModel(modelId);
+                        setPrDescReasoningEffort((current) => selectReasoningEffort(modelId, current));
                         void window.ade.ai.updateConfig({
                           featureModelOverrides: { pr_descriptions: modelId } as AiConfig["featureModelOverrides"],
                         });
                       }}
+                      showReasoning
+                      reasoningEffort={prDescReasoningEffort}
+                      onReasoningEffortChange={setPrDescReasoningEffort}
                     />
                   </div>
                   <Button size="sm" variant="primary" className="h-7" disabled={loading || !createDraft.title.trim()} onClick={() => void createPr()}>
@@ -481,10 +518,14 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
               value={prDescModel}
               onChange={(modelId) => {
                 setPrDescModel(modelId);
+                setPrDescReasoningEffort((current) => selectReasoningEffort(modelId, current));
                 void window.ade.ai.updateConfig({
                   featureModelOverrides: { pr_descriptions: modelId } as AiConfig["featureModelOverrides"],
                 });
               }}
+              showReasoning
+              reasoningEffort={prDescReasoningEffort}
+              onReasoningEffortChange={setPrDescReasoningEffort}
             />
             <select
               value={mergeMethod}

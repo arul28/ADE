@@ -1043,7 +1043,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       getReviews: async (prId: string) => MOCK_REVIEWS_BY_PR[prId] ?? [],
       updateDescription: resolvedArg(undefined),
       delete: resolvedArg({ deleted: true }),
-      draftDescription: resolvedArg2({ title: "AI-drafted title", body: "AI-drafted body" }),
+      draftDescription: resolvedArg({ title: "AI-drafted title", body: "AI-drafted body" }),
       land: resolvedArg({ success: true, prNumber: 142, sha: "abc123" }),
       landStack: resolvedArg([]),
       openInGitHub: resolvedArg(undefined),
@@ -1113,10 +1113,10 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       aiResolutionStart: async () => ({
         sessionId: "mock-pr-ai-session",
         provider: "codex" as const,
-        ptyId: "mock-pr-ai-pty",
+        ptyId: null,
         status: "started" as const,
         error: null,
-        context: { sourceTab: "normal" as const }
+        context: { sourceTab: "normal" as const, laneId: "lane-1" }
       }),
       aiResolutionInput: resolvedArg(undefined),
       aiResolutionStop: resolvedArg(undefined),

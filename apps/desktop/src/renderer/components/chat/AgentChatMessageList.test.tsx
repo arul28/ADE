@@ -212,6 +212,20 @@ describe("AgentChatMessageList", () => {
     expect(errorBlock).toBeTruthy();
   });
 
+  it("collapses reasoning cards by default in compact resolver view", () => {
+    render(
+      <AgentChatMessageList
+        compactResolverView
+        events={[
+          envelope({ type: "reasoning", text: "Thinking through the merge", turnId: "turn-1", itemId: "reason-1" })
+        ]}
+      />
+    );
+
+    expect(screen.getByText("Reasoning")).toBeTruthy();
+    expect(screen.queryByText("Thinking through the merge")).toBeNull();
+  });
+
   it("auto-scrolls to bottom on new events unless user scrolled up", async () => {
     const initialEvents = [envelope({ type: "text", text: "first" })];
     const { container, rerender } = render(<AgentChatMessageList events={initialEvents} />);

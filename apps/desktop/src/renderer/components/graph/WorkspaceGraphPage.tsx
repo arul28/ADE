@@ -43,6 +43,10 @@ import type {
   IntegrationProposal
 } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
+import {
+  buildIntegrationSourcesByLaneId,
+  isIntegrationLaneFromMetadata,
+} from "../../lib/integrationLanes";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
@@ -78,8 +82,7 @@ import {
   nodeDimensions,
   branchNameFromRef,
   globToRegExp,
-  collectDescendants,
-  isIntegrationLane
+  collectDescendants
 } from "./graphHelpers";
 import {
   buildDefaultFilter,
@@ -543,17 +546,7 @@ function GraphInner() {
 
   // Map integration lane id → source lane ids from proposals
   const integrationSourcesByLaneId = React.useMemo(() => {
-    const map = new Map<string, string[]>();
-    for (const proposal of integrationProposals) {
-      const integrationLaneId = proposal.integrationLaneId ?? null;
-      if (!integrationLaneId || !laneById.has(integrationLaneId)) continue;
-      const proposalSources = proposalSourceLaneIds(proposal).filter((laneId) => laneById.has(laneId));
-      if (proposalSources.length === 0) continue;
-      const existing = map.get(integrationLaneId) ?? [];
-      const merged = new Set([...existing, ...proposalSources]);
-      map.set(integrationLaneId, [...merged]);
-    }
-    return map;
+    return buildIntegrationSourcesByLaneId(integrationProposals, laneById);
   }, [integrationProposals, laneById]);
 
   const connectedToHoveredNode = React.useMemo(() => {
@@ -583,8 +576,20 @@ function GraphInner() {
       }
     }
 
+    for (const [integrationLaneId, sources] of integrationSourcesByLaneId.entries()) {
+      if (integrationLaneId === hoveredNodeId) {
+        for (const source of sources) connected.add(source.laneId);
+        continue;
+      }
+      for (const source of sources) {
+        if (source.laneId === hoveredNodeId) {
+          connected.add(integrationLaneId);
+        }
+      }
+    }
+
     return connected;
-  }, [hoveredNodeId, lanes, riskByPair, viewMode]);
+  }, [hoveredNodeId, integrationSourcesByLaneId, lanes, riskByPair, viewMode]);
 
   const laneMatchesFilters = React.useCallback(
     (lane: LaneSummary): boolean => {
@@ -671,6 +676,15 @@ function GraphInner() {
     await refreshPrs();
     await Promise.allSettled([refreshRiskBatch(), refreshLanes()]);
   }, [refreshLanes, refreshPrs, refreshRiskBatch]);
+
+  const refreshIntegrationProposals = React.useCallback(async () => {
+    try {
+      const proposals = await window.ade.prs.listProposals();
+      setIntegrationProposals(proposals);
+    } catch (err) {
+      console.warn("[Graph] Failed to load integration proposals:", err);
+    }
+  }, []);
 
   const refreshActivity = React.useCallback(async () => {
     try {
@@ -773,11 +787,21 @@ function GraphInner() {
   }, [refreshPrs]);
 
   React.useEffect(() => {
-    window.ade.prs
-      .listProposals()
-      .then((proposals) => setIntegrationProposals(proposals))
-      .catch((err) => console.warn("[Graph] Failed to load integration proposals:", err));
-  }, [lanesKey]);
+    void refreshIntegrationProposals();
+  }, [lanesKey, refreshIntegrationProposals]);
+
+  React.useEffect(() => {
+    const unsub = window.ade.prs.onEvent((event) => {
+      if (
+        event.type === "integration-step"
+        || event.type === "integration-state"
+        || event.type === "proposal-stale"
+      ) {
+        void refreshIntegrationProposals();
+      }
+    });
+    return unsub;
+  }, [refreshIntegrationProposals]);
 
   React.useEffect(() => {
     if (!project?.rootPath) return;
@@ -1029,6 +1053,7 @@ function GraphInner() {
         : 0;
       const connectedToHover = hoveredNodeId ? connectedToHoveredNode.has(lane.id) : false;
       const dimmedByHover = Boolean(hoveredNodeId) && !connectedToHover;
+      const integrationSources = integrationSourcesByLaneId.get(lane.id) ?? [];
       nextNodes.push({
         id: lane.id,
         type: "lane",
@@ -1052,9 +1077,10 @@ function GraphInner() {
           rebasePulse: rebaseFailedLaneId === lane.id && rebaseFailedPulse,
           mergeInProgress: Boolean(mergeInProgressByLaneId[lane.id]),
           mergeDisappearing: Boolean(mergeDisappearingAtByLaneId[lane.id]),
-          isIntegration: isIntegrationLane(lane),
+          isIntegration: isIntegrationLaneFromMetadata(lane, integrationSourcesByLaneId),
           focusGlow: focusLaneId === lane.id,
           isVirtualProposal: false,
+          integrationSources,
           pr: prOverlayByLaneId.get(lane.id) ?? null
         },
         selected: selectedLaneIds.includes(lane.id),
@@ -1136,6 +1162,10 @@ function GraphInner() {
           isIntegration: true,
           focusGlow: focusLaneId === nodeId,
           isVirtualProposal: true,
+          integrationSources: sourceLaneIds.map((laneId) => ({
+            laneId,
+            laneName: laneById.get(laneId)?.name ?? laneId,
+          })),
           pr: null,
           proposalOutcome: proposal.overallOutcome,
           proposalId: normalizedProposalId ?? undefined
@@ -1262,10 +1292,11 @@ function GraphInner() {
     }
 
     // Integration edges: source lane → integration lane
-    for (const [integLaneId, sourceLaneIds] of integrationSourcesByLaneId.entries()) {
+    for (const [integLaneId, integrationSources] of integrationSourcesByLaneId.entries()) {
       if (hiddenByCollapse.has(integLaneId)) continue;
       if (!laneById.has(integLaneId)) continue;
-      for (const srcId of sourceLaneIds) {
+      for (const source of integrationSources) {
+        const srcId = source.laneId;
         if (hiddenByCollapse.has(srcId)) continue;
         if (!laneById.has(srcId)) continue;
         const edgeId = `integration:${srcId}:${integLaneId}`;
@@ -1612,7 +1643,7 @@ function GraphInner() {
 
       if (!existing) {
         void window.ade.prs
-          .draftDescription(laneId)
+          .draftDescription({ laneId })
           .then((draft) => {
             setPrDialog((prev) => (prev && prev.laneId === laneId ? { ...prev, title: draft.title, body: draft.body, loadingDraft: false } : prev));
           })
@@ -3453,7 +3484,7 @@ function GraphInner() {
                       const laneId = prDialog.laneId;
                       setPrDialog((prev) => (prev ? { ...prev, loadingDraft: true, error: null } : prev));
                       window.ade.prs
-                        .draftDescription(laneId)
+                        .draftDescription({ laneId })
                         .then((draft) => {
                           setPrDialog((prev) =>
                             prev && prev.laneId === laneId ? { ...prev, title: draft.title, body: draft.body, loadingDraft: false } : prev
@@ -3591,8 +3622,14 @@ function GraphInner() {
             ) : null}
 
             <div className="mb-2 text-xs text-muted-fg">
-              This will create a new lane branched from Primary and merge the selected lanes into it.
+              This will create a new lane under the inferred base lane and merge the selected lanes into it, while keeping the source lanes in their current stack positions.
             </div>
+
+            {integrationDialog.targetLaneId ? (
+              <div className="mb-2 text-xs text-muted-fg">
+                Base lane: <span className="font-semibold text-fg">{laneById.get(integrationDialog.targetLaneId)?.name ?? integrationDialog.targetLaneId}</span>
+              </div>
+            ) : null}
 
             <input
               className="mb-2 h-9 w-full rounded border border-border/15 bg-surface-recessed px-3 text-sm"
@@ -3621,19 +3658,19 @@ function GraphInner() {
               <Button
                 size="sm"
                 variant="primary"
-                disabled={integrationDialog.busy || !integrationDialog.name.trim() || !primaryLaneId}
+                disabled={integrationDialog.busy || !integrationDialog.name.trim() || !(integrationDialog.targetLaneId || primaryLaneId)}
                 onClick={() => {
                   const draft = integrationDialog;
                   if (!draft) return;
-                  const primaryId = primaryLaneId;
-                  if (!primaryId) {
-                    setIntegrationDialog((prev) => (prev ? { ...prev, error: "Primary lane not found." } : prev));
+                  const targetParentLaneId = draft.targetLaneId ?? primaryLaneId;
+                  if (!targetParentLaneId) {
+                    setIntegrationDialog((prev) => (prev ? { ...prev, error: "Base lane not found." } : prev));
                     return;
                   }
-                  const ordered = [...draft.laneIds].filter((id) => id !== primaryId);
+                  const ordered = [...draft.laneIds].filter((id) => id !== targetParentLaneId);
                   setIntegrationDialog((prev) => (prev ? { ...prev, busy: true, error: null, step: "Creating integration lane…" } : prev));
                   window.ade.lanes
-                    .createChild({ parentLaneId: primaryId, name: draft.name.trim() })
+                    .createChild({ parentLaneId: targetParentLaneId, name: draft.name.trim() })
                     .then(async (newLane) => {
                       for (const sourceLaneId of ordered) {
                         const source = laneById.get(sourceLaneId);
@@ -3650,6 +3687,7 @@ function GraphInner() {
                       setIntegrationDialog((prev) => (prev ? { ...prev, step: "Done." } : prev));
                       window.setTimeout(() => setIntegrationDialog(null), 300);
                       await refreshLanes();
+                      await refreshIntegrationProposals();
                       setSelectedLaneIds([newLane.id]);
                       navigate(`/lanes?laneId=${encodeURIComponent(newLane.id)}&focus=single`);
                     })
@@ -3809,6 +3847,13 @@ function GraphInner() {
                 onClick={() =>
                   setIntegrationDialog({
                     laneIds: [...selectedLaneIds],
+                    targetLaneId: (() => {
+                      const baseLaneIds = selectedLaneIds
+                        .map((laneId) => getBaseLaneIdForLane(laneId) ?? primaryLaneId)
+                        .filter((laneId): laneId is string => Boolean(laneId));
+                      if (baseLaneIds.length === 0) return primaryLaneId;
+                      return baseLaneIds.every((laneId) => laneId === baseLaneIds[0]) ? baseLaneIds[0]! : primaryLaneId;
+                    })(),
                     name: `Integration ${new Date().toISOString().slice(0, 10)} (${selectedLaneIds.length})`,
                     busy: false,
                     step: null,

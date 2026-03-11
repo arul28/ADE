@@ -49,6 +49,7 @@ export function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
   const badgeMeta = pr ? `${pr.reviewCount}r · ${pr.commentCount}c` : "";
   const badgeWidth = Math.max(74, (badgeText.length + badgeMeta.length) * 6 + 40);
   const badgeHeight = 18;
+  const showIntegrationBadge = edgeType === "integration";
   return (
     <g>
       <path
@@ -62,6 +63,33 @@ export function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
         strokeDasharray={dash}
         opacity={effectiveOpacity}
       />
+      {showIntegrationBadge ? (
+        <g transform={`translate(${labelX}, ${labelY})`}>
+          <rect
+            x={-22}
+            y={-8}
+            width={44}
+            height={16}
+            rx={8}
+            fill="#A78BFA"
+            fillOpacity={0.16}
+            stroke="#A78BFA"
+            strokeOpacity={0.7}
+            strokeWidth={1}
+          />
+          <text
+            x={0}
+            y={3}
+            textAnchor="middle"
+            fontSize={9}
+            fill="#E9D5FF"
+            fontFamily="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace"
+            style={{ letterSpacing: "0.08em", textTransform: "uppercase" }}
+          >
+            feeds
+          </text>
+        </g>
+      ) : null}
       {pr ? (
         <g
           transform={`translate(${labelX}, ${labelY})`}

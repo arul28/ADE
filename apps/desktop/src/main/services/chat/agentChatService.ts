@@ -1874,15 +1874,20 @@ export function createAgentChatService(args: {
 
         const thinkingLevel = mapReasoningEffortToThinking(managed.session.reasoningEffort);
         const providerOptions = buildProviderOptions(unifiedRt.modelDescriptor, thinkingLevel);
-        const system = composeSystemPrompt(
-          undefined,
-          buildCodingAgentSystemPrompt({
-            cwd: managed.laneWorktreePath,
-            mode: "chat",
-            permissionMode: unifiedRt.permissionMode,
-            toolNames: Object.keys(tools),
-          }),
-        );
+        const harnessPrompt = buildCodingAgentSystemPrompt({
+          cwd: managed.laneWorktreePath,
+          mode: "chat",
+          permissionMode: unifiedRt.permissionMode,
+          toolNames: Object.keys(tools),
+        });
+        let system = harnessPrompt;
+        if (memoryService && projectId) {
+          const mems = memoryService.getMemoryBudget(projectId, "lite")
+            .filter((m) => m.compositeScore >= 0.3);
+          if (mems.length > 0) {
+            system = `${harnessPrompt}\n\n## Project Memory\n${mems.map((m) => `- [${m.category}] ${m.content}`).join("\n")}`;
+          }
+        }
 
         stream = streamText({
           model: unifiedRt.resolvedModel,

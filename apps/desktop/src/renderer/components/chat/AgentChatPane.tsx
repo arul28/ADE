@@ -346,6 +346,9 @@ export function AgentChatPane({
   forceNewSession = false,
   forceDraftMode = false,
   draftLayout = "full",
+  availableModelIdsOverride,
+  modelSelectionLocked = false,
+  compactResolverView = false,
   onSessionCreated,
 }: {
   laneId: string | null;
@@ -356,6 +359,9 @@ export function AgentChatPane({
   forceNewSession?: boolean;
   forceDraftMode?: boolean;
   draftLayout?: "full" | "embedded";
+  availableModelIdsOverride?: string[];
+  modelSelectionLocked?: boolean;
+  compactResolverView?: boolean;
   onSessionCreated?: (sessionId: string) => void;
 }) {
   const forceDraft = forceDraftMode || forceNewSession;
@@ -451,7 +457,7 @@ export function AgentChatPane({
   // Keep all configured models selectable, and always include the active session model.
   // When a session has messages, lock to the same family (e.g. Claude→Claude only).
   const effectiveAvailableModelIds = useMemo(() => {
-    let ids = availableModelIds;
+    let ids = (availableModelIdsOverride?.length ? availableModelIdsOverride : availableModelIds).filter(Boolean);
     if (selectedSessionModelId && !ids.includes(selectedSessionModelId)) {
       ids = [selectedSessionModelId, ...ids];
     }
@@ -466,7 +472,7 @@ export function AgentChatPane({
       }
     }
     return ids;
-  }, [availableModelIds, selectedSessionModelId, selectedEvents.length]);
+  }, [availableModelIds, availableModelIdsOverride, selectedSessionModelId, selectedEvents.length]);
 
   const refreshAvailableModels = useCallback(async () => {
     try {
@@ -1057,6 +1063,7 @@ export function AgentChatPane({
             events={selectedEvents}
             showStreamingIndicator={turnActive}
             className="border-0"
+            compactResolverView={compactResolverView}
             onApproval={(itemId, decision, responseText) => {
               if (!selectedSessionId) return;
               window.ade.agentChat.approve({ sessionId: selectedSessionId, itemId, decision, responseText }).then(() => {
@@ -1125,6 +1132,7 @@ export function AgentChatPane({
         sessionIsCliWrapped={sessionIsCliWrapped}
         executionMode={selectedExecutionMode?.value ?? "focused"}
         executionModeOptions={launchModeEditable ? executionModeOptions : []}
+        modelSelectionLocked={modelSelectionLocked}
         onExecutionModeChange={setExecutionMode}
         onPermissionModeChange={handlePermissionModeChange}
         onModelChange={(nextModelId) => {

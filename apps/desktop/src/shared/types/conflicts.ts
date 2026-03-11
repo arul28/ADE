@@ -367,6 +367,7 @@ export type PrepareResolverSessionArgs = {
   sourceLaneIds: string[];
   cwdLaneId?: string;
   integrationLaneName?: string;
+  proposalId?: string | null;
   scenario?: ResolverSessionScenario;
   model?: string | null;
   reasoningEffort?: string | null;

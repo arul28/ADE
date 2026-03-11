@@ -38,6 +38,7 @@ export type GraphNodeData = {
   isIntegration: boolean;
   focusGlow: boolean;
   isVirtualProposal: boolean;
+  integrationSources: Array<{ laneId: string; laneName: string }>;
   pr: GraphPrOverlay | null;
   proposalOutcome?: "clean" | "conflict" | "blocked";
   proposalId?: string;
@@ -140,6 +141,7 @@ export type ConflictPanelState = {
 
 export type IntegrationDialogState = {
   laneIds: string[];
+  targetLaneId: string | null;
   name: string;
   busy: boolean;
   step: string | null;

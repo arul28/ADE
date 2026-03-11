@@ -5,13 +5,18 @@ import type {
   CreatePrFromLaneArgs,
   CreateQueuePrsArgs,
   CreateQueuePrsResult,
-  CreateIntegrationPrArgs,
+   CreateIntegrationPrArgs,
   CreateIntegrationPrResult,
   CreateIntegrationLaneForProposalArgs,
   CreateIntegrationLaneForProposalResult,
   CommitIntegrationArgs,
+  DeleteIntegrationProposalArgs,
+  DeleteIntegrationProposalResult,
+  DraftPrDescriptionArgs,
   DeletePrArgs,
   DeletePrResult,
+  IntegrationLaneChangeStatus,
+  IntegrationLaneSnapshot,
   GitHubRepoRef,
   IntegrationLaneSummary,
   IntegrationPairwiseResult,
@@ -76,9 +81,11 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createAgentChatService } from "../chat/agentChatService";
-import { runGit, runGitOrThrow } from "../git/git";
+import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 import { extractFirstJsonObject } from "../ai/utils";
-import { asNumber, asString, normalizeBranchName, nowIso, parseDiffNameOnly } from "../shared/utils";
+import { buildIntegrationPreflight } from "./integrationPlanning";
+import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationValidation";
+import { asNumber, asString, normalizeBranchName, nowIso } from "../shared/utils";
 
 type PullRequestRow = {
   id: string;
@@ -126,6 +133,62 @@ function branchNameFromRef(ref: string): string {
 function normalizeGroupMemberRole(raw: string): PrGroupMemberRole {
   if (raw === "source" || raw === "integration" || raw === "target") return raw;
   return "source";
+}
+
+function createEmptyIntegrationResolutionState(integrationLaneId: string, updatedAt = nowIso()): IntegrationResolutionState {
+  return {
+    integrationLaneId,
+    stepResolutions: {},
+    activeWorkerStepId: null,
+    activeLaneId: null,
+    createdSnapshot: null,
+    currentSnapshot: null,
+    laneChangeStatus: "unknown",
+    updatedAt,
+  };
+}
+
+async function readIntegrationLaneSnapshot(worktreePath: string): Promise<IntegrationLaneSnapshot | null> {
+  if (!worktreePath || !fs.existsSync(worktreePath)) return null;
+  const [headRes, statusRes] = await Promise.all([
+    runGit(["rev-parse", "HEAD"], { cwd: worktreePath, timeoutMs: 8_000 }),
+    runGit(["status", "--porcelain"], { cwd: worktreePath, timeoutMs: 8_000 }),
+  ]);
+  if (headRes.exitCode !== 0 || statusRes.exitCode !== 0) return null;
+  return {
+    headSha: headRes.stdout.trim() || null,
+    dirty: statusRes.stdout.trim().length > 0,
+  };
+}
+
+function getIntegrationLaneChangeStatus(
+  createdSnapshot: IntegrationLaneSnapshot | null | undefined,
+  currentSnapshot: IntegrationLaneSnapshot | null | undefined
+): IntegrationLaneChangeStatus {
+  if (!currentSnapshot) return "missing";
+  if (!createdSnapshot) return "unknown";
+  return createdSnapshot.headSha === currentSnapshot.headSha && createdSnapshot.dirty === currentSnapshot.dirty
+    ? "unchanged"
+    : "changed";
+}
+
+async function hydrateIntegrationResolutionState(args: {
+  laneById: Map<string, LaneSummary>;
+  resolutionState: IntegrationResolutionState | null;
+  integrationLaneId: string | null;
+  fallbackUpdatedAt?: string;
+}): Promise<IntegrationResolutionState | null> {
+  const { laneById, resolutionState, integrationLaneId, fallbackUpdatedAt } = args;
+  if (!integrationLaneId) return resolutionState;
+  const lane = laneById.get(integrationLaneId);
+  const currentSnapshot = lane ? await readIntegrationLaneSnapshot(lane.worktreePath) : null;
+  const nextState = resolutionState
+    ? { ...resolutionState }
+    : createEmptyIntegrationResolutionState(integrationLaneId, fallbackUpdatedAt ?? nowIso());
+  nextState.integrationLaneId = integrationLaneId;
+  nextState.currentSnapshot = currentSnapshot;
+  nextState.laneChangeStatus = getIntegrationLaneChangeStatus(nextState.createdSnapshot, currentSnapshot);
+  return nextState;
 }
 
 function toPrState(args: { state: string; draft: boolean; mergedAt: string | null }): PrState {
@@ -269,166 +332,13 @@ function parseDiffStatOutput(stdout: string): IntegrationProposalStep["diffStat"
   };
 }
 
-function parseMergeTreeConflictPaths(output: string): string[] {
-  // git merge-tree --write-tree uses NUL bytes (\0) to separate sections
-  // (tree OID, conflicted file info, informational messages).
-  // Replace NUL bytes with newlines so the line-based parser can process all sections.
-  const lines = output.replace(/\0/g, "\n").split("\n");
-  const seen = new Set<string>();
-  const paths: string[] = [];
-  const addPath = (candidate: string | undefined) => {
-    const value = (candidate ?? "").trim();
-    if (!value.length || seen.has(value)) return;
-    // Skip placeholder entries
-    if (value.startsWith("(") && value.endsWith(")")) return;
-    // Skip bare OIDs (tree OID on first line of --write-tree output; SHA-1 or SHA-256)
-    if (/^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(value)) return;
-    seen.add(value);
-    paths.push(value);
-  };
+const DIRTY_WORKTREE_PREFIX = "DIRTY_WORKTREE:";
 
-  // Collect all CONFLICT lines up-front so we can do efficient lookups.
-  const conflictLineTexts = lines
-    .map((l) => (l ?? "").trim())
-    .filter((l) => l.startsWith("CONFLICT"));
-
-  // Also detect if any line looks like a bare path (used for the catch-all at the end of the loop).
-  // A bare path is a non-empty line that doesn't match any known prefix and looks like a file path.
-  // We'll use this regex to test: contains a '/' or a '.ext' and no spaces at the start.
-  // Known prefixes in git merge-tree informational messages (section after file list).
-  const GIT_MSG_PREFIXES = [
-    "CONFLICT", "Auto-merging", "Removing", "Adding", "Skipping",
-    "Merging", "Already", "Applying", "Using", "Falling", "Updating",
-    "warning:", "error:", "hint:", "fatal:", "note:"
-  ];
-  const looksLikePath = (l: string) => {
-    if (l.length === 0 || l.length > 500) return false;
-    // Exclude known git message prefixes
-    for (const prefix of GIT_MSG_PREFIXES) {
-      if (l.startsWith(prefix)) return false;
-    }
-    // Exclude stage entries (handled by stageMatch)
-    if (/^[0-7]{6}\s/.test(l)) return false;
-    // Exclude "changed in both" markers.
-    if (/^\s*(?:changed|added|removed|modified) in both\s*$/i.test(l)) return false;
-    // Exclude bare OIDs
-    if (/^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(l)) return false;
-    // A bare conflict path from git has no leading/trailing whitespace (already trimmed)
-    // and typically looks like a relative file path: contains '/' or has a file extension.
-    // Paths with spaces exist but are rare in code repos; to avoid false-positives
-    // from sentence-like lines, require that the line looks path-like.
-    return /\//.test(l) || /\.\w+$/.test(l);
-  };
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = (lines[i] ?? "").trim();
-    if (!line.length) continue;
-
-    // --write-tree "Conflicted file info" section: "<mode> <oid> <stage>\t<filename>"
-    // e.g. "100644 abc123def456... 2\tpath/to/file.ts"
-    // Stages: 1=base, 2=ours, 3=theirs — any file here is conflicted.
-    const stageMatch = line.match(/^[0-7]{6}\s+[0-9a-f]{40,64}\s+[123]\s+(.+)$/i);
-    if (stageMatch?.[1]) {
-      addPath(stageMatch[1]);
-      continue;
-    }
-
-    // "CONFLICT (content): Merge conflict in path/to/file"
-    const mergeConflictMatch = line.match(/^CONFLICT \([^)]+\): (?:Merge conflict in |content )(.+)$/);
-    if (mergeConflictMatch?.[1]) {
-      addPath(mergeConflictMatch[1]);
-      continue;
-    }
-
-    // "CONFLICT (modify/delete): path/to/file deleted in HEAD and modified in feature"
-    // "CONFLICT (rename/delete): path/to/file renamed to ... was deleted in ..."
-    // Use a NON-greedy match before the first " deleted| renamed| modified| added" to get the path.
-    const actionMatch = line.match(
-      /^CONFLICT \([^)]+\):\s+(.+?)\s+(?:deleted|renamed|modified|added|was)\s/
-    );
-    if (actionMatch?.[1]) {
-      addPath(actionMatch[1]);
-      continue;
-    }
-
-    // "CONFLICT (rename/rename): ... in path/to/file ..."
-    // Fallback: capture path after " in " when there's no action word before the path.
-    const conflictInMatch = line.match(/^CONFLICT \([^)]+\):.*\bMerge conflict in (.+?)(?:\s*$)/);
-    if (conflictInMatch?.[1]) {
-      addPath(conflictInMatch[1]);
-      continue;
-    }
-
-    // Catch-all: any CONFLICT line with a path-like token after the colon
-    const genericConflict = line.match(/^CONFLICT \([^)]+\):\s+(.+)$/);
-    if (genericConflict?.[1]) {
-      // Try to extract a file path from the message: a/b/c.ext or a/b/c (with slash)
-      const pathTokens = genericConflict[1].match(/(?:^|\s)([\w./@-]+(?:\/[\w.@-]+)+(?:\.\w+)?)(?:\s|$)/g)
-        ?? genericConflict[1].match(/(?:^|\s)([\w./-]+\.\w+)(?:\s|$)/g);
-      if (pathTokens) {
-        for (const token of pathTokens) addPath(token.trim());
-      }
-      continue;
-    }
-
-    // "Auto-merging path/to/file" — always extract the path. When --write-tree is used,
-    // the CONFLICT line may not immediately follow (it can appear later in the
-    // informational messages section, separated from Auto-merging by other lines).
-    // If the file truly auto-merged cleanly it will be deduplicated by `addPath` anyway,
-    // and the conflict status is already determined by the exit code + structured section.
-    const autoMergeMatch = line.match(/^Auto-merging (.+)$/);
-    if (autoMergeMatch?.[1]) {
-      // Check if any CONFLICT line exists anywhere in the output that mentions this path,
-      // or if the structured section already captured it. If the structured section
-      // captured this path, addPath deduplicates. Otherwise look for a nearby CONFLICT.
-      const nextLine = (lines[i + 1] ?? "").trim();
-      if (nextLine.startsWith("CONFLICT")) {
-        addPath(autoMergeMatch[1]);
-      } else if (seen.has(autoMergeMatch[1].trim())) {
-        // Already captured from the structured section — skip
-      } else {
-        // Check if there's any CONFLICT line in the entire output mentioning this file
-        const filePath = autoMergeMatch[1].trim();
-        const hasConflictForFile = conflictLineTexts.some((lt) => lt.includes(filePath));
-        if (hasConflictForFile) addPath(filePath);
-      }
-      continue;
-    }
-
-    // Merge-tree output: lines that look like file paths with conflict markers.
-    // "changed in both" / "added in both" patterns from old merge-tree format
-    const bothMatch = line.match(/^\s*(?:changed|added|removed|modified) in both\s*$/i);
-    if (bothMatch) {
-      // The path is usually on the previous line
-      const prevLine = (lines[i - 1] ?? "").trim();
-      if (prevLine && !prevLine.startsWith("CONFLICT") && !prevLine.startsWith("Auto-merging")) {
-        addPath(prevLine);
-      }
-      continue;
-    }
-
-    // --write-tree bare path fallback: git merge-tree --write-tree outputs conflicted
-    // file paths as bare lines (one per line) between the tree OID and the messages
-    // section. These lines don't have any prefix — just the file path.
-    if (looksLikePath(line)) {
-      addPath(line);
-    }
-  }
-
-  return paths;
-}
-
-function parseMergeTreeTreeOid(stdout: string): string | null {
-  // The --write-tree output may use NUL bytes to separate sections (oid\0conflict-info\0messages).
-  // Replace NUL with newline so the first line is just the OID.
-  const first = stdout
-    .replace(/\0/g, "\n")
-    .split("\n")
-    .map((line) => line.trim())
-    .find((line) => line.length > 0);
-  if (!first) return null;
-  // Accept SHA-1 (40 chars) or SHA-256 (64 chars)
-  return /^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(first) ? first : null;
+function formatDirtyWorktreeError(lanes: LaneSummary[]): Error {
+  const names = lanes.map((lane) => lane.name).join(", ");
+  return new Error(
+    `${DIRTY_WORKTREE_PREFIX} Uncommitted changes detected in ${names}. Commit, stash, or discard them before creating the PR, or explicitly continue anyway.`
+  );
 }
 
 function toJobStatus(raw: unknown): "queued" | "in_progress" | "completed" {
@@ -625,6 +535,19 @@ export function createPrService({
         summary.updatedAt ?? now
       ]
     );
+  };
+
+  const assertDirtyWorktreesAllowed = (args: {
+    lanes: LaneSummary[];
+    laneIds: string[];
+    allowDirtyWorktree?: boolean;
+  }): void => {
+    if (args.allowDirtyWorktree) return;
+    const selectedLaneIds = new Set(args.laneIds);
+    const dirtyLanes = args.lanes.filter((lane) => selectedLaneIds.has(lane.id) && Boolean(lane.status.dirty));
+    if (dirtyLanes.length > 0) {
+      throw formatDirtyWorktreeError(dirtyLanes);
+    }
   };
 
   const fetchPr = async (repo: GitHubRepoRef, prNumber: number): Promise<any> => {
@@ -1022,7 +945,8 @@ export function createPrService({
     };
   };
 
-  const draftDescription = async (laneId: string, model?: string): Promise<{ title: string; body: string }> => {
+  const draftDescription = async (args: DraftPrDescriptionArgs): Promise<{ title: string; body: string }> => {
+    const { laneId, model, reasoningEffort } = args;
     const lane = (await laneService.list({ includeArchived: true })).find((entry) => entry.id === laneId);
     if (!lane) throw new Error(`Lane not found: ${laneId}`);
 
@@ -1074,7 +998,8 @@ export function createPrService({
           laneId,
           cwd: lane.worktreePath,
           prompt,
-          ...(model ? { model } : {})
+          ...(model ? { model } : {}),
+          ...(reasoningEffort ? { reasoningEffort } : {})
         });
         const parsed = parsePrDraftJson(draft.text);
         if (parsed) return parsed;
@@ -1126,6 +1051,11 @@ export function createPrService({
     const allLanes = await laneService.list({ includeArchived: true });
     const lane = allLanes.find((entry) => entry.id === args.laneId);
     if (!lane) throw new Error(`Lane not found: ${args.laneId}`);
+    assertDirtyWorktreesAllowed({
+      lanes: allLanes,
+      laneIds: [lane.id],
+      allowDirtyWorktree: args.allowDirtyWorktree
+    });
 
     const repo = await githubService.getRepoOrThrow();
     const headBranch = branchNameFromRef(lane.branchRef);
@@ -1412,13 +1342,18 @@ export function createPrService({
     const prs: PrSummary[] = [];
     const errors: Array<{ laneId: string; error: string }> = [];
 
+    const lanes = await laneService.list({ includeArchived: false });
+    assertDirtyWorktreesAllowed({
+      lanes,
+      laneIds: args.laneIds,
+      allowDirtyWorktree: args.allowDirtyWorktree
+    });
+    const laneMap = new Map(lanes.map((lane) => [lane.id, lane]));
+
     db.run(
       `insert into pr_groups(id, project_id, group_type, name, auto_rebase, ci_gating, target_branch, created_at) values (?, ?, 'queue', ?, ?, ?, ?, ?)`,
       [groupId, projectId, args.queueName ?? null, args.autoRebase ? 1 : 0, args.ciGating ? 1 : 0, args.targetBranch, now]
     );
-
-    const lanes = await laneService.list({ includeArchived: false });
-    const laneMap = new Map(lanes.map((lane) => [lane.id, lane]));
 
     // Queue PRs all target the same branch (no chaining)
     for (let i = 0; i < args.laneIds.length; i++) {
@@ -1436,7 +1371,8 @@ export function createPrService({
           title,
           body: "",
           draft: Boolean(args.draft),
-          baseBranch: args.targetBranch
+          baseBranch: args.targetBranch,
+          allowDirtyWorktree: true
         });
         prs.push(pr);
 
@@ -1456,6 +1392,29 @@ export function createPrService({
 
   const createIntegrationPr = async (args: CreateIntegrationPrArgs): Promise<CreateIntegrationPrResult> => {
     if (!args.sourceLaneIds.length) throw new Error("At least one source lane is required");
+    const integrationLaneName = args.integrationLaneName.trim();
+    if (!integrationLaneName) throw new Error("Integration lane name is required");
+
+    const lanes = await laneService.list({ includeArchived: false });
+    const preflight = buildIntegrationPreflight(lanes, args.sourceLaneIds, args.baseBranch);
+    if (!preflight.uniqueSourceLaneIds.length) throw new Error("At least one valid source lane is required");
+    if (preflight.duplicateSourceLaneIds.length > 0) {
+      throw new Error(`Duplicate source lanes selected: ${preflight.duplicateSourceLaneIds.join(", ")}`);
+    }
+    if (preflight.missingSourceLaneIds.length > 0) {
+      throw new Error(`Source lanes not found: ${preflight.missingSourceLaneIds.join(", ")}`);
+    }
+    if (!preflight.baseLane) {
+      throw new Error(`Could not map base branch "${args.baseBranch}" to an active lane. Create or attach that lane first.`);
+    }
+    assertDirtyWorktreesAllowed({
+      lanes,
+      laneIds: preflight.uniqueSourceLaneIds,
+      allowDirtyWorktree: args.allowDirtyWorktree
+    });
+
+    const laneMap = new Map(lanes.map((lane) => [lane.id, lane]));
+    const sourceLaneNames = preflight.uniqueSourceLaneIds.map((laneId) => laneMap.get(laneId)?.name ?? laneId);
     const groupId = randomUUID();
     const now = nowIso();
 
@@ -1471,19 +1430,14 @@ export function createPrService({
       groupInserted = true;
 
       integrationLane = await laneService.createChild({
-        parentLaneId: (await laneService.list({ includeArchived: false })).find((lane) => {
-          const base = branchNameFromRef(lane.branchRef);
-          return base === args.baseBranch || lane.baseRef === args.baseBranch;
-        })?.id ?? args.sourceLaneIds[0]!,
-        name: args.integrationLaneName,
-        description: `Integration lane for merging: ${args.sourceLaneIds.join(", ")}`
+        parentLaneId: preflight.baseLane.id,
+        name: integrationLaneName,
+        description: `Integration lane for merging: ${sourceLaneNames.join(", ")}`
       });
 
       const mergeResults: Array<{ laneId: string; success: boolean; error?: string }> = [];
-      const lanes = await laneService.list({ includeArchived: false });
-      const laneMap = new Map(lanes.map((lane) => [lane.id, lane]));
 
-      for (const sourceLaneId of args.sourceLaneIds) {
+      for (const sourceLaneId of preflight.uniqueSourceLaneIds) {
         const sourceLane = laneMap.get(sourceLaneId);
         if (!sourceLane) {
           mergeResults.push({ laneId: sourceLaneId, success: false, error: `Lane not found: ${sourceLaneId}` });
@@ -1519,7 +1473,8 @@ export function createPrService({
         title: args.title,
         body: args.body ?? "",
         draft: Boolean(args.draft),
-        baseBranch: args.baseBranch
+        baseBranch: args.baseBranch,
+        allowDirtyWorktree: true
       });
 
       const integrationMemberId = randomUUID();
@@ -1528,11 +1483,11 @@ export function createPrService({
         [integrationMemberId, groupId, pr.id, integrationLane.id]
       );
 
-      for (let i = 0; i < args.sourceLaneIds.length; i++) {
+      for (let i = 0; i < preflight.uniqueSourceLaneIds.length; i++) {
         const memberId = randomUUID();
         db.run(
           `insert into pr_group_members(id, group_id, pr_id, lane_id, position, role) values (?, ?, ?, ?, ?, 'source')`,
-          [memberId, groupId, pr.id, args.sourceLaneIds[i]!, i + 1]
+          [memberId, groupId, pr.id, preflight.uniqueSourceLaneIds[i]!, i + 1]
         );
       }
 
@@ -1825,12 +1780,46 @@ export function createPrService({
     }
   };
 
+  const readConflictMarkerFiles = (worktreePath: string, filePaths: string[]): string[] => {
+    const worktreeRoot = path.resolve(worktreePath);
+    const matches: string[] = [];
+
+    for (const rawPath of filePaths) {
+      const filePath = rawPath.trim();
+      if (!filePath) continue;
+      const absPath = path.resolve(worktreeRoot, filePath);
+      if (absPath !== worktreeRoot && !absPath.startsWith(`${worktreeRoot}${path.sep}`)) {
+        continue;
+      }
+      try {
+        if (!fs.statSync(absPath).isFile()) continue;
+        const content = fs.readFileSync(absPath, "utf8");
+        if (hasMergeConflictMarkers(content)) {
+          matches.push(filePath);
+        }
+      } catch {
+        // Best-effort validation only.
+      }
+    }
+
+    return matches;
+  };
+
   const simulateIntegration = async (args: SimulateIntegrationArgs): Promise<IntegrationProposal> => {
     const proposalId = randomUUID();
     const now = nowIso();
     const lanes = await laneService.list({ includeArchived: false });
+    const preflight = buildIntegrationPreflight(lanes, args.sourceLaneIds, args.baseBranch);
+    if (!preflight.uniqueSourceLaneIds.length) throw new Error("At least one source lane is required");
+    if (preflight.duplicateSourceLaneIds.length > 0) {
+      throw new Error(`Duplicate source lanes selected: ${preflight.duplicateSourceLaneIds.join(", ")}`);
+    }
+    if (preflight.missingSourceLaneIds.length > 0) {
+      throw new Error(`Source lanes not found: ${preflight.missingSourceLaneIds.join(", ")}`);
+    }
+    const sourceLaneIds = preflight.uniqueSourceLaneIds;
     const laneMap = new Map(lanes.map((lane) => [lane.id, lane]));
-    const laneOrder = new Map(args.sourceLaneIds.map((laneId, index) => [laneId, index]));
+    const laneOrder = new Map(sourceLaneIds.map((laneId, index) => [laneId, index]));
     const zeroDiffStat: IntegrationProposalStep["diffStat"] = { insertions: 0, deletions: 0, filesChanged: 0 };
 
     // Resolve base branch SHA once, then compare each lane head against it.
@@ -1852,8 +1841,8 @@ export function createPrService({
       }
     >();
 
-    for (let i = 0; i < args.sourceLaneIds.length; i++) {
-      const laneId = args.sourceLaneIds[i]!;
+    for (let i = 0; i < sourceLaneIds.length; i++) {
+      const laneId = sourceLaneIds[i]!;
       const lane = laneMap.get(laneId);
       if (!lane) {
         laneSummariesById.set(laneId, {
@@ -1916,13 +1905,14 @@ export function createPrService({
     }
 
     const pairwiseResults: IntegrationPairwiseResult[] = [];
-    for (let i = 0; i < args.sourceLaneIds.length; i++) {
-      const laneAId = args.sourceLaneIds[i]!;
+    const blockedLaneIds = new Set<string>();
+    for (let i = 0; i < sourceLaneIds.length; i++) {
+      const laneAId = sourceLaneIds[i]!;
       const laneA = laneSummariesById.get(laneAId);
       if (!laneA) continue;
 
-      for (let j = i + 1; j < args.sourceLaneIds.length; j++) {
-        const laneBId = args.sourceLaneIds[j]!;
+      for (let j = i + 1; j < sourceLaneIds.length; j++) {
+        const laneBId = sourceLaneIds[j]!;
         const laneB = laneSummariesById.get(laneBId);
         if (!laneB) continue;
 
@@ -1930,12 +1920,13 @@ export function createPrService({
           continue;
         }
 
-        const mergeTreeResult = await runGit(
-          ["merge-tree", "--write-tree", "--messages", `--merge-base=${baseSha}`, laneA.headSha, laneB.headSha],
-          { cwd: projectRoot, timeoutMs: 30_000 }
-        );
-        // Exit code 128 indicates a fatal git error (e.g. invalid refs), not a merge conflict.
-        // Skip this pair entirely so it doesn't pollute conflict analysis.
+        const mergeTreeResult = await runGitMergeTree({
+          cwd: projectRoot,
+          mergeBase: baseSha,
+          branchA: laneA.headSha,
+          branchB: laneB.headSha,
+          timeoutMs: 30_000
+        });
         if (mergeTreeResult.exitCode === 128) {
           logger.warn("prs.merge_tree_fatal", {
             laneAId,
@@ -1943,15 +1934,28 @@ export function createPrService({
             exitCode: mergeTreeResult.exitCode,
             stderr: mergeTreeResult.stderr.trim()
           });
+          blockedLaneIds.add(laneAId);
+          blockedLaneIds.add(laneBId);
           continue;
         }
-        const hasConflict = mergeTreeResult.exitCode !== 0;
+        const hasConflict = mergeTreeResult.conflicts.length > 0;
+        if (!hasConflict && mergeTreeResult.exitCode !== 0) {
+          logger.warn("prs.merge_tree_unknown", {
+            laneAId,
+            laneBId,
+            exitCode: mergeTreeResult.exitCode,
+            stderr: mergeTreeResult.stderr.trim(),
+            stdoutPreview: mergeTreeResult.stdout.replace(/\0/g, "\\0").slice(0, 300)
+          });
+          blockedLaneIds.add(laneAId);
+          blockedLaneIds.add(laneBId);
+          continue;
+        }
         const conflictingFiles: IntegrationProposalStep["conflictingFiles"] = [];
 
         if (hasConflict) {
-          const treeOid = parseMergeTreeTreeOid(mergeTreeResult.stdout);
-          const mergeTreeCombined = `${mergeTreeResult.stdout}\n${mergeTreeResult.stderr}`;
-          let conflictPaths = parseMergeTreeConflictPaths(mergeTreeCombined);
+          const treeOid = mergeTreeResult.treeOid;
+          const conflictPaths = mergeTreeResult.conflicts.map((conflict) => conflict.path);
           logger.info("prs.merge_tree_conflict_parse", {
             laneAId,
             laneBId,
@@ -1964,25 +1968,6 @@ export function createPrService({
             parsedPathCount: conflictPaths.length,
             parsedPaths: conflictPaths.slice(0, 10)
           });
-          if (conflictPaths.length === 0) {
-            // Heuristic fallback: overlap of files changed by both lanes from the same base.
-            const [changedAResult, changedBResult] = await Promise.all([
-              runGit(["diff", "--name-only", `${baseSha}..${laneA.headSha}`], { cwd: projectRoot, timeoutMs: 15_000 }),
-              runGit(["diff", "--name-only", `${baseSha}..${laneB.headSha}`], { cwd: projectRoot, timeoutMs: 15_000 })
-            ]);
-            const changedA = changedAResult.exitCode === 0 ? parseDiffNameOnly(changedAResult.stdout) : [];
-            const changedB = changedBResult.exitCode === 0 ? parseDiffNameOnly(changedBResult.stdout) : [];
-            const changedASet = new Set(changedA);
-            conflictPaths = changedB.filter((path) => changedASet.has(path));
-            logger.info("prs.merge_tree_conflict_fallback_heuristic", {
-              laneAId,
-              laneBId,
-              changedACount: changedA.length,
-              changedBCount: changedB.length,
-              overlapCount: conflictPaths.length,
-              overlapPaths: conflictPaths.slice(0, 10)
-            });
-          }
           for (const filePath of conflictPaths) {
             if (treeOid) {
               const detail = await extractConflictDetail(treeOid, filePath, projectRoot);
@@ -2040,7 +2025,7 @@ export function createPrService({
 
     const conflictingPeersByLaneId = new Map<string, Set<string>>();
     const conflictingFilesByLaneId = new Map<string, Map<string, IntegrationProposalStep["conflictingFiles"][number]>>();
-    for (const laneId of args.sourceLaneIds) {
+    for (const laneId of sourceLaneIds) {
       conflictingPeersByLaneId.set(laneId, new Set<string>());
       conflictingFilesByLaneId.set(laneId, new Map<string, IntegrationProposalStep["conflictingFiles"][number]>());
     }
@@ -2057,7 +2042,7 @@ export function createPrService({
       }
     }
 
-    const laneSummaries: IntegrationLaneSummary[] = args.sourceLaneIds.map((laneId) => {
+    const laneSummaries: IntegrationLaneSummary[] = sourceLaneIds.map((laneId) => {
       const laneSummary = laneSummariesById.get(laneId);
       const laneName = laneSummary?.laneName ?? laneId;
       const conflictsWith = Array.from(conflictingPeersByLaneId.get(laneId) ?? []);
@@ -2065,6 +2050,8 @@ export function createPrService({
 
       const outcome: IntegrationLaneSummary["outcome"] = !laneSummary?.headSha
         ? "blocked"
+        : blockedLaneIds.has(laneId)
+          ? "blocked"
         : conflictsWith.length > 0
           ? "conflict"
           : "clean";
@@ -2098,7 +2085,7 @@ export function createPrService({
 
     const proposal: IntegrationProposal = {
       proposalId,
-      sourceLaneIds: args.sourceLaneIds,
+      sourceLaneIds,
       baseBranch: args.baseBranch,
       pairwiseResults,
       laneSummaries,
@@ -2114,7 +2101,7 @@ export function createPrService({
       [
         proposalId,
         projectId,
-        JSON.stringify(args.sourceLaneIds),
+        JSON.stringify(sourceLaneIds),
         args.baseBranch,
         JSON.stringify(steps),
         JSON.stringify(pairwiseResults),
@@ -2128,24 +2115,105 @@ export function createPrService({
     return proposal;
   };
 
+  const createIntegrationPrFromExistingLane = async (args: {
+    sourceLaneIds: string[];
+    integrationLaneId: string;
+    baseBranch: string;
+    title: string;
+    body?: string;
+    draft?: boolean;
+    allowDirtyWorktree?: boolean;
+  }): Promise<CreateIntegrationPrResult> => {
+    const lanes = await laneService.list({ includeArchived: false });
+    const integrationLane = lanes.find((lane) => lane.id === args.integrationLaneId);
+    if (!integrationLane) throw new Error(`Integration lane not found: ${args.integrationLaneId}`);
+    assertDirtyWorktreesAllowed({
+      lanes,
+      laneIds: [...args.sourceLaneIds, integrationLane.id],
+      allowDirtyWorktree: args.allowDirtyWorktree
+    });
+
+    const groupId = randomUUID();
+    const now = nowIso();
+    db.run(
+      `insert into pr_groups(id, project_id, group_type, created_at) values (?, ?, 'integration', ?)`,
+      [groupId, projectId, now]
+    );
+
+    try {
+      const pr = await createFromLane({
+        laneId: integrationLane.id,
+        title: args.title,
+        body: args.body ?? "",
+        draft: Boolean(args.draft),
+        baseBranch: args.baseBranch,
+        allowDirtyWorktree: true
+      });
+
+      const integrationMemberId = randomUUID();
+      db.run(
+        `insert into pr_group_members(id, group_id, pr_id, lane_id, position, role) values (?, ?, ?, ?, 0, 'integration')`,
+        [integrationMemberId, groupId, pr.id, integrationLane.id]
+      );
+
+      for (let i = 0; i < args.sourceLaneIds.length; i += 1) {
+        const sourceLaneId = args.sourceLaneIds[i]!;
+        const memberId = randomUUID();
+        db.run(
+          `insert into pr_group_members(id, group_id, pr_id, lane_id, position, role) values (?, ?, ?, ?, ?, 'source')`,
+          [memberId, groupId, pr.id, sourceLaneId, i + 1]
+        );
+      }
+
+      return {
+        groupId,
+        integrationLaneId: integrationLane.id,
+        pr,
+        mergeResults: args.sourceLaneIds.map((laneId) => ({ laneId, success: true }))
+      };
+    } catch (error) {
+      db.run("delete from pr_group_members where group_id = ?", [groupId]);
+      db.run("delete from pr_groups where id = ? and project_id = ?", [groupId, projectId]);
+      throw error;
+    }
+  };
+
   const commitIntegration = async (args: CommitIntegrationArgs): Promise<CreateIntegrationPrResult> => {
     // Look up proposal
-    const proposalRow = db.get<{ id: string; source_lane_ids_json: string; base_branch: string; steps_json: string }>(
-      `select id, source_lane_ids_json, base_branch, steps_json from integration_proposals where id = ?`,
+    const proposalRow = db.get<{
+      id: string;
+      source_lane_ids_json: string;
+      base_branch: string;
+      steps_json: string;
+      integration_lane_id: string | null;
+    }>(
+      `select id, source_lane_ids_json, base_branch, steps_json, integration_lane_id from integration_proposals where id = ?`,
       [args.proposalId]
     );
     if (!proposalRow) throw new Error(`Proposal not found: ${args.proposalId}`);
 
     const sourceLaneIds = JSON.parse(String(proposalRow.source_lane_ids_json)) as string[];
+    const existingIntegrationLaneId = asString(proposalRow.integration_lane_id).trim();
 
-    const result = await createIntegrationPr({
-      sourceLaneIds,
-      integrationLaneName: args.integrationLaneName,
-      baseBranch: String(proposalRow.base_branch),
-      title: args.title,
-      body: args.body,
-      draft: args.draft
-    });
+    const result = existingIntegrationLaneId
+      ? await createIntegrationPrFromExistingLane({
+          sourceLaneIds,
+          integrationLaneId: existingIntegrationLaneId,
+          baseBranch: String(proposalRow.base_branch),
+          title: args.title,
+          body: args.body,
+          draft: args.draft,
+          allowDirtyWorktree: args.allowDirtyWorktree
+        })
+      : await createIntegrationPr({
+          sourceLaneIds,
+          integrationLaneName: args.integrationLaneName,
+          baseBranch: String(proposalRow.base_branch),
+          title: args.title,
+          body: args.body,
+          draft: args.draft,
+          allowDirtyWorktree: args.allowDirtyWorktree
+        });
 
     db.run(`update integration_proposals set status = 'committed' where id = ?`, [args.proposalId]);
 
@@ -2288,7 +2356,7 @@ export function createPrService({
     return results;
   };
 
-  const listIntegrationProposals = (): IntegrationProposal[] => {
+  const listIntegrationProposals = async (): Promise<IntegrationProposal[]> => {
     const rows = db.all<{
       id: string; source_lane_ids_json: string; base_branch: string;
       steps_json: string; overall_outcome: string; created_at: string;
@@ -2300,22 +2368,36 @@ export function createPrService({
       `select * from integration_proposals where project_id = ? and status = 'proposed' order by created_at desc`,
       [projectId]
     );
-    return rows.map((row) => ({
-      proposalId: String(row.id),
-      sourceLaneIds: JSON.parse(String(row.source_lane_ids_json)) as string[],
-      baseBranch: String(row.base_branch),
-      pairwiseResults: parseJsonArrayOrEmpty<IntegrationPairwiseResult>(row.pairwise_results_json),
-      laneSummaries: parseJsonArrayOrEmpty<IntegrationLaneSummary>(row.lane_summaries_json),
-      steps: JSON.parse(String(row.steps_json)) as IntegrationProposalStep[],
-      overallOutcome: String(row.overall_outcome) as IntegrationProposal["overallOutcome"],
-      createdAt: String(row.created_at),
-      title: String(row.title || ""),
-      body: String(row.body || ""),
-      draft: Boolean(row.draft),
-      integrationLaneName: String(row.integration_lane_name || ""),
-      status: String(row.status) as IntegrationProposal["status"],
-      integrationLaneId: row.integration_lane_id || null,
-      resolutionState: row.resolution_state_json ? JSON.parse(String(row.resolution_state_json)) as IntegrationResolutionState : null
+    const lanes = await laneService.list({ includeArchived: true, includeStatus: false });
+    const laneById = new Map(lanes.map((lane) => [lane.id, lane]));
+    return await Promise.all(rows.map(async (row) => {
+      const integrationLaneId = row.integration_lane_id || null;
+      const parsedResolutionState = row.resolution_state_json
+        ? JSON.parse(String(row.resolution_state_json)) as IntegrationResolutionState
+        : null;
+      const resolutionState = await hydrateIntegrationResolutionState({
+        laneById,
+        resolutionState: parsedResolutionState,
+        integrationLaneId,
+        fallbackUpdatedAt: String(row.created_at),
+      });
+      return {
+        proposalId: String(row.id),
+        sourceLaneIds: JSON.parse(String(row.source_lane_ids_json)) as string[],
+        baseBranch: String(row.base_branch),
+        pairwiseResults: parseJsonArrayOrEmpty<IntegrationPairwiseResult>(row.pairwise_results_json),
+        laneSummaries: parseJsonArrayOrEmpty<IntegrationLaneSummary>(row.lane_summaries_json),
+        steps: JSON.parse(String(row.steps_json)) as IntegrationProposalStep[],
+        overallOutcome: String(row.overall_outcome) as IntegrationProposal["overallOutcome"],
+        createdAt: String(row.created_at),
+        title: String(row.title || ""),
+        body: String(row.body || ""),
+        draft: Boolean(row.draft),
+        integrationLaneName: String(row.integration_lane_name || ""),
+        status: String(row.status) as IntegrationProposal["status"],
+        integrationLaneId,
+        resolutionState,
+      };
     }));
   };
 
@@ -2331,8 +2413,35 @@ export function createPrService({
     db.run(`update integration_proposals set ${sets.join(", ")} where id = ?`, params);
   };
 
-  const deleteIntegrationProposal = (proposalId: string): void => {
-    db.run(`delete from integration_proposals where id = ?`, [proposalId]);
+  const deleteIntegrationProposal = async (args: DeleteIntegrationProposalArgs): Promise<DeleteIntegrationProposalResult> => {
+    const proposalRow = db.get<{
+      id: string;
+      integration_lane_id: string | null;
+    }>(
+      `select id, integration_lane_id from integration_proposals where id = ?`,
+      [args.proposalId]
+    );
+    if (!proposalRow) throw new Error(`Proposal not found: ${args.proposalId}`);
+    let deletedIntegrationLane = false;
+    const integrationLaneId = asString(proposalRow.integration_lane_id).trim() || null;
+    if (args.deleteIntegrationLane && integrationLaneId) {
+      try {
+        await laneService.delete({
+          laneId: integrationLaneId,
+          force: true,
+        });
+        deletedIntegrationLane = true;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!message.includes("Lane not found")) throw error;
+      }
+    }
+    db.run(`delete from integration_proposals where id = ?`, [args.proposalId]);
+    return {
+      proposalId: args.proposalId,
+      integrationLaneId,
+      deletedIntegrationLane,
+    };
   };
 
   // B1: Create integration lane for a proposal, merge clean steps
@@ -2341,30 +2450,54 @@ export function createPrService({
   ): Promise<CreateIntegrationLaneForProposalResult> => {
     const proposalRow = db.get<{
       id: string; source_lane_ids_json: string; base_branch: string;
-      steps_json: string; overall_outcome: string;
+      steps_json: string; overall_outcome: string; integration_lane_name: string | null;
+      integration_lane_id: string | null; resolution_state_json: string | null; created_at: string;
     }>(
-      `select id, source_lane_ids_json, base_branch, steps_json, overall_outcome from integration_proposals where id = ?`,
+      `select id, source_lane_ids_json, base_branch, steps_json, overall_outcome, integration_lane_name, integration_lane_id, resolution_state_json, created_at from integration_proposals where id = ?`,
       [args.proposalId]
     );
     if (!proposalRow) throw new Error(`Proposal not found: ${args.proposalId}`);
 
     const steps = JSON.parse(String(proposalRow.steps_json)) as IntegrationProposalStep[];
     const allLanes = await laneService.list({ includeArchived: false });
+    const preflight = buildIntegrationPreflight(allLanes, steps.map((step) => step.laneId), String(proposalRow.base_branch));
+    if (!preflight.uniqueSourceLaneIds.length) throw new Error("No source lanes are available for this proposal.");
+    if (preflight.missingSourceLaneIds.length > 0) {
+      throw new Error(`Source lanes not found: ${preflight.missingSourceLaneIds.join(", ")}`);
+    }
+    if (!preflight.baseLane) {
+      throw new Error(`Could not map base branch "${String(proposalRow.base_branch)}" to an active lane. Create or attach that lane first.`);
+    }
     const laneMap = new Map(allLanes.map((l) => [l.id, l]));
-
-    // Find a parent lane to base the integration lane on (use baseBranch's lane or first source lane)
-    const baseBranch = String(proposalRow.base_branch);
-    const parentLaneId = allLanes.find((l) => {
-      const base = branchNameFromRef(l.branchRef);
-      return base === baseBranch || l.baseRef === baseBranch;
-    })?.id ?? steps[0]?.laneId;
-
-    if (!parentLaneId) throw new Error("No suitable parent lane found for integration lane");
-
+    const existingIntegrationLaneId = asString(proposalRow.integration_lane_id).trim();
+    if (existingIntegrationLaneId) {
+      const existingLane = laneMap.get(existingIntegrationLaneId);
+      if (existingLane) {
+        const existingState = proposalRow.resolution_state_json
+          ? JSON.parse(String(proposalRow.resolution_state_json)) as IntegrationResolutionState
+          : null;
+        const mergedCleanSet = new Set(
+          Object.entries(existingState?.stepResolutions ?? {})
+            .filter(([, resolution]) => resolution === "merged-clean" || resolution === "resolved")
+            .map(([laneId]) => laneId)
+        );
+        if (mergedCleanSet.size === 0) {
+          for (const step of steps) {
+            if (step.outcome === "clean") mergedCleanSet.add(step.laneId);
+          }
+        }
+        return {
+          integrationLaneId: existingLane.id,
+          mergedCleanLanes: steps.filter((step) => mergedCleanSet.has(step.laneId)).map((step) => step.laneId),
+          conflictingLanes: steps.filter((step) => !mergedCleanSet.has(step.laneId)).map((step) => step.laneId),
+        };
+      }
+    }
     const shortId = args.proposalId.slice(0, 8);
+    const integrationLaneName = String(proposalRow.integration_lane_name ?? "").trim() || `integration/${shortId}`;
     const integrationLane = await laneService.createChild({
-      parentLaneId,
-      name: `integration/${shortId}`,
+      parentLaneId: preflight.baseLane.id,
+      name: integrationLaneName,
       description: `Integration lane for proposal ${args.proposalId}`
     });
 
@@ -2404,11 +2537,15 @@ export function createPrService({
       }
     }
 
+    const createdSnapshot = await readIntegrationLaneSnapshot(integrationLane.worktreePath);
     const resolutionState: IntegrationResolutionState = {
       integrationLaneId: integrationLane.id,
       stepResolutions,
       activeWorkerStepId: null,
       activeLaneId: null,
+      createdSnapshot,
+      currentSnapshot: createdSnapshot,
+      laneChangeStatus: getIntegrationLaneChangeStatus(createdSnapshot, createdSnapshot),
       updatedAt: nowIso()
     };
 
@@ -2480,13 +2617,7 @@ export function createPrService({
     if (statusRes.exitCode !== 0) {
       throw new Error(`git status failed in integration lane: ${statusRes.stderr.trim()}`);
     }
-    const conflictFiles = statusRes.stdout
-      .split("\n")
-      .filter((line) => {
-        const code = line.slice(0, 2);
-        return code === "UU" || code === "AA" || code === "DD" || code === "DU" || code === "UD" || code === "AU" || code === "UA";
-      })
-      .map((line) => line.slice(3).trim());
+    const conflictFiles = parseGitStatusPorcelain(statusRes.stdout).unmergedPaths;
 
     // Abort the failed merge so the orchestrator worker can re-attempt in a controlled way
     await runGit(["merge", "--abort"], { cwd: integrationLane.worktreePath, timeoutMs: 10_000 });
@@ -2568,20 +2699,20 @@ export function createPrService({
     if (statusRes.exitCode !== 0) {
       throw new Error(`git status failed in integration lane: ${statusRes.stderr.trim()}`);
     }
-    const conflictFiles = statusRes.stdout
-      .split("\n")
-      .filter((line) => {
-        const code = line.slice(0, 2);
-        return code === "UU" || code === "AA" || code === "DD" || code === "DU" || code === "UD" || code === "AU" || code === "UA";
-      })
-      .map((line) => line.slice(3).trim());
+    const statusSnapshot = parseGitStatusPorcelain(statusRes.stdout);
+    const conflictFiles = statusSnapshot.unmergedPaths;
+    const conflictMarkerFiles = conflictFiles.length === 0
+      ? readConflictMarkerFiles(integrationLane.worktreePath, statusSnapshot.changedPaths)
+      : [];
+    const remainingConflictFiles = conflictFiles.length > 0 ? conflictFiles : conflictMarkerFiles;
 
     const resolutionState: IntegrationResolutionState = proposalRow.resolution_state_json
       ? JSON.parse(String(proposalRow.resolution_state_json))
       : { integrationLaneId, stepResolutions: {}, activeWorkerStepId: null, activeLaneId: null, updatedAt: nowIso() };
 
     let resolution: IntegrationStepResolution;
-    if (conflictFiles.length === 0) {
+    let message: string | null = null;
+    if (remainingConflictFiles.length === 0) {
       resolution = "resolved";
       resolutionState.stepResolutions[args.laneId] = "resolved";
       if (resolutionState.activeLaneId === args.laneId) {
@@ -2589,8 +2720,15 @@ export function createPrService({
         resolutionState.activeLaneId = null;
       }
     } else {
-      resolution = "resolving";
-      resolutionState.stepResolutions[args.laneId] = "resolving";
+      resolution = "failed";
+      resolutionState.stepResolutions[args.laneId] = "failed";
+      if (resolutionState.activeLaneId === args.laneId) {
+        resolutionState.activeWorkerStepId = null;
+        resolutionState.activeLaneId = null;
+      }
+      message = conflictFiles.length > 0
+        ? `Recheck failed: ${conflictFiles.length} unmerged file${conflictFiles.length === 1 ? "" : "s"} remain in the integration lane.`
+        : `Recheck failed: merge conflict markers remain in ${conflictMarkerFiles.join(", ")}.`;
     }
     resolutionState.updatedAt = nowIso();
 
@@ -2611,7 +2749,7 @@ export function createPrService({
       db.run(`update integration_proposals set overall_outcome = 'clean' where id = ?`, [args.proposalId]);
     }
 
-    return { resolution, remainingConflictFiles: conflictFiles, allResolved };
+    return { resolution, remainingConflictFiles, allResolved, message };
   };
 
   // B5: Get integration resolution state
@@ -2684,8 +2822,8 @@ export function createPrService({
       return await deletePr(args);
     },
 
-    async draftDescription(laneId: string, model?: string): Promise<{ title: string; body: string }> {
-      return await draftDescription(laneId, model);
+    async draftDescription(args: DraftPrDescriptionArgs): Promise<{ title: string; body: string }> {
+      return await draftDescription(args);
     },
 
     async land(args: LandPrArgs): Promise<LandResult> {
@@ -2750,16 +2888,16 @@ export function createPrService({
       return await listWithConflicts();
     },
 
-    listIntegrationProposals(): IntegrationProposal[] {
-      return listIntegrationProposals();
+    async listIntegrationProposals(): Promise<IntegrationProposal[]> {
+      return await listIntegrationProposals();
     },
 
     updateIntegrationProposal(args: UpdateIntegrationProposalArgs): void {
       return updateIntegrationProposal(args);
     },
 
-    deleteIntegrationProposal(proposalId: string): void {
-      return deleteIntegrationProposal(proposalId);
+    async deleteIntegrationProposal(args: DeleteIntegrationProposalArgs): Promise<DeleteIntegrationProposalResult> {
+      return await deleteIntegrationProposal(args);
     },
 
     async createIntegrationLaneForProposal(args: CreateIntegrationLaneForProposalArgs): Promise<CreateIntegrationLaneForProposalResult> {

@@ -11,7 +11,14 @@
 | [Symphony §8.4 Retry](https://github.com/openai/symphony/blob/main/SPEC.md) | Retry semantics — clean exit vs crash, context preservation, exponential backoff | Continuation memory (preserve mission memory on clean exit), failure gotcha injection on crash retry |
 | [OpenClaw — Human Work Ingestion](https://docs.openclaw.ai/concepts/memory) | Daily log diffing, change digest, freshness tracking | `lastSeenHeadSha` tracking, change digest generation, worker notification on divergence |
 
-W7b wires the orchestrator into the unified memory system so that missions create, read, write, and promote memories throughout their lifecycle. Currently, `orchestrator_shared_facts` is a separate run-scoped table, worker briefings pull from memory but do not write back systematically, and no episodic summaries are generated. This workstream closes those gaps.
+W7b wires the orchestrator into the unified memory system so that missions create, read, write, and promote memories throughout their lifecycle. A 2026-03-10 code audit shows that the core of this workstream is already in place: mission memory lifecycle services, worker memory briefing assembly, episodic summary generation, and human-work digesting are all implemented. The remaining work is now cleanup and follow-through: finish retiring the legacy `orchestrator_shared_facts` compatibility path and fully wire persistent employee L2 briefing injection through every orchestrator call site.
+
+##### Audit Snapshot (2026-03-10)
+
+- Implemented in code today: `missionMemoryLifecycleService.ts`, `memoryBriefingService.ts`, `episodicSummaryService.ts`, and `humanWorkDigestService.ts`, all wired from `main.ts`.
+- Mission start/end hooks already write lifecycle state and episodic summaries from the orchestrator.
+- Legacy compatibility still exists in `unifiedMemoryService.ts` via `orchestrator_shared_facts` dual-source reads.
+- Persistent employee L2 memory is supported by the briefing layer but not fully passed through current orchestrator briefing calls.
 
 ##### Mission Memory Lifecycle
 
@@ -165,7 +172,7 @@ humanWorkDigestService.ts         — Git divergence detection, change digest ge
 
 All three services instantiated in `main.ts`. `missionMemoryLifecycleService` is called by `orchestratorService` at mission start/end. `episodicSummaryService` is called async after mission/session completion. `humanWorkDigestService` runs on app startup and before mission dispatch.
 
-**Implementation status:** Not started.
+**Implementation status (2026-03-10):** Mostly implemented. Remaining work: retire the `orchestrator_shared_facts` fallback path, finish persistent employee L2 memory wiring, and close any cleanup gaps around mission-context continuation behavior.
 
 **Tests:**
 - Mission memory lifecycle: scope creation on mission start, coordinator decision write, worker fact write, worker handoff write, cross-worker read via `memorySearch`.

@@ -10,6 +10,7 @@ import {
 } from "../../../shared/modelRegistry";
 import type { DetectedAuth } from "./authDetector";
 import { wrapWithMiddleware, type WrapMiddlewareOpts } from "./middleware";
+import { resolveViaAdeProviderRegistry } from "./adeProviderRegistry";
 export { buildProviderOptions } from "./providerOptions";
 
 // ---------------------------------------------------------------------------
@@ -263,7 +264,7 @@ export async function resolveModel(
     model = wrapWithMiddleware(model, descriptor, opts?.middleware || undefined);
   }
 
-  return model;
+  return resolveViaAdeProviderRegistry(descriptor, model);
 }
 
 async function resolveCliWrapped(

@@ -112,6 +112,7 @@ export function AgentChatComposer({
   sessionIsCliWrapped,
   executionMode,
   executionModeOptions = [],
+  modelSelectionLocked = false,
   onModelChange,
   onReasoningEffortChange,
   onDraftChange,
@@ -146,6 +147,7 @@ export function AgentChatComposer({
   sessionIsCliWrapped?: boolean;
   executionMode?: AgentChatExecutionMode | null;
   executionModeOptions?: ExecutionModeOption[];
+  modelSelectionLocked?: boolean;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
   onDraftChange: (value: string) => void;
@@ -584,14 +586,15 @@ export function AgentChatComposer({
 
       {/* ── Toolbar ── */}
       <div className="flex items-center gap-2 border-t border-border/8 px-3 py-1">
-        <UnifiedModelSelector
-          value={modelId}
-          onChange={onModelChange}
-          availableModelIds={availableModelIds}
-          showReasoning
-          reasoningEffort={reasoningEffort}
-          onReasoningEffortChange={onReasoningEffortChange}
-        />
+              <UnifiedModelSelector
+                value={modelId}
+                onChange={onModelChange}
+                availableModelIds={availableModelIds}
+                disabled={modelSelectionLocked}
+                showReasoning
+                reasoningEffort={reasoningEffort}
+                onReasoningEffortChange={onReasoningEffortChange}
+              />
 
         {/* Permission mode */}
         {permissionMode && onPermissionModeChange && permissionOptions.length > 0 ? (

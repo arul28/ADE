@@ -6,6 +6,9 @@ import type { GraphNodeData } from "../graphTypes";
 
 export function GraphProposalNode({ data, selected }: NodeProps<Node<GraphNodeData>>) {
   const borderColor = proposalOutcomeColor(data.proposalOutcome);
+  const visibleIntegrationSources = data.integrationSources.slice(0, 3);
+  const hiddenIntegrationSourceCount = Math.max(0, data.integrationSources.length - visibleIntegrationSources.length);
+  const minHeight = data.integrationSources.length > 2 ? 112 : 96;
   return (
     <div
       className={cn(
@@ -14,7 +17,7 @@ export function GraphProposalNode({ data, selected }: NodeProps<Node<GraphNodeDa
         data.dimmed && "opacity-30",
         data.highlight && "shadow-[0_2px_8px_rgba(0,0,0,0.2)]"
       )}
-      style={{ width: 220, minHeight: 84, borderColor }}
+      style={{ width: 220, minHeight, borderColor }}
     >
       <div className="flex items-center justify-between gap-1">
         <span
@@ -34,6 +37,34 @@ export function GraphProposalNode({ data, selected }: NodeProps<Node<GraphNodeDa
         <span className="truncate font-semibold">{data.lane.name}</span>
       </div>
       <div className="mt-0.5 truncate text-[10px] text-muted-fg">{data.lane.baseRef}</div>
+      {data.integrationSources.length > 0 ? (
+        <div className="mt-2">
+          <div className="mb-1 text-[9px] font-semibold uppercase tracking-[0.12em]" style={{ color: borderColor }}>
+            Fed By
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {visibleIntegrationSources.map((source) => (
+              <span
+                key={source.laneId}
+                className="rounded border px-1.5 py-0.5 text-[10px] font-medium"
+                style={{ color: borderColor, borderColor: `${borderColor}55`, backgroundColor: `${borderColor}18` }}
+                title={source.laneName}
+              >
+                {source.laneName}
+              </span>
+            ))}
+            {hiddenIntegrationSourceCount > 0 ? (
+              <span
+                className="rounded border px-1.5 py-0.5 text-[10px] font-medium"
+                style={{ color: borderColor, borderColor: `${borderColor}40`, backgroundColor: `${borderColor}12` }}
+                title={`${hiddenIntegrationSourceCount} more source lanes`}
+              >
+                +{hiddenIntegrationSourceCount}
+              </span>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
       <Handle
         id="target"
         type="target"

@@ -124,13 +124,22 @@ export function iconGlyph(icon: LaneIcon): React.ReactNode {
   return match?.icon ?? null;
 }
 
-export function nodeDimensions(lane: LaneSummary, bucket: GraphNodeData["activityBucket"], mode: GraphViewMode): { width: number; height: number } {
+export function nodeDimensions(
+  lane: LaneSummary,
+  bucket: GraphNodeData["activityBucket"],
+  mode: GraphViewMode,
+  opts?: { isIntegration?: boolean; integrationSourceCount?: number },
+): { width: number; height: number } {
+  const isIntegration = Boolean(opts?.isIntegration);
+  const integrationSourceCount = opts?.integrationSourceCount ?? 0;
   if (mode === "activity") {
+    if (isIntegration) return { width: 220, height: integrationSourceCount > 2 ? 122 : 110 };
     if (bucket === "min") return { width: 100, height: 50 };
     if (bucket === "low") return { width: 130, height: 65 };
     if (bucket === "high") return { width: 200, height: 100 };
     return { width: 160, height: 80 };
   }
+  if (isIntegration) return { width: 220, height: integrationSourceCount > 2 ? 122 : 110 };
   if (lane.laneType === "primary") return { width: 200, height: 100 };
   return { width: 160, height: 80 };
 }

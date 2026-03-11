@@ -19,6 +19,8 @@ export type ProviderFamily =
   | "groq"
   | "together";
 
+export type LocalProviderFamily = Extract<ProviderFamily, "ollama" | "lmstudio" | "vllm">;
+
 export type ModelCapabilities = {
   tools: boolean;
   vision: boolean;
@@ -61,6 +63,21 @@ export type ModelProviderGroup = "claude" | "codex" | "unified";
 const ALL_CAPS: ModelCapabilities = { tools: true, vision: true, reasoning: true, streaming: true };
 const NO_REASONING: ModelCapabilities = { tools: true, vision: true, reasoning: false, streaming: true };
 const BASIC_CAPS: ModelCapabilities = { tools: true, vision: false, reasoning: false, streaming: true };
+const LOCAL_PROVIDER_LABELS: Record<LocalProviderFamily, string> = {
+  ollama: "Ollama",
+  lmstudio: "LM Studio",
+  vllm: "vLLM",
+};
+const LOCAL_PROVIDER_COLORS: Record<LocalProviderFamily, string> = {
+  ollama: "#71717A",
+  lmstudio: "#64748B",
+  vllm: "#475569",
+};
+const LOCAL_PROVIDER_ENDPOINTS: Record<LocalProviderFamily, string> = {
+  ollama: "http://localhost:11434",
+  lmstudio: "http://localhost:1234",
+  vllm: "http://localhost:8000",
+};
 
 export const MODEL_REGISTRY: ModelDescriptor[] = [
   // ---- Anthropic (CLI-wrapped via claude) ----
@@ -876,18 +893,23 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
 // ---------------------------------------------------------------------------
 
 let byId = new Map<string, ModelDescriptor>();
-let byShortId = new Map<string, ModelDescriptor>();
+let byShortId = new Map<string, ModelDescriptor | null>();
 let byAlias = new Map<string, ModelDescriptor>();
 let bySdkModelId = new Map<string, ModelDescriptor>();
 
 function rebuildIndexes() {
   byId = new Map<string, ModelDescriptor>();
-  byShortId = new Map<string, ModelDescriptor>();
+  byShortId = new Map<string, ModelDescriptor | null>();
   byAlias = new Map<string, ModelDescriptor>();
   bySdkModelId = new Map<string, ModelDescriptor>();
   for (const m of MODEL_REGISTRY) {
     byId.set(m.id, m);
-    byShortId.set(m.shortId, m);
+    const existingShortId = byShortId.get(m.shortId);
+    if (existingShortId) {
+      byShortId.set(m.shortId, null);
+    } else if (!byShortId.has(m.shortId)) {
+      byShortId.set(m.shortId, m);
+    }
     bySdkModelId.set(m.sdkModelId, m);
     for (const alias of m.aliases ?? []) {
       const normalized = alias.trim().toLowerCase();
@@ -896,14 +918,92 @@ function rebuildIndexes() {
   }
 }
 
+export function validateModelRegistry(models: ModelDescriptor[] = MODEL_REGISTRY): void {
+  const ids = new Set<string>();
+  const aliases = new Set<string>();
+
+  for (const model of models) {
+    if (!model.id.trim()) {
+      throw new Error("Model registry contains an entry with an empty id.");
+    }
+    if (ids.has(model.id)) {
+      throw new Error(`Model registry contains a duplicate id: ${model.id}`);
+    }
+    ids.add(model.id);
+
+    if (!model.shortId.trim()) {
+      throw new Error(`Model registry entry ${model.id} is missing a shortId.`);
+    }
+
+    for (const alias of model.aliases ?? []) {
+      const normalizedAlias = alias.trim().toLowerCase();
+      if (!normalizedAlias) continue;
+      if (aliases.has(normalizedAlias)) {
+        throw new Error(`Model registry contains a duplicate alias: ${normalizedAlias}`);
+      }
+      aliases.add(normalizedAlias);
+    }
+  }
+}
+
+validateModelRegistry();
 rebuildIndexes();
+
+function isLocalProviderFamily(value: string): value is LocalProviderFamily {
+  return value === "ollama" || value === "lmstudio" || value === "vllm";
+}
+
+function parseDynamicLocalModelRef(modelRef: string): { provider: LocalProviderFamily; modelId: string } | null {
+  const normalized = modelRef.trim();
+  if (!normalized.length) return null;
+  const separatorIndex = normalized.indexOf("/");
+  if (separatorIndex <= 0) return null;
+  const provider = normalized.slice(0, separatorIndex).trim().toLowerCase();
+  if (!isLocalProviderFamily(provider)) return null;
+  const modelId = normalized.slice(separatorIndex + 1).trim();
+  if (!modelId.length || modelId === "auto") return null;
+  return { provider, modelId };
+}
+
+function toDynamicLocalDisplayName(provider: LocalProviderFamily, modelId: string): string {
+  return `${modelId} (${LOCAL_PROVIDER_LABELS[provider]})`;
+}
+
+export function createDynamicLocalModelDescriptor(
+  provider: LocalProviderFamily,
+  modelId: string,
+): ModelDescriptor {
+  const normalizedModelId = modelId.trim();
+  return {
+    id: `${provider}/${normalizedModelId}`,
+    shortId: normalizedModelId,
+    displayName: toDynamicLocalDisplayName(provider, normalizedModelId),
+    family: provider,
+    authTypes: ["local"],
+    contextWindow: 128_000,
+    maxOutputTokens: 8_192,
+    capabilities: { ...BASIC_CAPS },
+    color: LOCAL_PROVIDER_COLORS[provider],
+    sdkProvider: "@ai-sdk/openai-compatible",
+    sdkModelId: normalizedModelId,
+    aliases: [`${provider}:${normalizedModelId}`],
+    isCliWrapped: false,
+  };
+}
+
+export function getLocalProviderDefaultEndpoint(provider: LocalProviderFamily): string {
+  return LOCAL_PROVIDER_ENDPOINTS[provider];
+}
 
 // ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------
 
 export function getModelById(id: string): ModelDescriptor | undefined {
-  return byId.get(id);
+  return byId.get(id) ?? (() => {
+    const dynamic = parseDynamicLocalModelRef(id);
+    return dynamic ? createDynamicLocalModelDescriptor(dynamic.provider, dynamic.modelId) : undefined;
+  })();
 }
 
 export function getAvailableModels(
@@ -955,7 +1055,7 @@ export function getAvailableModels(
 
 export function resolveModelAlias(alias: string): ModelDescriptor | undefined {
   const normalized = alias.trim().toLowerCase();
-  return byId.get(normalized) ?? byShortId.get(normalized) ?? byAlias.get(normalized);
+  return byId.get(normalized) ?? byShortId.get(normalized) ?? byAlias.get(normalized) ?? undefined;
 }
 
 export function resolveModelDescriptor(modelRef: string): ModelDescriptor | undefined {

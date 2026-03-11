@@ -12,16 +12,24 @@ Goal: Add the CTO agent as a persistent project-aware assistant with a configura
 | W2: Worker Agents & Org Chart | [W1-W4.md](W1-W4.md) | ✅ Complete |
 | W3: Heartbeat & Activation | [W1-W4.md](W1-W4.md) | ✅ Complete |
 | W4: Bidirectional Linear Sync | [W1-W4.md](W1-W4.md) | ✅ Complete |
-| W5: Automations Platform + Night Shift | [W5.md](W5.md) | W5a ✅ / W5b not started |
+| W5: Automations Platform + Night Shift | [W5.md](W5.md) | W5a ✅ / W5b pending |
 | W6: Unified Memory System | [W6.md](W6.md) | ✅ Complete |
 | W6½: Memory Engine Hardening | [W6-half.md](W6-half.md) | ✅ Complete |
-| W-UX: CTO + Org Experience Overhaul | [W-UX.md](W-UX.md) | Not started |
+| W-UX: CTO + Org Experience Overhaul | [W-UX.md](W-UX.md) | Partially implemented |
 | W7a: Embeddings Pipeline | [W7a.md](W7a.md) | ✅ Complete |
-| W7b: Orchestrator ↔ Memory Integration | [W7b.md](W7b.md) | Not started |
-| W7c: Skills + Learning Pipeline | [W7c.md](W7c.md) | Not started |
+| W7b: Orchestrator ↔ Memory Integration | [W7b.md](W7b.md) | Mostly implemented |
+| W7c: Skills + Learning Pipeline | [W7c.md](W7c.md) | Core implemented / advanced capture pending |
 | W8: External MCP Consumption | [W8.md](W8.md) | Not started |
 | W9: OpenClaw Bridge | [W9.md](W9.md) | Not started |
 | W10: .ade/ Portable State | [W10.md](W10.md) | Not started |
+
+### Audit Snapshot (2026-03-10)
+
+- Complete: W1-W4, W6, W6½, W7a
+- Mostly/Core implemented: W7b, W7c
+- Partially implemented: W-UX
+- Still genuinely pending: W5b, W8, W9, W10
+- Highest-value cleanup still open inside shipped work: finish `orchestrator_shared_facts` migration, wire persistent employee L2 briefing injection end-to-end, and complete advanced knowledge capture from interventions/repeated errors/PR feedback
 
 ### Reference docs
 
@@ -50,7 +58,7 @@ This phase draws heavily from three open-source projects. Each workstream credit
 
 ### Execution Order
 
-Workstreams are numbered by topic but executed in dependency order. W1-W4, W5a, and W6 are complete. The orchestrator is being rebuilt from the ground up (Phase 3 overhaul). Remaining workstreams are reordered based on dependency analysis and lessons from Symphony, Paperclip, and OpenClaw reference implementations (2026-03-09 audit).
+Workstreams are numbered by topic but executed in dependency order. W1-W4, W5a, W6, W6½, and W7a are complete. A 2026-03-10 code audit showed that W-UX, W7b, and W7c are no longer greenfield workstreams: they have substantial implementation in the codebase and now need status-correct documentation plus targeted follow-through. The orchestrator is still evolving, so the remaining backlog is reordered around what is truly left rather than what was originally planned.
 
 **Completed workstreams (locked):**
 - W1: CTO Agent Core ✅
@@ -63,47 +71,48 @@ Workstreams are numbered by topic but executed in dependency order. W1-W4, W5a, 
 - W7a: Embeddings Pipeline ✅ (local all-MiniLM-L6-v2, hybrid FTS+cosine retrieval, MMR re-ranking)
 
 **Known gaps in shipped work** (addressed by remaining workstreams):
-- CTO works without setup flow — no onboarding, no identity configuration, no guided Linear connection
-- Inconsistent theming across CTO/Automations/Memory surfaces; poor discoverability of worker management
-- Orchestrator doesn't systematically write to or read from unified memory during missions
-- No episodic summary generation, no skill extraction pipeline
+- CTO still lacks the intended guided onboarding/setup flow and broader visual/system polish
+- Inconsistent theming and shared component treatment remain across CTO/Automations/Memory surfaces
+- `orchestrator_shared_facts` migration is incomplete, so mission knowledge still has a legacy compatibility path
+- Persistent employee L2 memory is designed in the briefing layer but not fully wired through orchestrator call sites
+- Advanced learning capture from user interventions, repeated errors, and PR feedback is still incomplete even though procedural extraction and skill export are present
 
 ```
-Wave 3 (complete — memory + UX foundation):
+Wave 3 (partially shipped — UX polish still open):
   W6½: Memory Engine Hardening            ✅ Complete
-  W-UX: CTO + Org Experience Overhaul     ← needs W1-W4 (shipped), can parallel with W6½
+  W-UX: CTO + Org Experience Overhaul     Partially implemented; onboarding/polish still open
 
-Wave 4 (complete — embeddings; orchestrator memory next):
+Wave 4 (mostly shipped — mission memory cleanup remains):
   W7a: Embeddings Pipeline                ✅ Complete
-  W7b: Orchestrator ↔ Memory Integration  ← needs W6½ (shipped) + stable orchestrator
+  W7b: Orchestrator ↔ Memory Integration  Mostly implemented; legacy shared-facts cleanup remains
 
-Wave 5 (after W7b — skills):
-  W7c: Skills + Learning Pipeline         ← needs W7a (shipped) + W7b (episodic summaries)
+Wave 5 (core shipped — advanced learning capture remains):
+  W7c: Skills + Learning Pipeline         Core implemented; advanced capture/review mining still open
 
 Wave 6 (after stable orchestrator — automations):
-  W5b: Automations — Executors + Night Shift + External Triggers  ← needs W5a + stable orchestrator + W6½
+  W5b: Automations — Executors + Night Shift + External Triggers  Pending; needs W5a + stable orchestrator + W6½
 
 Wave 7 (ecosystem — independent, can parallel):
-  W8: External MCP Consumption            ← independent infra
-  W9: OpenClaw Bridge                     ← needs W1, W8
-  W10: .ade/ Portable State               ← needs W1, W6½
+  W8: External MCP Consumption            Pending
+  W9: OpenClaw Bridge                     Pending; needs W1, W8
+  W10: .ade/ Portable State               Pending; needs W1, W6½
 ```
 
 Dependency graph:
 ```
-W1-W4 ✅ ──→ W5a ✅ ──→ W5b (Automations Full)
+W1-W4 ✅ ──→ W5a ✅ ──→ W5b (Automations Full; pending)
      │                      ↑
      │                      │ (needs stable orchestrator)
      │
-     ├──→ W6 ✅ ──→ W6½ ✅ ──→ W7a ✅ ──→ W7c (Skills)
+     ├──→ W6 ✅ ──→ W6½ ✅ ──→ W7a ✅ ──→ W7c (Skills; core shipped, advanced capture pending)
      │              │                          ↑
-     │              ├──→ W7b (Orch ↔ Memory) ──┘
-     │              │         ↑ (needs stable orchestrator)
-     │              └──→ W10 (.ade/ State)
+     │              ├──→ W7b (Orch ↔ Memory; mostly shipped) ──┘
+     │              │         ↑ (cleanup + employee L2 wiring remain)
+     │              └──→ W10 (.ade/ State; pending)
      │
-     ├──→ W-UX (CTO + Org UX) ← can parallel with W6½
+     ├──→ W-UX (CTO + Org UX; partial)
      │
-     └──→ W8 (External MCP) ──→ W9 (OpenClaw Bridge)
+     └──→ W8 (External MCP; pending) ──→ W9 (OpenClaw Bridge; pending)
 ```
 
 Each workstream includes its own renderer/UI changes and tests (no standalone workstreams for these).
@@ -179,15 +188,11 @@ Phase 4 should enable a "tech department" loop: one persistent agent per employe
 - ✅ Batch consolidation merges near-duplicate entries via Jaccard trigram clustering + LLM merge, preventing unbounded memory growth.
 - ✅ Memory Health dashboard in Settings > Memory shows entry counts, sweep/consolidation logs, hard limit usage, and manual action buttons.
 
-**W-UX — CTO + Org Experience Overhaul:**
-- First-run CTO onboarding wizard: identity setup, project context scan, integration connection.
-- CTO and workers have configurable identities (`identity.yaml`) with personality, capabilities, constraints, and communication style.
-- Identity files on disk are source of truth (file-as-truth sync with DB).
-- Linear connection has guided setup flow with token validation, project discovery, and status indicators.
-- CTO ↔ Automations Linear boundary is clearly separated in UI.
-- Consistent theming across all agent-system surfaces (status badges, cards, timeline entries, dark mode).
-- Worker management consolidated into discoverable Team panel with creation wizard, activity feed, and detail slide-out.
-- Fat/thin context delivery: mission workers get full context, heartbeat checks get minimal context.
+**W-UX — CTO + Org Experience Overhaul: Partially implemented (2026-03-10 audit)**
+- ✅ Current CTO shell, Team panel, worker settings flows, and Linear sync panel are in place and usable.
+- ✅ Identity files on disk are already the source of truth for CTO/worker state in the current implementation.
+- ✅ CTO ↔ Automations Linear boundary exists conceptually in the current UI, but it is not yet guided or polished.
+- Remaining: first-run CTO onboarding wizard, guided Linear connection/validation flow, shared badge/card/timeline redesign, stronger dark-mode/theming consistency, worker activity feed, and clearer fat/thin context UX.
 
 **W7a — Embeddings Pipeline: ✅ Complete**
 - ✅ Local all-MiniLM-L6-v2 model runs via `@huggingface/transformers` for embedding inference.
@@ -196,20 +201,20 @@ Phase 4 should enable a "tech department" loop: one persistent agent per employe
 - ✅ Graceful degradation: embedding pipeline disabled → lexical fallback, identical to shipped W6 behavior.
 - ✅ Memory Health dashboard shows embedding progress, model status, and cache stats.
 
-**W7b — Orchestrator ↔ Memory Integration:**
-- Mission memory lifecycle: scope creation → accumulation → promotion on success / archival on failure.
-- `orchestrator_shared_facts` migrated to mission-scoped `unified_memories` entries.
-- Worker briefing assembly pulls from unified memory plus the run-scoped `L0/L1/L2` mission-worker context assembly instead of pack exports.
-- Episodic summaries generated async on mission/session completion.
-- Human work ingestion: change digests generated when repo diverges outside agent runs.
-- Continuation vs failure retry memory: clean exit preserves context, crash injects gotcha.
+**W7b — Orchestrator ↔ Memory Integration: Mostly implemented (2026-03-10 audit)**
+- ✅ Mission memory lifecycle exists: scope creation, accumulation, promotion on success, archival on failure.
+- ✅ Worker briefing assembly reads from unified memory for project and mission context.
+- ✅ Episodic summaries are generated asynchronously on mission/session completion.
+- ✅ Human work ingestion/change digest generation exists and is used as a freshness gate before mission work.
+- ✅ Continuation vs failure retry memory exists: clean exit preserves mission state, failure injects gotchas.
+- Remaining: fully retire the `orchestrator_shared_facts` compatibility path and wire persistent employee L2 agent-memory injection all the way through orchestrator briefing call sites.
 
-**W7c — Skills + Learning Pipeline:**
-- Procedural memory extracted from 3+ similar episodic summaries via LLM.
-- Confidence evolution: success/failure tracking with auto-archive (< 0.3) and auto-promote (>= 0.8).
-- Knowledge capture from mission failures, user interventions, and repeated errors.
-- Skill materialization: confirmed procedures exported as `.claude/skills/<name>/SKILL.md`.
-- Skill ingestion: existing skill files scanned, parsed, and indexed into project memory.
+**W7c — Skills + Learning Pipeline: Core implemented / advanced capture pending (2026-03-10 audit)**
+- ✅ Procedural memory extraction from clusters of similar episodic summaries exists.
+- ✅ Confidence evolution, success/failure history, and auto promote/archive behavior exist.
+- ✅ Skill materialization/export to `.claude/skills/<name>/SKILL.md` exists.
+- ✅ Skill ingestion/indexing for `.claude/skills/`, `.claude/commands/`, `CLAUDE.md`, and `agents.md` exists.
+- Remaining: automatic knowledge capture from user interventions, repeated errors, and PR review feedback is not yet fully implemented end-to-end.
 
 **W5b — Automations Full:**
 - Automations tab provides trigger-driven workflows, template-driven setup, executor routing, and Night Shift scheduling.

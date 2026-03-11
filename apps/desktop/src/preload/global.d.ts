@@ -801,7 +801,7 @@ declare global {
         getReviews: (prId: string) => Promise<PrReview[]>;
         updateDescription: (args: UpdatePrDescriptionArgs) => Promise<void>;
         delete: (args: DeletePrArgs) => Promise<DeletePrResult>;
-        draftDescription: (laneId: string, model?: string) => Promise<{ title: string; body: string }>;
+        draftDescription: (args: import("../shared/types").DraftPrDescriptionArgs) => Promise<{ title: string; body: string }>;
         land: (args: LandPrArgs) => Promise<LandResult>;
         landStack: (args: LandStackArgs) => Promise<LandResult[]>;
         openInGitHub: (prId: string) => Promise<void>;
@@ -811,7 +811,7 @@ declare global {
         commitIntegration: (args: CommitIntegrationArgs) => Promise<import("../shared/types").CreateIntegrationPrResult>;
         listProposals(): Promise<IntegrationProposal[]>;
         updateProposal(args: UpdateIntegrationProposalArgs): Promise<void>;
-        deleteProposal(proposalId: string): Promise<void>;
+        deleteProposal(args: import("../shared/types").DeleteIntegrationProposalArgs): Promise<import("../shared/types").DeleteIntegrationProposalResult>;
         createIntegrationLaneForProposal(args: CreateIntegrationLaneForProposalArgs): Promise<CreateIntegrationLaneForProposalResult>;
         startIntegrationResolution(args: StartIntegrationResolutionArgs): Promise<StartIntegrationResolutionResult>;
         recheckIntegrationStep(args: RecheckIntegrationStepArgs): Promise<RecheckIntegrationStepResult>;

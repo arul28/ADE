@@ -9,6 +9,7 @@ import { QueueTab } from "./tabs/QueueTab";
 import { IntegrationTab } from "./tabs/IntegrationTab";
 import { RebaseTab } from "./tabs/RebaseTab";
 import { CreatePrModal } from "./CreatePrModal";
+import { useAppStore } from "../../state/appStore";
 
 type PrTab = "normal" | "queue" | "integration" | "rebase";
 
@@ -26,6 +27,7 @@ function classifyPr(_pr: PrWithConflicts, ctx: PrMergeContext | null): "normal" 
 }
 
 function PRsPageInner() {
+  const refreshLanes = useAppStore((s) => s.refreshLanes);
   const {
     activeTab,
     setActiveTab,
@@ -51,6 +53,15 @@ function PRsPageInner() {
   } = usePrs();
 
   const [createPrOpen, setCreatePrOpen] = React.useState(false);
+  const [integrationRefreshNonce, setIntegrationRefreshNonce] = React.useState(0);
+
+  const handleRefresh = React.useCallback(async () => {
+    await Promise.all([
+      refresh(),
+      refreshLanes().catch(() => {}),
+    ]);
+    setIntegrationRefreshNonce((prev) => prev + 1);
+  }, [refresh, refreshLanes]);
 
   React.useEffect(() => {
     const syncTabFromUrl = () => {
@@ -222,7 +233,7 @@ function PRsPageInner() {
             NEW PR
           </button>
           <button
-            onClick={() => void refresh()}
+            onClick={() => void handleRefresh()}
             disabled={loading}
             className={cn(
               "flex items-center justify-center h-8 w-8 text-[#71717A] hover:text-[#FAFAFA] transition-colors duration-150",
@@ -246,7 +257,7 @@ function PRsPageInner() {
             mergeMethod={mergeMethod}
             selectedPrId={selectedPrId}
             onSelectPr={setSelectedPrId}
-            onRefresh={refresh}
+            onRefresh={handleRefresh}
           />
         </div>
       )}
@@ -259,7 +270,7 @@ function PRsPageInner() {
             mergeMethod={mergeMethod}
             selectedGroupId={selectedQueueGroupId}
             onSelectGroup={setSelectedQueueGroupId}
-            onRefresh={refresh}
+            onRefresh={handleRefresh}
           />
         </div>
       )}
@@ -272,7 +283,8 @@ function PRsPageInner() {
             mergeMethod={mergeMethod}
             selectedPrId={selectedPrId}
             onSelectPr={setSelectedPrId}
-            onRefresh={refresh}
+            onRefresh={handleRefresh}
+            refreshNonce={integrationRefreshNonce}
           />
         </div>
       )}
@@ -289,12 +301,12 @@ function PRsPageInner() {
               setResolverModel(m);
               setResolverReasoningLevel(l);
             }}
-            onRefresh={refresh}
+            onRefresh={handleRefresh}
           />
         </div>
       )}
 
-      <CreatePrModal open={createPrOpen} onOpenChange={setCreatePrOpen} onCreated={() => void refresh()} />
+      <CreatePrModal open={createPrOpen} onOpenChange={setCreatePrOpen} onCreated={() => void handleRefresh()} />
     </div>
   );
 }

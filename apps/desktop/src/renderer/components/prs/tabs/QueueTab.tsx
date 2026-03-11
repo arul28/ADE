@@ -15,8 +15,8 @@ import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { PrRebaseBanner } from "../PrRebaseBanner";
 import { usePrs } from "../state/PrsContext";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
-import { ResolverTerminalModal } from "../../shared/conflictResolver/ResolverTerminalModal";
-import { normalizeBranchName, type BackgroundResolverSession } from "../shared/prHelpers";
+import { normalizeBranchName } from "../shared/prHelpers";
+import { PrAiResolverPanel } from "../shared/PrAiResolverPanel";
 
 type QueueGroup = {
   groupId: string;
@@ -117,8 +117,6 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
   const [deleteTarget, setDeleteTarget] = React.useState<string | null>(null);
   const [deleteBusy, setDeleteBusy] = React.useState(false);
   const [deleteCloseGh, setDeleteCloseGh] = React.useState(false);
-  const [resolverOpen, setResolverOpen] = React.useState(false);
-  const [backgroundSession, setBackgroundSession] = React.useState<BackgroundResolverSession | null>(null);
   const [resolverConfig, setResolverConfig] = React.useState<{ sourceLaneId: string; targetLaneId: string } | null>(null);
 
   // Build queue groups from merge contexts
@@ -201,18 +199,6 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
   }, [prs, mergeContextByPrId, laneById, queueStates, queueRehearsals]);
 
   const selectedGroup = React.useMemo(() => queueGroups.find((g) => g.groupId === selectedGroupId) ?? null, [queueGroups, selectedGroupId]);
-
-  React.useEffect(() => {
-    if (!backgroundSession?.ptyId) return;
-    const unsubscribe = window.ade.pty.onExit((event) => {
-      if (event.ptyId !== backgroundSession.ptyId) return;
-      setBackgroundSession((prev) => {
-        if (!prev || prev.ptyId !== event.ptyId) return prev;
-        return { ...prev, exitCode: event.exitCode ?? -1 };
-      });
-    });
-    return unsubscribe;
-  }, [backgroundSession?.ptyId]);
 
   React.useEffect(() => {
     if (selectedGroup?.landingState) {
@@ -655,6 +641,32 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
             </div>
           </div>
 
+          {resolverConfig ? (
+            <PrAiResolverPanel
+              key={`${resolverConfig.sourceLaneId}:${resolverConfig.targetLaneId}`}
+              title="QUEUE AI RESOLVER"
+              description="Resolve this queue member inline, using the same chat transcript UI as Work and Missions."
+              context={{
+                sourceTab: "queue",
+                sourceLaneId: resolverConfig.sourceLaneId,
+                targetLaneId: resolverConfig.targetLaneId,
+                laneId: resolverConfig.sourceLaneId,
+                scenario: "single-merge",
+              }}
+              modelId={resolverModel}
+              reasoningEffort={resolverReasoningLevel}
+              onModelChange={(model, effort) => {
+                setResolverModel(model);
+                setResolverReasoningLevel(effort || "medium");
+              }}
+              onCompleted={() => {
+                void onRefresh();
+              }}
+              onDismiss={() => setResolverConfig(null)}
+              startLabel="Start Queue Resolver"
+            />
+          ) : null}
+
           {/* ===== Queue Status section ===== */}
           <div>
             <div
@@ -983,7 +995,6 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
                                     return;
                                   }
                                   setResolverConfig({ sourceLaneId: member.laneId, targetLaneId });
-                                  setResolverOpen(true);
                                 }}
                                 style={{
                                   padding: "2px 6px",
@@ -1193,39 +1204,13 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
     deleteCloseGh,
     rebaseNeeds,
     autoRebaseStatuses,
+    resolverConfig,
     setActiveTab,
     onSelectGroup,
     onRefresh,
   ]);
 
   return (
-    <>
-      <PaneTilingLayout layoutId="prs:queue:v1" tree={PR_TAB_TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />
-      {resolverConfig ? (
-        <ResolverTerminalModal
-          open={resolverOpen}
-          onOpenChange={setResolverOpen}
-          sourceLaneId={resolverConfig.sourceLaneId}
-          targetLaneId={resolverConfig.targetLaneId}
-          cwdLaneId={resolverConfig.sourceLaneId}
-          scenario="single-merge"
-          sourceTab="queue"
-          initialModel={resolverModel}
-          initialReasoningEffort={resolverReasoningLevel}
-          onModelChange={(model, effort) => {
-            setResolverModel(model);
-            setResolverReasoningLevel(effort ?? "medium");
-          }}
-          onBackgroundSession={(session) => {
-            setBackgroundSession({ ...session, exitCode: null });
-            setResolverOpen(false);
-          }}
-          onCompleted={() => {
-            void onRefresh();
-            setResolverConfig(null);
-          }}
-        />
-      ) : null}
-    </>
+    <PaneTilingLayout layoutId="prs:queue:v1" tree={PR_TAB_TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />
   );
 }

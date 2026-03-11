@@ -3,7 +3,13 @@
 
 Dependencies: **W1-W4** (shipped). Can run in parallel with W6½. No dependency on embeddings.
 
-W1-W4 shipped the CTO agent, worker org chart, heartbeat system, and Linear sync — but with significant UX gaps. The CTO works without any setup (bug: it should require initialization), there's no identity configuration, the Linear connection flow is confusing, theming is inconsistent across CTO/Automations/Memory surfaces, and worker management is scattered and hard to discover. This workstream addresses all UX gaps to make the CTO system feel intentional and polished.
+W1-W4 shipped the CTO agent, worker org chart, heartbeat system, and Linear sync — but with significant UX gaps. A 2026-03-10 code audit shows this workstream is partially implemented rather than unstarted: the current CTO shell, Team panel, worker configuration flows, file-as-truth identity persistence, and Linear sync panel already exist. The remaining work is mostly around onboarding, guided connection UX, theming/component consistency, richer worker visibility, and making the whole surface feel intentionally designed rather than merely functional.
+
+##### Audit Snapshot (2026-03-10)
+
+- Implemented in code today: `CtoPage.tsx`, `TeamPanel.tsx`, `LinearSyncPanel.tsx`, `CtoSettingsPanel.tsx`, and file-backed CTO/worker state via `ctoStateService.ts`.
+- Identity/config persistence already follows the file-as-truth model for the current CTO/worker state files.
+- Not yet present: dedicated onboarding wizard, guided Linear connection panel, shared badge/card/timeline redesign, worker activity feed, and the broader visual consistency pass.
 
 ##### CTO Initialization & Onboarding
 
@@ -189,7 +195,7 @@ WorkerActivityFeed.tsx        — Worker activity timeline
 TeamPanelRedesign.tsx         — Consolidated worker management surface
 ```
 
-**Implementation status:** Not started.
+**Implementation status (2026-03-10):** Partially implemented. Remaining work is primarily onboarding/polish plus richer management and activity surfaces.
 
 **Tests:**
 - CTO onboarding: first-run detection shows wizard, completed steps persisted, skip behavior activates CTO with defaults, re-run from settings resets onboarding state.
