@@ -9,9 +9,14 @@ import type {
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
   ArchiveLaneArgs,
+  AutomationManualTriggerRequest,
   AutomationRuleSummary,
   AutomationRun,
   AutomationRunDetail,
+  AutomationRunListArgs,
+  AutomationQueueActionRequest,
+  AutomationQueueItem,
+  AutomationQueueListArgs,
   AutomationParseNaturalLanguageRequest,
   AutomationParseNaturalLanguageResult,
   AutomationValidateDraftRequest,
@@ -20,6 +25,9 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  NightShiftBriefing,
+  NightShiftState,
+  UpdateNightShiftSettingsRequest,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -545,12 +553,26 @@ contextBridge.exposeInMainWorld("ade", {
     list: async (): Promise<AutomationRuleSummary[]> => ipcRenderer.invoke(IPC.automationsList),
     toggle: async (args: { id: string; enabled: boolean }): Promise<AutomationRuleSummary[]> =>
       ipcRenderer.invoke(IPC.automationsToggle, args),
-    triggerManually: async (args: { id: string; laneId?: string | null }): Promise<AutomationRun> =>
+    triggerManually: async (args: AutomationManualTriggerRequest): Promise<AutomationRun> =>
       ipcRenderer.invoke(IPC.automationsTriggerManually, args),
     getHistory: async (args: { id: string; limit?: number }): Promise<AutomationRun[]> =>
       ipcRenderer.invoke(IPC.automationsGetHistory, args),
+    listRuns: async (args?: AutomationRunListArgs): Promise<AutomationRun[]> =>
+      ipcRenderer.invoke(IPC.automationsListRuns, args ?? {}),
     getRunDetail: async (runId: string): Promise<AutomationRunDetail | null> =>
       ipcRenderer.invoke(IPC.automationsGetRunDetail, { runId }),
+    listQueueItems: async (args?: AutomationQueueListArgs): Promise<AutomationQueueItem[]> =>
+      ipcRenderer.invoke(IPC.automationsListQueueItems, args ?? {}),
+    updateQueueItem: async (args: AutomationQueueActionRequest): Promise<AutomationQueueItem | null> =>
+      ipcRenderer.invoke(IPC.automationsUpdateQueueItem, args),
+    getNightShiftState: async (): Promise<NightShiftState> =>
+      ipcRenderer.invoke(IPC.automationsGetNightShiftState),
+    updateNightShiftSettings: async (args: UpdateNightShiftSettingsRequest): Promise<NightShiftState> =>
+      ipcRenderer.invoke(IPC.automationsUpdateNightShiftSettings, args),
+    getMorningBriefing: async (): Promise<NightShiftBriefing | null> =>
+      ipcRenderer.invoke(IPC.automationsGetMorningBriefing),
+    acknowledgeMorningBriefing: async (args: { id: string }): Promise<NightShiftBriefing | null> =>
+      ipcRenderer.invoke(IPC.automationsAcknowledgeMorningBriefing, args),
     parseNaturalLanguage: async (req: AutomationParseNaturalLanguageRequest): Promise<AutomationParseNaturalLanguageResult> =>
       ipcRenderer.invoke(IPC.automationsParseNaturalLanguage, req),
     validateDraft: async (req: AutomationValidateDraftRequest): Promise<AutomationValidateDraftResult> =>

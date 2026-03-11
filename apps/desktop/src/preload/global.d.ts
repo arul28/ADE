@@ -65,9 +65,14 @@ import type {
   AgentChatSteerArgs,
   AgentChatUpdateSessionArgs,
   AutomationsEventPayload,
+  AutomationManualTriggerRequest,
   AutomationRuleSummary,
   AutomationRun,
   AutomationRunDetail,
+  AutomationRunListArgs,
+  AutomationQueueActionRequest,
+  AutomationQueueItem,
+  AutomationQueueListArgs,
   AutomationParseNaturalLanguageRequest,
   AutomationParseNaturalLanguageResult,
   AutomationValidateDraftRequest,
@@ -76,6 +81,9 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  NightShiftBriefing,
+  NightShiftState,
+  UpdateNightShiftSettingsRequest,
   UsageSnapshot,
   BudgetCheckResult,
   BudgetCapScope,
@@ -515,9 +523,16 @@ declare global {
       automations: {
         list: () => Promise<AutomationRuleSummary[]>;
         toggle: (args: { id: string; enabled: boolean }) => Promise<AutomationRuleSummary[]>;
-        triggerManually: (args: { id: string; laneId?: string | null }) => Promise<AutomationRun>;
+        triggerManually: (args: AutomationManualTriggerRequest) => Promise<AutomationRun>;
         getHistory: (args: { id: string; limit?: number }) => Promise<AutomationRun[]>;
+        listRuns: (args?: AutomationRunListArgs) => Promise<AutomationRun[]>;
         getRunDetail: (runId: string) => Promise<AutomationRunDetail | null>;
+        listQueueItems: (args?: AutomationQueueListArgs) => Promise<AutomationQueueItem[]>;
+        updateQueueItem: (args: AutomationQueueActionRequest) => Promise<AutomationQueueItem | null>;
+        getNightShiftState: () => Promise<NightShiftState>;
+        updateNightShiftSettings: (args: UpdateNightShiftSettingsRequest) => Promise<NightShiftState>;
+        getMorningBriefing: () => Promise<NightShiftBriefing | null>;
+        acknowledgeMorningBriefing: (args: { id: string }) => Promise<NightShiftBriefing | null>;
         parseNaturalLanguage: (req: AutomationParseNaturalLanguageRequest) => Promise<AutomationParseNaturalLanguageResult>;
         validateDraft: (req: AutomationValidateDraftRequest) => Promise<AutomationValidateDraftResult>;
         saveDraft: (req: AutomationSaveDraftRequest) => Promise<AutomationSaveDraftResult>;

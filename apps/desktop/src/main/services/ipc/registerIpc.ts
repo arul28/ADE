@@ -14,9 +14,14 @@ import type {
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
   ArchiveLaneArgs,
+  AutomationManualTriggerRequest,
+  AutomationQueueActionRequest,
+  AutomationQueueItem,
+  AutomationQueueListArgs,
   AutomationRuleSummary,
   AutomationRun,
   AutomationRunDetail,
+  AutomationRunListArgs,
   AutomationParseNaturalLanguageRequest,
   AutomationParseNaturalLanguageResult,
   AutomationValidateDraftRequest,
@@ -25,6 +30,9 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  NightShiftBriefing,
+  NightShiftState,
+  UpdateNightShiftSettingsRequest,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   ConflictProposal,
@@ -1593,9 +1601,15 @@ export function registerIpc({
     return ctx.automationService.toggle({ id: arg?.id ?? "", enabled: Boolean(arg?.enabled) });
   });
 
-  ipcMain.handle(IPC.automationsTriggerManually, async (_event, arg: { id: string; laneId?: string | null }): Promise<AutomationRun> => {
+  ipcMain.handle(IPC.automationsTriggerManually, async (_event, arg: AutomationManualTriggerRequest): Promise<AutomationRun> => {
     const ctx = getCtx();
-    return await ctx.automationService.triggerManually({ id: arg?.id ?? "", laneId: arg?.laneId ?? null });
+    return await ctx.automationService.triggerManually({
+      id: arg?.id ?? "",
+      laneId: arg?.laneId ?? null,
+      reviewProfileOverride: arg?.reviewProfileOverride ?? null,
+      queueInstead: Boolean(arg?.queueInstead),
+      verboseTrace: Boolean(arg?.verboseTrace),
+    });
   });
 
   ipcMain.handle(IPC.automationsGetHistory, async (_event, arg: { id: string; limit?: number }): Promise<AutomationRun[]> => {
@@ -1603,9 +1617,44 @@ export function registerIpc({
     return ctx.automationService.getHistory({ id: arg?.id ?? "", limit: arg?.limit });
   });
 
+  ipcMain.handle(IPC.automationsListRuns, async (_event, arg: AutomationRunListArgs = {}): Promise<AutomationRun[]> => {
+    const ctx = getCtx();
+    return ctx.automationService.listRuns(arg);
+  });
+
   ipcMain.handle(IPC.automationsGetRunDetail, async (_event, arg: { runId: string }): Promise<AutomationRunDetail | null> => {
     const ctx = getCtx();
     return ctx.automationService.getRunDetail({ runId: arg?.runId ?? "" });
+  });
+
+  ipcMain.handle(IPC.automationsListQueueItems, async (_event, arg: AutomationQueueListArgs = {}): Promise<AutomationQueueItem[]> => {
+    const ctx = getCtx();
+    return ctx.automationService.listQueueItems(arg);
+  });
+
+  ipcMain.handle(IPC.automationsUpdateQueueItem, async (_event, arg: AutomationQueueActionRequest): Promise<AutomationQueueItem | null> => {
+    const ctx = getCtx();
+    return ctx.automationService.updateQueueItem(arg);
+  });
+
+  ipcMain.handle(IPC.automationsGetNightShiftState, async (): Promise<NightShiftState> => {
+    const ctx = getCtx();
+    return ctx.automationService.getNightShiftState();
+  });
+
+  ipcMain.handle(IPC.automationsUpdateNightShiftSettings, async (_event, arg: UpdateNightShiftSettingsRequest): Promise<NightShiftState> => {
+    const ctx = getCtx();
+    return ctx.automationService.updateNightShiftSettings(arg ?? {});
+  });
+
+  ipcMain.handle(IPC.automationsGetMorningBriefing, async (): Promise<NightShiftBriefing | null> => {
+    const ctx = getCtx();
+    return ctx.automationService.getMorningBriefing();
+  });
+
+  ipcMain.handle(IPC.automationsAcknowledgeMorningBriefing, async (_event, arg: { id: string }): Promise<NightShiftBriefing | null> => {
+    const ctx = getCtx();
+    return ctx.automationService.acknowledgeMorningBriefing({ id: arg?.id ?? "" });
   });
 
   ipcMain.handle(IPC.automationsParseNaturalLanguage, async (_event, arg: AutomationParseNaturalLanguageRequest): Promise<AutomationParseNaturalLanguageResult> => {
