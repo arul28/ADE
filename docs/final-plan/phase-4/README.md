@@ -12,24 +12,24 @@ Goal: Add the CTO agent as a persistent project-aware assistant with a configura
 | W2: Worker Agents & Org Chart | [W1-W4.md](W1-W4.md) | ✅ Complete |
 | W3: Heartbeat & Activation | [W1-W4.md](W1-W4.md) | ✅ Complete |
 | W4: Bidirectional Linear Sync | [W1-W4.md](W1-W4.md) | ✅ Complete |
-| W5: Automations Platform + Night Shift | [W5.md](W5.md) | W5a ✅ / W5b partially implemented |
+| W5: Automations Platform + Night Shift | [W5.md](W5.md) | W5a ✅ / W5b mostly implemented |
 | W6: Unified Memory System | [W6.md](W6.md) | ✅ Complete |
 | W6½: Memory Engine Hardening | [W6-half.md](W6-half.md) | ✅ Complete |
-| W-UX: CTO + Org Experience Overhaul | [W-UX.md](W-UX.md) | Partially implemented |
+| W-UX: CTO + Org Experience Overhaul | [W-UX.md](W-UX.md) | Partially implemented; onboarding/activity/polish remaining |
 | W7a: Embeddings Pipeline | [W7a.md](W7a.md) | ✅ Complete |
 | W7b: Orchestrator ↔ Memory Integration | [W7b.md](W7b.md) | ✅ Complete |
-| W7c: Skills + Learning Pipeline | [W7c.md](W7c.md) | Core implemented / advanced capture pending |
+| W7c: Skills + Learning Pipeline | [W7c.md](W7c.md) | Largely implemented / advanced capture follow-through pending |
 | W8: External MCP Consumption | [W8.md](W8.md) | Not started |
 | W9: OpenClaw Bridge | [W9.md](W9.md) | Not started |
-| W10: .ade/ Portable State | [W10.md](W10.md) | Not started |
+| W10: .ade/ Portable State | [W10.md](W10.md) | Partial foundation exists; portable git model pending |
 
 ### Audit Snapshot (2026-03-11)
 
 - Complete: W1-W4, W6, W6½, W7a, W7b
-- Mostly/Core implemented: W7c
-- Partially implemented: W-UX
-- Still genuinely pending: W8, W9, W10
-- Highest-value cleanup still open inside shipped work: complete advanced knowledge capture from interventions/repeated errors/PR feedback
+- Mostly implemented: W5b, W7c
+- Partially implemented: W-UX, W10
+- Still genuinely pending: W8, W9
+- Highest-value follow-through still open inside shipped work: onboarding/polish in CTO UX, advanced knowledge capture review, and a code-backed decision on how portable `.ade/` state should work before Phase 6
 
 ### Reference docs
 
@@ -72,9 +72,11 @@ Workstreams are numbered by topic but executed in dependency order. W1-W4, W5a, 
 - W7b: Orchestrator ↔ Memory Integration ✅ (mission-memory SSoT, shared team knowledge projection, exact employee L2 injection)
 
 **Known gaps in shipped work** (addressed by remaining workstreams):
-- CTO still lacks the intended guided onboarding/setup flow and broader visual/system polish
+- CTO still needs a cleaner onboarding/setup experience, stronger activity visibility, and broader visual/system polish
 - Inconsistent theming and shared component treatment remain across CTO/Automations/Memory surfaces
-- Advanced learning capture from user interventions, repeated errors, and PR feedback is still incomplete even though procedural extraction and skill export are present
+- Advanced learning capture from user interventions, repeated errors, and PR feedback still needs end-to-end follow-through even though the procedural pipeline is already in code
+- Portable `.ade/` policy is unresolved: file-backed CTO/worker state exists today, but the selective tracked/shareable model described for W10 is not yet implemented
+- Export/storage consolidation is unresolved: durable learned artifacts should converge under `.ade/` rather than remaining split across other top-level folders
 
 ```
 Wave 3 (partially shipped — UX polish still open):
@@ -85,13 +87,13 @@ Wave 4 (shipped):
   W7a: Embeddings Pipeline                ✅ Complete
   W7b: Orchestrator ↔ Memory Integration  ✅ Complete
 
-Wave 5 (core shipped — advanced learning capture remains):
-  W7c: Skills + Learning Pipeline         Core implemented; advanced capture/review mining still open
+Wave 5 (mostly shipped — advanced learning capture remains):
+  W7c: Skills + Learning Pipeline         Largely implemented; advanced capture/review mining still open
 
 Wave 6 (ecosystem — independent, can parallel):
   W8: External MCP Consumption            Pending
   W9: OpenClaw Bridge                     Pending; needs W1, W8
-  W10: .ade/ Portable State               Pending; needs W1, W6½
+  W10: .ade/ Portable State               Partial foundation exists; portable git/share model still pending
 ```
 
 Dependency graph:
@@ -101,7 +103,7 @@ W1-W4 ✅
      ├──→ W6 ✅ ──→ W6½ ✅ ──→ W7a ✅ ──→ W7b ✅
      │                          └──────→ W7c (Skills; core shipped, advanced capture pending)
      │
-     ├──→ W10 (.ade/ State; pending)
+     ├──→ W10 (.ade/ State; partial foundation, portability pending)
      │
      ├──→ W-UX (CTO + Org UX; partial)
      │
@@ -181,11 +183,11 @@ Phase 4 should enable a "tech department" loop: one persistent agent per employe
 - ✅ Batch consolidation merges near-duplicate entries via Jaccard trigram clustering + LLM merge, preventing unbounded memory growth.
 - ✅ Memory Health dashboard in Settings > Memory shows entry counts, sweep/consolidation logs, hard limit usage, and manual action buttons.
 
-**W-UX — CTO + Org Experience Overhaul: Partially implemented (2026-03-10 audit)**
-- ✅ Current CTO shell, Team panel, worker settings flows, and Linear sync panel are in place and usable.
+**W-UX — CTO + Org Experience Overhaul: Partially implemented (2026-03-11 audit)**
+- ✅ Current CTO shell, Team panel, worker settings flows, onboarding wizard, memory browser, and Linear sync panel are in place and usable.
 - ✅ Identity files on disk are already the source of truth for CTO/worker state in the current implementation.
-- ✅ CTO ↔ Automations Linear boundary exists conceptually in the current UI, but it is not yet guided or polished.
-- Remaining: first-run CTO onboarding wizard, guided Linear connection/validation flow, shared badge/card/timeline redesign, stronger dark-mode/theming consistency, worker activity feed, and clearer fat/thin context UX.
+- ✅ CTO ↔ Automations Linear boundary exists in product direction and current UI structure.
+- Remaining: polish the onboarding/setup path, strengthen connection validation/status UX, unify cards/badges/timelines, improve worker activity visibility, and finish broader theming consistency.
 
 **W7a — Embeddings Pipeline: ✅ Complete**
 - ✅ Local all-MiniLM-L6-v2 model runs via `@huggingface/transformers` for embedding inference.
@@ -203,18 +205,20 @@ Phase 4 should enable a "tech department" loop: one persistent agent per employe
 - ✅ `orchestrator_shared_facts` is retired; mission-scoped unified memory is now the single coordination store.
 - ✅ Persistent employee L2 agent memory is wired end to end through exact `employeeAgentId` mission launch metadata.
 
-**W7c — Skills + Learning Pipeline: Core implemented / advanced capture pending (2026-03-10 audit)**
+**W7c — Skills + Learning Pipeline: Largely implemented / advanced capture follow-through pending (2026-03-11 audit)**
 - ✅ Procedural memory extraction from clusters of similar episodic summaries exists.
 - ✅ Confidence evolution, success/failure history, and auto promote/archive behavior exist.
 - ✅ Skill materialization/export to `.claude/skills/<name>/SKILL.md` exists.
 - ✅ Skill ingestion/indexing for `.claude/skills/`, `.claude/commands/`, `CLAUDE.md`, and `agents.md` exists.
-- Remaining: automatic knowledge capture from user interventions, repeated errors, and PR review feedback is not yet fully implemented end-to-end.
+- ✅ Knowledge capture service exists for resolved interventions, recurring error clusters, and PR feedback, and is wired into current runtime flows.
+- Remaining: validate coverage, fill end-to-end gaps, polish the review/inspection UX around these advanced capture sources, and move durable skill export/storage into the `.ade/` model.
 
-**W5b — Automations Full: Partially implemented (2026-03-11 audit)**
+**W5b — Automations Full: Mostly implemented (2026-03-11 audit)**
 - ✅ Automations tab, rule builder/planner, run history, usage surfaces, and Night Shift scheduling/queue plumbing are present in the product.
 - ✅ Automation briefing assembly and employee-memory mode exist in the runtime, using the same memory briefing service as other agent paths.
 - ✅ CTO-owned Linear intake vs automation-trigger boundary is implemented in product docs and current UI direction.
-- Remaining: inbound webhook/GitHub trigger ingress, stronger end-to-end executor-mode follow-through, and completion/polish of overnight review UX.
+- ✅ Webhook/GitHub ingress, tool allowlists, executor routing, and automation-to-mission dispatch are present in the current runtime.
+- Remaining: tighten the overnight review/publish UX, finish external-MCP follow-through once W8 exists, and clean up any remaining executor/runtime edge cases.
 
 **W8 — External MCP Consumption:**
 - ADE agents can consume external MCP servers declared in `local.secret.yaml`.
@@ -228,12 +232,11 @@ Phase 4 should enable a "tech department" loop: one persistent agent per employe
 - HTTP + WebSocket transport with idempotency and device pairing.
 - Fallback skill-only mode for simpler setups.
 
-**W10 — .ade/ Portable State:**
-- `.ade/` directory provides portable state across machines — git tracks config, cr-sqlite syncs app state.
-- Startup validation: directory structure, schema validation, secret detection, file-truth sync.
-- Log integrity: SHA-256 hash chain on append-only JSONL files.
-- Dynamic config reload for `local.yaml` changes without app restart.
-- One-time migration from pre-Phase-4 storage.
+**W10 — .ade/ Portable State: Partial foundation exists**
+- ✅ CTO and worker identity/core-memory/session files already live under `.ade/cto/` and `.ade/agents/`, with file-vs-DB reconciliation behavior in code.
+- ✅ Current config layering already uses `.ade/ade.yaml` + `.ade/local.yaml`.
+- Remaining: decide and implement the selective git-tracked/shareable subset for `.ade/`, add startup validation/integrity tooling, add config reload where needed, consolidate durable exports under `.ade/`, and land the one-time migration/health surfaces.
+- Current limitation: ADE still excludes the entire `.ade/` directory via `.git/info/exclude`, so the portable-shareable model described here is not the live behavior yet.
 
 ### Cross-Cutting: Orchestrator + Mission UX Hardening (2026-03-09)
 

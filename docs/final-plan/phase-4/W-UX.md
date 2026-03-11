@@ -3,19 +3,20 @@
 
 Dependencies: **W1-W4** (shipped). Can run in parallel with W6½. No dependency on embeddings.
 
-W1-W4 shipped the CTO agent, worker org chart, heartbeat system, and Linear sync — but with significant UX gaps. A 2026-03-10 code audit shows this workstream is partially implemented rather than unstarted: the current CTO shell, Team panel, worker configuration flows, file-as-truth identity persistence, and Linear sync panel already exist. The remaining work is mostly around onboarding, guided connection UX, theming/component consistency, richer worker visibility, and making the whole surface feel intentionally designed rather than merely functional.
+W1-W4 shipped the CTO agent, worker org chart, heartbeat system, and Linear sync — but with significant UX gaps. A 2026-03-11 code audit shows this workstream is partially implemented rather than unstarted: the current CTO shell, Team panel, worker configuration flows, file-as-truth identity persistence, onboarding scaffold, and Linear sync panel already exist. The remaining work is mostly around onboarding polish, guided connection UX, theming/component consistency, richer worker visibility, and making the whole surface feel intentionally designed rather than merely functional.
 
-##### Audit Snapshot (2026-03-10)
+##### Audit Snapshot (2026-03-11)
 
 - Implemented in code today: `CtoPage.tsx`, `TeamPanel.tsx`, `LinearSyncPanel.tsx`, `CtoSettingsPanel.tsx`, and file-backed CTO/worker state via `ctoStateService.ts`.
+- Implemented in code today: `OnboardingWizard.tsx` and onboarding state handling in the CTO shell.
 - Identity/config persistence already follows the file-as-truth model for the current CTO/worker state files.
-- Not yet present: dedicated onboarding wizard, guided Linear connection panel, shared badge/card/timeline redesign, worker activity feed, and the broader visual consistency pass.
+- Not yet complete: polished onboarding/setup flow, guided Linear connection panel, shared badge/card/timeline redesign, richer worker activity feed, and the broader visual consistency pass.
 
 ##### CTO Initialization & Onboarding
 
-Currently the CTO is functional immediately on first launch with no setup. This is a bug — users don't understand what CTO is, what it can do, or how to configure it. The fix is a guided onboarding flow that runs on first CTO activation.
+The CTO now has an onboarding scaffold in the product, but it still needs polish to fully deliver the intended first-run experience. The remaining work is making that flow clearer, more guided, and better connected to setup state across the rest of the CTO surface.
 
-- **First-run detection**: Check `ctoAgent` row in `agents` table. If missing or `status: "uninitialized"`, show onboarding instead of the CTO chat.
+- **First-run detection**: Use the persisted CTO onboarding state to show onboarding instead of dropping users directly into the full CTO surface when setup is incomplete.
 
 - **Onboarding wizard** (3 steps, skippable):
   1. **Identity Setup**: Name the CTO (default: "CTO"), choose personality preset (Professional / Casual / Minimal), set primary model. Preview card shows how the CTO will introduce itself.
@@ -26,7 +27,7 @@ Currently the CTO is functional immediately on first launch with no setup. This 
 
 - **Re-run**: Settings > CTO > "Re-run Setup Wizard" button for reconfiguration.
 
-- **Implementation detail**: Onboarding state stored in `agents` table as `onboardingState: { completedSteps: string[], dismissedAt?: string }`. The wizard component is `CtoOnboardingWizard.tsx` — a multi-step modal with step indicators.
+- **Implementation detail**: Onboarding state is already persisted with the CTO identity, and the wizard component exists as `OnboardingWizard.tsx`. Remaining work is mostly around connection validation, polish, and reducing setup friction.
 
 ##### Identity System
 

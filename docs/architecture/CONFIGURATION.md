@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-04
+> Last updated: 2026-03-11
 
 The ADE configuration system manages project-level and workspace-level settings through a layered YAML-based approach. It supports shared team configuration, personal local overrides, and a trust model that prevents unauthorized command execution.
 
@@ -27,12 +27,12 @@ The ADE configuration system manages project-level and workspace-level settings 
 
 ## Overview
 
-ADE uses a two-file configuration system that balances team collaboration with personal customization:
+ADE uses a two-file configuration system that balances shared project defaults with personal customization:
 
-- **`.ade/ade.yaml`** (shared config) is tracked in git and shared across the team. It defines process commands, stack buttons, test suites, and workflow settings that the entire team agrees on.
-- **`.ade/local.yaml`** (local config) is NOT tracked in git and contains personal overrides such as environment variables, custom paths, AI provider settings, and personal process tweaks.
+- **`.ade/ade.yaml`** is the shared baseline config in the product model. It defines process commands, stack buttons, test suites, lane templates, and workflow defaults.
+- **`.ade/local.yaml`** contains machine-local overrides such as environment variables, local AI/provider preferences, and personal process tweaks.
 
-This split ensures that teams can standardize their development workflows while individual developers retain the freedom to customize their local environment without polluting the shared configuration.
+Today, both files live under `.ade/`, and ADE currently excludes the entire `.ade/` directory via `.git/info/exclude` when a project is initialized. That means the codebase already uses the shared/local split, but the future "selectively tracked/shareable `.ade/` subset" described in Phase 4 W10 is not live yet.
 
 ---
 
@@ -44,7 +44,7 @@ YAML supports comments (critical for documenting config choices), has cleaner sy
 
 ### Why Two Files Instead of One?
 
-A single config file creates a constant tension between "what the team wants" and "what I need locally." Developers end up with perpetual unstaged changes to the shared config, risk accidentally committing personal settings, and struggle with merge conflicts on config changes. The two-file approach cleanly separates these concerns: shared decisions go in `ade.yaml`, personal tweaks go in `local.yaml`.
+A single config file creates a constant tension between "what the project wants" and "what I need locally." Developers end up with perpetual unstaged changes to the shared config, risk accidentally committing personal settings, and struggle with merge conflicts on config changes. The two-file approach cleanly separates these concerns: shared decisions go in `ade.yaml`, personal tweaks go in `local.yaml`. Making `ade.yaml` selectively shareable in git is still roadmap work under W10.
 
 ### Why a Trust Model?
 
@@ -65,17 +65,17 @@ Both configuration files reside in the `.ade/` directory at the project root.
 ```
 project-root/
 ├── .ade/
-│   ├── ade.yaml          # Shared config (tracked in git)
-│   ├── local.yaml        # Local config (NOT tracked in git)
+│   ├── ade.yaml          # Shared baseline config
+│   ├── local.yaml        # Local override config
 │   └── transcripts/      # Terminal session transcripts
 ├── .git/
 │   └── info/
-│       └── exclude       # Contains ".ade/local.yaml" entry
+│       └── exclude       # Currently contains ".ade/" entry
 ├── src/
 └── ...
 ```
 
-The `local.yaml` file is automatically added to `.git/info/exclude` (the per-repo gitignore that is not itself tracked) when ADE initializes a project. This ensures the local config never appears in `git status` or gets accidentally committed.
+ADE currently adds the entire `.ade/` directory to `.git/info/exclude` (the per-repo gitignore that is not itself tracked) when it initializes a project. This keeps all current `.ade/` state out of `git status`. Selective tracking of a portable/shareable subset is future W10 work, not current behavior.
 
 ### Config Layering
 
@@ -473,9 +473,9 @@ Overlay policies are evaluated in order. Later policies override earlier ones fo
 | Trust model (SHA-based approval) | Done | Hash stored in SQLite kv table |
 | Trust UI dialog | Done | Renderer shows diff on hash mismatch |
 | Config service (`projectConfigService.ts`) | Done | Full CRUD + validation + trust |
-| File system watchers for config changes | Done | Emits events on change |
+| File system watchers for config changes | Not started | No config hot-reload/watch layer is wired in `projectConfigService.ts` today |
 | IPC endpoints for config operations | Done | `config:get`, `config:save`, `config:confirmTrust` |
-| `local.yaml` gitignore setup | Done | Added to `.git/info/exclude` on init |
+| `.ade/` exclude setup | Done | Added to `.git/info/exclude` on init |
 | AI provider auto-detection | Done | Detects Claude Code and Codex CLI tools |
 | Per-task model routing | Done | Task type → provider → model configuration |
 | Meta-reasoner configuration | Done | Fan-out strategies, model selection, breadth limits |
@@ -486,7 +486,7 @@ Overlay policies are evaluated in order. Later policies override earlier ones fo
 | Lane overlay policies | Done | Implemented via `laneOverlayMatcher.ts` (Phase 4) |
 | Config versioning layer | N/A | Runtime consumes version 1 config shape directly; no legacy provider-mode migration path is maintained |
 
-**Overall status**: Core configuration system is DONE (shared/local split, layered merging, trust model, validation, CRUD operations, file watching). AI provider detection and per-task model routing are DONE. Lane overlay policies are DONE (Phase 4, `laneOverlayMatcher.ts`). Orchestrator evolution configuration (meta-reasoner, compaction, memory, shared facts, run narrative) is DONE. Lane profiles are NOT YET STARTED. Runtime behavior is no-legacy baseline for provider mode handling (`ai.mode` only).
+**Overall status**: Core configuration system is DONE for parsing, layering, validation, trust, and CRUD operations. AI provider detection and per-task model routing are DONE. Lane overlay policies are DONE (Phase 4, `laneOverlayMatcher.ts`). Orchestrator evolution configuration (meta-reasoner, compaction, memory, shared facts, run narrative) is DONE. Lane profiles are NOT YET STARTED. Config hot reload/watchers and the broader portable `.ade/` sharing story are still future work.
 
 ---
 

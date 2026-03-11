@@ -790,7 +790,7 @@ This section clarifies the runtime characteristics of ADE's AI agents (mission w
 4. **Project context**: Loaded from project-scope packs and learning pack entries.
 5. **Mission context**: For workers, loaded from the mission's shared run memory.
 
-This reconstruction pattern means the CTO and mission infrastructure can be invoked on any machine that has the `.ade/` directory, supporting the cross-machine portability model (Section 10.11).
+This reconstruction pattern means the CTO and mission infrastructure are already file-backed under `.ade/` and are structurally compatible with a future cross-machine portability model (Section 10.11). Today, however, ADE still excludes the entire `.ade/` directory from git by default, so the selective tracked/shareable state model described later is not yet the live behavior.
 
 **Background Automations**: Scheduled and event-driven automations are event-driven. A rule defines its trigger, executor target, tool palette, memory policy, and output contract; when the trigger fires, ADE dispatches either a disposable automation bot, a persistent employee, a CTO-routed worker, or a Night Shift queue item. Between activations, automations consume no compute resources.
 
@@ -841,19 +841,19 @@ ADE's security model is built on explicit trust boundaries and conservative defa
 
 ## 12. Configuration Model
 
-ADE configuration lives in the `.ade/` folder at the project root. By default, `.ade/` is git-ignored via `.git/info/exclude`, but users can opt in to committing shareable state (CTO identity, memory, packs, history, artifacts, phase profiles) for cross-machine portability (see Section 10.11). Machine-specific files (`.ade/local.yaml`, `.ade/cache/`, `.ade/logs/`) remain git-ignored regardless.
+ADE configuration lives in the `.ade/` folder at the project root. In the current implementation, ADE excludes the entire `.ade/` directory via `.git/info/exclude` by default. CTO/worker identity and memory are already file-backed under `.ade/`, but the selective tracked/shareable subset described in the Phase 4 W10 roadmap is not implemented yet. Machine-specific files such as caches, logs, and transcripts are still intended to remain local regardless.
 
 **File layout**:
 
 | File | Purpose | Shareable |
 |------|---------|-----------|
-| `.ade/ade.yaml` | Shared baseline config (processes, stack buttons, test suites, lane profiles, overlay policies, AI task-type routing defaults, phase profiles, automation definitions) | Yes (opt-in) |
+| `.ade/ade.yaml` | Shared baseline config (processes, stack buttons, test suites, lane profiles, overlay policies, AI task-type routing defaults, phase profiles, automation definitions) | Planned shareable; currently excluded with the rest of `.ade/` |
 | `.ade/local.yaml` | Machine-specific overrides (including local AI provider preferences and CLI tool paths) | No |
-| `.ade/cto/` | CTO identity, memory, and configuration | Yes (opt-in) |
-| `.ade/memory/` | Project-scope memory, learning pack entries, vector embeddings | Yes (opt-in) |
-| `.ade/packs/` | Pack versions and materialized views | Yes (opt-in) |
-| `.ade/history/` | Checkpoints, events, and mission records | Yes (opt-in) |
-| `.ade/artifacts/` | Screenshots, videos, test results attached to missions/lanes | Yes (opt-in) |
+| `.ade/cto/` | CTO identity, memory, and configuration | Planned shareable; currently file-backed but excluded |
+| `.ade/memory/` | Project-scope memory, learning pack entries, vector embeddings | Planned shareable in part; currently excluded |
+| `.ade/packs/` | Pack versions and materialized views | Planned shareable; currently excluded |
+| `.ade/history/` | Checkpoints, events, and mission records | Planned shareable in part; currently excluded |
+| `.ade/artifacts/` | Screenshots, videos, test results attached to missions/lanes | No in current design |
 | `.ade/transcripts/` | Terminal session transcripts | No |
 | `.ade/logs/` | Process and test logs | No |
 | `.ade/cache/` | Local cache | No |
@@ -864,7 +864,7 @@ ADE configuration lives in the `.ade/` folder at the project root. By default, `
 2. `.ade/ade.yaml` (shared baseline)
 3. `.ade/local.yaml` (machine override)
 
-Arrays of objects merge by stable `id`. Unresolved references (such as stack buttons referencing unknown process IDs) fail validation. Commands are never executed until config passes validation.
+Arrays of objects merge by stable `id`. Unresolved references (such as stack buttons referencing unknown process IDs) fail validation. Commands are never executed until config passes validation. The current product already uses this layered `.ade/ade.yaml` + `.ade/local.yaml` model even though the broader portable-state sharing policy is still roadmap work.
 
 **AI task-type routing config**:
 
