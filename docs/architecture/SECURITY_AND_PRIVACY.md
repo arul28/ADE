@@ -355,23 +355,19 @@ Memories follow a lifecycle: `candidate` --> `promoted` --> `archived`. This pre
 
 ---
 
-## Compute Backend Trust Models
+## Brain Deployment Trust Model
 
-Each compute backend has a different trust model:
+Compute-backend abstraction was dropped with Phase 5.5. The current and planned trust model is simpler:
 
-| Backend | Trust Level | Data Location | Network Access | Credential Handling |
-|---------|------------|---------------|----------------|-------------------|
-| Local | Full trust | On-device | Host network | OS keychain |
-| VPS | Controlled trust | Remote (user-owned) | SSH tunnel | Forwarded via relay |
-| Daytona | Third-party trust | Daytona cloud | Daytona network | API key + workspace isolation |
+| Deployment | Trust Level | Data Location | Network Access | Credential Handling |
+|-----------|-------------|---------------|----------------|-------------------|
+| Local brain | Full trust | On-device | Host network | OS keychain / local secret files |
+| User-owned VPS brain (planned Phase 6) | Controlled trust | Remote machine the user operates | User-managed network path (for example Tailscale) | Machine-local secret files / keychain equivalent |
 
-**Decision Matrix**:
-- Sensitive/proprietary code — Local or VPS
-- Experimental/throwaway work — Any backend
-- CI-like isolation needed — Daytona (opt-in)
-- Night Shift agent autonomous work — VPS or Daytona
-
-Daytona workspaces are isolated: each gets its own filesystem, network namespace, and port space. Credentials are never shared between workspaces. API keys are stored in the system keychain, not in project files.
+Current guidance:
+- Sensitive/proprietary code: local brain by default.
+- Always-on unattended execution: future user-owned VPS brain, not a managed ADE compute backend.
+- Third-party managed sandboxes such as Daytona are not part of the active ADE architecture or roadmap.
 
 ## Per-Lane Proxy Security
 

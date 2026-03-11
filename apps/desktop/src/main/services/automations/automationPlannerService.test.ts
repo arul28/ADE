@@ -38,16 +38,38 @@ function createPlannerForTests(args: { suites: Array<{ id: string; name: string 
   });
 }
 
+function createDraft(
+  overrides: Partial<AutomationRuleDraft>,
+): AutomationRuleDraft {
+  const trigger = overrides.trigger ?? overrides.triggers?.[0] ?? { type: "manual" };
+  return {
+    name: "Automation Rule",
+    enabled: true,
+    mode: "review",
+    triggers: [trigger],
+    trigger,
+    executor: { mode: "automation-bot", targetId: null },
+    reviewProfile: "quick",
+    toolPalette: [],
+    contextSources: [],
+    memory: { mode: "project" },
+    guardrails: {},
+    outputs: { disposition: "comment-only", createArtifact: true },
+    verification: { verifyBeforePublish: false, mode: "intervention" },
+    billingCode: "auto:test",
+    actions: [],
+    ...overrides
+  };
+}
+
 describe("automationPlannerService.validateDraft", () => {
   it("resolves run-tests suite by fuzzy match", () => {
     const planner = createPlannerForTests({ suites: [{ id: "unit", name: "Unit Tests" }] });
 
-    const draft: AutomationRuleDraft = {
+    const draft = createDraft({
       name: "Run unit tests",
-      enabled: true,
-      trigger: { type: "manual" },
       actions: [{ type: "run-tests", suite: "Unit Tests" }]
-    };
+    });
 
     const res = planner.validateDraft({ draft, confirmations: [] });
     expect(res.ok).toBe(true);
@@ -58,12 +80,10 @@ describe("automationPlannerService.validateDraft", () => {
   it("requires explicit confirmation for run-command", () => {
     const planner = createPlannerForTests({ suites: [] });
 
-    const draft: AutomationRuleDraft = {
+    const draft = createDraft({
       name: "Echo",
-      enabled: true,
-      trigger: { type: "manual" },
       actions: [{ type: "run-command", command: "echo hello" }]
-    };
+    });
 
     const noConfirm = planner.validateDraft({ draft, confirmations: [] });
     expect(noConfirm.ok).toBe(false);
@@ -76,14 +96,14 @@ describe("automationPlannerService.validateDraft", () => {
   it("validates schedule cron", () => {
     const planner = createPlannerForTests({ suites: [] });
 
-    const draft: AutomationRuleDraft = {
+    const draft = createDraft({
       name: "Schedule",
-      enabled: true,
+      triggers: [{ type: "schedule", cron: "not-a-cron" }],
       trigger: { type: "schedule", cron: "not-a-cron" },
-      actions: [{ type: "update-packs" }]
-    };
+      actions: [{ type: "predict-conflicts" }]
+    });
     const res = planner.validateDraft({ draft, confirmations: [] });
     expect(res.ok).toBe(false);
-    expect(res.issues.some((i) => i.path === "trigger.cron")).toBe(true);
+    expect(res.issues.some((i) => i.path === "triggers[0].cron")).toBe(true);
   });
 });

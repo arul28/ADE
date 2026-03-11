@@ -12,7 +12,7 @@ Goal: Add the CTO agent as a persistent project-aware assistant with a configura
 | W2: Worker Agents & Org Chart | [W1-W4.md](W1-W4.md) | ✅ Complete |
 | W3: Heartbeat & Activation | [W1-W4.md](W1-W4.md) | ✅ Complete |
 | W4: Bidirectional Linear Sync | [W1-W4.md](W1-W4.md) | ✅ Complete |
-| W5: Automations Platform + Night Shift | [W5.md](W5.md) | W5a ✅ / W5b pending |
+| W5: Automations Platform + Night Shift | [W5.md](W5.md) | W5a ✅ / W5b partially implemented |
 | W6: Unified Memory System | [W6.md](W6.md) | ✅ Complete |
 | W6½: Memory Engine Hardening | [W6-half.md](W6-half.md) | ✅ Complete |
 | W-UX: CTO + Org Experience Overhaul | [W-UX.md](W-UX.md) | Partially implemented |
@@ -23,12 +23,12 @@ Goal: Add the CTO agent as a persistent project-aware assistant with a configura
 | W9: OpenClaw Bridge | [W9.md](W9.md) | Not started |
 | W10: .ade/ Portable State | [W10.md](W10.md) | Not started |
 
-### Audit Snapshot (2026-03-10)
+### Audit Snapshot (2026-03-11)
 
 - Complete: W1-W4, W6, W6½, W7a
 - Mostly/Core implemented: W7b, W7c
-- Partially implemented: W-UX
-- Still genuinely pending: W5b, W8, W9, W10
+- Partially implemented: W5b, W-UX
+- Still genuinely pending: W8, W9, W10
 - Highest-value cleanup still open inside shipped work: finish `orchestrator_shared_facts` migration, wire persistent employee L2 briefing injection end-to-end, and complete advanced knowledge capture from interventions/repeated errors/PR feedback
 
 ### Reference docs
@@ -90,7 +90,7 @@ Wave 5 (core shipped — advanced learning capture remains):
   W7c: Skills + Learning Pipeline         Core implemented; advanced capture/review mining still open
 
 Wave 6 (after stable orchestrator — automations):
-  W5b: Automations — Executors + Night Shift + External Triggers  Pending; needs W5a + stable orchestrator + W6½
+  W5b: Automations — Executors + Night Shift + External Triggers  Partially implemented; webhook ingress + executor follow-through remain
 
 Wave 7 (ecosystem — independent, can parallel):
   W8: External MCP Consumption            Pending
@@ -100,7 +100,7 @@ Wave 7 (ecosystem — independent, can parallel):
 
 Dependency graph:
 ```
-W1-W4 ✅ ──→ W5a ✅ ──→ W5b (Automations Full; pending)
+W1-W4 ✅ ──→ W5a ✅ ──→ W5b (Automations Full; partially implemented)
      │                      ↑
      │                      │ (needs stable orchestrator)
      │
@@ -216,11 +216,11 @@ Phase 4 should enable a "tech department" loop: one persistent agent per employe
 - ✅ Skill ingestion/indexing for `.claude/skills/`, `.claude/commands/`, `CLAUDE.md`, and `agents.md` exists.
 - Remaining: automatic knowledge capture from user interventions, repeated errors, and PR review feedback is not yet fully implemented end-to-end.
 
-**W5b — Automations Full:**
-- Automations tab provides trigger-driven workflows, template-driven setup, executor routing, and Night Shift scheduling.
-- Morning Briefing provides a swipeable card interface for reviewing overnight results.
-- Billing codes for cross-agent cost attribution in automation runs.
-- Clear boundary between CTO-managed and automation-managed Linear interactions.
+**W5b — Automations Full: Partially implemented (2026-03-11 audit)**
+- ✅ Automations tab, rule builder/planner, run history, usage surfaces, and Night Shift scheduling/queue plumbing are present in the product.
+- ✅ Automation briefing assembly and employee-memory mode exist in the runtime, using the same memory briefing service as other agent paths.
+- ✅ CTO-owned Linear intake vs automation-trigger boundary is implemented in product docs and current UI direction.
+- Remaining: inbound webhook/GitHub trigger ingress, stronger end-to-end executor-mode follow-through, and completion/polish of overnight review UX.
 
 **W8 — External MCP Consumption:**
 - ADE agents can consume external MCP servers declared in `local.secret.yaml`.

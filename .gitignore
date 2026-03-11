@@ -13,6 +13,10 @@ infra/.pulumi/
 *.png
 !docs/**/*.png
 
+# Python cache
+__pycache__/
+*.pyc
+
 # Database
 *.db
 

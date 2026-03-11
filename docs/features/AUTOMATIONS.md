@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 >
-> Last updated: 2026-03-06
+> Last updated: 2026-03-11
 
 ---
 
@@ -13,8 +13,10 @@ This document is the canonical product direction for ADE Automations in W5 and b
 - Surface: `/automations` is the first-class UI for creating, simulating, running, and reviewing automations.
 - Settings: Settings holds global defaults, connector auth, and policy presets. It is not the primary automation builder UI.
 - Runtime: automation executions use the same agent/runtime primitives as missions and CTO workers, including guardrails, memory, and audit history.
+- Current baseline: builder UI, Night Shift queue/review surfaces, budget tracking, automation-to-mission dispatch, and backward-compatible legacy actions (`run-command`, `run-tests`, `predict-conflicts`) are shipped.
+- Still pending in `W5b`: true external trigger ingress, tool-palette enforcement, richer executor/runtime specialization, and the “full ADE tool access” contract described below.
 
-Implementation note: the current baseline still has config-backed automation plumbing, but the product contract is the Automations tab as the canonical authoring and operations surface.
+Implementation note: the current baseline still carries some config-era compatibility fields, but the product contract is the Automations tab as the canonical authoring and operations surface.
 
 ---
 

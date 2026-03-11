@@ -342,10 +342,9 @@ export function RuleEditorPanel({
         {section("Compatibility Actions", (
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-2">
-              <div className="text-[10px] text-[#8B8B9A]">Optional legacy actions. Leave empty for fully mission-powered execution.</div>
+              <div className="text-[10px] text-[#8B8B9A]">Optional legacy actions for older rules. Leave empty for mission-powered execution.</div>
               <select className="h-7 px-2 font-mono text-[9px] text-[#FAFAFA]" style={INPUT_STYLE} value="" onChange={(e) => { if (e.target.value) addLegacyAction(e.target.value); e.target.value = ""; }}>
                 <option value="">Add legacy action...</option>
-                <option value="update-packs">update-packs</option>
                 <option value="predict-conflicts">predict-conflicts</option>
                 <option value="run-tests">run-tests</option>
                 <option value="run-command">run-command</option>

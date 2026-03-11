@@ -1,6 +1,6 @@
 # ADE (Agentic Development Environment) - Product Requirements Document
 
-Last updated: 2026-03-05
+Last updated: 2026-03-11
 
 Roadmap source of truth: `docs/final-plan/README.md` (this PRD captures product scope and core behavior; future sequencing lives in Final Plan).
 
@@ -519,7 +519,7 @@ Each feature area is specified in detail in the following documents. These are t
 | 8 | Packs | [features/PACKS.md](features/PACKS.md) | Durable context and history system. Covers immutable checkpoints, append-only pack events, pack versioning with head pointers, materialized current views, all six pack types, the update pipeline, and privacy/retention controls. |
 | 9 | Workspace Graph | [features/WORKSPACE_GRAPH.md](features/WORKSPACE_GRAPH.md) | Infinite-canvas topology overview. Covers primary/worktree/attached node rendering, stack and risk edge overlays, merge simulation interactions, and snapshot-based status overlays. |
 | 10 | Missions | [features/MISSIONS.md](features/MISSIONS.md) | AI orchestrator control center for mission intake and execution. Covers mission lifecycle, orchestrator run management, step DAG visualization, intervention queues, artifacts (including PR links), timeline events, and per-task-type model routing. |
-| 11 | Automations | [features/AUTOMATIONS.md](features/AUTOMATIONS.md) | First-class background execution surface. Covers trigger families (local + GitHub/Linear/webhook), executor routing (automation bots, employees, CTO-route, Night Shift), templates, tool palettes, automation-scoped memory, simulation, history, and overnight review. |
+| 11 | Automations | [features/AUTOMATIONS.md](features/AUTOMATIONS.md) | First-class background execution surface. Covers trigger families (local + GitHub/webhook), executor routing (automation bots, employees, CTO-route, Night Shift), templates, tool palettes, automation-scoped memory, simulation, history, and overnight review. |
 | 12 | Onboarding and Settings | [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md) | Repository initialization and user preferences. Covers onboarding flow (repo selection, `.ade/` setup, CLI tool detection), trust surfaces, operation previews, escape hatches, AI provider and per-task-type routing configuration, automation defaults/integration setup, and theme/keybinding settings. |
 | 13 | CTO | [features/CTO.md](features/CTO.md) | Always-on project-aware agent. Covers the CTO's persistent chat interface, three-tier memory model with project-scoped core memory, MCP tool access for mission creation and lane management, external request routing, and relationship to the mission orchestrator. Persistent employees can own and execute automations created in the Automations tab. |
 
@@ -679,12 +679,11 @@ Candidate entries are promoted by relevance/confidence and policy. The Context B
 
 ### 10.6 Compute Backends
 
-Mission workers can execute on multiple compute backends, configured per-phase or per-mission step. All backends provide isolated environments for worker execution.
+Mission workers execute in ADE-managed local runtime boundaries today. The active roadmap keeps that model simple:
 
 - **Local** (Default): Worker runs as a subprocess on the developer's machine, operating in a git worktree managed by ADE. Zero setup, zero cost, full access to local tools and credentials.
-- **VPS** (Opt-in): User-provisioned remote machine (SSH target). ADE syncs the worktree, runs the worker remotely, and streams output back. Configured in Settings → Compute Backends with SSH credentials.
-- **Daytona** (Opt-in): Dev environment-as-a-service via Daytona SDK. Provides reproducible, containerized development environments with pre-configured toolchains. Configured in Settings → Compute Backends with API key. Always opt-in.
-- **E2B** (Opt-in): Firecracker microVM-based sandboxes via E2B SDK. Sub-150ms cold start. Supports full desktop environments (Xfce + Chromium) for computer use scenarios. Per-second billing (~$0.05/hr for 1 vCPU). Configured in Settings → Compute Backends with API key. Always opt-in.
+- **Future user-owned VPS brain** (Phase 6): ADE itself runs on a remote machine that the user controls, and other devices connect to that brain. This is not a pluggable managed compute backend layer.
+- **Dropped / non-active direction**: Daytona, E2B, and the broader pluggable compute-backend abstraction are not part of the active ADE roadmap.
 
 ### 10.7 Worker Computer Use
 
@@ -694,7 +693,7 @@ Workers can interact with running applications visually through computer use cap
 - **Browser**: Headless browser (Playwright) for web app testing and verification. Worker can navigate, click, type, screenshot.
 - **Desktop**: Full virtual desktop (Xvfb + window manager) for desktop apps, Electron apps, mobile emulators. Worker gets mouse/keyboard control, screenshot capture, and video recording.
 
-Computer use is powered by provider-native APIs: Anthropic's Computer Use Tool for Claude workers, OpenAI's CUA for Codex workers. All compute backends (Local, VPS, Daytona, E2B) support all environment types.
+Computer use is powered by provider-native APIs: Anthropic's Computer Use Tool for Claude workers and OpenAI's CUA for Codex workers. The active plan treats this as a runtime capability layered onto ADE's local execution model rather than a matrix of pluggable compute backends.
 
 Artifacts produced by computer use (screenshots, videos, test results) attach to the lane or mission and are auto-included in PR descriptions.
 
@@ -730,7 +729,7 @@ ADE supports three complementary modes of work:
 - Orchestrator intelligence that scales from simple to complex missions
 
 **Background Automations** (`/automations`, fire-and-forget or employee-backed):
-- Automation rules: Builder-defined flows with local triggers plus GitHub, Linear, and webhook triggers
+- Automation rules: Builder-defined flows with local triggers plus GitHub and webhook triggers
 - Executor routing: disposable automation bots, persistent employees, CTO-route, or Night Shift queue
 - Night Shift mode: Scheduled unattended execution with morning digest
 - Templates and tool palettes: reusable recipes with explicit allowed tools and verification requirements
@@ -741,21 +740,17 @@ Development baseline: ADE assumes a modern Git CLI (worktrees, `git restore`, `g
 
 ### 10.11 Cross-Machine Portability
 
-ADE state is designed to be portable across machines without any dedicated sync service, hub, or event bus. **Git IS the sync layer.** Agents write code, commit, and push. Other machines pull. The core development workflow -- code changes flowing through git -- is inherently cross-machine.
+This is a roadmap target, not the fully shipped baseline. Today ADE already persists some state under `.ade/` (for example CTO/worker identity files, templates, config, and skill exports), but the project-wide portable-state contract is still Phase 4 `W10`, and real-time multi-device replication is still Phase 6.
 
-ADE stores all of its own state in the `.ade/` directory at the project root:
-- **CTO state**: `.ade/cto/` (identity, memory, configuration)
-- **Memory**: `.ade/memory/` (project-scope knowledge, learning pack entries)
-- **Packs**: `.ade/packs/` (context versions, materialized views)
-- **History**: `.ade/history/` (checkpoints, events, mission records)
-- **Artifacts**: `.ade/artifacts/` (screenshots, videos, test results)
-- **Configuration**: `.ade/ade.yaml` (shared baseline), `.ade/local.yaml` (machine-specific overrides)
+Current baseline:
+- Git is the only reliable cross-machine transport for code.
+- Parts of `.ade/` are already used as file-backed state, but the full directory contract, startup validation, integrity checks, and migration flow are not finished.
+- Machine-specific credentials remain local-only, either in gitignored files or encrypted local storage.
 
-The `.ade/` directory is committable to the repository. By committing `.ade/` (or syncing it via a dedicated branch), any machine that clones the repository gets the full ADE state -- CTO identity and memory, accumulated project knowledge, learning packs, mission history, phase profiles, and project configuration. Open ADE on a new machine, point it at the repo, and it reads `.ade/` to reconstruct the complete picture.
-
-Machine-specific state (local overrides, cache, active terminal sessions) stays in `.ade/local.yaml` and `.ade/cache/`, which are git-ignored by default. Everything else is portable.
-
-Phase 8 (Relay) in `docs/final-plan/README.md` adds remote execution routing -- for example, launching a mission on a Mac Mini from a laptop. But even with relay, the state sync mechanism remains git-based. The relay handles execution dispatch, not state replication.
+Roadmap direction:
+- Phase 4 `W10` formalizes the portable `.ade/` structure and tracked-vs-local boundaries.
+- Phase 6 adds cr-sqlite state sync, device registry, and the brain/viewer model.
+- Phase 7 builds remote/mobile control on top of that sync foundation.
 
 ### 10.12 External Agent Bridge
 
@@ -929,7 +924,7 @@ Implementation sequencing, future phases, and dependency ordering are now mainta
 
 - `docs/final-plan/README.md`
 
-Current status: Phase 1 (Agent SDK Integration), Phase 1.5 (Agent Chat Integration), Phase 2 (MCP Server), and Phase 5 (Lane Runtime Isolation) are complete. Phase 3 orchestrator implementation is complete through reflection protocol closure (Task 7); integration soak verification (Task 8) remains as hardening work.
+Current status: Phases 1, 1.5, 2, and 5 are complete. Phase 3 is complete through the orchestrator overhaul. Phase 4 is partially complete: `W1-W4`, `W6`, `W6½`, and `W7a` are shipped; `W7b` is mostly implemented; `W7c` has a working core; `W-UX` and `W5b` are partial; and `W8`, `W9`, and `W10` are still pending.
 
 This PRD intentionally focuses on product scope and behavior, while roadmap execution detail is centralized in the Final Plan to avoid drift.
 

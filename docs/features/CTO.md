@@ -2,9 +2,9 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-05
+> Last updated: 2026-03-11
 >
-> **Status: W1-W4 Complete, W6 Baseline Shipped** — CTO core identity, worker agents org chart, heartbeat/activation system, bidirectional Linear sync, and full CtoPage UI shipped. Unified memory renderer surfaces are live; native sqlite-vec integration is deferred. W5 (Automations Platform + Night Shift) is next.
+> **Status: W1-W4, W6, W6½, and W7a complete; W5b/W-UX/W7b/W7c remain in follow-through** — CTO core identity, worker org chart, heartbeat/activation, bidirectional Linear sync, onboarding/memory/worker UI surfaces, and the native memory upgrade are in the codebase. Remaining Phase 4 work is concentrated in automations completion, UX polish, orchestrator-memory cleanup, advanced knowledge capture, and the still-unstarted W8-W10 ecosystem work.
 
 ---
 
@@ -806,7 +806,7 @@ The CTO and all workers must be reachable from any device in the ADE ecosystem (
 - **Command routing**: When a user talks to the CTO or a worker from a non-brain device, the message routes over WebSocket to the brain, the agent processes it, and state changes sync back via cr-sqlite.
 - **iOS access** (Phase 7): Full CTO chat from the iOS companion app. View org chart, worker status, send messages, approve interventions. Push notifications for mission completion, budget alerts, and CTO escalations.
 - **VPS brain** (Phase 6 W9): CTO runs headlessly on a VPS brain via `xvfb-run electron .`. Heartbeats fire on schedule, Linear sync runs continuously, workers process issues — all without a desktop being open.
-- **Linear sync portability**: Linear API credentials are in `.ade/local.secret.yaml` (machine-specific, gitignored). The brain machine's secret file provides the Linear token. Other devices don't need it — they see the results via cr-sqlite sync.
+- **Linear sync portability**: the current implementation stores the Linear token in encrypted local storage under `.ade/secrets/`, with a one-time import path from legacy `.ade/local.secret.yaml`. Other devices do not need the token; they only need synced state from the brain machine.
 
 ---
 

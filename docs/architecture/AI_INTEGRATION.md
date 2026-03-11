@@ -1009,33 +1009,30 @@ The memory architecture is informed by production systems and academic research 
 
 ### External MCP Consumption
 
-ADE agents can connect to external MCP servers during execution, extending their capabilities beyond ADE's built-in tool set.
+This section describes the planned `W8` external-MCP client architecture. It is not shipped in the current codebase yet. Today ADE exposes MCP outward, but it does not yet run a full external MCP client registry/connection layer for workers or the CTO.
 
-**Configuration**: External MCP servers are declared in `.ade/local.yaml` under the `externalMcp` key:
+**Target configuration**: external MCP servers will be declared in `.ade/local.secret.yaml` under the `externalMcp` key:
 
 ```yaml
 externalMcp:
-  servers:
-    - name: github
-      command: npx
-      args: ["-y", "@modelcontextprotocol/server-github"]
-      env:
-        GITHUB_TOKEN: "${env:GITHUB_TOKEN}"
-    - name: postgres
-      command: npx
-      args: ["-y", "@modelcontextprotocol/server-postgres"]
-      env:
-        DATABASE_URL: "${env:DATABASE_URL}"
+  - name: github
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-github"]
+  - name: postgres
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-postgres"]
 ```
 
-**Connection management**: External MCP connections are lazy — they are established on first tool use and disconnected when the agent session ends. This avoids unnecessary process spawning for tools that may not be needed.
+**Planned connection management**: external MCP connections will be lazy by default, with optional auto-start and health-checked reconnection.
 
-**Security**: External MCP tools pass through the same permission and policy layer as ADE's internal tools:
+**Planned security model**: external MCP tools will pass through the same permission and policy layer as ADE's internal tools:
 - Agent identity `allowedTools` / `deniedTools` lists apply to external tool names (prefixed with the server name, e.g., `github:create_pull_request`)
 - Mutation tools from external servers require the same claim-based authorization as internal mutation tools
 - All external tool invocations are logged to the call audit trail
 
-**Tool discovery**: When an agent session starts, ADE queries all configured external MCP servers for their tool manifests. These tools are merged with ADE's internal tool set and presented to the agent as a unified tool list. The agent does not need to know whether a tool is internal or external.
+**Planned tool discovery**: when `W8` lands, ADE will query configured external MCP servers for their manifests and merge them into the agent-visible tool surface with namespaced identifiers.
 
 ### CTO Agent Architecture
 
@@ -1171,31 +1168,15 @@ Machine B: git pull → `.ade/ade.db` updated → memory retrieval reflects new 
 
 ### Compute Backends for Agent Execution
 
-Agent execution can target different compute backends via the `ComputeBackend` interface:
+The older pluggable `ComputeBackend` abstraction is no longer part of the active ADE architecture. The current runtime model is:
 
-```typescript
-interface ComputeBackend {
-  type: 'local' | 'vps' | 'daytona' | 'e2b';
-  create(config: WorkspaceConfig): Promise<WorkspaceHandle>;
-  destroy(handle: WorkspaceHandle): Promise<void>;
-  exec(handle: WorkspaceHandle, command: string): Promise<ExecResult>;
-  getPreviewUrl(handle: WorkspaceHandle, port: number): string;
-}
-```
-
-**Local Backend** (Default): Executes agents as local processes. No additional setup required.
-
-**VPS Backend**: Routes agent execution to remote machines via the ADE relay. Useful for Night Shift (after-hours autonomous work) and capacity scaling.
-
-**Daytona Backend** (Opt-in): Creates isolated cloud sandbox workspaces via the Daytona SDK. Each workspace gets its own filesystem, ports, and environment. Requires API key configuration.
-
-**E2B Backend** (Opt-in): Creates Firecracker microVM-based sandboxes via the E2B SDK. Sub-150ms cold start. Supports full desktop environments (Xfce desktop + Chromium browser) via E2B Desktop Sandbox. Per-second billing. Configured in Settings → Compute Backends with API key. E2B is always opt-in and provides an alternative to Daytona for teams that prefer managed cloud sandboxes over BYOC infrastructure.
-
-The orchestrator selects backends based on mission configuration, falling back to Local if no preference is set.
+- **Local brain/runtime** (current baseline): agents execute as local subprocesses/worktree tasks on the active ADE machine.
+- **User-owned VPS brain** (planned Phase 6): ADE itself runs on a remote machine the user controls, and other devices connect to that brain.
+- **Dropped managed backend direction**: Daytona, E2B, and similar ADE-managed cloud backends are not part of the active roadmap.
 
 ### Compute Environment Types
 
-Each compute backend supports multiple environment types that determine what level of interaction an agent has with the running environment:
+ADE still distinguishes environment capabilities, but they are layered onto the runtime placement above rather than selected from a backend matrix:
 
 ```typescript
 type ComputeEnvironmentType = 'terminal-only' | 'browser' | 'desktop';
@@ -1220,11 +1201,11 @@ interface ComputeEnvironment {
 }
 ```
 
-**Terminal-only** (default): Agent gets a shell in a worktree or sandbox. No GUI rendering. Suitable for code changes, test execution, and CLI operations. All backends support this.
+**Terminal-only** (default): Agent gets a shell in a worktree/runtime sandbox. No GUI rendering. Suitable for code changes, test execution, and CLI operations.
 
-**Browser**: Headless browser (Playwright/Puppeteer) available. Agent can launch web applications, navigate pages, interact with UI elements, and capture screenshots. Suitable for web application testing and visual verification. Implementation: Playwright is launched in the compute environment with the dev server URL.
+**Browser**: Headless browser (Playwright/Puppeteer) available. Agent can launch web applications, navigate pages, interact with UI elements, and capture screenshots. Suitable for web application testing and visual verification.
 
-**Desktop**: Full virtual desktop via Xvfb (X Virtual Framebuffer) + window manager. Agent gets programmatic mouse/keyboard control and screenshot/video capture. Suitable for desktop applications (Electron, native), mobile emulators (Android via docker-android), and any GUI application.
+**Desktop**: Full virtual desktop via Xvfb (X Virtual Framebuffer) + window manager. Agent gets programmatic mouse/keyboard control and screenshot/video capture. Suitable for desktop applications (Electron, native), mobile emulators, and GUI-heavy verification.
 
 Implementation stack for desktop environments:
 1. **Xvfb**: Virtual X11 display (e.g., `:99 -screen 0 1920x1080x24`)
@@ -1235,13 +1216,11 @@ Implementation stack for desktop environments:
 6. **scrot/ImageMagick**: Screenshot capture
 7. **ffmpeg**: Video recording via x11grab
 
-Backend capability matrix:
-| Backend | terminal-only | browser | desktop |
-|---------|:---:|:---:|:---:|
-| Local | Yes | Yes (local Playwright) | Yes (local Xvfb) |
-| VPS | Yes | Yes | Yes |
-| Daytona | Yes | Yes | Yes (native Computer Use API) |
-| E2B | Yes | Yes | Yes (Desktop Sandbox API) |
+Runtime capability notes:
+| Runtime placement | terminal-only | browser | desktop |
+|-------------------|:-------------:|:-------:|:-------:|
+| Local brain (current) | Yes | Yes (local Playwright) | Yes (local Xvfb) |
+| User-owned VPS brain (planned) | Planned | Planned | Planned |
 
 ### Per-Task-Type Configuration
 
@@ -1719,9 +1698,10 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Call audit logging | Complete | Every MCP tool invocation writes durable `mcp_tool_call` history records |
 | Permission/policy layer | Complete | Mutation tools enforce claim/identity policy; spawn and ask_user guards applied |
 | Chat reasoning effort (Claude) | Complete | Reasoning effort forwarded to Claude provider when supported; validated for Codex |
-| Compute backends (Local, VPS, Daytona) | Complete | `ComputeBackend` interface with pluggable backends |
-| E2B compute backend | Planned | Phase 4 -- Firecracker microVM sandboxes via E2B SDK |
-| Compute environment types | Planned | Phase 4 -- terminal-only, browser, and desktop environment support |
+| Local runtime placement | Complete | Agents run on local runtime records/worktrees on the active ADE machine |
+| Remote brain deployment | Planned | Phase 6 -- user-owned VPS brain + device routing |
+| Managed cloud compute backends (Daytona/E2B) | Dropped | Not on active roadmap |
+| Compute environment types | Planned | terminal-only, browser, and desktop environment support on ADE-managed runtime placements |
 | Computer use MCP tools | Planned | Phase 4 -- `screenshot_environment`, `interact_gui`, `record_environment`, `launch_app`, `get_environment_info` |
 | Unified Memory System (W6) — replaces context packs + CTO core memory UI surfaces | Complete | Unified memory retrieval and renderer cutover are active |
 | Memory Engine Hardening (W6½) — lifecycle sweeps, batch consolidation, pre-compaction flush | Complete | Temporal decay, tier demotion, hard limits, orphan cleanup, Jaccard+LLM consolidation, pre-compaction flush, Memory Health dashboard |

@@ -23,11 +23,27 @@ function buildBridge() {
         {
           id: "rule-1",
           name: "On session end",
+          description: "Review session output and flag follow-up work.",
           enabled: true,
+          mode: "review",
+          triggers: [{ type: "session-end" }],
           trigger: { type: "session-end" },
-          actions: [{ type: "update-packs" }],
+          executor: { mode: "automation-bot", targetId: null },
+          reviewProfile: "quick",
+          toolPalette: ["repo", "memory", "mission"],
+          contextSources: [],
+          memory: { mode: "automation-plus-project", ruleScopeKey: "rule-1" },
+          guardrails: { maxDurationMin: 20, maxFindings: 5 },
+          outputs: { disposition: "open-task", createArtifact: true },
+          verification: { verifyBeforePublish: false, mode: "intervention" },
+          billingCode: "auto:session-review",
+          actions: [{ type: "predict-conflicts" }],
           running: false,
-          lastRunStatus: "passed",
+          queueCount: 0,
+          paused: false,
+          ignoredRunCount: 0,
+          confidence: null,
+          lastRunStatus: "succeeded",
           lastRunAt: "2026-03-05T00:00:00.000Z",
         },
       ]),
@@ -40,6 +56,26 @@ function buildBridge() {
       getHistory: vi.fn(async () => []),
       getRunDetail: vi.fn(async () => null),
       parseNaturalLanguage: vi.fn(async () => ({})),
+      getNightShiftState: vi.fn(async () => ({
+        settings: {
+          activeHours: { start: "22:00", end: "06:00", timezone: "America/New_York" },
+          utilizationPreset: "conservative",
+          paused: false,
+          updatedAt: "2026-03-05T00:00:00.000Z",
+        },
+        queue: [],
+        latestBriefing: null,
+      })),
+      updateNightShiftSettings: vi.fn(async (next) => ({
+        settings: {
+          activeHours: { start: "22:00", end: "06:00", timezone: "America/New_York", ...(next.activeHours ?? {}) },
+          utilizationPreset: next.utilizationPreset ?? "conservative",
+          paused: next.paused ?? false,
+          updatedAt: "2026-03-05T00:00:00.000Z",
+        },
+        queue: [],
+        latestBriefing: null,
+      })),
     },
     projectConfig: {
       get: vi.fn(async () => ({
@@ -155,6 +191,6 @@ describe("AutomationsPage", () => {
     mountPage();
     await waitFor(() => expect(screen.getByText("Night Shift")).toBeTruthy());
     fireEvent.click(screen.getByText("Night Shift"));
-    await waitFor(() => expect(screen.getByText("Night Shift Queue")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Morning Briefing")).toBeTruthy());
   });
 });

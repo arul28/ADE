@@ -56,7 +56,7 @@ Each workstream includes its own renderer/UI changes and validation tests (no st
 - Docker service startup for lane-specific Docker Compose services (databases, caches, queues).
 - Dependency installation (`npm install`, `pip install`, etc.).
 - Standardized runtime mount points for agent profile/context files.
-- **Overlay policy**: Extend existing `laneOverlayMatcher.ts` for env/port/proxy overlays. Per-lane overrides for environment variables, port mappings, proxy settings, and compute backend selection.
+- **Overlay policy**: Extend existing `laneOverlayMatcher.ts` for env/port/proxy overlays. Per-lane overrides for environment variables, port mappings, proxy settings, and other lane-local runtime settings.
 - **Renderer**: Lane creation dialog shows environment init progress. Overlay config visible in lane settings.
 
 **Tests:**

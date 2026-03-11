@@ -100,8 +100,8 @@ The current Linear connection is a raw token input. This needs to be a guided fl
 
 - **CTO ↔ Automations Linear boundary**: Clear UI separation:
   - **CTO tab > Linear panel**: Shows what CTO is working on from Linear. Issues assigned, in-progress missions, completed items. CTO-initiated actions (dispatch, comment, status update).
-  - **Automations tab > Linear triggers**: Shows automation rules that fire on Linear events. Trigger configuration (on issue created, on label added, on priority changed). These rules create missions that the CTO then manages.
-  - **Shared state**: Both surfaces read from the same `linear_sync_state` table. No conflicting writes — automations create missions, CTO manages them.
+  - **Automations tab > workflow rules**: Shows local, GitHub, and generic webhook rules plus Linear post-actions. Automations can post to Linear, but do not own Linear issue intake or routing.
+  - **Shared state**: Both surfaces read from shared project state, but CTO owns Linear intake/routing while Automations owns programmable non-Linear triggers and follow-up actions.
 
 - **Error recovery**: If Linear API returns 401 (token revoked), show a banner: "Linear connection lost — [Reconnect]". If rate limited, show remaining cooldown. If webhook delivery fails, show retry count and manual retry button.
 
@@ -183,19 +183,18 @@ Services instantiated in `main.ts`. `ctoOnboardingService` gates CTO activation 
 ##### Renderer Components
 
 ```
-CtoOnboardingWizard.tsx       — Multi-step onboarding modal
+CtoPage.tsx                   — Consolidated CTO shell with onboarding, team, memory, Linear, and settings tabs
+OnboardingWizard.tsx          — Multi-step onboarding modal
+OnboardingBanner.tsx          — Persistent setup reminder / resume surface
 IdentityEditor.tsx            — Form-based identity editor (shared between CTO and workers)
-LinearConnectionPanel.tsx     — Guided Linear connection flow with status indicator
-AgentStatusBadge.tsx          — Shared status badge component
-MemoryEntryCard.tsx           — Shared memory entry display component
-TimelineEntry.tsx             — Shared timeline event component
+LinearSyncPanel.tsx           — Linear sync controls, status, and routing configuration
+CtoMemoryBrowser.tsx          — Memory inspection and management surface
 WorkerCreationWizard.tsx      — Template-based worker creation
-WorkerDetailPanel.tsx         — Worker detail slide-out with tabs
-WorkerActivityFeed.tsx        — Worker activity timeline
-TeamPanelRedesign.tsx         — Consolidated worker management surface
+WorkerDetailSlideOut.tsx      — Worker detail slide-out with tabs
+TeamPanel.tsx                 — Consolidated worker management surface
 ```
 
-**Implementation status (2026-03-10):** Partially implemented. Remaining work is primarily onboarding/polish plus richer management and activity surfaces.
+**Implementation status (2026-03-11):** Partially implemented. Remaining work is primarily onboarding/polish plus richer management/activity surfaces rather than greenfield UI construction.
 
 **Tests:**
 - CTO onboarding: first-run detection shows wizard, completed steps persisted, skip behavior activates CTO with defaults, re-run from settings resets onboarding state.

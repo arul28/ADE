@@ -71,9 +71,9 @@ const TEMPLATES: (AutomationTemplate & { draft: Omit<AutomationRuleDraft, "id"> 
   {
     id: "bug-triage",
     name: "Bug Triage",
-    description: "Predict merge conflicts and update packs on every commit to detect issues early.",
+    description: "Predict merge conflicts on every commit and route actionable follow-up early.",
     triggerType: "commit",
-    actionSummary: "predict-conflicts, update-packs",
+    actionSummary: "predict-conflicts",
     icon: Bug,
     draft: {
       name: "Bug Triage on Commit",
@@ -92,16 +92,16 @@ const TEMPLATES: (AutomationTemplate & { draft: Omit<AutomationRuleDraft, "id"> 
       outputs: { disposition: "open-task", createArtifact: true },
       verification: { verifyBeforePublish: false, mode: "intervention" },
       billingCode: "auto:bug-triage",
-      actions: [{ type: "predict-conflicts" } as any, { type: "update-packs" } as any],
-      legacyActions: [{ type: "predict-conflicts" } as any, { type: "update-packs" } as any],
+      actions: [{ type: "predict-conflicts" } as any],
+      legacyActions: [{ type: "predict-conflicts" } as any],
     },
   },
   {
     id: "routine-tasks",
     name: "Routine Tasks",
-    description: "Scheduled daily at 9 AM: update packs, run tests, predict conflicts.",
+    description: "Scheduled weekday sweep for regressions and conflict risk.",
     triggerType: "schedule",
-    actionSummary: "update-packs, run-tests, predict-conflicts",
+    actionSummary: "run-tests, predict-conflicts",
     icon: CheckSquare,
     draft: {
       name: "Daily Routine (9 AM)",
@@ -121,12 +121,10 @@ const TEMPLATES: (AutomationTemplate & { draft: Omit<AutomationRuleDraft, "id"> 
       verification: { verifyBeforePublish: false, mode: "intervention" },
       billingCode: "auto:daily-routine",
       actions: [
-        { type: "update-packs" } as any,
         { type: "run-tests", suite: "" } as any,
         { type: "predict-conflicts" } as any,
       ],
       legacyActions: [
-        { type: "update-packs" } as any,
         { type: "run-tests", suite: "" } as any,
         { type: "predict-conflicts" } as any,
       ],
@@ -135,9 +133,9 @@ const TEMPLATES: (AutomationTemplate & { draft: Omit<AutomationRuleDraft, "id"> 
   {
     id: "session-cleanup",
     name: "Session Cleanup",
-    description: "Update packs when a coding session ends. Keeps dependency state fresh.",
+    description: "Mission-powered session wrap-up that records follow-up risk and next steps.",
     triggerType: "session-end",
-    actionSummary: "update-packs",
+    actionSummary: "mission-powered review",
     icon: Wrench,
     draft: {
       name: "Session Cleanup",
@@ -156,8 +154,8 @@ const TEMPLATES: (AutomationTemplate & { draft: Omit<AutomationRuleDraft, "id"> 
       outputs: { disposition: "comment-only", createArtifact: true },
       verification: { verifyBeforePublish: false, mode: "intervention" },
       billingCode: "auto:session-cleanup",
-      actions: [{ type: "update-packs" } as any],
-      legacyActions: [{ type: "update-packs" } as any],
+      actions: [],
+      legacyActions: [],
     },
   },
   {

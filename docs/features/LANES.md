@@ -866,28 +866,19 @@ See also: `docs/final-plan/phase-5.md`
 
 ---
 
-## Compute Backend
+## Runtime Placement
 
-Lanes can execute on different compute backends:
+The older per-lane "compute backend" concept is no longer the active ADE model.
 
-| Backend  | Description                           | Use Case                           |
-|----------|---------------------------------------|------------------------------------|
-| Local    | Default. Processes run on host machine | Solo development, full control     |
-| VPS      | Remote relay via ADE machine registry  | Night Shift agents, remote capacity |
-| Daytona  | Opt-in cloud sandbox via Daytona SDK   | Isolated environments, CI-like     |
-
-Backend selection can be configured:
-- **Per-project**: Default backend in project settings
-- **Per-lane**: Override on lane creation
-- **Per-mission**: Orchestrator selects backend based on mission requirements
-
-Note: Daytona is always opt-in and requires API key configuration in Settings → Compute Backends.
+- **Current baseline**: lanes run on the active ADE machine alongside local worktrees, terminals, and previews.
+- **Phase 6 direction**: other devices become viewers/controllers of the brain machine rather than choosing a different backend per lane.
+- **Dropped direction**: Daytona-style managed cloud backends are not part of the active lanes roadmap.
 
 ---
 
 ## Lane Overlay Policies
 
-The existing `laneOverlayMatcher.ts` system provides a foundation for lane-specific configuration. Overlay policies define per-lane overrides for environment variables, port mappings, proxy settings, and compute backend selection. These policies are evaluated at lane creation time and can be dynamically updated as lane configuration changes.
+The existing `laneOverlayMatcher.ts` system provides a foundation for lane-specific configuration. Overlay policies define per-lane overrides for environment variables, port mappings, proxy settings, and other lane-local runtime behavior. These policies are evaluated at lane creation time and can be dynamically updated as lane configuration changes.
 
 ---
 

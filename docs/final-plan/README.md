@@ -25,7 +25,7 @@ The following phase files are superseded by the new roadmap and should be consid
 
 ---
 
-Last updated: 2026-03-10
+Last updated: 2026-03-11
 Owner: ADE
 Status: Active
 
@@ -121,9 +121,9 @@ Baseline derived from code in `apps/desktop`.
 
 ### 2.4 Confirmed gaps
 
-Not implemented yet:
+Not fully implemented yet:
 
-- Automations platform + Night Shift in Automations (templates, external triggers, executor routing, overnight execution)
+- Automations completion work in `/automations` (external webhook ingress, executor follow-through, and overnight review/polish remain)
 - Multi-device sync (cr-sqlite + WebSocket real-time replication)
 - Device registry and brain management (which machine runs agents)
 - iOS companion app (remote control, push notifications, mission monitoring)
@@ -194,12 +194,12 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Missions Home Dashboard (aggregate stats, history) | Phase 3 | Phase 3 | Implemented (Task 4) |
 | Budget Management (subscription + API key) | Phase 3 | Phase 3 | Implemented (Task 6) |
 | CTO Agent (persistent project-aware assistant) | Phase 4 | Phase 3 | Complete (W1) |
-| Automations Platform + Night Shift | Phase 4 | Phase 3 | Planned |
-| Learning Packs (auto-curated knowledge) | Phase 4 | Phase 3 | Planned |
+| Automations Platform + Night Shift | Phase 4 | Phase 3 | Partially implemented (W5a complete; W5b partially implemented) |
+| Learning Packs (auto-curated knowledge) | Phase 4 | Phase 3 | Partially implemented (W7c core pipeline shipped; advanced capture pending) |
 | Memory Architecture Upgrade (vector search, tiers) | Phase 4 | Phase 3 | Mostly complete (W6, W6½, W7a shipped; W7b mostly implemented; W7c core pipeline implemented with advanced capture still pending) |
 | Candidate Memory Triage Automation (auto-promote + stale archive sweep) | Phase 4 | Phase 3 memory lifecycle baseline | Complete (W6 + W6½) |
 | Mem0 Sidecar Integration (optional semantic index) | Post-Phase 4 | Phase 4 memory foundation | Deferred (evaluate after native memory upgrade + CTO baseline) |
-| Skill Library (recipe extraction + `.claude/skills/` materialization) | Phase 4 | Phase 4 Learning Packs + PROJ-039 viewer baseline | Planned (covered in Phase 4 W7) |
+| Skill Library (recipe extraction + `.claude/skills/` materialization) | Phase 4 | Phase 4 Learning Packs + PROJ-039 viewer baseline | Partially implemented (W7c core shipped; advanced capture pending) |
 | .ade/ Portable State (git-tracked configs) | Phase 4 | Phase 3 | Planned |
 | .ade/ State Sync (cr-sqlite database sync) | Phase 6 | Phase 4 | Planned |
 | External MCP Consumption | Phase 4 | Phase 3 | Planned |
@@ -207,15 +207,15 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Worker Agents & Org Chart | Phase 4 | Phase 4 W1 | Complete (W2) |
 | Heartbeat & Activation System (coalescing, deferred promotion) | Phase 4 | Phase 4 W1 | Complete (W3) |
 | Bidirectional Linear Sync (polling, auto-dispatch, reconciliation) | Phase 4 | Phase 4 W2 + W3 | Complete (W4) |
-| Mission Templates (reusable archetypes in .ade/templates/) | Phase 4 | Phase 4 W4 | Planned |
+| Mission Templates (reusable archetypes in .ade/templates/) | Phase 4 | Phase 4 W4 | Implemented baseline (`linearTemplateService` + `.ade/templates/` loading) |
 | Per-Agent Monthly Budgets (auto-pause enforcement) | Phase 4 | Phase 4 W2 | Complete (W2) |
 | Multi-Adapter Pattern (claude-local, codex-local, openclaw, process) | Phase 4 | Phase 4 W2 | Complete (W2) |
 | Agent Config Versioning (revision tracking, rollback) | Phase 4 | Phase 4 W2 | Complete (W2) |
 | Task Session Persistence (per-task context across invocations) | Phase 4 | Phase 4 W2 | Complete (W2) |
-| Issue Tracker Abstraction (Linear first, GitHub Issues planned) | Phase 4 | Phase 4 W4 | Planned |
+| Issue Tracker Abstraction (Linear first, GitHub Issues planned) | Phase 4 | Phase 4 W4 | Implemented baseline (`issueTracker.ts` + `linearIssueTracker.ts`) |
 | Pre-compaction Memory Flush | Phase 4 | Phase 3 (HW6) | Complete (W6½) |
 | Memory Consolidation | Phase 4 | Phase 3 | Complete (W6½) |
-| Episodic + Procedural Memory | Phase 4 | Phase 3 | Planned |
+| Episodic + Procedural Memory | Phase 4 | Phase 3 | Partially implemented (episodic summaries + procedural extraction shipped; advanced capture pending) |
 | Play runtime isolation | Phase 5 | Phase 3 (parallel with Phase 4) | Complete |
 | cr-sqlite multi-device sync | Phase 6 | Phase 4 | Planned |
 | Device registry & brain management | Phase 6 | Phase 4 | Planned |
