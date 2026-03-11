@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
-import { GearSix, GitBranch, BookOpenText, Robot, Terminal, Keyboard, Lightning, Plugs, SquaresFour, Stack, Globe, Database, Plus, X } from "@phosphor-icons/react";
+import { Brain, GearSix, GitBranch, BookOpenText, Robot, Terminal, Keyboard, Lightning, Plugs, SquaresFour, Stack, Globe, Database, Plus, X } from "@phosphor-icons/react";
 import { GeneralSection } from "../settings/GeneralSection";
 import { ProvidersSection } from "../settings/ProvidersSection";
 import { GitHubSection } from "../settings/GitHubSection";
@@ -13,6 +13,7 @@ import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
 import { ProxyAndPreviewSection } from "../settings/ProxyAndPreviewSection";
 import { DiagnosticsDashboardSection } from "../settings/DiagnosticsDashboardSection";
 import { MemoryHealthTab } from "../settings/MemoryHealthTab";
+import { AiFeaturesSection } from "../settings/AiFeaturesSection";
 import { COLORS, MONO_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton, dangerButton } from "../lanes/laneDesignTokens";
 import { ConfirmDialog, PromptDialog, useConfirmDialog, usePromptDialog } from "../shared/InlineDialogs";
 import type { PhaseProfile, PhaseCard } from "../../../shared/types";
@@ -21,6 +22,7 @@ import { PhaseCardEditor } from "../missions/PhaseCardEditor";
 const SECTIONS = [
   { id: "general", label: "General", icon: GearSix },
   { id: "providers", label: "Providers", icon: Plugs },
+  { id: "ai", label: "AI", icon: Brain },
   { id: "github", label: "GitHub", icon: GitBranch },
   { id: "memory", label: "Memory", icon: Database },
   { id: "context", label: "Context & Docs", icon: BookOpenText },
@@ -521,6 +523,7 @@ export function SettingsPage() {
       >
         {section === "general" && <GeneralSection />}
         {section === "providers" && <ProvidersSection />}
+        {section === "ai" && <AiFeaturesSection />}
         {section === "github" && <GitHubSection />}
         {section === "memory" && <MemoryHealthTab />}
         {section === "context" && <ContextSection />}
