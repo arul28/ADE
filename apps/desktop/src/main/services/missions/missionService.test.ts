@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
 import { createMissionService } from "./missionService";
 
@@ -163,6 +163,46 @@ describe("missionService lifecycle", () => {
     const detail = service.get(created.id);
     expect(detail?.status).toBe("in_progress");
     expect(detail?.openInterventions).toBe(1);
+
+    dispose();
+  });
+
+  it("emits the resolved intervention through the resolution hook", async () => {
+    const { db, projectId, laneId, dispose } = await createDbWithProjectAndLane();
+    const onInterventionResolved = vi.fn();
+    const service = createMissionService({ db, projectId, onInterventionResolved });
+
+    const created = service.create({
+      prompt: "Wait for user guidance before resuming work.",
+      laneId,
+    });
+
+    service.update({ missionId: created.id, status: "in_progress" });
+    const intervention = service.addIntervention({
+      missionId: created.id,
+      interventionType: "manual_input",
+      title: "Clarify rollout rule",
+      body: "Do we keep the old rollout guard?",
+    });
+
+    service.resolveIntervention({
+      missionId: created.id,
+      interventionId: intervention.id,
+      status: "resolved",
+      note: "Keep the old rollout guard for now.",
+    });
+
+    expect(onInterventionResolved).toHaveBeenCalledTimes(1);
+    expect(onInterventionResolved).toHaveBeenCalledWith(
+      expect.objectContaining({
+        missionId: created.id,
+        intervention: expect.objectContaining({
+          id: intervention.id,
+          status: "resolved",
+          resolutionNote: "Keep the old rollout guard for now.",
+        }),
+      }),
+    );
 
     dispose();
   });

@@ -35,12 +35,18 @@ export function createPrPollingService({
   logger,
   prService,
   projectConfigService,
-  onEvent
+  onEvent,
+  onPullRequestsChanged
 }: {
   logger: Logger;
   prService: ReturnType<typeof createPrService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   onEvent: (event: PrEventPayload) => void;
+  onPullRequestsChanged?: (args: {
+    prs: PrSummary[];
+    changedPrs: PrSummary[];
+    polledAt: string;
+  }) => void | Promise<void>;
 }) {
   const DEFAULT_INTERVAL_MS = 25_000;
   const MIN_INTERVAL_MS = 5_000;
@@ -132,9 +138,16 @@ export function createPrPollingService({
         return;
       }
 
+      const changedPrs: PrSummary[] = [];
       for (const pr of prs) {
         const prev = lastByPrId.get(pr.id) ?? null;
         const mergeReady = pr.state === "open" && pr.checksStatus === "passing" && pr.reviewStatus === "approved";
+        const changed =
+          !prev
+          || prev.checksStatus !== pr.checksStatus
+          || prev.reviewStatus !== pr.reviewStatus
+          || prev.state !== pr.state;
+        if (changed) changedPrs.push(pr);
 
         const shouldNotify = (kind: PrNotificationKind): boolean => {
           if (pr.state !== "open" && pr.state !== "draft") return false;
@@ -174,6 +187,21 @@ export function createPrPollingService({
         });
       }
 
+      if (changedPrs.length > 0) {
+        try {
+          await onPullRequestsChanged?.({
+            prs,
+            changedPrs,
+            polledAt,
+          });
+        } catch (error) {
+          logger.warn("prs.changed_hook_failed", {
+            error: error instanceof Error ? error.message : String(error),
+            prIds: changedPrs.map((pr) => pr.id),
+          });
+        }
+      }
+
       // Drop any PRs removed from the DB.
       const seen = new Set(prs.map((pr) => pr.id));
       for (const prId of Array.from(lastByPrId.keys())) {
@@ -211,4 +239,3 @@ export function createPrPollingService({
     }
   };
 }
-
