@@ -8,133 +8,30 @@ import {
   Warning,
   Terminal,
   FileCode,
-  Wrench,
   CheckCircle,
   XCircle,
   SpinnerGap,
   Circle,
   Checks,
-  ChatCircle,
   ListChecks,
   User,
   Robot,
-  MagnifyingGlass,
-  Globe,
   Note,
-  Notepad,
-  ListBullets,
-  Scissors,
-  StopCircle,
-  PencilSimpleLine,
-  FolderOpen,
-  Cpu,
-  ArrowSquareOut,
-  ClipboardText,
 } from "@phosphor-icons/react";
-import type { Icon } from "@phosphor-icons/react";
-import type { AgentChatApprovalDecision, AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types";
+import type {
+  AgentChatApprovalDecision,
+  AgentChatEvent,
+  AgentChatEventEnvelope,
+  ChatSurfaceChipTone,
+  ChatSurfaceMode,
+} from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { formatTime } from "../../lib/format";
 import { describeToolIdentifier, replaceInternalToolNames } from "./toolPresentation";
-
-/* ── Per-tool metadata ── */
-
-type ToolMeta = {
-  label: string;
-  icon: Icon;
-  color: string;              // hex for border/badge accent
-  badgeCls: string;           // tailwind classes for the badge chip
-  category: "read" | "write" | "exec" | "web" | "plan" | "meta" | "codex";
-  /** Extract a primary "target" string from args for the summary line */
-  getTarget?: (args: Record<string, unknown>) => string | null;
-};
-
-const TOOL_META: Record<string, ToolMeta> = {
-  // ── Claude Code: read ops ──────────────────────────────────────
-  Read:         { label: "Read",       icon: FileCode,         color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300",   category: "read", getTarget: a => String(a.file_path ?? a.path ?? "") || null },
-  Grep:         { label: "Grep",       icon: MagnifyingGlass,  color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300",   category: "read", getTarget: a => String(a.pattern ?? a.path ?? "") || null },
-  Glob:         { label: "Glob",       icon: FolderOpen,       color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300",   category: "read", getTarget: a => String(a.pattern ?? "") || null },
-  LS:           { label: "LS",         icon: ListBullets,      color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300",   category: "read", getTarget: a => String(a.path ?? "") || null },
-  // ── Claude Code: write ops ─────────────────────────────────────
-  Write:        { label: "Write",      icon: Note,             color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "write", getTarget: a => String(a.file_path ?? "") || null },
-  Edit:         { label: "Edit",       icon: PencilSimpleLine, color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "write", getTarget: a => String(a.file_path ?? "") || null },
-  MultiEdit:    { label: "MultiEdit",  icon: Notepad,          color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "write", getTarget: a => String(a.file_path ?? "") || null },
-  NotebookEdit: { label: "Notebook",   icon: Notepad,          color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "write", getTarget: a => String(a.notebook_path ?? "") || null },
-  // ── Claude Code: exec ops ──────────────────────────────────────
-  Bash:         { label: "Bash",       icon: Terminal,         color: "#FBBF24", badgeCls: "border-amber-400/25 bg-amber-400/10 text-amber-300",  category: "exec", getTarget: a => String(a.command ?? "") || null },
-  BashOutput:   { label: "Output",     icon: Terminal,         color: "#FBBF24", badgeCls: "border-amber-400/25 bg-amber-400/10 text-amber-300",  category: "exec" },
-  KillBash:     { label: "Kill",       icon: StopCircle,       color: "#F87171", badgeCls: "border-red-400/25 bg-red-400/10 text-red-300",        category: "exec" },
-  // ── Claude Code: web ops ───────────────────────────────────────
-  WebSearch:    { label: "Search",     icon: MagnifyingGlass,  color: "#818CF8", badgeCls: "border-indigo-400/25 bg-indigo-400/10 text-indigo-300", category: "web", getTarget: a => String(a.query ?? "") || null },
-  WebFetch:     { label: "Fetch",      icon: Globe,            color: "#818CF8", badgeCls: "border-indigo-400/25 bg-indigo-400/10 text-indigo-300", category: "web", getTarget: a => String(a.url ?? "") || null },
-  // ── Claude Code: todo/plan ops ─────────────────────────────────
-  TodoWrite:    { label: "Todo",       icon: ClipboardText,    color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "plan" },
-  TodoRead:     { label: "Todos",      icon: ClipboardText,    color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "plan" },
-  // ── Claude Code: meta ops ──────────────────────────────────────
-  Task:         { label: "Task",       icon: Cpu,              color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "meta" },
-  ExitPlanMode: { label: "ExitPlan",   icon: ArrowSquareOut,   color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "meta" },
-  // ── Codex tools ────────────────────────────────────────────────
-  exec_command: { label: "Shell",      icon: Terminal,         color: "#FBBF24", badgeCls: "border-amber-400/25 bg-amber-400/10 text-amber-300",  category: "codex", getTarget: a => String(a.command ?? a.cmd ?? "") || null },
-  apply_patch:  { label: "Patch",      icon: Scissors,         color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "codex" },
-  update_plan:  { label: "Plan",       icon: ListChecks,       color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "codex" },
-  // ── Unified/API/local tools ────────────────────────────────────
-  readFile:     { label: "Read",       icon: FileCode,         color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "read", getTarget: a => String(a.path ?? a.file_path ?? "") || null },
-  grep:         { label: "Grep",       icon: MagnifyingGlass,  color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "read", getTarget: a => String(a.pattern ?? "") || null },
-  glob:         { label: "Glob",       icon: FolderOpen,       color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "read", getTarget: a => String(a.pattern ?? "") || null },
-  listDir:      { label: "List",       icon: FolderOpen,       color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "read", getTarget: a => String(a.path ?? "") || null },
-  gitStatus:    { label: "Git Status", icon: ClipboardText,    color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "read" },
-  gitDiff:      { label: "Git Diff",   icon: Scissors,         color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "read", getTarget: a => String(a.path ?? a.ref ?? "") || null },
-  gitLog:       { label: "Git Log",    icon: ClipboardText,    color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "read", getTarget: a => String(a.ref ?? "") || null },
-  editFile:     { label: "Edit",       icon: PencilSimpleLine, color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "write", getTarget: a => String(a.file_path ?? a.path ?? "") || null },
-  writeFile:    { label: "Write",      icon: Note,             color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "write", getTarget: a => String(a.file_path ?? a.path ?? "") || null },
-  bash:         { label: "Shell",      icon: Terminal,         color: "#FBBF24", badgeCls: "border-amber-400/25 bg-amber-400/10 text-amber-300", category: "exec", getTarget: a => String(a.command ?? "") || null },
-  askUser:      { label: "Ask User",   icon: ChatCircle,       color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "meta", getTarget: a => String(a.question ?? "") || null },
-  memorySearch: { label: "Memory",     icon: Brain,            color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "meta", getTarget: a => String(a.query ?? "") || null },
-  memoryAdd:    { label: "Memory Add", icon: Brain,            color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "meta" },
-  memoryPin:    { label: "Memory Pin", icon: Brain,            color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "meta" },
-  memoryUpdateCore: { label: "Core Memory", icon: Brain,       color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "meta" },
-  // ── ADE orchestrator coordinator tools ────────────────────────
-  spawn_worker:         { label: "Spawn",           icon: Robot,       color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "meta", getTarget: a => String(a.name ?? a.workerId ?? "") || null },
-  request_specialist:   { label: "Specialist",      icon: User,        color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "meta", getTarget: a => String(a.role ?? a.name ?? "") || null },
-  delegate_to_subagent: { label: "Delegate",        icon: User,        color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "meta", getTarget: a => String(a.name ?? a.parentWorkerId ?? "") || null },
-  delegate_parallel:    { label: "Delegate Batch",  icon: User,        color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "meta", getTarget: a => `${Array.isArray(a.tasks) ? a.tasks.length : 0} task(s)` },
-  read_mission_status:  { label: "Mission Status",  icon: MagnifyingGlass, color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "plan" },
-  get_worker_output:    { label: "Worker Output",   icon: FileCode,    color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "plan", getTarget: a => String(a.workerId ?? "") || null },
-  revise_plan:          { label: "Revise Plan",     icon: ListChecks,  color: "#A78BFA", badgeCls: "border-violet-400/25 bg-violet-400/10 text-violet-300", category: "plan" },
-  retry_step:           { label: "Retry",           icon: ArrowSquareOut, color: "#FBBF24", badgeCls: "border-amber-400/25 bg-amber-400/10 text-amber-300", category: "meta", getTarget: a => String(a.workerId ?? "") || null },
-  skip_step:            { label: "Skip",            icon: StopCircle,   color: "#F87171", badgeCls: "border-red-400/25 bg-red-400/10 text-red-300", category: "meta", getTarget: a => String(a.workerId ?? "") || null },
-  mark_step_complete:   { label: "Mark Complete",   icon: CheckCircle,  color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "meta", getTarget: a => String(a.workerId ?? "") || null },
-  mark_step_failed:     { label: "Mark Failed",     icon: XCircle,      color: "#F87171", badgeCls: "border-red-400/25 bg-red-400/10 text-red-300", category: "meta", getTarget: a => String(a.workerId ?? "") || null },
-  message_worker:       { label: "Message",         icon: Note,         color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "meta", getTarget: a => String(a.workerId ?? a.to ?? "") || null },
-  send_message:         { label: "Message",         icon: Note,         color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "meta", getTarget: a => String(a.to ?? a.workerId ?? "") || null },
-  broadcast:            { label: "Broadcast",       icon: Note,         color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "meta" },
-  report_status:        { label: "Status",          icon: Circle,       color: "#22D3EE", badgeCls: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300", category: "meta", getTarget: a => String(a.workerId ?? "") || null },
-  report_result:        { label: "Result",          icon: CheckCircle,  color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "meta", getTarget: a => String(a.workerId ?? "") || null },
-  report_validation:    { label: "Validation",      icon: Checks,       color: "#34D399", badgeCls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300", category: "meta", getTarget: a => String(a.workerId ?? a.targetWorkerId ?? "") || null },
-};
-
-function getToolMeta(toolName: string): ToolMeta {
-  const direct = TOOL_META[toolName];
-  if (direct) return direct;
-
-  const candidateKeys = [
-    toolName.split(".").at(-1) ?? "",
-    toolName.split("__").at(-1) ?? "",
-  ].filter(Boolean);
-  for (const candidate of candidateKeys) {
-    const candidateMeta = TOOL_META[candidate];
-    if (candidateMeta) return candidateMeta;
-  }
-
-  return {
-    label: describeToolIdentifier(toolName).label,
-    icon: Wrench,
-    color: "#A78BFA",
-    badgeCls: "border-accent/25 bg-accent/10 text-accent/80",
-    category: "meta",
-  };
-}
+import { chatChipToneClass } from "./chatSurfaceTheme";
+import { ChatAttachmentTray } from "./ChatAttachmentTray";
+import { getToolMeta } from "./chatToolAppearance";
 
 function formatStructuredValue(value: unknown): string {
   if (typeof value === "string") return value;
@@ -167,6 +64,45 @@ function formatTokenCount(value: number | null | undefined): string | null {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
   return String(Math.round(value));
+}
+
+const GLASS_CARD_CLASS =
+  "overflow-hidden rounded-[var(--chat-radius-card)] border border-white/6 bg-[linear-gradient(180deg,rgba(255,255,255,0.06),rgba(255,255,255,0.025))] shadow-[var(--chat-card-shadow)] backdrop-blur-md";
+
+const RECESSED_BLOCK_CLASS =
+  "overflow-auto whitespace-pre-wrap break-words rounded-[calc(var(--chat-radius-card)-6px)] border border-white/6 bg-black/20 px-4 py-3 font-mono text-[11px] leading-[1.55] text-fg/70";
+
+function toolSourceChip(toolName: string): { label: string; tone: ChatSurfaceChipTone } | null {
+  if (toolName.startsWith("mcp__")) {
+    const [, namespace] = toolName.split("__");
+    const label = namespace ? `${namespace.replace(/[_-]/g, " ")} MCP` : "MCP";
+    return { label, tone: "info" };
+  }
+  if (toolName.startsWith("functions.")) {
+    return { label: "Local tool", tone: "muted" };
+  }
+  if (toolName.startsWith("multi_tool_use.")) {
+    return { label: "Parallel", tone: "accent" };
+  }
+  if (toolName.includes(".")) {
+    const namespace = toolName.split(".")[0]?.trim();
+    if (namespace) return { label: namespace.replace(/[_-]/g, " "), tone: "muted" };
+  }
+  return null;
+}
+
+function messageCardStyle(accentAlpha = 0.18): React.CSSProperties {
+  return {
+    borderColor: "color-mix(in srgb, var(--chat-accent) 18%, transparent)",
+    background: `linear-gradient(180deg, color-mix(in srgb, var(--chat-accent) ${Math.round(accentAlpha * 100)}%, rgba(255,255,255,0.05)), rgba(255,255,255,0.03))`,
+  };
+}
+
+function surfaceInlineCardStyle(): React.CSSProperties {
+  return {
+    borderColor: "color-mix(in srgb, var(--chat-accent) 14%, rgba(255,255,255,0.05))",
+    background: "linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02))",
+  };
 }
 
 type RenderEnvelope = {
@@ -416,12 +352,12 @@ function PlanStepIcon({ status }: { status: string }) {
 
 const MarkdownBlock = React.memo(function MarkdownBlock({ markdown }: { markdown: string }) {
   return (
-    <div className="prose max-w-none text-[12.5px] leading-[1.65] text-fg/80 prose-headings:mb-2 prose-headings:mt-3 prose-headings:font-sans prose-headings:text-fg/85 prose-p:my-1.5 prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0 prose-strong:text-fg/90">
+    <div className="prose max-w-none text-[12.5px] leading-[1.68] text-fg/82 prose-headings:mb-2 prose-headings:mt-3 prose-headings:font-sans prose-headings:text-fg/88 prose-p:my-1.5 prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0 prose-strong:text-fg/92">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
           pre: ({ children }) => (
-            <pre className="my-2.5 overflow-auto border border-border/25 bg-surface-recessed/90 px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/75">
+            <pre className={cn("my-2.5 max-h-80", RECESSED_BLOCK_CLASS)}>
               {children}
             </pre>
           ),
@@ -431,7 +367,7 @@ const MarkdownBlock = React.memo(function MarkdownBlock({ markdown }: { markdown
             return isBlock ? (
               <code className="font-mono text-[11px] text-fg/75">{children}</code>
             ) : (
-              <code className="border border-border/20 bg-surface-recessed/90 px-1.5 py-0.5 font-mono text-[11px] text-accent/80">{children}</code>
+              <code className="rounded-[var(--chat-radius-pill)] border border-white/8 bg-black/20 px-1.5 py-0.5 font-mono text-[11px] text-accent/80">{children}</code>
             );
           },
           a: ({ children, href }) => (
@@ -467,16 +403,16 @@ function CollapsibleCard({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className={cn("border transition-colors", className)}>
+    <div className={cn(GLASS_CARD_CLASS, "transition-colors", className)} style={surfaceInlineCardStyle()}>
       <button
         type="button"
-        className="flex w-full items-center gap-2 px-3 py-2 text-left font-mono text-[11px]"
+        className="flex w-full items-center gap-2 px-3.5 py-3 text-left font-mono text-[11px]"
         onClick={() => setOpen((v) => !v)}
       >
         {open ? <CaretDown size={10} weight="bold" className="text-muted-fg/60" /> : <CaretRight size={10} weight="bold" className="text-muted-fg/60" />}
         <div className="flex flex-1 flex-wrap items-center gap-2">{summary}</div>
       </button>
-      {open ? <div className="border-t border-border/15 px-3 pb-3 pt-2">{children}</div> : null}
+      {open ? <div className="border-t border-white/6 px-3.5 pb-3.5 pt-2.5">{children}</div> : null}
     </div>
   );
 }
@@ -486,7 +422,7 @@ function CollapsibleCard({
 function DiffPreview({ diff }: { diff: string }) {
   const lines = diff.split(/\r?\n/);
   return (
-    <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words border border-border/15 bg-surface-recessed/90 px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/70">
+    <pre className={cn("max-h-80", RECESSED_BLOCK_CLASS)}>
       {lines.map((line, index) => {
         let tone = "text-fg/70";
         let bg = "";
@@ -525,13 +461,18 @@ function ActivityIndicator({ activity, detail }: { activity: string; detail?: st
   const displayText = detail ? `${label}: ${replaceInternalToolNames(detail)}` : `${label}...`;
 
   return (
-    <div className="flex items-center gap-3 border-l border-l-accent/20 px-4 py-2.5 font-mono text-[11px] text-fg/60">
-      <div className="flex items-center gap-1">
-        <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:0ms]" />
-        <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:150ms]" />
-        <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:300ms]" />
+    <div className={cn(GLASS_CARD_CLASS, "flex items-center gap-3 px-4 py-3 font-mono text-[11px] text-fg/68")} style={surfaceInlineCardStyle()}>
+      <div className="flex h-7 w-7 items-center justify-center rounded-[var(--chat-radius-pill)] border border-white/6 bg-black/15">
+        <div className="flex items-center gap-1">
+          <span className="h-1 w-1 animate-bounce rounded-full bg-[var(--chat-accent)] [animation-delay:0ms]" />
+          <span className="h-1 w-1 animate-bounce rounded-full bg-[var(--chat-accent)] [animation-delay:150ms]" />
+          <span className="h-1 w-1 animate-bounce rounded-full bg-[var(--chat-accent)] [animation-delay:300ms]" />
+        </div>
       </div>
-      <span className="truncate font-medium">{displayText}</span>
+      <div className="min-w-0 flex-1">
+        <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-[var(--chat-accent)]">Live</div>
+        <span className="block truncate font-medium">{displayText}</span>
+      </div>
     </div>
   );
 }
@@ -545,6 +486,7 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
   const meta = getToolMeta(event.tool);
   const ToolIcon = meta.icon;
   const toolDisplay = describeToolIdentifier(event.tool);
+  const sourceChip = toolSourceChip(event.tool);
   const resultStr = formatStructuredValue(event.result);
   const isTruncated = resultStr.length > TOOL_RESULT_TRUNCATE_LIMIT;
   const displayStr = !expanded && isTruncated ? `${resultStr.slice(0, TOOL_RESULT_TRUNCATE_LIMIT)}...` : resultStr;
@@ -560,6 +502,11 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
             <ToolIcon size={11} weight="bold" />
             {meta.label}
           </span>
+          {sourceChip ? (
+            <span className={cn("inline-flex items-center border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.16em]", chatChipToneClass(sourceChip.tone))}>
+              {sourceChip.label}
+            </span>
+          ) : null}
           {toolDisplay.secondaryLabel ? (
             <span className="font-bold text-fg/75">{toolDisplay.secondaryLabel}</span>
           ) : null}
@@ -574,11 +521,9 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
           ) : null}
         </div>
       }
-      className="border-border/10"
+      className="border-transparent"
     >
-      <pre
-        className="max-h-52 overflow-auto whitespace-pre-wrap break-words border border-border/10 bg-surface-recessed/90 px-4 py-3 font-mono text-[11px] text-fg/65"
-      >
+      <pre className={cn("max-h-52", RECESSED_BLOCK_CLASS)}>
         {displayStr}
       </pre>
       {isTruncated ? (
@@ -614,30 +559,27 @@ function renderEvent(
   options?: {
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
     turnModelLabel?: string | null;
-    compactResolverView?: boolean;
+    surfaceMode?: ChatSurfaceMode;
   }
 ) {
   const event = envelope.event;
+  const isResolverMode = options?.surfaceMode === "resolver";
 
   /* ── User message ── */
   if (event.type === "user_message") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[80%] border border-accent/12 bg-accent/[0.05] px-4 py-2.5">
-          <div className="mb-1.5 flex items-center gap-2">
-            <User size={11} weight="bold" className="text-accent/50" />
-            <span className="font-mono text-[9px] font-bold uppercase tracking-[1.5px] text-accent/40">You</span>
+        <div className={cn(GLASS_CARD_CLASS, "max-w-[82%] px-4 py-3")} style={messageCardStyle(0.18)}>
+          <div className="mb-2 flex items-center gap-2">
+            <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-white/8 bg-black/15">
+              <User size={11} weight="bold" className="text-[var(--chat-accent)]" />
+            </span>
+            <span className="font-mono text-[9px] font-bold uppercase tracking-[1.5px] text-[var(--chat-accent)]">You</span>
             <span className="ml-auto font-mono text-[9px] text-muted-fg/25">{formatTime(envelope.timestamp)}</span>
           </div>
           <div className="whitespace-pre-wrap break-words text-[12.5px] leading-[1.65] text-fg/85">{event.text}</div>
           {event.attachments?.length ? (
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {event.attachments.map((attachment, index) => (
-                <span key={`${attachment.path}:${index}`} className="inline-flex items-center gap-1 border border-accent/15 bg-accent/[0.04] px-2 py-0.5 font-mono text-[9px] text-fg/45">
-                  {attachment.type}: {attachment.path}
-                </span>
-              ))}
-            </div>
+            <ChatAttachmentTray attachments={event.attachments} mode={options?.surfaceMode ?? "standard"} className="mt-1 px-0 py-0" />
           ) : null}
         </div>
       </div>
@@ -648,15 +590,17 @@ function renderEvent(
   if (event.type === "text") {
     return (
       <div className="flex justify-start">
-        <div className="max-w-[92%] border-l border-accent/15 bg-card/30 py-2.5 pl-4 pr-3">
-          <div className="mb-1.5 flex items-center gap-2">
-            <Robot size={11} weight="bold" className="text-accent/40" />
-            <span className="font-mono text-[9px] font-bold uppercase tracking-[1.5px] text-accent/30">Agent</span>
+        <div className={cn(GLASS_CARD_CLASS, "max-w-[94%] px-4 py-3")} style={surfaceInlineCardStyle()}>
+          <div className="mb-2 flex items-center gap-2">
+            <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-white/8 bg-black/15">
+              <Robot size={11} weight="bold" className="text-[var(--chat-accent)]" />
+            </span>
+            <span className="font-mono text-[9px] font-bold uppercase tracking-[1.5px] text-[var(--chat-accent)]">Agent</span>
             <span className="ml-auto font-mono text-[9px] text-muted-fg/20">{formatTime(envelope.timestamp)}</span>
           </div>
           <MarkdownBlock markdown={event.text} />
           {options?.turnModelLabel ? (
-            <div className="mt-2 border-t border-border/10 pt-1.5 font-mono text-[9px] uppercase tracking-[1.4px] text-muted-fg/25">
+            <div className="mt-3 border-t border-white/6 pt-2 font-mono text-[9px] uppercase tracking-[1.4px] text-muted-fg/30">
               {options.turnModelLabel}
             </div>
           ) : null}
@@ -717,7 +661,7 @@ function renderEvent(
     }
 
     return (
-      <div className="border border-amber-500/10 bg-amber-500/[0.02] p-3">
+      <div className={cn(GLASS_CARD_CLASS, "p-3")} style={surfaceInlineCardStyle()}>
         <div className="mb-2">{commandHeader}</div>
         {commandBody}
       </div>
@@ -742,7 +686,7 @@ function renderEvent(
       <CollapsibleCard
         defaultOpen={!hasDiff || event.diff.split("\n").length <= 20}
         summary={summary}
-        className="border-emerald-500/10"
+        className="border-transparent"
       >
         {hasDiff ? (
           <DiffPreview diff={event.diff} />
@@ -756,10 +700,12 @@ function renderEvent(
   /* ── Plan ── */
   if (event.type === "plan") {
     return (
-      <div className="border border-violet-500/10 bg-violet-500/[0.02] p-4">
+      <div className={cn(GLASS_CARD_CLASS, "p-4")} style={surfaceInlineCardStyle()}>
         <div className="mb-3 flex items-center gap-2">
-          <ListChecks size={13} weight="bold" className="text-violet-400/60" />
-          <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-violet-400/60">Plan</span>
+          <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-violet-400/18 bg-violet-500/[0.1]">
+            <ListChecks size={13} weight="bold" className="text-violet-300/80" />
+          </span>
+          <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-violet-300/80">Plan</span>
         </div>
         <div className="space-y-1">
           {event.steps.length ? (
@@ -793,7 +739,7 @@ function renderEvent(
     const displayReasoning = reasoningText.length > 0 ? event.text : "Thinking...";
     return (
       <CollapsibleCard
-        defaultOpen={!options?.compactResolverView}
+        defaultOpen={!isResolverMode}
         summary={
           <div className="flex items-center gap-2 font-mono text-[11px]">
             <span className="inline-flex h-5 w-5 items-center justify-center border border-violet-500/18 bg-violet-500/[0.08]">
@@ -802,7 +748,7 @@ function renderEvent(
             <span className="font-bold uppercase tracking-[0.16em] text-violet-300/75">Reasoning</span>
           </div>
         }
-        className="border-violet-500/10"
+        className="border-transparent"
       >
         <div className="text-fg/65">
           <MarkdownBlock markdown={displayReasoning} />
@@ -821,6 +767,7 @@ function renderEvent(
     const meta = getToolMeta(event.tool);
     const ToolIcon = meta.icon;
     const toolDisplay = describeToolIdentifier(event.tool);
+    const sourceChip = toolSourceChip(event.tool);
     const args = readRecord(event.args) ?? {};
     const resultText = event.result === undefined ? null : formatStructuredValue(event.result);
     const targetLine = meta.getTarget ? meta.getTarget(args) : null;
@@ -837,6 +784,11 @@ function renderEvent(
               <ToolIcon size={11} weight="bold" />
               {meta.label}
             </span>
+            {sourceChip ? (
+              <span className={cn("inline-flex items-center border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.16em]", chatChipToneClass(sourceChip.tone))}>
+                {sourceChip.label}
+              </span>
+            ) : null}
             {secondaryLabel ? <span className="flex-1 truncate text-[10px] text-fg/45">{secondaryLabel}</span> : null}
             {event.parentItemId ? (
               <span className="border border-violet-500/18 bg-violet-500/[0.08] px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.16em] text-violet-300/80">
@@ -858,11 +810,11 @@ function renderEvent(
           <div>
             <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-fg/35">Arguments</div>
             {argCount ? (
-              <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words border border-border/10 bg-surface-recessed/90 px-4 py-3 font-mono text-[11px] leading-[1.55] text-fg/65">
+              <pre className={cn("max-h-52", RECESSED_BLOCK_CLASS)}>
                 {formatStructuredValue(args)}
               </pre>
             ) : (
-              <div className="border border-border/10 bg-surface-recessed/90 px-4 py-2 font-mono text-[10px] text-muted-fg/40">
+              <div className="rounded-[calc(var(--chat-radius-card)-6px)] border border-white/6 bg-black/20 px-4 py-2 font-mono text-[10px] text-muted-fg/40">
                 No arguments
               </div>
             )}
@@ -870,7 +822,7 @@ function renderEvent(
           {resultText ? (
             <div>
               <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-fg/35">Result</div>
-              <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words border border-border/10 bg-surface-recessed/90 px-4 py-3 font-mono text-[11px] leading-[1.55] text-fg/65">
+              <pre className={cn("max-h-52", RECESSED_BLOCK_CLASS)}>
                 {resultText}
               </pre>
             </div>
@@ -884,6 +836,7 @@ function renderEvent(
     const meta = getToolMeta(event.tool);
     const ToolIcon = meta.icon;
     const toolDisplay = describeToolIdentifier(event.tool);
+    const sourceChip = toolSourceChip(event.tool);
     const args = event.args as Record<string, unknown> | null;
     const safeArgs = args && typeof args === "object" ? args : {};
 
@@ -934,6 +887,11 @@ function renderEvent(
               <ToolIcon size={11} weight="bold" />
               {meta.label}
             </span>
+            {sourceChip ? (
+              <span className={cn("inline-flex items-center border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.16em]", chatChipToneClass(sourceChip.tone))}>
+                {sourceChip.label}
+              </span>
+            ) : null}
             {secondaryLabel ? (
               <span className="flex-1 truncate text-[10px] text-fg/45">{secondaryLabel}</span>
             ) : null}
@@ -964,7 +922,7 @@ function renderEvent(
     const isAskUser = (normalizedTool === "askuser" || normalizedTool === "ask_user") && question.length > 0;
     const detailText = event.detail == null || isAskUser ? "" : formatStructuredValue(event.detail);
     return (
-      <div className="border border-amber-500/12 bg-amber-500/[0.02] p-4">
+      <div className={cn(GLASS_CARD_CLASS, "p-4")} style={surfaceInlineCardStyle()}>
         <div className="mb-2 flex items-center gap-2">
           <Warning size={13} weight="bold" className="text-amber-500" />
           <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-fg/85">
@@ -978,9 +936,9 @@ function renderEvent(
             <CollapsibleCard
               defaultOpen={false}
               summary={<span className="font-mono text-[10px] uppercase tracking-wider text-amber-300/70">Request Details</span>}
-              className="border-amber-500/10 bg-surface/35"
+              className="border-transparent bg-surface/35"
             >
-              <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words border border-border/10 bg-surface-recessed/90 px-4 py-3 font-mono text-[11px] leading-[1.55] text-fg/65">
+              <pre className={cn("max-h-52", RECESSED_BLOCK_CLASS)}>
                 {detailText}
               </pre>
             </CollapsibleCard>
@@ -1030,7 +988,7 @@ function renderEvent(
   /* ── Error ── */
   if (event.type === "error") {
     return (
-      <div className="border border-red-500/12 bg-red-500/[0.02] p-4">
+      <div className={cn(GLASS_CARD_CLASS, "border-red-500/12 p-4")} style={surfaceInlineCardStyle()}>
         <div className="mb-2 flex items-center gap-2">
           <Warning size={13} weight="bold" className="text-red-500" />
           <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-fg/85">Error</span>
@@ -1060,7 +1018,7 @@ function renderEvent(
     return (
       <div
         className={cn(
-          "flex items-center gap-2 border px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em]",
+          "flex items-center gap-2 rounded-[var(--chat-radius-pill)] border px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em]",
           isFailure
             ? "border-red-500/14 bg-red-500/[0.05] text-red-300"
             : isInterrupted
@@ -1091,7 +1049,7 @@ function renderEvent(
         : "border-amber-500/15 bg-amber-500/[0.05] text-amber-300";
 
     return (
-      <div className={cn("flex flex-wrap items-center gap-2 border px-3 py-1.5 font-mono text-[9px] uppercase tracking-[0.16em]", statusTone)}>
+      <div className={cn("flex flex-wrap items-center gap-2 rounded-[var(--chat-radius-pill)] border px-3 py-1.5 font-mono text-[9px] uppercase tracking-[0.16em]", statusTone)}>
         <span className="inline-flex items-center gap-1 border border-border/15 bg-surface/50 px-1.5 py-0.5 text-[8px] font-bold tracking-[0.18em] text-fg/55">
           Usage
         </span>
@@ -1108,9 +1066,9 @@ function renderEvent(
   /* ── Fallback ── */
   return (
     <div className="flex items-center gap-3 py-0.5">
-      <div className="h-px flex-1 bg-border/10" />
-      <span className="font-mono text-[9px] font-bold uppercase tracking-[2px] text-muted-fg/25">event</span>
-      <div className="h-px flex-1 bg-border/10" />
+      <div className="h-px flex-1 bg-white/6" />
+      <span className="rounded-[var(--chat-radius-pill)] border border-white/6 px-2 py-1 font-mono text-[9px] font-bold uppercase tracking-[2px] text-muted-fg/25">event</span>
+      <div className="h-px flex-1 bg-white/6" />
     </div>
   );
 }
@@ -1132,7 +1090,7 @@ type EventRowProps = {
   turnDividerLabel: string | null;
   turnModelLabel: string | null;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
-  compactResolverView?: boolean;
+  surfaceMode?: ChatSurfaceMode;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -1141,20 +1099,20 @@ const EventRow = React.memo(function EventRow({
   turnDividerLabel,
   turnModelLabel,
   onApproval,
-  compactResolverView = false,
+  surfaceMode = "standard",
 }: EventRowProps) {
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       {showTurnDivider && turnDividerLabel ? (
         <div className="flex items-center gap-3 py-2">
-          <div className="h-px flex-1 bg-accent/8" />
-          <span className="font-mono text-[9px] font-bold uppercase tracking-[0.22em] text-accent/28">
+          <div className="h-px flex-1 bg-[color:color-mix(in_srgb,var(--chat-accent)_20%,transparent)]" />
+          <span className="rounded-[var(--chat-radius-pill)] border border-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)] px-2 py-1 font-mono text-[9px] font-bold uppercase tracking-[0.22em] text-[color:color-mix(in_srgb,var(--chat-accent)_84%,white_16%)]">
             {turnDividerLabel}
           </span>
-          <div className="h-px flex-1 bg-accent/8" />
+          <div className="h-px flex-1 bg-[color:color-mix(in_srgb,var(--chat-accent)_20%,transparent)]" />
         </div>
       ) : null}
-      {renderEvent(envelope, { onApproval, turnModelLabel, compactResolverView })}
+      {renderEvent(envelope, { onApproval, turnModelLabel, surfaceMode })}
     </div>
   );
 });
@@ -1201,13 +1159,13 @@ export function AgentChatMessageList({
   showStreamingIndicator = false,
   className,
   onApproval,
-  compactResolverView = false
+  surfaceMode = "standard",
 }: {
   events: AgentChatEventEnvelope[];
   showStreamingIndicator?: boolean;
   className?: string;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
-  compactResolverView?: boolean;
+  surfaceMode?: ChatSurfaceMode;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const collapseCacheRef = useRef<{ events: AgentChatEventEnvelope[]; rows: RenderEnvelope[] }>({
@@ -1383,7 +1341,7 @@ export function AgentChatMessageList({
           turnDividerLabel={turnDividerLabel}
           turnModelLabel={turnModelLabel}
           onApproval={handleApproval}
-          compactResolverView={compactResolverView}
+          surfaceMode={surfaceMode}
         />
       );
     }
@@ -1396,10 +1354,10 @@ export function AgentChatMessageList({
         turnDividerLabel={turnDividerLabel}
         turnModelLabel={turnModelLabel}
         onApproval={handleApproval}
-        compactResolverView={compactResolverView}
+        surfaceMode={surfaceMode}
       />
     );
-  }, [compactResolverView, rows, turnModelLabelMap, handleApproval, handleMeasure]);
+  }, [surfaceMode, rows, turnModelLabelMap, handleApproval, handleMeasure]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -1417,13 +1375,18 @@ export function AgentChatMessageList({
     latestActivity ? (
       <ActivityIndicator activity={latestActivity.activity} detail={latestActivity.detail} />
     ) : (
-      <div className="flex items-center gap-3 border-l border-l-accent/20 px-4 py-2.5 font-mono text-[11px] text-fg/60">
-        <div className="flex items-center gap-1">
-          <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:0ms]" />
-          <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:150ms]" />
-          <span className="h-1 w-1 animate-bounce bg-accent/70 [animation-delay:300ms]" />
+      <div className={cn(GLASS_CARD_CLASS, "flex items-center gap-3 px-4 py-3 font-mono text-[11px] text-fg/65")} style={surfaceInlineCardStyle()}>
+        <div className="flex h-7 w-7 items-center justify-center rounded-[var(--chat-radius-pill)] border border-white/6 bg-black/15">
+          <div className="flex items-center gap-1">
+            <span className="h-1 w-1 animate-bounce rounded-full bg-[var(--chat-accent)] [animation-delay:0ms]" />
+            <span className="h-1 w-1 animate-bounce rounded-full bg-[var(--chat-accent)] [animation-delay:150ms]" />
+            <span className="h-1 w-1 animate-bounce rounded-full bg-[var(--chat-accent)] [animation-delay:300ms]" />
+          </div>
         </div>
-        <span className="font-medium">Streaming...</span>
+        <div>
+          <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-[var(--chat-accent)]">Streaming</div>
+          <span className="font-medium">Response in progress…</span>
+        </div>
       </div>
     )
   ) : null;
@@ -1431,16 +1394,21 @@ export function AgentChatMessageList({
   return (
     <div
       ref={scrollRef}
-      className={cn("h-full overflow-auto p-4", className)}
+      className={cn("h-full overflow-auto px-4 py-5", className)}
       onScroll={handleScroll}
     >
       {rows.length === 0 ? (
-        <div className="flex h-full flex-col items-center justify-center gap-4">
-          <div className="relative">
-            <Robot size={36} weight="thin" className="text-accent/15" />
-            <div className="absolute inset-0 animate-pulse bg-accent/[0.03] blur-xl" />
+        <div className="flex h-full flex-col items-center justify-center gap-5">
+          <div className="relative flex h-20 w-20 items-center justify-center rounded-full border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)]">
+            <Robot size={34} weight="thin" className="text-[var(--chat-accent)]" />
+            <div className="absolute inset-0 animate-pulse rounded-full bg-[var(--chat-accent-glow)] blur-2xl" />
           </div>
-          <span className="font-mono text-[10px] uppercase tracking-[2px] text-muted-fg/20">Start a conversation</span>
+          <div className="space-y-1 text-center">
+            <div className="font-sans text-[18px] font-semibold tracking-tight text-fg/78">Chat feels alive here now.</div>
+            <span className="font-mono text-[10px] uppercase tracking-[2px] text-muted-fg/28">
+              {surfaceMode === "resolver" ? "Launch the resolver to start the transcript" : "Start a conversation"}
+            </span>
+          </div>
         </div>
       ) : shouldVirtualize ? (
         /* ── Virtualized path: only render rows in / near the viewport ── */

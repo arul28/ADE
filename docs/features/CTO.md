@@ -2,9 +2,9 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-11
+> Last updated: 2026-03-12
 >
-> **Status: W1-W4, W6, W6½, W7a, W7b, and W8 complete at baseline or better; W5b/W-UX/W7c remain in follow-through** — CTO core identity, worker org chart, heartbeat/activation, bidirectional Linear sync, onboarding/memory/worker UI surfaces, the native memory upgrade, and the ADE-managed external MCP substrate are in the codebase. Remaining Phase 4 work is concentrated in automations polish, UX polish, advanced knowledge capture validation, and the still-pending W9 ecosystem bridge.
+> **Status: W1-W4, W6, W6½, W7a, W7b, W8, W9, and W10 complete at baseline or better; W5b/W-UX/W7c remain in follow-through** — CTO core identity, worker org chart, heartbeat/activation, bidirectional Linear sync, onboarding/memory/worker UI surfaces, the native memory upgrade, the ADE-managed external MCP substrate, the OpenClaw bridge, and portable `.ade/` state are in the codebase. Remaining Phase 4 work is concentrated in automations polish, UX polish, and advanced knowledge capture validation.
 
 ---
 
@@ -669,7 +669,7 @@ The bridge service runs inside ADE's Electron main process and provides bidirect
 │  │  (Vercel AI) │◄─┤  Bridge     │  │
 │  └──────────────┘  │  Service    │  │
 │                    │             │  │
-│                    │ HTTP :3742  │  │
+│                    │ HTTP :18791 │  │
 │                    │ WS client   │  │
 │                    └──────┬──────┘  │
 └───────────────────────────┼─────────┘
@@ -682,7 +682,7 @@ The bridge service runs inside ADE's Electron main process and provides bidirect
 │                           │         │
 │  ┌────────────────────────▼──────┐  │
 │  │  Gateway WS API (operator)   │  │
-│  │  + /hooks/agent endpoint     │  │
+│  │  + hook/skill ingress        │  │
 │  └──────────────┬────────────────┘  │
 │                 │                   │
 │  ┌──────────────▼──────────────┐    │
@@ -699,19 +699,18 @@ The bridge service runs inside ADE's Electron main process and provides bidirect
 
 ##### OpenClaw → CTO Flow (Inbound)
 
-1. An OpenClaw agent (e.g., the user's "main" virtual self agent) calls `sessions_send` targeting a `hook:ade-cto` session key.
-2. OpenClaw's Gateway routes to that session and triggers a `message:received` hook.
-3. The hook handler POSTs the message to ADE's bridge HTTP server at `http://127.0.0.1:3742/cto`.
-4. ADE's bridge forwards via IPC to the CTO agent, which processes the request with full project memory and MCP tool access.
-5. The bridge POSTs the CTO's reply back via `POST http://127.0.0.1:18789/hooks/agent` with the appropriate `sessionKey`.
-6. OpenClaw delivers the reply back to the original session, and the `sessions_send` call resolves.
+1. An OpenClaw agent, hook, or skill calls ADE's bridge entrypoint at `POST http://127.0.0.1:18791/openclaw/hook` for async delivery or `POST http://127.0.0.1:18791/openclaw/query` for synchronous fallback.
+2. The bridge validates the shared hook token, checks idempotency, and resolves the ADE target through one stable contract: the message plus optional `targetHint` (`cto` or `agent:<worker-slug>`).
+3. ADE forwards the request into the correct identity session via `agentChatService.ensureIdentitySession()`, injecting OpenClaw metadata as turn-scoped bridge context rather than durable memory.
+4. If the target worker is missing or unavailable, the bridge falls back to CTO and records that fallback in bridge history.
+5. Hook requests return `202` immediately. When the ADE turn completes, the bridge uses the OpenClaw Gateway WebSocket operator session to deliver the reply back to the original OpenClaw conversation.
 
 ##### CTO → OpenClaw Flow (Proactive Outbound)
 
 1. CTO (or the ADE mission orchestrator) wants to proactively message an OpenClaw agent (e.g., notify the user's virtual self about a completed mission).
-2. ADE's bridge service, connected as a WebSocket `operator` client to OpenClaw's Gateway, calls `sessions_send` directly over the WebSocket.
-3. The target OpenClaw agent receives the message in its active session.
-4. Any reply comes back as streamed `agent` events to ADE's WebSocket connection.
+2. ADE's bridge service, connected as a WebSocket `operator` client to OpenClaw's Gateway, sends over the paired operator socket.
+3. When a remembered `sessionKey` is available, the bridge uses `chat.send` to reply inside the active OpenClaw conversation. When only agent routing is known, it uses the Gateway `agent` method.
+4. Notification routes are configured per event type (`mission_complete`, `ci_broken`, `blocked_run`), and offline sends are queued locally until the operator socket reconnects.
 
 ##### OpenClaw Configuration
 
@@ -738,7 +737,7 @@ The OpenClaw side requires:
 }
 ```
 
-And a custom skill at `~/.openclaw/workspace/skills/ade-cto/SKILL.md` that teaches OpenClaw agents when and how to invoke CTO (either via the bridge HTTP endpoint or via `sessions_send` to the hook session).
+And a custom skill at `~/.openclaw/workspace/skills/ade-cto/SKILL.md` that teaches OpenClaw agents when and how to invoke CTO through the bridge HTTP entrypoint. The recommended contract is one ADE router alias plus optional `targetHint`, not a separate low-level endpoint per ADE employee.
 
 ##### Alternative: Simpler Skill-Only Bridge
 
@@ -751,9 +750,10 @@ description: Consult the ADE CTO agent for technical decisions and code question
 ---
 # ADE CTO Agent
 Use the exec tool to consult the ADE CTO:
-curl -s -X POST "http://127.0.0.1:3742/cto" \
+curl -s -X POST "http://127.0.0.1:18791/openclaw/query" \
+  -H "Authorization: Bearer $ADE_OPENCLAW_HOOK_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"question": "<question>", "context": "<context>"}'
+  -d '{"message":"<question>","targetHint":"cto","context":{"source":"openclaw-skill"}}'
 ```
 
 This approach is one-directional (OpenClaw → CTO only) but requires no WebSocket integration. The full bidirectional bridge is recommended for production use.
@@ -766,6 +766,7 @@ This approach is one-directional (OpenClaw → CTO only) but requires no WebSock
 - Sub-agents spawned via `sessions_spawn` do not get session tools — only depth-1 orchestrators can use `sessions_send`.
 - The ADE bridge must handle OpenClaw's device pairing protocol (challenge-nonce, `connect` handshake, `deviceToken` persistence) for WebSocket operator connections.
 - OpenClaw webhook handlers must be non-blocking (fire-and-forget). The bridge HTTP server should acknowledge immediately and process asynchronously.
+- Inbound OpenClaw context should remain turn-scoped bridge metadata by default. ADE should only promote it into durable project memory through normal CTO workflows, not on receipt.
 
 ---
 

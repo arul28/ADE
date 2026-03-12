@@ -57,6 +57,7 @@ import {
   parseSteeringDirective,
 } from "./orchestratorContext";
 import type {
+  AgentChatFileRef,
   SendOrchestratorChatArgs,
   GetOrchestratorChatArgs,
   ListOrchestratorChatThreadsArgs,
@@ -68,10 +69,59 @@ import type {
   ActiveAgentInfo,
   OrchestratorRunGraph,
   OrchestratorThreadEvent,
+  OrchestratorMissionThreadUserMessageStructuredStream,
 } from "../../../shared/types";
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function normalizeThreadAttachments(value: unknown): AgentChatFileRef[] {
+  if (!Array.isArray(value)) return [];
+  const deduped = new Map<string, AgentChatFileRef>();
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    const path = readString(entry.path);
+    const type = readString(entry.type);
+    if (!path || (type !== "file" && type !== "image")) continue;
+    deduped.set(path, { path, type });
+  }
+  return [...deduped.values()];
+}
+
+function buildAttachmentContextSuffix(attachments: AgentChatFileRef[]): string {
+  if (!attachments.length) return "";
+  return `\n\nAttached context:\n${attachments.map((file) => `- ${file.type}: ${file.path}`).join("\n")}`;
+}
+
+function buildStructuredUserMessageMetadata(args: {
+  content: string;
+  attachments: AgentChatFileRef[];
+  metadata?: Record<string, unknown> | null;
+}): Record<string, unknown> | null {
+  const base = isRecord(args.metadata) ? { ...args.metadata } : {};
+  if (!args.attachments.length) {
+    return Object.keys(base).length > 0 ? base : null;
+  }
+
+  const existingStructured = isRecord(base.structuredStream) ? { ...base.structuredStream } : {};
+  const structuredStream: OrchestratorMissionThreadUserMessageStructuredStream & Record<string, unknown> = {
+    ...existingStructured,
+    kind: "user_message",
+    text: args.content,
+    attachments: args.attachments,
+  };
+  base.structuredStream = structuredStream;
+  return base;
+}
+
+function shouldPreserveCoordinatorPromptForRouting(content: string): boolean {
+  const normalized = content.trim().toLowerCase();
+  return normalized === "status"
+    || normalized === "progress"
+    || normalized === "heartbeat"
+    || normalized === "what's happening"
+    || normalized === "what is happening";
 }
 
 function looksLikeLowSignalMissionNoise(text: string): boolean {
@@ -1258,7 +1308,12 @@ export function sendWorkersBroadcastMessageCtx(
   deps: ChatRoutingDeps
 ): OrchestratorChatMessage {
   const missionThread = ensureMissionThread(ctx, threadArgs.missionId);
-  const metadata = isRecord(threadArgs.metadata) ? threadArgs.metadata : null;
+  const attachments = normalizeThreadAttachments(threadArgs.attachments);
+  const metadata = buildStructuredUserMessageMetadata({
+    content: threadArgs.content,
+    attachments,
+    metadata: threadArgs.metadata,
+  });
   const broadcastMessage = appendChatMessageCtx(ctx, {
     id: randomUUID(),
     missionId: threadArgs.missionId,
@@ -1329,6 +1384,7 @@ export function sendWorkersBroadcastMessageCtx(
       missionId: threadArgs.missionId,
       threadId: thread.id,
       content: threadArgs.content,
+      attachments,
       target: workerTarget,
       visibilityMode: normalizeChatVisibility(threadArgs.visibilityMode, DEFAULT_WORKER_CHAT_VISIBILITY),
       metadata: nextMetadata
@@ -1367,15 +1423,23 @@ export function sendThreadMessageCtx(
   const target = mergeThreadResolvedTarget(thread, explicitTarget);
   const isWorkerTarget = target?.kind === "worker";
   const isTeammateTarget = target?.kind === "teammate";
+  const attachments = normalizeThreadAttachments(threadArgs.attachments);
+  const deliveryContent = `${threadArgs.content}${buildAttachmentContextSuffix(attachments)}`;
   const visibilityFallback = isWorkerTarget ? DEFAULT_WORKER_CHAT_VISIBILITY : DEFAULT_CHAT_VISIBILITY;
   const visibility = normalizeChatVisibility(threadArgs.visibilityMode, visibilityFallback);
   const deliveryState: OrchestratorChatDeliveryState =
     isWorkerTarget || isTeammateTarget ? "queued" : DEFAULT_CHAT_DELIVERY;
+  const persistedContent = isWorkerTarget && attachments.length > 0 ? deliveryContent : threadArgs.content;
+  const messageMetadata = buildStructuredUserMessageMetadata({
+    content: threadArgs.content,
+    attachments,
+    metadata: threadArgs.metadata,
+  });
   const msg = appendChatMessageCtx(ctx, {
     id: randomUUID(),
     missionId: threadArgs.missionId,
     role: "user",
-    content: threadArgs.content,
+    content: persistedContent,
     timestamp: nowIso(),
     threadId: thread.id,
     target: target ?? (thread.threadType === "coordinator" ? { kind: "coordinator", runId: thread.runId ?? null } : null),
@@ -1391,7 +1455,7 @@ export function sendThreadMessageCtx(
     laneId: isWorkerTarget ? target.laneId ?? null : null,
     runId: target?.runId ?? thread.runId ?? null,
     stepKey: isWorkerTarget ? target.stepKey ?? null : null,
-    metadata: threadArgs.metadata ?? null
+    metadata: messageMetadata
   });
   if ((ctx.chatMessages.get(threadArgs.missionId)?.length ?? 0) >= CONTEXT_CHECKPOINT_CHAT_THRESHOLD) {
     const total = ctx.chatMessages.get(threadArgs.missionId)?.length ?? 0;
@@ -1410,7 +1474,7 @@ export function sendThreadMessageCtx(
     }
   }
   if (msg.target?.kind === "worker") {
-    deps.routeMessageToWorker(msg);
+    deps.routeMessageToWorker(attachments.length > 0 ? { ...msg, content: threadArgs.content } : msg);
     void deps.replayQueuedWorkerMessages({
       reason: "send_thread_message",
       missionId: threadArgs.missionId,
@@ -1431,7 +1495,7 @@ export function sendThreadMessageCtx(
     }
     void Promise.resolve()
       .then(async () => {
-        await deps.sendWorkerMessageToSession(teammateSessionId, msg.content);
+        await deps.sendWorkerMessageToSession(teammateSessionId, attachments.length > 0 ? deliveryContent : threadArgs.content);
         updateChatMessage(ctx, msg.id, (current) => ({ ...current, deliveryState: "delivered" }));
       })
       .catch((error: unknown) => {
@@ -1444,7 +1508,15 @@ export function sendThreadMessageCtx(
         });
       });
   } else {
-    deps.routeMessageToCoordinator(msg);
+    const coordinatorContent =
+      attachments.length > 0 && !shouldPreserveCoordinatorPromptForRouting(threadArgs.content)
+        ? deliveryContent
+        : threadArgs.content;
+    deps.routeMessageToCoordinator(
+      coordinatorContent === msg.content
+        ? msg
+        : { ...msg, content: coordinatorContent }
+    );
   }
   return msg;
 }

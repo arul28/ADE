@@ -215,7 +215,7 @@ describe("AgentChatMessageList", () => {
   it("collapses reasoning cards by default in compact resolver view", () => {
     render(
       <AgentChatMessageList
-        compactResolverView
+        surfaceMode="resolver"
         events={[
           envelope({ type: "reasoning", text: "Thinking through the merge", turnId: "turn-1", itemId: "reason-1" })
         ]}

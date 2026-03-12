@@ -257,7 +257,6 @@ export function WorkStartSurface({
             laneLabel={selectedLane?.name ?? selectedLaneId}
             hideSessionTabs
             forceDraftMode
-            draftLayout="embedded"
             onSessionCreated={onOpenChatSession}
           />
         </div>

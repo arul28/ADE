@@ -305,8 +305,26 @@ export function PrAiResolverPanel({
               hideSessionTabs
               availableModelIdsOverride={[displayModelId]}
               modelSelectionLocked
-              compactResolverView
               permissionModeLocked
+              presentation={{
+                mode: "resolver",
+                title,
+                subtitle: description,
+                accentColor: "#F97316",
+                chips: [
+                  { label: displayModelId, tone: "accent" },
+                  { label: displayPermissionMode.replace(/_/g, " "), tone: "warning" },
+                  {
+                    label: status,
+                    tone: status === "completed"
+                      ? "success"
+                      : status === "failed" || status === "cancelled"
+                        ? "danger"
+                        : "accent",
+                  },
+                ],
+                showMcpStatus: true,
+              }}
             />
           </div>
         </div>

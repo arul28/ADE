@@ -356,7 +356,7 @@ describe("AgentChatPane", () => {
 
   it("renders the minimal empty state when embedded in the work launcher", async () => {
     setupWindowAde({ sessions: [] });
-    render(<AgentChatPane laneId="lane-1" forceDraftMode hideSessionTabs draftLayout="embedded" />);
+    render(<AgentChatPane laneId="lane-1" forceDraftMode hideSessionTabs />);
 
     await waitFor(() => {
       expect(screen.getByText("Start typing below")).toBeTruthy();
@@ -367,7 +367,7 @@ describe("AgentChatPane", () => {
 
   it("sends with default execution mode when no selector is present", async () => {
     setupWindowAde({ sessions: [] });
-    render(<AgentChatPane laneId="lane-1" forceDraftMode hideSessionTabs draftLayout="embedded" />);
+    render(<AgentChatPane laneId="lane-1" forceDraftMode hideSessionTabs />);
 
     await act(async () => {
       fireEvent.change(screen.getByPlaceholderText("Message the agent..."), {

@@ -8,6 +8,7 @@ import { PaneHeader } from "../ui/PaneHeader";
 import { cn } from "../ui/cn";
 import { inputCls, labelCls, textareaCls, cardCls } from "./shared/designTokens";
 import { ExternalMcpAccessEditor } from "../shared/ExternalMcpAccessEditor";
+import { OpenclawConnectionPanel } from "./OpenclawConnectionPanel";
 
 /* ── Helpers ── */
 
@@ -181,6 +182,16 @@ export function CtoSettingsPanel({
               {externalMcpSaving ? "Saving..." : "Save Access Policy"}
             </Button>
           </div>
+        </div>
+      </div>
+
+      <div className={cn(cardCls, "overflow-hidden")}>
+        <PaneHeader title="OpenClaw" />
+        <div className="p-4">
+          <OpenclawConnectionPanel
+            identity={identity}
+            onSaveIdentity={onSaveIdentity}
+          />
         </div>
       </div>
 

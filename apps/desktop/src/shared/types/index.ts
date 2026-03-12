@@ -13,6 +13,7 @@ export * from "./files";
 export * from "./sessions";
 export * from "./chat";
 export * from "./cto";
+export * from "./openclaw";
 export * from "./externalMcp";
 export * from "./missions";
 export * from "./orchestrator";

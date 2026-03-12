@@ -385,6 +385,7 @@ export const MissionThreadMessageList = React.memo(function MissionThreadMessage
         events={events}
         showStreamingIndicator={showStreamingIndicator}
         className={className}
+        surfaceMode={sessionId ? "mission-thread" : "mission-feed"}
         onApproval={onApproval
           ? (itemId, decision, responseText) => {
               const approval = pendingApproval?.itemId === itemId

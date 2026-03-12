@@ -6,8 +6,8 @@
  */
 import React, { useMemo } from "react";
 import {
-  Hash,
   Crown,
+  Database,
   UsersThree,
   Wrench,
   Globe,
@@ -23,10 +23,10 @@ import { MissionThreadMessageList } from "./MissionThreadMessageList";
 import type { Channel } from "./ChatChannelList";
 import { getMissionInterventionOwnerLabel } from "./missionHelpers";
 import type { MissionStateNarrative } from "./missionFeedPresentation";
+import type { ChatMcpSummary } from "../chat/useChatMcpSummary";
 
 // ── Design tokens ──
 const MONO = MONO_FONT;
-const ACCENT = COLORS.accent;
 const BORDER = "#2a2535";
 const TEXT_PRIMARY = COLORS.textPrimary;
 const TEXT_SECONDARY = COLORS.textSecondary;
@@ -58,6 +58,8 @@ export type ChatMessageAreaProps = {
   missionNarrative: MissionStateNarrative | null;
   runtimeSummary: { title: string; detail: string } | null;
   agentRuntimeConfig: MissionAgentRuntimeConfig | null;
+  mcpSummary: ChatMcpSummary | null;
+  onOpenMcpSettings: () => void;
   onApproval: (
     sessionId: string,
     itemId: string,
@@ -80,6 +82,8 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
   missionNarrative,
   runtimeSummary,
   agentRuntimeConfig,
+  mcpSummary,
+  onOpenMcpSettings,
   onApproval,
 }: ChatMessageAreaProps) {
   const threadInterventionOwnerLabel = useMemo(
@@ -97,56 +101,116 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
         return selectedChannel.fullLabel;
     }
   })();
+  const channelSummary = (() => {
+    if (!selectedChannel) return "Mission chat";
+    switch (selectedChannel.kind) {
+      case "global":
+        return "Signal and raw mission traffic stay visible here, including routed user notes and coordinator updates.";
+      case "orchestrator":
+        return "Message the coordinator directly for planning changes, recovery guidance, and run-level direction.";
+      case "teammate":
+        return "Direct teammate thread for specialist collaboration without leaving the mission surface.";
+      case "worker":
+        return selectedChannel.status === "active"
+          ? "Live worker thread. Notes here stay pinned to this execution lane."
+          : "Worker history thread. Review the transcript even after the worker has finished.";
+      default:
+        return "Mission chat";
+    }
+  })();
+  const headerIcon = (() => {
+    switch (selectedChannel?.kind) {
+      case "global":
+        return <Globe size={16} weight="fill" />;
+      case "orchestrator":
+        return <Crown size={16} weight="fill" />;
+      case "teammate":
+        return <UsersThree size={16} weight="fill" />;
+      case "worker":
+        return <Wrench size={16} weight="fill" />;
+      default:
+        return <Globe size={16} weight="fill" />;
+    }
+  })();
+  const headerStatusColor =
+    selectedChannel?.kind === "orchestrator"
+      ? STATUS_DOT[selectedChannel.status] ?? STATUS_GRAY
+      : workerStatusDot(selectedChannel?.attemptId ?? null);
 
   return (
     <>
       {/* Header */}
       <div
-        className="flex items-center gap-2 px-3 py-1"
-        style={{ borderBottom: `1px solid ${BORDER}` }}
+        className="border-b px-4 py-4"
+        style={{
+          borderBottomColor: BORDER,
+          background: "linear-gradient(180deg, rgba(20,16,29,0.96) 0%, rgba(13,10,20,0.92) 100%)",
+        }}
       >
-        <Hash size={14} weight="regular" style={{ color: TEXT_MUTED }} />
-        <span
-          className="min-w-0 truncate text-[11px] font-semibold"
-          style={{ color: TEXT_PRIMARY, fontFamily: MONO }}
-        >
-          {channelHeaderName}
-        </span>
-        {selectedChannel && selectedChannel.kind !== "global" && (
-          <span
-            className="ml-1 inline-block h-2 w-2 rounded-full"
+        <div className="flex flex-wrap items-start gap-3">
+          <div
+            className="flex h-10 w-10 shrink-0 items-center justify-center border"
             style={{
-              backgroundColor:
-                selectedChannel.kind === "orchestrator"
-                  ? STATUS_DOT[selectedChannel.status] ?? STATUS_GRAY
-                  : workerStatusDot(selectedChannel.attemptId),
+              borderColor: "color-mix(in srgb, var(--chat-accent) 18%, rgba(255,255,255,0.08))",
+              background: "color-mix(in srgb, var(--chat-accent) 10%, transparent)",
+              color: TEXT_PRIMARY,
             }}
-          />
-        )}
-        <ChannelKindBadge channel={selectedChannel} />
-        <div className="ml-auto flex items-center gap-1">
-          {runtimeSummary && selectedChannel?.kind === "global" && (
-            <span
-              className="hidden items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px] lg:inline-flex"
-              style={{
-                background: `${ACCENT}10`,
-                color: TEXT_SECONDARY,
-                border: `1px solid ${ACCENT}18`,
-                fontFamily: MONO,
-              }}
-              title={runtimeSummary.detail}
-            >
-              <Globe size={10} weight="fill" />
-              {runtimeSummary.title}
-            </span>
-          )}
-          {agentRuntimeConfig && selectedChannel?.kind !== "worker" && (
-            <>
-              <RuntimeFlagPill label="Parallel" enabled={agentRuntimeConfig.allowParallelAgents} />
-              <RuntimeFlagPill label="Sub-agents" enabled={agentRuntimeConfig.allowSubAgents} />
-              <RuntimeFlagPill label="Claude teams" enabled={agentRuntimeConfig.allowClaudeAgentTeams} />
-            </>
-          )}
+          >
+            {headerIcon}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className="truncate text-[13px] font-semibold"
+                style={{ color: TEXT_PRIMARY, fontFamily: MONO }}
+              >
+                {channelHeaderName}
+              </span>
+              {selectedChannel && selectedChannel.kind !== "global" ? (
+                <span
+                  className="inline-block h-2 w-2 rounded-full"
+                  style={{ backgroundColor: headerStatusColor }}
+                />
+              ) : null}
+              <ChannelKindBadge channel={selectedChannel} />
+              {runtimeSummary && selectedChannel?.kind === "global" ? (
+                <HeaderMetaPill label={runtimeSummary.title} detail={runtimeSummary.detail} />
+              ) : null}
+            </div>
+            <div className="mt-1 text-[12px] leading-[1.55]" style={{ color: TEXT_SECONDARY }}>
+              {channelSummary}
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {mcpSummary ? (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em] transition-opacity hover:opacity-90"
+                style={{
+                  background: "color-mix(in srgb, var(--chat-accent) 10%, transparent)",
+                  color: TEXT_SECONDARY,
+                  border: "1px solid color-mix(in srgb, var(--chat-accent) 18%, rgba(255,255,255,0.08))",
+                  fontFamily: MONO,
+                }}
+                onClick={onOpenMcpSettings}
+                title="Open External MCP settings"
+              >
+                <Database size={10} weight="bold" />
+                {mcpSummary.connectedCount > 0
+                  ? `MCP ${mcpSummary.connectedCount}/${mcpSummary.configuredCount}`
+                  : mcpSummary.configuredCount > 0
+                    ? `MCP ${mcpSummary.configuredCount} configured`
+                    : "MCP setup"}
+              </button>
+            ) : null}
+            {agentRuntimeConfig && selectedChannel?.kind !== "worker" ? (
+              <>
+                <RuntimeFlagPill label="Parallel" enabled={agentRuntimeConfig.allowParallelAgents} />
+                <RuntimeFlagPill label="Sub-agents" enabled={agentRuntimeConfig.allowSubAgents} />
+                <RuntimeFlagPill label="Claude teams" enabled={agentRuntimeConfig.allowClaudeAgentTeams} />
+              </>
+            ) : null}
+          </div>
         </div>
       </div>
 
@@ -264,13 +328,19 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
 
 // ── Small helper components ──
 
+function workerBadgeLabel(status: string, phaseLabel: string | null): string {
+  const suffix = status === "active" ? "worker" : "history";
+  const fallback = status === "active" ? "Active worker" : "Worker history";
+  return phaseLabel ? `${phaseLabel} ${suffix}` : fallback;
+}
+
 function ChannelKindBadge({ channel }: { channel: Channel | undefined }) {
   if (!channel) return null;
   if (channel.kind === "orchestrator") {
     return (
       <span
-        className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px]"
-        style={{ background: "#3B82F618", color: "#3B82F6", border: "1px solid #3B82F630" }}
+        className="inline-flex items-center gap-1 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em]"
+        style={{ background: "#3B82F618", color: "#60A5FA", border: "1px solid #3B82F630" }}
       >
         <Crown size={10} weight="fill" />
         Orchestrator
@@ -280,7 +350,7 @@ function ChannelKindBadge({ channel }: { channel: Channel | undefined }) {
   if (channel.kind === "teammate") {
     return (
       <span
-        className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px]"
+        className="inline-flex items-center gap-1 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em]"
         style={{ background: "#06B6D418", color: "#06B6D4", border: "1px solid #06B6D430" }}
       >
         <UsersThree size={10} weight="fill" />
@@ -291,27 +361,39 @@ function ChannelKindBadge({ channel }: { channel: Channel | undefined }) {
   if (channel.kind === "worker") {
     return (
       <span
-        className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px]"
+        className="inline-flex items-center gap-1 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em]"
         style={{ background: "#8B5CF618", color: "#8B5CF6", border: "1px solid #8B5CF630" }}
       >
         <Wrench size={10} weight="fill" />
-        {channel.status === "active"
-          ? channel.phaseLabel
-            ? `${channel.phaseLabel} worker`
-            : "Active worker"
-          : channel.phaseLabel
-            ? `${channel.phaseLabel} history`
-            : "Worker history"}
+        {workerBadgeLabel(channel.status, channel.phaseLabel)}
       </span>
     );
   }
   return null;
 }
 
+function HeaderMetaPill({ label, detail }: { label: string; detail: string }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em]"
+      style={{
+        background: "color-mix(in srgb, var(--chat-accent) 10%, transparent)",
+        color: TEXT_SECONDARY,
+        border: "1px solid color-mix(in srgb, var(--chat-accent) 16%, rgba(255,255,255,0.08))",
+        fontFamily: MONO,
+      }}
+      title={detail}
+    >
+      <Globe size={10} weight="fill" />
+      {label}
+    </span>
+  );
+}
+
 function RuntimeFlagPill({ label, enabled }: { label: string; enabled: boolean }) {
   return (
     <span
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px]"
+      className="inline-flex items-center gap-1 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em]"
       style={{
         background: enabled ? "#22C55E18" : "#6B728018",
         color: enabled ? "#22C55E" : TEXT_MUTED,

@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Plus } from "@phosphor-icons/react";
-import type {
-  AgentChatApprovalDecision,
-  AgentChatExecutionMode,
-  AgentChatEvent,
-  AgentChatEventEnvelope,
-  AgentChatFileRef,
-  AgentChatPermissionMode,
-  AgentChatSessionSummary,
-  ContextPackOption
+import { Database, Plus } from "@phosphor-icons/react";
+import {
+  inferAttachmentType,
+  type AgentChatApprovalDecision,
+  type AgentChatExecutionMode,
+  type AgentChatEvent,
+  type AgentChatEventEnvelope,
+  type AgentChatFileRef,
+  type AgentChatPermissionMode,
+  type ChatSurfaceChip,
+  type ChatSurfacePresentation,
+  type AgentChatSessionSummary,
+  type ContextPackOption,
 } from "../../../shared/types";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { getDefaultModelDescriptor, MODEL_REGISTRY, getModelById, type ModelDescriptor } from "../../../shared/modelRegistry";
@@ -19,6 +22,10 @@ import { AgentQuestionModal } from "./AgentQuestionModal";
 import { isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
+import { ChatSurfaceShell } from "./ChatSurfaceShell";
+import { chatChipToneClass } from "./chatSurfaceTheme";
+import { useChatMcpSummary } from "./useChatMcpSummary";
+import { openExternalMcpSettings } from "./chatNavigation";
 
 type PendingApproval = {
   itemId: string;
@@ -239,10 +246,6 @@ function byStartedDesc(a: AgentChatSessionSummary, b: AgentChatSessionSummary): 
   return Date.parse(b.startedAt) - Date.parse(a.startedAt);
 }
 
-function inferAttachmentType(filePath: string): AgentChatFileRef["type"] {
-  return /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?)$/i.test(filePath) ? "image" : "file";
-}
-
 function resolveRegistryModelId(value: string | null | undefined): string | null {
   const normalized = (value ?? "").trim().toLowerCase();
   if (!normalized.length) return null;
@@ -345,11 +348,10 @@ export function AgentChatPane({
   hideSessionTabs = false,
   forceNewSession = false,
   forceDraftMode = false,
-  draftLayout = "full",
   availableModelIdsOverride,
   modelSelectionLocked = false,
-  compactResolverView = false,
   permissionModeLocked = false,
+  presentation,
   onSessionCreated,
 }: {
   laneId: string | null;
@@ -359,15 +361,13 @@ export function AgentChatPane({
   hideSessionTabs?: boolean;
   forceNewSession?: boolean;
   forceDraftMode?: boolean;
-  draftLayout?: "full" | "embedded";
   availableModelIdsOverride?: string[];
   modelSelectionLocked?: boolean;
-  compactResolverView?: boolean;
   permissionModeLocked?: boolean;
+  presentation?: ChatSurfacePresentation;
   onSessionCreated?: (sessionId: string) => void;
 }) {
   const forceDraft = forceDraftMode || forceNewSession;
-  // draftLayout prop kept for API compat but no longer drives render branching
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(lockSessionId ?? initialSessionId ?? null);
   const [eventsBySession, setEventsBySession] = useState<Record<string, AgentChatEventEnvelope[]>>({});
@@ -394,6 +394,8 @@ export function AgentChatPane({
   const pendingEventQueueRef = useRef<AgentChatEventEnvelope[]>([]);
   const eventFlushTimerRef = useRef<number | null>(null);
   const refreshSessionsTimerRef = useRef<number | null>(null);
+  const showMcpStatus = presentation?.showMcpStatus ?? true;
+  const mcpSummary = useChatMcpSummary(showMcpStatus);
 
   const selectedSession = useMemo(
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
@@ -414,6 +416,7 @@ export function AgentChatPane({
   const pendingQuestion = useMemo(() => extractAskUserQuestion(pendingApproval), [pendingApproval]);
   const selectedModelDesc = getModelById(modelId);
   const reasoningTiers = selectedModelDesc?.reasoningTiers ?? [];
+  const surfaceMode = presentation?.mode ?? "standard";
 
   const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
     if (!session) return;
@@ -455,6 +458,28 @@ export function AgentChatPane({
     [executionMode, executionModeOptions],
   );
   const launchModeEditable = !selectedSessionId || selectedEvents.length === 0;
+  const resolvedTitle = presentation?.title?.trim()
+    || (surfaceMode === "resolver" ? "AI Resolver" : laneDisplayLabel?.trim() || "Chat");
+  const resolvedSubtitle = presentation?.subtitle?.trim()
+    || (surfaceMode === "resolver"
+      ? "Model and permission stay locked after launch, but the transcript and follow-ups stay in one smooth surface."
+      : "Same chat core, tuned for the current workflow.");
+  const chipsJson = JSON.stringify(presentation?.chips ?? []);
+  const resolvedChips = useMemo(() => JSON.parse(chipsJson) as ChatSurfaceChip[], [chipsJson]);
+  const mcpChip: ChatSurfaceChip | null = showMcpStatus && mcpSummary
+    ? {
+        label: mcpSummary.connectedCount > 0
+          ? `MCP ${mcpSummary.connectedCount}/${mcpSummary.configuredCount}`
+          : mcpSummary.configuredCount > 0
+            ? `MCP ${mcpSummary.configuredCount} configured`
+            : "MCP not configured",
+        tone: mcpSummary.connectedCount > 0
+          ? "success"
+          : mcpSummary.configuredCount > 0
+            ? "info"
+            : "muted",
+      }
+    : null;
 
   // Keep all configured models selectable, and always include the active session model.
   // When a session has messages, lock to the same family (e.g. Claude→Claude only).
@@ -975,21 +1000,59 @@ export function AgentChatPane({
 
   if (!laneId) {
     return (
-      <div className="flex h-full items-center justify-center">
-        <span className="font-mono text-[11px] text-muted-fg/30">Select a lane to start chatting</span>
-      </div>
+      <ChatSurfaceShell mode={surfaceMode} accentColor={presentation?.accentColor}>
+        <div className="flex h-full items-center justify-center">
+          <span className="font-mono text-[11px] text-muted-fg/30">Select a lane to start chatting</span>
+        </div>
+      </ChatSurfaceShell>
     );
   }
-
-
   const draftAccent = selectedModelDesc?.color ?? "#A78BFA";
+  const shellHeader = (
+    <div className="space-y-4 px-4 py-4">
+      <div className="flex flex-wrap items-start gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-[var(--chat-accent)]">
+            {resolvedTitle}
+          </div>
+          {resolvedSubtitle ? (
+            <div className="mt-1 max-w-3xl text-[12px] leading-[1.55] text-fg/60">
+              {resolvedSubtitle}
+            </div>
+          ) : null}
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {resolvedChips.map((chip) => (
+            <span
+              key={`${chip.label}:${chip.tone ?? "accent"}`}
+              className={cn(
+                "inline-flex items-center rounded-[var(--chat-radius-pill)] border px-2.5 py-1 font-mono text-[9px] font-bold uppercase tracking-[0.16em]",
+                chatChipToneClass(chip.tone),
+              )}
+            >
+              {chip.label}
+            </span>
+          ))}
+          {mcpChip ? (
+            <button
+              type="button"
+              className={cn(
+                "inline-flex items-center gap-1 rounded-[var(--chat-radius-pill)] border px-2.5 py-1 font-mono text-[9px] font-bold uppercase tracking-[0.16em] transition-colors hover:opacity-90",
+                chatChipToneClass(mcpChip.tone),
+              )}
+              onClick={openExternalMcpSettings}
+              title="Open External MCP settings"
+            >
+              <Database size={11} weight="bold" />
+              {mcpChip.label}
+            </button>
+          ) : null}
+        </div>
+      </div>
 
-  return (
-    <div className="flex h-full min-h-0 flex-col" style={{ background: "var(--color-card)" }}>
-      {/* ── Session tabs ── */}
       {!lockSessionId && !hideSessionTabs ? (
-        <div className="flex items-center border-b border-border/8 bg-surface">
-          <div className="flex min-w-0 flex-1 items-center gap-px overflow-x-auto">
+        <div className="flex items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto pb-1">
             {sessions.map((session) => {
               const desc = session.modelId ? getModelById(session.modelId) : MODEL_REGISTRY.find((m) => m.shortId === session.model);
               const title = chatSessionTitle(session);
@@ -1000,10 +1063,10 @@ export function AgentChatPane({
                   key={session.sessionId}
                   type="button"
                   className={cn(
-                    "flex shrink-0 items-center gap-1 px-2 py-px font-mono text-[8px] transition-colors",
+                    "inline-flex shrink-0 items-center gap-2 rounded-[var(--chat-radius-pill)] border px-3 py-2 font-mono text-[9px] transition-colors",
                     isActive
-                      ? "border-b border-b-accent/40 text-fg/70"
-                      : "text-muted-fg/25 hover:text-fg/45"
+                      ? "border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)] text-fg/82"
+                      : "border-white/8 bg-black/10 text-muted-fg/38 hover:text-fg/62",
                   )}
                   onClick={() => {
                     draftSelectionLockedRef.current = false;
@@ -1011,10 +1074,10 @@ export function AgentChatPane({
                     setSelectedSessionId(session.sessionId);
                   }}
                 >
-                  <ToolLogo toolType={chatToolTypeForProvider(session.provider)} size={8} />
-                  <span className="max-w-[80px] truncate">{title}</span>
+                  <ToolLogo toolType={chatToolTypeForProvider(session.provider)} size={10} />
+                  <span className="max-w-[120px] truncate">{title}</span>
                   {isRunning ? (
-                    <span className="h-1 w-1 animate-pulse" style={{ backgroundColor: desc?.color ?? "#A78BFA" }} />
+                    <span className="h-1.5 w-1.5 animate-pulse rounded-full" style={{ backgroundColor: desc?.color ?? "#A78BFA" }} />
                   ) : null}
                 </button>
               );
@@ -1022,7 +1085,7 @@ export function AgentChatPane({
           </div>
           <button
             type="button"
-            className="shrink-0 px-1.5 py-px text-muted-fg/15 transition-colors hover:text-accent/40"
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--chat-radius-pill)] border border-white/8 bg-black/10 text-muted-fg/28 transition-colors hover:text-[var(--chat-accent)]"
             title="New chat"
             onClick={() => {
               draftSelectionLockedRef.current = true;
@@ -1033,142 +1096,146 @@ export function AgentChatPane({
               setSelectedContextPacks([]);
             }}
           >
-            <Plus size={8} weight="bold" />
+            <Plus size={10} weight="bold" />
           </button>
         </div>
       ) : null}
+    </div>
+  );
 
-      {/* Session info bar removed — model/lane info is in the tabs and composer */}
-
-      {/* ── Error bar ── */}
-      {error ? (
-        <div className="border-b border-red-500/10 px-4 py-1.5 font-mono text-[10px] text-red-400/60">
-          {error}
-        </div>
-      ) : null}
-
-      {/* ── Message area ── */}
-      <div className="min-h-0 flex-1">
-        {loading ? (
-          <div className="flex h-full items-center justify-center">
-            <div className="flex flex-col items-center gap-3">
-              <div className="flex items-center gap-1.5">
-                <span className="h-1.5 w-1.5 animate-bounce bg-accent/50 rounded-full [animation-delay:0ms]" />
-                <span className="h-1.5 w-1.5 animate-bounce bg-accent/50 rounded-full [animation-delay:150ms]" />
-                <span className="h-1.5 w-1.5 animate-bounce bg-accent/50 rounded-full [animation-delay:300ms]" />
-              </div>
-              <span className="font-mono text-[10px] uppercase tracking-[2px] text-muted-fg/25">Loading sessions...</span>
-            </div>
-          </div>
-        ) : selectedSessionId ? (
-          <AgentChatMessageList
-            events={selectedEvents}
-            showStreamingIndicator={turnActive}
-            className="border-0"
-            compactResolverView={compactResolverView}
-            onApproval={(itemId, decision, responseText) => {
-              if (!selectedSessionId) return;
-              window.ade.agentChat.approve({ sessionId: selectedSessionId, itemId, decision, responseText }).then(() => {
-                setApprovalsBySession((prev) => ({
-                  ...prev,
-                  [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((e) => e.itemId !== itemId)
-                }));
-              }).catch((err) => {
-                setError(err instanceof Error ? err.message : String(err));
-              });
+  return (
+    <>
+      <ChatSurfaceShell
+        mode={surfaceMode}
+        accentColor={presentation?.accentColor ?? draftAccent}
+        header={shellHeader}
+        footer={
+          <AgentChatComposer
+            surfaceMode={surfaceMode}
+            modelId={modelId}
+            availableModelIds={effectiveAvailableModelIds}
+            reasoningEffort={reasoningEffort}
+            draft={draft}
+            attachments={attachments}
+            pendingApproval={pendingApproval}
+            turnActive={turnActive}
+            sendOnEnter={sendOnEnter}
+            busy={busy}
+            selectedContextPacks={selectedContextPacks}
+            laneId={laneId ?? undefined}
+            permissionMode={permissionMode}
+            sessionProvider={sessionProvider}
+            sessionIsCliWrapped={sessionIsCliWrapped}
+            executionMode={selectedExecutionMode?.value ?? "focused"}
+            executionModeOptions={launchModeEditable ? executionModeOptions : []}
+            modelSelectionLocked={modelSelectionLocked}
+            permissionModeLocked={permissionModeLocked}
+            onExecutionModeChange={setExecutionMode}
+            onPermissionModeChange={handlePermissionModeChange}
+            onModelChange={(nextModelId) => {
+              if (selectedSessionModelId && effectiveAvailableModelIds.length && !effectiveAvailableModelIds.includes(nextModelId)) {
+                return;
+              }
+              setModelId(nextModelId);
+              const nextDesc = getModelById(nextModelId);
+              const tiers = nextDesc?.reasoningTiers ?? [];
+              const preferred = readLastUsedReasoningEffort({ laneId, modelId: nextModelId });
+              setReasoningEffort(selectReasoningEffort({ tiers, preferred }));
+            }}
+            onReasoningEffortChange={setReasoningEffort}
+            onDraftChange={setDraft}
+            onSubmit={() => {
+              void submit();
+            }}
+            onInterrupt={() => {
+              void interrupt();
+            }}
+            onApproval={(decision) => {
+              void approve(decision);
+            }}
+            onAddAttachment={addAttachment}
+            onRemoveAttachment={removeAttachment}
+            onSearchAttachments={searchAttachments}
+            onContextPacksChange={setSelectedContextPacks}
+            onClearEvents={() => {
+              if (selectedSessionId) {
+                setEventsBySession((prev) => ({ ...prev, [selectedSessionId]: [] }));
+              }
             }}
           />
-        ) : (
-          /* ── Empty state: no session selected — just show the composer below ── */
-          <div className="flex h-full flex-col items-center justify-center px-6">
-            <div className="flex flex-col items-center gap-4 text-center">
-              <div className="flex items-center gap-2">
-                <span
-                  className="inline-block h-2 w-2"
-                  style={{ backgroundColor: draftAccent }}
-                />
-                <span className="font-mono text-[10px] font-bold uppercase tracking-[2px] text-muted-fg/40">
-                  {laneDisplayLabel}
-                </span>
-              </div>
-              <div className="font-sans text-[15px] font-medium tracking-tight text-fg/60">
-                Start typing below
-              </div>
-              <div className="mt-2 grid grid-cols-2 gap-2">
-                {[
-                  "Explain the project structure",
-                  "Review recent changes",
-                  "Plan the next feature",
-                  "Find bugs and propose fixes",
-                ].map((prompt) => (
-                  <button
-                    key={prompt}
-                    type="button"
-                    className="border border-border/10 px-3 py-2 text-left font-mono text-[10px] text-muted-fg/40 transition-colors hover:border-border/25 hover:text-fg/60"
-                    onClick={() => setDraft(prompt)}
-                  >
-                    {prompt}
-                  </button>
-                ))}
+        }
+        bodyClassName="min-h-0"
+      >
+        {error ? (
+          <div className="border-b border-red-500/10 px-4 py-2 font-mono text-[10px] text-red-300/80">
+            {error}
+          </div>
+        ) : null}
+
+        <div className="min-h-0 flex-1">
+          {loading ? (
+            <div className="flex h-full items-center justify-center">
+              <div className="flex flex-col items-center gap-3">
+                <div className="flex items-center gap-1.5">
+                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[var(--chat-accent)] [animation-delay:0ms]" />
+                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[var(--chat-accent)] [animation-delay:150ms]" />
+                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[var(--chat-accent)] [animation-delay:300ms]" />
+                </div>
+                <span className="font-mono text-[10px] uppercase tracking-[2px] text-muted-fg/25">Loading sessions...</span>
               </div>
             </div>
-          </div>
-        )}
-      </div>
-
-      {/* ── Composer ── */}
-      <AgentChatComposer
-        modelId={modelId}
-        availableModelIds={effectiveAvailableModelIds}
-        reasoningEffort={reasoningEffort}
-        draft={draft}
-        attachments={attachments}
-        pendingApproval={pendingApproval}
-        turnActive={turnActive}
-        sendOnEnter={sendOnEnter}
-        busy={busy}
-        selectedContextPacks={selectedContextPacks}
-        laneId={laneId ?? undefined}
-        permissionMode={permissionMode}
-        sessionProvider={sessionProvider}
-        sessionIsCliWrapped={sessionIsCliWrapped}
-        executionMode={selectedExecutionMode?.value ?? "focused"}
-        executionModeOptions={launchModeEditable ? executionModeOptions : []}
-        modelSelectionLocked={modelSelectionLocked}
-        permissionModeLocked={permissionModeLocked}
-        onExecutionModeChange={setExecutionMode}
-        onPermissionModeChange={handlePermissionModeChange}
-        onModelChange={(nextModelId) => {
-          if (selectedSessionModelId && effectiveAvailableModelIds.length && !effectiveAvailableModelIds.includes(nextModelId)) {
-            return;
-          }
-          setModelId(nextModelId);
-          const nextDesc = getModelById(nextModelId);
-          const tiers = nextDesc?.reasoningTiers ?? [];
-          const preferred = readLastUsedReasoningEffort({ laneId, modelId: nextModelId });
-          setReasoningEffort(selectReasoningEffort({ tiers, preferred }));
-        }}
-        onReasoningEffortChange={setReasoningEffort}
-        onDraftChange={setDraft}
-        onSubmit={() => {
-          void submit();
-        }}
-        onInterrupt={() => {
-          void interrupt();
-        }}
-        onApproval={(decision) => {
-          void approve(decision);
-        }}
-        onAddAttachment={addAttachment}
-        onRemoveAttachment={removeAttachment}
-        onSearchAttachments={searchAttachments}
-        onContextPacksChange={setSelectedContextPacks}
-        onClearEvents={() => {
-          if (selectedSessionId) {
-            setEventsBySession((prev) => ({ ...prev, [selectedSessionId]: [] }));
-          }
-        }}
-      />
+          ) : selectedSessionId ? (
+            <AgentChatMessageList
+              events={selectedEvents}
+              showStreamingIndicator={turnActive}
+              className="border-0"
+              surfaceMode={surfaceMode}
+              onApproval={(itemId, decision, responseText) => {
+                if (!selectedSessionId) return;
+                window.ade.agentChat.approve({ sessionId: selectedSessionId, itemId, decision, responseText }).then(() => {
+                  setApprovalsBySession((prev) => ({
+                    ...prev,
+                    [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((e) => e.itemId !== itemId)
+                  }));
+                }).catch((err) => {
+                  setError(err instanceof Error ? err.message : String(err));
+                });
+              }}
+            />
+          ) : (
+            <div className="flex h-full flex-col items-center justify-center px-6">
+              <div className="flex flex-col items-center gap-4 text-center">
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: draftAccent }} />
+                  <span className="font-mono text-[10px] font-bold uppercase tracking-[2px] text-muted-fg/40">
+                    {laneDisplayLabel}
+                  </span>
+                </div>
+                <div className="font-sans text-[15px] font-medium tracking-tight text-fg/60">
+                  Start typing below
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  {[
+                    "Explain the project structure",
+                    "Review recent changes",
+                    "Plan the next feature",
+                    "Find bugs and propose fixes",
+                  ].map((prompt) => (
+                    <button
+                      key={prompt}
+                      type="button"
+                      className="rounded-[var(--chat-radius-pill)] border border-white/8 bg-black/10 px-3 py-2 text-left font-mono text-[10px] text-muted-fg/42 transition-colors hover:border-white/16 hover:text-fg/72"
+                      onClick={() => setDraft(prompt)}
+                    >
+                      {prompt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </ChatSurfaceShell>
       {pendingQuestion && selectedSessionId ? (
         <AgentQuestionModal
           question={pendingQuestion}
@@ -1183,6 +1250,6 @@ export function AgentChatPane({
           }}
         />
       ) : null}
-    </div>
+    </>
   );
 }

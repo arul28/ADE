@@ -17,7 +17,6 @@ import { usePrs } from "../state/PrsContext";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
 import { normalizeBranchName } from "../shared/prHelpers";
 import { PrAiResolverPanel } from "../shared/PrAiResolverPanel";
-import { PrResolverLaunchControls } from "../shared/PrResolverLaunchControls";
 
 type QueueGroup = {
   groupId: string;
@@ -676,18 +675,6 @@ export function QueueTab({
               )}
             </div>
           </div>
-
-          <PrResolverLaunchControls
-            modelId={resolverModel}
-            reasoningEffort={resolverReasoningLevel}
-            permissionMode={resolverPermissionMode}
-            onModelChange={setResolverModel}
-            onReasoningEffortChange={(effort) => setResolverReasoningLevel(effort || "medium")}
-            onPermissionModeChange={setResolverPermissionMode}
-            disabled={queueActionBusy}
-            className="mb-4"
-          />
-
           {resolverConfig ? (
             <PrAiResolverPanel
               key={`${resolverConfig.sourceLaneId}:${resolverConfig.targetLaneId}`}

@@ -18,6 +18,7 @@ import { inputCls, labelCls, textareaCls } from "./shared/designTokens";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { LinearConnectionPanel } from "./LinearConnectionPanel";
+import { OpenclawConnectionPanel } from "./OpenclawConnectionPanel";
 
 const STEPS: WizardStep[] = [
   { id: "identity", label: "Identity", icon: IdentificationCard },
@@ -59,7 +60,7 @@ const PERSONALITY_PRESETS = [
 type IdentityDraft = {
   name: string;
   persona: string;
-  personality: string;
+  personality: CtoPersonalityPreset;
   provider: string;
   model: string;
 };
@@ -434,18 +435,24 @@ export function OnboardingWizard({
                 <div className="space-y-1">
                   <div className="font-sans text-xs font-bold text-fg">Integrations</div>
                   <div className="font-mono text-[10px] text-muted-fg/60">
-                    Connect Linear now for issue intake, or finish setup and configure it later from the CTO tab.
+                    Connect Linear for issue intake and OpenClaw for external agent routing, or finish setup and wire them later from the CTO tab.
                   </div>
                 </div>
 
-                <div className="border border-border/10 bg-card/60 p-4">
-                  <LinearConnectionPanel
-                    compact
-                    onStatusChange={(status) => {
-                      setLinearStatus(status);
-                      if (status?.connected) setIntegrationSkipped(false);
-                    }}
-                  />
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div className="border border-border/10 bg-card/60 p-4">
+                    <LinearConnectionPanel
+                      compact
+                      onStatusChange={(status) => {
+                        setLinearStatus(status);
+                        if (status?.connected) setIntegrationSkipped(false);
+                      }}
+                    />
+                  </div>
+
+                  <div className="border border-border/10 bg-card/60 p-4">
+                    <OpenclawConnectionPanel compact />
+                  </div>
                 </div>
 
                 {!linearStatus?.connected && (

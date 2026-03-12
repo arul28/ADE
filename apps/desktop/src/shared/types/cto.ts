@@ -1,6 +1,14 @@
 import type { ModelId } from "./core";
 import type { AgentChatPermissionMode } from "./chat";
 import type { ExternalMcpAccessPolicy } from "./externalMcp";
+import type {
+  OpenclawBridgeConfig,
+  OpenclawBridgeState,
+  OpenclawBridgeStatus,
+  OpenclawContextPolicy,
+  OpenclawMessageRecord,
+  OpenclawOutboundEnvelope,
+} from "./openclaw";
 
 export type CtoCapabilityMode = "full_mcp" | "fallback";
 
@@ -22,6 +30,7 @@ export type CtoIdentity = {
   constraints?: string[];
   systemPromptExtension?: string;
   externalMcpAccess?: ExternalMcpAccessPolicy;
+  openclawContextPolicy?: OpenclawContextPolicy;
   onboardingState?: CtoOnboardingState;
   modelPreferences: {
     provider: string;
@@ -91,6 +100,10 @@ export type CtoEnsureSessionArgs = {
   permissionMode?: AgentChatPermissionMode;
 };
 
+export type CtoUpdateIdentityArgs = {
+  patch: Partial<Omit<CtoIdentity, "version" | "updatedAt">>;
+};
+
 export type CtoUpdateCoreMemoryArgs = {
   patch: Partial<Omit<CtoCoreMemory, "version" | "updatedAt">>;
 };
@@ -134,3 +147,23 @@ export type CtoLinearProject = {
   slug: string;
   teamName: string;
 };
+
+export type CtoGetOpenclawStateArgs = Record<string, never>;
+
+export type CtoUpdateOpenclawConfigArgs = {
+  patch: Partial<OpenclawBridgeConfig>;
+};
+
+export type CtoTestOpenclawConnectionArgs = {
+  reconnect?: boolean;
+};
+
+export type CtoListOpenclawMessagesArgs = {
+  limit?: number;
+};
+
+export type CtoSendOpenclawMessageArgs = OpenclawOutboundEnvelope;
+
+export type CtoGetOpenclawStateResult = OpenclawBridgeState;
+export type CtoTestOpenclawConnectionResult = OpenclawBridgeStatus;
+export type CtoListOpenclawMessagesResult = OpenclawMessageRecord[];

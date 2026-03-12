@@ -316,8 +316,16 @@ import type {
   AiSettingsStatus,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
+  CtoUpdateIdentityArgs,
   CtoUpdateCoreMemoryArgs,
   CtoListSessionLogsArgs,
+  CtoGetOpenclawStateResult,
+  CtoUpdateOpenclawConfigArgs,
+  CtoTestOpenclawConnectionArgs,
+  CtoTestOpenclawConnectionResult,
+  CtoListOpenclawMessagesArgs,
+  CtoListOpenclawMessagesResult,
+  CtoSendOpenclawMessageArgs,
   CtoSnapshot,
   CtoSessionLogEntry,
   GetOrchestratorWorkerStatesArgs,
@@ -468,6 +476,7 @@ import type { createOrchestratorService } from "../orchestrator/orchestratorServ
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
 import { readCoordinatorCheckpoint } from "../orchestrator/missionStateDoc";
 import type { createMemoryService } from "../memory/memoryService";
+import type { createOpenclawBridgeService } from "../cto/openclawBridgeService";
 import type { createBatchConsolidationService } from "../memory/batchConsolidationService";
 import type { createMemoryLifecycleService } from "../memory/memoryLifecycleService";
 import type { createMemoryBriefingService } from "../memory/memoryBriefingService";
@@ -559,6 +568,7 @@ export type AppContext = {
   embeddingService?: ReturnType<typeof createEmbeddingService> | null;
   embeddingWorkerService?: ReturnType<typeof createEmbeddingWorkerService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
+  openclawBridgeService?: ReturnType<typeof createOpenclawBridgeService> | null;
   workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
   adeProjectService?: AdeProjectService | null;
   workerRevisionService?: ReturnType<typeof createWorkerRevisionService> | null;
@@ -4812,10 +4822,40 @@ export function registerIpc({
     return ctx.workerBudgetService.getBudgetSnapshot({ monthKey: arg.monthKey });
   });
 
-  ipcMain.handle(IPC.ctoUpdateIdentity, async (_event, arg: { patch: Record<string, unknown> }): Promise<CtoSnapshot> => {
+  ipcMain.handle(IPC.ctoUpdateIdentity, async (_event, arg: CtoUpdateIdentityArgs): Promise<CtoSnapshot> => {
     const ctx = getCtx();
     if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
     return ctx.ctoStateService.updateIdentity(arg.patch ?? {});
+  });
+
+  ipcMain.handle(IPC.ctoGetOpenclawState, async (): Promise<CtoGetOpenclawStateResult> => {
+    const ctx = getCtx();
+    if (!ctx.openclawBridgeService) throw new Error("OpenClaw bridge service is not available.");
+    return ctx.openclawBridgeService.getState();
+  });
+
+  ipcMain.handle(IPC.ctoUpdateOpenclawConfig, async (_event, arg: CtoUpdateOpenclawConfigArgs): Promise<CtoGetOpenclawStateResult> => {
+    const ctx = getCtx();
+    if (!ctx.openclawBridgeService) throw new Error("OpenClaw bridge service is not available.");
+    return await ctx.openclawBridgeService.updateConfig(arg.patch ?? {});
+  });
+
+  ipcMain.handle(IPC.ctoTestOpenclawConnection, async (_event, _arg: CtoTestOpenclawConnectionArgs = {}): Promise<CtoTestOpenclawConnectionResult> => {
+    const ctx = getCtx();
+    if (!ctx.openclawBridgeService) throw new Error("OpenClaw bridge service is not available.");
+    return await ctx.openclawBridgeService.testConnection();
+  });
+
+  ipcMain.handle(IPC.ctoListOpenclawMessages, async (_event, arg: CtoListOpenclawMessagesArgs = {}): Promise<CtoListOpenclawMessagesResult> => {
+    const ctx = getCtx();
+    if (!ctx.openclawBridgeService) throw new Error("OpenClaw bridge service is not available.");
+    return ctx.openclawBridgeService.listMessages(arg.limit ?? 40);
+  });
+
+  ipcMain.handle(IPC.ctoSendOpenclawMessage, async (_event, arg: CtoSendOpenclawMessageArgs): Promise<CtoListOpenclawMessagesResult[number]> => {
+    const ctx = getCtx();
+    if (!ctx.openclawBridgeService) throw new Error("OpenClaw bridge service is not available.");
+    return await ctx.openclawBridgeService.sendMessage(arg);
   });
 
   // -- W3: Heartbeat & Activation --

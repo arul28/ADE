@@ -21,6 +21,7 @@ import type {
   CtoSubordinateActivityEntry,
   AgentStatus,
   HeartbeatPolicy,
+  OpenclawBridgeStatus,
   WorkerAgentRun,
 } from "../../../shared/types";
 import { AgentChatPane } from "../chat/AgentChatPane";
@@ -37,6 +38,7 @@ import { OnboardingWizard } from "./OnboardingWizard";
 import { OnboardingBanner } from "./OnboardingBanner";
 import { WorkerCreationWizard } from "./WorkerCreationWizard";
 import { CtoMemoryBrowser } from "./CtoMemoryBrowser";
+import { OpenclawConnectionPanel } from "./OpenclawConnectionPanel";
 import { TimelineEntry } from "./shared/TimelineEntry";
 import { cardCls, shellBodyCls, shellTabBarCls } from "./shared/designTokens";
 
@@ -67,6 +69,7 @@ export function CtoPage() {
   const [coreMemory, setCoreMemory] = useState<CtoCoreMemory | null>(null);
   const [sessionLogs, setSessionLogs] = useState<CtoSessionLogEntry[]>([]);
   const [subordinateActivity, setSubordinateActivity] = useState<CtoSubordinateActivityEntry[]>([]);
+  const [openclawStatus, setOpenclawStatus] = useState<OpenclawBridgeStatus | null>(null);
 
   // Onboarding state
   const [onboardingState, setOnboardingState] = useState<CtoOnboardingState | null>(null);
@@ -120,15 +123,17 @@ export function CtoPage() {
   const loadCtoState = useCallback(async () => {
     if (!window.ade?.cto) return;
     try {
-      const [snapshot, obState] = await Promise.all([
+      const [snapshot, obState, openclawState] = await Promise.all([
         window.ade.cto.getState({ recentLimit: 20 }),
         window.ade.cto.getOnboardingState(),
+        window.ade.cto.getOpenclawState().catch(() => null),
       ]);
       setCtoIdentity(snapshot.identity);
       setCoreMemory(snapshot.coreMemory);
       setSessionLogs(snapshot.recentSessions);
       setSubordinateActivity(snapshot.recentSubordinateActivity);
       setOnboardingState(obState);
+      setOpenclawStatus(openclawState?.status ?? null);
       // Auto-show onboarding if first run
       if (obState.completedSteps.length === 0 && !obState.dismissedAt && !obState.completedAt) {
         setShowOnboarding(true);
@@ -164,6 +169,13 @@ export function CtoPage() {
   useEffect(() => {
     void Promise.all([loadCtoState(), loadWorkersAndBudget(), loadExternalMcpRegistry()]);
   }, [loadCtoState, loadWorkersAndBudget, loadExternalMcpRegistry]);
+
+  useEffect(() => {
+    const unsubscribe = window.ade?.cto?.onOpenclawConnectionStatus?.((status) => {
+      setOpenclawStatus(status);
+    });
+    return () => unsubscribe?.();
+  }, []);
 
   // Load revisions when worker selected
   useEffect(() => {
@@ -460,11 +472,37 @@ export function CtoPage() {
                     ? (selectedWorker ? `Direct chat with ${selectedWorker.name}` : "Persistent CTO session is locked to this project context.")
                     : "Create a lane to start CTO chat."}
                 </div>
+                {openclawStatus && (
+                  <div className="mt-1 font-mono text-[10px] text-muted-fg/60">
+                    OpenClaw:{" "}
+                    <span className={cn(
+                      openclawStatus.state === "connected"
+                        ? "text-success"
+                        : openclawStatus.state === "connecting" || openclawStatus.state === "reconnecting"
+                          ? "text-warning"
+                          : "text-muted-fg/60",
+                    )}>
+                      {openclawStatus.state}
+                    </span>
+                    {openclawStatus.lastMessageAt ? ` · last bridge activity ${new Date(openclawStatus.lastMessageAt).toLocaleTimeString()}` : ""}
+                  </div>
+                )}
                 {loading && <div className="font-mono text-[10px] text-muted-fg mt-1" data-testid="cto-loading">Connecting session...</div>}
                 {error && <div className="font-mono text-[10px] text-error mt-1" data-testid="cto-error">{error}</div>}
               </div>
 
               {/* Chat pane */}
+              {!selectedWorker && (
+                <div className="shrink-0 border-b border-border/20 px-4 py-3" style={{ background: "var(--color-surface-raised)" }}>
+                  <OpenclawConnectionPanel
+                    compact
+                    showConfig={false}
+                    showRecentTraffic
+                    onStateChange={(nextState) => setOpenclawStatus(nextState?.status ?? null)}
+                  />
+                </div>
+              )}
+
               <div className="flex-1 min-h-0">
                 <AgentChatPane laneId={laneId} lockSessionId={session?.id ?? null} />
               </div>

@@ -143,6 +143,13 @@ import type {
   CtoOnboardingState,
   CtoSystemPromptPreview,
   CtoLinearProject,
+  CtoGetOpenclawStateResult,
+  CtoUpdateOpenclawConfigArgs,
+  CtoTestOpenclawConnectionArgs,
+  CtoTestOpenclawConnectionResult,
+  CtoListOpenclawMessagesArgs,
+  CtoListOpenclawMessagesResult,
+  CtoSendOpenclawMessageArgs,
   LinearConnectionStatus,
   CtoSetLinearTokenArgs,
   CtoSaveFlowPolicyArgs,
@@ -154,6 +161,7 @@ import type {
   LinearSyncQueueItem,
   CtoResolveLinearSyncQueueItemArgs,
   LinearSyncConfig,
+  OpenclawBridgeStatus,
   ExternalMcpServerConfig,
   ExternalMcpServerSnapshot,
   ExternalMcpUsageEvent,
@@ -1026,7 +1034,13 @@ declare global {
         ensureSession: (args?: CtoEnsureSessionArgs) => Promise<AgentChatSession>;
         updateCoreMemory: (args: CtoUpdateCoreMemoryArgs) => Promise<CtoSnapshot>;
         listSessionLogs: (args?: CtoListSessionLogsArgs) => Promise<CtoSessionLogEntry[]>;
-        updateIdentity: (args: { patch: Record<string, unknown> }) => Promise<CtoSnapshot>;
+        updateIdentity: (args: CtoUpdateIdentityArgs) => Promise<CtoSnapshot>;
+        getOpenclawState: () => Promise<CtoGetOpenclawStateResult>;
+        updateOpenclawConfig: (args: CtoUpdateOpenclawConfigArgs) => Promise<CtoGetOpenclawStateResult>;
+        testOpenclawConnection: (args?: CtoTestOpenclawConnectionArgs) => Promise<CtoTestOpenclawConnectionResult>;
+        listOpenclawMessages: (args?: CtoListOpenclawMessagesArgs) => Promise<CtoListOpenclawMessagesResult>;
+        sendOpenclawMessage: (args: CtoSendOpenclawMessageArgs) => Promise<CtoListOpenclawMessagesResult[number]>;
+        onOpenclawConnectionStatus: (cb: (status: OpenclawBridgeStatus) => void) => () => void;
         listAgents: (args?: CtoListAgentsArgs) => Promise<AgentIdentity[]>;
         saveAgent: (args: CtoSaveAgentArgs) => Promise<AgentIdentity>;
         removeAgent: (args: CtoRemoveAgentArgs) => Promise<void>;

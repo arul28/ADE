@@ -90,6 +90,7 @@ import { createFlowPolicyService } from "./services/cto/flowPolicyService";
 import { createLinearRoutingService } from "./services/cto/linearRoutingService";
 import { createLinearOutboundService } from "./services/cto/linearOutboundService";
 import { createLinearSyncService } from "./services/cto/linearSyncService";
+import { createOpenclawBridgeService } from "./services/cto/openclawBridgeService";
 import { createOrchestratorService } from "./services/orchestrator/orchestratorService";
 import { createAiOrchestratorService } from "./services/orchestrator/aiOrchestratorService";
 import { createMissionBudgetService } from "./services/orchestrator/missionBudgetService";
@@ -787,6 +788,7 @@ app.whenReady().then(async () => {
 
     let orchestratorServiceRef: ReturnType<typeof createOrchestratorService> | null = null;
     let aiOrchestratorServiceRef: ReturnType<typeof createAiOrchestratorService> | null = null;
+    let openclawBridgeServiceRef: ReturnType<typeof createOpenclawBridgeService> | null = null;
     const queueLandingService = createQueueLandingService({
       db,
       logger,
@@ -1078,6 +1080,7 @@ app.whenReady().then(async () => {
       appVersion: app.getVersion(),
       onEvent: (event) => {
         aiOrchestratorServiceRef?.onAgentChatEvent(event);
+        openclawBridgeServiceRef?.onAgentChatEvent(event);
         emitProjectEvent(projectRoot, IPC.agentChatEvent, event);
       },
       onSessionEnded: onTrackedSessionEnded
@@ -1115,7 +1118,10 @@ app.whenReady().then(async () => {
       logger,
       laneService,
       projectConfigService,
-      broadcastEvent: (ev) => emitProjectEvent(projectRoot, IPC.testsEvent, ev)
+      broadcastEvent: (ev) => {
+        openclawBridgeServiceRef?.onTestEvent(ev);
+        emitProjectEvent(projectRoot, IPC.testsEvent, ev);
+      }
     });
 
     automationService = createAutomationService({
@@ -1147,6 +1153,7 @@ app.whenReady().then(async () => {
         }).catch(() => {});
       },
       onEvent: (event) => {
+        openclawBridgeServiceRef?.onMissionEvent(event);
         emitProjectEvent(projectRoot, IPC.missionsEvent, event);
         if (event.missionId) {
           automationService?.onMissionUpdated({ missionId: event.missionId });
@@ -1209,6 +1216,27 @@ app.whenReady().then(async () => {
       });
     }
 
+    const openclawBridgeService = createOpenclawBridgeService({
+      projectRoot,
+      adeDir: adePaths.adeDir,
+      laneService,
+      agentChatService,
+      ctoStateService,
+      workerAgentService,
+      missionService,
+      logger,
+      appVersion: app.getVersion(),
+      onStatusChange: (status) => emitProjectEvent(projectRoot, IPC.openclawConnectionStatus, status),
+    });
+    openclawBridgeServiceRef = openclawBridgeService;
+    try {
+      await openclawBridgeService.start();
+    } catch (error) {
+      logger.warn("openclaw_bridge.start_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
     const orchestratorService = createOrchestratorService({
       db,
       projectId,
@@ -1229,6 +1257,7 @@ app.whenReady().then(async () => {
       externalMcpService,
       onEvent: (event) => {
         aiOrchestratorServiceRef?.onOrchestratorRuntimeEvent(event);
+        openclawBridgeServiceRef?.onOrchestratorEvent(event);
         emitProjectEvent(projectRoot, IPC.orchestratorEvent, event);
       }
     });
@@ -1614,6 +1643,7 @@ app.whenReady().then(async () => {
       embeddingService,
       embeddingWorkerService,
       ctoStateService,
+      openclawBridgeService,
       workerAgentService,
       adeProjectService,
       workerRevisionService,
@@ -1702,6 +1732,7 @@ app.whenReady().then(async () => {
       proceduralLearningService: null,
       skillRegistryService: null,
       ctoStateService: null,
+      openclawBridgeService: null,
       workerAgentService: null,
       adeProjectService: null,
       workerRevisionService: null,
@@ -1761,6 +1792,11 @@ app.whenReady().then(async () => {
     }
     try {
       await ctx.externalMcpService?.dispose?.();
+    } catch {
+      // ignore
+    }
+    try {
+      await ctx.openclawBridgeService?.stop?.();
     } catch {
       // ignore
     }

@@ -1,18 +1,21 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import type {
-  MissionAgentRuntimeConfig,
-  MissionIntervention,
-  OrchestratorChatThread,
-  OrchestratorChatMessage,
-  OrchestratorMetadata,
-  OrchestratorTeamRuntimeState,
-  OrchestratorWorkerState,
-  OrchestratorChatTarget,
-  ActiveAgentInfo,
-  MissionStatus,
-  MissionRunView,
-  OrchestratorRunStatus,
-  TeamRuntimeConfig,
+import {
+  inferAttachmentType,
+  mergeAttachments,
+  type AgentChatFileRef,
+  type MissionAgentRuntimeConfig,
+  type MissionIntervention,
+  type OrchestratorChatThread,
+  type OrchestratorChatMessage,
+  type OrchestratorMetadata,
+  type OrchestratorTeamRuntimeState,
+  type OrchestratorWorkerState,
+  type OrchestratorChatTarget,
+  type ActiveAgentInfo,
+  type MissionStatus,
+  type MissionRunView,
+  type OrchestratorRunStatus,
+  type TeamRuntimeConfig,
 } from "../../../shared/types";
 import type { MentionParticipant } from "../shared/MentionInput";
 import { COLORS } from "../lanes/laneDesignTokens";
@@ -30,8 +33,36 @@ import {
 import { ChatChannelList, type Channel } from "./ChatChannelList";
 import { ChatMessageArea } from "./ChatMessageArea";
 import { ChatInput, type QuickTarget } from "./ChatInput";
+import { ChatSurfaceShell } from "../chat/ChatSurfaceShell";
+import { openExternalMcpSettings } from "../chat/chatNavigation";
+import { useChatMcpSummary } from "../chat/useChatMcpSummary";
 
 const BG_PAGE = COLORS.pageBg;
+
+function resolveMissionPhaseAccent(phaseLabel: string | null): string {
+  const normalized = (phaseLabel ?? "").trim().toLowerCase();
+  if (!normalized.length) return "#38BDF8";
+  if (/(plan|discover|research|scop|shape|intake)/.test(normalized)) return "#38BDF8";
+  if (/(build|implement|craft|develop|ship)/.test(normalized)) return "#A78BFA";
+  if (/(validat|test|qa|review|check)/.test(normalized)) return "#F59E0B";
+  if (/(merge|release|launch|handoff|finish|done)/.test(normalized)) return "#22C55E";
+  return "#38BDF8";
+}
+
+function resolveMissionSurfaceAccent(channel: Channel | undefined): string {
+  switch (channel?.kind) {
+    case "global":
+      return "#22C55E";
+    case "orchestrator":
+      return "#60A5FA";
+    case "teammate":
+      return "#06B6D4";
+    case "worker":
+      return resolveMissionPhaseAccent(channel.phaseLabel);
+    default:
+      return "#38BDF8";
+  }
+}
 
 function findThreadIntervention(args: {
   interventions: MissionIntervention[];
@@ -96,6 +127,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   const [teamRuntimeState, setTeamRuntimeState] = useState<OrchestratorTeamRuntimeState | null>(null);
   const [selectedChannelId, setSelectedChannelId] = useState("global");
   const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<AgentChatFileRef[]>([]);
   const [sending, setSending] = useState(false);
   const [globalViewMode, setGlobalViewMode] = useState<"signal" | "raw">("signal");
   const [completedCollapsed, setCompletedCollapsed] = useState(false);
@@ -130,10 +162,13 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   const completedWorkerChannels = useMemo(() => channels.filter((c) => c.kind === "worker" && c.status !== "active"), [channels]);
   const orchestratorChannel = useMemo(() => channels.find((c) => c.kind === "orchestrator") ?? null, [channels]);
   const selectedChannel = useMemo(() => channels.find((c) => c.id === selectedChannelId) ?? channels[0], [channels, selectedChannelId]);
+  const missionSurfaceMode = selectedChannel?.kind === "global" ? "mission-feed" : "mission-thread";
+  const missionSurfaceAccent = useMemo(() => resolveMissionSurfaceAccent(selectedChannel), [selectedChannel]);
   const shouldHydrateGlobalMessages = useMemo(
     () => selectedChannel?.kind === "global" && (globalViewMode === "raw" || !(runView?.progressLog?.length)),
     [globalViewMode, runView?.progressLog, selectedChannel?.kind],
   );
+  const mcpSummary = useChatMcpSummary(selectedChannel?.kind !== "worker");
 
   // ── Build mention targets ──
   const mentionTargets = useMemo<MentionTargetOption[]>(() => {
@@ -332,6 +367,26 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
 
   const quickTargets = useMemo<QuickTarget[]>(() => mentionTargets.filter((t) => t.id === "orchestrator" || t.id === "all" || t.status === "active").slice(0, 8).map((t) => ({ id: t.id, label: t.label, status: t.status as QuickTarget["status"], helper: t.helper })), [mentionTargets]);
   const appendMentionTarget = useCallback((targetId: string) => { setInput((prev) => { const token = `@${targetId}`; if (prev.includes(token)) return prev; const base = prev.trimEnd(); return `${base}${base.length ? " " : ""}${token} `; }); }, []);
+  const removeAttachment = useCallback((attachmentPath: string) => {
+    setAttachments((current) => current.filter((attachment) => attachment.path !== attachmentPath));
+  }, []);
+  const pickAttachments = useCallback(async () => {
+    try {
+      const paths = await (window as any).ade?.dialog?.openFile?.({
+        multiple: true,
+        title: "Attach files to mission chat",
+      });
+      if (!Array.isArray(paths) || !paths.length) return;
+      setAttachments((current) => mergeAttachments(
+        current,
+        paths
+          .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+          .map((path) => ({ path, type: inferAttachmentType(path) })),
+      ));
+    } catch {
+      // Dialog canceled or unavailable.
+    }
+  }, []);
 
   const runtimeSummary = useMemo(() => { if (teamRuntimeConfig?.enabled) { const c = teamRuntimeState?.teammateIds.length ?? teamRuntimeConfig.teammateCount ?? 0; return { title: "Team runtime", detail: `${teamRuntimeState?.phase ?? "bootstrapping"} · ${c} teammate${c === 1 ? "" : "s"} · ${teamRuntimeConfig.targetProvider === "auto" ? "auto" : teamRuntimeConfig.targetProvider}` }; } if (agentRuntimeConfig) return { title: "Coordinator chat", detail: "Direct worker targeting is available from here." }; return null; }, [agentRuntimeConfig, teamRuntimeConfig, teamRuntimeState]);
   const missionNarrative = useMemo(() => buildMissionStateNarrative(runView), [runView]);
@@ -339,24 +394,26 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   // ── Send message ──
   const handleSend = useCallback(async (message: string, mentions: string[]) => {
     if (sending || !message.trim() || chatBlocked) return;
+    const attachmentsSnapshot = attachments;
     setSending(true);
     try {
       if (selectedChannel?.kind === "global" || mentions.length > 0) {
         const ct = threads.find((t) => t.threadType === "coordinator");
-        if (ct) { const mt = mentions.map((m) => mentionTargetMap.get(m)).find((e) => e?.target != null) ?? null; const tgt: OrchestratorChatTarget = mt?.target ?? { kind: "coordinator", runId: runId ?? null }; await window.ade.orchestrator.sendThreadMessage({ missionId, threadId: mt?.threadId ?? ct.id, content: message, target: tgt }); }
+        if (ct) { const mt = mentions.map((m) => mentionTargetMap.get(m)).find((e) => e?.target != null) ?? null; const tgt: OrchestratorChatTarget = mt?.target ?? { kind: "coordinator", runId: runId ?? null }; await window.ade.orchestrator.sendThreadMessage({ missionId, threadId: mt?.threadId ?? ct.id, content: message, attachments: attachmentsSnapshot, target: tgt }); }
       } else if (selectedChannel?.threadId) {
         const th = threads.find((t) => t.id === selectedChannel.threadId);
         let tgt: OrchestratorChatTarget;
         if (th?.threadType === "worker") tgt = { kind: "worker", runId: th.runId ?? runId ?? null, stepId: th.stepId ?? null, stepKey: th.stepKey ?? null, attemptId: th.attemptId ?? null, sessionId: th.sessionId ?? null, laneId: th.laneId ?? null };
         else if (th?.threadType === "teammate") tgt = { kind: "teammate", runId: th.runId ?? runId ?? null, teamMemberId: (th as OrchestratorChatThread & { teamMemberId?: string }).teamMemberId ?? null };
         else tgt = { kind: "coordinator", runId: runId ?? null };
-        await window.ade.orchestrator.sendThreadMessage({ missionId, threadId: selectedChannel.threadId, content: message, target: tgt });
+        await window.ade.orchestrator.sendThreadMessage({ missionId, threadId: selectedChannel.threadId, content: message, attachments: attachmentsSnapshot, target: tgt });
       }
       setInput("");
+      setAttachments([]);
       await Promise.all([refreshThreads(), refreshGlobalMessages()]);
       if (selectedChannel?.threadId) await refreshThreadMessages(selectedChannel.threadId);
     } catch (err) { console.error("[MissionChatV2] handleSend failed:", err); } finally { setSending(false); }
-  }, [chatBlocked, mentionTargetMap, sending, selectedChannel, threads, missionId, runId, refreshThreads, refreshGlobalMessages, refreshThreadMessages]);
+  }, [attachments, chatBlocked, mentionTargetMap, sending, selectedChannel, threads, missionId, runId, refreshThreads, refreshGlobalMessages, refreshThreadMessages]);
 
   const handleApproval = useCallback(async (sessionId: string, itemId: string, decision: "accept" | "accept_for_session" | "decline" | "cancel", responseText?: string | null) => {
     try { await window.ade.agentChat.approve({ sessionId, itemId, decision, responseText }); setJumpNotice(null); await Promise.all([refreshThreads(), refreshGlobalMessages()]); if (selectedChannel?.threadId) await refreshThreadMessages(selectedChannel.threadId); } catch (error) { setJumpNotice(error instanceof Error ? error.message : String(error)); }
@@ -379,33 +436,47 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
         onSetGlobalViewMode={setGlobalViewMode}
       />
       <div className="flex min-w-0 flex-1 flex-col" style={{ background: BG_PAGE }}>
-        <ChatMessageArea
-          selectedChannel={selectedChannel}
-          workerStatusDot={workerStatusDotFn}
-          displayMessages={displayMessages}
-          attemptNameMap={attemptNameMap}
-          jumpNotice={jumpNotice}
-          chatNotice={chatNotice}
-          chatBlocked={chatBlocked}
-          threadIntervention={threadIntervention}
-          onOpenIntervention={onOpenIntervention}
-          showStreamingIndicator={showStreaming}
-          missionNarrative={selectedChannel?.kind === "global" ? missionNarrative : null}
-          runtimeSummary={runtimeSummary}
-          agentRuntimeConfig={agentRuntimeConfig}
-          onApproval={handleApproval}
-        />
-        <ChatInput
-          selectedChannel={selectedChannel}
-          input={input}
-          sending={sending}
-          chatBlocked={Boolean(chatBlocked)}
-          participants={participants}
-          quickTargets={quickTargets}
-          onInputChange={setInput}
-          onSend={handleSend}
-          onAppendMentionTarget={appendMentionTarget}
-        />
+        <ChatSurfaceShell
+          mode={missionSurfaceMode}
+          accentColor={missionSurfaceAccent}
+          className="m-3 ml-2 rounded-[var(--chat-radius-shell)]"
+          bodyClassName="flex min-h-0 flex-1 flex-col"
+          footer={(
+            <ChatInput
+              selectedChannel={selectedChannel}
+              input={input}
+              attachments={attachments}
+              sending={sending}
+              chatBlocked={Boolean(chatBlocked)}
+              participants={participants}
+              quickTargets={quickTargets}
+              onInputChange={setInput}
+              onSend={handleSend}
+              onAppendMentionTarget={appendMentionTarget}
+              onPickAttachments={pickAttachments}
+              onRemoveAttachment={removeAttachment}
+            />
+          )}
+        >
+          <ChatMessageArea
+            selectedChannel={selectedChannel}
+            workerStatusDot={workerStatusDotFn}
+            displayMessages={displayMessages}
+            attemptNameMap={attemptNameMap}
+            jumpNotice={jumpNotice}
+            chatNotice={chatNotice}
+            chatBlocked={chatBlocked}
+            threadIntervention={threadIntervention}
+            onOpenIntervention={onOpenIntervention}
+            showStreamingIndicator={showStreaming}
+            missionNarrative={selectedChannel?.kind === "global" ? missionNarrative : null}
+            runtimeSummary={runtimeSummary}
+            agentRuntimeConfig={agentRuntimeConfig}
+            mcpSummary={selectedChannel?.kind === "worker" ? null : mcpSummary}
+            onOpenMcpSettings={openExternalMcpSettings}
+            onApproval={handleApproval}
+          />
+        </ChatSurfaceShell>
       </div>
     </div>
   );

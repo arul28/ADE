@@ -25,7 +25,7 @@ The following phase files are superseded by the new roadmap and should be consid
 
 ---
 
-Last updated: 2026-03-11
+Last updated: 2026-03-12
 Owner: ADE
 Status: Active
 
@@ -203,7 +203,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | .ade/ Portable State (canonical tracked/shareable contract) | Phase 4 | Phase 3 | Implemented |
 | .ade/ State Sync (cr-sqlite database sync) | Phase 6 | Phase 4 | Planned |
 | External MCP Consumption | Phase 4 | Phase 3 | Implemented baseline; ADE-managed external MCP substrate shipped |
-| OpenClaw Bridge (External Agent Gateway) | Phase 4 | Phase 4 W1 (CTO) + W8 (External MCP) | Planned (not started) |
+| OpenClaw Bridge (External Agent Gateway) | Phase 4 | Phase 4 W1 (CTO) + W8 (External MCP) | Complete (W9) |
 | Worker Agents & Org Chart | Phase 4 | Phase 4 W1 | Complete (W2) |
 | Heartbeat & Activation System (coalescing, deferred promotion) | Phase 4 | Phase 4 W1 | Complete (W3) |
 | Bidirectional Linear Sync (polling, auto-dispatch, reconciliation) | Phase 4 | Phase 4 W2 + W3 | Complete (W4) |

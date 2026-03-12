@@ -38,6 +38,7 @@ import type {
   DraftPrDescriptionArgs,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
+  CtoUpdateIdentityArgs,
   CtoUpdateCoreMemoryArgs,
   CtoListSessionLogsArgs,
   CtoSnapshot,
@@ -68,6 +69,13 @@ import type {
   CtoOnboardingState,
   CtoSystemPromptPreview,
   CtoLinearProject,
+  CtoGetOpenclawStateResult,
+  CtoUpdateOpenclawConfigArgs,
+  CtoTestOpenclawConnectionArgs,
+  CtoTestOpenclawConnectionResult,
+  CtoListOpenclawMessagesArgs,
+  CtoListOpenclawMessagesResult,
+  CtoSendOpenclawMessageArgs,
   LinearConnectionStatus,
   CtoSetLinearTokenArgs,
   CtoSaveFlowPolicyArgs,
@@ -79,6 +87,7 @@ import type {
   LinearSyncQueueItem,
   CtoResolveLinearSyncQueueItemArgs,
   LinearSyncConfig,
+  OpenclawBridgeStatus,
   ExternalMcpServerConfig,
   ExternalMcpServerSnapshot,
   ExternalMcpUsageEvent,
@@ -1491,8 +1500,23 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.ctoUpdateCoreMemory, args),
     listSessionLogs: async (args: CtoListSessionLogsArgs = {}): Promise<CtoSessionLogEntry[]> =>
       ipcRenderer.invoke(IPC.ctoListSessionLogs, args),
-    updateIdentity: async (args: { patch: Record<string, unknown> }): Promise<CtoSnapshot> =>
+    updateIdentity: async (args: CtoUpdateIdentityArgs): Promise<CtoSnapshot> =>
       ipcRenderer.invoke(IPC.ctoUpdateIdentity, args),
+    getOpenclawState: async (): Promise<CtoGetOpenclawStateResult> =>
+      ipcRenderer.invoke(IPC.ctoGetOpenclawState),
+    updateOpenclawConfig: async (args: CtoUpdateOpenclawConfigArgs): Promise<CtoGetOpenclawStateResult> =>
+      ipcRenderer.invoke(IPC.ctoUpdateOpenclawConfig, args),
+    testOpenclawConnection: async (args: CtoTestOpenclawConnectionArgs = {}): Promise<CtoTestOpenclawConnectionResult> =>
+      ipcRenderer.invoke(IPC.ctoTestOpenclawConnection, args),
+    listOpenclawMessages: async (args: CtoListOpenclawMessagesArgs = {}): Promise<CtoListOpenclawMessagesResult> =>
+      ipcRenderer.invoke(IPC.ctoListOpenclawMessages, args),
+    sendOpenclawMessage: async (args: CtoSendOpenclawMessageArgs): Promise<CtoListOpenclawMessagesResult[number]> =>
+      ipcRenderer.invoke(IPC.ctoSendOpenclawMessage, args),
+    onOpenclawConnectionStatus: (cb: (status: OpenclawBridgeStatus) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: OpenclawBridgeStatus) => cb(payload);
+      ipcRenderer.on(IPC.openclawConnectionStatus, listener);
+      return () => ipcRenderer.removeListener(IPC.openclawConnectionStatus, listener);
+    },
     listAgents: async (args: CtoListAgentsArgs = {}): Promise<AgentIdentity[]> =>
       ipcRenderer.invoke(IPC.ctoListAgents, args),
     saveAgent: async (args: CtoSaveAgentArgs): Promise<AgentIdentity> =>

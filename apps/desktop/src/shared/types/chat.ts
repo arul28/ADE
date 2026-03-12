@@ -9,12 +9,53 @@ export type AgentChatProvider = "codex" | "claude" | "unified" | (string & {});
 
 export type AgentChatSessionStatus = "active" | "idle" | "ended";
 
+export type ChatSurfaceMode = "standard" | "resolver" | "mission-thread" | "mission-feed";
+
+export type ChatSurfaceChipTone = "accent" | "success" | "warning" | "danger" | "info" | "muted";
+
+export type ChatSurfaceChip = {
+  label: string;
+  tone?: ChatSurfaceChipTone;
+};
+
+export type ChatSurfacePresentation = {
+  mode: ChatSurfaceMode;
+  title?: string | null;
+  subtitle?: string | null;
+  accentColor?: string | null;
+  chips?: ChatSurfaceChip[];
+  showMcpStatus?: boolean;
+};
+
 export type AgentChatApprovalDecision = "accept" | "accept_for_session" | "decline" | "cancel";
 
 export type AgentChatFileRef = {
   path: string;
   type: "file" | "image";
 };
+
+/** Infer whether a file path points to an image or a generic file. */
+export function inferAttachmentType(
+  filePath: string,
+  mimeType?: string | null,
+): AgentChatFileRef["type"] {
+  if (mimeType?.startsWith("image/")) return "image";
+  return /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?)$/i.test(filePath) ? "image" : "file";
+}
+
+/** Merge two attachment lists, deduplicating by path (last-write wins). */
+export function mergeAttachments(
+  current: AgentChatFileRef[],
+  incoming: AgentChatFileRef[],
+): AgentChatFileRef[] {
+  const deduped = new Map<string, AgentChatFileRef>();
+  for (const attachment of current) deduped.set(attachment.path, attachment);
+  for (const attachment of incoming) {
+    if (!attachment.path.trim().length) continue;
+    deduped.set(attachment.path, attachment);
+  }
+  return [...deduped.values()];
+}
 
 export type AgentChatPlanStep = {
   text: string;

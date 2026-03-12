@@ -20,16 +20,15 @@ Goal: Add the CTO agent as a persistent project-aware assistant with a configura
 | W7b: Orchestrator ↔ Memory Integration | [W7b.md](W7b.md) | ✅ Complete |
 | W7c: Skills + Learning Pipeline | [W7c.md](W7c.md) | Largely implemented / advanced capture follow-through pending |
 | W8: External MCP Consumption | [W8.md](W8.md) | Implemented baseline; ready for W9 |
-| W9: OpenClaw Bridge | [W9.md](W9.md) | Not started |
+| W9: OpenClaw Bridge | [W9.md](W9.md) | ✅ Complete |
 | W10: .ade/ Portable State | [W10.md](W10.md) | ✅ Complete |
 
-### Audit Snapshot (2026-03-11)
+### Current Status (2026-03-12)
 
-- Complete: W1-W4, W6, W6½, W7a, W7b, W8
+- Complete: W1-W4, W6, W6½, W7a, W7b, W8, W9, W10
 - Mostly implemented: W5b, W7c
 - Partially implemented: W-UX
-- Still genuinely pending: W9
-- Highest-value follow-through still open inside shipped work: onboarding/polish in CTO UX, advanced knowledge capture validation/review, and W5b ecosystem polish before moving deeper into W9.
+- Remaining follow-through inside shipped Phase 4 work: onboarding/polish in CTO UX, advanced knowledge capture validation/review, and W5b ecosystem polish.
 
 ### Reference docs
 
@@ -75,7 +74,6 @@ Workstreams are numbered by topic but executed in dependency order. W1-W4, W5a, 
 - CTO still needs a cleaner onboarding/setup experience, stronger activity visibility, and broader visual/system polish
 - Inconsistent theming and shared component treatment remain across CTO/Automations/Memory surfaces
 - Advanced learning capture from user interventions, repeated errors, and PR feedback still needs end-to-end follow-through even though the procedural pipeline is already in code
-- OpenClaw bridge work remains the main ecosystem gap: W8 now ships the ADE-managed external MCP substrate that W9 is expected to build on.
 - Advanced knowledge capture still needs end-to-end confidence in production flows even though the extraction/export/indexing pipeline is already in place.
 
 ```
@@ -92,7 +90,7 @@ Wave 5 (mostly shipped — advanced learning capture remains):
 
 Wave 6 (ecosystem):
   W8: External MCP Consumption            Implemented baseline
-  W9: OpenClaw Bridge                     Pending; builds on W1 + shipped W8 substrate
+  W9: OpenClaw Bridge                     ✅ Complete
   W10: .ade/ Portable State               ✅ Complete
 ```
 
@@ -107,7 +105,7 @@ W1-W4 ✅
      │
      ├──→ W-UX (CTO + Org UX; partial)
      │
-     └──→ W8 (External MCP; shipped baseline) ──→ W9 (OpenClaw Bridge; pending)
+     └──→ W8 (External MCP; shipped baseline) ──→ W9 (OpenClaw Bridge; complete)
 ```
 
 Each workstream includes its own renderer/UI changes and tests (no standalone workstreams for these).
@@ -226,11 +224,12 @@ Phase 4 should enable a "tech department" loop: one persistent agent per employe
 - Settings, CTO access controls, and mission-level server/tool selection are in the product surface.
 - Worker ownership, budget gating, config reload, discovery, and structured tool result passthrough are wired well enough for W9 to assume the substrate exists.
 
-**W9 — OpenClaw Bridge:**
-- Bidirectional communication between ADE CTO and OpenClaw agent gateway.
-- Memory bridge: selective context sharing with configurable privacy policy.
-- HTTP + WebSocket transport with idempotency and device pairing.
-- Fallback skill-only mode for simpler setups.
+**W9 — OpenClaw Bridge: Complete**
+- ✅ `openclawBridgeService` runs in the Electron main process and owns local `/openclaw/health`, `/openclaw/hook`, and `/openclaw/query` endpoints plus the paired OpenClaw Gateway operator WebSocket client.
+- ✅ OpenClaw ingress routes through one ADE bridge contract with optional `targetHint` (`cto` or `agent:<worker-slug>`), using `agentChatService.ensureIdentitySession()` for routing and CTO fallback when a worker target is unavailable.
+- ✅ Replies and proactive notifications flow back through the OpenClaw Gateway operator session, with offline queueing, remembered session routing, idempotency, and persisted bridge state under `.ade/cto/`.
+- ✅ OpenClaw context stays turn-scoped bridge metadata by default and is filtered through CTO `openclawContextPolicy` on outbound delivery rather than being auto-promoted into durable memory.
+- ✅ The bridge is surfaced in product UI through onboarding, CTO settings, and a compact panel in the CTO chat area for connection state and recent traffic.
 
 **W10 — .ade/ Portable State: Complete**
 - ✅ `.ade` now has one canonical layout shared by desktop startup and MCP bootstrap (`adeLayout.ts`).

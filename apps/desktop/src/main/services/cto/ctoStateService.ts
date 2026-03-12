@@ -6,6 +6,7 @@ import type {
   CtoCoreMemory,
   CtoIdentity,
   ExternalMcpAccessPolicy,
+  OpenclawContextPolicy,
   CtoOnboardingState,
   CtoSessionLogEntry,
   CtoSubordinateActivityEntry,
@@ -88,6 +89,7 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
       ? (source.memoryPolicy as Record<string, unknown>)
       : {};
   const externalMcpAccess = normalizeExternalMcpAccess(source.externalMcpAccess);
+  const openclawContextPolicy = normalizeOpenclawContextPolicy(source.openclawContextPolicy);
 
   return {
     name,
@@ -118,6 +120,7 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
         : 30,
     },
     ...(externalMcpAccess ? { externalMcpAccess } : {}),
+    ...(openclawContextPolicy ? { openclawContextPolicy } : {}),
     updatedAt,
   };
 }
@@ -133,6 +136,18 @@ function normalizeExternalMcpAccess(value: unknown): ExternalMcpAccessPolicy | u
     allowAll: source.allowAll !== false,
     allowedServers: toStringArray(source.allowedServers),
     blockedServers: toStringArray(source.blockedServers),
+  };
+}
+
+function normalizeOpenclawContextPolicy(value: unknown): OpenclawContextPolicy | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const source = value as Record<string, unknown>;
+  const blockedCategories = Array.isArray(source.blockedCategories)
+    ? [...new Set(source.blockedCategories.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0))]
+    : [];
+  return {
+    shareMode: source.shareMode === "full" ? "full" : "filtered",
+    blockedCategories,
   };
 }
 
@@ -227,6 +242,10 @@ function makeDefaultIdentity(): CtoIdentity {
       allowAll: true,
       allowedServers: [],
       blockedServers: [],
+    },
+    openclawContextPolicy: {
+      shareMode: "filtered",
+      blockedCategories: ["secret", "token", "system_prompt"],
     },
     updatedAt: timestamp,
   };
@@ -704,6 +723,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       modelPreferences: { ...current.modelPreferences, ...(patch.modelPreferences ?? {}) },
       memoryPolicy: { ...current.memoryPolicy, ...(patch.memoryPolicy ?? {}) },
       externalMcpAccess: normalizeExternalMcpAccess(patch.externalMcpAccess) ?? current.externalMcpAccess,
+      openclawContextPolicy: normalizeOpenclawContextPolicy(patch.openclawContextPolicy) ?? current.openclawContextPolicy,
       version: current.version + 1,
       updatedAt: timestamp,
     };

@@ -51,6 +51,10 @@
   --shadow-card: 0 1px 6px -1px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(45, 40, 64, 0.3);
   --shadow-card-hover: 0 4px 16px -2px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(45, 40, 64, 0.5);
   --shadow-float: 0 8px 32px -8px rgba(0, 0, 0, 0.8);
+
+  --chat-radius-shell: 18px;
+  --chat-radius-card: 16px;
+  --chat-radius-pill: 9999px;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -87,6 +91,12 @@
   --color-glow: rgba(167, 139, 250, 0.25);
   --pane-bg: rgba(24, 20, 35, 0.94);
   --pane-border: rgba(45, 40, 64, 0.6);
+  --chat-shell-shadow: 0 24px 60px -34px rgba(0, 0, 0, 0.86), 0 0 0 1px rgba(167, 139, 250, 0.12);
+  --chat-card-shadow: 0 16px 32px -24px rgba(0, 0, 0, 0.8);
+  --chat-composer-shadow: 0 -12px 30px -26px rgba(0, 0, 0, 0.8);
+  --chat-glass-bg: rgba(24, 20, 35, 0.7);
+  --chat-glass-border: rgba(255, 255, 255, 0.08);
+  --chat-streaming-shimmer: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
   --color-success: #22c55e;
   --color-warning: #f59e0b;
   --color-error: #ef4444;
@@ -192,6 +202,12 @@
   --color-glow: rgba(4, 144, 104, 0.12);
   --pane-bg: rgba(255, 255, 255, 0.88);
   --pane-border: rgba(212, 209, 204, 0.5);
+  --chat-shell-shadow: 0 18px 42px -28px rgba(15, 23, 42, 0.18), 0 0 0 1px rgba(4, 144, 104, 0.1);
+  --chat-card-shadow: 0 14px 28px -24px rgba(15, 23, 42, 0.14);
+  --chat-composer-shadow: 0 -12px 22px -24px rgba(15, 23, 42, 0.12);
+  --chat-glass-bg: rgba(255, 255, 255, 0.76);
+  --chat-glass-border: rgba(26, 26, 30, 0.08);
+  --chat-streaming-shimmer: linear-gradient(90deg, transparent, rgba(26,26,30,0.08), transparent);
   --color-success: #16a34a;
   --color-warning: #d97706;
   --color-error: #dc2626;

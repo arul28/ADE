@@ -2,6 +2,7 @@
 // Orchestrator types
 // ---------------------------------------------------------------------------
 
+import type { AgentChatFileRef } from "./chat";
 import type { ModelId } from "./core";
 import type { ModelConfig } from "./models";
 import type { PrDepth, QueueWaitReason } from "./prs";
@@ -1363,6 +1364,12 @@ export type OrchestratorChatMessage = {
   metadata?: Record<string, unknown> | null;
 };
 
+export type OrchestratorMissionThreadUserMessageStructuredStream = {
+  kind: "user_message";
+  text: string;
+  attachments?: AgentChatFileRef[];
+};
+
 export type OrchestratorChatThreadType = "coordinator" | "teammate" | "worker";
 
 export type OrchestratorChatVisibilityMode = "full" | "digest_only" | "metadata_only";
@@ -1455,6 +1462,7 @@ export type GetOrchestratorThreadMessagesArgs = {
 export type SendOrchestratorThreadMessageArgs = {
   missionId: string;
   content: string;
+  attachments?: AgentChatFileRef[];
   visibilityMode?: OrchestratorChatVisibilityMode;
   metadata?: Record<string, unknown> | null;
 } & (
