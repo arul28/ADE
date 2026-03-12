@@ -89,6 +89,15 @@ describe("AgentChatComposer", () => {
     expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 
+  it("does not send message on Enter while busy", () => {
+    const { onSubmit } = renderComposer({ sendOnEnter: true, draft: "send me", busy: true });
+
+    const textarea = screen.getByPlaceholderText("Message the agent...") as HTMLTextAreaElement;
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("shows steer mode and interrupt controls when turn is active", () => {
     renderComposer({ turnActive: true, draft: "steer" });
 

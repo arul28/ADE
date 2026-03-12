@@ -1,5 +1,12 @@
 # Computer Use in ADE — Research & Brainstorm
 
+## Status Snapshot (2026-03-12)
+
+- This document is still research/spec material, not a shipped implementation contract.
+- ADE can already model screenshot/browser-verification/video evidence requirements in mission validation and closeout logic.
+- Native computer-use runtime tools (`screenshot_environment`, `interact_gui`, `record_environment`, `launch_app`, `get_environment_info`) are not exposed end-to-end in the local ADE runtime yet.
+- Automatic screenshot/video capture, first-class mission/lane proof artifacts, and PR-body proof embedding are still open follow-through work.
+
 ## What Cursor Built (Cloud Agents + Computer Use)
 
 **Architecture**: Each agent gets an isolated Linux VM with full dev environment. The agent:
@@ -28,38 +35,40 @@
 
 ---
 
-## What ADE Already Plans
+## What ADE Has Today (Specs + Partial Implementation)
 
-ADE's docs are **remarkably well-prepared** for this. Key existing specs:
+ADE's type system and docs are well-prepared for computer use, and some runtime groundwork exists. Here is what is spec'd versus what is actually wired in code.
 
 ### Computer Use MCP Tools (AI_INTEGRATION.md:429-454)
-Already specified:
-- `screenshot_environment` — capture screen → Base64 PNG
+Specified in docs but **not registered as callable MCP tools**:
+- `screenshot_environment` — capture screen -> Base64 PNG
 - `interact_gui` — mouse/keyboard actions
-- `record_environment` — start/stop video → MP4 artifact
+- `record_environment` — start/stop video -> MP4 artifact
 - `launch_app` — open any app
 - `get_environment_info` — resolution, processes
 
-Provider-specific mappings for Claude and Codex already documented.
+Provider-specific mappings for Claude and Codex are documented. The orchestrator adapter (`baseOrchestratorAdapter.ts`) injects textual instructions referencing these tool names into worker prompts, but the tools themselves do not exist in the MCP tool registry.
+
+### Local Capability Detection (implemented)
+`localComputerUse.ts` probes macOS for `screencapture`, `osascript`, `swift`, and `open` and returns structured capability state per proof-requirement key. This lets the orchestrator know what the host machine can support in principle, but does not perform any capture itself.
+
+### Proof Artifact Types (implemented)
+`proofArtifacts.ts` defines and normalizes `screenshot`, `browser_verification`, `browser_trace`, `video_recording`, and `console_logs` as first-class artifact kinds. `MissionCloseoutRequirement` supports these keys, and the closeout diagnostic system can block completion when declared evidence is missing. The artifact path helper (`createComputerUseArtifactPath`) writes under `.ade/artifacts/computer-use/`.
 
 ### Desktop Environment Stack (AI_INTEGRATION.md:1210-1237)
-Full Xvfb pipeline spec'd:
-- Xvfb virtual display → Fluxbox/Mutter → VNC → noVNC → xdotool → ffmpeg
+Specified but **not implemented**:
+- Xvfb virtual display -> Fluxbox/Mutter -> VNC -> noVNC -> xdotool -> ffmpeg
 - Three tiers: terminal-only, browser, desktop
 
 ### Lane Artifacts (LANES.md:714-745)
-- `screenshot` and `video` artifact types already first-class
-- Auto-attach to lanes, missions, agent runs
-- PR integration: screenshots embedded in PR body, videos linked
-
-### Milestone 5 Validation (plans/milestone-5)
-- `MissionCloseoutRequirement` supports `"screenshot"`, `"browser_verification"` keys
-- CompletionDiagnostic system blocks close if artifacts missing
-- Agent-browser capability flag on PhaseCards
+- `screenshot` and `video` artifact types are defined in the type system.
+- Auto-attach to lanes, missions, and agent runs is modeled but depends on the capture runtime that does not yet exist.
+- PR integration (screenshots embedded in PR body, videos linked) is not implemented.
 
 ### Agent Browser (AGENT_BROWSER.md)
-- Playwright via CDP for Electron testing
-- Peekaboo mentioned as macOS native alternative
+- Playwright via CDP for Electron testing is spec'd.
+- Peekaboo mentioned as macOS native alternative.
+- Neither is wired into the mission worker tool surface today.
 
 ---
 
@@ -292,12 +301,16 @@ Or leverage Ghost OS recipes for non-web flows:
 
 ## Summary
 
-ADE is **90% of the way there in docs/specs**. The Computer Use MCP tools, artifact system, closeout requirements, and agent-browser are all specified. The main gaps are:
+ADE has extensive specs for computer use, and the mission/artifact type system already models screenshot, video, and browser-verification evidence. A `localComputerUse.ts` capability-detection module (159 lines) probes the host for `screencapture`, `osascript`, `swift`, and `open` and maps those to proof-requirement keys. The `proofArtifacts.ts` module (270 lines) normalizes artifact types and closeout requirement keys. The orchestrator adapter injects proof-capture instructions into worker prompts when a step declares hard proof requirements.
 
-1. **Native macOS support** — Ghost OS fills this perfectly
-2. **Visual verification loop** — Screenshot → assess → fix → re-verify
-3. **Video proof of work** — Recording + auto-attach to missions/PRs
-4. **User-customizable recipes** — Per-project verification workflows
-5. **Real-time observation** — Watch agent work via VNC/screen sharing
+What is **not yet built**:
 
-The combination of Ghost OS (native macOS) + existing Playwright/CDP (web/Electron) + Xvfb containers (CI) gives ADE full-spectrum computer use across any app type, on any platform, user-customizable.
+1. **Native runtime tools** -- `screenshot_environment`, `interact_gui`, `record_environment`, `launch_app`, and `get_environment_info` are referenced in orchestrator prompts but are not registered as MCP tools that workers can actually invoke.
+2. **Ghost OS integration** -- Not started. Ghost OS is the recommended path for native macOS computer use.
+3. **Visual verification loop** -- Screenshot-then-assess-then-fix loop is spec'd but not wired into the worker execution path.
+4. **Video proof of work** -- No automatic screen recording or MP4 capture exists.
+5. **PR proof embedding** -- Screenshots and videos are not auto-embedded in PR descriptions.
+6. **User-customizable recipes** -- `.ade/computer-use.json` and `.ade/recipes/` are not implemented.
+7. **Real-time observation** -- No VNC or screen-sharing viewer for watching agent work.
+
+The target architecture combines Ghost OS (native macOS) + Playwright/CDP (web/Electron) + Xvfb containers (CI) for full-spectrum computer use. All of this remains future work.

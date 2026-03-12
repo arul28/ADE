@@ -26,7 +26,7 @@ import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
-import { CARD_SHADOW_STYLE, extractError, getAutomationsBridge, INPUT_STYLE } from "./shared";
+import { CARD_SHADOW_STYLE, extractError, INPUT_STYLE } from "./shared";
 
 const DEFAULT_STATE: NightShiftState = {
   settings: {
@@ -57,20 +57,14 @@ function QueueMutationButtons({
   index,
   total,
   disabled,
-  available,
   onMutate,
 }: {
   item: NightShiftQueueItem;
   index: number;
   total: number;
   disabled: boolean;
-  available: boolean;
   onMutate: (action: "remove" | "run-now" | "pause" | "resume" | "move", position?: number) => void;
 }) {
-  if (!available) {
-    return <div className="text-[10px] text-[#71717A]">Queue runtime controls waiting on W5b bridge</div>;
-  }
-
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       <Button size="sm" variant="ghost" disabled={disabled || index === 0} onClick={() => onMutate("move", index - 1)}>
@@ -130,8 +124,6 @@ export function NightShiftTab() {
   const [briefingQueueId, setBriefingQueueId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const automationsBridge = getAutomationsBridge();
-  const queueControlsAvailable = Boolean(automationsBridge.mutateNightShiftQueue);
   const ruleById = useMemo(() => new Map(rules.map((rule) => [rule.id, rule])), [rules]);
 
   const refresh = useCallback(async () => {
@@ -186,11 +178,10 @@ export function NightShiftTab() {
     action: "remove" | "run-now" | "pause" | "resume" | "move",
     position?: number,
   ) => {
-    if (!automationsBridge.mutateNightShiftQueue) return;
     setMutatingQueueId(queueItemId);
     setError(null);
     try {
-      const next = await automationsBridge.mutateNightShiftQueue(
+      const next = await window.ade.automations.mutateNightShiftQueue(
         action === "move" ? { action, queueItemId, position: position ?? 0 } : { action, queueItemId },
       );
       setState(next);
@@ -341,7 +332,6 @@ export function NightShiftTab() {
                             index={index}
                             total={state.queue.length}
                             disabled={disabled}
-                            available={queueControlsAvailable}
                             onMutate={(action, position) => void mutateQueue(item.id, action, position)}
                           />
                         </div>

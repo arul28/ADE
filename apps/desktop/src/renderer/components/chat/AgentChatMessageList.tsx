@@ -105,6 +105,34 @@ function surfaceInlineCardStyle(): React.CSSProperties {
   };
 }
 
+function describeUserDeliveryState(event: Extract<AgentChatEvent, { type: "user_message" }>): { label: string; className: string } | null {
+  if (event.deliveryState === "failed") {
+    return {
+      label: "failed",
+      className: "border-red-500/18 bg-red-500/[0.08] text-red-300",
+    };
+  }
+  if (event.deliveryState === "queued") {
+    return {
+      label: "queued",
+      className: "border-amber-500/18 bg-amber-500/[0.08] text-amber-300",
+    };
+  }
+  if (event.processed) {
+    return {
+      label: "processed",
+      className: "border-emerald-500/18 bg-emerald-500/[0.08] text-emerald-300",
+    };
+  }
+  if (event.deliveryState === "delivered") {
+    return {
+      label: "sent",
+      className: "border-sky-500/18 bg-sky-500/[0.08] text-sky-300",
+    };
+  }
+  return null;
+}
+
 type RenderEnvelope = {
   key: string;
   timestamp: string;
@@ -567,6 +595,7 @@ function renderEvent(
 
   /* ── User message ── */
   if (event.type === "user_message") {
+    const deliveryChip = describeUserDeliveryState(event);
     return (
       <div className="flex justify-end">
         <div className={cn(GLASS_CARD_CLASS, "max-w-[82%] px-4 py-3")} style={messageCardStyle(0.18)}>
@@ -575,6 +604,11 @@ function renderEvent(
               <User size={11} weight="bold" className="text-[var(--chat-accent)]" />
             </span>
             <span className="font-mono text-[9px] font-bold uppercase tracking-[1.5px] text-[var(--chat-accent)]">You</span>
+            {deliveryChip ? (
+              <span className={cn("inline-flex items-center border px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase tracking-[0.18em]", deliveryChip.className)}>
+                {deliveryChip.label}
+              </span>
+            ) : null}
             <span className="ml-auto font-mono text-[9px] text-muted-fg/25">{formatTime(envelope.timestamp)}</span>
           </div>
           <div className="whitespace-pre-wrap break-words text-[12.5px] leading-[1.65] text-fg/85">{event.text}</div>

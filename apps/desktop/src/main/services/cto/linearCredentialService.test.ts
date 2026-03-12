@@ -78,4 +78,26 @@ describe("linearCredentialService", () => {
     expect(fs.existsSync(sentinelPath)).toBe(true);
     expect(fs.readFileSync(sentinelPath, "utf8")).toContain("imported");
   });
+
+  it("reads Linear OAuth client credentials from .ade/secrets", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-oauth-"));
+    const adeDir = path.join(root, ".ade");
+    fs.mkdirSync(path.join(adeDir, "secrets"), { recursive: true });
+    fs.writeFileSync(
+      path.join(adeDir, "secrets", "linear-oauth.v1.json"),
+      JSON.stringify({ clientId: "client-123", clientSecret: "secret-456" }),
+      "utf8"
+    );
+
+    const service = createLinearCredentialService({
+      adeDir,
+      logger: createLogger(),
+    });
+
+    expect(service.getOAuthClientCredentials()).toEqual({
+      clientId: "client-123",
+      clientSecret: "secret-456",
+    });
+    expect(service.getStatus().oauthConfigured).toBe(true);
+  });
 });

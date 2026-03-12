@@ -138,6 +138,60 @@ describe("buildFullPrompt", () => {
     expect(prompt.prompt).not.toContain("STEP OUTPUT FILE:");
   });
 
+  it("handles partial briefing structures without throwing", () => {
+    const prompt = buildFullPrompt(
+      {
+        run: {
+          id: "run-1",
+          missionId: "mission-1",
+          metadata: {
+            missionGoal: "Recover the mission landing path",
+          },
+        } as any,
+        step: {
+          id: "step-1",
+          title: "Recover landing flow",
+          stepKey: "recover-landing",
+          laneId: "lane-1",
+          metadata: {},
+          dependencyStepIds: [],
+          joinPolicy: "all_success",
+        } as any,
+        attempt: {} as any,
+        allSteps: [],
+        contextProfile: {} as any,
+        laneExport: null,
+        projectExport: {
+          content: "Project context body",
+        } as any,
+        docsRefs: [],
+        fullDocs: [],
+        createTrackedSession: async () => ({ ptyId: "pty-1", sessionId: "session-1" }),
+        memoryBriefing: {
+          mission: {
+            title: "Mission Memory",
+            entries: [
+              {
+                id: "mission-memory-1",
+                category: "note",
+                content: "Mission landing failures should point to the focused intervention.",
+                importance: "high",
+              },
+            ],
+          },
+          l1: {
+            title: "Project Knowledge",
+          },
+        } as any,
+      },
+      "unified",
+      {}
+    );
+
+    expect(prompt.prompt).toContain("Mission landing failures should point to the focused intervention.");
+    expect(prompt.prompt).toContain("## Mission Memory");
+  });
+
   it("keeps checkpoint and step output instructions for writable workers", () => {
     const prompt = buildFullPrompt(
       {

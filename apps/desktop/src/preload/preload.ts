@@ -69,6 +69,10 @@ import type {
   CtoOnboardingState,
   CtoSystemPromptPreview,
   CtoLinearProject,
+  CtoStartLinearOAuthResult,
+  CtoGetLinearOAuthSessionArgs,
+  CtoGetLinearOAuthSessionResult,
+  CtoRunProjectScanResult,
   CtoGetOpenclawStateResult,
   CtoUpdateOpenclawConfigArgs,
   CtoTestOpenclawConnectionArgs,
@@ -86,7 +90,7 @@ import type {
   LinearSyncDashboard,
   LinearSyncQueueItem,
   CtoResolveLinearSyncQueueItemArgs,
-  LinearSyncConfig,
+  LinearWorkflowConfig,
   OpenclawBridgeStatus,
   ExternalMcpServerConfig,
   ExternalMcpServerSnapshot,
@@ -660,6 +664,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.usageGetCumulativeUsage, args),
     getBudgetConfig: async (): Promise<BudgetCapConfig> =>
       ipcRenderer.invoke(IPC.usageGetBudgetConfig),
+    saveBudgetConfig: async (config: BudgetCapConfig): Promise<BudgetCapConfig> =>
+      ipcRenderer.invoke(IPC.usageSaveBudgetConfig, config),
     onUpdate: (cb: (snapshot: UsageSnapshot) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, snapshot: UsageSnapshot) => cb(snapshot);
       ipcRenderer.on(IPC.usageEvent, listener);
@@ -1448,6 +1454,13 @@ contextBridge.exposeInMainWorld("ade", {
       status?: "promoted" | "candidate" | "archived" | "all";
     }): Promise<unknown[]> =>
       ipcRenderer.invoke(IPC.memorySearch, args),
+    list: async (args: {
+      scope?: "project" | "agent" | "mission";
+      tier?: 1 | 2 | 3;
+      status?: "promoted" | "candidate" | "archived" | "all";
+      limit?: number;
+    } = {}): Promise<MemoryEntryDto[]> =>
+      ipcRenderer.invoke(IPC.memoryList, args),
     listMissionEntries: async (args: {
       missionId: string;
       runId?: string | null;
@@ -1549,13 +1562,13 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.ctoSetLinearToken, args),
     clearLinearToken: async (): Promise<LinearConnectionStatus> =>
       ipcRenderer.invoke(IPC.ctoClearLinearToken),
-    getFlowPolicy: async (): Promise<LinearSyncConfig> =>
+    getFlowPolicy: async (): Promise<LinearWorkflowConfig> =>
       ipcRenderer.invoke(IPC.ctoGetFlowPolicy),
-    saveFlowPolicy: async (args: CtoSaveFlowPolicyArgs): Promise<LinearSyncConfig> =>
+    saveFlowPolicy: async (args: CtoSaveFlowPolicyArgs): Promise<LinearWorkflowConfig> =>
       ipcRenderer.invoke(IPC.ctoSaveFlowPolicy, args),
     listFlowPolicyRevisions: async (): Promise<CtoFlowPolicyRevision[]> =>
       ipcRenderer.invoke(IPC.ctoListFlowPolicyRevisions),
-    rollbackFlowPolicyRevision: async (args: CtoRollbackFlowPolicyRevisionArgs): Promise<LinearSyncConfig> =>
+    rollbackFlowPolicyRevision: async (args: CtoRollbackFlowPolicyRevisionArgs): Promise<LinearWorkflowConfig> =>
       ipcRenderer.invoke(IPC.ctoRollbackFlowPolicyRevision, args),
     simulateFlowRoute: async (args: CtoSimulateFlowRouteArgs): Promise<LinearRouteDecision> =>
       ipcRenderer.invoke(IPC.ctoSimulateFlowRoute, args),
@@ -1583,5 +1596,11 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.ctoPreviewSystemPrompt, args),
     getLinearProjects: async (): Promise<CtoLinearProject[]> =>
       ipcRenderer.invoke(IPC.ctoGetLinearProjects),
+    startLinearOAuth: async (): Promise<CtoStartLinearOAuthResult> =>
+      ipcRenderer.invoke(IPC.ctoStartLinearOAuth),
+    getLinearOAuthSession: async (args: CtoGetLinearOAuthSessionArgs): Promise<CtoGetLinearOAuthSessionResult> =>
+      ipcRenderer.invoke(IPC.ctoGetLinearOAuthSession, args),
+    runProjectScan: async (): Promise<CtoRunProjectScanResult> =>
+      ipcRenderer.invoke(IPC.ctoRunProjectScan),
   }
 });

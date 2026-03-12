@@ -77,6 +77,7 @@ import {
 import { isRecord, nowIso, safeJsonParse } from "../shared/utils";
 import { normalizeAgentRuntimeFlags } from "../orchestrator/teamRuntimeConfig";
 import { resolveModelDescriptor } from "../../../shared/modelRegistry";
+import { normalizeMissionArtifactType as normalizeMissionArtifactTypeValue } from "../../../shared/proofArtifacts";
 
 const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>(["completed", "failed", "canceled"]);
 
@@ -430,9 +431,7 @@ function normalizePhaseCards(phases: PhaseCard[]): PhaseCard[] {
       const phaseKey = String(phase.phaseKey ?? "").trim().toLowerCase();
       const planningPhase = phaseKey === "planning";
       const testingOrValidation = phaseKey === "testing" || phaseKey === "validation";
-      const askQuestionsEnabled = planningPhase
-        ? phase.askQuestions.enabled !== false
-        : phase.askQuestions.enabled === true;
+      const askQuestionsEnabled = planningPhase && phase.askQuestions.enabled !== false;
       const askQuestions: PhaseCard["askQuestions"] = {
         ...phase.askQuestions,
         enabled: askQuestionsEnabled,
@@ -538,8 +537,7 @@ function normalizeStepStatus(value: string): MissionStepStatus {
 }
 
 function normalizeArtifactType(value: string): MissionArtifactType {
-  if (value === "summary" || value === "pr" || value === "link" || value === "note" || value === "patch" || value === "plan") return value;
-  return "note";
+  return normalizeMissionArtifactTypeValue(value);
 }
 
 function normalizeInterventionType(value: string): MissionInterventionType {
@@ -725,7 +723,8 @@ export function createMissionService({
   projectRoot,
   onEvent,
   concurrencyConfig,
-  onInterventionResolved
+  onInterventionResolved,
+  onBlockingInterventionAdded,
 }: {
   db: AdeDb;
   projectId: string;
@@ -733,6 +732,10 @@ export function createMissionService({
   onEvent?: (payload: MissionsEventPayload) => void;
   concurrencyConfig?: Partial<MissionConcurrencyConfig>;
   onInterventionResolved?: (args: {
+    missionId: string;
+    intervention: MissionIntervention;
+  }) => void | Promise<void>;
+  onBlockingInterventionAdded?: (args: {
     missionId: string;
     intervention: MissionIntervention;
   }) => void | Promise<void>;
@@ -3531,11 +3534,20 @@ export function createMissionService({
 
       const shouldPauseMission = args.pauseMission !== false;
       if (shouldPauseMission) {
-        upsertMissionStatus({
-          missionId,
-          nextStatus: "intervention_required",
-          summary: "Mission moved to intervention required."
-        });
+        if (onBlockingInterventionAdded) {
+          void Promise.resolve(
+            onBlockingInterventionAdded({
+              missionId,
+              intervention,
+            }),
+          ).catch(() => {});
+        } else {
+          upsertMissionStatus({
+            missionId,
+            nextStatus: "intervention_required",
+            summary: "Mission moved to intervention required."
+          });
+        }
       }
 
       db.run(

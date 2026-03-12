@@ -202,6 +202,10 @@ export function RuleEditorPanel({
     if (!(draft.executor.mode === "employee" || draft.executor.mode === "cto-route")) {
       return;
     }
+    if (!window.ade?.cto?.listAgents) {
+      setAgents([]);
+      return;
+    }
     let cancelled = false;
     setAgentsLoading(true);
     window.ade.cto

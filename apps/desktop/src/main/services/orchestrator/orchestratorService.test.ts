@@ -1136,6 +1136,19 @@ describe("orchestratorService", () => {
         ownerId: "planner-owner",
         executorKind: "manual",
       });
+      fixture.service.updateStepMetadata({
+        runId: started.run.id,
+        stepId: planningStep.id,
+        metadata: {
+          lastResultReport: {
+            summary: "Planning complete.",
+            plan: {
+              markdown: "# Plan\n\n1. Implement work",
+              artifactPath: ".ade/plans/mission-plan.md",
+            },
+          },
+        },
+      });
       await fixture.service.completeAttempt({
         attemptId: attempt.id,
         status: "succeeded",
@@ -3155,6 +3168,81 @@ describe("orchestratorService", () => {
     }
   });
 
+  it("classifies planning workers with lifecycle-only chat transcripts as interrupted", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.chat.jsonl`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'claude-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "planning-worker",
+            title: "Planning Worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "unified",
+            metadata: {
+              stepType: "planning",
+              readOnlyExecution: true,
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected planning step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          JSON.stringify({
+            sessionId: attempt.executorSessionId,
+            timestamp: now,
+            event: {
+              type: "status",
+              turnStatus: "started",
+            },
+          }),
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const after = fixture.service.listAttempts({ runId: started.run.id }).find((entry) => entry.id === attempt.id);
+      expect(after?.status).toBe("failed");
+      expect(after?.errorClass).toBe("interrupted");
+      expect(after?.errorMessage).toBe("Planning worker session started but was interrupted before producing any assistant or tool activity.");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("derives tracked-session completion status from terminal session state when exit code is missing", async () => {
     const fixture = await createFixture();
     try {
@@ -3853,7 +3941,8 @@ describe("orchestratorService", () => {
       });
 
       expect(attempt.status).toBe("succeeded");
-      const briefingArgs = buildBriefing.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+      const firstBriefingCall = buildBriefing.mock.calls.at(0) as unknown[] | undefined;
+      const briefingArgs = firstBriefingCall?.[0] as Record<string, unknown> | undefined;
       expect(briefingArgs).toBeTruthy();
       expect(briefingArgs?.agentId).toBeUndefined();
       expect(briefingArgs?.includeAgentMemory).toBeUndefined();

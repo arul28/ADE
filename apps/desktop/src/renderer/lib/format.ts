@@ -77,6 +77,16 @@ export function statusToneAutomation(status: string | null): string {
   return "border-border text-muted-fg";
 }
 
+/** Extract a human-readable error message from an unknown thrown value. */
+export function extractError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** Shorten a SHA-like hash to the first 8 characters. */
+export function shortSha(value: string | null | undefined): string {
+  return value?.slice(0, 8) ?? "";
+}
+
 /** Map an operation status to Tailwind text+border classes (history style). */
 export function statusToneOperation(status: string): string {
   if (status === "succeeded") return "text-emerald-400 border-emerald-900";

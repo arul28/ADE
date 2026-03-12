@@ -106,4 +106,43 @@ describe("linearClient", () => {
     expect(viewer.name).toBe("Alex");
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
+
+  it("lists projects with their owning team names", async () => {
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { query?: string };
+      expect(init?.headers).toMatchObject({ authorization: "Bearer lin_api_test" });
+      if (!body.query?.includes("query Projects")) {
+        return new Response(JSON.stringify({ data: {} }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(
+        JSON.stringify({
+          data: {
+            projects: {
+              nodes: [
+                {
+                  id: "project-1",
+                  name: "App Platform",
+                  slug: "app-platform",
+                  teams: {
+                    nodes: [{ name: "Platform" }],
+                  },
+                },
+              ],
+            },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+
+    const client = createLinearClient({
+      credentials: { getTokenOrThrow: () => "lin_api_test" } as any,
+      fetchImpl: fetchImpl as any,
+      logger: null,
+    });
+
+    await expect(client.listProjects()).resolves.toEqual([
+      { id: "project-1", name: "App Platform", slug: "app-platform", teamName: "Platform" },
+    ]);
+  });
 });

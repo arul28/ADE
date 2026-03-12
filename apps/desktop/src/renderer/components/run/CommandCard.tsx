@@ -4,6 +4,7 @@ import { COLORS, MONO_FONT, inlineBadge, processStatusColor } from "../lanes/lan
 import { formatDurationMs } from "../../lib/format";
 import type { ProcessDefinition, ProcessRuntime, ProcessRuntimeStatus } from "../../../shared/types";
 import { useClickOutside } from "../../hooks/useClickOutside";
+import { commandArrayToLine } from "../../lib/shell";
 
 export type CommandCardProps = {
   definition: ProcessDefinition;
@@ -35,7 +36,7 @@ export function CommandCard({
 
   useClickOutside(menuRef, () => setMenuOpen(false), menuOpen);
 
-  const commandPreview = definition.command.join(" ");
+  const commandPreview = commandArrayToLine(definition.command);
 
   return (
     <div
@@ -280,4 +281,3 @@ export function CommandCard({
     </div>
   );
 }
-

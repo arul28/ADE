@@ -411,6 +411,7 @@ export const IPC = {
   usageCheckBudget: "ade.usage.checkBudget",
   usageGetCumulativeUsage: "ade.usage.getCumulativeUsage",
   usageGetBudgetConfig: "ade.usage.getBudgetConfig",
+  usageSaveBudgetConfig: "ade.usage.saveBudgetConfig",
   usageEvent: "ade.usage.event",
   memoryAdd: "ade.memory.add",
   memoryPin: "ade.memory.pin",
@@ -421,6 +422,7 @@ export const IPC = {
   memoryPromoteMissionEntry: "ade.memory.promoteMissionEntry",
   memoryArchive: "ade.memory.archive",
   memorySearch: "ade.memory.search",
+  memoryList: "ade.memory.list",
   memoryListMissionEntries: "ade.memory.listMissionEntries",
   memoryListProcedures: "ade.memory.listProcedures",
   memoryGetProcedureDetail: "ade.memory.getProcedureDetail",
@@ -478,7 +480,10 @@ export const IPC = {
   ctoDismissOnboarding: "ade.cto.dismissOnboarding",
   ctoResetOnboarding: "ade.cto.resetOnboarding",
   ctoPreviewSystemPrompt: "ade.cto.previewSystemPrompt",
-  ctoGetLinearProjects: "ade.cto.getLinearProjects"
+  ctoGetLinearProjects: "ade.cto.getLinearProjects",
+  ctoStartLinearOAuth: "ade.cto.startLinearOAuth",
+  ctoGetLinearOAuthSession: "ade.cto.getLinearOAuthSession",
+  ctoRunProjectScan: "ade.cto.runProjectScan"
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];

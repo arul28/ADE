@@ -695,15 +695,11 @@ function normalizeDraft(args: {
     },
     billingCode: safeTrim(args.draft.billingCode) || `auto:${slugify(name)}`,
     ...(args.draft.queueStatus ? { queueStatus: args.draft.queueStatus } : {}),
-    ...(normalizedActions.length > 0
-      ? {
-          actions: normalizedActions,
-          legacy: {
-            trigger: triggers[0],
-            actions: normalizedActions,
-          }
-        }
-      : {}),
+    actions: normalizedActions,
+    legacy: {
+      trigger: triggers[0],
+      actions: normalizedActions,
+    },
   };
 
   if (!normalized.prompt && normalizedActions.length === 0) {

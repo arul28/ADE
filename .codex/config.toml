@@ -1,0 +1,5 @@
+[features]
+rmcp_client = true
+
+[mcp_servers.linear]
+url = "https://mcp.linear.app/mcp"

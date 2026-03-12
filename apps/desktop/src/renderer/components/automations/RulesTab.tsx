@@ -572,7 +572,7 @@ export function RulesTab({
         window.ade.cto.getLinearSyncDashboard(),
         window.ade.cto.getFlowPolicy(),
       ]);
-      setLinearConnection(connection); setLinearDashboard(dashboard); setLinearPolicyEnabled(policy.enabled === true);
+      setLinearConnection(connection); setLinearDashboard(dashboard); setLinearPolicyEnabled(policy.workflows.some((workflow) => workflow.enabled));
     } catch (err) {
       setLinearCardError(extractError(err));
     } finally { setLinearBusy(false); }

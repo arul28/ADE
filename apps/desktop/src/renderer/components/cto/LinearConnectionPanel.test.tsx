@@ -6,18 +6,56 @@ import { LinearConnectionPanel } from "./LinearConnectionPanel";
 
 function buildBridge() {
   return {
+    app: {
+      openExternal: vi.fn(async () => undefined),
+    },
     cto: {
-      getLinearConnectionStatus: vi.fn(async () => ({
-        tokenStored: true,
-        connected: false,
-        viewerId: null,
-        viewerName: null,
-        checkedAt: "2026-03-05T00:00:00.000Z",
-        message: "Linear connection lost.",
-      })),
+      getLinearConnectionStatus: vi
+        .fn()
+        .mockResolvedValueOnce({
+          tokenStored: true,
+          connected: false,
+          viewerId: null,
+          viewerName: null,
+          checkedAt: "2026-03-05T00:00:00.000Z",
+          message: "Linear connection lost.",
+          authMode: "manual",
+          oauthAvailable: true,
+          tokenExpiresAt: null,
+        })
+        .mockResolvedValue({
+          tokenStored: true,
+          connected: true,
+          viewerId: "viewer-oauth",
+          viewerName: "Taylor",
+          checkedAt: "2026-03-05T00:00:00.000Z",
+          message: null,
+          authMode: "oauth",
+          oauthAvailable: true,
+          tokenExpiresAt: "2026-03-06T00:00:00.000Z",
+        }),
       getLinearProjects: vi.fn(async () => [
         { id: "project-1", name: "My Project", slug: "my-project", teamName: "Platform" },
       ]),
+      startLinearOAuth: vi.fn(async () => ({
+        sessionId: "oauth-session-1",
+        authUrl: "https://linear.app/oauth/authorize?state=test",
+        redirectUri: "http://127.0.0.1:40123/oauth/callback",
+      })),
+      getLinearOAuthSession: vi.fn(async () => ({
+        status: "completed",
+        connection: {
+          tokenStored: true,
+          connected: true,
+          viewerId: "viewer-oauth",
+          viewerName: "Taylor",
+          checkedAt: "2026-03-05T00:00:00.000Z",
+          message: null,
+          authMode: "oauth",
+          oauthAvailable: true,
+          tokenExpiresAt: "2026-03-06T00:00:00.000Z",
+        },
+      })),
       setLinearToken: vi.fn(async () => ({
         tokenStored: true,
         connected: true,
@@ -25,6 +63,9 @@ function buildBridge() {
         viewerName: "Alex",
         checkedAt: "2026-03-05T00:00:00.000Z",
         message: null,
+        authMode: "manual",
+        oauthAvailable: true,
+        tokenExpiresAt: null,
       })),
       clearLinearToken: vi.fn(async () => ({
         tokenStored: false,
@@ -33,6 +74,9 @@ function buildBridge() {
         viewerName: null,
         checkedAt: "2026-03-05T00:00:00.000Z",
         message: "Disconnected.",
+        authMode: null,
+        oauthAvailable: true,
+        tokenExpiresAt: null,
       })),
     },
   };
@@ -62,10 +106,24 @@ describe("LinearConnectionPanel", () => {
 
     await waitFor(() => expect(screen.getByPlaceholderText("lin_api_...")).toBeTruthy());
     fireEvent.change(screen.getByPlaceholderText("lin_api_..."), { target: { value: "lin_api_test" } });
-    fireEvent.click(screen.getByRole("button", { name: /connect/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^connect$/i }));
 
     await waitFor(() => {
       expect((window as any).ade.cto.setLinearToken).toHaveBeenCalledWith({ token: "lin_api_test" });
+      expect(screen.getByText(/Connected as/)).toBeTruthy();
+      expect(screen.getByText("My Project")).toBeTruthy();
+    });
+  });
+
+  it("starts OAuth and completes the loopback session", async () => {
+    render(<LinearConnectionPanel />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /connect with linear/i })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /connect with linear/i }));
+
+    await waitFor(() => {
+      expect((window as any).ade.cto.startLinearOAuth).toHaveBeenCalledTimes(1);
+      expect((window as any).ade.app.openExternal).toHaveBeenCalledWith("https://linear.app/oauth/authorize?state=test");
       expect(screen.getByText(/Connected as/)).toBeTruthy();
       expect(screen.getByText("My Project")).toBeTruthy();
     });

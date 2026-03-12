@@ -391,6 +391,8 @@ export function AgentChatPane({
   const loadedHistoryRef = useRef<Set<string>>(new Set());
   const draftSelectionLockedRef = useRef(false);
   const optimisticSessionIdsRef = useRef<Set<string>>(new Set());
+  const submitInFlightRef = useRef(false);
+  const createSessionPromiseRef = useRef<Promise<string | null> | null>(null);
   const pendingEventQueueRef = useRef<AgentChatEventEnvelope[]>([]);
   const eventFlushTimerRef = useRef<number | null>(null);
   const refreshSessionsTimerRef = useRef<number | null>(null);
@@ -829,36 +831,51 @@ export function AgentChatPane({
   }, []);
 
   const createSession = useCallback(async (): Promise<string | null> => {
+    if (createSessionPromiseRef.current) {
+      return createSessionPromiseRef.current;
+    }
     if (!laneId) return null;
-    const desc = getModelById(modelId);
-    const provider = desc?.isCliWrapped
-      ? (desc.family === "openai" ? "codex" : "claude")
-      : "unified";
-    const model = provider === "unified" ? modelId : (desc?.shortId ?? modelId);
-    const created = await window.ade.agentChat.create({
-      laneId,
-      provider,
-      model,
-      modelId,
-      reasoningEffort,
-      permissionMode
-    });
-    loadedHistoryRef.current.delete(created.id);
-    optimisticSessionIdsRef.current.add(created.id);
-    draftSelectionLockedRef.current = false;
-    setSelectedSessionId(created.id);
-    onSessionCreated?.(created.id);
-    void refreshSessions().catch(() => {});
-    return created.id;
+    const createPromise = (async () => {
+      const desc = getModelById(modelId);
+      const provider = desc?.isCliWrapped
+        ? (desc.family === "openai" ? "codex" : "claude")
+        : "unified";
+      const model = provider === "unified" ? modelId : (desc?.shortId ?? modelId);
+      const created = await window.ade.agentChat.create({
+        laneId,
+        provider,
+        model,
+        modelId,
+        reasoningEffort,
+        permissionMode
+      });
+      loadedHistoryRef.current.delete(created.id);
+      optimisticSessionIdsRef.current.add(created.id);
+      draftSelectionLockedRef.current = false;
+      setSelectedSessionId(created.id);
+      onSessionCreated?.(created.id);
+      void refreshSessions().catch(() => {});
+      return created.id;
+    })();
+    createSessionPromiseRef.current = createPromise;
+    try {
+      return await createPromise;
+    } finally {
+      if (createSessionPromiseRef.current === createPromise) {
+        createSessionPromiseRef.current = null;
+      }
+    }
   }, [laneId, modelId, onSessionCreated, permissionMode, reasoningEffort, refreshSessions]);
 
   const submit = useCallback(async () => {
+    if (submitInFlightRef.current || busy) return;
     const text = draft.trim();
     if (!text.length || !laneId) return;
     const draftSnapshot = draft;
     const attachmentsSnapshot = attachments;
     const contextPackSnapshot = selectedContextPacks;
 
+    submitInFlightRef.current = true;
     setBusy(true);
     setError(null);
     setDraft("");
@@ -934,10 +951,12 @@ export function AgentChatPane({
       setSelectedContextPacks((current) => (current.length ? current : contextPackSnapshot));
       setError(submitError instanceof Error ? submitError.message : String(submitError));
     } finally {
+      submitInFlightRef.current = false;
       setBusy(false);
     }
   }, [
     attachments,
+    busy,
     createSession,
     draft,
     executionMode,

@@ -49,9 +49,16 @@ export function RuleCard({
   onHistory: () => void;
 }) {
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
       className={cn(
         "w-full p-3 text-left transition-all duration-150 group",
         selected
@@ -146,7 +153,7 @@ export function RuleCard({
           </div>
         </div>
       </div>
-    </button>
+    </div>
   );
 }
 

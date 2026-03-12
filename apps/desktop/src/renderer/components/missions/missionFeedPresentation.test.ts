@@ -46,6 +46,7 @@ function makeRunView(overrides: Partial<MissionRunView> = {}): MissionRunView {
     workers: [],
     progressLog: [],
     lastMeaningfulProgress: null,
+    closeoutRequirements: [],
     ...overrides,
   };
 }

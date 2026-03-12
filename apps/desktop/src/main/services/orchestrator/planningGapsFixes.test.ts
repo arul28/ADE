@@ -5,6 +5,9 @@ import path from "node:path";
 import { buildClaudeReadOnlyWorkerAllowedTools } from "./unifiedOrchestratorAdapter";
 import { classifyBlockingWarnings } from "./orchestratorQueries";
 import { extractAndRegisterArtifacts } from "./workerTracking";
+import { createOrchestratorService } from "./orchestratorService";
+import { createMissionService } from "../missions/missionService";
+import { openKvDb } from "../state/kvDb";
 import type { OrchestratorRunGraph } from "../../../shared/types/orchestrator";
 
 // ─────────────────────────────────────────────────────────────────
@@ -387,5 +390,281 @@ describe("VAL-ART-001: Planning step registers plan artifact", () => {
         title: "Planner result missing plan",
       }),
     );
+  });
+});
+
+describe("VAL-PLAN-004: planner contract enforcement", () => {
+  it("fails a planning attempt that completes without report_result.plan.markdown", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-plan-contract-"));
+    const db = await openKvDb(path.join(projectRoot, "ade.db"), {
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+    } as any);
+    const projectId = "proj-1";
+    const laneId = "lane-1";
+    const missionId = "mission-1";
+    const now = "2026-03-12T00:00:00.000Z";
+
+    db.run(
+      `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)
+       values (?, ?, ?, ?, ?, ?)`,
+      [projectId, projectRoot, "ADE", "main", now, now]
+    );
+    db.run(
+      `insert into lanes(
+        id, project_id, name, description, lane_type, base_ref, branch_ref,
+        worktree_path, attached_root_path, is_edit_protected, parent_lane_id,
+        color, icon, tags_json, status, created_at, archived_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        laneId, projectId, "Lane 1", null, "worktree", "main", "feature/planning",
+        projectRoot, null, 0, null, null, null, null, "active", now, null,
+      ]
+    );
+    db.run(
+      `insert into missions(
+        id, project_id, lane_id, title, prompt, status, priority,
+        execution_mode, target_machine_id, outcome_summary, last_error,
+        metadata_json, created_at, updated_at, started_at, completed_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        missionId, projectId, laneId, "Planner contract", "Create a plan.",
+        "planning", "normal", "local", null, null, null, null, now, now, now, null,
+      ]
+    );
+
+    const orchestratorService = createOrchestratorService({
+      db,
+      projectId,
+      projectRoot,
+      packService: {
+        getLaneExport: vi.fn(async () => ({
+          packKey: `lane:${laneId}`,
+          packType: "lane",
+          level: "standard",
+          header: {} as any,
+          content: "lane",
+          approxTokens: 32,
+          maxTokens: 500,
+          truncated: false,
+          warnings: [],
+          clipReason: null,
+          omittedSections: null,
+        })),
+        getProjectExport: vi.fn(async () => ({
+          packKey: "project",
+          packType: "project",
+          level: "standard",
+          header: {} as any,
+          content: "project",
+          approxTokens: 32,
+          maxTokens: 500,
+          truncated: false,
+          warnings: [],
+          clipReason: null,
+          omittedSections: null,
+        })),
+        refreshMissionPack: vi.fn(async () => ({
+          packKey: `mission:${missionId}`,
+          packType: "mission",
+          path: path.join(projectRoot, ".ade", "packs", "missions", missionId, "mission_pack.md"),
+          exists: true,
+          deterministicUpdatedAt: now,
+          narrativeUpdatedAt: null,
+          lastHeadSha: null,
+          versionId: `mission-${missionId}-v1`,
+          versionNumber: 1,
+          contentHash: `hash-mission-${missionId}`,
+          metadata: null,
+          body: "# Mission Pack",
+        })),
+      } as any,
+      ptyService: {
+        create: vi.fn(async () => ({ ptyId: "pty-1", sessionId: "session-1" })),
+      } as any,
+      projectConfigService: null as any,
+      aiIntegrationService: null as any,
+      memoryService: null as any,
+    });
+    createMissionService({ db, projectId, projectRoot });
+
+    try {
+      const started = await orchestratorService.startRun({
+        missionId,
+        steps: [
+          {
+            stepKey: "planning-worker",
+            stepIndex: 0,
+            title: "Plan the work",
+            executorKind: "manual",
+            laneId,
+            metadata: {
+              stepType: "planning",
+              phaseKey: "planning",
+              readOnlyExecution: true,
+            },
+          },
+        ],
+      });
+      const step = started.steps[0]!;
+      db.run(
+        "update orchestrator_steps set metadata_json = ? where id = ? and project_id = ?",
+        [
+          JSON.stringify({
+            stepType: "planning",
+            phaseKey: "planning",
+            readOnlyExecution: true,
+            lastResultReport: {
+              summary: "needed",
+              outputs: null,
+            },
+          }),
+          step.id,
+          projectId,
+        ]
+      );
+
+      const attempt = await orchestratorService.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "planner",
+        executorKind: "manual",
+      });
+
+      const completed = await orchestratorService.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+      });
+
+      const graph = orchestratorService.getRunGraph({ runId: started.run.id, timelineLimit: 20 });
+      const updatedStep = graph.steps.find((entry) => entry.id === step.id);
+      const planningArtifactEvents = orchestratorService.listRuntimeEvents({
+        runId: started.run.id,
+        attemptId: attempt.id,
+        eventTypes: ["planning_artifact_missing"],
+      });
+
+      expect(completed.status).toBe("failed");
+      expect(completed.errorClass).toBe("planner_contract_violation");
+      expect(completed.errorMessage).toContain("report_result.plan.markdown");
+      expect(updatedStep?.status).toBe("failed");
+      expect(planningArtifactEvents).toHaveLength(1);
+      expect(planningArtifactEvents[0]?.payload).toMatchObject({
+        reason: "planner_plan_missing",
+        expectedPlanPath: ".ade/plans/mission-plan.md",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("emits distinct artifact-missing and intervention-opened runtime events for planner failures", () => {
+    const worktreePath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-plan-artifacts-"));
+    fs.mkdirSync(path.join(worktreePath, ".ade", "plans"), { recursive: true });
+    const appendRuntimeEvent = vi.fn();
+    const ctx = {
+      projectRoot: worktreePath,
+      db: {
+        get: vi.fn(() => ({ worktree_path: worktreePath })),
+      },
+      missionService: {
+        addArtifact: vi.fn(),
+        addIntervention: vi.fn((intervention: Record<string, unknown>) => ({
+          id: "intervention-1",
+          missionId: "mission-1",
+          status: "open",
+          createdAt: "2026-03-10T00:05:00.000Z",
+          updatedAt: "2026-03-10T00:05:00.000Z",
+          resolvedAt: null,
+          resolutionNote: null,
+          laneId: null,
+          ...intervention,
+        })),
+      },
+      orchestratorService: {
+        registerArtifact: vi.fn(),
+        appendTimelineEvent: vi.fn(),
+        appendRuntimeEvent,
+      },
+      logger: {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    } as any;
+    const attempt = {
+      id: "attempt-1",
+      runId: "run-1",
+      stepId: "step-1",
+      status: "succeeded" as const,
+      executorSessionId: "session-1",
+      executorKind: "unified" as const,
+      createdAt: "2026-03-10T00:00:00.000Z",
+      completedAt: "2026-03-10T00:05:00.000Z",
+      resultEnvelope: {
+        schema: "ade.orchestratorAttempt.v1",
+        success: true,
+        summary: "Planner finished without reporting a plan artifact.",
+        outputs: {},
+        warnings: [],
+        sessionId: "session-1",
+        trackedSession: true,
+      },
+      metadata: {},
+    } as any;
+    const graph = {
+      run: {
+        id: "run-1",
+        missionId: "mission-1",
+        status: "active",
+        metadata: {},
+      },
+      steps: [
+        {
+          id: "step-1",
+          stepKey: "planning-worker",
+          title: "Plan the work",
+          laneId: "lane-1",
+          status: "running",
+          metadata: {
+            stepType: "planning",
+            readOnlyExecution: true,
+            lastResultReport: {
+              workerId: "planning-worker",
+              runId: "run-1",
+              missionId: "mission-1",
+              outcome: "succeeded",
+              summary: "Planner finished without reporting a plan artifact.",
+              plan: null,
+              artifacts: [],
+              filesChanged: [],
+              testsRun: null,
+              reportedAt: "2026-03-10T00:05:00.000Z",
+            },
+          },
+          dependencyStepIds: [],
+          joinPolicy: "all_success",
+          retryCount: 0,
+          retryLimit: 2,
+        },
+      ],
+      attempts: [attempt],
+    } as any;
+
+    extractAndRegisterArtifacts(ctx, { graph, attempt });
+
+    const planningArtifactEvent = ctx.orchestratorService.appendTimelineEvent.mock.calls
+      .map(([event]: [Record<string, unknown>]) => event)
+      .find((event: Record<string, unknown>) => event.eventType === "planning_artifact_missing");
+    const interventionOpenedEvent = appendRuntimeEvent.mock.calls
+      .map(([event]: [Record<string, unknown>]) => event)
+      .find((event: Record<string, unknown>) => event.eventType === "intervention_opened");
+
+    expect(planningArtifactEvent).toBeTruthy();
+    expect(interventionOpenedEvent).toBeTruthy();
+    expect(interventionOpenedEvent?.eventKey).toBe("intervention_opened:intervention-1");
   });
 });

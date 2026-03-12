@@ -62,6 +62,9 @@ function toMemoryEntryDto(value: unknown): MemoryEntryDto | null {
     sourceRunId: typeof row.sourceRunId === "string" ? row.sourceRunId : null,
     sourceType: typeof row.sourceType === "string" ? row.sourceType : null,
     sourceId: typeof row.sourceId === "string" ? row.sourceId : null,
+    fileScopePattern: typeof row.fileScopePattern === "string"
+      ? row.fileScopePattern
+      : (typeof row.file_scope_pattern === "string" ? row.file_scope_pattern : null),
   };
 }
 
@@ -267,7 +270,7 @@ export function MissionArtifactsTab({
     ?? null;
 
   const handlePromoteMemory = async (memoryId: string) => {
-    if (!missionId) return;
+    if (!missionId || !window.ade.memory) return;
     setMemoryActionBusyId(memoryId);
     try {
       await window.ade.memory.promoteMissionEntry({ id: memoryId, missionId });
@@ -278,6 +281,7 @@ export function MissionArtifactsTab({
   };
 
   const handleArchiveMemory = async (memoryId: string) => {
+    if (!window.ade.memory) return;
     setMemoryActionBusyId(memoryId);
     try {
       await window.ade.memory.archive({ id: memoryId });

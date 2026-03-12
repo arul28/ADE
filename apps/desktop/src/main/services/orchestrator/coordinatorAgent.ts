@@ -90,6 +90,7 @@ export type CoordinatorAgentDeps = {
   db: AdeDb;
   projectId: string;
   projectRoot: string;
+  workspaceRoot: string;
   missionService: ReturnType<typeof createMissionService>;
   memoryService?: ReturnType<typeof createMemoryService> | null;
   getMissionBudgetStatus?: () => Promise<MissionBudgetSnapshot | null>;
@@ -173,7 +174,7 @@ export function buildCoordinatorCliOptions(args: {
       ? "ade"
       : (mcpServerNames[0] ?? "ade");
     cli.claude = {
-      permissionMode: "acceptEdits",
+      permissionMode: "plan",
       allowedTools: buildCoordinatorMcpAllowedTools(coordinatorMcpServerName),
       settingSources: [],
       debugFile: path.join(logDir, `coordinator-${args.runId}.claude.log`),
@@ -321,6 +322,7 @@ export class CoordinatorAgent {
       logger: deps.logger,
       db: deps.db,
       projectRoot: deps.projectRoot,
+      workspaceRoot: deps.workspaceRoot,
       missionService: deps.missionService,
       memoryService: deps.memoryService,
       projectId: deps.projectId,
@@ -1425,7 +1427,7 @@ Your initial plan is a hypothesis. Adjust it as you learn:
         return undefined;
       }
       const launch = resolveAdeMcpServerLaunch({
-        workspaceRoot: this.deps.projectRoot,
+        workspaceRoot: this.deps.workspaceRoot,
         runtimeRoot: resolveUnifiedRuntimeRoot(),
         missionId: this.deps.missionId,
         runId: this.deps.runId,
@@ -1440,7 +1442,7 @@ Your initial plan is a hypothesis. Adjust it as you learn:
       } as Record<string, Record<string, unknown>>;
     })();
     const model = await resolveModel(this.deps.modelId, auth, {
-      cwd: this.deps.projectRoot,
+      cwd: this.deps.workspaceRoot,
       cli: buildCoordinatorCliOptions({
         modelId: this.deps.modelId,
         projectRoot: this.deps.projectRoot,

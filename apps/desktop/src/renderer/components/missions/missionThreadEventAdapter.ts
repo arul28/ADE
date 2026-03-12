@@ -102,6 +102,17 @@ function normalizeActivity(value: string | null): "thinking" | "editing_file" | 
   }
 }
 
+function normalizeDeliveryState(value: unknown): "queued" | "delivered" | "failed" | undefined {
+  switch (value) {
+    case "queued":
+    case "delivered":
+    case "failed":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
 type UserAttachment = NonNullable<Extract<AgentChatEvent, { type: "user_message" }>["attachments"]>[number];
 
 function resolveSessionId(message: OrchestratorChatMessage, structuredStream: Record<string, unknown> | null): string {
@@ -357,6 +368,7 @@ function toStructuredEvents(message: OrchestratorChatMessage): AgentChatEventEnv
           type: "user_message",
           text: readString(structuredStream.text) ?? message.content,
           turnId,
+          deliveryState: normalizeDeliveryState(message.deliveryState),
           attachments: Array.isArray(structuredStream.attachments)
             ? structuredStream.attachments
                 .map((entry) => {
@@ -434,6 +446,7 @@ function toFallbackEvent(message: OrchestratorChatMessage): AgentChatEventEnvelo
         type: "user_message",
         text: message.content,
         turnId: `${sessionId}:user:${message.id}`,
+        deliveryState: normalizeDeliveryState(message.deliveryState),
       },
     };
   }
@@ -470,6 +483,33 @@ export function adaptMissionThreadMessagesToAgentEvents(messages: OrchestratorCh
     }
     const fallbackEvent = toFallbackEvent(message);
     if (fallbackEvent) events.push(fallbackEvent);
+  }
+
+  const pendingUserEventsBySession = new Map<string, number[]>();
+  for (let index = 0; index < events.length; index += 1) {
+    const envelope = events[index];
+    if (!envelope) continue;
+    if (envelope.event.type === "user_message") {
+      const pending = pendingUserEventsBySession.get(envelope.sessionId) ?? [];
+      pending.push(index);
+      pendingUserEventsBySession.set(envelope.sessionId, pending);
+      continue;
+    }
+    if (envelope.event.type === "step_boundary") continue;
+    const pending = pendingUserEventsBySession.get(envelope.sessionId);
+    if (!pending?.length) continue;
+    for (const userIndex of pending) {
+      const userEnvelope = events[userIndex];
+      if (!userEnvelope || userEnvelope.event.type !== "user_message") continue;
+      events[userIndex] = {
+        ...userEnvelope,
+        event: {
+          ...userEnvelope.event,
+          processed: true,
+        },
+      };
+    }
+    pendingUserEventsBySession.delete(envelope.sessionId);
   }
 
   return events;

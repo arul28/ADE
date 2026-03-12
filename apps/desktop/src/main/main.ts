@@ -87,13 +87,18 @@ import { createLinearClient } from "./services/cto/linearClient";
 import { createLinearIssueTracker } from "./services/cto/linearIssueTracker";
 import { createLinearTemplateService } from "./services/cto/linearTemplateService";
 import { createFlowPolicyService } from "./services/cto/flowPolicyService";
+import { createLinearWorkflowFileService } from "./services/cto/linearWorkflowFileService";
 import { createLinearRoutingService } from "./services/cto/linearRoutingService";
+import { createLinearIntakeService } from "./services/cto/linearIntakeService";
 import { createLinearOutboundService } from "./services/cto/linearOutboundService";
+import { createLinearCloseoutService } from "./services/cto/linearCloseoutService";
+import { createLinearDispatcherService } from "./services/cto/linearDispatcherService";
 import { createLinearSyncService } from "./services/cto/linearSyncService";
 import { createOpenclawBridgeService } from "./services/cto/openclawBridgeService";
 import { createOrchestratorService } from "./services/orchestrator/orchestratorService";
 import { createAiOrchestratorService } from "./services/orchestrator/aiOrchestratorService";
 import { createMissionBudgetService } from "./services/orchestrator/missionBudgetService";
+import { transitionMissionStatus } from "./services/orchestrator/missionLifecycle";
 import { createExternalMcpService } from "./services/externalMcp/externalMcpService";
 import type { Logger } from "./services/logging/logger";
 
@@ -1045,16 +1050,22 @@ app.whenReady().then(async () => {
     const linearTemplateService = createLinearTemplateService({
       adeDir: adePaths.adeDir,
     });
+    const linearWorkflowFileService = createLinearWorkflowFileService({
+      projectRoot,
+    });
     const flowPolicyService = createFlowPolicyService({
       db,
       projectId,
       projectConfigService,
+      workflowFileService: linearWorkflowFileService,
     });
     const linearRoutingService = createLinearRoutingService({
-      projectRoot,
-      workerAgentService,
-      aiIntegrationService,
       flowPolicyService,
+    });
+    const linearIntakeService = createLinearIntakeService({
+      db,
+      projectId,
+      issueTracker: linearIssueTracker,
     });
     const linearOutboundService = createLinearOutboundService({
       db,
@@ -1142,10 +1153,28 @@ app.whenReady().then(async () => {
       listRules: () => projectConfigService.get().effective.automations ?? [],
     });
 
+    let missionServiceRef: ReturnType<typeof createMissionService> | null = null;
     const missionService = createMissionService({
       db,
       projectId,
       projectRoot,
+      onBlockingInterventionAdded: ({ missionId, intervention }) => {
+        const currentMissionService = missionServiceRef;
+        const currentOrchestratorService = orchestratorServiceRef;
+        if (!currentMissionService || !currentOrchestratorService) return;
+        transitionMissionStatus(
+          {
+            logger,
+            missionService: currentMissionService,
+            orchestratorService: currentOrchestratorService,
+          } as any,
+          missionId,
+          "intervention_required",
+          {
+            lastError: intervention.body?.trim() || intervention.title?.trim() || null,
+          },
+        );
+      },
       onInterventionResolved: ({ missionId, intervention }) => {
         void knowledgeCaptureService.captureResolvedIntervention({
           missionId,
@@ -1170,6 +1199,7 @@ app.whenReady().then(async () => {
         }
       }
     });
+    missionServiceRef = missionService;
     // Run phase built-in migration/cleanup once at startup so launcher state is canonical.
     try {
       missionService.listPhaseProfiles({ includeArchived: true });
@@ -1291,20 +1321,34 @@ app.whenReady().then(async () => {
       });
     }
 
+    const linearCloseoutService = createLinearCloseoutService({
+      issueTracker: linearIssueTracker,
+      outboundService: linearOutboundService,
+      missionService,
+      orchestratorService,
+    });
+    const linearDispatcherService = createLinearDispatcherService({
+      db,
+      projectId,
+      issueTracker: linearIssueTracker,
+      workerAgentService,
+      workerHeartbeatService,
+      missionService,
+      aiOrchestratorService,
+      agentChatService,
+      laneService,
+      templateService: linearTemplateService,
+      closeoutService: linearCloseoutService,
+    });
+
     const linearSyncService = createLinearSyncService({
       db,
       logger,
       projectId,
-      projectRoot,
-      issueTracker: linearIssueTracker,
       flowPolicyService,
       routingService: linearRoutingService,
-      templateService: linearTemplateService,
-      outboundService: linearOutboundService,
-      workerAgentService,
-      missionService,
-      aiOrchestratorService,
-      orchestratorService,
+      intakeService: linearIntakeService,
+      dispatcherService: linearDispatcherService,
       autoStart: true,
     });
 

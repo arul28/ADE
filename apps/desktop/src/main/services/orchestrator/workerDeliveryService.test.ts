@@ -197,6 +197,104 @@ describe("workerDeliveryService routeMessageToCoordinatorCtx", () => {
     }
   });
 
+  it("answers failure questions with intervention and failed-step context", async () => {
+    vi.useFakeTimers();
+    try {
+      const appended: Array<{ content: string }> = [];
+      const ctx = {
+        disposed: { current: false },
+        logger: { debug: vi.fn() },
+        aiIntegrationService: {},
+        projectRoot: "/tmp/project",
+        chatMessages: new Map(),
+        sessionRuntimeSignals: new Map(),
+        missionService: {
+          get: vi.fn(() => ({
+            interventions: [
+              {
+                id: "intervention-1",
+                status: "open",
+                title: "Planner output missing",
+                requestedAction: "Retry the planner or provide a manual plan summary.",
+                createdAt: "2026-03-06T17:00:00.000Z",
+                updatedAt: "2026-03-06T17:00:10.000Z",
+                metadata: { runId: "run-1" },
+              },
+            ],
+          })),
+        },
+        orchestratorService: {
+          listRuns: vi.fn(() => [
+            {
+              id: "run-1",
+              status: "paused",
+              createdAt: "2026-03-06T17:00:00.000Z",
+            },
+          ]),
+          getRunGraph: vi.fn(() => ({
+            run: {
+              id: "run-1",
+              status: "paused",
+              metadata: {},
+            },
+            steps: [
+              {
+                id: "step-1",
+                stepKey: "plan-work",
+                title: "Plan work",
+                status: "failed",
+                createdAt: "2026-03-06T17:00:05.000Z",
+                updatedAt: "2026-03-06T17:00:10.000Z",
+                completedAt: "2026-03-06T17:00:10.000Z",
+              },
+            ],
+            attempts: [
+              {
+                id: "attempt-1",
+                stepId: "step-1",
+                status: "failed",
+                createdAt: "2026-03-06T17:00:05.000Z",
+                startedAt: "2026-03-06T17:00:05.000Z",
+                completedAt: "2026-03-06T17:00:10.000Z",
+                errorMessage: "Planner never wrote report_result.plan.markdown.",
+              },
+            ],
+            claims: [],
+          })),
+        },
+      } as any;
+      const deps = {
+        appendChatMessage: vi.fn((message) => {
+          appended.push(message);
+          return message;
+        }),
+        steerMission: vi.fn(),
+        enqueueChatResponse: vi.fn(),
+        runHealthSweep: vi.fn().mockResolvedValue({ sweeps: 0, staleRecovered: 0 }),
+      };
+
+      routeMessageToCoordinatorCtx(
+        ctx,
+        {
+          missionId: "mission-1",
+          content: "What went wrong?",
+          threadId: "thread-1",
+          target: { kind: "coordinator", runId: "run-1" },
+        } as any,
+        deps as any,
+      );
+
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(deps.runHealthSweep).toHaveBeenCalledWith("chat_status");
+      expect(appended).toHaveLength(1);
+      expect(appended[0]?.content).toContain("Open intervention: Planner output missing.");
+      expect(appended[0]?.content).toContain("Next action: Retry the planner or provide a manual plan summary.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("treats imperative worker guidance as a directive instead of a passive status query", () => {
     const ctx = {
       disposed: { current: false },

@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
-import type { LinearSyncConfig, NormalizedLinearIssue } from "../../../shared/types";
+import { describe, expect, it } from "vitest";
+import type { LinearWorkflowConfig, NormalizedLinearIssue } from "../../../shared/types";
 import { createLinearRoutingService } from "./linearRoutingService";
 
 const baseIssue: NormalizedLinearIssue = {
@@ -15,12 +15,18 @@ const baseIssue: NormalizedLinearIssue = {
   stateId: "state-1",
   stateName: "Todo",
   stateType: "unstarted",
+  previousStateId: "state-backlog",
+  previousStateName: "Backlog",
+  previousStateType: "backlog",
   priority: 2,
   priorityLabel: "high",
-  labels: ["bug"],
+  labels: ["bug", "fast-lane"],
+  metadataTags: ["ui"],
   assigneeId: null,
-  assigneeName: null,
+  assigneeName: "CTO",
   ownerId: "owner-1",
+  creatorId: "creator-1",
+  creatorName: "Taylor",
   blockerIssueIds: [],
   hasOpenBlockers: false,
   createdAt: "2026-03-05T00:00:00.000Z",
@@ -28,113 +34,67 @@ const baseIssue: NormalizedLinearIssue = {
   raw: {},
 };
 
-function buildPolicy(overrides: Partial<LinearSyncConfig> = {}): LinearSyncConfig {
+function buildPolicy(): LinearWorkflowConfig {
   return {
-    enabled: true,
-    pollingIntervalSec: 300,
-    projects: [{ slug: "acme-platform" }],
-    routing: { byLabel: {} },
-    assignment: { setAssigneeOnDispatch: false },
-    autoDispatch: { default: "auto", rules: [] },
-    classification: { mode: "hybrid", confidenceThreshold: 0.7 },
-    ...overrides,
+    version: 1,
+    source: "repo",
+    settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
+    workflows: [
+      {
+        id: "review",
+        name: "Review gate",
+        enabled: true,
+        priority: 50,
+        triggers: { assignees: ["CTO"], labels: ["needs-triage"] },
+        target: { type: "review_gate" },
+        steps: [{ id: "launch", type: "launch_target" }],
+      },
+      {
+        id: "fast-lane",
+        name: "PR fast lane",
+        enabled: true,
+        priority: 120,
+        triggers: { assignees: ["CTO"], labels: ["fast-lane"], priority: ["high"], projectSlugs: ["acme-platform"] },
+        target: { type: "pr_resolution", runMode: "autopilot" },
+        steps: [{ id: "launch", type: "launch_target", name: "Launch PR flow" }],
+      },
+    ],
+    files: [],
+    migration: { hasLegacyConfig: false, needsSave: false },
+    legacyConfig: null,
   };
 }
 
 describe("linearRoutingService", () => {
-  it("routes by label mapping and preserves auto-dispatch action", async () => {
-    const policy = buildPolicy({
-      routing: { byLabel: { bug: "backend-dev" } },
-    });
-
+  it("returns all candidate explanations and picks the highest-priority match", async () => {
+    const policy = buildPolicy();
     const service = createLinearRoutingService({
-      projectRoot: "/tmp/project",
-      workerAgentService: {
-        listAgents: () => [{ id: "agent-1", slug: "backend-dev", name: "Backend Dev" }],
-      } as any,
-      aiIntegrationService: {
-        executeTask: vi.fn(),
-      } as any,
       flowPolicyService: {
         getPolicy: () => policy,
-        normalizePolicy: (input?: LinearSyncConfig) => input ?? policy,
+        normalizePolicy: (input?: LinearWorkflowConfig) => input ?? policy,
       } as any,
     });
 
     const decision = await service.routeIssue({ issue: baseIssue });
-    expect(decision.workerSlug).toBe("backend-dev");
-    expect(decision.workerId).toBe("agent-1");
-    expect(decision.action).toBe("auto");
-    expect(decision.reason.toLowerCase()).toContain("label-based routing");
+    expect(decision.workflowId).toBe("fast-lane");
+    expect(decision.target?.type).toBe("pr_resolution");
+    expect(decision.candidates).toHaveLength(2);
+    expect(decision.candidates.find((candidate) => candidate.workflowId === "review")?.matched).toBe(false);
   });
 
-  it("escalates when auto route cannot resolve a worker", async () => {
-    const policy = buildPolicy({
-      routing: { byLabel: {} },
-      autoDispatch: { default: "auto", rules: [] },
-      classification: { mode: "heuristics", confidenceThreshold: 0.7 },
-    });
-
+  it("explains when nothing matched", async () => {
+    const policy = buildPolicy();
     const service = createLinearRoutingService({
-      projectRoot: "/tmp/project",
-      workerAgentService: {
-        listAgents: () => [],
-      } as any,
-      aiIntegrationService: {
-        executeTask: vi.fn(),
-      } as any,
       flowPolicyService: {
         getPolicy: () => policy,
-        normalizePolicy: (input?: LinearSyncConfig) => input ?? policy,
+        normalizePolicy: (input?: LinearWorkflowConfig) => input ?? policy,
       } as any,
     });
 
     const decision = await service.routeIssue({
-      issue: { ...baseIssue, labels: [] },
+      issue: { ...baseIssue, labels: ["bug"], assigneeName: "Someone Else" },
     });
-    expect(decision.action).toBe("escalate");
-    expect(decision.workerSlug).toBeNull();
-    expect(decision.confidence).toBeLessThanOrEqual(0.4);
-  });
-
-  it("uses AI fallback in hybrid mode when heuristic confidence is low", async () => {
-    const policy = buildPolicy({
-      classification: { mode: "hybrid", confidenceThreshold: 0.9 },
-    });
-
-    const executeTask = vi.fn(async () => ({
-      structuredOutput: {
-        workerSlug: "ai-worker",
-        action: "auto",
-        templateId: "ai-template",
-        confidence: 0.95,
-        reason: "AI selected worker",
-        matchedSignals: ["ai:classification"],
-      },
-      text: "",
-    }));
-
-    const service = createLinearRoutingService({
-      projectRoot: "/tmp/project",
-      workerAgentService: {
-        listAgents: () => [{ id: "agent-ai", slug: "ai-worker", name: "AI Worker" }],
-      } as any,
-      aiIntegrationService: {
-        executeTask,
-      } as any,
-      flowPolicyService: {
-        getPolicy: () => policy,
-        normalizePolicy: (input?: LinearSyncConfig) => input ?? policy,
-      } as any,
-    });
-
-    const decision = await service.routeIssue({
-      issue: { ...baseIssue, labels: [] },
-    });
-    expect(executeTask).toHaveBeenCalledOnce();
-    expect(decision.workerSlug).toBe("ai-worker");
-    expect(decision.workerId).toBe("agent-ai");
-    expect(decision.templateId).toBe("ai-template");
-    expect(decision.reason).toContain("(AI)");
+    expect(decision.workflowId).toBeNull();
+    expect(decision.reason).toContain("No workflow matched");
   });
 });

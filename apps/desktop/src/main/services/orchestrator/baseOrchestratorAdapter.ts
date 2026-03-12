@@ -280,6 +280,34 @@ export function buildFullPrompt(
     }
   }
 
+  {
+    const phaseValidation = step.metadata?.phaseValidation;
+    const evidenceRequirements = phaseValidation && typeof phaseValidation === "object" && !Array.isArray(phaseValidation) && Array.isArray((phaseValidation as Record<string, unknown>).evidenceRequirements)
+      ? ((phaseValidation as Record<string, unknown>).evidenceRequirements as unknown[])
+          .map((entry) => typeof entry === "string" ? entry.trim() : "")
+          .filter(Boolean)
+      : [];
+    const hardProofRequirements = evidenceRequirements.filter((entry) =>
+      entry === "screenshot"
+      || entry === "browser_verification"
+      || entry === "browser_trace"
+      || entry === "video_recording"
+      || entry === "console_logs"
+    );
+    if (hardProofRequirements.length > 0 && hasMissionTooling) {
+      systemParts.push(
+        [
+          "PROOF CAPTURE:",
+          `- This step requires proof artifacts: ${hardProofRequirements.join(", ")}.`,
+          "- Use ADE's local computer-use tools when you need native proof capture:",
+          "- `get_environment_info`, `launch_app`, `interact_gui`, `screenshot_environment`, and `record_environment`.",
+          "- When those tools generate proof files, include them in `report_result.artifacts` with canonical types such as `screenshot`, `browser_verification`, `browser_trace`, `video_recording`, or `console_logs`.",
+          "- Do not assume ADE inferred proof automatically; attach the resulting artifact URIs explicitly in your final `report_result` payload.",
+        ].join("\n")
+      );
+    }
+  }
+
   systemParts.push(
     hasMissionTooling
       ? [
@@ -401,15 +429,19 @@ export function buildFullPrompt(
   const MIN_MEMORY_SCORE = 0.3;
   const memProjectId = opts?.projectId;
   if (briefing) {
-    if (briefing.mission.entries.length > 0) {
+    const missionEntries = Array.isArray(briefing.mission?.entries) ? briefing.mission.entries : [];
+    const projectL0Entries = Array.isArray(briefing.l0?.entries) ? briefing.l0.entries : [];
+    const projectL1Entries = Array.isArray(briefing.l1?.entries) ? briefing.l1.entries : [];
+    const agentEntries = Array.isArray(briefing.l2?.entries) ? briefing.l2.entries : [];
+    if (missionEntries.length > 0) {
       systemParts.push(
         [
           "## Mission Memory",
-          ...briefing.mission.entries.map((mem) => `- [${mem.category}] ${mem.content}`)
+          ...missionEntries.map((mem) => `- [${mem.category}] ${mem.content}`)
         ].join("\n")
       );
     }
-    const projectKnowledge = [...briefing.l0.entries, ...briefing.l1.entries]
+    const projectKnowledge = [...projectL0Entries, ...projectL1Entries]
       .filter((entry, index, all) => all.findIndex((candidate) => candidate.id === entry.id) === index);
     if (projectKnowledge.length > 0) {
       systemParts.push(
@@ -419,11 +451,11 @@ export function buildFullPrompt(
         ].join("\n")
       );
     }
-    if (briefing.l2.entries.length > 0) {
+    if (agentEntries.length > 0) {
       systemParts.push(
         [
           "## Agent Memory",
-          ...briefing.l2.entries.map((mem) => `- [${mem.category}] ${mem.content}`)
+          ...agentEntries.map((mem) => `- [${mem.category}] ${mem.content}`)
         ].join("\n")
       );
     }

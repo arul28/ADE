@@ -111,6 +111,7 @@ export type OrchestratorErrorClass =
   | "configuration_error"
   | "canceled"
   | "resume_recovered"
+  | "planner_contract_violation"
   | "soft_success_blocking_failure";
 
 export type OrchestratorClaimScope = "lane" | "file" | "env" | "task";
@@ -833,6 +834,7 @@ export type OrchestratorRuntimeEventType =
   | "done"
   | "retry_scheduled"
   | "retry_exhausted"
+  | "planning_artifact_missing"
   | "claim_conflict"
   | "session_ended"
   | "intervention_opened"

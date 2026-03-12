@@ -198,6 +198,70 @@ describe("AgentChatPane", () => {
     });
   });
 
+  it("only creates and sends once for two rapid Enter submits when no session is selected", async () => {
+    setupWindowAde();
+    const ade = (window as any).ade;
+
+    let resolveCreate: ((value: {
+      id: string;
+      laneId: string;
+      provider: string;
+      model: string;
+      modelId: string;
+      status: string;
+      createdAt: string;
+      lastActivityAt: string;
+    }) => void) | null = null;
+    ade.agentChat.create = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveCreate = resolve;
+        })
+    );
+
+    render(<AgentChatPane laneId="lane-1" />);
+
+    const textarea = await screen.findByPlaceholderText("Message the agent...");
+
+    await act(async () => {
+      fireEvent.change(textarea, {
+        target: { value: "hello" },
+      });
+    });
+
+    await act(async () => {
+      fireEvent.keyDown(textarea, { key: "Enter" });
+      fireEvent.keyDown(textarea, { key: "Enter" });
+    });
+
+    expect(ade.agentChat.create).toHaveBeenCalledTimes(1);
+    expect(ade.agentChat.send).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveCreate?.({
+        id: "new-session-1",
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.3-codex",
+        modelId: "openai/gpt-5.3-codex",
+        status: "idle",
+        createdAt: new Date().toISOString(),
+        lastActivityAt: new Date().toISOString()
+      });
+    });
+
+    await waitFor(() => {
+      expect(ade.agentChat.create).toHaveBeenCalledTimes(1);
+      expect(ade.agentChat.send).toHaveBeenCalledTimes(1);
+      expect(ade.agentChat.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: "new-session-1",
+          text: "hello"
+        })
+      );
+    });
+  });
+
   it("opens a question modal for askUser approvals and sends the typed answer", async () => {
     const session = mockSession({ provider: "unified", modelId: "anthropic/claude-sonnet-4-6-api", model: "anthropic/claude-sonnet-4-6-api" });
     setupWindowAde({ sessions: [session], codexAvailable: false, claudeAvailable: true });

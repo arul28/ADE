@@ -59,6 +59,7 @@ export type ChatMessageAreaProps = {
   runtimeSummary: { title: string; detail: string } | null;
   agentRuntimeConfig: MissionAgentRuntimeConfig | null;
   mcpSummary: ChatMcpSummary | null;
+  runControls?: React.ReactNode;
   onOpenMcpSettings: () => void;
   onApproval: (
     sessionId: string,
@@ -83,6 +84,7 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
   runtimeSummary,
   agentRuntimeConfig,
   mcpSummary,
+  runControls,
   onOpenMcpSettings,
   onApproval,
 }: ChatMessageAreaProps) {
@@ -182,6 +184,7 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
             </div>
           </div>
           <div className="flex flex-wrap gap-1.5">
+            {runControls}
             {mcpSummary ? (
               <button
                 type="button"

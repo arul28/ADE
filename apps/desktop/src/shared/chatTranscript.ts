@@ -62,6 +62,10 @@ export function hasMaterialWorkerChatEvent(events: AgentChatEventEnvelope[]): bo
   return events.some((entry) => MATERIAL_WORKER_EVENT_TYPES.has(entry.event.type));
 }
 
+export function hasWorkerChatLifecycleEvent(events: AgentChatEventEnvelope[]): boolean {
+  return events.some((entry) => entry.event.type !== "user_message");
+}
+
 export function deriveAgentChatTranscriptSummary(
   events: AgentChatEventEnvelope[],
   maxChars = 280,

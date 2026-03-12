@@ -123,13 +123,6 @@ function GraphInner() {
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const [environmentMappings, setEnvironmentMappings] = React.useState<EnvironmentMapping[]>([]);
   const [prs, setPrs] = React.useState<PrWithConflicts[]>([]);
-  const [prInsightById, setPrInsightById] = React.useState<Record<string, {
-    status: PrStatus | null;
-    checks: PrCheck[];
-    reviews: PrReview[];
-    comments: PrComment[];
-    lastActivityAt: string | null;
-  }>>({});
   const [syncByLaneId, setSyncByLaneId] = React.useState<Record<string, GitUpstreamSyncStatus | null>>({});
   const [autoRebaseByLaneId, setAutoRebaseByLaneId] = React.useState<Record<string, AutoRebaseLaneStatus | null>>({});
   const syncRefreshInFlightRef = React.useRef(false);
@@ -139,6 +132,7 @@ function GraphInner() {
   const activityRefreshInFlightRef = React.useRef(false);
   const activityRefreshQueuedRef = React.useRef(false);
   const activityRefreshTimerRef = React.useRef<number | null>(null);
+  const prRefreshTimerRef = React.useRef<number | null>(null);
   const graphConfirm = useConfirmDialog();
   const lanesRef = React.useRef(lanes);
 
@@ -164,6 +158,14 @@ function GraphInner() {
     const next = await window.ade.prs.listWithConflicts();
     setPrs(next);
   }, []);
+
+  const scheduleRefreshPrs = React.useCallback((delayMs = 250) => {
+    if (prRefreshTimerRef.current != null) return;
+    prRefreshTimerRef.current = window.setTimeout(() => {
+      prRefreshTimerRef.current = null;
+      void refreshPrs().catch((err) => console.warn("[Graph] debounced listWithConflicts failed:", err));
+    }, delayMs);
+  }, [refreshPrs]);
 
   const refreshLaneSyncStatuses = React.useCallback(async () => {
     if (syncRefreshInFlightRef.current) {
@@ -466,56 +468,6 @@ function GraphInner() {
   const resolvePrBaseLaneId = React.useCallback((lane: LaneSummary, baseBranch: string) => {
     return laneIdByBranchRef.get(baseBranch) ?? laneIdByBranchRef.get(branchNameFromRef(baseBranch)) ?? lane.parentLaneId ?? primaryLaneId;
   }, [laneIdByBranchRef, primaryLaneId]);
-  React.useEffect(() => {
-    let cancelled = false;
-
-    if (prs.length === 0) {
-      setPrInsightById({});
-      return;
-    }
-
-    const loadInsights = async () => {
-      const next: Record<string, { status: PrStatus | null; checks: PrCheck[]; reviews: PrReview[]; comments: PrComment[]; lastActivityAt: string | null }> = {};
-      const chunkSize = 4;
-      for (let index = 0; index < prs.length; index += chunkSize) {
-        const chunk = prs.slice(index, index + chunkSize);
-        const results = await Promise.all(
-          chunk.map(async (pr) => {
-            try {
-              const [status, checks, reviews, comments] = await Promise.all([
-                window.ade.prs.getStatus(pr.id).catch(() => null),
-                window.ade.prs.getChecks(pr.id).catch(() => [] as PrCheck[]),
-                window.ade.prs.getReviews(pr.id).catch(() => [] as PrReview[]),
-                window.ade.prs.getComments(pr.id).catch(() => [] as PrComment[])
-              ]);
-              const activityTimestamps = [
-                pr.updatedAt,
-                pr.lastSyncedAt,
-                ...checks.flatMap((check) => [check.startedAt, check.completedAt]),
-                ...reviews.map((review) => review.submittedAt),
-                ...comments.flatMap((comment) => [comment.createdAt, comment.updatedAt])
-              ]
-                .filter((value): value is string => Boolean(value))
-                .map((value) => ({ value, ts: Date.parse(value) }))
-                .filter((entry) => Number.isFinite(entry.ts))
-                .sort((a, b) => b.ts - a.ts);
-              return [pr.id, { status, checks, reviews, comments, lastActivityAt: activityTimestamps[0]?.value ?? pr.updatedAt }] as const;
-            } catch {
-              return [pr.id, { status: null, checks: [] as PrCheck[], reviews: [] as PrReview[], comments: [] as PrComment[], lastActivityAt: pr.updatedAt }] as const;
-            }
-          })
-        );
-        for (const [prId, insight] of results) next[prId] = insight;
-      }
-      if (!cancelled) setPrInsightById(next);
-    };
-
-    void loadInsights();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [prs]);
 
   const prOverlayByPair = React.useMemo(() => {
     const map = new Map<string, GraphPrOverlay>();
@@ -527,12 +479,11 @@ function GraphInner() {
       map.set(edgePairKey(baseLaneId, pr.laneId), buildGraphPrOverlay({
         pr,
         baseLaneId,
-        detail: prInsightById[pr.id],
         mergeInProgress: Boolean(mergeInProgressByLaneId[pr.laneId])
       }));
     }
     return map;
-  }, [laneById, mergeInProgressByLaneId, prInsightById, prs, resolvePrBaseLaneId]);
+  }, [laneById, mergeInProgressByLaneId, prs, resolvePrBaseLaneId]);
   const prOverlayByLaneId = React.useMemo(() => {
     const map = new Map<string, GraphPrOverlay>();
     for (const overlay of prOverlayByPair.values()) {
@@ -789,7 +740,7 @@ function GraphInner() {
       unsub = window.ade.prs.onEvent((event) => {
         if (event.type !== "prs-updated") return;
         if (cancelled) return;
-        void refreshPrs().catch((err) => console.warn("[Graph] prs-updated refresh failed:", err));
+        scheduleRefreshPrs();
       });
     } catch (error) {
       reportGraphIssue("Live PR updates are unavailable in the graph.", error);
@@ -803,7 +754,7 @@ function GraphInner() {
         // noop
       }
     };
-  }, [refreshPrs, reportGraphIssue]);
+  }, [refreshPrs, reportGraphIssue, scheduleRefreshPrs]);
 
   React.useEffect(() => {
     void refreshIntegrationProposals();
@@ -1074,12 +1025,12 @@ function GraphInner() {
       if (document.visibilityState !== "visible") return;
       void refreshLanes().catch((err) => console.warn("[Graph] periodic refreshLanes failed:", err));
       scheduleRefreshActivity(320);
-    }, 12_000);
+    }, 30_000);
     const syncInterval = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       void refreshLaneSyncStatuses();
       void refreshAutoRebaseStatuses();
-    }, 25_000);
+    }, 60_000);
     const onFocus = () => {
       void refreshLaneSyncStatuses();
       void refreshAutoRebaseStatuses();
@@ -1113,8 +1064,12 @@ function GraphInner() {
       if (activityRefreshTimerRef.current != null) {
         window.clearTimeout(activityRefreshTimerRef.current);
       }
+      if (prRefreshTimerRef.current != null) {
+        window.clearTimeout(prRefreshTimerRef.current);
+        prRefreshTimerRef.current = null;
+      }
     };
-  }, [refreshLaneSyncStatuses, refreshLanes, refreshRiskBatch, refreshAutoRebaseStatuses, reportGraphIssue, scheduleRefreshActivity]);
+  }, [refreshLaneSyncStatuses, refreshLanes, refreshRiskBatch, refreshAutoRebaseStatuses, reportGraphIssue, scheduleRefreshActivity, scheduleRefreshPrs]);
 
   const baseGraph = React.useMemo(() => {
     if (!loadedGraphPreferences) {
@@ -1914,7 +1869,8 @@ function GraphInner() {
         changeRequestCount: 0,
         commentCount: 0,
         pendingCheckCount: 0,
-        activityState: "idle"
+        activityState: "idle",
+        detailLoaded: false
       };
     },
     [laneById, mergeInProgressByLaneId, prByLaneId, prOverlayByLaneId, resolvePrBaseLaneId]

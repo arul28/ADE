@@ -340,7 +340,7 @@ export type AutomationRuleDraft = {
   legacyActions?: AutomationDraftAction[];
 };
 
-export type AutomationRuleDraftNormalized = Omit<AutomationRule, "legacy"> & {
+export type AutomationRuleDraftNormalized = Omit<AutomationRule, "id" | "legacy"> & {
   id?: string | null;
   /** @deprecated Legacy planner/editor compatibility field. */
   trigger: AutomationTrigger;

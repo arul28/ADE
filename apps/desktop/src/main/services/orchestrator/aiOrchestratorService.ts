@@ -235,6 +235,12 @@ import {
 } from "./missionLifecycle";
 import type { HookDispatchDeps } from "./missionLifecycle";
 import { hasMaterialWorkerChatEvent } from "../../../shared/chatTranscript";
+import {
+  isProofEvidenceRequirement,
+  resolveCloseoutRequirementKeyFromArtifact,
+  resolveOrchestratorArtifactUri,
+} from "../../../shared/proofArtifacts";
+import { getCapabilityForRequirement } from "../computerUse/localComputerUse";
 
 // ── Intervention Prompt Builder (inlined from deleted planningPipeline module) ──
 
@@ -1605,6 +1611,17 @@ export function createAiOrchestratorService(args: {
     try {
       const coordinatorProjectId = resolveProjectIdForMission(missionId) ?? missionId;
       const modelId = modelConfigToServiceModel(modelConfig);
+      const workspaceRoot = (() => {
+        const laneId = opts?.missionLaneId ?? resolvePersistedMissionLaneIdForRun(runId);
+        if (laneId && laneService && typeof laneService.getLaneWorktreePath === "function") {
+          try {
+            return laneService.getLaneWorktreePath(laneId);
+          } catch {
+            // Fall back to the canonical project root below.
+          }
+        }
+        return projectRoot;
+      })();
       const agent = new CoordinatorAgent({
         orchestratorService,
         missionService,
@@ -1616,6 +1633,7 @@ export function createAiOrchestratorService(args: {
         db,
         projectId: coordinatorProjectId,
         projectRoot,
+        workspaceRoot,
         memoryService: plannerMemoryService,
         getMissionBudgetStatus: missionBudgetService
           ? async () => {
@@ -2167,10 +2185,15 @@ Check all worker statuses and continue managing the mission from here. Read work
     const missionArtifacts = args.mission.artifacts ?? [];
     const orchestratorArtifacts = orchestratorService.getArtifactsForMission(args.mission.id);
     const closeoutRequirements = new Map<MissionCloseoutRequirementKey, MissionCloseoutRequirement>();
-    const artifactByKey = new Map<string, { artifactId: string | null; uri: string | null; detail: string | null; source: "declared" | "discovered" }>();
+    const artifactByKey = new Map<MissionCloseoutRequirementKey, { artifactId: string | null; uri: string | null; detail: string | null; source: "declared" | "discovered" }>();
 
     for (const artifact of missionArtifacts) {
-      artifactByKey.set(artifact.artifactType, {
+      const requirementKey = resolveCloseoutRequirementKeyFromArtifact({
+        artifactType: artifact.artifactType,
+        metadata: artifact.metadata,
+      });
+      if (!requirementKey) continue;
+      artifactByKey.set(requirementKey, {
         artifactId: artifact.id,
         uri: artifact.uri ?? null,
         detail: artifact.description ?? null,
@@ -2178,9 +2201,19 @@ Check all worker statuses and continue managing the mission from here. Read work
       });
     }
     for (const artifact of orchestratorArtifacts) {
-      artifactByKey.set(artifact.artifactKey, {
+      const requirementKey = resolveCloseoutRequirementKeyFromArtifact({
+        artifactKey: artifact.artifactKey,
+        kind: artifact.kind,
+        metadata: artifact.metadata,
+      });
+      if (!requirementKey) continue;
+      artifactByKey.set(requirementKey, {
         artifactId: artifact.id,
-        uri: artifact.kind === "file" || artifact.kind === "pr" || artifact.kind === "branch" ? artifact.value : null,
+        uri: resolveOrchestratorArtifactUri({
+          kind: artifact.kind,
+          value: artifact.value,
+          metadata: artifact.metadata,
+        }),
         detail: typeof artifact.metadata.summary === "string"
           ? artifact.metadata.summary
           : typeof artifact.metadata.description === "string"
@@ -2301,15 +2334,28 @@ Check all worker statuses and continue managing the mission from here. Read work
     for (const requirementKey of requiredEvidence) {
       if (closeoutRequirements.has(requirementKey)) continue;
       const artifact = artifactByKey.get(requirementKey) ?? null;
+      const capability = isProofEvidenceRequirement(requirementKey)
+        ? getCapabilityForRequirement(requirementKey)
+        : null;
       pushRequirement({
         key: requirementKey,
         label: requirementKey.replace(/_/g, " "),
         required: true,
-        status: artifact ? "present" : "missing",
-        detail: artifact?.detail ?? (artifact?.uri ?? `Required evidence "${requirementKey.replace(/_/g, " ")}" has not been attached yet.`),
+        status: artifact
+          ? "present"
+          : capability && !capability.available
+            ? "blocked_by_capability"
+            : "missing",
+        detail: artifact?.detail
+          ?? artifact?.uri
+          ?? (
+            capability && !capability.available
+              ? `Required evidence "${requirementKey.replace(/_/g, " ")}" is blocked because the local computer-use runtime is unavailable. ${capability.detail}`
+              : `Required evidence "${requirementKey.replace(/_/g, " ")}" has not been attached yet.`
+          ),
         artifactId: artifact?.artifactId ?? null,
         uri: artifact?.uri ?? null,
-        source: artifact?.source ?? "declared",
+        source: artifact?.source ?? (capability && !capability.available ? "runtime" : "declared"),
       });
     }
 
@@ -3817,6 +3863,18 @@ Check all worker statuses and continue managing the mission from here. Read work
     }
   };
 
+  const hasOpenBlockingInterventionForRun = (missionId: string, runId: string): boolean => {
+    const mission = missionService.get(missionId);
+    if (!mission) return false;
+    return mission.status === "intervention_required"
+      || mission.interventions.some((intervention) => {
+        if (intervention.status !== "open") return false;
+        const interventionRunId =
+          typeof intervention.metadata?.runId === "string" ? intervention.metadata.runId.trim() : "";
+        return interventionRunId.length === 0 || interventionRunId === runId;
+      });
+  };
+
   const startReadyAutopilotAttemptsWithMilestoneReadiness = async (args: {
     runId: string;
     reason: string;
@@ -3824,6 +3882,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     const run = orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === args.runId) ?? null;
     if (!run) return 0;
     if (run.status !== "active" && run.status !== "bootstrapping" && run.status !== "queued") return 0;
+    if (hasOpenBlockingInterventionForRun(run.missionId, run.id)) return 0;
     const coordinator = coordinatorAgents.get(args.runId);
     if (!coordinator?.isAlive) return 0;
     emitMilestoneReadinessToCoordinator({ runId: args.runId, reason: args.reason });
@@ -3832,15 +3891,21 @@ Check all worker statuses and continue managing the mission from here. Read work
 
   const runHealthSweep = async (reason: string): Promise<{ sweeps: number; staleRecovered: number }> => {
     if (disposed) return { sweeps: 0, staleRecovered: 0 };
+    const startedAtMs = Date.now();
     pruneSessionRuntimeSignals();
     const runs = orchestratorService
       .listRuns({ limit: HEALTH_SWEEP_ACTIVE_RUN_SCAN_LIMIT })
       .filter((run) => run.status === "active" || run.status === "bootstrapping" || run.status === "queued");
     let sweeps = 0;
     let staleRecovered = 0;
+    let skippedBlockedRuns = 0;
 
     for (const run of runs) {
       if (disposed) break;
+      if ((reason === "interval" || reason === "startup") && hasOpenBlockingInterventionForRun(run.missionId, run.id)) {
+        skippedBlockedRuns += 1;
+        continue;
+      }
       if (activeHealthSweepRuns.has(run.id)) {
         // Interval/startup sweeps are opportunistic; manual/chat/status sweeps should wait briefly
         // so explicit health checks don't get dropped due to an in-flight background sweep.
@@ -4171,6 +4236,15 @@ Check all worker statuses and continue managing the mission from here. Read work
 
     await replayQueuedWorkerMessages({
       reason: `health_sweep:${reason}`
+    });
+
+    logger.debug("ai_orchestrator.health_sweep_summary", {
+      reason,
+      sweeps,
+      staleRecovered,
+      skippedBlockedRuns,
+      activeRunCount: runs.length,
+      durationMs: Date.now() - startedAtMs,
     });
 
     return { sweeps, staleRecovered };
@@ -5604,6 +5678,17 @@ Check all worker statuses and continue managing the mission from here. Read work
 
       // Find the intervention
       const intervention = mission.interventions.find((i) => i.id === args.interventionId);
+      const interventionReasonCode =
+        typeof intervention?.metadata?.reasonCode === "string" ? intervention.metadata.reasonCode.trim() : "";
+      if (interventionReasonCode === "planner_plan_missing") {
+        const suggestion =
+          "Planner output is missing the canonical plan artifact. Retry planning only after the planner can return report_result.plan.markdown.";
+        emitOrchestratorMessage(
+          args.missionId,
+          `Intervention requires your input: ${intervention?.title ?? args.interventionId}. ${suggestion}`
+        );
+        return { autoResolved: false, suggestion };
+      }
       const interventionDesc = intervention
         ? `Type: ${intervention.interventionType}, Title: ${intervention.title}, Body: ${intervention.body}`
         : `Intervention ID: ${args.interventionId}`;
@@ -8782,6 +8867,15 @@ Check all worker statuses and continue managing the mission from here. Read work
       }),
       progressLog,
       lastMeaningfulProgress: progressLog[0] ?? null,
+      closeoutRequirements: graph
+        ? buildMissionCloseoutRequirements({
+            mission,
+            graph,
+            policy: resolveMissionFinalizationPolicy(resolveActivePhaseSettings(mission.id).settings.prStrategy ?? { kind: "manual" }),
+            finalization: stateDoc?.finalization ?? null,
+            stateDoc,
+          })
+        : [],
     };
   };
 

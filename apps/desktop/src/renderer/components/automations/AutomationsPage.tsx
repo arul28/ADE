@@ -129,9 +129,9 @@ export function AutomationsPage() {
                 <Dialog.Title className="text-sm font-semibold text-[#FAFAFA]" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
                   Morning Briefing
                 </Dialog.Title>
-                <div className="mt-1 text-xs text-[#8B8B9A]">
+                <Dialog.Description className="mt-1 text-xs text-[#8B8B9A]">
                   Review overnight automation outcomes before you clear the queue.
-                </div>
+                </Dialog.Description>
               </div>
               {morningBriefing ? <Chip className="text-[9px]">{morningBriefing.totalRuns} runs</Chip> : null}
             </div>

@@ -123,7 +123,8 @@ Baseline derived from code in `apps/desktop`.
 
 Not fully implemented yet:
 
-- Final Automations polish in `/automations` (review/publish UX, a few executor edge cases, and external-MCP follow-through remain; core ingress/runtime plumbing is shipped)
+- Mission proof/computer-use runtime follow-through (`screenshot_environment`, `record_environment`, native computer-use loops, and automatic PR proof embedding remain incomplete even though mission evidence requirements and artifact links are partially wired)
+- Single-device tester hardening across Run, Settings, Graph, onboarding, and general performance surfaces
 - Multi-device sync (cr-sqlite + WebSocket real-time replication)
 - Device registry and brain management (which machine runs agents)
 - iOS companion app (remote control, push notifications, mission monitoring)
@@ -190,16 +191,16 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Tiered Validation System (strict self/dedicated runtime contracts) | Phase 3 | Phase 3 | Implemented (Task 5 + Orchestrator Overhaul Phase 5) |
 | Intervention Granularity (per-worker pause) | Phase 3 | Phase 3 | Implemented (Task 5) |
 | Mission Introspection (reflection protocol, retrospectives) | Phase 3 | Phase 3 | Implemented (ORCHESTRATOR_OVERHAUL.md Phase 7) |
-| Subscription Usage Tracking (local CLI data analysis) | Phase 3 | Phase 3 | Planned |
+| Subscription Usage Tracking (local CLI data analysis) | Phase 3 | Phase 3 | Implemented (usage tracking service + local cost scanning shipped) |
 | Missions Home Dashboard (aggregate stats, history) | Phase 3 | Phase 3 | Implemented (Task 4) |
 | Budget Management (subscription + API key) | Phase 3 | Phase 3 | Implemented (Task 6) |
 | CTO Agent (persistent project-aware assistant) | Phase 4 | Phase 3 | Complete (W1) |
-| Automations Platform + Night Shift | Phase 4 | Phase 3 | Mostly implemented (W5a complete; W5b runtime largely shipped, polish remains) |
-| Learning Packs (auto-curated knowledge) | Phase 4 | Phase 3 | Mostly implemented (W7c pipeline shipped; advanced capture validation/polish remains) |
-| Memory Architecture Upgrade (vector search, tiers) | Phase 4 | Phase 3 | Complete through W7b, with W7c follow-through still open |
+| Automations Platform + Night Shift | Phase 4 | Phase 3 | Complete (W5) |
+| Learning Packs (auto-curated knowledge) | Phase 4 | Phase 3 | Complete |
+| Memory Architecture Upgrade (vector search, tiers) | Phase 4 | Phase 3 | Complete |
 | Candidate Memory Triage Automation (auto-promote + stale archive sweep) | Phase 4 | Phase 3 memory lifecycle baseline | Complete (W6 + W6½) |
 | Mem0 Sidecar Integration (optional semantic index) | Post-Phase 4 | Phase 4 memory foundation | Deferred (evaluate after native memory upgrade + CTO baseline) |
-| Skill Library (recipe extraction + `.ade/skills/` materialization) | Phase 4 | Phase 4 Learning Packs + PROJ-039 viewer baseline | Mostly implemented (canonical export + ingestion shipped; advanced capture follow-through remains) |
+| Skill Library (recipe extraction + `.ade/skills/` materialization) | Phase 4 | Phase 4 Learning Packs + PROJ-039 viewer baseline | Complete |
 | .ade/ Portable State (canonical tracked/shareable contract) | Phase 4 | Phase 3 | Implemented |
 | .ade/ State Sync (cr-sqlite database sync) | Phase 6 | Phase 4 | Planned |
 | External MCP Consumption | Phase 4 | Phase 3 | Implemented baseline; ADE-managed external MCP substrate shipped |
@@ -215,7 +216,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Issue Tracker Abstraction (Linear first, GitHub Issues planned) | Phase 4 | Phase 4 W4 | Implemented baseline (`issueTracker.ts` + `linearIssueTracker.ts`) |
 | Pre-compaction Memory Flush | Phase 4 | Phase 3 (HW6) | Complete (W6½) |
 | Memory Consolidation | Phase 4 | Phase 3 | Complete (W6½) |
-| Episodic + Procedural Memory | Phase 4 | Phase 3 | Partially implemented (episodic summaries + procedural extraction shipped; advanced capture pending) |
+| Episodic + Procedural Memory | Phase 4 | Phase 3 | Complete |
 | Play runtime isolation | Phase 5 | Phase 3 (parallel with Phase 4) | Complete |
 | cr-sqlite multi-device sync | Phase 6 | Phase 4 | Planned |
 | Device registry & brain management | Phase 6 | Phase 4 | Planned |

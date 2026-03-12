@@ -6,7 +6,7 @@ import type {
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
-import { nowIso } from "../shared/utils";
+import { nowIso, toMemoryEntryDto } from "../shared/utils";
 import type { Memory, UnifiedMemoryService } from "./unifiedMemoryService";
 
 type ProcedureDetailRow = {
@@ -113,11 +113,12 @@ function buildProcedureContent(trigger: string, markdown: string): string {
   return `Trigger: ${trigger}\n\n${markdown}`.trim();
 }
 
+
 function procedureFromRows(memory: Memory, detailRow: ProcedureDetailRow | null, sourceEpisodeIds: string[]): ProcedureListItem {
   const successCount = Math.max(0, Number(detailRow?.success_count ?? 0) || 0);
   const failureCount = Math.max(0, Number(detailRow?.failure_count ?? 0) || 0);
   return {
-    memory,
+    memory: toMemoryEntryDto(memory),
     procedural: {
       id: memory.id,
       trigger: detailRow?.trigger?.trim() || "repeated workflow",
@@ -276,7 +277,8 @@ export function createProceduralLearningService(args: {
       ...summary,
       sourceEpisodes: sources
         .map((row) => memoryService.getMemory(row.episode_memory_id))
-        .filter((entry): entry is Memory => Boolean(entry)),
+        .filter((entry): entry is Memory => Boolean(entry))
+        .map((entry) => toMemoryEntryDto(entry)),
       confidenceHistory: historyRows.map((row) => ({
         id: row.id,
         confidence: Number(row.confidence ?? memory.confidence) || memory.confidence,

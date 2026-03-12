@@ -3,14 +3,33 @@ import path from "node:path";
 import YAML from "yaml";
 import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
-import { isRecord, getErrorMessage } from "../shared/utils";
+import { isRecord, getErrorMessage, isEnoentError } from "../shared/utils";
 
 const TOKEN_FILE = "linear-token.v1.bin";
 const IMPORT_SENTINEL = "linear-token.imported.v1";
+const OAUTH_CONFIG_FILES = [
+  "linear-oauth.v1.json",
+  "linear-oauth.json",
+  "linear-oauth.v1.yaml",
+  "linear-oauth.yaml",
+  "linear-oauth.yml",
+] as const;
 
 type LinearCredentialServiceArgs = {
   adeDir: string;
   logger?: Logger | null;
+};
+
+type StoredLinearToken = {
+  token: string;
+  authMode?: "manual" | "oauth" | null;
+  refreshToken?: string | null;
+  expiresAt?: string | null;
+};
+
+type LinearOAuthClientCredentials = {
+  clientId: string;
+  clientSecret: string;
 };
 
 function extractLegacyToken(raw: string): string | null {
@@ -36,7 +55,25 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
   const tokenPath = path.join(secretsDir, TOKEN_FILE);
   const importSentinelPath = path.join(secretsDir, IMPORT_SENTINEL);
 
-  const readEncryptedToken = (): string | null => {
+  const normalizeStoredToken = (value: unknown): StoredLinearToken | null => {
+    if (!isRecord(value)) return null;
+    const token = typeof value.token === "string" ? value.token.trim() : "";
+    if (!token.length) return null;
+    return {
+      token,
+      authMode: value.authMode === "manual" || value.authMode === "oauth" ? value.authMode : null,
+      refreshToken:
+        typeof value.refreshToken === "string" && value.refreshToken.trim().length > 0
+          ? value.refreshToken.trim()
+          : null,
+      expiresAt:
+        typeof value.expiresAt === "string" && value.expiresAt.trim().length > 0
+          ? value.expiresAt.trim()
+          : null,
+    };
+  };
+
+  const readEncryptedToken = (): StoredLinearToken | null => {
     try {
       if (!safeStorage.isEncryptionAvailable()) {
         args.logger?.warn("linear_sync.token_store_unavailable", {
@@ -46,11 +83,10 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
       }
       const encrypted = fs.readFileSync(tokenPath);
       const decrypted = safeStorage.decryptString(encrypted);
-      const parsed = JSON.parse(decrypted) as { token?: unknown };
-      const token = typeof parsed?.token === "string" ? parsed.token.trim() : "";
-      return token.length ? token : null;
+      const parsed = JSON.parse(decrypted) as StoredLinearToken;
+      return normalizeStoredToken(parsed);
     } catch (error: unknown) {
-      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
+      if (isEnoentError(error)) return null;
       args.logger?.warn("linear_sync.token_store_read_failed", {
         error: getErrorMessage(error)
       });
@@ -58,9 +94,9 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     }
   };
 
-  const persistToken = (token: string | null): void => {
-    const clean = (token ?? "").trim();
-    if (!clean.length) {
+  const persistToken = (record: StoredLinearToken | null): void => {
+    const token = record?.token?.trim() ?? "";
+    if (!token.length) {
       try {
         fs.unlinkSync(tokenPath);
       } catch {
@@ -74,7 +110,12 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     }
 
     fs.mkdirSync(secretsDir, { recursive: true });
-    const encrypted = safeStorage.encryptString(JSON.stringify({ token: clean }));
+    const encrypted = safeStorage.encryptString(JSON.stringify({
+      token,
+      authMode: record?.authMode ?? null,
+      refreshToken: record?.refreshToken ?? null,
+      expiresAt: record?.expiresAt ?? null,
+    } satisfies StoredLinearToken));
     fs.writeFileSync(tokenPath, encrypted);
     try {
       fs.chmodSync(tokenPath, 0o600);
@@ -110,12 +151,12 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
         fs.writeFileSync(importSentinelPath, "no_token", "utf8");
         return;
       }
-      persistToken(token);
+      persistToken({ token, authMode: "manual" });
       fs.mkdirSync(secretsDir, { recursive: true });
       fs.writeFileSync(importSentinelPath, "imported", "utf8");
       args.logger?.info("linear_sync.token_imported_legacy", { legacyPath });
     } catch (error: unknown) {
-      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return;
+      if (isEnoentError(error)) return;
       args.logger?.warn("linear_sync.token_import_failed", {
         legacyPath,
         error: getErrorMessage(error)
@@ -123,9 +164,10 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     }
   };
 
-  let cachedToken: string | null | undefined;
+  let cachedToken: StoredLinearToken | null | undefined;
+  let cachedOAuthCreds: LinearOAuthClientCredentials | null | undefined;
 
-  const getToken = (): string | null => {
+  const getStoredToken = (): StoredLinearToken | null => {
     if (cachedToken !== undefined) return cachedToken;
     importLegacyTokenIfNeeded();
     cachedToken = readEncryptedToken();
@@ -134,19 +176,74 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
 
   const invalidateCache = (): void => {
     cachedToken = undefined;
+    cachedOAuthCreds = undefined;
+  };
+
+  const readOAuthClientCredentials = (): LinearOAuthClientCredentials | null => {
+    if (cachedOAuthCreds !== undefined) return cachedOAuthCreds;
+    for (const filename of OAUTH_CONFIG_FILES) {
+      const configPath = path.join(secretsDir, filename);
+      try {
+        const raw = fs.readFileSync(configPath, "utf8");
+        const parsed = filename.endsWith(".json") ? JSON.parse(raw) : YAML.parse(raw);
+        if (!isRecord(parsed)) continue;
+        const clientId =
+          typeof parsed.clientId === "string"
+            ? parsed.clientId.trim()
+            : typeof parsed.client_id === "string"
+              ? parsed.client_id.trim()
+              : "";
+        const clientSecret =
+          typeof parsed.clientSecret === "string"
+            ? parsed.clientSecret.trim()
+            : typeof parsed.client_secret === "string"
+              ? parsed.client_secret.trim()
+              : "";
+        if (clientId.length && clientSecret.length) {
+          cachedOAuthCreds = { clientId, clientSecret };
+          return cachedOAuthCreds;
+        }
+      } catch (error: unknown) {
+        if (isEnoentError(error)) {
+          continue;
+        }
+        args.logger?.warn("linear_sync.oauth_config_read_failed", {
+          filename,
+          error: getErrorMessage(error),
+        });
+      }
+    }
+    cachedOAuthCreds = null;
+    return null;
   };
 
   return {
-    getToken,
+    getToken(): string | null {
+      return getStoredToken()?.token ?? null;
+    },
 
     getTokenOrThrow(): string {
-      const token = getToken();
+      const token = getStoredToken()?.token ?? null;
       if (!token) throw new Error("Linear token missing. Set it in CTO > Linear Sync.");
       return token;
     },
 
     setToken(token: string): void {
-      persistToken(token);
+      persistToken({ token, authMode: "manual" });
+      invalidateCache();
+    },
+
+    setOAuthToken(args: {
+      accessToken: string;
+      refreshToken?: string | null;
+      expiresAt?: string | null;
+    }): void {
+      persistToken({
+        token: args.accessToken,
+        authMode: "oauth",
+        refreshToken: args.refreshToken ?? null,
+        expiresAt: args.expiresAt ?? null,
+      });
       invalidateCache();
     },
 
@@ -155,9 +252,26 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
       invalidateCache();
     },
 
-    getStatus(): { tokenStored: boolean } {
-      return { tokenStored: getToken() != null };
-    }
+    getStatus(): {
+      tokenStored: boolean;
+      authMode: "manual" | "oauth" | null;
+      tokenExpiresAt: string | null;
+      refreshTokenStored: boolean;
+      oauthConfigured: boolean;
+    } {
+      const stored = getStoredToken();
+      return {
+        tokenStored: stored != null,
+        authMode: stored?.authMode ?? null,
+        tokenExpiresAt: stored?.expiresAt ?? null,
+        refreshTokenStored: Boolean(stored?.refreshToken),
+        oauthConfigured: readOAuthClientCredentials() != null,
+      };
+    },
+
+    getOAuthClientCredentials(): LinearOAuthClientCredentials | null {
+      return readOAuthClientCredentials();
+    },
   };
 }
 

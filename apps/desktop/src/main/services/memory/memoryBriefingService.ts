@@ -177,6 +177,8 @@ export function createMemoryBriefingService(args: {
         || entry.category === "digest"
         || entry.category === "pattern"
         || entry.category === "procedure"
+        || entry.category === "convention"
+        || entry.category === "preference"
       )
       .map((entry) => ({
         id: entry.id,

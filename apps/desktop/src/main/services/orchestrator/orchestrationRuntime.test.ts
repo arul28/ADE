@@ -194,6 +194,7 @@ function createHarness(args: {
     logger,
     db,
     projectRoot: "/tmp",
+    workspaceRoot: "/tmp",
     onDagMutation: vi.fn(),
     getMissionBudgetStatus: args.getMissionBudgetStatus,
     onHardCapTriggered: args.onHardCapTriggered,
@@ -561,7 +562,7 @@ describe("approval gate on phase transition", () => {
 // VAL-PLAN-006: Multi-round deliberation (maxQuestions bypass for planning)
 // ---------------------------------------------------------------------------
 describe("multi-round deliberation", () => {
-  it("allows more questions than maxQuestions in planning phase with canLoop", async () => {
+  it("blocks coordinator-owned planning questions even when planning can loop", async () => {
     const planningPhase = makePlanningPhase({
       askQuestions: { enabled: true, maxQuestions: 3 },
       orderingConstraints: { mustBeFirst: true, canLoop: true, loopTarget: "planning" },
@@ -596,14 +597,13 @@ describe("multi-round deliberation", () => {
       missionInterventions: priorInterventions,
     });
 
-    // Should be allowed even though 3 questions already asked (canLoop = true)
     const result = await (tools.ask_user as any).execute({
       questions: [{ question: "What framework should we use?" }],
       phase: "planning",
     });
 
-    expect(result.ok).toBe(true);
-    expect(result.interventionId).toBeDefined();
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("active planning worker must ask");
   });
 });
 

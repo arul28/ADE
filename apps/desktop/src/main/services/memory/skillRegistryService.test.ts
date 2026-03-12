@@ -74,6 +74,7 @@ describe("skillRegistryService", () => {
             sourceRunId: null,
             sourceType: "system",
             sourceId: null,
+            fileScopePattern: null,
           },
           procedural: {
             id: "proc-1",

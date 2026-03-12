@@ -68,6 +68,8 @@ export type AgentChatEvent =
       text: string;
       attachments?: AgentChatFileRef[];
       turnId?: string;
+      deliveryState?: "queued" | "delivered" | "failed";
+      processed?: boolean;
     }
   | {
       type: "text";

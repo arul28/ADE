@@ -3,18 +3,18 @@
 
 Dependencies: **W1-W4** (shipped). Can run in parallel with W6½. No dependency on embeddings.
 
-W1-W4 shipped the CTO agent, worker org chart, heartbeat system, and Linear sync — but with significant UX gaps. A 2026-03-11 code audit shows this workstream is partially implemented rather than unstarted: the current CTO shell, Team panel, worker configuration flows, file-as-truth identity persistence, onboarding scaffold, and Linear sync panel already exist. The remaining work is mostly around onboarding polish, guided connection UX, theming/component consistency, richer worker visibility, and making the whole surface feel intentionally designed rather than merely functional.
+W1-W4 shipped the CTO agent, worker org chart, heartbeat system, and Linear sync. The remaining W-UX follow-through is now complete: the CTO shell, onboarding/setup path, Linear connection flow, worker visibility surfaces, memory browser, and cross-surface theming have all been finished and validated in the app.
 
-##### Audit Snapshot (2026-03-11)
+##### Audit Snapshot (2026-03-12)
 
 - Implemented in code today: `CtoPage.tsx`, `TeamPanel.tsx`, `LinearSyncPanel.tsx`, `CtoSettingsPanel.tsx`, and file-backed CTO/worker state via `ctoStateService.ts`.
 - Implemented in code today: `OnboardingWizard.tsx` and onboarding state handling in the CTO shell.
 - Identity/config persistence already follows the file-as-truth model for the current CTO/worker state files.
-- Not yet complete: polished onboarding/setup flow, guided Linear connection panel, shared badge/card/timeline redesign, richer worker activity feed, and the broader visual consistency pass.
+- Completed in the 2026-03-12 closure pass: polished onboarding/setup flow, guided Linear connection panel, richer worker activity visibility, unified memory browsing, and the broader visual/theming consistency pass.
 
 ##### CTO Initialization & Onboarding
 
-The CTO now has an onboarding scaffold in the product, but it still needs polish to fully deliver the intended first-run experience. The remaining work is making that flow clearer, more guided, and better connected to setup state across the rest of the CTO surface.
+The CTO onboarding flow is now a complete first-run experience with resilient loading, guided setup, repo scanning/bootstrap, and integration handoff into the broader CTO surface.
 
 - **First-run detection**: Use the persisted CTO onboarding state to show onboarding instead of dropping users directly into the full CTO surface when setup is incomplete.
 
@@ -27,7 +27,7 @@ The CTO now has an onboarding scaffold in the product, but it still needs polish
 
 - **Re-run**: Settings > CTO > "Re-run Setup Wizard" button for reconfiguration.
 
-- **Implementation detail**: Onboarding state is already persisted with the CTO identity, and the wizard component exists as `OnboardingWizard.tsx`. Remaining work is mostly around connection validation, polish, and reducing setup friction.
+- **Implementation detail**: Onboarding state is persisted with the CTO identity, and the wizard now completes the scan/bootstrap and integration connection path rather than stopping at scaffolding.
 
 ##### Identity System
 
@@ -84,7 +84,7 @@ The current memory inspector is functional but hard to use for understanding wha
 
 ##### Linear Connection UX
 
-The current Linear connection is a raw token input. This needs to be a guided flow with validation, status indicators, and clear error states.
+The Linear connection flow is now guided, validated, and recoverable, with OAuth plus manual token fallback, project discovery, status indicators, and clear reconnect/retry states.
 
 - **Connection flow**:
   1. Settings > Integrations > Linear: "Connect Linear" button.
@@ -155,31 +155,40 @@ Workers are currently created and managed from scattered locations. This workstr
 
 ##### Service Architecture
 
+W-UX functionality is distributed across existing Phase 4 services rather than standalone service files:
+
 ```
-ctoOnboardingService.ts       — First-run detection, onboarding state, project scan
-identityService.ts            — Identity YAML read/write, file-as-truth sync, prompt assembly
-linearConnectionService.ts    — OAuth flow, token validation, project discovery, connection status
-themeAuditService.ts          — Design token definitions, component alignment utilities
-workerManagementService.ts    — Worker CRUD, template system, activity feed assembly
+ctoStateService.ts            — CTO identity, onboarding state (completedSteps, first-run gating), project scan, identity YAML read/write, file-as-truth sync, prompt assembly
+linearOAuthService.ts         — OAuth flow (redirect + callback)
+linearCredentialService.ts    — Token storage, validation, connection status
+linearSyncService.ts          — Sync loop, project discovery, dashboard state
+workerAgentService.ts         — Worker CRUD, template system, agent lifecycle
+shared/designTokens.ts        — Shared design token definitions (renderer)
 ```
 
-Services instantiated in `main.ts`. `ctoOnboardingService` gates CTO activation on first run. `identityService` loads identity from `.ade/` files on startup and syncs to DB. `linearConnectionService` wraps the existing Linear sync with connection UX.
+Services instantiated in `main.ts`. `ctoStateService` gates CTO activation on first run via persisted onboarding state and loads identity from `.ade/cto/identity.yaml` on startup. Linear connection UX wraps `linearOAuthService` + `linearCredentialService` + `linearSyncService`.
 
 ##### IPC Channels
 
+All CTO/worker/Linear channels use the `ade.cto.*` namespace in `ipc.ts`:
+
 | Channel | Direction | Purpose |
 |---------|-----------|---------|
-| `cto:onboarding-state` | renderer → main | Get/set onboarding progress |
-| `cto:run-project-scan` | renderer → main | Bootstrap project memory from repo scan |
-| `cto:identity-get` | renderer → main | Load CTO identity |
-| `cto:identity-update` | renderer → main | Save CTO identity changes |
-| `agent:identity-get` | renderer → main | Load worker identity |
-| `agent:identity-update` | renderer → main | Save worker identity changes |
-| `linear:validate-token` | renderer → main | Validate Linear API token |
-| `linear:discover-projects` | renderer → main | List available Linear projects |
-| `linear:connection-status` | main → renderer | Connection health updates |
-| `worker:create-from-template` | renderer → main | Create worker with template defaults |
-| `worker:activity-feed` | renderer → main | Fetch worker activity timeline |
+| `ade.cto.getOnboardingState` | renderer → main | Get onboarding progress |
+| `ade.cto.completeOnboardingStep` | renderer → main | Mark an onboarding step complete |
+| `ade.cto.dismissOnboarding` | renderer → main | Dismiss the onboarding banner |
+| `ade.cto.resetOnboarding` | renderer → main | Re-run setup wizard from settings |
+| `ade.cto.runProjectScan` | renderer → main | Bootstrap project memory from repo scan |
+| `ade.cto.getState` | renderer → main | Load CTO identity and full state |
+| `ade.cto.updateIdentity` | renderer → main | Save CTO identity changes |
+| `ade.cto.previewSystemPrompt` | renderer → main | Preview assembled system prompt |
+| `ade.cto.saveAgent` | renderer → main | Create or update a worker agent |
+| `ade.cto.listAgents` | renderer → main | List all workers in the org chart |
+| `ade.cto.listAgentRuns` | renderer → main | Fetch worker run history / activity |
+| `ade.cto.setLinearToken` | renderer → main | Store Linear API token |
+| `ade.cto.startLinearOAuth` | renderer → main | Begin OAuth redirect flow |
+| `ade.cto.getLinearConnectionStatus` | renderer → main | Connection health + sync state |
+| `ade.cto.getLinearProjects` | renderer → main | List available Linear projects |
 
 ##### Renderer Components
 
@@ -188,14 +197,26 @@ CtoPage.tsx                   — Consolidated CTO shell with onboarding, team, 
 OnboardingWizard.tsx          — Multi-step onboarding modal
 OnboardingBanner.tsx          — Persistent setup reminder / resume surface
 IdentityEditor.tsx            — Form-based identity editor (shared between CTO and workers)
+LinearConnectionPanel.tsx     — Guided Linear connection flow (OAuth + manual token + validation)
 LinearSyncPanel.tsx           — Linear sync controls, status, and routing configuration
-CtoMemoryBrowser.tsx          — Memory inspection and management surface
+CtoMemoryBrowser.tsx          — Memory inspection with procedures, skills, sync, and raw-memory tabs
+CtoSettingsPanel.tsx          — CTO configuration surface
 WorkerCreationWizard.tsx      — Template-based worker creation
 WorkerDetailSlideOut.tsx      — Worker detail slide-out with tabs
+WorkerActivityFeed.tsx        — Merged heartbeat/session activity timeline per worker
 TeamPanel.tsx                 — Consolidated worker management surface
+AgentSidebar.tsx              — Agent list sidebar navigation
+OpenclawConnectionPanel.tsx   — OpenClaw bridge connection and status
+
+shared/AgentStatusBadge.tsx   — Unified status badge used across CTO, Team, Automations
+shared/MemoryEntryCard.tsx    — Shared memory entry card for memory browser and CTO memory
+shared/TimelineEntry.tsx      — Shared timeline event component for activity feeds and logs
+shared/ConnectionStatusDot.tsx— Connection health dot indicator
+shared/StepWizard.tsx         — Shared multi-step wizard scaffold (used by onboarding and worker creation)
+shared/designTokens.ts        — Agent-system design tokens (status colors, card styles, typography)
 ```
 
-**Implementation status (2026-03-11):** Partially implemented. Remaining work is primarily onboarding/polish plus richer management/activity surfaces rather than greenfield UI construction.
+**Implementation status (2026-03-12):** ✅ Complete. The onboarding flow, guided Linear setup, worker activity visibility, unified memory browsing, and theming/component consistency pass are all shipped.
 
 **Tests:**
 - CTO onboarding: first-run detection shows wizard, completed steps persisted, skip behavior activates CTO with defaults, re-run from settings resets onboarding state.

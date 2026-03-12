@@ -533,6 +533,11 @@ describe("mcpServer", () => {
         "memory_update_core",
         "reflection_add",
         "memory_search",
+        "get_environment_info",
+        "launch_app",
+        "interact_gui",
+        "screenshot_environment",
+        "record_environment",
         "run_tests",
         "get_lane_status",
         "list_lanes",
@@ -621,6 +626,19 @@ describe("mcpServer", () => {
         "update_tool_profiles",
       ])
     );
+  });
+
+  it("returns structured local computer-use capability state", async () => {
+    const { runtime } = createRuntime();
+    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "coord-1", role: "orchestrator" });
+    const response = await callTool(handler, "get_environment_info", {});
+
+    expect(response.isError).toBeUndefined();
+    expect(response.structuredContent.platform).toBeTypeOf("string");
+    expect(response.structuredContent.capabilities).toBeTruthy();
+    expect(response.structuredContent.capabilities.proofRequirements).toBeTruthy();
   });
 
   it("includes ADE-managed external MCP tools in tool discovery and preserves structured tool results", async () => {
@@ -1842,7 +1860,7 @@ describe("mcpServer", () => {
     expect(response.structuredContent.startupCommand).toContain("read-only");
     const contextPath = response.structuredContent.contextRef?.path as string | null;
     expect(contextPath).toBeTruthy();
-    expect(contextPath?.includes("/.ade/orchestrator/mcp-context/run-123/")).toBe(true);
+    expect(contextPath?.includes("/.ade/cache/orchestrator/mcp-context/run-123/")).toBe(true);
     if (!contextPath) {
       throw new Error("Expected context manifest path");
     }

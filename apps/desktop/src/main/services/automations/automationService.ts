@@ -97,6 +97,7 @@ type AutomationRunRow = {
   trigger_metadata: string | null;
   summary: string | null;
   confidence_json: string | null;
+  billing_code: string | null;
   linked_procedure_ids_json: string | null;
   procedure_feedback_json: string | null;
 };
@@ -197,6 +198,11 @@ const TOOL_FAMILY_ALLOWED_TOOLS: Record<AutomationToolFamily, string[]> = {
   linear: ["mcp__linear__get_issue", "mcp__linear__save_comment", "mcp__linear__save_issue"],
   browser: [
     "agent-browser",
+    "mcp__ade__get_environment_info",
+    "mcp__ade__launch_app",
+    "mcp__ade__interact_gui",
+    "mcp__ade__screenshot_environment",
+    "mcp__ade__record_environment",
     "mcp__playwright__browser_navigate",
     "mcp__playwright__browser_snapshot",
     "mcp__playwright__browser_click",
@@ -237,6 +243,14 @@ function safeJsonParseArray<T>(raw: string | null): T[] {
 function clampText(raw: string, max: number): string {
   if (raw.length <= max) return raw;
   return `${raw.slice(0, max)}\n...(truncated)...\n`;
+}
+
+function summarizeMemoryContent(content: string, fallback: string): string {
+  const firstLine = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+  return firstLine ?? fallback;
 }
 
 function dedupeStrings(values: Array<string | null | undefined>): string[] {
@@ -325,7 +339,42 @@ function computeConfidence(rule: AutomationRule, procedureCount: number): Automa
 }
 
 function primaryTrigger(rule: AutomationRule): AutomationTrigger {
-  return rule.triggers[0] ?? rule.legacy?.trigger ?? { type: "manual" };
+  return normalizedRuleTriggers(rule)[0] ?? { type: "manual" };
+}
+
+function normalizedRuleTriggers(rule: AutomationRule): AutomationTrigger[] {
+  if (Array.isArray(rule.triggers) && rule.triggers.length > 0) return rule.triggers;
+  const legacyTrigger = (rule as AutomationRule & { trigger?: AutomationTrigger }).trigger;
+  if (legacyTrigger) return [legacyTrigger];
+  if (rule.legacy?.trigger) return [rule.legacy.trigger];
+  return [{ type: "manual" }];
+}
+
+function normalizeRuntimeRule(rule: AutomationRule): AutomationRule {
+  const triggers = normalizedRuleTriggers(rule);
+  const legacyActions = Array.isArray(rule.legacy?.actions)
+    ? rule.legacy.actions
+    : Array.isArray((rule as AutomationRule & { actions?: AutomationAction[] }).actions)
+      ? (rule as AutomationRule & { actions?: AutomationAction[] }).actions ?? []
+      : [];
+  return {
+    ...rule,
+    enabled: rule.enabled !== false,
+    triggers,
+    executor: rule.executor ?? { mode: "automation-bot" },
+    reviewProfile: rule.reviewProfile ?? "quick",
+    toolPalette: rule.toolPalette?.length ? rule.toolPalette : ["repo", "memory", "mission"],
+    contextSources: rule.contextSources?.length ? rule.contextSources : [{ type: "project-memory" }, { type: "procedures" }],
+    memory: rule.memory ?? { mode: "automation-plus-project", ruleScopeKey: rule.id },
+    guardrails: rule.guardrails ?? {},
+    outputs: rule.outputs ?? { disposition: "comment-only", createArtifact: true },
+    verification: rule.verification ?? { verifyBeforePublish: false, mode: "intervention" },
+    billingCode: rule.billingCode?.trim() || `auto:${rule.id}`,
+    legacy: {
+      ...(rule.legacy?.trigger ?? triggers[0] ? { trigger: rule.legacy?.trigger ?? triggers[0] } : {}),
+      ...(legacyActions.length ? { actions: legacyActions } : {}),
+    },
+  };
 }
 
 function summarizeTrigger(trigger: AutomationTrigger): string {
@@ -561,6 +610,10 @@ export function createAutomationService({
     queueItemId?: string;
   }) => void;
 }) {
+  type AutomationIngressStatusPatch = {
+    githubRelay?: Partial<AutomationIngressStatus["githubRelay"]>;
+    localWebhook?: Partial<AutomationIngressStatus["localWebhook"]>;
+  };
   let missionServiceRef = missionService;
   let aiOrchestratorServiceRef = aiOrchestratorService;
   let memoryBriefingServiceRef = memoryBriefingService;
@@ -785,7 +838,7 @@ export function createAutomationService({
 
   ensureSchema();
 
-  const listRules = (): AutomationRule[] => projectConfigService.get().effective.automations ?? [];
+  const listRules = (): AutomationRule[] => (projectConfigService.get().effective.automations ?? []).map((rule) => normalizeRuntimeRule(rule as AutomationRule));
   const findRule = (automationId: string): AutomationRule | null => listRules().find((rule) => rule.id === automationId) ?? null;
 
   const readNightShiftSettings = (): NightShiftSettings => {
@@ -828,7 +881,7 @@ export function createAutomationService({
     );
   };
 
-  const updateIngressStatus = (patch: Partial<AutomationIngressStatus>) => {
+  const updateIngressStatus = (patch: AutomationIngressStatusPatch) => {
     ingressStatusRef = {
       githubRelay: { ...ingressStatusRef.githubRelay, ...(patch.githubRelay ?? {}) },
       localWebhook: { ...ingressStatusRef.localWebhook, ...(patch.localWebhook ?? {}) },
@@ -981,7 +1034,7 @@ export function createAutomationService({
           billing_code,
           linked_procedure_ids_json,
           procedure_feedback_json
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, ?, ?, ?, 0, ?, null, ?, 0, ?, ?, ?, ?, ?)
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, ?, ?, ?, 0, ?, null, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         runId,
@@ -999,6 +1052,7 @@ export function createAutomationService({
         args.rule.executor.mode,
         Math.max(1, args.actionsTotal ?? 1),
         requiresPublishGate(args.rule) ? 1 : 0,
+        0,
         JSON.stringify(triggerMetadata),
         args.summary ?? null,
         confidence ? JSON.stringify(confidence) : null,
@@ -1287,11 +1341,12 @@ export function createAutomationService({
       lines.push("Do not publish external side effects. This rule is running in dry-run verification mode.");
     }
     if (args.briefing) {
-      const l0 = args.briefing.l0.slice(0, 3).map((memory) => `- ${memory.summary}`);
-      const procedures = args.briefing.l1
-        .filter((memory) => memory.kind === "procedure")
+      const l0 = args.briefing.l0.entries
+        .slice(0, 3)
+        .map((memory) => `- ${summarizeMemoryContent(memory.content, memory.category)}`);
+      const procedures = args.briefing.l1.entries
         .slice(0, 4)
-        .map((memory) => `- ${memory.summary}`);
+        .map((memory) => `- ${summarizeMemoryContent(memory.content, memory.category)}`);
       if (l0.length) lines.push("", "Pinned context:", ...l0);
       if (procedures.length) lines.push("", "Relevant procedures:", ...procedures);
     }
@@ -1961,9 +2016,6 @@ export function createAutomationService({
       const queueInstead = trigger.queueInstead || rule.executor.mode === "night-shift" || rule.outputs.disposition === "queue-overnight";
       if (queueInstead) return await queueNightShiftRun(rule, trigger);
       if ((rule.legacy?.actions?.length ?? 0) > 0) return await runLegacyRule(rule, trigger);
-      if (rule.executor.mode === "employee" || rule.executor.mode === "cto-route") {
-        return await dispatchWorkerRun({ rule, trigger });
-      }
       return await dispatchMissionRun({ rule, trigger });
     } finally {
       inFlightByAutomationId.delete(rule.id);
@@ -2061,7 +2113,7 @@ export function createAutomationService({
     const feedback = linkedProcedureIds.map((procedureId) => ({ procedureId, outcome, reason }));
     const normalizedFeedback = feedback.map((item) => ({
       memoryId: item.procedureId,
-      outcome: item.outcome === "observation" ? "success" as const : item.outcome,
+      outcome: item.outcome === "failure" ? "failure" as const : "success" as const,
       reason: item.reason,
     }));
     try {
@@ -2704,23 +2756,13 @@ export function createAutomationService({
             triggerType: runRow.trigger_type as AutomationTriggerType,
             ...(safeJsonParseRecord(runRow.trigger_metadata) ?? {}),
           } as TriggerContext;
-          if (rule.executor.mode === "employee" || rule.executor.mode === "cto-route") {
-            await dispatchWorkerRun({
-              rule,
-              trigger,
-              existingRunId: runRow.id,
-              existingQueueItemId: row.id,
-              publishPhase: true,
-            });
-          } else {
-            await dispatchMissionRun({
-              rule,
-              trigger,
-              existingRunId: runRow.id,
-              existingQueueItemId: row.id,
-              publishPhase: true,
-            });
-          }
+          await dispatchMissionRun({
+            rule,
+            trigger,
+            existingRunId: runRow.id,
+            existingQueueItemId: row.id,
+            publishPhase: true,
+          });
           updateQueueItemStatus(queueItemId, "completed-clean");
           updateRun(runRow.id, { queue_status: "completed-clean", verification_required: 0 });
           return loadQueueItemRow(queueItemId) ? toQueueItem(loadQueueItemRow(queueItemId)!) : null;

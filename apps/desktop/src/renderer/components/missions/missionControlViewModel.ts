@@ -8,6 +8,10 @@ import type {
   ValidationEvidenceRequirement,
 } from "../../../shared/types";
 import { isRecord } from "./missionHelpers";
+import {
+  resolveCloseoutRequirementKeyFromArtifact,
+  resolveOrchestratorArtifactUri,
+} from "../../../shared/proofArtifacts";
 
 /** Return trimmed string or null if empty/non-string. Duplicates shared/utils for renderer boundary. */
 function toOptionalString(value: unknown): string | null {
@@ -227,7 +231,10 @@ function normalizeMissionArtifacts(mission: MissionDetail | null): UnifiedMissio
     source: "mission",
     title: artifact.title,
     description: artifact.description,
-    artifactType: artifact.artifactType,
+    artifactType: resolveCloseoutRequirementKeyFromArtifact({
+      artifactType: artifact.artifactType,
+      metadata: artifact.metadata,
+    }) ?? artifact.artifactType,
     stepId: toOptionalString(artifact.metadata?.stepId),
     stepTitle: toOptionalString(artifact.metadata?.stepTitle),
     phaseKey: toOptionalString(artifact.metadata?.phaseKey),
@@ -256,12 +263,20 @@ function normalizeOrchestratorArtifacts(stepById: StepMap, artifacts: Orchestrat
       source: "orchestrator",
       title: toOptionalString(artifactMeta?.title) ?? artifact.artifactKey.replace(/_/g, " "),
       description: toOptionalString(artifactMeta?.summary) ?? toOptionalString(artifactMeta?.description),
-      artifactType: artifact.kind,
+      artifactType: resolveCloseoutRequirementKeyFromArtifact({
+        artifactKey: artifact.artifactKey,
+        kind: artifact.kind,
+        metadata: artifact.metadata,
+      }) ?? artifact.kind,
       stepId: artifact.stepId,
       stepTitle: step?.title ?? null,
       phaseKey: toOptionalString(metadata?.phaseKey),
       phaseName: toOptionalString(metadata?.phaseName),
-      uri: artifact.kind === "file" || artifact.kind === "branch" || artifact.kind === "pr" ? artifact.value : null,
+      uri: resolveOrchestratorArtifactUri({
+        kind: artifact.kind,
+        value: artifact.value,
+        metadata: artifact.metadata,
+      }),
       textContent: artifact.kind === "custom" || artifact.kind === "checkpoint" || artifact.kind === "test_report" ? artifact.value : null,
       declared: artifact.declared,
       missingExpectedEvidence: false,

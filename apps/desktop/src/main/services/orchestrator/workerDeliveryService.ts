@@ -80,11 +80,15 @@ function isCoordinatorStatusQuery(content: string): boolean {
   const normalized = content.trim().toLowerCase();
   if (!normalized.length) return false;
 
+  if (/\b(what went wrong|why did it fail|why is it failing|what is wrong|what failed|why did the mission fail|why is the mission blocked)\b/i.test(normalized)) {
+    return true;
+  }
+
   if (/^(status|progress|heartbeat|what'?s happening|what is happening)$/i.test(normalized)) {
     return true;
   }
 
-  const statusTerms = /\b(status|progress|stuck|heartbeat|doing|working on|worker|agent|lane|phase|running)\b/i;
+  const statusTerms = /\b(status|progress|stuck|heartbeat|doing|working on|worker|agent|lane|phase|running|wrong|fail(?:ed|ing)?|error|blocked|intervention)\b/i;
   if (!statusTerms.test(normalized)) return false;
 
   // Imperative status requests like "status update please", "give me a status update"
@@ -135,6 +139,16 @@ function buildCoordinatorStatusReply(
   try {
     const graph = ctx.orchestratorService.getRunGraph({ runId: targetRun.id, timelineLimit: 0 });
     const normalizedContent = content.trim().toLowerCase();
+    const mission = typeof ctx.missionService?.get === "function" ? ctx.missionService.get(missionId) : null;
+    const openIntervention = (mission?.interventions ?? [])
+      .filter((intervention) => intervention.status === "open")
+      .filter((intervention) => {
+        const metadata = isRecord(intervention.metadata) ? intervention.metadata : null;
+        const interventionRunId = typeof metadata?.runId === "string" ? metadata.runId.trim() : "";
+        return interventionRunId.length === 0 || interventionRunId === targetRun.id;
+      })
+      .sort((left, right) => Date.parse(right.updatedAt || right.createdAt) - Date.parse(left.updatedAt || left.createdAt))[0] ?? null;
+    const asksAboutFailure = /\b(what went wrong|why did it fail|why is it failing|what is wrong|what failed|why did the mission fail|why is the mission blocked)\b/i.test(normalizedContent);
     const runningSteps = graph.steps.filter((step) => step.status === "running");
     const targetStep =
       graph.steps.find((step) => {
@@ -143,8 +157,42 @@ function buildCoordinatorStatusReply(
         return (title.length > 0 && normalizedContent.includes(title)) || (stepKey.length > 0 && normalizedContent.includes(stepKey));
       })
       ?? (runningSteps.length === 1 ? runningSteps[0] : null);
+    const latestFailedStep = [...graph.steps]
+      .filter((step) => step.status === "failed")
+      .sort((left, right) => {
+        const leftTs = Date.parse(left.completedAt ?? left.updatedAt ?? left.createdAt ?? "");
+        const rightTs = Date.parse(right.completedAt ?? right.updatedAt ?? right.createdAt ?? "");
+        return rightTs - leftTs;
+      })[0] ?? null;
+    const latestFailedAttempt = latestFailedStep
+      ? graph.attempts
+          .filter((attempt) => attempt.stepId === latestFailedStep.id)
+          .sort((left, right) => {
+            const leftTs = Date.parse(left.completedAt ?? left.startedAt ?? left.createdAt ?? "");
+            const rightTs = Date.parse(right.completedAt ?? right.startedAt ?? right.createdAt ?? "");
+            return rightTs - leftTs;
+          })[0] ?? null
+      : null;
 
     if (!targetStep) {
+      const failureSummary = [
+        summarizeRunForChat(ctx, missionId),
+        openIntervention ? `Open intervention: ${openIntervention.title}.` : null,
+        openIntervention?.requestedAction?.trim()
+          ? `Next action: ${clipTextForContext(openIntervention.requestedAction.trim(), 180)}.`
+          : null,
+        latestFailedStep
+          ? `Latest failed step: ${(latestFailedStep.title?.trim() || latestFailedStep.stepKey)} (${latestFailedStep.stepKey}).`
+          : null,
+        latestFailedAttempt?.errorMessage?.trim()
+          ? `Failure detail: ${clipTextForContext(latestFailedAttempt.errorMessage.trim(), 220)}.`
+          : null,
+      ]
+        .filter((entry): entry is string => Boolean(entry))
+        .join(" ");
+      if (asksAboutFailure || openIntervention || latestFailedStep || targetRun.status === "failed" || targetRun.status === "paused") {
+        return failureSummary;
+      }
       return summarizeRunForChat(ctx, missionId);
     }
 

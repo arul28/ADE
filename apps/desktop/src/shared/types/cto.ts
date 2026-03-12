@@ -148,6 +148,34 @@ export type CtoLinearProject = {
   teamName: string;
 };
 
+export type CtoStartLinearOAuthArgs = Record<string, never>;
+
+export type CtoStartLinearOAuthResult = {
+  sessionId: string;
+  authUrl: string;
+  redirectUri: string;
+};
+
+export type CtoLinearOAuthSessionState = "pending" | "completed" | "failed" | "expired";
+
+export type CtoGetLinearOAuthSessionArgs = {
+  sessionId: string;
+};
+
+export type CtoGetLinearOAuthSessionResult = {
+  status: CtoLinearOAuthSessionState;
+  connection?: import("./linearSync").LinearConnectionStatus;
+  error?: string | null;
+};
+
+export type CtoRunProjectScanArgs = Record<string, never>;
+
+export type CtoRunProjectScanResult = {
+  detection: import("./core").OnboardingDetectionResult | null;
+  coreMemoryPatch: Partial<Omit<CtoCoreMemory, "version" | "updatedAt">>;
+  createdMemoryIds: string[];
+};
+
 export type CtoGetOpenclawStateArgs = Record<string, never>;
 
 export type CtoUpdateOpenclawConfigArgs = {

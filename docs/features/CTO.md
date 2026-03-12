@@ -4,7 +4,7 @@
 
 > Last updated: 2026-03-12
 >
-> **Status: W1-W4, W6, W6½, W7a, W7b, W8, W9, and W10 complete at baseline or better; W5b/W-UX/W7c remain in follow-through** — CTO core identity, worker org chart, heartbeat/activation, bidirectional Linear sync, onboarding/memory/worker UI surfaces, the native memory upgrade, the ADE-managed external MCP substrate, the OpenClaw bridge, and portable `.ade/` state are in the codebase. Remaining Phase 4 work is concentrated in automations polish, UX polish, and advanced knowledge capture validation.
+> **Status: W1-W10 complete at baseline or better** — CTO core identity, worker org chart, heartbeat/activation, bidirectional Linear sync, onboarding/memory/worker UI surfaces, the native memory upgrade, advanced knowledge capture/review surfaces, the ADE-managed external MCP substrate, the OpenClaw bridge, and portable `.ade/` state are in the codebase. Phase 4 can now be treated as closed at the product-contract level.
 
 ---
 
@@ -452,7 +452,7 @@ For mission workers, the situation is different again: they use a generated `l0/
 
 ### Auto-Compaction
 
-The CTO's conversations can be long-running. The current compaction flow still preserves summaries/shared facts, but the full documented silent pre-compaction `memoryAdd` flush is not yet shipped. Treat that flush behavior as planned work rather than current behavior.
+The CTO's conversations can be long-running. When context approaches the compaction threshold, a silent pre-compaction flush runs via `compactionFlushService.ts` (224 lines): the agent gets a flush turn to write important observations to durable memory before the context window is compacted. This prevents knowledge loss during long sessions.
 
 ### Temporal Decay & Composite Scoring
 
@@ -475,6 +475,13 @@ Over time, the CTO's memory naturally stratifies:
 - **Ongoing**: Architectural decision history, mission outcome patterns, team workflow preferences, learned routing patterns, procedural knowledge about what works and what does not.
 
 This accumulation is what makes the CTO fundamentally different from a session-scoped assistant. Each interaction adds to a growing knowledge base that makes every future interaction more informed.
+
+The CTO Memory tab is also an operator-facing review surface for that knowledge, not just a raw browser. It now exposes:
+
+- raw-memory provenance for intervention-derived, PR-derived, and recurring-failure captures,
+- learned procedures with confidence history and source episodes,
+- indexed skills with reveal/re-index actions,
+- knowledge freshness via the human-work digest sync state.
 
 ### Upward and Downward Propagation
 
@@ -825,11 +832,9 @@ This design draws from three open-source projects:
 
 ## Deferred Design
 
-W1-W4 are **Complete** as of 2026-03-05. The following areas remain open for future workstreams:
+Phase 4 (W1-W10) is complete. The following areas remain open beyond Phase 4:
 
-- **Proactive behavior**: When and how the CTO should surface information without being asked (e.g., morning briefing, mission completion notifications). Partially addressed by heartbeat system (W3) but proactive chat messages not yet implemented.
-- **Multi-project support**: How the CTO handles users working across multiple projects. Current implementation is single-project.
-- **Learning rate and accuracy**: How quickly the CTO should adopt new patterns vs. maintaining stable behavior. Three-tier memory model (W6) will address this.
-- **Trust and permissions**: What the CTO can do autonomously vs. what requires user approval. Currently governed by adapter capability mode (`full_mcp` vs `fallback`).
-
-These design questions will be addressed in W5+ (Night Shift, Memory Architecture, OpenClaw Bridge).
+- **Proactive chat messages**: The heartbeat system (W3) handles scheduled activation and issue intake, and the morning briefing assembles overnight results. Proactive push-style messages into the CTO chat (e.g., "I noticed a failing CI run") are not yet implemented.
+- **Multi-project support**: The CTO currently operates within a single project. Multi-project coordination is not addressed by Phase 4.
+- **Computer use and visual verification**: Mission closeout can model screenshot/video evidence requirements, and capability detection probes macOS tools, but native computer-use runtime tools are not shipped. See `docs/computer-use.md` for the research plan.
+- **Trust escalation**: CTO autonomy is governed by adapter capability mode (`full_mcp` vs `fallback`) and per-rule `verifyBeforePublish` gates. More granular trust escalation (e.g., progressive autonomy based on track record) is future work.

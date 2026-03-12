@@ -18,7 +18,7 @@ import {
   type TeamRuntimeConfig,
 } from "../../../shared/types";
 import type { MentionParticipant } from "../shared/MentionInput";
-import { COLORS } from "../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
 import { useMissionPolling } from "./useMissionPolling";
 import { formatMissionWorkerPresentation } from "./missionHelpers";
 import { buildMissionStateNarrative, prepareMissionFeedItems } from "./missionFeedPresentation";
@@ -36,6 +36,7 @@ import { ChatInput, type QuickTarget } from "./ChatInput";
 import { ChatSurfaceShell } from "../chat/ChatSurfaceShell";
 import { openExternalMcpSettings } from "../chat/chatNavigation";
 import { useChatMcpSummary } from "../chat/useChatMcpSummary";
+import { useMissionsStore } from "./useMissionsStore";
 
 const BG_PAGE = COLORS.pageBg;
 
@@ -129,6 +130,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<AgentChatFileRef[]>([]);
   const [sending, setSending] = useState(false);
+  const [runActionBusy, setRunActionBusy] = useState<"pause" | "resume" | "cancel" | null>(null);
   const [globalViewMode, setGlobalViewMode] = useState<"signal" | "raw">("signal");
   const [completedCollapsed, setCompletedCollapsed] = useState(false);
   const [jumpNotice, setJumpNotice] = useState<string | null>(null);
@@ -301,7 +303,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   const displayMessages = useMemo(() => {
     if (selectedChannel?.kind === "global") {
       if (globalViewMode === "signal" && runView?.progressLog?.length) {
-        return prepareMissionFeedItems(runView.progressLog).map((item) => ({
+        const feedMessages = prepareMissionFeedItems(runView.progressLog).map((item) => ({
           id: `mission-feed:${item.id}`,
           missionId,
           role: item.kind === "worker" ? "worker" : item.kind === "user" ? "user" : "orchestrator",
@@ -318,6 +320,10 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
             feedKind: item.kind,
           },
         } satisfies OrchestratorChatMessage));
+        const visibleUserMessages = [...globalMessages]
+          .filter((message) => message.role === "user")
+          .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+        return [...feedMessages, ...visibleUserMessages].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
       }
       let msgs = [...globalMessages].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
       msgs = msgs.filter((msg) => { const md = readRecord(msg.metadata); if (md?.missionChatMode !== "thread_only") return true; return msg.target?.kind === "coordinator" || msg.threadId === `mission:${missionId}`; });
@@ -419,6 +425,88 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
     try { await window.ade.agentChat.approve({ sessionId, itemId, decision, responseText }); setJumpNotice(null); await Promise.all([refreshThreads(), refreshGlobalMessages()]); if (selectedChannel?.threadId) await refreshThreadMessages(selectedChannel.threadId); } catch (error) { setJumpNotice(error instanceof Error ? error.message : String(error)); }
   }, [refreshGlobalMessages, refreshThreadMessages, refreshThreads, selectedChannel]);
 
+  const refreshMissionWorkspace = useCallback(async () => {
+    const store = useMissionsStore.getState();
+    await store.refreshMissionList({ preserveSelection: true, silent: true });
+    await store.loadMissionDetail(missionId);
+    await store.loadOrchestratorGraph(missionId);
+  }, [missionId]);
+
+  const handleRunControl = useCallback(async (action: "pause" | "resume" | "cancel") => {
+    if (!runId || runActionBusy) return;
+    setRunActionBusy(action);
+    setJumpNotice(null);
+    try {
+      if (action === "pause") {
+        await window.ade.orchestrator.pauseRun({ runId, reason: "Paused from mission chat." });
+      } else if (action === "resume") {
+        await window.ade.orchestrator.resumeRun({ runId });
+      } else {
+        await window.ade.orchestrator.cancelRun({ runId, reason: "Canceled from mission chat." });
+      }
+      await Promise.all([
+        refreshMissionWorkspace(),
+        refreshThreads(),
+        refreshWorkers(),
+        refreshSelectedMessages(),
+      ]);
+    } catch (error) {
+      setJumpNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRunActionBusy(null);
+    }
+  }, [refreshMissionWorkspace, refreshSelectedMessages, refreshThreads, refreshWorkers, runActionBusy, runId]);
+
+  const runControls = useMemo(() => {
+    if (!runId || !runStatus) return null;
+    if (runStatus === "succeeded" || runStatus === "failed" || runStatus === "canceled") return null;
+
+    const buttons: Array<{ id: "pause" | "resume" | "cancel"; label: string; tone: "accent" | "danger" }> = [];
+    if (runStatus === "paused") {
+      buttons.push({ id: "resume", label: "Resume run", tone: "accent" });
+    } else {
+      buttons.push({ id: "pause", label: "Pause run", tone: "accent" });
+    }
+    buttons.push({ id: "cancel", label: "Cancel run", tone: "danger" });
+
+    return (
+      <>
+        <span
+          className="inline-flex items-center gap-1 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em]"
+          style={{
+            background: "color-mix(in srgb, var(--chat-accent) 10%, transparent)",
+            color: COLORS.textSecondary,
+            border: "1px solid color-mix(in srgb, var(--chat-accent) 16%, rgba(255,255,255,0.08))",
+            fontFamily: MONO_FONT,
+          }}
+        >
+          Run {runStatus.replace(/_/g, " ")}
+        </span>
+        {buttons.map((button) => {
+          const accentColor = button.tone === "danger" ? COLORS.danger : COLORS.accent;
+          const isBusy = runActionBusy === button.id;
+          return (
+            <button
+              key={button.id}
+              type="button"
+              className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em] transition-opacity hover:opacity-90 disabled:opacity-55"
+              style={{
+                background: `${accentColor}14`,
+                color: accentColor,
+                border: `1px solid ${accentColor}30`,
+                fontFamily: MONO_FONT,
+              }}
+              onClick={() => void handleRunControl(button.id)}
+              disabled={runActionBusy != null}
+            >
+              {isBusy ? "Working..." : button.label}
+            </button>
+          );
+        })}
+      </>
+    );
+  }, [handleRunControl, runActionBusy, runId, runStatus]);
+
   return (
     <div className="flex h-full min-h-0">
       <ChatChannelList
@@ -473,6 +561,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
             runtimeSummary={runtimeSummary}
             agentRuntimeConfig={agentRuntimeConfig}
             mcpSummary={selectedChannel?.kind === "worker" ? null : mcpSummary}
+            runControls={runControls}
             onOpenMcpSettings={openExternalMcpSettings}
             onApproval={handleApproval}
           />

@@ -373,6 +373,7 @@ export function AgentChatComposer({
     const shouldSend = sendOnEnter ? !commandEnter : commandEnter;
     if (!shouldSend) return;
     event.preventDefault();
+    if (busy) return;
     onSubmit();
   };
 

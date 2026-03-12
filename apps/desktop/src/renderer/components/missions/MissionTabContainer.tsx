@@ -28,6 +28,7 @@ import { MissionActivePhasePanel } from "./MissionActivePhasePanel";
 import { PromptInspectorCard } from "./PromptInspectorCard";
 import { buildMissionArtifactGroups, deriveActivePhaseViewModel } from "./missionControlViewModel";
 import { useMissionRunView } from "./useMissionRunView";
+import { routeMissionIntervention } from "./missionInterventionRouting";
 
 /* ════════════════════ TAB NAVIGATION ════════════════════ */
 
@@ -234,62 +235,7 @@ export function MissionTabContent() {
   /* ── Intervention handling (imperative store access) ── */
   const handleOpenIntervention = (interventionId: string) => {
     const s = useMissionsStore.getState();
-    if (!s.selectedMission) return;
-    const intervention = s.selectedMission.interventions.find((e) => e.id === interventionId) ?? null;
-    if (!intervention || intervention.status !== "open") return;
-
-    if (intervention.interventionType === "manual_input") {
-      s.setActiveInterventionId(intervention.id);
-      return;
-    }
-
-    const metadata = isRecord(intervention.metadata) ? intervention.metadata : {};
-    const interventionRunId = typeof metadata.runId === "string" && metadata.runId.trim().length > 0 ? metadata.runId.trim() : null;
-    const interventionStepId = typeof metadata.stepId === "string" && metadata.stepId.trim().length > 0 ? metadata.stepId.trim() : null;
-    const interventionStepKey = typeof metadata.stepKey === "string" && metadata.stepKey.trim().length > 0 ? metadata.stepKey.trim() : null;
-    const interventionAttemptId = typeof metadata.attemptId === "string" && metadata.attemptId.trim().length > 0 ? metadata.attemptId.trim() : null;
-    const reasonCode = typeof metadata.reasonCode === "string" && metadata.reasonCode.trim().length > 0 ? metadata.reasonCode.trim() : null;
-    const currentRunId = s.runGraph?.run.id ?? null;
-    const sameRun = interventionRunId ? interventionRunId === currentRunId : Boolean(currentRunId);
-    const resolvedStepId =
-      sameRun && interventionStepId && s.runGraph?.steps.some((step) => step.id === interventionStepId)
-        ? interventionStepId
-        : null;
-
-    if (reasonCode === "coordinator_unavailable" || reasonCode === "coordinator_recovery_failed") {
-      s.setLogsFocusInterventionId(null);
-      s.setChatJumpTarget({ kind: "coordinator", runId: interventionRunId ?? currentRunId });
-      s.setActiveTab("chat");
-      return;
-    }
-
-    if (intervention.interventionType === "failed_step") {
-      if (resolvedStepId) {
-        s.setSelectedStepId(resolvedStepId);
-        s.setPlanSubview("board");
-        s.setLogsFocusInterventionId(intervention.id);
-        s.setActiveTab("plan");
-        return;
-      }
-      if (sameRun && (interventionAttemptId || interventionStepKey)) {
-        s.setLogsFocusInterventionId(null);
-        s.setChatJumpTarget({
-          kind: "worker",
-          runId: interventionRunId ?? currentRunId,
-          stepId: null,
-          stepKey: interventionStepKey,
-          attemptId: interventionAttemptId,
-        });
-        s.setActiveTab("chat");
-        return;
-      }
-      s.setLogsFocusInterventionId(intervention.id);
-      s.setActiveTab("history");
-      return;
-    }
-
-    s.setLogsFocusInterventionId(intervention.id);
-    s.setActiveTab("history");
+    routeMissionIntervention(s, interventionId);
   };
 
   const handleInterventionResponse = async (interventionId: string, directiveText: string) => {
@@ -403,7 +349,7 @@ export function MissionTabContent() {
         {activeTab === "artifacts" && (
           <MissionArtifactsTab
             groupedArtifacts={groupedArtifacts}
-            closeoutRequirements={[]}
+            closeoutRequirements={runView?.closeoutRequirements ?? []}
             missionId={selectedMissionId}
             runId={runGraph?.run.id ?? null}
           />

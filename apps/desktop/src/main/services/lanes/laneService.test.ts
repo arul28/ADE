@@ -141,7 +141,14 @@ describe("laneService rebaseStart", () => {
       /already active for this lane stack/i,
     );
 
-    resolveRebase?.({ exitCode: 0, stdout: "", stderr: "" });
+    if (!resolveRebase) {
+      throw new Error("Expected rebase resolver to be registered");
+    }
+    (resolveRebase as (value: { exitCode: number; stdout: string; stderr: string }) => void)({
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+    });
     const completed = await firstRun;
     expect(completed.run.state).toBe("completed");
   });

@@ -123,10 +123,13 @@ export function CtoPage() {
   const loadCtoState = useCallback(async () => {
     if (!window.ade?.cto) return;
     try {
+      const openclawPromise = typeof window.ade.cto.getOpenclawState === "function"
+        ? window.ade.cto.getOpenclawState().catch(() => null)
+        : Promise.resolve(null);
       const [snapshot, obState, openclawState] = await Promise.all([
         window.ade.cto.getState({ recentLimit: 20 }),
         window.ade.cto.getOnboardingState(),
-        window.ade.cto.getOpenclawState().catch(() => null),
+        openclawPromise,
       ]);
       setCtoIdentity(snapshot.identity);
       setCoreMemory(snapshot.coreMemory);

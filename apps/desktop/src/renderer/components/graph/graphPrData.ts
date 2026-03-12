@@ -75,5 +75,6 @@ export function buildGraphPrOverlay(args: {
       reviewStatus: liveStatus?.reviewStatus ?? pr.reviewStatus,
       pendingCheckCount,
     }),
+    detailLoaded: Boolean(detail),
   };
 }

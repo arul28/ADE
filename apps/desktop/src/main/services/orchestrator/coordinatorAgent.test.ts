@@ -35,6 +35,7 @@ function createTestCoordinatorAgent(args?: {
     } as any,
     projectId: "project-1",
     projectRoot: "/tmp/ade-project",
+    workspaceRoot: "/tmp/ade-worktree",
     missionService: {
       get: vi.fn(() => ({ interventions: [] })),
     } as any,
@@ -90,10 +91,10 @@ describe("buildCoordinatorCliOptions", () => {
         },
       },
       claude: {
-        permissionMode: "acceptEdits",
+        permissionMode: "plan",
         allowedTools: buildCoordinatorMcpAllowedTools("ade"),
         settingSources: [],
-        debugFile: "/tmp/ade-project/.ade/logs/coordinator-run-123.claude.log",
+        debugFile: "/tmp/ade-project/.ade/transcripts/logs/coordinator-run-123.claude.log",
       },
     });
   });

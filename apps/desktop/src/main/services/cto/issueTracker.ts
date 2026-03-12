@@ -1,4 +1,4 @@
-import type { NormalizedLinearIssue } from "../../../shared/types";
+import type { CtoLinearProject, NormalizedLinearIssue } from "../../../shared/types";
 
 export type IssueTrackerCandidateQuery = {
   projectSlugs: string[];
@@ -18,6 +18,7 @@ export type IssueTrackerWorkflowState = {
 };
 
 export type IssueTracker = {
+  listProjects(): Promise<CtoLinearProject[]>;
   fetchCandidateIssues(query: IssueTrackerCandidateQuery): Promise<NormalizedLinearIssue[]>;
   fetchIssueById(issueId: string): Promise<NormalizedLinearIssue | null>;
   fetchIssuesByIds(issueIds: string[]): Promise<Map<string, NormalizedLinearIssue>>;

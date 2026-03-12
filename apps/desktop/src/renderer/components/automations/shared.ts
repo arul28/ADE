@@ -22,7 +22,7 @@ export function extractError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export type AutomationsRendererBridge = typeof window.ade.automations & {
+export type AutomationsRendererBridge = Omit<typeof window.ade.automations, "getIngressStatus" | "mutateNightShiftQueue"> & {
   getIngressStatus?: () => Promise<AutomationIngressStatus>;
   mutateNightShiftQueue?: (args: NightShiftQueueMutationRequest) => Promise<NightShiftState>;
 };

@@ -39,6 +39,14 @@ export function getErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+export function isEnoentError(error: unknown): boolean {
+  return error != null && typeof error === "object" && "code" in error && (error as { code: unknown }).code === "ENOENT";
+}
+
+export function toMemoryEntryDto<T extends { embedded?: boolean }>(memory: T): T & { embedded: boolean } {
+  return { ...memory, embedded: memory.embedded === true };
+}
+
 // ── Array helpers ───────────────────────────────────────────────────
 
 export function uniqueSorted(values: Iterable<string>): string[] {

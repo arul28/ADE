@@ -46,7 +46,7 @@ export function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
   const badgeColor = pr ? prOverlayColor(pr) : "#6b7280";
   const dotColor = pr ? prCiDotColor(pr) : "#6b7280";
   const badgeText = pr ? `PR #${pr.number}` : "";
-  const badgeMeta = pr ? `${pr.reviewCount}r · ${pr.commentCount}c` : "";
+  const badgeMeta = pr && pr.detailLoaded ? `${pr.reviewCount}r · ${pr.commentCount}c` : "";
   const badgeWidth = Math.max(74, (badgeText.length + badgeMeta.length) * 6 + 40);
   const badgeHeight = 18;
   const showIntegrationBadge = edgeType === "integration";

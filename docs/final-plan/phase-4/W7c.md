@@ -14,14 +14,15 @@ Dependencies: **W7a** (embeddings — needed for cosine similarity in episode cl
 | [Paperclip SKILLS.md Injection](https://github.com/paperclipai/paperclip/blob/main/doc/SPEC.md) | §7 Runtime Context, SKILLS.md section | Skills injected into agent system prompt at activation time. Goal hierarchy provides skill selection context. |
 | [CrewAI Memory — Long-Term](https://docs.crewai.com/concepts/memory) | Long-term memory and learning sections | Confidence evolution: success/failure tracking, automatic archival of low-confidence procedures. |
 
-W7c builds the extraction and materialization layer on top of W7a's embeddings and W7b's episodic summaries. A 2026-03-11 code audit shows that the extraction/materialization loop is already present in the product: procedural learning, confidence/history tracking, skill export, skill ingestion, and Memory Health UI surfaces are implemented, and a dedicated `knowledgeCaptureService` now exists for advanced sources as well. The remaining work is concentrated in validating and polishing those advanced capture flows end to end rather than inventing the pipeline from scratch.
+W7c builds the extraction and materialization layer on top of W7a's embeddings and W7b's episodic summaries. A 2026-03-12 closure pass confirmed that the extraction/materialization loop is fully shipped in product surfaces: procedural learning, confidence/history tracking, skill export, skill ingestion, advanced-source knowledge capture, and operator-facing review UX now all exist in both Settings and the CTO Memory tab.
 
-##### Audit Snapshot (2026-03-11)
+##### Audit Snapshot (2026-03-12)
 
-- Implemented in code today: `proceduralLearningService.ts`, `skillRegistryService.ts`, and the Procedures/Skills views in `MemoryHealthTab.tsx`.
+- Implemented in code today: `proceduralLearningService.ts`, `skillRegistryService.ts`, the Procedures/Skills views in `MemoryHealthTab.tsx`, and the corresponding W7c review surfaces in `CtoMemoryBrowser.tsx`.
 - Episode clustering, procedure creation/update, confidence history, export to `.ade/skills/`, and filesystem re-indexing are all present.
 - `knowledgeCaptureService.ts` now captures resolved interventions, recurring error clusters, and PR feedback, and is wired into current runtime flows.
-- Not yet fully done: validate coverage, close any gaps in automatic source capture, and improve the review/inspection UX around these advanced knowledge sources.
+- End-to-end validation now covers the advanced capture sources called out by the workstream: resolved interventions, recurring failure clusters, and PR feedback.
+- Review/inspection UX is now available in both Settings > Memory and CTO > Memory, including procedure detail, confidence history, indexed skills, knowledge sync, and raw-memory provenance.
 
 ##### Procedural Memory Extraction
 
@@ -100,7 +101,7 @@ Automatic capture from agent interactions into project memory. These entries fee
 
 Confirmed procedural memories can be exported as universal skill files, following the [Claude Code skills convention](https://docs.anthropic.com/en/docs/claude-code/skills):
 
-- User reviews procedural memories in Settings > Memory > Procedures tab.
+- User reviews procedural memories in Settings > Memory > Procedures tab or CTO > Memory > Procedures.
 - User clicks "Export as Skill" on a procedure → system materializes it as `.ade/skills/<name>/SKILL.md`.
 - `.ade/skills/` is the canonical project-local skill export path. Legacy `.claude/skills/` content is still read and indexed when present.
 - **Skill file format**: Plain markdown with trigger description, step-by-step instructions, and context notes. Follows the Vercel/Anthropic skills convention — any agent that reads markdown can consume it:
@@ -175,7 +176,7 @@ Read existing skill and command files into project memory so that ADE agents can
 
 - **Export flow**: "Export as Skill" button opens a confirmation dialog showing the generated `SKILL.md` content with an editable name field. User confirms → file written → skill tab updated → memory entry linked.
 
-**Implementation status (2026-03-11):** Largely implemented; advanced capture follow-through still pending.
+**Implementation status (2026-03-12):** Complete.
 
 **Tests:**
 - Procedural extraction: 3+ similar episodes trigger extraction, LLM extraction call produces valid `ProceduralMemory`, confidence initialized from LLM estimate, source episode IDs recorded.

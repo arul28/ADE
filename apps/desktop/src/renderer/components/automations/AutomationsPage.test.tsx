@@ -17,6 +17,65 @@ function mountPage() {
 }
 
 function buildBridge() {
+  const getNightShiftState = vi.fn(async () => ({
+    settings: {
+      activeHours: { start: "22:00", end: "06:00", timezone: "America/New_York" },
+      utilizationPreset: "conservative",
+      paused: false,
+      updatedAt: "2026-03-05T00:00:00.000Z",
+    },
+    queue: [
+      {
+        id: "night-1",
+        automationId: "rule-1",
+        title: "On session end",
+        reviewProfile: "quick",
+        executorMode: "automation-bot",
+        targetLabel: null,
+        scheduledWindow: "22:00-06:00",
+        status: "queued",
+        position: 0,
+        createdAt: "2026-03-05T00:00:00.000Z",
+        updatedAt: "2026-03-05T00:00:00.000Z",
+      },
+    ],
+    latestBriefing: {
+      id: "briefing-1",
+      createdAt: "2026-03-05T08:00:00.000Z",
+      completedAt: "2026-03-05T08:00:00.000Z",
+      totalRuns: 1,
+      succeededRuns: 1,
+      failedRuns: 0,
+      totalSpendUsd: 0.25,
+      cards: [
+        {
+          queueItemId: "night-1",
+          title: "On session end",
+          summary: "Completed overnight review cleanly.",
+          confidence: { value: 0.9, label: "high", reason: "clean" },
+          spendUsd: 0.25,
+          suggestedActions: ["accept"],
+          procedureSignals: [],
+        },
+      ],
+    },
+  }));
+
+  const updateNightShiftSettings = vi.fn(async (next: {
+    activeHours?: { start?: string; end?: string; timezone?: string };
+    utilizationPreset?: string;
+    paused?: boolean;
+  }) => ({
+    settings: {
+      activeHours: { start: "22:00", end: "06:00", timezone: "America/New_York", ...(next.activeHours ?? {}) },
+      utilizationPreset: next.utilizationPreset ?? "conservative",
+      paused: next.paused ?? false,
+      updatedAt: "2026-03-05T00:00:00.000Z",
+    },
+    queue: [],
+    latestBriefing: null,
+  }));
+
   return {
     automations: {
       list: vi.fn(async () => [
@@ -80,82 +139,12 @@ function buildBridge() {
       getRunDetail: vi.fn(async () => null),
       listQueueItems: vi.fn(async () => []),
       updateQueueItem: vi.fn(async () => null),
-      getNightShiftState: vi.fn(async () => ({
-        settings: {
-          activeHours: { start: "22:00", end: "06:00", timezone: "America/New_York" },
-          utilizationPreset: "conservative",
-          paused: false,
-          updatedAt: "2026-03-05T00:00:00.000Z",
-        },
-        queue: [
-          {
-            id: "night-1",
-            automationId: "rule-1",
-            title: "On session end",
-            reviewProfile: "quick",
-            executorMode: "automation-bot",
-            targetLabel: null,
-            scheduledWindow: "22:00-06:00",
-            status: "queued",
-            position: 0,
-            createdAt: "2026-03-05T00:00:00.000Z",
-            updatedAt: "2026-03-05T00:00:00.000Z",
-          },
-        ],
-        latestBriefing: {
-          id: "briefing-1",
-          createdAt: "2026-03-05T08:00:00.000Z",
-          completedAt: "2026-03-05T08:00:00.000Z",
-          totalRuns: 1,
-          succeededRuns: 1,
-          failedRuns: 0,
-          totalSpendUsd: 0.25,
-          cards: [
-            {
-              queueItemId: "night-1",
-              title: "On session end",
-              summary: "Completed overnight review cleanly.",
-              confidence: { value: 0.9, label: "high", reason: "clean" },
-              spendUsd: 0.25,
-              suggestedActions: ["accept"],
-              procedureSignals: [],
-            },
-          ],
-        },
-      })),
-      updateNightShiftSettings: vi.fn(async () => ({
-        settings: {
-          activeHours: { start: "22:00", end: "06:00", timezone: "America/New_York" },
-          utilizationPreset: "conservative",
-          paused: false,
-          updatedAt: "2026-03-05T00:00:00.000Z",
-        },
-        queue: [],
-        latestBriefing: null,
-      })),
+      getNightShiftState,
+      mutateNightShiftQueue: vi.fn(async () => getNightShiftState()),
+      updateNightShiftSettings,
       getMorningBriefing: vi.fn(async () => null),
       acknowledgeMorningBriefing: vi.fn(async () => null),
       parseNaturalLanguage: vi.fn(async () => ({})),
-      getNightShiftState: vi.fn(async () => ({
-        settings: {
-          activeHours: { start: "22:00", end: "06:00", timezone: "America/New_York" },
-          utilizationPreset: "conservative",
-          paused: false,
-          updatedAt: "2026-03-05T00:00:00.000Z",
-        },
-        queue: [],
-        latestBriefing: null,
-      })),
-      updateNightShiftSettings: vi.fn(async (next) => ({
-        settings: {
-          activeHours: { start: "22:00", end: "06:00", timezone: "America/New_York", ...(next.activeHours ?? {}) },
-          utilizationPreset: next.utilizationPreset ?? "conservative",
-          paused: next.paused ?? false,
-          updatedAt: "2026-03-05T00:00:00.000Z",
-        },
-        queue: [],
-        latestBriefing: null,
-      })),
     },
     projectConfig: {
       get: vi.fn(async () => ({
@@ -280,7 +269,7 @@ describe("AutomationsPage", () => {
     await waitFor(() => expect(screen.getByText("Night Shift")).toBeTruthy());
     fireEvent.click(screen.getByText("Night Shift"));
     await waitFor(() => expect(screen.getByText("Night Shift Queue")).toBeTruthy());
-    expect(screen.getByText("On session end")).toBeTruthy();
+    expect(screen.getAllByText("On session end").length).toBeGreaterThan(0);
   });
 
   it("opens the morning briefing modal when an unacknowledged briefing exists", async () => {
@@ -304,7 +293,7 @@ describe("AutomationsPage", () => {
           procedureSignals: ["release-risk"],
         },
       ],
-    }));
+    })) as any;
     (window as any).ade = bridge;
 
     mountPage();

@@ -51,6 +51,11 @@ describe("buildClaudeReadOnlyWorkerAllowedTools", () => {
       "mcp__ade__stream_events",
       "mcp__ade__get_timeline",
       "mcp__ade__get_pending_messages",
+      "mcp__ade__get_environment_info",
+      "mcp__ade__launch_app",
+      "mcp__ade__interact_gui",
+      "mcp__ade__screenshot_environment",
+      "mcp__ade__record_environment",
       "mcp__ade__report_status",
       "mcp__ade__report_result",
       "mcp__ade__ask_user",
@@ -196,9 +201,9 @@ describe("createUnifiedOrchestratorAdapter", () => {
     expect(startupCommand).not.toContain("-s 'workspace-write'");
     expect(startupCommand).not.toContain("--add-dir");
     expect(startupCommand).toContain(" exec -");
-    expect(startupCommand).toContain(".ade/orchestrator/worker-prompts/worker-attempt-1.txt");
+    expect(startupCommand).toContain(".ade/cache/orchestrator/worker-prompts/worker-attempt-1.txt");
     expect(startupCommand).not.toContain("Mission goal: Plan the work");
-    expect(fs.readFileSync(path.join(workspaceRoot, ".ade", "orchestrator", "worker-prompts", "worker-attempt-1.txt"), "utf8"))
+    expect(fs.readFileSync(path.join(workspaceRoot, ".ade", "cache", "orchestrator", "worker-prompts", "worker-attempt-1.txt"), "utf8"))
       .toContain("Mission goal: Plan the work");
     expect(startupCommand).not.toContain("\n");
   });
@@ -250,12 +255,14 @@ describe("createUnifiedOrchestratorAdapter", () => {
     expect(result.status).toBe("accepted");
     expect(startupCommand).toContain("--permission-mode 'default'");
     expect(startupCommand).not.toContain("--dangerously-skip-permissions");
-    expect(startupCommand).toContain("--allowedTools 'Read,Glob,Grep,mcp__ade__get_mission,mcp__ade__get_run_graph,mcp__ade__stream_events,mcp__ade__get_timeline,mcp__ade__get_pending_messages,mcp__ade__report_status,mcp__ade__report_result,mcp__ade__ask_user,mcp__ade__memory_search,mcp__ade__memory_add'");
+    expect(startupCommand).toContain("mcp__ade__get_environment_info");
+    expect(startupCommand).toContain("mcp__ade__screenshot_environment");
+    expect(startupCommand).toContain("mcp__ade__record_environment");
     expect(startupCommand).not.toContain("Bash");
     expect(startupCommand).toContain(`-p "$(cat '`);
-    expect(startupCommand).toContain(".ade/orchestrator/worker-prompts/worker-attempt-1.txt");
+    expect(startupCommand).toContain(".ade/cache/orchestrator/worker-prompts/worker-attempt-1.txt");
     expect(startupCommand).not.toContain("Mission goal: Plan the work");
-    expect(fs.readFileSync(path.join(workspaceRoot, ".ade", "orchestrator", "worker-prompts", "worker-attempt-1.txt"), "utf8"))
+    expect(fs.readFileSync(path.join(workspaceRoot, ".ade", "cache", "orchestrator", "worker-prompts", "worker-attempt-1.txt"), "utf8"))
       .toContain("Mission goal: Plan the work");
     expect(startupCommand).not.toContain("\n");
   });

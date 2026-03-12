@@ -243,6 +243,67 @@ describe("VAL-STATE-001: intervention_required pauses active runs", () => {
     }
   });
 
+  it("routes blocking missionService.addIntervention through the same pause-first lifecycle path", async () => {
+    const fixture = await createFixture();
+    try {
+      let hookedMissionService: ReturnType<typeof createMissionService> | null = null;
+      hookedMissionService = createMissionService({
+        db: fixture.db,
+        projectId: fixture.projectId,
+        projectRoot: fixture.projectRoot,
+        onBlockingInterventionAdded: ({ missionId, intervention }) => {
+          transitionMissionStatus(
+            {
+              logger: createLogger(),
+              missionService: hookedMissionService,
+              orchestratorService: fixture.orchestratorService,
+            } as any,
+            missionId,
+            "intervention_required",
+            {
+              lastError: intervention.body ?? intervention.title ?? null,
+            },
+          );
+        },
+      });
+
+      const { run } = await fixture.orchestratorService.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "step-1",
+            stepIndex: 0,
+            title: "Step 1",
+            executorKind: "manual",
+            laneId: fixture.laneId,
+            metadata: {},
+          },
+        ],
+      });
+
+      const graph = fixture.orchestratorService.getRunGraph({ runId: run.id });
+      expect(["active", "bootstrapping"]).toContain(graph.run.status);
+
+      hookedMissionService.addIntervention({
+        missionId: fixture.missionId,
+        interventionType: "failed_step",
+        title: "Planner needs help",
+        body: "Planner output was incomplete.",
+        requestedAction: "Review the planner output and retry.",
+        metadata: {
+          runId: run.id,
+          reasonCode: "planner_plan_missing",
+        },
+      });
+
+      const pausedGraph = fixture.orchestratorService.getRunGraph({ runId: run.id });
+      expect(pausedGraph.run.status).toBe("paused");
+      expect(hookedMissionService.get(fixture.missionId)?.status).toBe("intervention_required");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("does NOT pause runs for transitions other than intervention_required", async () => {
     const fixture = await createFixture();
     try {

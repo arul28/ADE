@@ -93,9 +93,14 @@ function createLogger() {
 }
 
 function createMockConfigService(usageConfig: BudgetCapConfig = {}) {
+  let localUsage = usageConfig;
   return {
     getEffective: () => ({}),
-    get: () => ({ local: { usage: usageConfig }, shared: {}, effective: {}, validation: { ok: true, issues: [] }, trust: { sharedHash: "", localHash: "", approvedSharedHash: null, requiresSharedTrust: false }, paths: { sharedPath: "", localPath: "" } })
+    get: () => ({ local: { usage: localUsage }, shared: {}, effective: {}, validation: { ok: true, issues: [] }, trust: { sharedHash: "", localHash: "", approvedSharedHash: null, requiresSharedTrust: false }, paths: { sharedPath: "", localPath: "" } }),
+    save: ({ local }: { local?: Record<string, unknown> }) => {
+      localUsage = (local?.usage as BudgetCapConfig | undefined) ?? {};
+      return { local: { usage: localUsage } };
+    },
   };
 }
 
@@ -517,6 +522,41 @@ describe("budgetCapService", () => {
       const result = svc.getConfig();
       expect(result.nightShiftReservePercent).toBe(20);
       expect(result.preset).toBe("conservative");
+    });
+  });
+
+  describe("updateConfig", () => {
+    it("persists normalized budget settings back through project config", () => {
+      const { db } = createInMemoryDb();
+      const configService = createMockConfigService();
+      const svc = createBudgetCapService({
+        db,
+        logger: createLogger(),
+        projectConfigService: configService,
+      });
+
+      const saved = svc.updateConfig({
+        preset: "maximize",
+        nightShiftReservePercent: 17.6,
+        alertAtWeeklyPercent: 82.4,
+        budgetCaps: [
+          {
+            scope: "automation-rule",
+            scopeId: " nightly-review ",
+            capType: "weekly-percent",
+            provider: "any",
+            limit: 79.9,
+            action: "warn",
+          },
+        ],
+      });
+
+      expect(saved.preset).toBe("maximize");
+      expect(saved.nightShiftReservePercent).toBe(18);
+      expect(saved.alertAtWeeklyPercent).toBe(82);
+      expect(saved.budgetCaps?.[0]?.scopeId).toBe("nightly-review");
+      expect(saved.budgetCaps?.[0]?.limit).toBe(79.9);
+      expect(configService.get().local.usage?.budgetCaps?.[0]?.scopeId).toBe("nightly-review");
     });
   });
 });

@@ -32,6 +32,18 @@ describe("AgentChatMessageList", () => {
     expect(container.querySelector(".justify-end")).toBeTruthy();
   });
 
+  it("renders user delivery state chips", () => {
+    render(
+      <AgentChatMessageList
+        events={[
+          envelope({ type: "user_message", text: "hello user", deliveryState: "delivered", processed: true })
+        ]}
+      />
+    );
+
+    expect(screen.getByText("processed")).toBeTruthy();
+  });
+
   it("renders agent text markdown formatting", () => {
     const { container } = render(
       <AgentChatMessageList
@@ -212,6 +224,21 @@ describe("AgentChatMessageList", () => {
     expect(errorBlock).toBeTruthy();
   });
 
+  it("shows interrupted statuses but suppresses empty completed statuses", () => {
+    render(
+      <AgentChatMessageList
+        events={[
+          envelope({ type: "status", turnStatus: "completed" }),
+          envelope({ type: "status", turnStatus: "interrupted", message: "Planner stopped before producing a plan." }, 1),
+        ]}
+      />
+    );
+
+    expect(screen.getByText("interrupted")).toBeTruthy();
+    expect(screen.getByText("Planner stopped before producing a plan.")).toBeTruthy();
+    expect(screen.queryByText(/^completed$/i)).toBeNull();
+  });
+
   it("collapses reasoning cards by default in compact resolver view", () => {
     render(
       <AgentChatMessageList
@@ -224,6 +251,33 @@ describe("AgentChatMessageList", () => {
 
     expect(screen.getByText("Reasoning")).toBeTruthy();
     expect(screen.queryByText("Thinking through the merge")).toBeNull();
+  });
+
+  it("clears the streaming indicator once a later status arrives", () => {
+    const { rerender } = render(
+      <AgentChatMessageList
+        showStreamingIndicator
+        events={[
+          envelope({ type: "activity", activity: "thinking", detail: "Inspecting files" }),
+          envelope({ type: "text", text: "Still working" }, 1),
+        ]}
+      />
+    );
+
+    expect(screen.getAllByText("Live")).toHaveLength(2);
+
+    rerender(
+      <AgentChatMessageList
+        showStreamingIndicator
+        events={[
+          envelope({ type: "activity", activity: "thinking", detail: "Inspecting files" }),
+          envelope({ type: "text", text: "Still working" }, 1),
+          envelope({ type: "status", turnStatus: "interrupted", message: "Stopped early." }, 2),
+        ]}
+      />
+    );
+
+    expect(screen.getAllByText("Live")).toHaveLength(1);
   });
 
   it("auto-scrolls to bottom on new events unless user scrolled up", async () => {

@@ -1,6 +1,14 @@
-import { describe, it, expect } from "vitest";
+// @vitest-environment jsdom
+
+import { createElement } from "react";
+import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import type { MissionIntervention, MissionRunViewLatestIntervention, MissionRunViewProgressItem, MissionRunViewWorkerSummary } from "../../../shared/types";
-import { selectOpenInterventions, selectRecentProgress, sortWorkers } from "./MissionRunPanel";
+import { MissionRunPanel, selectOpenInterventions, selectRecentProgress, sortWorkers } from "./MissionRunPanel";
+
+afterEach(() => {
+  cleanup();
+});
 
 function makeWorker(overrides: Partial<MissionRunViewWorkerSummary> = {}): MissionRunViewWorkerSummary {
   return {
@@ -158,5 +166,49 @@ describe("MissionRunPanel intervention selection", () => {
     const selected = selectOpenInterventions({ interventions: null, latestIntervention });
 
     expect(selected.map((entry) => entry.id)).toEqual(["latest-open"]);
+  });
+
+  it("renders the fallback latest intervention banner and opens it from the panel", () => {
+    const onOpenIntervention = vi.fn();
+
+    render(
+      createElement(MissionRunPanel, {
+        runView: {
+          lifecycle: {
+            displayStatus: "active",
+            summary: "Waiting on user input",
+            startedAt: "2026-03-01T10:00:00Z",
+          },
+          active: {
+            stepTitle: "Planning",
+            phaseName: null,
+            featureLabel: null,
+          },
+          coordinator: {
+            available: true,
+            mode: "online",
+            summary: "Waiting for the next instruction",
+          },
+          haltReason: null,
+          workers: [],
+          progressLog: [],
+          latestIntervention: {
+            id: "latest-open",
+            title: "Provide missing input",
+            body: "",
+            interventionType: "manual_input",
+            status: "open",
+            requestedAction: "Answer question",
+            createdAt: "2026-03-01T10:08:00Z",
+          },
+        } as any,
+        interventions: null,
+        onOpenIntervention,
+      }),
+    );
+
+    expect(screen.getByText("Intervention required")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "OPEN" }));
+    expect(onOpenIntervention).toHaveBeenCalledWith("latest-open");
   });
 });

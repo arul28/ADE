@@ -2476,6 +2476,43 @@ describe("aiOrchestratorService", () => {
     }
   });
 
+  it("skips background health sweeps for runs blocked on open interventions", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Pause background churn while the user resolves a blocker.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.missionService.addIntervention({
+        missionId: mission.id,
+        interventionType: "manual_input",
+        title: "Need direction",
+        body: "Choose the next recovery path.",
+        metadata: {
+          runId,
+          canProceedWithoutAnswer: false,
+        },
+      });
+
+      const backgroundSweep = await fixture.aiOrchestratorService.runHealthSweep("interval");
+      expect(backgroundSweep.sweeps).toBe(0);
+
+      const explicitSweep = await fixture.aiOrchestratorService.runHealthSweep("chat_status");
+      expect(explicitSweep.sweeps).toBe(1);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("keeps running attempts alive when tracked sessions show recent output activity", async () => {
     const fixture = await createFixture();
     try {
@@ -2825,6 +2862,26 @@ describe("aiOrchestratorService", () => {
         ownerId: "test-owner",
         executorKind: "manual"
       });
+      fixture.db.run(
+        "update orchestrator_steps set metadata_json = ? where id = ? and project_id = ?",
+        [
+          JSON.stringify({
+            instructions: "Recover the planning pass and report back.",
+            phaseKey: "planning",
+            phaseName: "Planning",
+            stepType: "planning",
+            readOnlyExecution: true,
+            lastResultReport: {
+              summary: "Recovered the plan and reported the next steps.",
+              plan: {
+                markdown: "# Recovery plan\n\n- Re-run planning\n- Persist the canonical plan\n",
+              },
+            },
+          }),
+          recoveryPlanner.id,
+          fixture.projectId,
+        ],
+      );
       await fixture.orchestratorService.completeAttempt({
         attemptId: recoveryAttempt.id,
         status: "succeeded",
@@ -4102,6 +4159,45 @@ describe("aiOrchestratorService", () => {
       });
       expect(result.autoResolved).toBe(false);
       expect(result.suggestion).toBeNull();
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("handleInterventionWithAI never auto-resolves planner contract failures", async () => {
+    const executeTask = vi.fn();
+    const mockAi = createMockAiIntegrationService({
+      executeTask,
+    });
+
+    const fixture = await createFixture({ aiIntegrationService: mockAi });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Planner contract failure.",
+        laneId: fixture.laneId
+      });
+      fixture.missionService.update({ missionId: mission.id, status: "planning" });
+      fixture.missionService.update({ missionId: mission.id, status: "in_progress" });
+      const intervention = fixture.missionService.addIntervention({
+        missionId: mission.id,
+        interventionType: "failed_step",
+        title: "Planner result missing plan",
+        body: "Planner output did not include report_result.plan.markdown.",
+        requestedAction: "Retry planning after fixing the planner output.",
+        metadata: {
+          reasonCode: "planner_plan_missing",
+        },
+      });
+
+      const result = await fixture.aiOrchestratorService.handleInterventionWithAI({
+        missionId: mission.id,
+        interventionId: intervention.id,
+        provider: "claude"
+      });
+
+      expect(result.autoResolved).toBe(false);
+      expect(result.suggestion).toContain("report_result.plan.markdown");
+      expect(executeTask).not.toHaveBeenCalled();
     } finally {
       fixture.dispose();
     }

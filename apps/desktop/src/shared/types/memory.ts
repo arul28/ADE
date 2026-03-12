@@ -42,6 +42,7 @@ export type MemoryEntryDto = {
   sourceRunId: string | null;
   sourceType: string | null;
   sourceId: string | null;
+  fileScopePattern: string | null;
 };
 
 export type EpisodicMemoryOutcome = "success" | "partial" | "failure";

@@ -70,6 +70,7 @@ export type GraphPrOverlay = {
   commentCount: number;
   pendingCheckCount: number;
   activityState: PrActivityState;
+  detailLoaded: boolean;
 };
 
 export type GraphEdgeData = {

@@ -5,6 +5,7 @@ import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton } from "../l
 import { useMissionsStore } from "./useMissionsStore";
 import { getMissionInterventionOwnerLabel, isRecord } from "./missionHelpers";
 import { relativeWhen } from "../../lib/format";
+import { routeMissionIntervention } from "./missionInterventionRouting";
 
 /* ════════════════════ INTERVENTION HELPERS ════════════════════ */
 
@@ -217,9 +218,8 @@ function InterventionCard({
 
   const handleViewDetails = useCallback(() => {
     const s = useMissionsStore.getState();
-    s.setLogsFocusInterventionId(intervention.id);
-    s.setActiveTab("history");
-  }, [intervention.id]);
+    routeMissionIntervention(s, intervention);
+  }, [intervention]);
 
   const handleCopyError = useCallback(async () => {
     const parts = [

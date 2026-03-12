@@ -263,6 +263,18 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
   return out;
 }
 
+function coerceAutomationTriggers(
+  triggers: ReadonlyArray<unknown> | undefined,
+  legacyTrigger: unknown,
+): AutomationTrigger[] {
+  const normalized = Array.isArray(triggers)
+    ? triggers.map(coerceAutomationTrigger).filter((trigger): trigger is AutomationTrigger => trigger != null)
+    : [];
+  if (normalized.length > 0) return normalized;
+  const legacy = coerceAutomationTrigger(legacyTrigger);
+  return legacy ? [legacy] : [{ type: "manual" }];
+}
+
 function coerceAutomationActiveHours(value: unknown): AutomationActiveHours | undefined {
   if (!isRecord(value)) return undefined;
   const start = asString(value.start);
@@ -1772,66 +1784,71 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     }
   }));
 
-  const automations: AutomationRule[] = mergedAutomations.map((entry) => ({
-    id: entry.id.trim(),
-    name: entry.name?.trim() ?? entry.id.trim(),
-    ...(entry.description?.trim() ? { description: entry.description.trim() } : {}),
-    mode: entry.mode ?? "review",
-    triggers: (entry.triggers?.length ? entry.triggers : entry.trigger ? [entry.trigger] : [{ type: "manual" }]).map((trigger) => ({
-      type: trigger.type,
-      ...(trigger.cron ? { cron: trigger.cron.trim() } : {}),
-      ...(trigger.branch ? { branch: trigger.branch.trim() } : {}),
-      ...(trigger.event ? { event: trigger.event.trim() } : {}),
-      ...(trigger.author ? { author: trigger.author.trim() } : {}),
-      ...(trigger.labels?.length ? { labels: trigger.labels.map((value) => value.trim()).filter(Boolean) } : {}),
-      ...(trigger.paths?.length ? { paths: trigger.paths.map((value) => value.trim()).filter(Boolean) } : {}),
-      ...(trigger.keywords?.length ? { keywords: trigger.keywords.map((value) => value.trim()).filter(Boolean) } : {}),
-      ...(trigger.draftState ? { draftState: trigger.draftState } : {}),
-      ...(trigger.secretRef ? { secretRef: trigger.secretRef.trim() } : {}),
-      ...(trigger.activeHours ? { activeHours: trigger.activeHours } : {}),
-    })),
-    trigger: entry.trigger ?? (entry.triggers?.[0] ?? { type: "manual" }),
-    executor: entry.executor ?? { mode: "automation-bot" },
-    ...(entry.modelConfig ? { modelConfig: entry.modelConfig } : {}),
-    ...(entry.permissionConfig ? { permissionConfig: entry.permissionConfig } : {}),
-    ...(entry.templateId?.trim() ? { templateId: entry.templateId.trim() } : {}),
-    ...(entry.prompt?.trim() ? { prompt: entry.prompt.trim() } : {}),
-    reviewProfile: entry.reviewProfile ?? "quick",
-    toolPalette: entry.toolPalette?.length ? [...new Set(entry.toolPalette)] : ["repo", "memory", "mission"],
-    contextSources: entry.contextSources?.length ? entry.contextSources : [{ type: "project-memory" }, { type: "procedures" }],
-    memory: entry.memory ?? { mode: "automation-plus-project", ruleScopeKey: entry.id.trim() },
-    guardrails: entry.guardrails ?? {},
-    outputs: entry.outputs ?? { disposition: "comment-only", createArtifact: true },
-    verification: entry.verification ?? { verifyBeforePublish: false, mode: "intervention" },
-    billingCode: entry.billingCode?.trim() || `auto:${entry.id.trim()}`,
-    ...(entry.queueStatus ? { queueStatus: entry.queueStatus } : {}),
-    actions: (entry.actions ?? []).map((action) => ({
-      type: action.type,
-      ...(action.suiteId ? { suiteId: action.suiteId.trim() } : {}),
-      ...(action.command ? { command: action.command } : {}),
-      ...(action.cwd ? { cwd: action.cwd.trim() } : {}),
-      ...(action.condition ? { condition: action.condition.trim() } : {}),
-      ...(action.continueOnFailure != null ? { continueOnFailure: action.continueOnFailure } : {}),
-      ...(action.timeoutMs != null ? { timeoutMs: action.timeoutMs } : {}),
-      ...(action.retry != null ? { retry: action.retry } : {}),
-    })),
-    legacy: {
-      ...(entry.trigger ? { trigger: entry.trigger } : {}),
-      ...(entry.actions ? {
-        actions: entry.actions.map((action) => ({
-          type: action.type,
-          ...(action.suiteId ? { suiteId: action.suiteId.trim() } : {}),
-          ...(action.command ? { command: action.command } : {}),
-          ...(action.cwd ? { cwd: action.cwd.trim() } : {}),
-          ...(action.condition ? { condition: action.condition.trim() } : {}),
-          ...(action.continueOnFailure != null ? { continueOnFailure: action.continueOnFailure } : {}),
-          ...(action.timeoutMs != null ? { timeoutMs: action.timeoutMs } : {}),
-          ...(action.retry != null ? { retry: action.retry } : {}),
-        })),
-      } : {}),
-    },
-    enabled: entry.enabled ?? true
-  }));
+  const automations: AutomationRule[] = mergedAutomations.map((entry) => {
+    const triggers = coerceAutomationTriggers(entry.triggers, entry.trigger);
+    const legacyTrigger = coerceAutomationTrigger(entry.trigger);
+
+    return {
+      id: entry.id.trim(),
+      name: entry.name?.trim() ?? entry.id.trim(),
+      ...(entry.description?.trim() ? { description: entry.description.trim() } : {}),
+      mode: entry.mode ?? "review",
+      triggers: triggers.map((trigger) => ({
+        type: trigger.type,
+        ...(trigger.cron ? { cron: trigger.cron.trim() } : {}),
+        ...(trigger.branch ? { branch: trigger.branch.trim() } : {}),
+        ...(trigger.event ? { event: trigger.event.trim() } : {}),
+        ...(trigger.author ? { author: trigger.author.trim() } : {}),
+        ...(trigger.labels?.length ? { labels: trigger.labels.map((value) => value.trim()).filter(Boolean) } : {}),
+        ...(trigger.paths?.length ? { paths: trigger.paths.map((value) => value.trim()).filter(Boolean) } : {}),
+        ...(trigger.keywords?.length ? { keywords: trigger.keywords.map((value) => value.trim()).filter(Boolean) } : {}),
+        ...(trigger.draftState ? { draftState: trigger.draftState } : {}),
+        ...(trigger.secretRef ? { secretRef: trigger.secretRef.trim() } : {}),
+        ...(trigger.activeHours ? { activeHours: trigger.activeHours } : {}),
+      })),
+      trigger: legacyTrigger ?? triggers[0] ?? { type: "manual" },
+      executor: entry.executor ?? { mode: "automation-bot" },
+      ...(entry.modelConfig ? { modelConfig: entry.modelConfig } : {}),
+      ...(entry.permissionConfig ? { permissionConfig: entry.permissionConfig } : {}),
+      ...(entry.templateId?.trim() ? { templateId: entry.templateId.trim() } : {}),
+      ...(entry.prompt?.trim() ? { prompt: entry.prompt.trim() } : {}),
+      reviewProfile: entry.reviewProfile ?? "quick",
+      toolPalette: entry.toolPalette?.length ? [...new Set(entry.toolPalette)] : ["repo", "memory", "mission"],
+      contextSources: entry.contextSources?.length ? entry.contextSources : [{ type: "project-memory" }, { type: "procedures" }],
+      memory: entry.memory ?? { mode: "automation-plus-project", ruleScopeKey: entry.id.trim() },
+      guardrails: entry.guardrails ?? {},
+      outputs: entry.outputs ?? { disposition: "comment-only", createArtifact: true },
+      verification: entry.verification ?? { verifyBeforePublish: false, mode: "intervention" },
+      billingCode: entry.billingCode?.trim() || `auto:${entry.id.trim()}`,
+      ...(entry.queueStatus ? { queueStatus: entry.queueStatus } : {}),
+      actions: (entry.actions ?? []).map((action) => ({
+        type: action.type,
+        ...(action.suiteId ? { suiteId: action.suiteId.trim() } : {}),
+        ...(action.command ? { command: action.command } : {}),
+        ...(action.cwd ? { cwd: action.cwd.trim() } : {}),
+        ...(action.condition ? { condition: action.condition.trim() } : {}),
+        ...(action.continueOnFailure != null ? { continueOnFailure: action.continueOnFailure } : {}),
+        ...(action.timeoutMs != null ? { timeoutMs: action.timeoutMs } : {}),
+        ...(action.retry != null ? { retry: action.retry } : {}),
+      })),
+      legacy: {
+        ...(legacyTrigger ? { trigger: legacyTrigger } : {}),
+        ...(entry.actions ? {
+          actions: entry.actions.map((action) => ({
+            type: action.type,
+            ...(action.suiteId ? { suiteId: action.suiteId.trim() } : {}),
+            ...(action.command ? { command: action.command } : {}),
+            ...(action.cwd ? { cwd: action.cwd.trim() } : {}),
+            ...(action.condition ? { condition: action.condition.trim() } : {}),
+            ...(action.continueOnFailure != null ? { continueOnFailure: action.continueOnFailure } : {}),
+            ...(action.timeoutMs != null ? { timeoutMs: action.timeoutMs } : {}),
+            ...(action.retry != null ? { retry: action.retry } : {}),
+          })),
+        } : {}),
+      },
+      enabled: entry.enabled ?? true,
+    };
+  });
 
   const mergedProviders = shared.providers || local.providers
     ? {

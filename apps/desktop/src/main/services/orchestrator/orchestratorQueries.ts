@@ -307,6 +307,7 @@ export function normalizeErrorClass(value: string): OrchestratorErrorClass {
     value === "configuration_error" ||
     value === "canceled" ||
     value === "resume_recovered" ||
+    value === "planner_contract_violation" ||
     value === "soft_success_blocking_failure"
   ) {
     return value;
@@ -338,6 +339,7 @@ export function normalizeRuntimeEventType(value: string): OrchestratorRuntimeEve
     value === "done" ||
     value === "retry_scheduled" ||
     value === "retry_exhausted" ||
+    value === "planning_artifact_missing" ||
     value === "claim_conflict" ||
     value === "session_ended" ||
     value === "intervention_opened" ||

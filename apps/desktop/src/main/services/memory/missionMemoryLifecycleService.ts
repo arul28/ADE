@@ -7,7 +7,9 @@ function cleanIds(values: Array<string | null | undefined>): string[] {
 
 function normalizeStatuses(status?: MemoryStatus | ReadonlyArray<MemoryStatus> | "all"): MemoryStatus[] | undefined {
   if (status === "all" || status === undefined) return undefined;
-  return Array.isArray(status) ? [...status] : [status];
+  if (Array.isArray(status)) return Array.from(status);
+  if (status !== "candidate" && status !== "promoted" && status !== "archived") return undefined;
+  return [status];
 }
 
 export function createMissionMemoryLifecycleService(args: {
@@ -25,11 +27,12 @@ export function createMissionMemoryLifecycleService(args: {
     runId?: string | null;
     status?: MemoryStatus | ReadonlyArray<MemoryStatus> | "all";
   }): Memory[] => {
+    const statuses = normalizeStatuses(input.status);
     return memoryService.listMemories({
       projectId: input.projectId,
       scope: "mission",
       scopeOwnerIds: cleanIds([input.missionId, input.runId]),
-      ...(normalizeStatuses(input.status) ? { status: normalizeStatuses(input.status) } : {}),
+      ...(statuses ? { status: statuses } : {}),
       limit: 500,
     });
   };

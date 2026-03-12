@@ -13,7 +13,7 @@ import type {
   CtoOnboardingState,
   CtoSnapshot,
   WorkerAgentRun,
-  LinearSyncConfig,
+  LinearWorkflowConfig,
 } from "../../../shared/types";
 
 vi.mock("../chat/AgentChatPane", () => ({
@@ -136,17 +136,29 @@ const makeAgentCoreMemory = (): AgentCoreMemory => ({
 });
 
 function buildCtoBridge() {
-  const basePolicy: LinearSyncConfig = {
-    enabled: false,
-    pollingIntervalSec: 300,
-    projects: [{ slug: "my-project", defaultWorker: "backend-dev" }],
-    routing: { byLabel: { bug: "backend-dev" } },
-    assignment: { setAssigneeOnDispatch: false },
-    autoDispatch: { default: "escalate", rules: [] },
-    concurrency: { global: 5, byState: { todo: 3, in_progress: 5 } },
-    reconciliation: { enabled: true, stalledTimeoutSec: 300 },
-    classification: { mode: "hybrid", confidenceThreshold: 0.7 },
-    artifacts: { mode: "links" },
+  const basePolicy: LinearWorkflowConfig = {
+    version: 1,
+    source: "repo",
+    settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
+    workflows: [
+      {
+        id: "cto-mission-autopilot",
+        name: "CTO -> Mission autopilot",
+        enabled: true,
+        priority: 100,
+        triggers: { assignees: ["CTO"], projectSlugs: ["my-project"], labels: ["bug"] },
+        target: { type: "mission", runMode: "autopilot", workerSelector: { mode: "slug", value: "backend-dev" } },
+        steps: [
+          { id: "launch", type: "launch_target", name: "Launch mission" },
+          { id: "wait", type: "wait_for_target_status", name: "Wait", targetStatus: "completed" },
+          { id: "complete", type: "complete_issue", name: "Complete" },
+        ],
+        closeout: { successState: "done", failureState: "blocked", applyLabels: ["ade"], resolveOnSuccess: true, reopenOnFailure: true, artifactMode: "links" },
+      },
+    ],
+    files: [],
+    migration: { hasLegacyConfig: false, needsSave: false },
+    legacyConfig: null,
   };
 
   return {
@@ -193,19 +205,25 @@ function buildCtoBridge() {
       message: "Linear token cleared.",
     })),
     getFlowPolicy: vi.fn(async () => basePolicy),
-    saveFlowPolicy: vi.fn(async ({ policy }: { policy: LinearSyncConfig }) => policy),
+    saveFlowPolicy: vi.fn(async ({ policy }: { policy: LinearWorkflowConfig }) => policy),
     listFlowPolicyRevisions: vi.fn(async () => []),
     rollbackFlowPolicyRevision: vi.fn(async () => basePolicy),
     simulateFlowRoute: vi.fn(async () => ({
-      action: "escalate",
-      workerSlug: "backend-dev",
-      workerId: "agent-1",
-      workerName: "Backend Dev",
-      templateId: "bug-fix",
+      workflowId: "cto-mission-autopilot",
+      workflowName: "CTO -> Mission autopilot",
+      workflow: basePolicy.workflows[0],
+      target: basePolicy.workflows[0]?.target ?? null,
       reason: "Matched bug route.",
-      confidence: 0.9,
-      matchedRuleId: "rule-1",
-      matchedSignals: ["label:bug"],
+      candidates: [
+        {
+          workflowId: "cto-mission-autopilot",
+          workflowName: "CTO -> Mission autopilot",
+          priority: 100,
+          matched: true,
+          reasons: ["Assignee matched CTO", "Label matched bug"],
+        },
+      ],
+      nextStepsPreview: ["Launch mission", "Wait", "Complete"],
     })),
     getLinearSyncDashboard: vi.fn(async () => ({
       enabled: false,
@@ -617,14 +635,6 @@ describe("CtoPage", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("linear-sync-panel")).toBeTruthy();
-    });
-
-    // Navigate to Routing step (which has the simulation)
-    const routingBtn = screen.getByText("Routing");
-    fireEvent.click(routingBtn);
-
-    await waitFor(() => {
-      expect(screen.getByTestId("linear-simulate-btn")).toBeTruthy();
     });
 
     fireEvent.click(screen.getByTestId("linear-simulate-btn"));

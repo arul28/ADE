@@ -13,6 +13,7 @@ function createTestDeps(args: {
   }) => Promise<CoordinatorWorkerDeliveryStatus>;
   memoryService?: {
     search: (opts: Record<string, unknown>) => Promise<any[]>;
+    searchAcrossScopeOwners?: (opts: Record<string, unknown>) => Promise<any[]>;
     writeMemory: (opts: Record<string, unknown>) => {
       accepted: boolean;
       reason?: string;
@@ -51,6 +52,7 @@ function createTestDeps(args: {
     logger,
     db: {} as any,
     projectRoot: "/tmp",
+    workspaceRoot: "/tmp/worktree",
     onDagMutation: vi.fn(),
     sendWorkerMessageToSession: args.sendWorkerMessageToSession,
   });
@@ -62,6 +64,8 @@ describe("coordinator memory tools", () => {
   it("memory_search queries project memory with mission scope defaults", async () => {
     const memoryService = {
       search: vi.fn(async () => ([
+      ])),
+      searchAcrossScopeOwners: vi.fn(async () => ([
         {
           id: "memory-1",
           scope: "project",
@@ -88,11 +92,11 @@ describe("coordinator memory tools", () => {
       scope: "mission",
     });
 
-    expect(memoryService.search).toHaveBeenCalledWith(expect.objectContaining({
+    expect(memoryService.searchAcrossScopeOwners).toHaveBeenCalledWith(expect.objectContaining({
       projectId: "project-1",
       query: "integration PR lane",
       scope: "mission",
-      scopeOwnerId: "run-1",
+      scopeOwnerIds: ["mission-1", "run-1", null],
       limit: 5,
     }));
     expect(result.ok).toBe(true);
@@ -319,6 +323,7 @@ function createCoordinatorHarness(args: {
     logger,
     db,
     projectRoot: args.projectRoot ?? "/tmp",
+    workspaceRoot: args.projectRoot ?? "/tmp",
     onDagMutation,
     onRunFinalize: args.onRunFinalize,
     getMissionBudgetStatus: args.getMissionBudgetStatus,
@@ -4224,7 +4229,7 @@ describe("coordinatorTools file path containment", () => {
 
     expect(result).toMatchObject({
       ok: false,
-      error: "Path is outside project root",
+      error: "Path is outside mission workspace root",
     });
   });
 

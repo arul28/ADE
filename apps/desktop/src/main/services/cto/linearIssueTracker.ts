@@ -4,6 +4,10 @@ import { getErrorMessage } from "../shared/utils";
 
 export function createLinearIssueTracker(args: { client: LinearClient }): IssueTracker {
   return {
+    listProjects() {
+      return args.client.listProjects();
+    },
+
     fetchCandidateIssues(query) {
       return args.client.fetchCandidateIssues(query);
     },

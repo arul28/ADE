@@ -62,6 +62,11 @@ import type {
   GetOrchestratorContextCheckpointArgs,
   ListOrchestratorLaneDecisionsArgs,
 } from "../../../shared/types";
+import {
+  resolveReportArtifactKey,
+  resolveReportArtifactKind,
+  resolveReportArtifactMissionType,
+} from "../../../shared/proofArtifacts";
 
 // ── Worker State Functions ───────────────────────────────────────
 
@@ -187,6 +192,30 @@ function resolveRetryExhaustedIntervention(args: {
     body: `Step ${args.step.stepKey} (${args.stepTitle}) exhausted all ${args.step.retryLimit} retries. Last error: ${errorText || "unknown"}`,
     requestedAction: "Review and decide whether to retry, skip, or add a workaround.",
     reasonCode: "retry_exhausted",
+  };
+}
+
+function resolvePlannerPlanMissingIntervention(args: {
+  attempt: OrchestratorRunGraph["attempts"][number];
+  step: OrchestratorRunGraph["steps"][number];
+  stepTitle: string;
+}): {
+  interventionType: "failed_step";
+  title: string;
+  body: string;
+  requestedAction: string;
+  reasonCode: "planner_plan_missing";
+} {
+  const errorText = typeof args.attempt.errorMessage === "string" ? args.attempt.errorMessage.trim() : "";
+  return {
+    interventionType: "failed_step",
+    title: "Planner result missing plan",
+    body:
+      errorText ||
+      `Step ${args.step.stepKey} (${args.stepTitle}) finished without returning report_result.plan.markdown, so ADE could not accept the planning attempt as successful.`,
+    requestedAction:
+      "Retry planning only after the planner can return report_result.plan.markdown. ADE will not advance until the canonical plan artifact exists.",
+    reasonCode: "planner_plan_missing",
   };
 }
 
@@ -785,7 +814,7 @@ export function extractAndRegisterArtifacts(
     };
 
     const registerMissionArtifact = (args: {
-      artifactType: "plan" | "summary" | "note" | "patch" | "link" | "pr";
+      artifactType: "plan" | "summary" | "note" | "patch" | "link" | "pr" | "test_report" | "screenshot" | "browser_verification" | "browser_trace" | "video_recording" | "console_logs";
       title: string;
       description?: string | null;
       uri?: string | null;
@@ -870,12 +899,6 @@ export function extractAndRegisterArtifacts(
       register("implementation_pr", "pr", prUrl.trim());
     }
 
-    const ARTIFACT_TYPE_TO_KIND: Record<string, OrchestratorArtifactKind> = {
-      branch: "branch",
-      pr: "pr",
-      pull_request: "pr",
-      test_report: "test_report",
-    };
     const reportArtifacts = Array.isArray(lastResultReport?.artifacts) ? lastResultReport.artifacts : [];
     reportArtifacts.forEach((entry, index) => {
       const artifact = isRecord(entry) ? entry : null;
@@ -883,11 +906,19 @@ export function extractAndRegisterArtifacts(
       const rawType = artifact && typeof artifact.type === "string" ? artifact.type.trim().toLowerCase() : "";
       const rawUri = artifact && typeof artifact.uri === "string" ? artifact.uri.trim() : "";
       const title = rawTitle || `Worker artifact ${index + 1}`;
-      const fallbackKey = `reported_artifact_${index + 1}`;
-      const artifactKey = rawTitle.length
-        ? rawTitle.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || fallbackKey
-        : fallbackKey;
-      const kind = ARTIFACT_TYPE_TO_KIND[rawType] ?? (rawUri.length ? "file" : "custom");
+      const metadata = isRecord(artifact?.metadata) ? artifact.metadata : {};
+      const artifactKey = resolveReportArtifactKey({
+        type: rawType,
+        title: title,
+        metadata,
+        index,
+      });
+      const kind = resolveReportArtifactKind({
+        type: rawType,
+        artifactKey,
+        uri: rawUri,
+        metadata,
+      });
       const value = rawUri.length
         ? rawUri
         : artifact?.metadata != null
@@ -896,8 +927,27 @@ export function extractAndRegisterArtifacts(
       register(artifactKey, kind, value, {
         title,
         type: rawType || "artifact",
-        ...(isRecord(artifact?.metadata) ? artifact.metadata : {}),
+        ...(metadata ?? {}),
       });
+      const missionArtifactType = resolveReportArtifactMissionType({
+        type: rawType,
+        artifactKey,
+        metadata,
+      });
+      if (missionArtifactType) {
+        registerMissionArtifact({
+          artifactType: missionArtifactType,
+          title,
+          description: rawUri.length > 0 ? null : title,
+          uri: rawUri.length > 0 ? rawUri : null,
+          metadata: {
+            artifactKey,
+            kind,
+            sourceType: rawType || "artifact",
+            ...metadata,
+          },
+        });
+      }
     });
 
     // Match remaining output keys against declared artifactHints
@@ -1360,58 +1410,72 @@ export function updateWorkerStateFromEventCtx(
           unit: "usd"
         });
       }
-      if (step && step.status === "failed" && step.retryCount >= step.retryLimit) {
+      if (step && step.status === "failed") {
         try {
           const stepMetadata = isRecord(step.metadata) ? step.metadata : {};
           const phaseKey = typeof stepMetadata.phaseKey === "string" ? stepMetadata.phaseKey.trim() : "";
           const stepType = typeof stepMetadata.stepType === "string" ? stepMetadata.stepType.trim() : "";
-          // Emit retry_exhausted event
-          deps.recordRuntimeEvent({
-            runId: attempt.runId,
-            stepId: step.id,
-            attemptId: attempt.id,
-            sessionId: attempt.executorSessionId,
-            eventType: "retry_exhausted",
-            eventKey: `retry_exhausted:${step.id}`,
-            payload: {
-              retryCount: step.retryCount,
-              retryLimit: step.retryLimit,
-              lastError: attempt.errorMessage ?? "unknown"
+          const plannerContractFailure = attempt.errorClass === "planner_contract_violation";
+          const retryExhausted = step.retryCount >= step.retryLimit;
+          let openedInterventionId: string | null = null;
+          if (plannerContractFailure || retryExhausted) {
+            const interventionSpec = plannerContractFailure
+              ? resolvePlannerPlanMissingIntervention({
+                  attempt,
+                  step,
+                  stepTitle: stepTitleForMessage(step),
+                })
+              : resolveRetryExhaustedIntervention({
+                  attempt,
+                  step,
+                  stepTitle: stepTitleForMessage(step),
+                });
+            if (!plannerContractFailure) {
+              deps.recordRuntimeEvent({
+                runId: attempt.runId,
+                stepId: step.id,
+                attemptId: attempt.id,
+                sessionId: attempt.executorSessionId,
+                eventType: "retry_exhausted",
+                eventKey: `retry_exhausted:${step.id}`,
+                payload: {
+                  retryCount: step.retryCount,
+                  retryLimit: step.retryLimit,
+                  lastError: attempt.errorMessage ?? "unknown"
+                }
+              });
             }
-          });
-          const interventionSpec = resolveRetryExhaustedIntervention({
-            attempt,
-            step,
-            stepTitle: stepTitleForMessage(step),
-          });
-          const intervention = ctx.missionService.addIntervention({
-            missionId: graph.run.missionId,
-            interventionType: interventionSpec.interventionType,
-            title: interventionSpec.title,
-            body: interventionSpec.body,
-            requestedAction: interventionSpec.requestedAction,
-            metadata: {
+            const intervention = ctx.missionService.addIntervention({
+              missionId: graph.run.missionId,
+              interventionType: interventionSpec.interventionType,
+              title: interventionSpec.title,
+              body: interventionSpec.body,
+              requestedAction: interventionSpec.requestedAction,
+              metadata: {
+                runId: attempt.runId,
+                stepId: step.id,
+                stepKey: step.stepKey,
+                ...(phaseKey.length > 0 ? { phaseKey } : {}),
+                ...(stepType.length > 0 ? { stepType } : {}),
+                reasonCode: interventionSpec.reasonCode,
+              }
+            });
+            deps.recordRuntimeEvent({
               runId: attempt.runId,
               stepId: step.id,
-              stepKey: step.stepKey,
-              ...(phaseKey.length > 0 ? { phaseKey } : {}),
-              ...(stepType.length > 0 ? { stepType } : {}),
-              reasonCode: interventionSpec.reasonCode,
-            }
-          });
-          deps.recordRuntimeEvent({
-            runId: attempt.runId,
-            stepId: step.id,
-            attemptId: attempt.id,
-            sessionId: attempt.executorSessionId,
-            eventType: "intervention_opened",
-            eventKey: `intervention_opened:${intervention.id}`,
-            payload: {
-              interventionId: intervention.id,
-              interventionType: intervention.interventionType,
-              reason: interventionSpec.reasonCode,
-            }
-          });
+              attemptId: attempt.id,
+              sessionId: attempt.executorSessionId,
+              eventType: "intervention_opened",
+              eventKey: `intervention_opened:${intervention.id}`,
+              payload: {
+                interventionId: intervention.id,
+                interventionType: intervention.interventionType,
+                reason: interventionSpec.reasonCode,
+                ...(plannerContractFailure ? { expectedPlanPath: ".ade/plans/mission-plan.md" } : {}),
+              }
+            });
+            openedInterventionId = intervention.id;
+          }
 
           const coordForDiag = ctx.coordinatorAgents.get(attempt.runId);
           if (!coordForDiag?.isAlive && ctx.aiIntegrationService && ctx.projectRoot) {
@@ -1583,10 +1647,10 @@ export function updateWorkerStateFromEventCtx(
 
             // Also attempt auto-resolution if configured
             const runtimeProfile = ctx.runRuntimeProfiles.get(attempt.runId) ?? resolveActiveRuntimeProfile(ctx, graph.run.missionId);
-            if (runtimeProfile.evaluation.autoResolveInterventions) {
+            if (openedInterventionId && runtimeProfile.evaluation.autoResolveInterventions) {
               deps.handleInterventionWithAI({
                 missionId: graph.run.missionId,
-                interventionId: intervention.id,
+                interventionId: openedInterventionId,
                 provider: resolveEvaluationProvider(attempt)
               }).catch((error: unknown) => {
                 ctx.logger.debug("ai_orchestrator.auto_intervention_failed", {

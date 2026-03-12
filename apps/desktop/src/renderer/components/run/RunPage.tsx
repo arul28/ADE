@@ -8,6 +8,7 @@ import { ProcessMonitor } from "./ProcessMonitor";
 import { LaneRuntimeBar } from "./LaneRuntimeBar";
 import { AddCommandDialog, type AddCommandInitialValues } from "./AddCommandDialog";
 import { AiScanPanel, type AiScanSuggestion } from "./AiScanPanel";
+import { commandArrayToLine, parseCommandLine } from "../../lib/shell";
 import type {
   ProcessDefinition,
   ProcessRuntime,
@@ -250,7 +251,8 @@ export function RunPage() {
         if (!def) return;
         // Start the managed process
         await window.ade.processes.start({ laneId: effectiveLaneId, processId });
-        // Also open a terminal in the Work tab for visibility
+        // Also open a shell in the Work tab for manual inspection, but do not
+        // replay the managed process command there.
         try {
           await window.ade.pty.create({
             laneId: effectiveLaneId,
@@ -258,7 +260,6 @@ export function RunPage() {
             rows: 30,
             title: def.name,
             tracked: true,
-            startupCommand: def.command.join(" "),
           });
         } catch {
           // Terminal creation is best-effort
@@ -326,7 +327,7 @@ export function RunPage() {
       const newProcess: ConfigProcessDefinition = {
         id: processId,
         name: cmd.name,
-        command: cmd.command.split(/\s+/),
+        command: parseCommandLine(cmd.command),
         cwd: cmd.cwd === "." ? undefined : cmd.cwd,
       };
 
@@ -381,7 +382,7 @@ export function RunPage() {
           ? {
               ...p,
               name: cmd.name,
-              command: cmd.command.split(/\s+/),
+              command: parseCommandLine(cmd.command),
               cwd: cmd.cwd === "." ? undefined : cmd.cwd,
             }
           : p
@@ -504,7 +505,7 @@ export function RunPage() {
         id: processId,
         values: {
           name: def.name,
-          command: def.command.join(" "),
+          command: commandArrayToLine(def.command),
           stackId: currentStack?.id ?? null,
           cwd: def.cwd || ".",
         },

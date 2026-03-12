@@ -2,6 +2,7 @@ import React from "react";
 import { X } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, LABEL_STYLE, primaryButton, outlineButton } from "../lanes/laneDesignTokens";
 import type { StackButtonDefinition } from "../../../shared/types";
+import { parseCommandLine } from "../../lib/shell";
 
 export type AddCommandInitialValues = {
   name: string;
@@ -47,6 +48,16 @@ export function AddCommandDialog({
 
   const dialogTitle = title ?? "Add Command";
   const dialogSubmitLabel = submitLabel ?? "Add";
+  const commandError = React.useMemo(() => {
+    const trimmed = command.trim();
+    if (!trimmed) return null;
+    try {
+      parseCommandLine(trimmed);
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }, [command]);
 
   React.useEffect(() => {
     if (open) {
@@ -68,7 +79,7 @@ export function AddCommandDialog({
 
   if (!open) return null;
 
-  const canSubmit = name.trim() && command.trim();
+  const canSubmit = Boolean(name.trim() && command.trim() && !commandError);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -185,6 +196,17 @@ export function AddCommandDialog({
               placeholder="e.g. npx sst dev"
               style={inputStyle}
             />
+            <div
+              style={{
+                marginTop: 6,
+                fontFamily: MONO_FONT,
+                fontSize: 10,
+                color: commandError ? COLORS.danger : COLORS.textDim,
+                lineHeight: 1.5,
+              }}
+            >
+              {commandError ?? "Quoted args are supported. For shell pipelines or redirects, wrap them in a script or invoke a shell explicitly."}
+            </div>
           </div>
 
           <div>

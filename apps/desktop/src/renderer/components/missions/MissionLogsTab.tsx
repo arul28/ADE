@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MissionLogChannel, MissionLogEntry } from "../../../shared/types";
 import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { useMissionPolling } from "./useMissionPolling";
@@ -64,6 +64,8 @@ export const MissionLogsTab = React.memo(function MissionLogsTab({
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [exportNotice, setExportNotice] = useState<string | null>(null);
+  const [highlightedInterventionId, setHighlightedInterventionId] = useState<string | null>(focusInterventionId ?? null);
+  const focusedEntryRef = useRef<HTMLDivElement | null>(null);
 
   const channelKey = useMemo(() => selectedChannels.join(","), [selectedChannels]);
 
@@ -110,8 +112,16 @@ export const MissionLogsTab = React.memo(function MissionLogsTab({
   useEffect(() => {
     if (!focusInterventionId) return;
     setSelectedChannels(["interventions"]);
+    setHighlightedInterventionId(focusInterventionId);
     onFocusHandled?.();
   }, [focusInterventionId, onFocusHandled]);
+
+  useEffect(() => {
+    focusedEntryRef.current?.scrollIntoView({
+      block: "center",
+      behavior: "smooth",
+    });
+  }, [entries, highlightedInterventionId]);
 
   const toggleChannel = (channel: MissionLogChannel) => {
     setSelectedChannels((prev) => {
@@ -200,10 +210,11 @@ export const MissionLogsTab = React.memo(function MissionLogsTab({
         ) : (
           <div className="max-h-[520px] overflow-y-auto">
             {entries.map((entry) => {
-              const focused = focusInterventionId && entry.interventionId === focusInterventionId;
+              const focused = highlightedInterventionId != null && entry.interventionId === highlightedInterventionId;
               return (
                 <div
                   key={entry.id}
+                  ref={focused ? focusedEntryRef : null}
                   className="px-3 py-2"
                   style={{
                     borderBottom: `1px solid ${COLORS.border}`,

@@ -405,6 +405,10 @@ import type {
   CtoListAgentSessionLogsArgs,
   CtoListAgentTaskSessionsArgs,
   CtoClearAgentTaskSessionArgs,
+  CtoGetLinearOAuthSessionArgs,
+  CtoGetLinearOAuthSessionResult,
+  CtoRunProjectScanResult,
+  CtoStartLinearOAuthResult,
   LinearConnectionStatus,
   CtoSetLinearTokenArgs,
   CtoFlowPolicyRevision,
@@ -415,7 +419,7 @@ import type {
   LinearSyncDashboard,
   LinearSyncQueueItem,
   CtoResolveLinearSyncQueueItemArgs,
-  LinearSyncConfig,
+  LinearWorkflowConfig,
   NormalizedLinearIssue,
   ExternalMcpServerConfig,
   ExternalMcpServerSnapshot,
@@ -494,6 +498,7 @@ import type { createWorkerBudgetService } from "../cto/workerBudgetService";
 import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService";
 import type { createWorkerTaskSessionService } from "../cto/workerTaskSessionService";
 import type { createLinearCredentialService } from "../cto/linearCredentialService";
+import { createLinearOAuthService, type LinearOAuthService } from "../cto/linearOAuthService";
 import type { createFlowPolicyService } from "../cto/flowPolicyService";
 import type { createLinearRoutingService } from "../cto/linearRoutingService";
 import type { createLinearSyncService } from "../cto/linearSyncService";
@@ -503,7 +508,7 @@ import type { createUsageTrackingService } from "../usage/usageTrackingService";
 import type { createBudgetCapService } from "../usage/budgetCapService";
 import type { AdeProjectService } from "../projects/adeProjectService";
 import type { ConfigReloadService } from "../projects/configReloadService";
-import { getErrorMessage, isRecord, nowIso } from "../shared/utils";
+import { getErrorMessage, isRecord, nowIso, toMemoryEntryDto } from "../shared/utils";
 
 export type AppContext = {
   db: AdeDb;
@@ -667,6 +672,7 @@ function toRecentProjectSummary(entry: { rootPath: string; displayName: string; 
 }
 
 type MemoryScope = "user" | "project" | "lane" | "mission";
+type UnifiedMemoryScope = "project" | "agent" | "mission";
 type MemoryHealthScope = "project" | "agent" | "mission";
 
 type MemoryHealthCountRow = {
@@ -716,6 +722,15 @@ function normalizeMemoryScope(rawScope: string): MemoryScope | undefined {
   if (trimmed === "user" || trimmed === "project" || trimmed === "lane" || trimmed === "mission") return trimmed;
   return undefined;
 }
+
+function normalizeUnifiedMemoryScope(rawScope: unknown): UnifiedMemoryScope | undefined {
+  const trimmed = typeof rawScope === "string" ? rawScope.trim() : "";
+  if (trimmed === "project") return "project";
+  if (trimmed === "agent" || trimmed === "user") return "agent";
+  if (trimmed === "mission" || trimmed === "lane") return "mission";
+  return undefined;
+}
+
 
 function normalizeMemoryHealthScope(rawScope: unknown): MemoryHealthScope | null {
   const trimmed = typeof rawScope === "string" ? rawScope.trim() : "";
@@ -1071,6 +1086,11 @@ async function buildLinearConnectionStatus(
   tokenStored: boolean,
   message?: string
 ): Promise<LinearConnectionStatus> {
+  const credentialStatus = ctx.linearCredentialService?.getStatus() ?? {
+    authMode: null,
+    oauthConfigured: false,
+    tokenExpiresAt: null,
+  };
   if (!ctx.linearIssueTracker || !tokenStored) {
     return {
       tokenStored,
@@ -1078,6 +1098,9 @@ async function buildLinearConnectionStatus(
       viewerId: null,
       viewerName: null,
       checkedAt: nowIso(),
+      authMode: credentialStatus.authMode,
+      oauthAvailable: credentialStatus.oauthConfigured,
+      tokenExpiresAt: credentialStatus.tokenExpiresAt,
       message: message ?? (tokenStored ? "Linear tracker service unavailable." : "Linear token not configured."),
     };
   }
@@ -1089,7 +1112,35 @@ async function buildLinearConnectionStatus(
     viewerId: status.viewerId,
     viewerName: status.viewerName,
     checkedAt: nowIso(),
+    authMode: credentialStatus.authMode,
+    oauthAvailable: credentialStatus.oauthConfigured,
+    tokenExpiresAt: credentialStatus.tokenExpiresAt,
     message: status.message,
+  };
+}
+
+function summarizeProjectScan(result: OnboardingDetectionResult | null): Partial<{
+  projectSummary: string;
+  criticalConventions: string[];
+  activeFocus: string[];
+  notes: string[];
+}> {
+  if (!result) return {};
+  const projectTypes = result.projectTypes.filter((entry) => entry.trim().length > 0);
+  const signalFiles = result.indicators
+    .slice(0, 4)
+    .map((indicator) => indicator.file.trim())
+    .filter((entry) => entry.length > 0);
+  const workflowPaths = result.suggestedWorkflows
+    .slice(0, 4)
+    .map((workflow) => workflow.path.trim())
+    .filter((entry) => entry.length > 0);
+
+  return {
+    projectSummary: `Detected ${projectTypes.join(", ") || "project"} setup from ${signalFiles.join(", ") || "repository signals"}.`,
+    criticalConventions: projectTypes.map((type) => `${type} conventions`),
+    activeFocus: projectTypes.length > 0 ? [`stabilize ${projectTypes[0]} workflows`] : [],
+    notes: workflowPaths.length > 0 ? workflowPaths.map((workflow) => `Detected workflow: ${workflow}`) : [],
   };
 }
 
@@ -1168,6 +1219,23 @@ export function registerIpc({
   globalStatePath: string;
 }) {
   const watcherCleanupBoundSenders = new Set<number>();
+  let linearOAuthService: LinearOAuthService | null = null;
+  let linearOAuthServiceAdeDir: string | null = null;
+
+  const getLinearOAuthBridge = (ctx: AppContext): LinearOAuthService => {
+    if (!ctx.linearCredentialService) {
+      throw new Error("Linear credential service is not available.");
+    }
+    if (!linearOAuthService || linearOAuthServiceAdeDir !== ctx.adeDir) {
+      linearOAuthService?.dispose();
+      linearOAuthService = createLinearOAuthService({
+        credentials: ctx.linearCredentialService,
+        logger: ctx.logger,
+      });
+      linearOAuthServiceAdeDir = ctx.adeDir;
+    }
+    return linearOAuthService;
+  };
 
   const withIpcTiming = async <T>(
     ctx: AppContext,
@@ -2567,6 +2635,11 @@ export function registerIpc({
   ipcMain.handle(IPC.usageGetBudgetConfig, async (): Promise<BudgetCapConfig> => {
     const ctx = getCtx();
     return ctx.budgetCapService?.getConfig() ?? {};
+  });
+
+  ipcMain.handle(IPC.usageSaveBudgetConfig, async (_event, arg: BudgetCapConfig): Promise<BudgetCapConfig> => {
+    const ctx = getCtx();
+    return ctx.budgetCapService?.updateConfig(arg ?? {}) ?? {};
   });
 
   ipcMain.handle(IPC.layoutGet, async (_event, arg: { layoutId: string }): Promise<DockLayout | null> => {
@@ -4597,6 +4670,37 @@ export function registerIpc({
     });
   });
 
+  ipcMain.handle(
+    IPC.memoryList,
+    async (
+      _event,
+      arg: {
+        scope?: "project" | "agent" | "mission";
+        tier?: 1 | 2 | 3;
+        status?: "candidate" | "promoted" | "archived" | "all";
+        limit?: number;
+      } = {},
+    ) => {
+      const ctx = getCtx();
+      if (!ctx.memoryService) return [];
+      const scope = normalizeUnifiedMemoryScope(arg.scope);
+      const status = arg.status === "all"
+        ? (["promoted", "candidate", "archived"] as const)
+        : arg.status === "candidate" || arg.status === "promoted" || arg.status === "archived"
+          ? arg.status
+          : undefined;
+      const tiers = arg.tier === 1 || arg.tier === 2 || arg.tier === 3 ? [arg.tier] : undefined;
+
+      return ctx.memoryService.listMemories({
+        projectId: ctx.projectId,
+        ...(scope ? { scope } : {}),
+        ...(status ? { status } : {}),
+        ...(tiers ? { tiers } : {}),
+        limit: Math.max(1, Math.min(200, Math.floor(arg.limit ?? 100))),
+      }).map((memory) => toMemoryEntryDto(memory));
+    },
+  );
+
   ipcMain.handle(IPC.memoryListMissionEntries, async (_event, arg: { missionId: string; runId?: string | null; status?: "candidate" | "promoted" | "archived" | "all" }) => {
     const ctx = getCtx();
     if (!ctx.missionMemoryLifecycleService) return [];
@@ -4605,7 +4709,7 @@ export function registerIpc({
       missionId: arg.missionId,
       runId: arg.runId,
       status: arg.status ?? "all",
-    });
+    }).map((memory) => toMemoryEntryDto(memory));
   });
 
   ipcMain.handle(IPC.memoryListProcedures, async (_event, arg: { status?: "candidate" | "promoted" | "archived" | "all"; scope?: "project" | "mission" | "agent"; query?: string } = {}) => {
@@ -4928,17 +5032,41 @@ export function registerIpc({
       viewerId: null,
       viewerName: null,
       checkedAt: nowIso(),
+      authMode: null,
+      oauthAvailable: ctx.linearCredentialService.getStatus().oauthConfigured,
+      tokenExpiresAt: null,
       message: "Linear token cleared.",
     };
   });
 
-  ipcMain.handle(IPC.ctoGetFlowPolicy, async (): Promise<LinearSyncConfig> => {
+  ipcMain.handle(IPC.ctoStartLinearOAuth, async (): Promise<CtoStartLinearOAuthResult> => {
+    const ctx = getCtx();
+    return getLinearOAuthBridge(ctx).startSession();
+  });
+
+  ipcMain.handle(
+    IPC.ctoGetLinearOAuthSession,
+    async (_event, arg: CtoGetLinearOAuthSessionArgs): Promise<CtoGetLinearOAuthSessionResult> => {
+      const ctx = getCtx();
+      const session = getLinearOAuthBridge(ctx).getSession(arg.sessionId);
+      if (session.status !== "completed") {
+        return session;
+      }
+      const tokenStored = Boolean(ctx.linearCredentialService?.getStatus().tokenStored);
+      return {
+        ...session,
+        connection: await buildLinearConnectionStatus(ctx, tokenStored),
+      };
+    }
+  );
+
+  ipcMain.handle(IPC.ctoGetFlowPolicy, async (): Promise<LinearWorkflowConfig> => {
     const ctx = getCtx();
     if (!ctx.flowPolicyService) throw new Error("Flow policy service is not available.");
     return ctx.flowPolicyService.getPolicy();
   });
 
-  ipcMain.handle(IPC.ctoSaveFlowPolicy, async (_event, arg: CtoSaveFlowPolicyArgs): Promise<LinearSyncConfig> => {
+  ipcMain.handle(IPC.ctoSaveFlowPolicy, async (_event, arg: CtoSaveFlowPolicyArgs): Promise<LinearWorkflowConfig> => {
     const ctx = getCtx();
     if (!ctx.flowPolicyService) throw new Error("Flow policy service is not available.");
     const saved = ctx.flowPolicyService.savePolicy(arg.policy, arg.actor ?? "user");
@@ -4951,7 +5079,7 @@ export function registerIpc({
     return ctx.flowPolicyService.listRevisions(50);
   });
 
-  ipcMain.handle(IPC.ctoRollbackFlowPolicyRevision, async (_event, arg: CtoRollbackFlowPolicyRevisionArgs): Promise<LinearSyncConfig> => {
+  ipcMain.handle(IPC.ctoRollbackFlowPolicyRevision, async (_event, arg: CtoRollbackFlowPolicyRevisionArgs): Promise<LinearWorkflowConfig> => {
     const ctx = getCtx();
     if (!ctx.flowPolicyService) throw new Error("Flow policy service is not available.");
     return ctx.flowPolicyService.rollbackRevision(arg.revisionId, arg.actor ?? "user");
@@ -4962,6 +5090,11 @@ export function registerIpc({
     if (!ctx.linearRoutingService) throw new Error("Linear routing service is not available.");
 
     const now = nowIso();
+    const policy = ctx.flowPolicyService?.getPolicy();
+    const defaultProjectSlug =
+      policy?.workflows.flatMap((workflow) => workflow.triggers.projectSlugs ?? []).find(Boolean)
+      ?? policy?.legacyConfig?.projects?.[0]?.slug
+      ?? "sim-project";
     const issue: NormalizedLinearIssue = {
       id: arg.issue.id ?? `sim-${randomUUID()}`,
       identifier: arg.issue.identifier ?? "SIM-1",
@@ -4969,7 +5102,7 @@ export function registerIpc({
       description: arg.issue.description ?? "",
       url: arg.issue.url ?? null,
       projectId: arg.issue.projectId ?? "sim-project",
-      projectSlug: arg.issue.projectSlug ?? (ctx.flowPolicyService?.getPolicy().projects?.[0]?.slug ?? "sim-project"),
+      projectSlug: arg.issue.projectSlug ?? defaultProjectSlug,
       teamId: arg.issue.teamId ?? "sim-team",
       teamKey: arg.issue.teamKey ?? "SIM",
       stateId: arg.issue.stateId ?? "sim-state",
@@ -4978,9 +5111,12 @@ export function registerIpc({
       priority: Number.isFinite(Number(arg.issue.priority)) ? Number(arg.issue.priority) : 3,
       priorityLabel: arg.issue.priorityLabel ?? "normal",
       labels: Array.isArray(arg.issue.labels) ? arg.issue.labels : [],
+      metadataTags: Array.isArray(arg.issue.metadataTags) ? arg.issue.metadataTags : [],
       assigneeId: arg.issue.assigneeId ?? null,
       assigneeName: arg.issue.assigneeName ?? null,
       ownerId: arg.issue.ownerId ?? null,
+      creatorId: arg.issue.creatorId ?? null,
+      creatorName: arg.issue.creatorName ?? null,
       blockerIssueIds: Array.isArray(arg.issue.blockerIssueIds) ? arg.issue.blockerIssueIds : [],
       hasOpenBlockers: Boolean(arg.issue.hasOpenBlockers),
       createdAt: arg.issue.createdAt ?? now,
@@ -5058,5 +5194,53 @@ export function registerIpc({
     } catch {
       return [];
     }
+  });
+
+  ipcMain.handle(IPC.ctoRunProjectScan, async (): Promise<CtoRunProjectScanResult> => {
+    const ctx = getCtx();
+    const detection = await ctx.onboardingService.detectDefaults().catch(() => null);
+    const summary = summarizeProjectScan(detection);
+    const coreMemoryPatch = {
+      projectSummary: summary.projectSummary ?? "",
+      criticalConventions: summary.criticalConventions ?? [],
+      activeFocus: summary.activeFocus ?? [],
+      notes: summary.notes ?? [],
+    };
+
+    if (ctx.ctoStateService) {
+      ctx.ctoStateService.updateCoreMemory(coreMemoryPatch);
+    }
+
+    const createdMemoryIds: string[] = [];
+    if (ctx.memoryService) {
+      if (coreMemoryPatch.projectSummary) {
+        createdMemoryIds.push(
+          ctx.memoryService.addMemory({
+            projectId: ctx.projectId,
+            scope: "project",
+            category: "fact",
+            content: coreMemoryPatch.projectSummary,
+            importance: "high",
+          }).id
+        );
+      }
+      for (const convention of coreMemoryPatch.criticalConventions) {
+        createdMemoryIds.push(
+          ctx.memoryService.addMemory({
+            projectId: ctx.projectId,
+            scope: "project",
+            category: "convention",
+            content: convention,
+            importance: "medium",
+          }).id
+        );
+      }
+    }
+
+    return {
+      detection,
+      coreMemoryPatch,
+      createdMemoryIds,
+    };
   });
 }

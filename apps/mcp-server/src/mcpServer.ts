@@ -1,8 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { Tool } from "ai";
 import { createCoordinatorToolSet } from "../../desktop/src/main/services/orchestrator/coordinatorTools";
+import {
+  createComputerUseArtifactPath,
+  getLocalComputerUseCapabilities,
+  toProjectArtifactUri,
+} from "../../desktop/src/main/services/computerUse/localComputerUse";
 import { ReflectionValidationError } from "../../desktop/src/main/services/orchestrator/orchestratorService";
 import { getTeamMembersForRun, registerTeamMember, updateTeamMemberStatus } from "../../desktop/src/main/services/orchestrator/teamRuntimeState";
 import { runGit } from "../../desktop/src/main/services/git/git";
@@ -270,6 +276,74 @@ const TOOL_SPECS: ToolSpec[] = [
         scope: { type: "string", enum: ["project", "mission", "agent"] },
         status: { type: "string", enum: ["promoted", "candidate", "archived", "all"], default: "promoted" },
         limit: { type: "number", minimum: 1, maximum: 50, default: 5 }
+      }
+    }
+  },
+  {
+    name: "get_environment_info",
+    description: "Inspect local computer-use capability state, frontmost app context, and ADE artifact paths.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        includeDisplays: { type: "boolean", default: false }
+      }
+    }
+  },
+  {
+    name: "launch_app",
+    description: "Launch or focus a local desktop application for proof capture flows.",
+    inputSchema: {
+      type: "object",
+      required: ["app"],
+      additionalProperties: false,
+      properties: {
+        app: { type: "string", minLength: 1 },
+        waitMs: { type: "number", minimum: 0, maximum: 30000, default: 500 },
+        activate: { type: "boolean", default: true }
+      }
+    }
+  },
+  {
+    name: "interact_gui",
+    description: "Perform a local GUI interaction such as click, type, or keypress on macOS.",
+    inputSchema: {
+      type: "object",
+      required: ["action"],
+      additionalProperties: false,
+      properties: {
+        action: { type: "string", enum: ["click", "type", "keypress"] },
+        app: { type: "string" },
+        x: { type: "number" },
+        y: { type: "number" },
+        text: { type: "string" },
+        key: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "screenshot_environment",
+    description: "Capture a local screenshot and store it in ADE artifacts for proof attachment.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        name: { type: "string" },
+        displayId: { type: "number" },
+        format: { type: "string", enum: ["png", "jpg"], default: "png" }
+      }
+    }
+  },
+  {
+    name: "record_environment",
+    description: "Record a short local screen video and store it in ADE artifacts for proof attachment.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        name: { type: "string" },
+        displayId: { type: "number" },
+        durationSec: { type: "number", minimum: 1, maximum: 120, default: 10 }
       }
     }
   },
@@ -836,7 +910,8 @@ const READ_ONLY_TOOLS = new Set([
   "list_lanes",
   "simulate_integration",
   "get_pr_health",
-  "memory_search"
+  "memory_search",
+  "get_environment_info"
 ]);
 
 const MUTATION_TOOLS = new Set([
@@ -852,6 +927,10 @@ const MUTATION_TOOLS = new Set([
   "memory_pin",
   "memory_update_core",
   "reflection_add",
+  "launch_app",
+  "interact_gui",
+  "screenshot_environment",
+  "record_environment",
   "spawn_agent"
 ]);
 
@@ -1700,6 +1779,7 @@ function getCoordinatorToolSet(args: {
     logger: args.runtime.logger,
     db: args.runtime.db,
     projectRoot: args.runtime.projectRoot,
+    workspaceRoot: args.runtime.projectRoot,
     missionLaneId: missionLaneId ?? undefined,
     onRunFinalize: ({ runId }) => {
       args.runtime.aiOrchestratorService.finalizeRun({ runId, force: true });
@@ -2383,6 +2463,63 @@ async function runTool(args: {
 }): Promise<Record<string, unknown>> {
   const { runtime, session, name, toolArgs } = args;
   const callerCtx = resolveCallerContext(session);
+  const runLocalCommand = (
+    command: string,
+    commandArgs: string[],
+    options?: { env?: NodeJS.ProcessEnv }
+  ): { stdout: string; stderr: string } => {
+    const result = spawnSync(command, commandArgs, {
+      cwd: runtime.projectRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ...(options?.env ?? {}),
+      },
+    });
+    if (result.status !== 0) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.toolFailed,
+        `${command} failed: ${(result.stderr || result.stdout || "unknown error").trim() || "unknown error"}`,
+      );
+    }
+    return {
+      stdout: typeof result.stdout === "string" ? result.stdout.trim() : "",
+      stderr: typeof result.stderr === "string" ? result.stderr.trim() : "",
+    };
+  };
+  const tryLocalCommand = (
+    command: string,
+    commandArgs: string[],
+    options?: { env?: NodeJS.ProcessEnv }
+  ): { stdout: string; stderr: string } | null => {
+    try {
+      return runLocalCommand(command, commandArgs, options);
+    } catch {
+      return null;
+    }
+  };
+  const ensureLocalComputerUse = (
+    toolName: string,
+    capabilityKey: "screenshot" | "browser_verification" | "browser_trace" | "video_recording" | "console_logs" | "appLaunch" | "guiInteraction" | "environmentInfo",
+  ) => {
+    const capabilities = getLocalComputerUseCapabilities();
+    const capability =
+      capabilityKey === "appLaunch" || capabilityKey === "guiInteraction" || capabilityKey === "environmentInfo"
+        ? capabilities[capabilityKey]
+        : capabilities.proofRequirements[capabilityKey];
+    if (!capability.available) {
+      throw new JsonRpcError(JsonRpcErrorCode.toolFailed, `${toolName} is unavailable: ${capability.detail}`);
+    }
+    return capabilities;
+  };
+  const activateApp = async (app: string): Promise<void> => {
+    runLocalCommand("open", ["-a", app]);
+    const capabilities = getLocalComputerUseCapabilities();
+    if (capabilities.environmentInfo.available) {
+      tryLocalCommand("osascript", ["-e", `tell application ${JSON.stringify(app)} to activate`]);
+    }
+    await sleep(250);
+  };
 
   if (name.startsWith("ext.")) {
     if (!runtime.externalMcpService) {
@@ -2628,6 +2765,167 @@ async function runTool(args: {
       intervention: latest,
       awaitingUserResponse: true,
       timedOut: true
+    };
+  }
+
+  if (name === "get_environment_info") {
+    const includeDisplays = asBoolean(toolArgs.includeDisplays, false);
+    const capabilities = getLocalComputerUseCapabilities();
+    const frontmostApp = capabilities.environmentInfo.available
+      ? tryLocalCommand("osascript", [
+          "-e",
+          "tell application \"System Events\" to get name of first application process whose frontmost is true",
+        ])?.stdout || null
+      : null;
+    let displays: unknown = [];
+    if (includeDisplays && capabilities.environmentInfo.available) {
+      const displayResult = tryLocalCommand("system_profiler", ["SPDisplaysDataType", "-json"]);
+      if (displayResult?.stdout) {
+        try {
+          displays = JSON.parse(displayResult.stdout);
+        } catch {
+          displays = [];
+        }
+      }
+    }
+    return {
+      platform: process.platform,
+      projectRoot: runtime.projectRoot,
+      artifactsDir: path.join(resolveAdeLayout(runtime.projectRoot).artifactsDir, "computer-use"),
+      frontmostApp,
+      capabilities,
+      displays,
+    };
+  }
+
+  if (name === "launch_app") {
+    ensureLocalComputerUse(name, "appLaunch");
+    const app = assertNonEmptyString(toolArgs.app, "app");
+    const waitMs = Math.max(0, Math.min(30_000, Math.floor(asNumber(toolArgs.waitMs, 500))));
+    const activate = asBoolean(toolArgs.activate, true);
+    if (activate) {
+      await activateApp(app);
+    } else {
+      runLocalCommand("open", ["-a", app]);
+    }
+    if (waitMs > 0) {
+      await sleep(waitMs);
+    }
+    return {
+      launched: true,
+      app,
+      waitMs,
+    };
+  }
+
+  if (name === "interact_gui") {
+    const action = assertNonEmptyString(toolArgs.action, "action");
+    const app = asOptionalTrimmedString(toolArgs.app);
+    if (app) {
+      ensureLocalComputerUse(name, "appLaunch");
+      await activateApp(app);
+    }
+    if (action === "click") {
+      ensureLocalComputerUse(name, "guiInteraction");
+      const x = Math.floor(asNumber(toolArgs.x, Number.NaN));
+      const y = Math.floor(asNumber(toolArgs.y, Number.NaN));
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "click requires numeric x and y coordinates.");
+      }
+      runLocalCommand("swift", [
+        "-e",
+        [
+          "import CoreGraphics",
+          "let x = Double(CommandLine.arguments[1]) ?? 0",
+          "let y = Double(CommandLine.arguments[2]) ?? 0",
+          "let point = CGPoint(x: x, y: y)",
+          "let move = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)!",
+          "move.post(tap: .cghidEventTap)",
+          "let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)!",
+          "down.post(tap: .cghidEventTap)",
+          "let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)!",
+          "up.post(tap: .cghidEventTap)",
+        ].join("\n"),
+        String(x),
+        String(y),
+      ]);
+      return { action, x, y, app };
+    }
+    if (action === "type") {
+      ensureLocalComputerUse(name, "guiInteraction");
+      const text = assertNonEmptyString(toolArgs.text, "text");
+      runLocalCommand("osascript", [
+        "-e",
+        `tell application "System Events" to keystroke ${JSON.stringify(text)}`,
+      ]);
+      return { action, textLength: text.length, app };
+    }
+    if (action === "keypress") {
+      ensureLocalComputerUse(name, "guiInteraction");
+      const key = assertNonEmptyString(toolArgs.key, "key").trim().toLowerCase();
+      const keyCodeMap: Record<string, number> = { enter: 36, return: 36, tab: 48, escape: 53, esc: 53, space: 49 };
+      if (keyCodeMap[key] != null) {
+        runLocalCommand("osascript", [
+          "-e",
+          `tell application "System Events" to key code ${keyCodeMap[key]}`,
+        ]);
+      } else {
+        runLocalCommand("osascript", [
+          "-e",
+          `tell application "System Events" to keystroke ${JSON.stringify(key)}`,
+        ]);
+      }
+      return { action, key, app };
+    }
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Unsupported GUI action: ${action}`);
+  }
+
+  if (name === "screenshot_environment") {
+    ensureLocalComputerUse(name, "screenshot");
+    const displayId = Number.isFinite(Number(toolArgs.displayId)) ? String(Math.floor(Number(toolArgs.displayId))) : null;
+    const format = asOptionalTrimmedString(toolArgs.format) === "jpg" ? "jpg" : "png";
+    const title = asOptionalTrimmedString(toolArgs.name) ?? "Environment screenshot";
+    const artifactPath = createComputerUseArtifactPath(runtime.projectRoot, title, format);
+    const commandArgs = ["-x"];
+    if (displayId) commandArgs.push(`-D${displayId}`);
+    commandArgs.push(artifactPath);
+    runLocalCommand("screencapture", commandArgs);
+    return {
+      artifact: {
+        type: "screenshot",
+        title,
+        uri: toProjectArtifactUri(runtime.projectRoot, artifactPath),
+        metadata: {
+          absolutePath: artifactPath,
+          displayId,
+          format,
+        },
+      },
+    };
+  }
+
+  if (name === "record_environment") {
+    ensureLocalComputerUse(name, "video_recording");
+    const displayId = Number.isFinite(Number(toolArgs.displayId)) ? String(Math.floor(Number(toolArgs.displayId))) : null;
+    const durationSec = Math.max(1, Math.min(120, Math.floor(asNumber(toolArgs.durationSec, 10))));
+    const title = asOptionalTrimmedString(toolArgs.name) ?? "Environment recording";
+    const artifactPath = createComputerUseArtifactPath(runtime.projectRoot, title, "mov");
+    const commandArgs = ["-v", `-V${durationSec}`, "-x"];
+    if (displayId) commandArgs.push(`-D${displayId}`);
+    commandArgs.push(artifactPath);
+    runLocalCommand("screencapture", commandArgs);
+    return {
+      artifact: {
+        type: "video_recording",
+        title,
+        uri: toProjectArtifactUri(runtime.projectRoot, artifactPath),
+        metadata: {
+          absolutePath: artifactPath,
+          displayId,
+          durationSec,
+          format: "mov",
+        },
+      },
     };
   }
 

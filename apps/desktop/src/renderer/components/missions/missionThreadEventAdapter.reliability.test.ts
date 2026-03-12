@@ -75,4 +75,84 @@ describe("missionThreadEventAdapter reliability", () => {
       attemptId: "attempt-1",
     });
   });
+
+  it("preserves user delivery state and structured status/done metadata", () => {
+    const events = adaptMissionThreadMessagesToAgentEvents([
+      {
+        id: "msg-user",
+        missionId: "mission-1",
+        role: "user",
+        content: "What went wrong?",
+        timestamp: "2026-03-09T12:00:00.000Z",
+        threadId: "thread-1",
+        runId: "run-1",
+        deliveryState: "delivered",
+        metadata: {
+          structuredStream: {
+            kind: "user_message",
+            text: "What went wrong?",
+          },
+        },
+      },
+      {
+        id: "msg-status",
+        missionId: "mission-1",
+        role: "orchestrator",
+        content: "",
+        timestamp: "2026-03-09T12:00:01.000Z",
+        threadId: "thread-1",
+        runId: "run-1",
+        metadata: {
+          structuredStream: {
+            kind: "status",
+            status: "interrupted",
+            message: "Planner session started and then stopped almost immediately.",
+            turnId: "turn-1",
+          },
+        },
+      },
+      {
+        id: "msg-done",
+        missionId: "mission-1",
+        role: "orchestrator",
+        content: "",
+        timestamp: "2026-03-09T12:00:02.000Z",
+        threadId: "thread-1",
+        runId: "run-1",
+        metadata: {
+          structuredStream: {
+            kind: "done",
+            status: "failed",
+            turnId: "turn-1",
+            modelId: "anthropic/claude-sonnet-4-6",
+            usage: {
+              inputTokens: 42,
+              outputTokens: 13,
+            },
+          },
+        },
+      },
+    ] as any);
+
+    expect(events[0]?.event).toMatchObject({
+      type: "user_message",
+      text: "What went wrong?",
+      deliveryState: "delivered",
+      processed: true,
+    });
+    expect(events[1]?.event).toMatchObject({
+      type: "status",
+      turnStatus: "interrupted",
+      message: "Planner session started and then stopped almost immediately.",
+    });
+    expect(events[2]?.event).toMatchObject({
+      type: "done",
+      status: "failed",
+      modelId: "anthropic/claude-sonnet-4-6",
+      usage: {
+        inputTokens: 42,
+        outputTokens: 13,
+      },
+    });
+  });
 });

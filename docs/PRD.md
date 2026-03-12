@@ -1,6 +1,6 @@
 # ADE (Agentic Development Environment) - Product Requirements Document
 
-Last updated: 2026-03-11
+Last updated: 2026-03-12
 
 Roadmap source of truth: `docs/final-plan/README.md` (this PRD captures product scope and core behavior; future sequencing lives in Final Plan).
 
@@ -359,15 +359,19 @@ See: [features/HISTORY.md](features/HISTORY.md)
 
 The CTO tab is home to ADE's always-on, project-aware agent -- a persistent AI assistant that "knows" the entire project. The CTO replaces the former Concierge Agent concept with a richer, interactive agent that serves as both a conversational interface and an intelligent entry point for development workflows.
 
+The CTO tab uses a five-sub-tab layout: **Chat** (persistent conversational interface), **Team** (worker org chart and management), **Memory** (operator-facing memory browser with procedures, skills, knowledge sync, and raw-memory provenance), **Linear** (bidirectional Linear sync with OAuth plus manual token connection, project discovery, and workflow management), and **Settings** (CTO identity, persona, and configuration). An onboarding wizard handles first-run setup including identity creation, project scanning/bootstrap, and integration handoff.
+
 **Core Capabilities**: The CTO has full access to ADE's infrastructure via MCP tools. It can create missions, spin up lanes, check project state, read context packs, review conflict predictions, and route external requests to the appropriate internal workflow. Unlike mission workers (which are ephemeral and task-scoped), the CTO is persistent and project-scoped -- it accumulates knowledge about the project over time and can answer questions, suggest approaches, and take action based on deep project understanding.
 
 **Three-Tier Memory Model**: The CTO uses the same three-tier memory architecture as mission workers (Core/Hot/Cold) with auto-compaction, but with a significantly larger core memory allocation. Its core memory includes project architecture, key conventions, recent mission outcomes, active lane states, and accumulated project knowledge. Hot memory retrieval surfaces relevant historical context (past decisions, learned patterns, known pitfalls) on demand. Cold memory provides access to the full project history when explicitly queried.
 
-**Interaction Model**: The CTO tab presents a persistent chat interface. Users can ask questions about the project ("what's the state of the auth module?"), request actions ("create a mission to refactor the payment service"), or delegate complex workflows ("review what happened overnight and summarize"). The CTO can also receive requests from external systems via the MCP server, making it the designated router for programmatic development requests from tools like OpenClaw or custom agent frameworks.
+**Interaction Model**: The CTO tab's Chat sub-tab presents a persistent chat interface. Users can ask questions about the project ("what's the state of the auth module?"), request actions ("create a mission to refactor the payment service"), or delegate complex workflows ("review what happened overnight and summarize"). The CTO can also receive requests from external systems via the MCP server, making it the designated router for programmatic development requests from tools like OpenClaw or custom agent frameworks.
 
 **Relationship to Missions**: The CTO can create and monitor missions but does not replace the orchestrator. The CTO operates at the project level (strategic), while the orchestrator operates at the mission level (tactical). The CTO might decide a mission is needed, configure its phases, and launch it, then monitor progress and intervene if the orchestrator escalates.
 
-**Detailed Design**: The full CTO design (memory configuration, persona definition, MCP tool access policy, external request routing protocol) is deferred to a later phase. This section establishes the concept and its place in the tab structure.
+**Linear Integration**: The CTO owns bidirectional Linear sync. Inbound: issues matching configured workflow definitions are ingested, dispatched to missions or workers, and tracked through completion with closeout (state transitions, artifact links, comments). Outbound: mission outcomes, PR links, and proof artifacts are published back to Linear issues. The Linear connection flow supports OAuth with manual token fallback, project discovery, validation, and reconnect/retry states. CTO-owned Linear intake is separate from automation-trigger Linear follow-up actions.
+
+**Memory Review Surface**: The CTO Memory sub-tab is an operator-facing review surface (not just a raw browser). It exposes raw-memory provenance for intervention-derived, PR-derived, and recurring-failure captures; learned procedures with confidence history and source episodes; indexed skills with reveal/re-index actions; and knowledge freshness via the human-work digest sync state.
 
 See: [features/CTO.md](features/CTO.md)
 
@@ -695,13 +699,15 @@ Workers can interact with running applications visually through computer use cap
 
 Computer use is powered by provider-native APIs: Anthropic's Computer Use Tool for Claude workers and OpenAI's CUA for Codex workers. The active plan treats this as a runtime capability layered onto ADE's local execution model rather than a matrix of pluggable compute backends.
 
-Artifacts produced by computer use (screenshots, videos, test results) attach to the lane or mission and are auto-included in PR descriptions.
+Target behavior: artifacts produced by computer use (screenshots, videos, test results) attach to the lane or mission and are included in closeout and PR workflows.
+
+Current implementation note (2026-03-12): ADE already supports mission evidence requirements such as `screenshot`, `browser_verification`, and `video_recording`, and can publish artifact links in Linear closeout. Native computer-use runtime tooling and automatic PR proof embedding are not shipped end-to-end yet.
 
 ### 10.8 Artifacts
 
-Artifacts are first-class objects that can attach to missions, lanes, or worker runs. Types include: summary, pr, link, note, patch, screenshot, video, test-result.
+Artifacts are first-class objects that can attach to missions, lanes, or worker runs. Target types include: summary, pr, link, note, patch, screenshot, video, test-result.
 
-Lane-level artifacts enable workers operating in a lane (via chat, mission phases, or automation tasks) to attach visual proof and outputs directly to the lane. When a PR is opened from a lane, attached artifacts (screenshots, videos) are auto-included in the PR description.
+Lane-level artifacts enable workers operating in a lane (via chat, mission phases, or automation tasks) to attach visual proof and outputs directly to the lane. The intended UX is for attached screenshots/videos to flow into PR descriptions and closeout summaries once the computer-use runtime and artifact unification work is fully shipped.
 
 Artifact storage is local under `.ade/artifacts/`, organized by mission or lane. Artifacts are referenced by ID in the SQLite database and linked to their parent entity (mission, lane, or worker run).
 
@@ -711,7 +717,7 @@ Learning packs are auto-curated project knowledge that accumulates from worker a
 
 Knowledge entries have categories (mistake-pattern, preference, flaky-test, tool-usage, architecture-rule), scopes (global, directory, file-pattern), and confidence scores that increase with repeated observations. High-confidence entries are injected into worker and CTO context alongside project packs.
 
-Users can review, edit, confirm, or delete entries in Settings → Learning. Learning packs can export to/from CLAUDE.md or agents.md format for interoperability. Learning packs are local-only and never transmitted.
+Users can review, edit, confirm, or delete entries in Settings > Memory and CTO > Memory. Confirmed procedural memories can be exported as skill files to `.ade/skills/`. The skill registry also ingests existing `.ade/skills/`, `.claude/skills/`, `.claude/commands/`, `CLAUDE.md`, and `agents.md` files for interoperability. Learning packs are local-only and never transmitted.
 
 ### 10.10 Development Modes
 
@@ -790,7 +796,7 @@ This section clarifies the runtime characteristics of ADE's AI agents (mission w
 4. **Project context**: Loaded from project-scope packs and learning pack entries.
 5. **Mission context**: For workers, loaded from the mission's shared run memory.
 
-This reconstruction pattern means the CTO and mission infrastructure are already file-backed under `.ade/` and are structurally compatible with a future cross-machine portability model (Section 10.11). Today, however, ADE still excludes the entire `.ade/` directory from git by default, so the selective tracked/shareable state model described later is not yet the live behavior.
+This reconstruction pattern means the CTO and mission infrastructure are file-backed under `.ade/` and compatible with the cross-machine portability model (Section 10.11). ADE ships a tracked `.ade/.gitignore` that selectively ignores machine-local runtime state (databases, caches, worktrees, transcripts, secrets) while allowing CTO/worker identity, memory artifacts, history, and shared config to be committed alongside the repo.
 
 **Background Automations**: Scheduled and event-driven automations are event-driven. A rule defines its trigger, executor target, tool palette, memory policy, and output contract; when the trigger fires, ADE dispatches either a disposable automation bot, a persistent employee, a CTO-routed worker, or a Night Shift queue item. Between activations, automations consume no compute resources.
 
@@ -926,7 +932,7 @@ Implementation sequencing, future phases, and dependency ordering are now mainta
 
 - `docs/final-plan/README.md`
 
-Current status: Phases 1, 1.5, 2, and 5 are complete. Phase 3 is complete through the orchestrator overhaul. Phase 4 is partially complete overall: `W1-W4`, `W6`, `W6½`, `W7a`, `W7b`, `W8`, and `W10` are shipped at baseline or better; `W7c` has a working core with follow-through still open; `W-UX` and `W5b` are partial; and `W9` remains the main pending ecosystem workstream.
+Current status: Phases 1, 1.5, 2, 3, 4, and 5 are complete. Phase 4 is closed at baseline or better: `W1-W10` are shipped, including the W7c skills/learning follow-through, CTO memory review surfaces, and advanced knowledge capture validation.
 
 This PRD intentionally focuses on product scope and behavior, while roadmap execution detail is centralized in the Final Plan to avoid drift.
 

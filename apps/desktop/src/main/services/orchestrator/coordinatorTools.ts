@@ -526,6 +526,7 @@ export function createCoordinatorToolSet(deps: {
   logger: Logger;
   db: AdeDb;
   projectRoot: string;
+  workspaceRoot: string;
   onDagMutation: (event: DagMutationEvent) => void;
   onRunFinalize?: (args: { runId: string; succeeded: boolean; summary?: string; reason?: string }) => void;
   onHardCapTriggered?: (detail: string) => void;
@@ -545,6 +546,7 @@ export function createCoordinatorToolSet(deps: {
     logger,
     db,
     projectRoot,
+    workspaceRoot,
     onDagMutation
   } = deps;
   const projectId = typeof deps.projectId === "string" && deps.projectId.trim().length > 0
@@ -555,6 +557,7 @@ export function createCoordinatorToolSet(deps: {
     ? deps.missionLaneId.trim()
     : null;
   const resolvedProjectRoot = path.resolve(projectRoot);
+  const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
 
   const normalizeLaneId = (value: string | null | undefined): string | null => {
     if (typeof value !== "string") return null;
@@ -5556,10 +5559,10 @@ export function createCoordinatorToolSet(deps: {
         if (planningReadBlockReason) {
           return { ok: false, error: planningReadBlockReason };
         }
-        const fullPath = path.resolve(resolvedProjectRoot, filePath);
-        // Security: ensure path is within project root
-        if (!isWithinDir(resolvedProjectRoot, fullPath)) {
-          return { ok: false, error: "Path is outside project root" };
+        const fullPath = path.resolve(resolvedWorkspaceRoot, filePath);
+        // Security: ensure path is within mission workspace root
+        if (!isWithinDir(resolvedWorkspaceRoot, fullPath)) {
+          return { ok: false, error: "Path is outside mission workspace root" };
         }
         let stat: fs.Stats;
         try {
@@ -5600,9 +5603,9 @@ export function createCoordinatorToolSet(deps: {
     execute: async ({ stepKey }) => {
       try {
         const sanitized = stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
-        const filePath = path.resolve(resolvedProjectRoot, `.ade/step-output-${sanitized}.md`);
-        if (!isWithinDir(resolvedProjectRoot, filePath)) {
-          return { ok: false, error: "Path is outside project root" };
+        const filePath = path.resolve(resolvedWorkspaceRoot, `.ade/step-output-${sanitized}.md`);
+        if (!isWithinDir(resolvedWorkspaceRoot, filePath)) {
+          return { ok: false, error: "Path is outside mission workspace root" };
         }
         let content: string;
         try {
@@ -5644,7 +5647,7 @@ export function createCoordinatorToolSet(deps: {
               for (const entry of entries) {
                 if (results.length >= limit) break;
                 if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
-                const rel = path.relative(projectRoot, path.join(dir, entry.name));
+                const rel = path.relative(workspaceRoot, path.join(dir, entry.name));
                 if (entry.isDirectory()) {
                   walkDir(path.join(dir, entry.name), depth + 1);
                 } else if (new RegExp(pattern.replace(/\*/g, ".*")).test(entry.name)) {
@@ -5655,7 +5658,7 @@ export function createCoordinatorToolSet(deps: {
               // Skip unreadable dirs
             }
           };
-          walkDir(projectRoot);
+          walkDir(workspaceRoot);
           return { ok: true, searchType, pattern, results, total: results.length };
         }
         // Content search using a simple line-by-line grep
@@ -5680,7 +5683,7 @@ export function createCoordinatorToolSet(deps: {
                   for (let i = 0; i < lines.length && results.length < limit; i++) {
                     if (regex.test(lines[i]!)) {
                       results.push({
-                        file: path.relative(projectRoot, fullPath),
+                        file: path.relative(workspaceRoot, fullPath),
                         line: i + 1,
                         text: lines[i]!.slice(0, 200),
                       });
@@ -5695,7 +5698,7 @@ export function createCoordinatorToolSet(deps: {
             // Skip unreadable dirs
           }
         };
-        walkDir(projectRoot);
+        walkDir(workspaceRoot);
         return { ok: true, searchType, pattern, results, total: results.length };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -5714,7 +5717,7 @@ export function createCoordinatorToolSet(deps: {
         const keyFiles = ["package.json", "tsconfig.json", "README.md", "CLAUDE.md"];
         const docs: Record<string, string> = {};
         for (const f of keyFiles) {
-          const fp = path.resolve(projectRoot, f);
+          const fp = path.resolve(workspaceRoot, f);
           try {
             const content = fs.readFileSync(fp, "utf-8");
             docs[f] = content.slice(0, 4_000);
@@ -5725,7 +5728,7 @@ export function createCoordinatorToolSet(deps: {
         // Top-level directory listing
         let topLevel: string[] = [];
         try {
-          topLevel = fs.readdirSync(projectRoot)
+          topLevel = fs.readdirSync(workspaceRoot)
             .filter((e) => !e.startsWith("."))
             .slice(0, 50);
         } catch {
@@ -5733,7 +5736,7 @@ export function createCoordinatorToolSet(deps: {
         }
         return {
           ok: true,
-          projectRoot,
+          projectRoot: workspaceRoot,
           topLevelEntries: topLevel,
           docs,
         };

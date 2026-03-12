@@ -88,6 +88,7 @@ describe("buildGraphPrOverlay", () => {
     expect(overlay.pendingCheckCount).toBe(1);
     expect(overlay.activityState).toBe("active");
     expect(overlay.behindBaseBy).toBe(2);
+    expect(overlay.detailLoaded).toBe(true);
 
     vi.useRealTimers();
   });
@@ -137,6 +138,46 @@ describe("buildGraphPrOverlay", () => {
     expect(overlay.checksStatus).toBe("passing");
     expect(overlay.reviewStatus).toBe("approved");
     expect(overlay.activityState).toBe("idle");
+    expect(overlay.detailLoaded).toBe(true);
+  });
+
+  it("falls back to summary-only overlay data when detail is omitted", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-08T12:00:00Z"));
+
+    const overlay = buildGraphPrOverlay({
+      pr: {
+        id: "pr-3",
+        laneId: "lane-3",
+        projectId: "proj-1",
+        repoOwner: "acme",
+        repoName: "ade",
+        githubPrNumber: 63,
+        githubUrl: "https://github.com/acme/ade/pull/63",
+        githubNodeId: "node-63",
+        title: "Use summary-only graph overlay",
+        state: "open",
+        baseBranch: "main",
+        headBranch: "feature/summary-only",
+        checksStatus: "passing",
+        reviewStatus: "requested",
+        additions: 8,
+        deletions: 3,
+        lastSyncedAt: "2026-03-08T10:30:00Z",
+        createdAt: "2026-03-07T08:00:00Z",
+        updatedAt: "2026-03-08T10:30:00Z"
+      },
+      baseLaneId: "lane-main",
+      mergeInProgress: false
+    });
+
+    expect(overlay.reviewCount).toBe(0);
+    expect(overlay.commentCount).toBe(0);
+    expect(overlay.pendingCheckCount).toBe(0);
+    expect(overlay.activityState).toBe("active");
+    expect(overlay.detailLoaded).toBe(false);
+
+    vi.useRealTimers();
   });
 });
 

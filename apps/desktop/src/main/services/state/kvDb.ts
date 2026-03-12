@@ -2146,6 +2146,70 @@ function migrate(db: Database) {
   db.run("create index if not exists idx_linear_sync_events_project_created on linear_sync_events(project_id, created_at)");
   db.run("create index if not exists idx_linear_sync_events_issue_created on linear_sync_events(project_id, issue_id, created_at)");
 
+  db.run(`
+    create table if not exists linear_workflow_runs (
+      id text primary key,
+      project_id text not null,
+      issue_id text not null,
+      identifier text not null,
+      title text not null,
+      workflow_id text not null,
+      workflow_name text not null,
+      workflow_version text not null,
+      source text not null default 'repo',
+      target_type text not null,
+      status text not null,
+      current_step_index integer not null default 0,
+      current_step_id text,
+      linked_mission_id text,
+      linked_session_id text,
+      linked_worker_run_id text,
+      linked_pr_id text,
+      review_state text,
+      retry_count integer not null default 0,
+      retry_after text,
+      closeout_state text not null default 'pending',
+      terminal_outcome text,
+      last_error text,
+      source_issue_snapshot_json text not null default '{}',
+      created_at text not null,
+      updated_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_linear_workflow_runs_project_status on linear_workflow_runs(project_id, status, updated_at)");
+  db.run("create index if not exists idx_linear_workflow_runs_issue on linear_workflow_runs(project_id, issue_id, updated_at)");
+
+  db.run(`
+    create table if not exists linear_workflow_run_steps (
+      id text primary key,
+      project_id text not null,
+      run_id text not null,
+      workflow_step_id text not null,
+      type text not null,
+      status text not null,
+      started_at text,
+      completed_at text,
+      payload_json text,
+      created_at text not null,
+      updated_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_linear_workflow_run_steps_run on linear_workflow_run_steps(project_id, run_id, created_at)");
+
+  db.run(`
+    create table if not exists linear_workflow_run_events (
+      id text primary key,
+      project_id text not null,
+      run_id text not null,
+      event_type text not null,
+      status text,
+      message text,
+      payload_json text,
+      created_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_linear_workflow_run_events_run on linear_workflow_run_events(project_id, run_id, created_at)");
+
   // Phase 4 W4: Active flow policy snapshot and immutable revision history.
   db.run(`
     create table if not exists cto_flow_policies (

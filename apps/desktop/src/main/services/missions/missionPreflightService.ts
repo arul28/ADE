@@ -17,6 +17,7 @@ import { normalizeMissionPermissions } from "../orchestrator/permissionMapping";
 import type { MissionPermissionConfig } from "../../../shared/types/missions";
 import { isRecord, nowIso } from "../shared/utils";
 import type { HumanWorkDigestService } from "../memory/humanWorkDigestService";
+import { getCapabilityForRequirement } from "../computerUse/localComputerUse";
 
 function toNonEmptyString(value: unknown): string | null {
   const text = typeof value === "string" ? value.trim() : "";
@@ -286,6 +287,13 @@ export function createMissionPreflightService(args: {
       }
       if (requiresBrowserEvidence && !descriptor) {
         const message = `${phase.name}: requires browser/screenshot evidence, but model ${phase.model.modelId} could not be resolved for capability checks.`;
+        if ((phase.validationGate.capabilityFallback ?? "block") === "block") capabilityIssues.push(message);
+        else capabilityWarnings.push(message);
+      }
+      for (const requirement of evidenceRequirements) {
+        const capability = getCapabilityForRequirement(requirement);
+        if (!capability || capability.available) continue;
+        const message = `${phase.name}: ${requirement.replace(/_/g, " ")} is required, but the local computer-use runtime is ${capability.state === "blocked_by_capability" ? "blocked by platform support" : "missing required tooling"} (${capability.detail}).`;
         if ((phase.validationGate.capabilityFallback ?? "block") === "block") capabilityIssues.push(message);
         else capabilityWarnings.push(message);
       }

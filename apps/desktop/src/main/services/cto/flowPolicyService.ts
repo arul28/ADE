@@ -1,217 +1,99 @@
 import { randomUUID } from "node:crypto";
 import type {
   CtoFlowPolicyRevision,
-  LinearAutoDispatchAction,
   LinearSyncConfig,
+  LinearWorkflowConfig,
+  LinearWorkflowDefinition,
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
-import { isRecord, nowIso, safeJsonParse } from "../shared/utils";
-
-const DEFAULT_POLICY: LinearSyncConfig = {
-  enabled: false,
-  pollingIntervalSec: 300,
-  projects: [],
-  routing: { byLabel: {} },
-  assignment: { setAssigneeOnDispatch: false },
-  autoDispatch: {
-    rules: [],
-    default: "escalate",
-  },
-  concurrency: {
-    global: 5,
-    byState: {
-      todo: 3,
-      in_progress: 5,
-    },
-  },
-  reconciliation: {
-    enabled: true,
-    stalledTimeoutSec: 300,
-  },
-  classification: {
-    mode: "hybrid",
-    confidenceThreshold: 0.7,
-  },
-  artifacts: {
-    mode: "links",
-  },
-};
+import { nowIso, safeJsonParse } from "../shared/utils";
+import type { LinearWorkflowFileService } from "./linearWorkflowFileService";
 
 type ProjectConfigServiceLike = {
   getEffective: () => { linearSync?: LinearSyncConfig };
-  get: () => { shared: Record<string, unknown>; local: Record<string, unknown> };
-  save: (candidate: { shared: Record<string, unknown>; local: Record<string, unknown> }) => unknown;
+};
+
+const DEFAULT_POLICY: LinearWorkflowConfig = {
+  version: 1,
+  source: "generated",
+  settings: {
+    ctoLinearAssigneeName: "CTO",
+    ctoLinearAssigneeAliases: ["cto"],
+  },
+  workflows: [],
+  files: [],
+  migration: {
+    hasLegacyConfig: false,
+    needsSave: true,
+  },
+  legacyConfig: null,
 };
 
 function clone<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
+  return structuredClone(value);
 }
 
-function asAction(value: unknown, fallback: LinearAutoDispatchAction): LinearAutoDispatchAction {
-  return value === "auto" || value === "escalate" || value === "queue-night-shift"
-    ? value
-    : fallback;
-}
-
-function normalizePolicy(input?: LinearSyncConfig | null): LinearSyncConfig {
-  const policy = isRecord(input) ? input : {};
-  const projectsRaw = Array.isArray(policy.projects) ? policy.projects : [];
-
-  const projects = projectsRaw
-    .filter((entry) => isRecord(entry) && typeof entry.slug === "string" && entry.slug.trim().length > 0)
-    .map((entry) => {
-      const stateMap = isRecord(entry.stateMap) ? entry.stateMap : null;
-      const nextStateMap: Record<string, string> = {};
-      if (stateMap) {
-        for (const [key, value] of Object.entries(stateMap)) {
-          if (typeof value !== "string" || !value.trim().length) continue;
-          nextStateMap[key] = value.trim();
-        }
-      }
-      return {
-        slug: String(entry.slug).trim(),
-        ...(typeof entry.defaultWorker === "string" && entry.defaultWorker.trim().length
-          ? { defaultWorker: entry.defaultWorker.trim() }
-          : {}),
-        ...(typeof entry.teamKey === "string" && entry.teamKey.trim().length
-          ? { teamKey: entry.teamKey.trim() }
-          : {}),
-        ...(Object.keys(nextStateMap).length ? { stateMap: nextStateMap } : {}),
-      };
-    });
-
-  const byLabel = (() => {
-    const next: Record<string, string> = {};
-    const raw = isRecord(policy.routing?.byLabel) ? policy.routing?.byLabel : null;
-    if (!raw) return next;
-    for (const [label, workerSlug] of Object.entries(raw)) {
-      if (typeof workerSlug !== "string" || !workerSlug.trim().length) continue;
-      next[label.trim().toLowerCase()] = workerSlug.trim();
-    }
-    return next;
-  })();
-
-  const rules = Array.isArray(policy.autoDispatch?.rules)
-    ? policy.autoDispatch.rules
-        .filter((entry) => isRecord(entry))
-        .map((entry, idx) => {
-          const action = asAction(entry.action, "escalate");
-          const labels = Array.isArray(entry.match?.labels)
-            ? entry.match.labels.map((label) => String(label).trim().toLowerCase()).filter(Boolean)
-            : undefined;
-          const priorities = Array.isArray(entry.match?.priority)
-            ? entry.match.priority.map((priority) => String(priority).trim().toLowerCase()).filter(Boolean)
-            : undefined;
-          const projectSlugs = Array.isArray(entry.match?.projectSlugs)
-            ? entry.match.projectSlugs.map((slug) => String(slug).trim()).filter(Boolean)
-            : undefined;
-          const owner = Array.isArray(entry.match?.owner)
-            ? entry.match.owner.map((value) => String(value).trim()).filter(Boolean)
-            : undefined;
-
-          return {
-            id: typeof entry.id === "string" && entry.id.trim().length ? entry.id.trim() : `rule-${idx + 1}`,
-            action,
-            ...(typeof entry.template === "string" && entry.template.trim().length
-              ? { template: entry.template.trim() }
-              : {}),
-            ...(labels?.length || priorities?.length || projectSlugs?.length || owner?.length
-              ? {
-                  match: {
-                    ...(labels?.length ? { labels } : {}),
-                    ...(priorities?.length ? { priority: priorities as any } : {}),
-                    ...(projectSlugs?.length ? { projectSlugs } : {}),
-                    ...(owner?.length ? { owner } : {}),
-                  },
-                }
-              : {}),
-          };
-        })
-    : [];
-
-  const confidenceThresholdRaw = Number(policy.classification?.confidenceThreshold);
-
+function normalizePolicy(input?: LinearWorkflowConfig | null): LinearWorkflowConfig {
+  const source = input ?? DEFAULT_POLICY;
   return {
-    enabled: policy.enabled === true,
-    pollingIntervalSec: Math.max(5, Math.floor(Number(policy.pollingIntervalSec ?? DEFAULT_POLICY.pollingIntervalSec ?? 300))),
-    projects,
-    routing: { byLabel },
-    assignment: {
-      setAssigneeOnDispatch:
-        typeof policy.assignment?.setAssigneeOnDispatch === "boolean"
-          ? policy.assignment.setAssigneeOnDispatch
-          : Boolean(DEFAULT_POLICY.assignment?.setAssigneeOnDispatch),
+    version: 1,
+    source: source.source === "repo" ? "repo" : "generated",
+    settings: {
+      ...(typeof source.settings?.ctoLinearAssigneeId === "string" ? { ctoLinearAssigneeId: source.settings.ctoLinearAssigneeId } : {}),
+      ctoLinearAssigneeName: source.settings?.ctoLinearAssigneeName?.trim() || "CTO",
+      ctoLinearAssigneeAliases: (source.settings?.ctoLinearAssigneeAliases ?? ["cto"])
+        .map((entry) => entry.trim())
+        .filter(Boolean),
     },
-    autoDispatch: {
-      rules,
-      default: asAction(policy.autoDispatch?.default, DEFAULT_POLICY.autoDispatch?.default ?? "escalate"),
-    },
-    concurrency: {
-      global: Math.max(1, Math.floor(Number(policy.concurrency?.global ?? DEFAULT_POLICY.concurrency?.global ?? 5))),
-      byState: {
-        ...DEFAULT_POLICY.concurrency?.byState,
-        ...(isRecord(policy.concurrency?.byState) ? policy.concurrency?.byState : {}),
-      },
-    },
-    reconciliation: {
-      enabled:
-        typeof policy.reconciliation?.enabled === "boolean"
-          ? policy.reconciliation.enabled
-          : Boolean(DEFAULT_POLICY.reconciliation?.enabled),
-      stalledTimeoutSec: Math.max(
-        30,
-        Math.floor(Number(policy.reconciliation?.stalledTimeoutSec ?? DEFAULT_POLICY.reconciliation?.stalledTimeoutSec ?? 300))
-      ),
-    },
-    classification: {
-      mode:
-        policy.classification?.mode === "heuristics" || policy.classification?.mode === "ai" || policy.classification?.mode === "hybrid"
-          ? policy.classification.mode
-          : DEFAULT_POLICY.classification?.mode,
-      confidenceThreshold:
-        Number.isFinite(confidenceThresholdRaw) && confidenceThresholdRaw >= 0 && confidenceThresholdRaw <= 1
-          ? confidenceThresholdRaw
-          : DEFAULT_POLICY.classification?.confidenceThreshold,
-    },
-    artifacts: {
-      mode: policy.artifacts?.mode === "attachments" ? "attachments" : "links",
-    },
+    workflows: (source.workflows ?? [])
+      .filter((entry) => Boolean(entry?.id) && Boolean(entry?.name))
+      .map<LinearWorkflowDefinition>((entry) => ({
+        ...entry,
+        source: entry.source === "repo" ? "repo" : "generated",
+        priority: Number.isFinite(Number(entry.priority)) ? Math.floor(Number(entry.priority)) : 100,
+        enabled: entry.enabled !== false,
+        steps: (entry.steps ?? []).map((step, index) => ({
+          ...step,
+          id: step.id?.trim() || `step-${index + 1}`,
+        })),
+      }))
+      .sort((left, right) => right.priority - left.priority || left.name.localeCompare(right.name)),
+    files: Array.isArray(source.files) ? source.files : [],
+    migration: source.migration
+      ? {
+          hasLegacyConfig: source.migration.hasLegacyConfig === true,
+          needsSave: source.migration.needsSave === true,
+          ...(source.migration.compatibilitySnapshotPath ? { compatibilitySnapshotPath: source.migration.compatibilitySnapshotPath } : {}),
+        }
+      : {
+          hasLegacyConfig: false,
+          needsSave: false,
+        },
+    legacyConfig: source.legacyConfig ?? null,
   };
 }
 
-function diffPolicyPaths(previous: unknown, next: unknown, basePath = "linearSync"): string[] {
-  if (JSON.stringify(previous) === JSON.stringify(next)) return [];
-  const prevRecord = isRecord(previous) ? previous : null;
-  const nextRecord = isRecord(next) ? next : null;
-  if (!prevRecord || !nextRecord) {
+function diffPolicyPaths(previous: unknown, next: unknown, basePath = "linearWorkflows"): string[] {
+  if (previous === next) return [];
+  if (
+    previous == null ||
+    next == null ||
+    typeof previous !== "object" ||
+    typeof next !== "object" ||
+    Array.isArray(previous) ||
+    Array.isArray(next)
+  ) {
     return [basePath];
   }
 
-  const keys = new Set<string>([...Object.keys(prevRecord), ...Object.keys(nextRecord)]);
+  const keys = new Set<string>([...Object.keys(previous), ...Object.keys(next)]);
   const changes: string[] = [];
   for (const key of keys) {
     const childPath = `${basePath}.${key}`;
-    const prevValue = prevRecord[key];
-    const nextValue = nextRecord[key];
-
-    if (Array.isArray(prevValue) || Array.isArray(nextValue)) {
-      if (JSON.stringify(prevValue) !== JSON.stringify(nextValue)) {
-        changes.push(childPath);
-      }
-      continue;
-    }
-
-    if (isRecord(prevValue) && isRecord(nextValue)) {
-      const nested = diffPolicyPaths(prevValue, nextValue, childPath);
-      changes.push(...nested);
-      continue;
-    }
-
-    if (JSON.stringify(prevValue) !== JSON.stringify(nextValue)) {
-      changes.push(childPath);
-    }
+    const prevValue = (previous as Record<string, unknown>)[key];
+    const nextValue = (next as Record<string, unknown>)[key];
+    changes.push(...diffPolicyPaths(prevValue, nextValue, childPath));
   }
-
   return Array.from(new Set(changes)).sort();
 }
 
@@ -219,6 +101,7 @@ export function createFlowPolicyService(args: {
   db: AdeDb;
   projectId: string;
   projectConfigService: ProjectConfigServiceLike;
+  workflowFileService: LinearWorkflowFileService;
 }) {
   const getPolicyRow = (): { policy_json: string; active_revision_id: string | null } | null =>
     args.db.get<{ policy_json: string; active_revision_id: string | null }>(
@@ -226,19 +109,19 @@ export function createFlowPolicyService(args: {
       [args.projectId]
     );
 
-  const readPolicyFromDb = (): LinearSyncConfig | null => {
+  const legacyConfig = (): LinearSyncConfig | null => args.projectConfigService.getEffective().linearSync ?? null;
+
+  const readPolicyFromDb = (): LinearWorkflowConfig | null => {
     const row = getPolicyRow();
     if (!row?.policy_json) return null;
-    return normalizePolicy(safeJsonParse<LinearSyncConfig>(row.policy_json, {}));
+    return normalizePolicy(safeJsonParse<LinearWorkflowConfig>(row.policy_json, DEFAULT_POLICY));
   };
 
-  const readPolicyFromConfig = (): LinearSyncConfig => {
-    const effective = args.projectConfigService.getEffective();
-    return normalizePolicy(effective.linearSync ?? undefined);
+  const readPolicyFromRepo = (): LinearWorkflowConfig => {
+    return normalizePolicy(args.workflowFileService.load(legacyConfig()));
   };
 
-  const persistPolicy = (policy: LinearSyncConfig, revisionId: string, actor: string): void => {
-    const timestamp = nowIso();
+  const persistPolicy = (policy: LinearWorkflowConfig, revisionId: string, actor: string): void => {
     args.db.run(
       `
         insert into cto_flow_policies(project_id, policy_json, active_revision_id, updated_at, updated_by)
@@ -249,19 +132,18 @@ export function createFlowPolicyService(args: {
           updated_at = excluded.updated_at,
           updated_by = excluded.updated_by
       `,
-      [args.projectId, JSON.stringify(policy), revisionId, timestamp, actor]
+      [args.projectId, JSON.stringify(policy), revisionId, nowIso(), actor]
     );
   };
 
-  const insertRevision = (policy: LinearSyncConfig, actor: string): CtoFlowPolicyRevision => {
-    const current = readPolicyFromDb() ?? readPolicyFromConfig();
+  const insertRevision = (policy: LinearWorkflowConfig, actor: string): CtoFlowPolicyRevision => {
+    const current = readPolicyFromDb() ?? readPolicyFromRepo();
     const revision: CtoFlowPolicyRevision = {
       id: randomUUID(),
       actor,
       createdAt: nowIso(),
       policy: clone(policy),
     };
-    const changedPaths = diffPolicyPaths(current, policy);
     args.db.run(
       `
         insert into cto_flow_policy_revisions(id, project_id, actor, policy_json, diff_json, created_at)
@@ -272,7 +154,7 @@ export function createFlowPolicyService(args: {
         args.projectId,
         actor,
         JSON.stringify(policy),
-        JSON.stringify(changedPaths),
+        JSON.stringify(diffPolicyPaths(current, policy)),
         revision.createdAt,
       ]
     );
@@ -280,60 +162,56 @@ export function createFlowPolicyService(args: {
     return revision;
   };
 
-  const savePolicyToConfig = (policy: LinearSyncConfig): void => {
-    const snapshot = args.projectConfigService.get();
-    const nextLocal = {
-      ...snapshot.local,
-      linearSync: policy,
-    };
-    args.projectConfigService.save({
-      shared: snapshot.shared,
-      local: nextLocal,
-    });
-  };
-
-  const getPolicy = (): LinearSyncConfig => {
+  const getPolicy = (): LinearWorkflowConfig => {
     const fromDb = readPolicyFromDb();
     if (fromDb) return fromDb;
-    const fromConfig = readPolicyFromConfig();
-    insertRevision(fromConfig, "bootstrap");
-    return fromConfig;
+    const fromRepo = readPolicyFromRepo();
+    insertRevision(fromRepo, "bootstrap");
+    return fromRepo;
   };
 
-  const validatePolicy = (policy: LinearSyncConfig): { ok: boolean; issues: string[] } => {
+  const validatePolicy = (policy: LinearWorkflowConfig): { ok: boolean; issues: string[] } => {
     const issues: string[] = [];
     const normalized = normalizePolicy(policy);
-    if ((normalized.projects ?? []).length === 0) {
-      issues.push("At least one Linear project slug is required.");
+    if (!normalized.workflows.length) {
+      issues.push("At least one workflow is required.");
     }
-    const seenProjectSlugs = new Set<string>();
-    for (const project of normalized.projects ?? []) {
-      const key = project.slug.toLowerCase();
-      if (seenProjectSlugs.has(key)) {
-        issues.push(`Duplicate project slug: ${project.slug}`);
+
+    const ids = new Set<string>();
+    for (const workflow of normalized.workflows) {
+      const key = workflow.id.toLowerCase();
+      if (ids.has(key)) issues.push(`Duplicate workflow id: ${workflow.id}`);
+      ids.add(key);
+      if (!workflow.steps.length) issues.push(`Workflow '${workflow.name}' requires at least one step.`);
+      if (!workflow.target?.type) issues.push(`Workflow '${workflow.name}' requires a target.`);
+      if (
+        !workflow.triggers.assignees?.length &&
+        !workflow.triggers.labels?.length &&
+        !workflow.triggers.projectSlugs?.length &&
+        !workflow.triggers.teamKeys?.length &&
+        !workflow.triggers.priority?.length &&
+        !workflow.triggers.stateTransitions?.length &&
+        !workflow.triggers.owner?.length &&
+        !workflow.triggers.creator?.length &&
+        !workflow.triggers.metadataTags?.length
+      ) {
+        issues.push(`Workflow '${workflow.name}' requires at least one trigger.`);
       }
-      seenProjectSlugs.add(key);
     }
-    if ((normalized.concurrency?.global ?? 1) < 1) {
-      issues.push("Global concurrency must be >= 1.");
-    }
-    const threshold = normalized.classification?.confidenceThreshold;
-    if (threshold != null && (threshold < 0 || threshold > 1)) {
-      issues.push("Classification confidence threshold must be between 0 and 1.");
-    }
+
     return { ok: issues.length === 0, issues };
   };
 
-  const savePolicy = (policy: LinearSyncConfig, actor = "user"): LinearSyncConfig => {
+  const savePolicy = (policy: LinearWorkflowConfig, actor = "user"): LinearWorkflowConfig => {
     const normalized = normalizePolicy(policy);
     const validation = validatePolicy(normalized);
     if (!validation.ok) {
       throw new Error(`Invalid flow policy: ${validation.issues.join(" ")}`);
     }
 
-    savePolicyToConfig(normalized);
-    insertRevision(normalized, actor);
-    return normalized;
+    const saved = normalizePolicy(args.workflowFileService.save(normalized));
+    insertRevision(saved, actor);
+    return saved;
   };
 
   const listRevisions = (limit = 20): CtoFlowPolicyRevision[] => {
@@ -351,7 +229,7 @@ export function createFlowPolicyService(args: {
 
     return rows
       .map((row) => {
-        const parsed = safeJsonParse<LinearSyncConfig | null>(row.policy_json, null);
+        const parsed = safeJsonParse<LinearWorkflowConfig | null>(row.policy_json, null);
         if (!parsed) return null;
         return {
           id: row.id,
@@ -363,7 +241,7 @@ export function createFlowPolicyService(args: {
       .filter((entry): entry is CtoFlowPolicyRevision => entry != null);
   };
 
-  const rollbackRevision = (revisionId: string, actor = "user"): LinearSyncConfig => {
+  const rollbackRevision = (revisionId: string, actor = "user"): LinearWorkflowConfig => {
     const row = args.db.get<{ policy_json: string }>(
       `
         select policy_json
@@ -377,7 +255,7 @@ export function createFlowPolicyService(args: {
     if (!row?.policy_json) {
       throw new Error(`Flow policy revision not found: ${revisionId}`);
     }
-    const parsed = safeJsonParse<LinearSyncConfig | null>(row.policy_json, null);
+    const parsed = safeJsonParse<LinearWorkflowConfig | null>(row.policy_json, null);
     if (!parsed) {
       throw new Error(`Flow policy revision payload is invalid: ${revisionId}`);
     }

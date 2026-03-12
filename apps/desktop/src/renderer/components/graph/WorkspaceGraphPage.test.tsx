@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import React from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import type { BatchAssessmentResult, LaneSummary, ProjectInfo } from "../../../shared/types";
+import type { BatchAssessmentResult, LaneSummary, ProjectInfo, PrWithConflicts } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { WorkspaceGraphPage } from "./WorkspaceGraphPage";
 
@@ -103,10 +103,10 @@ function buildLane(overrides: Partial<LaneSummary>): LaneSummary {
 
 function buildBridge(options?: {
   lanes?: LaneSummary[];
-  graphState?: unknown;
+  graphState?: Record<string, unknown> | null;
   environments?: Array<{ env: string; branch: string; color?: string | null }>;
 }) {
-  let storedGraphState = options?.graphState ?? null;
+  let storedGraphState: Record<string, unknown> | null = options?.graphState ?? null;
   const laneList = options?.lanes ?? [];
   const environments = options?.environments ?? [];
 
@@ -118,7 +118,7 @@ function buildBridge(options?: {
         }))
       },
       prs: {
-        listWithConflicts: vi.fn(async () => []),
+        listWithConflicts: vi.fn<[], Promise<PrWithConflicts[]>>(async () => []),
         listProposals: vi.fn(async () => []),
         onEvent: vi.fn(() => () => {}),
         getStatus: vi.fn(async () => null),
@@ -149,7 +149,7 @@ function buildBridge(options?: {
       graphState: {
         get: vi.fn(async () => storedGraphState),
         set: vi.fn(async (_projectId: string, state: unknown) => {
-          storedGraphState = state;
+          storedGraphState = state && typeof state === "object" ? state as Record<string, unknown> : null;
         })
       },
       pty: {
@@ -325,6 +325,60 @@ describe("WorkspaceGraphPage", () => {
 
     await waitFor(() => expect(screen.getByText("See the full workspace map with dependencies, environments, and active pull requests.")).toBeTruthy());
     expect(screen.queryByText("Loading topology…")).toBeNull();
+  });
+
+  it("does not eagerly load per-PR detail for the full graph surface", async () => {
+    const primaryLane = buildLane({
+      id: "primary",
+      name: "Primary",
+      laneType: "primary",
+      branchRef: "refs/heads/main",
+      isEditProtected: true
+    });
+    const featureLane = buildLane({
+      id: "feature-a",
+      name: "Feature A",
+      parentLaneId: "primary",
+      childCount: 0,
+      stackDepth: 1,
+      branchRef: "refs/heads/feature-a"
+    });
+    const { bridge } = buildBridge({ lanes: [primaryLane, featureLane] });
+    bridge.prs.listWithConflicts.mockResolvedValue([
+      {
+        id: "pr-1",
+        laneId: "feature-a",
+        projectId: "proj-1",
+        repoOwner: "acme",
+        repoName: "ade",
+        githubPrNumber: 42,
+        githubUrl: "https://github.com/acme/ade/pull/42",
+        githubNodeId: "node-42",
+        title: "Feature A",
+        state: "open",
+        baseBranch: "main",
+        headBranch: "feature-a",
+        checksStatus: "pending",
+        reviewStatus: "requested",
+        additions: 12,
+        deletions: 4,
+        lastSyncedAt: "2026-03-12T07:00:00.000Z",
+        createdAt: "2026-03-12T06:00:00.000Z",
+        updatedAt: "2026-03-12T07:00:00.000Z",
+        conflictAnalysis: null
+      }
+    ] as PrWithConflicts[]);
+    (window as any).ade = bridge;
+
+    renderGraphPage();
+
+    await waitFor(() => expect(bridge.prs.listWithConflicts).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Overview" })).toBeTruthy());
+
+    expect(bridge.prs.getStatus).not.toHaveBeenCalled();
+    expect(bridge.prs.getChecks).not.toHaveBeenCalled();
+    expect(bridge.prs.getReviews).not.toHaveBeenCalled();
+    expect(bridge.prs.getComments).not.toHaveBeenCalled();
   });
 
   it("removes orphaned edges when filters leave only one visible lane", async () => {

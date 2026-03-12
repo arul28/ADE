@@ -1918,7 +1918,7 @@ export function createPrService({
     treeOid: string,
     filePath: string,
     cwd: string
-  ): Promise<{ conflictMarkers: string; oursExcerpt: string; theirsExcerpt: string; diffHunk: string }> => {
+  ): Promise<{ conflictType: "content" | null; conflictMarkers: string; oursExcerpt: string; theirsExcerpt: string; diffHunk: string }> => {
     try {
       const result = await runGit(
         ["show", `${treeOid}:${filePath}`],
@@ -1926,7 +1926,7 @@ export function createPrService({
       );
       const content = result.stdout;
       if (!content.includes("<<<<<<<")) {
-        return { conflictMarkers: "", oursExcerpt: "", theirsExcerpt: "", diffHunk: "" };
+        return { conflictType: null, conflictMarkers: "", oursExcerpt: "", theirsExcerpt: "", diffHunk: "" };
       }
 
       // Extract conflict markers and excerpts
@@ -1948,9 +1948,9 @@ export function createPrService({
       // Build a simple diff hunk preview
       const diffHunk = markers.map((m) => m.split("\n").slice(0, 12).join("\n")).join("\n...\n").slice(0, 500);
 
-      return { conflictMarkers, oursExcerpt, theirsExcerpt, diffHunk };
+      return { conflictType: "content", conflictMarkers, oursExcerpt, theirsExcerpt, diffHunk };
     } catch {
-      return { conflictMarkers: "", oursExcerpt: "", theirsExcerpt: "", diffHunk: "" };
+      return { conflictType: null, conflictMarkers: "", oursExcerpt: "", theirsExcerpt: "", diffHunk: "" };
     }
   };
 
@@ -2147,7 +2147,7 @@ export function createPrService({
               const detail = await extractConflictDetail(treeOid, filePath, projectRoot);
               conflictingFiles.push({
                 path: filePath,
-                conflictType: detail.conflictType ?? null,
+                conflictType: detail.conflictType,
                 conflictMarkers: detail.conflictMarkers,
                 oursExcerpt: detail.oursExcerpt || null,
                 theirsExcerpt: detail.theirsExcerpt || null,

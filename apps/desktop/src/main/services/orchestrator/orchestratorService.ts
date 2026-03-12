@@ -93,6 +93,7 @@ import { classifyWorkerExecutionPath, resolveModelDescriptor } from "../../../sh
 import {
   deriveAgentChatTranscriptSummary,
   hasMaterialWorkerChatEvent,
+  hasWorkerChatLifecycleEvent,
   parseAgentChatTranscript,
 } from "../../../shared/chatTranscript";
 import { isWorkerBootstrapNoiseLine } from "../../../shared/workerRuntimeNoise";
@@ -522,11 +523,12 @@ function deriveTranscriptSummaryFromPath(filePath: string | null | undefined): s
 function analyzeTranscriptFromPath(filePath: string | null | undefined): {
   summary: string | null;
   hasMaterialOutput: boolean;
+  hasLifecycleActivity: boolean;
   isStructuredChat: boolean;
 } {
   const normalizedPath = typeof filePath === "string" ? filePath.trim() : "";
   if (!normalizedPath || !fs.existsSync(normalizedPath)) {
-    return { summary: null, hasMaterialOutput: false, isStructuredChat: false };
+    return { summary: null, hasMaterialOutput: false, hasLifecycleActivity: false, isStructuredChat: false };
   }
   try {
     const rawTail = readUtf8Tail(normalizedPath);
@@ -535,16 +537,23 @@ function analyzeTranscriptFromPath(filePath: string | null | undefined): {
       return {
         summary: deriveAgentChatTranscriptSummary(events),
         hasMaterialOutput: hasMaterialWorkerChatEvent(events),
+        hasLifecycleActivity: hasWorkerChatLifecycleEvent(events),
         isStructuredChat: true,
       };
     }
     return {
       summary: deriveTranscriptSummaryFromPath(normalizedPath),
       hasMaterialOutput: deriveTranscriptSummaryFromPath(normalizedPath) != null,
+      hasLifecycleActivity: deriveTranscriptSummaryFromPath(normalizedPath) != null,
       isStructuredChat: false,
     };
   } catch {
-    return { summary: null, hasMaterialOutput: false, isStructuredChat: normalizedPath.endsWith(".chat.jsonl") };
+    return {
+      summary: null,
+      hasMaterialOutput: false,
+      hasLifecycleActivity: false,
+      isStructuredChat: normalizedPath.endsWith(".chat.jsonl"),
+    };
   }
 }
 
@@ -552,9 +561,16 @@ function classifySilentWorkerExit(args: {
   stepMetadata: Record<string, unknown> | null | undefined;
   transcriptSummary: string | null;
   hasMaterialOutput: boolean;
+  hasLifecycleActivity: boolean;
 }): { errorClass: OrchestratorErrorClass; errorMessage: string } | null {
   if (args.transcriptSummary) return null;
   if (isPlanningLikeStepMetadata(args.stepMetadata)) {
+    if (args.hasLifecycleActivity && !args.hasMaterialOutput) {
+      return {
+        errorClass: "interrupted",
+        errorMessage: "Planning worker session started but was interrupted before producing any assistant or tool activity.",
+      };
+    }
     if (!args.hasMaterialOutput) {
       return {
         errorClass: "startup_failure",
@@ -564,6 +580,12 @@ function classifySilentWorkerExit(args: {
     return {
       errorClass: "executor_failure",
       errorMessage: "Planning worker exited after partial activity without reporting a usable plan summary.",
+    };
+  }
+  if (args.hasLifecycleActivity && !args.hasMaterialOutput) {
+    return {
+      errorClass: "interrupted",
+      errorMessage: "Worker session started but was interrupted before producing any assistant or tool activity.",
     };
   }
   if (!args.hasMaterialOutput) {
@@ -1445,6 +1467,30 @@ export function createOrchestratorService({
 
   const runCanStartAttempts = (status: OrchestratorRunStatus): boolean =>
     status === "queued" || status === "bootstrapping" || status === "active";
+
+  const hasOpenBlockingInterventionForRun = (run: OrchestratorRun): boolean => {
+    const missionRow = db.get<{ status: string | null }>(
+      "select status from missions where id = ? and project_id = ? limit 1",
+      [run.missionId, projectId],
+    );
+    const missionStatus = String(missionRow?.status ?? "").trim();
+    const openInterventions = db.all<{ metadata_json: string | null }>(
+      `
+        select metadata_json
+        from mission_interventions
+        where project_id = ?
+          and mission_id = ?
+          and status = 'open'
+      `,
+      [projectId, run.missionId],
+    );
+    const hasRelevantOpenIntervention = openInterventions.some((row) => {
+      const metadata = parseJsonRecord(row.metadata_json);
+      const interventionRunId = typeof metadata?.runId === "string" ? metadata.runId.trim() : "";
+      return interventionRunId.length === 0 || interventionRunId === run.id;
+    });
+    return missionStatus === "intervention_required" || hasRelevantOpenIntervention;
+  };
 
   const expireClaims = () => {
     const now = nowIso();
@@ -5013,7 +5059,11 @@ export function createOrchestratorService({
 
       // Early guard: skip if the run is paused or missing (before lock acquisition)
       const preCheckRow = getRunRow(runId);
-      if (!preCheckRow || normalizeRunStatus(preCheckRow.status) === "paused") {
+      if (!preCheckRow) {
+        return 0;
+      }
+      const preCheckRun = toRun(preCheckRow);
+      if (preCheckRun.status === "paused" || hasOpenBlockingInterventionForRun(preCheckRun)) {
         return 0;
       }
 
@@ -5035,7 +5085,7 @@ export function createOrchestratorService({
         const runRow = getRunRow(runId);
         if (!runRow) return 0;
         const run = toRun(runRow);
-        if (!runCanStartAttempts(run.status)) return 0;
+        if (!runCanStartAttempts(run.status) || hasOpenBlockingInterventionForRun(run)) return 0;
 
         const autopilot = parseAutopilotConfig(run.metadata, DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG.maxParallelWorkers);
         if (!autopilot.enabled) return 0;
@@ -5063,8 +5113,8 @@ export function createOrchestratorService({
           loops += 1;
           const loopRunRow = getRunRow(runId);
           if (!loopRunRow) break;
-          const loopRunStatus = normalizeRunStatus(loopRunRow.status);
-          if (!runCanStartAttempts(loopRunStatus)) break;
+          const loopRun = toRun(loopRunRow);
+          if (!runCanStartAttempts(loopRun.status) || hasOpenBlockingInterventionForRun(loopRun)) break;
           this.tick({ runId });
           const effectiveCapState = computeEffectiveParallelismCap();
           const effectiveCap = effectiveCapState.cap;
@@ -5318,6 +5368,7 @@ export function createOrchestratorService({
           stepMetadata,
           transcriptSummary,
           hasMaterialOutput: transcriptAnalysis.hasMaterialOutput,
+          hasLifecycleActivity: transcriptAnalysis.hasLifecycleActivity,
         });
         const completionForAttempt =
           completion.status === "succeeded" && silentFailure
@@ -7188,6 +7239,7 @@ export function createOrchestratorService({
                       stepMetadata: currentStepMetadata,
                       transcriptSummary: transcriptAnalysis.summary,
                       hasMaterialOutput: transcriptAnalysis.hasMaterialOutput,
+                      hasLifecycleActivity: transcriptAnalysis.hasLifecycleActivity,
                     });
                 if (silentFailure) {
                   await this.completeAttempt({
@@ -7218,6 +7270,7 @@ export function createOrchestratorService({
                   stepMetadata: currentStepMetadata,
                   transcriptSummary: transcriptAnalysis.summary,
                   hasMaterialOutput: transcriptAnalysis.hasMaterialOutput,
+                  hasLifecycleActivity: transcriptAnalysis.hasLifecycleActivity,
                 });
                 await this.completeAttempt({
                   attemptId: attempt.id,
@@ -7388,7 +7441,24 @@ export function createOrchestratorService({
 	        status = "blocked";
 	      }
 	      const stepMetadata = asRecord(step.metadata) ?? {};
+	      const phaseKey = typeof stepMetadata.phaseKey === "string" ? stepMetadata.phaseKey.trim().toLowerCase() : "";
+	      const stepType = typeof stepMetadata.stepType === "string" ? stepMetadata.stepType.trim().toLowerCase() : "";
+	      const planningStep =
+	        stepMetadata.readOnlyExecution === true ||
+	        phaseKey === "planning" ||
+	        stepType === "planning";
 	      const lastResultReport = asRecord(stepMetadata.lastResultReport);
+	      const reportedPlan = asRecord(lastResultReport?.plan);
+	      const reportedPlanMarkdown =
+	        typeof reportedPlan?.markdown === "string" ? reportedPlan.markdown.trim() : "";
+	      const expectedPlanPath =
+	        typeof reportedPlan?.artifactPath === "string" && reportedPlan.artifactPath.trim().length > 0
+	          ? reportedPlan.artifactPath.trim()
+	          : ".ade/plans/mission-plan.md";
+	      const plannerContractViolation =
+	        status === "succeeded" &&
+	        planningStep &&
+	        reportedPlanMarkdown.length === 0;
 	      const reportedSummary =
 	        typeof lastResultReport?.summary === "string" ? lastResultReport.summary.trim() : "";
 	      const transcriptPath =
@@ -7418,13 +7488,20 @@ export function createOrchestratorService({
 	          softFailureOverride = null;
 	        }
 	      }
-	      const effectiveErrorMessage = softFailureOverride
-	        ? softFailureOverride.detail
-	        : reservationBlocks
-	          ? fileReservationMessage
-	          : args.errorMessage ?? null;
+	      if (plannerContractViolation) {
+	        status = "failed";
+	      }
+	      const effectiveErrorMessage = plannerContractViolation
+	        ? "PLANNER CONTRACT VIOLATION: Planning worker completed without returning report_result.plan.markdown."
+	        : softFailureOverride
+	          ? softFailureOverride.detail
+	          : reservationBlocks
+	            ? fileReservationMessage
+	            : args.errorMessage ?? null;
 	      const errorClass =
-	        softFailureOverride
+	        plannerContractViolation
+	          ? "planner_contract_violation" as OrchestratorErrorClass
+	          : softFailureOverride
 	          ? "soft_success_blocking_failure" as OrchestratorErrorClass
 	          : status === "failed"
 	            ? args.errorClass ?? "executor_failure"
@@ -7433,6 +7510,34 @@ export function createOrchestratorService({
 	              : status === "canceled"
 	                ? "canceled"
 	                : "none";
+	      if (plannerContractViolation) {
+	        appendTimelineEvent({
+	          runId: run.id,
+	          stepId: step.id,
+	          attemptId: attempt.id,
+	          eventType: "planning_artifact_missing",
+	          reason: "planner_plan_missing",
+	          detail: {
+	            expectedPlanPath,
+	            phaseKey: phaseKey || null,
+	            stepType: stepType || null,
+	          }
+	        });
+	        this.appendRuntimeEvent({
+	          runId: run.id,
+	          stepId: step.id,
+	          attemptId: attempt.id,
+	          sessionId: attempt.executorSessionId ?? null,
+	          eventType: "planning_artifact_missing",
+	          eventKey: `planning_artifact_missing:${attempt.id}`,
+	          payload: {
+	            expectedPlanPath,
+	            phaseKey: phaseKey || null,
+	            stepType: stepType || null,
+	            reason: "planner_plan_missing",
+	          }
+	        });
+	      }
 	      const retryable = status === "failed" ? RETRYABLE_ERROR_CLASSES.has(errorClass) : false;
 	      const retryRemaining = status === "failed" ? step.retryCount < step.retryLimit : false;
 	      const shouldRetry = status === "failed" ? retryable && retryRemaining : false;
@@ -7449,7 +7554,6 @@ export function createOrchestratorService({
 	            .map((entry) => String(entry ?? "").trim())
 	            .filter((entry) => entry.length > 0)
 	        : [];
-	      const reportedPlan = asRecord(lastResultReport?.plan);
 	      const reportedTests = asRecord(lastResultReport?.testsRun);
 	      const implicitOutputs = (() => {
 	        if (status !== "succeeded") return null;

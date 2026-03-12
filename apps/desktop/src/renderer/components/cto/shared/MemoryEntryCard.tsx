@@ -5,23 +5,9 @@ import {
   Archive,
   Trash,
 } from "@phosphor-icons/react";
+import type { MemoryEntryDto } from "../../../../shared/types";
 import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
-
-type MemoryEntry = {
-  id: string;
-  scope: string;
-  tier: number;
-  pinned: boolean;
-  category: string;
-  content: string;
-  importance: "low" | "medium" | "high";
-  status: "candidate" | "promoted" | "archived";
-  confidence: number;
-  createdAt: string;
-  lastAccessedAt: string;
-  accessCount: number;
-};
 
 const tierLabel = (tier: number) =>
   tier === 1 ? "T1" : tier === 2 ? "T2" : tier === 3 ? "T3" : "ARC";
@@ -52,7 +38,7 @@ export function MemoryEntryCard({
   onArchive,
   onDelete,
 }: {
-  entry: MemoryEntry;
+  entry: MemoryEntryDto;
   compact?: boolean;
   selected?: boolean;
   onClick?: () => void;

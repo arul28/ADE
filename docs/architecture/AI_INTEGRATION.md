@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-10
+> Last updated: 2026-03-12
 
 The AI integration layer replaces the previous hosted agent with a local-first, provider-flexible approach. Instead of a cloud backend with remote job queues, ADE routes work to configured runtimes (CLI subscriptions, API-key/OpenRouter providers, and local endpoints such as LM Studio/Ollama/vLLM), coordinates tooling through MCP, and manages multi-step workflows via an AI orchestrator.
 
@@ -430,6 +430,8 @@ This provides full traceability of what AI agents did during a mission run.
 
 Additional MCP tools available when the compute environment supports GUI interaction (browser or desktop mode). These tools enable agents to interact with running applications visually.
 
+Status note (2026-03-12): this section describes the target computer-use architecture. ADE already models screenshot/browser-verification/video evidence in mission validation and closeout, but the local runtime does not yet expose the full `screenshot_environment` / `interact_gui` / `record_environment` tool loop end-to-end.
+
 | Tool | Description | Environment | Returns |
 |---|---|---|---|
 | `screenshot_environment` | Capture current screen state | browser, desktop | Base64-encoded PNG image |
@@ -449,7 +451,9 @@ Additional MCP tools available when the compute environment supports GUI interac
 - **Claude agents**: Uses Anthropic's Computer Use Tool (`computer_20250124`) natively. The screenshot/action loop is built into Claude's tool use protocol. Actions: `mouse_move`, `left_click`, `right_click`, `double_click`, `type`, `key`, `screenshot`, `scroll`, `hold_key`, `triple_click`, `wait`.
 - **Codex agents**: Uses OpenAI's CUA (Computer-Using Agent) API via the Responses API. Actions: `click(x,y)`, `type(text)`, `scroll`, `key`, `screenshot`, `wait`, `drag`.
 
-**Artifact production**: Screenshots and video recordings produced by computer use tools are automatically attached as artifacts to the owning lane, mission, or agent run. Artifact types: `screenshot` (PNG), `video` (MP4).
+**Artifact production**: Target behavior is for screenshots and video recordings produced by computer use tools to attach to the owning lane, mission, or agent run as `screenshot` (PNG) and `video` (MP4) artifacts.
+
+Current implementation note: orchestrator closeout can reason about screenshot/browser-verification/video evidence from declared or discovered artifacts, and Linear closeout can publish artifact links, but automatic ADE-managed screenshot/video capture and PR-body embedding are not shipped end-to-end yet.
 
 **Permission control**: Computer use tools require `full-auto` / `bypassPermissions` permission level. Agents in `read-only` or `edit` modes cannot use GUI interaction tools (screenshot capture is allowed in all modes).
 
@@ -459,21 +463,21 @@ The AI Orchestrator is the intelligent coordination layer that plans and execute
 
 #### Module Decomposition
 
-The AI orchestrator codebase (`aiOrchestratorService.ts`) has been decomposed from a 13.2K-line monolith into a 7.7K-line core plus eight domain-specific modules. All modules share state through an `OrchestratorContext` object (defined in `orchestratorContext.ts`) that holds 22+ mutable `Map` objects. Extracted functions follow the pattern `fooCtx(ctx: OrchestratorContext, ...args)`, with thin wrappers in the main file: `const foo = (...args) => fooCtx(ctx, ...args)`. Cross-module dependencies are passed via typed deps objects rather than direct imports.
+The AI orchestrator codebase (`aiOrchestratorService.ts`) has been decomposed from a 13.2K-line monolith into a ~9.9K-line core plus eight domain-specific modules. All modules share state through an `OrchestratorContext` object (defined in `orchestratorContext.ts`) that holds 22+ mutable `Map` objects. Extracted functions follow the pattern `fooCtx(ctx: OrchestratorContext, ...args)`, with thin wrappers in the main file: `const foo = (...args) => fooCtx(ctx, ...args)`. Cross-module dependencies are passed via typed deps objects rather than direct imports.
 
 | Module | Lines | Responsibility |
 |--------|-------|----------------|
-| `aiOrchestratorService.ts` | ~7,700 | Core orchestration: autopilot tick loop, coordinator session management, step dispatch, event handling |
-| `orchestratorContext.ts` | ~1,330 | `OrchestratorContext` type definition holding all mutable state Maps |
-| `chatMessageService.ts` | ~1,850 | All chat/messaging: thread CRUD, message send/get, @mention parsing, agent message routing, global chat, reconciliation |
-| `workerDeliveryService.ts` | ~1,330 | Inter-agent message delivery: worker delivery context resolution, PTY write / SDK injection, queued message replay, worker-to-coordinator routing |
-| `workerTracking.ts` | ~1,090 | Worker state management + `updateWorkerStateFromEvent` (457-line event handler mapping orchestrator events to worker state transitions) |
-| `missionLifecycle.ts` | ~1,050 | Mission run management, hook dispatch (`dispatchOrchestratorHook`, `maybeDispatchTeammateIdleHook`) |
-| `recoveryService.ts` | ~410 | Failure recovery, health sweep, hydration on startup |
-| `modelConfigResolver.ts` | ~180 | Model config resolution with 30s TTL cache: `resolveCallTypeConfig`, `resolveOrchestratorModelConfig`, `resolveMissionLaunchPlannerModel` |
-| `orchestratorConstants.ts` | ~115 | Runtime constants: `LEGACY_STEP_TO_TASK_STATUS`, `DEFAULT_ROLE_ISOLATION_RULES`, etc. |
+| `aiOrchestratorService.ts` | ~9,900 | Core orchestration: autopilot tick loop, coordinator session management, step dispatch, event handling |
+| `orchestratorContext.ts` | ~1,380 | `OrchestratorContext` type definition holding all mutable state Maps |
+| `chatMessageService.ts` | ~2,060 | All chat/messaging: thread CRUD, message send/get, @mention parsing, agent message routing, global chat, reconciliation |
+| `workerDeliveryService.ts` | ~1,650 | Inter-agent message delivery: worker delivery context resolution, PTY write / SDK injection, queued message replay, worker-to-coordinator routing |
+| `workerTracking.ts` | ~1,680 | Worker state management + `updateWorkerStateFromEvent` event handler mapping orchestrator events to worker state transitions |
+| `missionLifecycle.ts` | ~600 | Mission run management, hook dispatch (`dispatchOrchestratorHook`, `maybeDispatchTeammateIdleHook`) |
+| `recoveryService.ts` | ~400 | Failure recovery, health sweep, hydration on startup |
+| `modelConfigResolver.ts` | ~150 | Model config resolution with 30s TTL cache: `resolveCallTypeConfig`, `resolveOrchestratorModelConfig`, `resolveMissionLaunchPlannerModel` |
+| `orchestratorConstants.ts` | ~170 | Runtime constants: `LEGACY_STEP_TO_TASK_STATUS`, `DEFAULT_ROLE_ISOLATION_RULES`, etc. |
 
-The deterministic orchestrator service (`orchestratorService.ts`, ~8.3K lines) has also been decomposed, with `orchestratorQueries.ts` (~760 lines) extracting DB row types, normalizers, and parse helpers, and `stepPolicyResolver.ts` (~340 lines) extracting step policy resolution and file claim helpers. Both modules are shared between `orchestratorService.ts` and `aiOrchestratorService.ts`.
+The deterministic orchestrator service (`orchestratorService.ts`, ~11K lines) has also been decomposed, with `orchestratorQueries.ts` (~840 lines) extracting DB row types, normalizers, and parse helpers, and `stepPolicyResolver.ts` (~390 lines) extracting step policy resolution and file claim helpers. Both modules are shared between `orchestratorService.ts` and `aiOrchestratorService.ts`.
 
 #### Design Principles (Informed by Claude Code Agent Teams)
 
@@ -520,11 +524,9 @@ Mission prompt + context packs
 │  │      │        │                                 │
 │  ▼      ▼        ▼                                 │
 │ ┌──────────────────────────────┐                   │
-│ │      AgentExecutor           │                   │
-│ │  ┌──────────┬──────────┐     │                   │
-│ │  │  Claude  │  Codex   │     │                   │
-│ │  │ Executor │ Executor │     │                   │
-│ │  └──────────┴──────────┘     │                   │
+│ │    Unified Executor          │                   │
+│ │  (CLI-wrapped or in-process  │                   │
+│ │   based on model class)      │                   │
 │ └──────────────────────────────┘                   │
 │        │                                           │
 │  ┌─────┼──────────┐                                │
@@ -1139,9 +1141,11 @@ ADE now ships a canonical `.ade` contract. The tracked/shareable subset lives al
 
 **No cloud dependency**: ADE's local filesystem contract is git-friendly, but real-time multi-device sync is still Phase 6 work. The Phase 8 relay is for real-time remote control of a running ADE instance, not for state synchronization.
 
-### Phase 3 Implementation Status
+### Shipped Implementation Summary
 
-**Shipped (~90%)**:
+Phases 1, 1.5, 2, 3, 4, and 5 are complete. The sections below summarize the major shipped components across all phases.
+
+**Orchestrator and mission runtime**:
 - AI orchestrator service with mission lifecycle management, decomposed into modular architecture (core + 8 extracted modules)
 - Orchestrator service decomposed (`orchestratorQueries.ts`, `stepPolicyResolver.ts` extracted)
 - Built-in planning phase runtime (default-on profiles), clarification gating, and explicit coordinator phase transitions
@@ -1150,18 +1154,19 @@ ADE now ships a canonical `.ade` contract. The tracked/shareable subset lives al
 - Execution plan preview with approval gates
 - Inter-agent messaging decomposed into `chatMessageService.ts` and `workerDeliveryService.ts`
 - Mission chat workspace (`MissionChatV2`) with global summary, worker/orchestrator threads, mentions, and shared-renderer-backed detailed thread views
-- Model selection per-mission with per-model thinking budgets
-- Activity feed with category dropdown and run narrative
-- missionId-filtered queries across all views
 - Meta-reasoner with AI-driven fan-out dispatch (external_parallel, internal_parallel, hybrid)
 - Context compaction engine (70% threshold, self-summarization, pre-compaction writeback)
 - Session persistence via attempt_transcripts table and JSONL files
 - Session resume via resumeUnified()
 - Shared facts injection and run narrative generation
-- Memory tool wiring into agent coding tool set
-- Memory architecture (scoped namespaces, candidate/promoted/archived lifecycle, auto-promotion, context budget panel)
-- Mission phase engine + profiles (Task 3): phase storage, profile CRUD/import/export, mission overrides, phase transition telemetry
-- Mission UI overhaul (Task 4): Plan/Work tabs, missions home dashboard, phase-aware details and launch/settings profile management
+- Orchestrator Overhaul Phases 1-7 complete (reflection protocol closure, cross-mission trends, pattern-candidate promotion gates)
+- Approval gates (`phase_approval` intervention type), mandatory planning enforcement, multi-round deliberation
+- Adaptive runtime (`classifyTaskComplexity`, `scaleParallelismCap`, `evaluateModelDowngrade`)
+- Budget-gated spawns (hard cap checks before every worker spawn)
+- Benign error classification (`BENIGN_SANDBOX_BLOCK_PATTERNS` for ExitPlanMode/Zod noise)
+- Phase 4 delegation contract: `delegate_parallel`, push sub-agent rollups, native teammate auto-registration + allocation caps
+
+**Model and provider infrastructure**:
 - Model registry unified: pricing fields in `ModelDescriptor`, `getModelPricing()`, `FAMILY_TO_CLI` map, `modelProfiles.ts` derived from registry
 - Model registry expansion (40+ models across 8 provider families, auth-type classification, runtime enrichment via `enrichModelRegistry()`)
 - Dynamic pricing via models.dev integration (`modelsDevService.ts`: fetch, 6h cache, fallback to hardcoded)
@@ -1170,15 +1175,47 @@ ADE now ships a canonical `.ade` contract. The tracked/shareable subset lives al
 - UnifiedModelSelector redesign (auth-type grouping, hide unavailable models, "Configure more..." settings link)
 - Universal tools for API-key and local models (`universalTools.ts`: permission modes plan/edit/full-auto)
 - Middleware layer (`middleware.ts`: logging, retry, cost guard, reasoning extraction)
-- GPT-5.3 Codex Spark model support
+
+**Memory and knowledge**:
+- Unified memory system (W6): scoped namespaces, candidate/promoted/archived lifecycle, auto-promotion, context budget panel
+- Memory engine hardening (W6-half): lifecycle sweeps, batch consolidation, pre-compaction flush, Memory Health dashboard
+- Embeddings pipeline (W7a): local all-MiniLM-L6-v2, FTS4 BM25 + cosine similarity + MMR re-ranking
+- Orchestrator memory wiring (W7b): mission-memory SSoT, exact employee L2 injection
+- Skills and learning pipeline (W7c): episodic-to-procedural extraction, `.ade/skills/SKILL.md` materialization, skill ingestion from legacy sources, knowledge capture from failures/interventions/repeated errors/PR feedback, CTO memory review surfaces with provenance, confidence history, and re-index actions
+- Memory tool wiring into agent coding tool set
+
+**CTO and worker infrastructure** (Phase 4):
+- CTO core identity (W1), worker org chart (W2), heartbeat and activation (W3)
+- Bidirectional Linear sync (W4): `linearClient.ts`, `linearSyncService.ts`, `linearOutboundService.ts`, `linearRoutingService.ts`, `linearTemplateService.ts`, `linearCredentialService.ts`, `flowPolicyService.ts`, `linearCloseoutService.ts`, `linearDispatcherService.ts`, `linearIntakeService.ts`, `linearOAuthService.ts`, `linearWorkflowFileService.ts`, `issueTracker.ts` abstraction
+- Automations platform and Night Shift (W5): `automationService.ts`, `automationPlannerService.ts`, `automationRoutingService.ts`, `automationIngressService.ts`, `automationSecretService.ts`
+- CTO + Org Experience Overhaul (W-UX): onboarding, activity, memory browser, and polish surfaces
+- External MCP consumption (W8): ADE-managed external MCP registry/service, namespaced `ext.*` tool exposure
+- OpenClaw bridge (W9)
+- Portable `.ade/` state (W10): canonical tracked/shareable layout, startup repair, integrity normalization
+
+**Mission UI and UX**:
+- Mission phase engine + profiles: phase storage, profile CRUD/import/export, mission overrides, phase transition telemetry
+- Mission UI overhaul: Plan/Work tabs, missions home dashboard, phase-aware details and launch/settings profile management
+- Model selection per-mission with per-model thinking budgets
+- Activity feed with category dropdown and run narrative
+- missionId-filtered queries across all views
+
+**Usage and budget**:
+- Subscription usage tracking (`usageTrackingService.ts`): local CLI data analysis and cost scanning
+- Budget cap service (`budgetCapService.ts`): mission and global budget enforcement
+- Mission budget service with coordinator `get_budget_status`
+
+**Codebase structure**:
 - Orchestrator call types simplified from 6 to 2 (coordinator, chat_response)
-- Type system modularized: `src/shared/types/` with 17 domain modules replacing monolithic `types.ts`; 16 dead types deleted
+- Type system modularized: `src/shared/types/` with 23 domain modules replacing monolithic `types.ts`
 - Pack service decomposed: `projectPackBuilder.ts`, `missionPackBuilder.ts`, `conflictPackBuilder.ts`, `packUtils.ts` extracted
 - Shared utilities consolidated: backend `utils.ts` (60+ duplicate removals), renderer `format.ts`/`shell.ts`/`sessions.ts`, shared React hooks
 
-**Remaining (~3%)**:
-- Orchestrator Overhaul Phases 1-7 are complete (reflection protocol closure shipped, including cross-mission trends and pattern-candidate promotion gates).
-- Remaining Phase 3 workstream is integration soak + broad regression verification (Task 8), tracked in test harness/docs.
+**Not yet shipped**:
+- Computer use runtime: The `localComputerUse.ts` capability detection module exists, and mission validation models screenshot/browser-verification/video evidence requirements, but the full `screenshot_environment` / `interact_gui` / `record_environment` MCP tool loop is not exposed end-to-end. Automatic PR proof embedding from computer-use artifacts is not shipped.
+- Multi-device sync (cr-sqlite + WebSocket real-time replication) is Phase 6 work.
+- Remote brain deployment (user-owned VPS) is Phase 6 work.
+- iOS companion app is Phase 7 work.
 
 ### Compute Backends for Agent Execution
 
@@ -1604,13 +1641,13 @@ This lifecycle mirrors the PTY session lifecycle exactly, ensuring that chat ses
 ### Desktop Application
 
 - **AI integration service**: `apps/desktop/src/main/services/ai/aiIntegrationService.ts` -- provider detection, task routing, executor dispatch via `AgentExecutor`, streaming response handling.
-- **Orchestrator service**: `apps/desktop/src/main/services/orchestrator/orchestratorService.ts` (~8.3K lines) + `orchestratorQueries.ts`, `stepPolicyResolver.ts` -- run/step/attempt state machine, claim management, context snapshots, gate reports.
-- **AI orchestrator service**: `apps/desktop/src/main/services/orchestrator/aiOrchestratorService.ts` (~7.7K lines) + 8 extracted modules (`chatMessageService.ts`, `workerDeliveryService.ts`, `workerTracking.ts`, `missionLifecycle.ts`, `recoveryService.ts`, `modelConfigResolver.ts`, `orchestratorContext.ts`, `orchestratorConstants.ts`) -- AI coordination layer: autopilot, worker management, messaging, recovery.
+- **Orchestrator service**: `apps/desktop/src/main/services/orchestrator/orchestratorService.ts` (~11K lines) + `orchestratorQueries.ts`, `stepPolicyResolver.ts` -- run/step/attempt state machine, claim management, context snapshots, gate reports.
+- **AI orchestrator service**: `apps/desktop/src/main/services/orchestrator/aiOrchestratorService.ts` (~9.9K lines) + 8 extracted modules (`chatMessageService.ts`, `workerDeliveryService.ts`, `workerTracking.ts`, `missionLifecycle.ts`, `recoveryService.ts`, `modelConfigResolver.ts`, `orchestratorContext.ts`, `orchestratorConstants.ts`) -- AI coordination layer: autopilot, worker management, messaging, recovery.
 - **Agent chat service**: `apps/desktop/src/main/services/chat/agentChatService.ts` -- manages chat session lifecycle, spawns Codex app-server processes and Claude multi-turn sessions, maps provider events to ChatEvent streams, integrates with session tracking.
 - **Unified memory service**: `apps/desktop/src/main/services/memory/memoryService.ts` -- memory retrieval, candidate/promoted lifecycle, and budgeted context assembly.
 - **Bounded memory budgets**: `memoryGetBudget` (`lite`/`standard`/`deep`) controls AI context size in runtime prompt assembly.
 - **Model system**: `apps/desktop/src/shared/modelRegistry.ts` (pricing-aware descriptors, `FAMILY_TO_CLI` map) + `modelProfiles.ts` (derived from registry).
-- **Shared types**: `apps/desktop/src/shared/types/` -- 17 domain-scoped type modules (core, lanes, conflicts, prs, git, files, sessions, chat, missions, orchestrator, config, automations, packs, budget, models, usage) with barrel `index.ts`.
+- **Shared types**: `apps/desktop/src/shared/types/` -- 23 domain-scoped type modules (core, lanes, conflicts, prs, git, files, sessions, chat, missions, orchestrator, config, automations, packs, budget, models, usage) with barrel `index.ts`.
 - **Configuration**: Provider settings read from `projectConfigService.ts` (merged shared + local config).
 - **IPC channels**: `ade.ai.*` for AI streaming, `ade.missions.*` for mission lifecycle, `ade.orchestrator.*` for run management.
 
@@ -1673,7 +1710,7 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Architecture design | Complete | Documented in this file |
 | Planning phase (coordinator-owned) | Complete | Built-in `planning` phase is default-on and transitions via `set_current_phase` |
 | Coordinator-strategy deterministic fallback (runtime) | Removed | Coordinator owns strategy; unavailable coordinator pauses/escalates instead of deterministic replacement |
-| Orchestrator state machine | Complete | `orchestratorService.ts` (~8.3K lines) + `orchestratorQueries.ts`, `stepPolicyResolver.ts` -- runs, steps, attempts, claims, gates, timeline |
+| Orchestrator state machine | Complete | `orchestratorService.ts` (~11K lines) + `orchestratorQueries.ts`, `stepPolicyResolver.ts` -- runs, steps, attempts, claims, gates, timeline |
 | Executor adapter interface | Complete | `OrchestratorExecutorAdapter` type for pluggable step execution |
 | Context snapshot system | Complete | Profile-based export assembly (deterministic, narrative-opt-in) |
 | Bounded memory budgets | Complete | Lite/Standard/Deep retrieval tiers via memory APIs |
@@ -1689,7 +1726,7 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Chat session integration | Complete | `codex-chat`, `claude-chat`, and `ai-chat` tool types in `terminal_sessions` |
 | MCP server (`apps/mcp-server`) | Complete | JSON-RPC 2.0 server with 35 tools, dual-mode architecture (headless + embedded) |
 | MCP dual-mode architecture | Complete | Transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding (.ade/mcp.sock), smart entry point auto-detection |
-| AI orchestrator (Claude + MCP) | Complete | Tasks 1-7 shipped; Orchestrator Overhaul Phases 1-7 complete (reflection protocol closure with deterministic retrospectives, trend persistence, and candidate promotion gating). Task 8 integration soak remains as verification hardening. M4/M5 additions: approval gates, mandatory planning enforcement, multi-round deliberation, adaptive runtime, model downgrade, budget-gated spawns, benign error classification. |
+| AI orchestrator (Claude + MCP) | Complete | Tasks 1-7 shipped; Orchestrator Overhaul Phases 1-7 complete (reflection protocol closure with deterministic retrospectives, trend persistence, and candidate promotion gating). M4/M5 additions: approval gates, mandatory planning enforcement, multi-round deliberation, adaptive runtime, model downgrade, budget-gated spawns, benign error classification. |
 | Phase 4 orchestrator delegation/team runtime | Complete | `delegate_parallel`, push sub-agent progress/completion rollups, native teammate auto-registration + allocation cap guardrails, single team-member data path |
 | Adaptive Runtime (M5) | Complete | `adaptiveRuntime.ts` — `classifyTaskComplexity`, `scaleParallelismCap`, `evaluateModelDowngrade`; budget hard cap enforcement in coordinator tools |
 | Approval Gates (M4/M5) | Complete | `phase_approval` intervention type, `requiresApproval` on PhaseCard, blocking phase transitions until user approval |
@@ -1705,8 +1742,8 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Provider options (tier passthrough) | Complete | `providerOptions.ts` -- pure tier-string passthrough per provider family, no arbitrary token budgets |
 | Middleware layer | Complete | `middleware.ts` -- logging, retry, cost guard, reasoning extraction |
 | Universal tools (API-key/local) | Complete | `universalTools.ts` -- permission modes (plan/edit/full-auto), approval hooks |
-| Type system modularization | Complete | `src/shared/types/` -- 17 domain modules replacing monolithic `types.ts`; 16 dead types deleted; runtime constants moved to `orchestratorConstants.ts` |
-| Pack service decomposition | Complete | `packService.ts` (~3.2K) + `projectPackBuilder.ts`, `missionPackBuilder.ts`, `conflictPackBuilder.ts`, `packUtils.ts` -- 45% reduction from 5.7K monolith |
+| Type system modularization | Complete | `src/shared/types/` -- 23 domain modules replacing monolithic `types.ts` |
+| Pack service decomposition | Complete | `packService.ts` + `projectPackBuilder.ts`, `missionPackBuilder.ts`, `conflictPackBuilder.ts`, `packUtils.ts` |
 | Shared utilities consolidation | Complete | Backend `utils.ts` (60+ duplicates removed), renderer `format.ts`/`shell.ts`/`sessions.ts`, shared React hooks (`useClickOutside`, `useThreadEventRefresh`) |
 | Agent-first runtime baseline | Complete | Non-interactive AI call paths execute on runtime records with no legacy compatibility migration path |
 | Call audit logging | Complete | Every MCP tool invocation writes durable `mcp_tool_call` history records |
@@ -1715,23 +1752,23 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Local runtime placement | Complete | Agents run on local runtime records/worktrees on the active ADE machine |
 | Remote brain deployment | Planned | Phase 6 -- user-owned VPS brain + device routing |
 | Managed cloud compute backends (Daytona/E2B) | Dropped | Not on active roadmap |
-| Compute environment types | Planned | terminal-only, browser, and desktop environment support on ADE-managed runtime placements |
-| Computer use MCP tools | Planned | Phase 4 -- `screenshot_environment`, `interact_gui`, `record_environment`, `launch_app`, `get_environment_info` |
-| Unified Memory System (W6) — replaces context packs + CTO core memory UI surfaces | Complete | Unified memory retrieval and renderer cutover are active |
+| Compute environment types | Partially implemented | terminal-only is active; browser and desktop environment types are defined but the full runtime loop is not shipped |
+| Computer use MCP tools | Partially implemented | Capability detection exists (`localComputerUse.ts`); mission validation models evidence requirements; full MCP tool loop (`screenshot_environment`, `interact_gui`, `record_environment`, `launch_app`, `get_environment_info`) and automatic PR proof embedding are not shipped end-to-end |
+| Unified Memory System (W6) | Complete | Unified memory retrieval and renderer cutover are active |
 | Memory Engine Hardening (W6½) — lifecycle sweeps, batch consolidation, pre-compaction flush | Complete | Temporal decay, tier demotion, hard limits, orphan cleanup, Jaccard+LLM consolidation, pre-compaction flush, Memory Health dashboard |
 | Embeddings Pipeline (W7a) — local embedding + hybrid retrieval | Complete | Local all-MiniLM-L6-v2 via @huggingface/transformers, FTS4 BM25 + cosine similarity + MMR re-ranking, graceful lexical fallback |
 | Orchestrator Memory Wiring (W7b) — mission-memory SSoT + exact employee L2 injection | Complete | Retired `orchestrator_shared_facts`, compaction writes back to mission memory, worker briefings derive shared team knowledge from mission memory, exact `employeeAgentId` launch metadata controls agent-memory injection |
-| Skills + Learning Pipeline (W7) — procedural extraction + skill materialization | Core implemented; advanced capture pending | Phase 4 — episodic→procedural extraction, `.ade/skills/SKILL.md` materialization, and skill ingestion are present; remaining work is knowledge source capture from failures/interventions/repeated errors/PR feedback |
+| Skills + Learning Pipeline (W7) — procedural extraction + skill materialization | Complete | Phase 4 — episodic-to-procedural extraction, `.ade/skills/SKILL.md` materialization, skill ingestion from legacy sources, and knowledge capture from failures/interventions/repeated errors/PR feedback are shipped (`knowledgeCaptureService.ts`, `proceduralLearningService.ts`, `skillRegistryService.ts`) |
 | CTO Agent — core identity, persistent chat, core memory (W1) | Complete | Phase 4 -- `ctoStateService.ts`, dual-canonical persistence (DB + file), session reconstruction, CtoPage with chat |
 | Worker Agents — org chart, multi-adapter, config versioning, budget (W2) | Complete | Phase 4 -- `workerAgentService.ts`, `workerRevisionService.ts`, `workerBudgetService.ts`, `workerTaskSessionService.ts`, `workerAdapterRuntimeService.ts` |
 | Heartbeat & Activation — timer pool, coalescing, orphan reaping (W3) | Complete | Phase 4 -- `workerHeartbeatService.ts` (789 lines), two-tier execution, deferred promotion, issue locking |
-| Bidirectional Linear Sync (W4) | Complete | Phase 4 -- `linearClient.ts`, `linearSyncService.ts`, `linearOutboundService.ts`, `linearRoutingService.ts`, `linearTemplateService.ts`, `linearCredentialService.ts`, `flowPolicyService.ts`, `issueTracker.ts` abstraction, `LinearSyncPanel.tsx` UI with 6-step flow composer |
-| External MCP consumption | Implemented baseline | Phase 4 -- ADE-managed external MCP registry/service, namespaced `ext.*` tool exposure through ADE MCP, mission/worker/CTO policy integration |
+| Bidirectional Linear Sync (W4) | Complete | Phase 4 -- `linearClient.ts`, `linearSyncService.ts`, `linearOutboundService.ts`, `linearRoutingService.ts`, `linearTemplateService.ts`, `linearCredentialService.ts`, `flowPolicyService.ts`, `linearCloseoutService.ts`, `linearDispatcherService.ts`, `linearIntakeService.ts`, `linearOAuthService.ts`, `linearWorkflowFileService.ts`, `issueTracker.ts` abstraction, `LinearSyncPanel.tsx` UI with 6-step flow composer |
+| External MCP consumption | Complete | Phase 4 -- ADE-managed external MCP registry/service, namespaced `ext.*` tool exposure through ADE MCP, mission/worker/CTO policy integration |
 | `.ade/` portable state | Complete | Phase 4 -- canonical tracked/shareable layout, startup repair, integrity normalization, config reload, Settings > Project health surface |
 | Task agents (lane artifacts) | Planned | Phase 4 -- specialized agents for artifact production within lanes |
 | Chat-to-mission escalation | Planned | Phase 4 -- promote a chat conversation into a full mission with pre-filled context |
 
-**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestrator implementation is functionally complete through Orchestrator Overhaul Phases 1-7. Phase 4 W1-W4, W6, W6½, W7a, W7b, W8, and W10 are complete at baseline or better. M4 and M5 are complete, adding approval gates (`phase_approval` intervention type with blocking phase transition semantics), mandatory planning enforcement (constructor-injected planning phase with first-turn watchdog), multi-round deliberation (`canLoop`/`loopTarget`/`maxQuestions` on phase ordering constraints), adaptive runtime (`classifyTaskComplexity` → parallelism scaling, `evaluateModelDowngrade` → cheaper models under budget pressure), budget-gated spawns (hard cap checks before every worker spawn), and benign error classification (`BENIGN_SANDBOX_BLOCK_PATTERNS` for ExitPlanMode/Zod noise). Memory engine now includes lifecycle sweeps, batch consolidation, pre-compaction flush, local embedding pipeline (`@huggingface/transformers` all-MiniLM-L6-v2), hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking) with graceful lexical fallback, mission-memory-backed shared team knowledge, exact employee L2 injection for employee-owned runs, the canonical `.ade` path contract, and the ADE-managed external MCP substrate. Remaining major Phase 4 workstreams after Wave 1: W9 and W-UX/W7c/W5b follow-through. MCP dual-mode architecture shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
+**Overall status**: Phases 1, 1.5, 2, 3, 4, and 5 are complete. All Phase 4 workstreams (W1-W10, W-UX, W6-half, W7a-c) are shipped at baseline or better. The remaining unshipped work is concentrated in computer-use runtime follow-through (the MCP tool loop for `screenshot_environment`/`interact_gui`/`record_environment` and automatic PR proof embedding) and future-phase items (multi-device sync, remote brain deployment, iOS companion). MCP dual-mode architecture is shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
 
 ---
 

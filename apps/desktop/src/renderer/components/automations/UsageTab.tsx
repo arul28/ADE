@@ -34,6 +34,8 @@ export function UsageTab() {
   const [budgetConfig, setBudgetConfig] = useState<BudgetCapConfig | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [budgetSaving, setBudgetSaving] = useState(false);
+  const [budgetError, setBudgetError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!window.ade?.usage) { setError("Usage bridge unavailable."); return; }
@@ -58,6 +60,23 @@ export function UsageTab() {
     } catch (err) {
       setError(extractError(err));
     } finally { setLoading(false); }
+  }, []);
+
+  const saveBudgetConfig = useCallback(async (nextConfig: BudgetCapConfig) => {
+    if (!window.ade?.usage?.saveBudgetConfig) {
+      setBudgetError("Budget save bridge unavailable.");
+      return;
+    }
+    setBudgetSaving(true);
+    setBudgetError(null);
+    try {
+      const saved = await window.ade.usage.saveBudgetConfig(nextConfig);
+      setBudgetConfig(saved);
+    } catch (err) {
+      setBudgetError(extractError(err));
+    } finally {
+      setBudgetSaving(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -165,7 +184,12 @@ export function UsageTab() {
               tokenBreakdown={codexCost.tokenBreakdown}
             />
           )}
-          <BudgetCapEditor config={budgetConfig} />
+          <BudgetCapEditor
+            config={budgetConfig}
+            saving={budgetSaving}
+            saveError={budgetError}
+            onSave={saveBudgetConfig}
+          />
         </div>
 
         {/* Empty state if no data at all */}

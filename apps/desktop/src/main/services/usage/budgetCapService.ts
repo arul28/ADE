@@ -37,6 +37,45 @@ function presetToWeeklyPercent(preset: BudgetPreset): number {
   }
 }
 
+function normalizeBudgetConfig(input: BudgetCapConfig): BudgetCapConfig {
+  const clampPercent = (value: unknown): number | undefined => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return undefined;
+    return Math.max(0, Math.min(100, Math.round(parsed)));
+  };
+  const clampPositive = (value: unknown): number | undefined => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+    return Math.round(parsed * 100) / 100;
+  };
+  const preset = input.preset === "conservative" || input.preset === "maximize" || input.preset === "fixed"
+    ? input.preset
+    : undefined;
+  const refreshIntervalMin = clampPositive(input.refreshIntervalMin);
+  const nightShiftReservePercent = clampPercent(input.nightShiftReservePercent);
+  const alertAtWeeklyPercent = clampPercent(input.alertAtWeeklyPercent);
+  return {
+    ...(preset ? { preset } : {}),
+    ...(refreshIntervalMin != null ? { refreshIntervalMin } : {}),
+    ...(nightShiftReservePercent != null ? { nightShiftReservePercent } : {}),
+    ...(alertAtWeeklyPercent != null ? { alertAtWeeklyPercent } : {}),
+    ...(Array.isArray(input.budgetCaps)
+      ? {
+          budgetCaps: input.budgetCaps
+            .map((cap) => ({
+              scope: cap.scope,
+              ...(typeof cap.scopeId === "string" && cap.scopeId.trim().length > 0 ? { scopeId: cap.scopeId.trim() } : {}),
+              capType: cap.capType,
+              provider: cap.provider,
+              limit: clampPositive(cap.limit) ?? 0,
+              action: cap.action,
+            }))
+            .filter((cap) => cap.limit > 0),
+        }
+      : {}),
+  };
+}
+
 type CapConfigRaw = {
   scope: BudgetCapScope;
   scopeId?: string;
@@ -52,7 +91,8 @@ type CapConfigRaw = {
 
 type ProjectConfigService = {
   getEffective(): { ai?: unknown; [k: string]: unknown };
-  get(): { local: { usage?: BudgetCapConfig; [k: string]: unknown }; [k: string]: unknown };
+  get(): { local: { usage?: BudgetCapConfig; [k: string]: unknown }; shared?: Record<string, unknown>; [k: string]: unknown };
+  save(candidate: { shared?: Record<string, unknown>; local?: Record<string, unknown> }): { local?: Record<string, unknown> };
 };
 
 type UsageTrackingService = {
@@ -412,6 +452,23 @@ export function createBudgetCapService({
      */
     getConfig(): BudgetCapConfig {
       return readConfig();
+    },
+
+    updateConfig(nextConfig: BudgetCapConfig): BudgetCapConfig {
+      const snapshot = projectConfigService.get();
+      const normalized = normalizeBudgetConfig(nextConfig);
+      const saved = projectConfigService.save({
+        shared: (snapshot.shared as Record<string, unknown> | undefined) ?? {},
+        local: {
+          ...(snapshot.local ?? {}),
+          usage: normalized,
+        },
+      });
+      logger.info("budgetCap.updateConfig", {
+        preset: normalized.preset ?? null,
+        capCount: normalized.budgetCaps?.length ?? 0,
+      });
+      return (saved.local?.usage as BudgetCapConfig) ?? normalized;
     },
 
     /** Exposed for testing. */

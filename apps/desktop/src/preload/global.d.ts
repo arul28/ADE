@@ -143,6 +143,10 @@ import type {
   CtoOnboardingState,
   CtoSystemPromptPreview,
   CtoLinearProject,
+  CtoStartLinearOAuthResult,
+  CtoGetLinearOAuthSessionArgs,
+  CtoGetLinearOAuthSessionResult,
+  CtoRunProjectScanResult,
   CtoGetOpenclawStateResult,
   CtoUpdateOpenclawConfigArgs,
   CtoTestOpenclawConnectionArgs,
@@ -160,7 +164,7 @@ import type {
   LinearSyncDashboard,
   LinearSyncQueueItem,
   CtoResolveLinearSyncQueueItemArgs,
-  LinearSyncConfig,
+  LinearWorkflowConfig,
   OpenclawBridgeStatus,
   ExternalMcpServerConfig,
   ExternalMcpServerSnapshot,
@@ -587,6 +591,7 @@ declare global {
         checkBudget: (args: { scope: BudgetCapScope; scopeId?: string; provider: BudgetCapProvider }) => Promise<BudgetCheckResult>;
         getCumulativeUsage: (args: { scope: BudgetCapScope; scopeId?: string; provider?: BudgetCapProvider }) => Promise<{ totalTokens: number; totalCostUsd: number; weekKey: string }>;
         getBudgetConfig: () => Promise<BudgetCapConfig>;
+        saveBudgetConfig: (config: BudgetCapConfig) => Promise<BudgetCapConfig>;
         onUpdate: (cb: (snapshot: UsageSnapshot) => void) => () => void;
       };
       missions: {
@@ -1006,6 +1011,12 @@ declare global {
           mode?: "lexical" | "hybrid";
           status?: "promoted" | "candidate" | "archived" | "all";
         }) => Promise<unknown[]>;
+        list: (args?: {
+          scope?: "project" | "agent" | "mission";
+          tier?: 1 | 2 | 3;
+          status?: "promoted" | "candidate" | "archived" | "all";
+          limit?: number;
+        }) => Promise<MemoryEntryDto[]>;
         listMissionEntries: (args: {
           missionId: string;
           runId?: string | null;
@@ -1057,10 +1068,10 @@ declare global {
         getLinearConnectionStatus: () => Promise<LinearConnectionStatus>;
         setLinearToken: (args: CtoSetLinearTokenArgs) => Promise<LinearConnectionStatus>;
         clearLinearToken: () => Promise<LinearConnectionStatus>;
-        getFlowPolicy: () => Promise<LinearSyncConfig>;
-        saveFlowPolicy: (args: CtoSaveFlowPolicyArgs) => Promise<LinearSyncConfig>;
+        getFlowPolicy: () => Promise<LinearWorkflowConfig>;
+        saveFlowPolicy: (args: CtoSaveFlowPolicyArgs) => Promise<LinearWorkflowConfig>;
         listFlowPolicyRevisions: () => Promise<CtoFlowPolicyRevision[]>;
-        rollbackFlowPolicyRevision: (args: CtoRollbackFlowPolicyRevisionArgs) => Promise<LinearSyncConfig>;
+        rollbackFlowPolicyRevision: (args: CtoRollbackFlowPolicyRevisionArgs) => Promise<LinearWorkflowConfig>;
         simulateFlowRoute: (args: CtoSimulateFlowRouteArgs) => Promise<LinearRouteDecision>;
         getLinearSyncDashboard: () => Promise<LinearSyncDashboard>;
         runLinearSyncNow: () => Promise<LinearSyncDashboard>;
@@ -1074,6 +1085,9 @@ declare global {
         resetOnboarding: () => Promise<CtoOnboardingState>;
         previewSystemPrompt: (args?: { identityOverride?: Record<string, unknown> }) => Promise<CtoSystemPromptPreview>;
         getLinearProjects: () => Promise<CtoLinearProject[]>;
+        startLinearOAuth: () => Promise<CtoStartLinearOAuthResult>;
+        getLinearOAuthSession: (args: CtoGetLinearOAuthSessionArgs) => Promise<CtoGetLinearOAuthSessionResult>;
+        runProjectScan: () => Promise<CtoRunProjectScanResult>;
       };
     };
   }

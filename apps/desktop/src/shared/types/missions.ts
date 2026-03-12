@@ -11,6 +11,7 @@ import type {
   TeamRuntimeConfig,
   RecoveryLoopPolicy,
   IntegrationPrPolicy,
+  MissionCloseoutRequirement,
 } from "./orchestrator";
 import type { AiCliPermissionMode, AiCliSandboxPermissions, AiInProcessPermissionMode } from "./config";
 import type { AgentChatPermissionMode } from "./chat";
@@ -78,7 +79,19 @@ export type MissionStepStatus =
   | "blocked"
   | "canceled";
 
-export type MissionArtifactType = "summary" | "pr" | "link" | "note" | "patch" | "plan";
+export type MissionArtifactType =
+  | "summary"
+  | "pr"
+  | "link"
+  | "note"
+  | "patch"
+  | "plan"
+  | "test_report"
+  | "screenshot"
+  | "browser_verification"
+  | "browser_trace"
+  | "video_recording"
+  | "console_logs";
 
 export type MissionInterventionType =
   | "approval_required"
@@ -696,6 +709,7 @@ export type MissionPreflightCheckId =
   | "capabilities"
   | "permissions"
   | "worktrees"
+  | "knowledge_sync"
   | "phase_structural"
   | "phase_ordering"
   | "phase_semantic"
@@ -855,6 +869,7 @@ export type MissionRunView = {
   workers: MissionRunViewWorkerSummary[];
   progressLog: MissionRunViewProgressItem[];
   lastMeaningfulProgress: MissionRunViewProgressItem | null;
+  closeoutRequirements: MissionCloseoutRequirement[];
 };
 
 export type GetMissionRunViewArgs = {

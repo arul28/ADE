@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Logger } from "../logging/logger";
-import type { LinearPriorityLabel, NormalizedLinearIssue } from "../../../shared/types";
+import type { CtoLinearProject, LinearPriorityLabel, NormalizedLinearIssue } from "../../../shared/types";
 import type { LinearCredentialService } from "./linearCredentialService";
 import { isRecord, toOptionalString as asString, asArray, sleep, getErrorMessage } from "../shared/utils";
 
@@ -13,6 +13,11 @@ function mapPriorityLabel(priority: number): LinearPriorityLabel {
   if (priority === 3) return "normal";
   if (priority === 4) return "low";
   return "none";
+}
+
+function toBearerToken(token: string): string {
+  const trimmed = token.trim();
+  return /^bearer\s+/i.test(trimmed) ? trimmed : `Bearer ${trimmed}`;
 }
 
 function toNormalizedIssue(node: Record<string, unknown>): NormalizedLinearIssue | null {
@@ -54,6 +59,7 @@ function toNormalizedIssue(node: Record<string, unknown>): NormalizedLinearIssue
 
   const assignee = isRecord(node.assignee) ? node.assignee : null;
   const owner = isRecord(node.creator) ? node.creator : null;
+  const metadata = isRecord(node.metadata) ? node.metadata : null;
   const priority = Number(node.priority ?? 0);
 
   return {
@@ -72,9 +78,14 @@ function toNormalizedIssue(node: Record<string, unknown>): NormalizedLinearIssue
     priority: Number.isFinite(priority) ? priority : 0,
     priorityLabel: mapPriorityLabel(Number.isFinite(priority) ? priority : 0),
     labels,
+    metadataTags: asArray(metadata?.tags)
+      .map((entry) => (typeof entry === "string" ? entry.trim().toLowerCase() : ""))
+      .filter((entry) => entry.length > 0),
     assigneeId: assignee ? asString(assignee.id) : null,
     assigneeName: assignee ? (asString(assignee.displayName) ?? asString(assignee.name)) : null,
     ownerId: owner ? asString(owner.id) : null,
+    creatorId: owner ? asString(owner.id) : null,
+    creatorName: owner ? (asString(owner.displayName) ?? asString(owner.name)) : null,
     blockerIssueIds,
     hasOpenBlockers,
     createdAt: asString(node.createdAt) ?? new Date().toISOString(),
@@ -97,7 +108,7 @@ export function createLinearClient(args: LinearClientArgs) {
     variables?: Record<string, unknown>;
     maxRetries?: number;
   }): Promise<TData> => {
-    const token = args.credentials.getTokenOrThrow();
+    const token = toBearerToken(args.credentials.getTokenOrThrow());
     const maxRetries = Math.max(0, Math.floor(params.maxRetries ?? 3));
     let attempt = 0;
     let backoffMs = 500;
@@ -157,6 +168,50 @@ export function createLinearClient(args: LinearClientArgs) {
     };
   };
 
+  const listProjects = async (): Promise<CtoLinearProject[]> => {
+    const data = await request<{
+      projects?: {
+        nodes?: Array<Record<string, unknown>>;
+      };
+    }>({
+      query: `
+        query Projects {
+          projects(first: 100) {
+            nodes {
+              id
+              name
+              slug
+              teams {
+                nodes {
+                  name
+                }
+              }
+            }
+          }
+        }
+      `,
+      maxRetries: 2,
+    });
+
+    return asArray(data.projects?.nodes)
+      .map((node) => {
+        if (!isRecord(node)) return null;
+        const id = asString(node.id);
+        const name = asString(node.name);
+        const slug = asString(node.slug);
+        if (!id || !name || !slug) return null;
+        const teamName =
+          (isRecord(node.teams)
+            ? asArray(node.teams.nodes)
+              .map((entry) => (isRecord(entry) ? asString(entry.name) : null))
+              .find((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+            : null) ?? "Unassigned";
+        return { id, name, slug, teamName };
+      })
+      .filter((entry): entry is CtoLinearProject => entry != null)
+      .sort((left, right) => left.name.localeCompare(right.name));
+  };
+
   const ISSUE_FIELDS_FRAGMENT = `
     id
     identifier
@@ -170,7 +225,8 @@ export function createLinearClient(args: LinearClientArgs) {
     team { id key }
     state { id name type }
     assignee { id name displayName }
-    creator { id }
+    creator { id name displayName }
+    metadata
     labels { nodes { id name } }
     children {
       nodes {
@@ -547,6 +603,7 @@ export function createLinearClient(args: LinearClientArgs) {
   return {
     request,
     getViewer,
+    listProjects,
     fetchCandidateIssues,
     fetchIssueById,
     fetchIssuesByIds,
