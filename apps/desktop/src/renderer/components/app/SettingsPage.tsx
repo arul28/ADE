@@ -16,7 +16,7 @@ import { ProxyAndPreviewSection } from "../settings/ProxyAndPreviewSection";
 import { DiagnosticsDashboardSection } from "../settings/DiagnosticsDashboardSection";
 import { MemoryHealthTab } from "../settings/MemoryHealthTab";
 import { AiFeaturesSection } from "../settings/AiFeaturesSection";
-import { COLORS, MONO_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton, dangerButton } from "../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton, dangerButton } from "../lanes/laneDesignTokens";
 import { ConfirmDialog, PromptDialog, useConfirmDialog, usePromptDialog } from "../shared/InlineDialogs";
 import type { PhaseProfile, PhaseCard } from "../../../shared/types";
 import { PhaseCardEditor } from "../missions/PhaseCardEditor";
@@ -49,6 +49,7 @@ function padIndex(i: number): string {
 
 const SECTION_LABEL: React.CSSProperties = {
   ...LABEL_STYLE,
+  fontFamily: SANS_FONT,
   fontSize: 11,
   marginBottom: 10,
 };
@@ -56,20 +57,20 @@ const SECTION_LABEL: React.CSSProperties = {
 const SETTINGS_INPUT: React.CSSProperties = {
   height: 28,
   width: "100%",
-  background: COLORS.recessedBg,
-  border: `1px solid ${COLORS.outlineBorder}`,
+  background: "rgba(255,255,255,0.03)",
+  border: "1px solid rgba(255,255,255,0.06)",
   padding: "0 8px",
   fontSize: 11,
   color: COLORS.textPrimary,
   fontFamily: MONO_FONT,
-  borderRadius: 0,
+  borderRadius: 8,
   outline: "none",
 };
 
 const FIELD_LABEL: React.CSSProperties = {
   fontSize: 9,
   fontWeight: 700,
-  fontFamily: MONO_FONT,
+  fontFamily: SANS_FONT,
   textTransform: "uppercase" as const,
   letterSpacing: "1px",
   color: COLORS.textMuted,
@@ -94,10 +95,10 @@ function PhaseProfileSettingsCard({
   const isReadOnly = profile.isBuiltIn;
 
   return (
-    <div style={{ ...cardStyle({ padding: 12 }), marginBottom: 8 }}>
+    <div style={{ ...cardStyle({ padding: 12 }), marginBottom: 8, background: "rgba(255,255,255,0.03)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 16 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 12, fontFamily: MONO_FONT, fontWeight: 600, color: COLORS.textPrimary }}>
+          <div style={{ fontSize: 12, fontFamily: SANS_FONT, fontWeight: 600, color: COLORS.textPrimary }}>
             {profile.isBuiltIn && <span style={{ color: COLORS.accent, marginRight: 4 }}>{"\u25CF"}</span>}
             {profile.name}
             {profile.isDefault && <span style={{ fontSize: 9, fontWeight: 600, color: "#22C55E", marginLeft: 6, fontFamily: MONO_FONT }}>DEFAULT</span>}
@@ -133,7 +134,7 @@ function PhaseProfileSettingsCard({
       </div>
 
       {expanded && (
-        <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${COLORS.border}` }}>
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
           {!isReadOnly && (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
               <label>
@@ -409,12 +410,12 @@ function PhaseProfilesSection() {
       </div>
 
       {notice && (
-        <div style={{ padding: "6px 10px", marginBottom: 8, fontSize: 11, border: `1px solid ${COLORS.success}30`, background: `${COLORS.success}15`, color: COLORS.success }}>
+        <div style={{ padding: "6px 10px", marginBottom: 8, fontSize: 11, border: `1px solid ${COLORS.success}30`, background: `${COLORS.success}15`, color: COLORS.success, borderRadius: 8 }}>
           {notice}
         </div>
       )}
       {error && (
-        <div style={{ padding: "6px 10px", marginBottom: 8, fontSize: 11, border: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}15`, color: COLORS.danger }}>
+        <div style={{ padding: "6px 10px", marginBottom: 8, fontSize: 11, border: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}15`, color: COLORS.danger, borderRadius: 8 }}>
           {error}
         </div>
       )}
@@ -460,15 +461,17 @@ export function SettingsPage() {
         style={{
           width: 200,
           flexShrink: 0,
-          background: COLORS.recessedBg,
-          borderRight: `1px solid ${COLORS.border}`,
+          background: "rgba(255,255,255,0.02)",
+          backdropFilter: "blur(20px)",
+          WebkitBackdropFilter: "blur(20px)",
+          borderRight: "1px solid rgba(255,255,255,0.06)",
           paddingTop: 16,
           paddingBottom: 16,
           paddingLeft: 8,
           paddingRight: 8,
         }}
       >
-        <div style={{ ...LABEL_STYLE, paddingLeft: 10, marginBottom: 12 }}>
+        <div style={{ ...LABEL_STYLE, fontFamily: SANS_FONT, paddingLeft: 10, marginBottom: 12 }}>
           SETTINGS
         </div>
 
@@ -485,18 +488,18 @@ export function SettingsPage() {
             border: "none",
             borderLeft: isActive ? `3px solid ${COLORS.accent}` : "3px solid transparent",
             background: isActive
-              ? COLORS.accentSubtle
+              ? "rgba(167,139,250,0.10)"
               : isHovered
-                ? COLORS.hoverBg
+                ? "rgba(255,255,255,0.04)"
                 : "transparent",
             color: isActive ? COLORS.textPrimary : COLORS.textMuted,
-            fontFamily: MONO_FONT,
+            fontFamily: SANS_FONT,
             fontSize: 11,
             fontWeight: 600,
             textTransform: "uppercase",
             letterSpacing: "1px",
             cursor: "pointer",
-            borderRadius: 0,
+            borderRadius: 8,
             transition: "background 120ms ease, color 120ms ease",
           };
 

@@ -80,15 +80,12 @@ export function getModelsForProvider(provider: ModelProvider): ModelEntry[] {
 export type ThinkingOption = { value: ThinkingLevel; label: string };
 
 export const CLAUDE_THINKING_LEVELS: ThinkingOption[] = [
-  { value: "none", label: "None" },
   { value: "low", label: "Low" },
   { value: "medium", label: "Medium" },
   { value: "high", label: "High" },
-  { value: "max", label: "Max" },
 ];
 
 export const CODEX_THINKING_LEVELS: ThinkingOption[] = [
-  { value: "minimal", label: "Minimal" },
   { value: "low", label: "Low" },
   { value: "medium", label: "Medium" },
   { value: "high", label: "High" },
@@ -99,7 +96,6 @@ export function getThinkingLevels(provider: ModelProvider): ThinkingOption[] {
   if (provider === "claude") return CLAUDE_THINKING_LEVELS;
   if (provider === "codex") return CODEX_THINKING_LEVELS;
   return [
-    { value: "minimal", label: "Minimal" },
     { value: "low", label: "Low" },
     { value: "medium", label: "Medium" },
     { value: "high", label: "High" },
@@ -286,7 +282,8 @@ export function modelConfigToServiceModel(config: ModelConfig): string {
 
 /** Convert ThinkingLevel to reasoning effort string for AI service */
 export function thinkingLevelToReasoningEffort(level?: ThinkingLevel | null): string {
-  if (!level || level === "none") return "low";
+  if (!level || level === "none" || level === "minimal") return "low";
+  if (level === "max") return "high";
   return level;
 }
 

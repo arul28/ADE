@@ -71,6 +71,7 @@ import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createLaneService } from "../lanes/laneService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createPrService } from "../prs/prService";
+import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 
 // ── Re-export commonly-used shared types for module convenience ──
 export type {
@@ -396,6 +397,7 @@ export type OrchestratorContext = {
   aiIntegrationService: ReturnType<typeof createAiIntegrationService> | null | undefined;
   prService: ReturnType<typeof createPrService> | null | undefined;
   missionBudgetService: import("./missionBudgetService").MissionBudgetService | null | undefined;
+  computerUseArtifactBrokerService: ComputerUseArtifactBrokerService | null | undefined;
   projectRoot: string | undefined;
   onThreadEvent: ((event: OrchestratorThreadEvent) => void) | undefined;
   onDagMutation: ((event: DagMutationEvent) => void) | undefined;
@@ -1273,7 +1275,7 @@ export function getModelCapabilities(): GetModelCapabilitiesResult {
       costTier: "very_high",
       bestFor: ["planning", "review"],
       parallelCapable: false,
-      reasoningTiers: ["low", "medium", "high", "max"]
+      reasoningTiers: ["low", "medium", "high"]
     },
     {
       provider: "claude",
@@ -1306,7 +1308,7 @@ export function getModelCapabilities(): GetModelCapabilitiesResult {
       costTier: "medium",
       bestFor: ["implementation", "review"],
       parallelCapable: true,
-      reasoningTiers: ["minimal", "low", "medium", "high", "xhigh"]
+      reasoningTiers: ["low", "medium", "high", "xhigh"]
     },
     {
       provider: "codex",
@@ -1317,7 +1319,7 @@ export function getModelCapabilities(): GetModelCapabilitiesResult {
       costTier: "low",
       bestFor: ["implementation"],
       parallelCapable: true,
-      reasoningTiers: ["minimal", "low", "medium"]
+      reasoningTiers: ["low", "medium", "high", "xhigh"]
     },
     {
       provider: "codex",
@@ -1328,7 +1330,7 @@ export function getModelCapabilities(): GetModelCapabilitiesResult {
       costTier: "medium",
       bestFor: ["implementation"],
       parallelCapable: true,
-      reasoningTiers: ["minimal", "low", "medium", "high", "xhigh"]
+      reasoningTiers: ["low", "medium", "high", "xhigh"]
     },
     {
       provider: "codex",
@@ -1339,7 +1341,7 @@ export function getModelCapabilities(): GetModelCapabilitiesResult {
       costTier: "medium",
       bestFor: ["implementation"],
       parallelCapable: true,
-      reasoningTiers: ["low", "medium", "high"]
+      reasoningTiers: ["low", "medium", "high", "xhigh"]
     },
     {
       provider: "codex",
@@ -1350,7 +1352,7 @@ export function getModelCapabilities(): GetModelCapabilitiesResult {
       costTier: "low",
       bestFor: ["implementation"],
       parallelCapable: true,
-      reasoningTiers: ["low", "medium"]
+      reasoningTiers: ["medium", "high"]
     },
     {
       provider: "codex",
@@ -1372,7 +1374,7 @@ export function getModelCapabilities(): GetModelCapabilitiesResult {
       costTier: "high",
       bestFor: ["planning", "review"],
       parallelCapable: false,
-      reasoningTiers: ["minimal", "low", "medium", "high"]
+      reasoningTiers: ["low", "medium", "high", "xhigh"]
     }
   ];
   return { profiles };

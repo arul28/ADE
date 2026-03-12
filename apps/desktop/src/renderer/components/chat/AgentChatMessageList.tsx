@@ -67,10 +67,10 @@ function formatTokenCount(value: number | null | undefined): string | null {
 }
 
 const GLASS_CARD_CLASS =
-  "overflow-hidden rounded-[var(--chat-radius-card)] border border-white/6 bg-[linear-gradient(180deg,rgba(255,255,255,0.06),rgba(255,255,255,0.025))] shadow-[var(--chat-card-shadow)] backdrop-blur-md";
+  "overflow-hidden rounded-[var(--chat-radius-card)] border border-white/[0.04] bg-white/[0.03] backdrop-blur-xl";
 
 const RECESSED_BLOCK_CLASS =
-  "overflow-auto whitespace-pre-wrap break-words rounded-[calc(var(--chat-radius-card)-6px)] border border-white/6 bg-black/20 px-4 py-3 font-mono text-[11px] leading-[1.55] text-fg/70";
+  "overflow-auto whitespace-pre-wrap break-words rounded-[calc(var(--chat-radius-card)-6px)] border border-white/[0.04] bg-black/15 px-4 py-3 font-mono text-[11px] leading-[1.55] text-fg/70";
 
 function toolSourceChip(toolName: string): { label: string; tone: ChatSurfaceChipTone } | null {
   if (toolName.startsWith("mcp__")) {
@@ -93,15 +93,15 @@ function toolSourceChip(toolName: string): { label: string; tone: ChatSurfaceChi
 
 function messageCardStyle(accentAlpha = 0.18): React.CSSProperties {
   return {
-    borderColor: "color-mix(in srgb, var(--chat-accent) 18%, transparent)",
-    background: `linear-gradient(180deg, color-mix(in srgb, var(--chat-accent) ${Math.round(accentAlpha * 100)}%, rgba(255,255,255,0.05)), rgba(255,255,255,0.03))`,
+    borderColor: "color-mix(in srgb, var(--chat-accent) 12%, transparent)",
+    background: `color-mix(in srgb, var(--chat-accent) ${Math.round(accentAlpha * 50)}%, rgba(255,255,255,0.02))`,
   };
 }
 
 function surfaceInlineCardStyle(): React.CSSProperties {
   return {
-    borderColor: "color-mix(in srgb, var(--chat-accent) 14%, rgba(255,255,255,0.05))",
-    background: "linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02))",
+    borderColor: "rgba(255,255,255, 0.04)",
+    background: "rgba(255,255,255, 0.02)",
   };
 }
 
@@ -361,6 +361,50 @@ function collapseEventsIncremental(
   return out;
 }
 
+/* ── Tool grouping ── */
+
+type ToolGroup = {
+  type: "tool_group";
+  tools: Array<RenderEnvelope & { event: Extract<RenderEnvelope["event"], { type: "tool_invocation" }> }>;
+};
+
+type GroupedRenderEnvelope = {
+  key: string;
+  timestamp: string;
+  event: RenderEnvelope["event"] | ToolGroup;
+};
+
+function groupConsecutiveTools(rows: RenderEnvelope[]): GroupedRenderEnvelope[] {
+  const result: GroupedRenderEnvelope[] = [];
+  let i = 0;
+  while (i < rows.length) {
+    const row = rows[i]!;
+    if (row.event.type === "tool_invocation") {
+      // Collect consecutive tool invocations
+      const group: Array<RenderEnvelope & { event: Extract<RenderEnvelope["event"], { type: "tool_invocation" }> }> = [];
+      while (i < rows.length && rows[i]!.event.type === "tool_invocation") {
+        group.push(rows[i] as any);
+        i++;
+      }
+      if (group.length === 1) {
+        // Single tool call - render normally
+        result.push(group[0]!);
+      } else {
+        // Multiple consecutive tool calls - group them
+        result.push({
+          key: `group:${group[0]!.key}`,
+          timestamp: group[group.length - 1]!.timestamp,
+          event: { type: "tool_group", tools: group },
+        });
+      }
+    } else {
+      result.push(row);
+      i++;
+    }
+  }
+  return result;
+}
+
 /* ── Status indicators ── */
 
 function StatusIcon({ status }: { status: "running" | "completed" | "failed" }) {
@@ -440,7 +484,7 @@ function CollapsibleCard({
         {open ? <CaretDown size={10} weight="bold" className="text-muted-fg/60" /> : <CaretRight size={10} weight="bold" className="text-muted-fg/60" />}
         <div className="flex flex-1 flex-wrap items-center gap-2">{summary}</div>
       </button>
-      {open ? <div className="border-t border-white/6 px-3.5 pb-3.5 pt-2.5">{children}</div> : null}
+      {open ? <div className="border-t border-white/[0.04] px-3.5 pb-3.5 pt-2.5">{children}</div> : null}
     </div>
   );
 }
@@ -477,6 +521,7 @@ function DiffPreview({ diff }: { diff: string }) {
 
 const ACTIVITY_LABELS: Record<string, string> = {
   thinking: "Thinking",
+  working: "Working",
   editing_file: "Editing",
   running_command: "Running command",
   searching: "Searching",
@@ -489,16 +534,11 @@ function ActivityIndicator({ activity, detail }: { activity: string; detail?: st
   const displayText = detail ? `${label}: ${replaceInternalToolNames(detail)}` : `${label}...`;
 
   return (
-    <div className={cn(GLASS_CARD_CLASS, "flex items-center gap-3 px-4 py-3 font-mono text-[11px] text-fg/68")} style={surfaceInlineCardStyle()}>
-      <div className="flex h-7 w-7 items-center justify-center rounded-[var(--chat-radius-pill)] border border-white/6 bg-black/15">
-        <div className="flex items-center gap-1">
-          <span className="h-1 w-1 animate-bounce rounded-full bg-[var(--chat-accent)] [animation-delay:0ms]" />
-          <span className="h-1 w-1 animate-bounce rounded-full bg-[var(--chat-accent)] [animation-delay:150ms]" />
-          <span className="h-1 w-1 animate-bounce rounded-full bg-[var(--chat-accent)] [animation-delay:300ms]" />
-        </div>
+    <div className="flex items-center gap-3 rounded-[var(--chat-radius-card)] border border-white/[0.04] bg-white/[0.03] px-4 py-2.5 font-mono text-[11px] text-fg/68 backdrop-blur-xl">
+      <div className="flex h-6 w-6 items-center justify-center rounded-full border border-[var(--chat-accent-faint)] bg-[var(--chat-accent-faint)]">
+        <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--chat-accent)]" />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-[var(--chat-accent)]">Live</div>
         <span className="block truncate font-medium">{displayText}</span>
       </div>
     </div>
@@ -634,7 +674,7 @@ function renderEvent(
           </div>
           <MarkdownBlock markdown={event.text} />
           {options?.turnModelLabel ? (
-            <div className="mt-3 border-t border-white/6 pt-2 font-mono text-[9px] uppercase tracking-[1.4px] text-muted-fg/30">
+            <div className="mt-3 border-t border-white/[0.04] pt-2 font-mono text-[9px] uppercase tracking-[1.4px] text-muted-fg/30">
               {options.turnModelLabel}
             </div>
           ) : null}
@@ -848,7 +888,7 @@ function renderEvent(
                 {formatStructuredValue(args)}
               </pre>
             ) : (
-              <div className="rounded-[calc(var(--chat-radius-card)-6px)] border border-white/6 bg-black/20 px-4 py-2 font-mono text-[10px] text-muted-fg/40">
+              <div className="rounded-[calc(var(--chat-radius-card)-6px)] border border-white/[0.04] bg-black/20 px-4 py-2 font-mono text-[10px] text-muted-fg/40">
                 No arguments
               </div>
             )}
@@ -945,6 +985,8 @@ function renderEvent(
   if (event.type === "tool_result") {
     return <ToolResultCard event={event} />;
   }
+
+  /* ── Tool group (handled separately via ToolGroupCard) ── */
 
   /* ── Approval request ── */
   if (event.type === "approval_request") {
@@ -1101,8 +1143,85 @@ function renderEvent(
   return (
     <div className="flex items-center gap-3 py-0.5">
       <div className="h-px flex-1 bg-white/6" />
-      <span className="rounded-[var(--chat-radius-pill)] border border-white/6 px-2 py-1 font-mono text-[9px] font-bold uppercase tracking-[2px] text-muted-fg/25">event</span>
+      <span className="rounded-[var(--chat-radius-pill)] border border-white/[0.04] px-2 py-1 font-mono text-[9px] font-bold uppercase tracking-[2px] text-muted-fg/25">event</span>
       <div className="h-px flex-1 bg-white/6" />
+    </div>
+  );
+}
+
+function ToolGroupCard({ group }: { group: ToolGroup }) {
+  const [expanded, setExpanded] = useState(false);
+  const allCompleted = group.tools.every((t) => t.event.status !== "running");
+  const runningCount = group.tools.filter((t) => t.event.status === "running").length;
+  const failedCount = group.tools.filter((t) => t.event.status === "failed").length;
+
+  // Get unique tool types for the summary
+  const toolTypes = new Map<string, number>();
+  for (const t of group.tools) {
+    const meta = getToolMeta(t.event.tool);
+    toolTypes.set(meta.label, (toolTypes.get(meta.label) ?? 0) + 1);
+  }
+  const toolSummary = Array.from(toolTypes.entries())
+    .map(([label, count]) => count > 1 ? `${count}x ${label}` : label)
+    .join(", ");
+
+  return (
+    <div className="overflow-hidden rounded-[var(--chat-radius-card)] border border-white/[0.04] bg-white/[0.03] backdrop-blur-xl">
+      <button
+        type="button"
+        className="flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left font-mono text-[11px] transition-colors hover:bg-white/[0.02]"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        {expanded ? <CaretDown size={10} weight="bold" className="text-muted-fg/50" /> : <CaretRight size={10} weight="bold" className="text-muted-fg/50" />}
+
+        <div className="flex items-center gap-1.5">
+          {allCompleted ? (
+            failedCount > 0 ? <XCircle size={13} weight="bold" className="text-red-400" /> : <CheckCircle size={13} weight="bold" className="text-emerald-400" />
+          ) : (
+            <SpinnerGap size={13} weight="bold" className="animate-spin text-accent" />
+          )}
+        </div>
+
+        <span className="text-fg/65">{group.tools.length} tool calls</span>
+        <span className="text-[10px] text-muted-fg/35">{toolSummary}</span>
+
+        {runningCount > 0 && (
+          <span className="ml-auto text-[9px] uppercase tracking-wider text-accent/60">{runningCount} running</span>
+        )}
+        {failedCount > 0 && (
+          <span className="text-[9px] uppercase tracking-wider text-red-400/60">{failedCount} failed</span>
+        )}
+      </button>
+
+      {expanded && (
+        <div className="space-y-1.5 border-t border-white/[0.04] px-3 py-2.5">
+          {group.tools.map((tool) => {
+            const meta = getToolMeta(tool.event.tool);
+            const ToolIcon = meta.icon;
+            const toolDisplay = describeToolIdentifier(tool.event.tool);
+            const sourceChip = toolSourceChip(tool.event.tool);
+            const targetLine = meta.getTarget ? meta.getTarget(readRecord(tool.event.args) ?? {}) : null;
+            const secondaryLabel = targetLine ?? toolDisplay.secondaryLabel;
+
+            return (
+              <div key={tool.key} className="flex items-center gap-2 rounded-lg px-2 py-1.5 font-mono text-[10px] transition-colors hover:bg-white/[0.02]">
+                <StatusIcon status={tool.event.status} />
+                <span className={cn("inline-flex items-center gap-1 border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider", meta.badgeCls)}>
+                  <ToolIcon size={10} weight="bold" />
+                  {meta.label}
+                </span>
+                {sourceChip ? (
+                  <span className={cn("inline-flex items-center border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.14em]", chatChipToneClass(sourceChip.tone))}>
+                    {sourceChip.label}
+                  </span>
+                ) : null}
+                {secondaryLabel ? <span className="flex-1 truncate text-fg/40">{secondaryLabel}</span> : null}
+                <span className="text-[8px] uppercase tracking-wider text-muted-fg/25">{tool.event.status}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -1230,6 +1349,7 @@ export function AgentChatMessageList({
     collapseCacheRef.current = { events, rows: nextRows };
     return nextRows;
   }, [events]);
+  const groupedRows = useMemo(() => groupConsecutiveTools(rows), [rows]);
   const latestActivity = useMemo(() => (showStreamingIndicator ? deriveLatestActivity(events) : null), [events, showStreamingIndicator]);
   const latestRowIsActivity = rows[rows.length - 1]?.event.type === "activity";
 
@@ -1252,8 +1372,33 @@ export function AgentChatMessageList({
   useEffect(() => {
     const el = scrollRef.current;
     if (!el || !stickToBottom) return;
-    el.scrollTop = el.scrollHeight;
-  }, [rows, stickToBottom]);
+    // Use rAF to ensure DOM has updated before scrolling
+    const raf = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [rows, stickToBottom, showStreamingIndicator]);
+
+  // Auto-scroll when content mutates (streaming text, images loading, etc.)
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (typeof MutationObserver === "undefined") return;
+    let rafId = 0;
+    const mo = new MutationObserver(() => {
+      if (!stickToBottomRef.current) return;
+      if (rafId) return; // already scheduled
+      rafId = requestAnimationFrame(() => {
+        rafId = 0;
+        el.scrollTop = el.scrollHeight;
+      });
+    });
+    mo.observe(el, { childList: true, subtree: true, characterData: true });
+    return () => {
+      mo.disconnect();
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+  }, []);
 
   // Observe the scroll container's size so we know the viewport height.
   useEffect(() => {
@@ -1409,18 +1554,11 @@ export function AgentChatMessageList({
     latestActivity ? (
       <ActivityIndicator activity={latestActivity.activity} detail={latestActivity.detail} />
     ) : (
-      <div className={cn(GLASS_CARD_CLASS, "flex items-center gap-3 px-4 py-3 font-mono text-[11px] text-fg/65")} style={surfaceInlineCardStyle()}>
-        <div className="flex h-7 w-7 items-center justify-center rounded-[var(--chat-radius-pill)] border border-white/6 bg-black/15">
-          <div className="flex items-center gap-1">
-            <span className="h-1 w-1 animate-bounce rounded-full bg-[var(--chat-accent)] [animation-delay:0ms]" />
-            <span className="h-1 w-1 animate-bounce rounded-full bg-[var(--chat-accent)] [animation-delay:150ms]" />
-            <span className="h-1 w-1 animate-bounce rounded-full bg-[var(--chat-accent)] [animation-delay:300ms]" />
-          </div>
+      <div className="flex items-center gap-3 rounded-[var(--chat-radius-card)] border border-white/[0.04] bg-white/[0.03] px-4 py-2.5 font-mono text-[11px] text-fg/65 backdrop-blur-xl">
+        <div className="flex h-6 w-6 items-center justify-center rounded-full border border-[var(--chat-accent-faint)] bg-[var(--chat-accent-faint)]">
+          <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--chat-accent)]" />
         </div>
-        <div>
-          <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-[var(--chat-accent)]">Streaming</div>
-          <span className="font-medium">Response in progress…</span>
-        </div>
+        <span className="font-medium">Working...</span>
       </div>
     )
   ) : null;
@@ -1428,7 +1566,7 @@ export function AgentChatMessageList({
   return (
     <div
       ref={scrollRef}
-      className={cn("h-full overflow-auto px-4 py-5", className)}
+      className={cn("h-full min-h-0 overflow-auto px-4 pt-5 pb-8", className)}
       onScroll={handleScroll}
     >
       {rows.length === 0 ? (
@@ -1450,9 +1588,12 @@ export function AgentChatMessageList({
           {/* Top spacer pushes rendered rows to their correct scroll position */}
           <div style={{ height: offsetTop }} aria-hidden />
           <div className="space-y-3">
-            {rows.slice(startIndex, endIndex).map((envelope, i) =>
-              renderRow(envelope, startIndex + i, true)
-            )}
+            {groupedRows.slice(startIndex, Math.min(endIndex, groupedRows.length)).map((envelope, i) => {
+              if (envelope.event.type === "tool_group") {
+                return <ToolGroupCard key={envelope.key} group={envelope.event} />;
+              }
+              return renderRow(envelope as RenderEnvelope, startIndex + i, true);
+            })}
           </div>
           {/* Bottom spacer fills remaining scroll area */}
           <div style={{ height: bottomSpacerHeight }} aria-hidden />
@@ -1461,7 +1602,12 @@ export function AgentChatMessageList({
       ) : (
         /* ── Non-virtualized path: render all rows (small conversation) ── */
         <div className="space-y-3">
-          {rows.map((envelope, index) => renderRow(envelope, index, false))}
+          {groupedRows.map((envelope, index) => {
+            if (envelope.event.type === "tool_group") {
+              return <ToolGroupCard key={envelope.key} group={envelope.event} />;
+            }
+            return renderRow(envelope as RenderEnvelope, index, false);
+          })}
           {streamingIndicator}
         </div>
       )}

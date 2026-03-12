@@ -16,7 +16,7 @@ import { ClaudeLogo, CodexLogo } from "./ToolLogos";
 type WorkStartSurfaceProps = {
   draftKind: WorkDraftKind;
   lanes: LaneSummary[];
-  onOpenChatSession: (sessionId: string) => void;
+  onOpenChatSession: (sessionId: string) => void | Promise<void>;
   onLaunchPtySession: (args: {
     laneId: string;
     profile: "claude" | "codex" | "shell";
@@ -74,12 +74,13 @@ function LaunchModeHero({
   const Icon = config.icon;
 
   return (
-    <div className="flex items-center gap-3 px-5 py-3.5" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+    <div className="flex items-center gap-3 px-5 py-3.5" style={{ borderBottom: "1px solid rgba(255,255,255, 0.04)" }}>
       <div
         className="flex h-9 w-9 shrink-0 items-center justify-center"
         style={{
           background: `${config.color}18`,
           border: `1px solid ${config.color}30`,
+          borderRadius: 12,
         }}
       >
         <Icon size={16} weight="bold" style={{ color: config.color }} />
@@ -136,11 +137,11 @@ function LanePicker({
                 fontFamily: MONO_FONT,
                 letterSpacing: "0.5px",
                 border: isActive
-                  ? `1px solid ${laneColor}55`
-                  : `1px solid ${COLORS.border}`,
-                borderLeft: isActive ? `3px solid ${laneColor}` : `1px solid ${COLORS.border}`,
-                background: isActive ? `${laneColor}12` : COLORS.recessedBg,
+                  ? `1px solid ${laneColor}30`
+                  : "1px solid rgba(255,255,255, 0.04)",
+                background: isActive ? `${laneColor}08` : "rgba(255,255,255, 0.02)",
                 color: isActive ? COLORS.textPrimary : COLORS.textMuted,
+                borderRadius: 12,
               }}
               onClick={() => onChange(lane.id)}
             >
@@ -228,7 +229,7 @@ export function WorkStartSurface({
   if (!lanes.length) {
     return (
       <div className="flex h-full items-center justify-center px-6" style={{ background: COLORS.cardBg }}>
-        <div style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "20px 24px", textAlign: "center" }}>
+        <div style={{ background: COLORS.cardBg, border: "1px solid rgba(255,255,255, 0.04)", padding: "20px 24px", textAlign: "center", borderRadius: 16 }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textPrimary, fontFamily: SANS_FONT }}>No lanes available</div>
           <div className="mt-2" style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: MONO_FONT }}>
             Create or reopen a lane before starting chat, CLI, or shell work.
@@ -241,13 +242,13 @@ export function WorkStartSurface({
   if (draftKind === "chat") {
     return (
       <div className="flex h-full min-h-0 flex-col" style={{ background: COLORS.cardBg }}>
-        <div style={{ background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}` }}>
+        <div style={{ background: COLORS.cardBg, borderBottom: "1px solid rgba(255,255,255, 0.04)" }}>
           <LaunchModeHero
             kind="chat"
             title="New chat"
             body="Choose the lane, then send the opening prompt."
           />
-          <div className="px-5 py-3" style={{ borderTop: `1px solid ${COLORS.border}` }}>
+          <div className="px-5 py-3" style={{ borderTop: "1px solid rgba(255,255,255, 0.04)" }}>
             <LanePicker lanes={lanes} value={selectedLaneId} onChange={setSelectedLaneId} />
           </div>
         </div>
@@ -275,7 +276,7 @@ export function WorkStartSurface({
           />
         </div>
         <div className="flex min-h-0 flex-1 flex-col gap-4 px-5 py-5">
-          <div style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: 16 }}>
+          <div style={{ background: COLORS.cardBg, border: "1px solid rgba(255,255,255, 0.04)", padding: 16, borderRadius: 16 }}>
             <LanePicker lanes={lanes} value={selectedLaneId} onChange={setSelectedLaneId} />
 
             <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -292,10 +293,10 @@ export function WorkStartSurface({
                     style={{
                       fontFamily: MONO_FONT,
                       letterSpacing: "1px",
-                      border: active ? `1px solid ${option.color}55` : `1px solid ${COLORS.border}`,
-                      borderLeft: active ? `3px solid ${option.color}` : `1px solid ${COLORS.border}`,
-                      background: active ? `${option.color}12` : COLORS.recessedBg,
+                      border: active ? `1px solid ${option.color}30` : "1px solid rgba(255,255,255, 0.04)",
+                      background: active ? `${option.color}08` : "rgba(255,255,255, 0.02)",
                       color: active ? COLORS.textPrimary : COLORS.textMuted,
+                      borderRadius: 12,
                     }}
                     onClick={() => setCliProvider(option.id)}
                   >
@@ -320,8 +321,10 @@ export function WorkStartSurface({
                     style={{
                       fontFamily: MONO_FONT,
                       letterSpacing: "0.5px",
-                      border: active ? `1px solid ${COLORS.accent}` : `1px solid ${COLORS.border}`,
+                      border: active ? `1px solid ${COLORS.accent}30` : "1px solid rgba(255,255,255, 0.04)",
+                      background: active ? undefined : "rgba(255,255,255, 0.02)",
                       color: active ? COLORS.textPrimary : COLORS.textMuted,
+                      borderRadius: 12,
                     }}
                     onClick={() => setCliPermissionMode(option.value)}
                     title={option.detail}
@@ -334,7 +337,7 @@ export function WorkStartSurface({
             </div>
           </div>
 
-          <div className="mt-auto flex items-center justify-between gap-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "12px 16px" }}>
+          <div className="mt-auto flex items-center justify-between gap-3" style={{ background: COLORS.cardBg, border: "1px solid rgba(255,255,255, 0.04)", padding: "12px 16px", borderRadius: 16 }}>
             <div className="min-w-0">
               <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
                 {cliProvider === "claude" ? "Claude Code" : "Codex CLI"}
@@ -361,6 +364,7 @@ export function WorkStartSurface({
                 border: `1px solid ${COLORS.accent}`,
                 cursor: selectedLaneId && !launchBusy ? "pointer" : "not-allowed",
                 opacity: selectedLaneId && !launchBusy ? 1 : 0.5,
+                borderRadius: 999,
               }}
               disabled={!selectedLaneId || launchBusy}
               onClick={() => void launchCli()}
@@ -384,9 +388,9 @@ export function WorkStartSurface({
         />
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-4 px-5 py-5">
-        <div style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: 16 }}>
+        <div style={{ background: COLORS.cardBg, border: "1px solid rgba(255,255,255, 0.04)", padding: 16, borderRadius: 16 }}>
           <LanePicker lanes={lanes} value={selectedLaneId} onChange={setSelectedLaneId} />
-          <div className="mt-4" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "12px 16px" }}>
+          <div className="mt-4" style={{ background: COLORS.cardBg, border: "1px solid rgba(255,255,255, 0.04)", padding: "12px 16px", borderRadius: 16 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textPrimary, fontFamily: SANS_FONT }}>Blank shell session</div>
             <div className="mt-1" style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
               Starts a regular terminal with lane context for manual commands, scripts, or debugging.
@@ -394,7 +398,7 @@ export function WorkStartSurface({
           </div>
         </div>
 
-        <div className="mt-auto flex items-center justify-between gap-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "12px 16px" }}>
+        <div className="mt-auto flex items-center justify-between gap-3" style={{ background: COLORS.cardBg, border: "1px solid rgba(255,255,255, 0.04)", padding: "12px 16px", borderRadius: 16 }}>
           <div style={{ fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", color: COLORS.textMuted }}>
             Lane {lanes.find((lane) => lane.id === selectedLaneId)?.name ?? selectedLaneId}
           </div>
@@ -416,6 +420,7 @@ export function WorkStartSurface({
               border: `1px solid ${COLORS.accent}`,
               cursor: selectedLaneId && !launchBusy ? "pointer" : "not-allowed",
               opacity: selectedLaneId && !launchBusy ? 1 : 0.5,
+              borderRadius: 999,
             }}
             disabled={!selectedLaneId || launchBusy}
             onClick={() => void launchShell()}

@@ -299,10 +299,10 @@ export function buildFullPrompt(
         [
           "PROOF CAPTURE:",
           `- This step requires proof artifacts: ${hardProofRequirements.join(", ")}.`,
-          "- Use ADE's local computer-use tools when you need native proof capture:",
-          "- `get_environment_info`, `launch_app`, `interact_gui`, `screenshot_environment`, and `record_environment`.",
-          "- When those tools generate proof files, include them in `report_result.artifacts` with canonical types such as `screenshot`, `browser_verification`, `browser_trace`, `video_recording`, or `console_logs`.",
-          "- Do not assume ADE inferred proof automatically; attach the resulting artifact URIs explicitly in your final `report_result` payload.",
+          "- Prefer external computer-use backends first. Use `get_computer_use_backend_status` to see what ADE can ingest and prefer approved external tools such as `ext.*` backends or external CLIs like agent-browser when available.",
+          "- After an external backend produces proof, call `ingest_computer_use_artifacts` so ADE can normalize, store, link, and publish the resulting evidence.",
+          "- Use ADE-local tools (`get_environment_info`, `launch_app`, `interact_gui`, `screenshot_environment`, `record_environment`) only as fallback compatibility support when an external backend is not available for the step.",
+          "- Do not assume ADE inferred proof automatically. Register or attach the resulting artifact URIs explicitly.",
         ].join("\n")
       );
     }

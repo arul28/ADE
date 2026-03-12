@@ -114,7 +114,7 @@ export function TimelineCompactView({
   return (
     <div className="flex flex-1 flex-col min-h-0">
       {/* ---- header ---- */}
-      <div className="flex items-center border-b border-border/15 bg-surface-recessed/30 px-2">
+      <div className="flex items-center border-b border-white/[0.06] bg-white/[0.02] backdrop-blur-xl px-2">
         {COLUMNS.map((col, i) => {
           const active = sortField === col.field;
           const SortIcon = sortDir === "asc" ? CaretUp : CaretDown;
@@ -128,7 +128,7 @@ export function TimelineCompactView({
                 "flex h-7 items-center gap-0.5 px-1",
                 col.width,
                 col.align === "right" && "justify-end",
-                "font-mono text-[9px] font-bold uppercase tracking-[1px]",
+                "font-sans text-[9px] font-bold uppercase tracking-[1px]",
                 active ? "text-fg" : "text-muted-fg hover:text-fg",
               )}
             >
@@ -155,8 +155,8 @@ export function TimelineCompactView({
                 "flex h-7 w-full items-center border-l-2 border-l-transparent px-2",
                 "transition-colors duration-75",
                 selected
-                  ? "border-l-accent bg-accent/8"
-                  : "hover:bg-card/30",
+                  ? "border-l-accent bg-white/[0.05]"
+                  : "hover:bg-white/[0.03]",
               )}
             >
               {/* Time */}
@@ -170,7 +170,7 @@ export function TimelineCompactView({
                   className="inline-block size-[6px] shrink-0 rounded-full"
                   style={{ backgroundColor: catMeta?.color ?? ev.color }}
                 />
-                <span className="truncate font-mono text-[10px] text-fg">
+                <span className="truncate font-sans text-[10px] text-fg">
                   {ev.label}
                 </span>
               </span>

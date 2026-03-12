@@ -41,7 +41,7 @@ function MetaCell({
 }) {
   return (
     <div className="flex flex-col gap-1">
-      <span className="font-mono text-[10px] font-bold uppercase tracking-[1px] text-muted-fg">
+      <span className="font-sans text-[10px] font-bold uppercase tracking-[1px] text-muted-fg">
         {label}
       </span>
       <span className="font-mono text-[11px] text-fg">{children}</span>
@@ -143,7 +143,7 @@ function PanelContent({
       {/* ── Header ────────────────────────────────────────────── */}
       <div className="flex items-start gap-3 px-3 pt-2 pb-3">
         <div
-          className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center"
+          className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
           style={{ backgroundColor: catMeta.colorMuted }}
         >
           <div
@@ -158,7 +158,7 @@ function PanelContent({
           </h2>
           <div
             className={cn(
-              "inline-flex w-fit items-center border px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[1px]",
+              "inline-flex w-fit items-center border rounded-md px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[1px]",
               statusClasses,
             )}
           >
@@ -177,7 +177,7 @@ function PanelContent({
       )}
 
       {/* ── Metadata grid ─────────────────────────────────────── */}
-      <div className="mx-3 border border-border/10 bg-card p-3">
+      <div className="mx-3 border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl rounded-xl p-3">
         <div className="grid grid-cols-2 gap-x-6 gap-y-3">
           <MetaCell label="Kind">
             <span className="font-mono text-[11px] text-fg">{event.kind}</span>
@@ -245,8 +245,8 @@ function PanelContent({
 
       {/* ── Lane section ──────────────────────────────────────── */}
       {event.laneId && (
-        <div className="mx-3 mt-3 border border-border/10 bg-card p-3">
-          <span className="font-mono text-[10px] font-bold uppercase tracking-[1px] text-muted-fg">
+        <div className="mx-3 mt-3 border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl rounded-xl p-3">
+          <span className="font-sans text-[10px] font-bold uppercase tracking-[1px] text-muted-fg">
             Lane
           </span>
           <div className="mt-2 flex items-center justify-between">
@@ -277,8 +277,8 @@ function PanelContent({
 
       {/* ── SHA transition ────────────────────────────────────── */}
       {(event.preHeadSha || event.postHeadSha) && (
-        <div className="mx-3 mt-3 border border-border/10 bg-card p-3">
-          <span className="font-mono text-[10px] font-bold uppercase tracking-[1px] text-muted-fg">
+        <div className="mx-3 mt-3 border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl rounded-xl p-3">
+          <span className="font-sans text-[10px] font-bold uppercase tracking-[1px] text-muted-fg">
             HEAD Transition
           </span>
           <div className="mt-2 flex items-center gap-2">
@@ -292,7 +292,7 @@ function PanelContent({
 
       {/* ── Raw metadata (collapsible) ────────────────────────── */}
       {event.metadata && Object.keys(event.metadata).length > 0 && (
-        <div className="mx-3 mt-3 border border-border/10 bg-card p-3">
+        <div className="mx-3 mt-3 border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl rounded-xl p-3">
           <button
             type="button"
             onClick={() => setMetadataExpanded(!metadataExpanded)}
@@ -303,7 +303,7 @@ function PanelContent({
             ) : (
               <CaretRight size={10} weight="bold" className="text-muted-fg" />
             )}
-            <span className="font-mono text-[10px] font-bold uppercase tracking-[1px] text-muted-fg">
+            <span className="font-sans text-[10px] font-bold uppercase tracking-[1px] text-muted-fg">
               Raw Metadata
             </span>
           </button>
@@ -317,7 +317,7 @@ function PanelContent({
                 transition={{ duration: 0.12, ease: "easeOut" }}
                 className="overflow-hidden"
               >
-                <pre className="mt-2 overflow-x-auto border border-border/10 bg-[#0D0B12] p-3 font-mono text-[10px] leading-relaxed text-muted-fg">
+                <pre className="mt-2 overflow-x-auto border border-white/[0.04] bg-white/[0.02] rounded-lg p-3 font-mono text-[10px] leading-relaxed text-muted-fg">
                   {JSON.stringify(event.metadata, null, 2)}
                 </pre>
               </motion.div>

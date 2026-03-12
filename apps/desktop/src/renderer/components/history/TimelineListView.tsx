@@ -90,8 +90,8 @@ export function TimelineListView({
           {/* Sticky group header */}
           <div
             className={cn(
-              "sticky top-0 z-10 border-b border-border/10 bg-bg/90 px-3 py-1.5 backdrop-blur-sm",
-              "font-mono text-[10px] font-bold uppercase tracking-[1px] text-muted-fg/50",
+              "sticky top-0 z-10 border-b border-white/[0.06] bg-white/[0.02] px-3 py-1.5 backdrop-blur-xl",
+              "font-sans text-[10px] font-bold uppercase tracking-[1px] text-muted-fg/50",
             )}
           >
             {group.label}
@@ -114,8 +114,8 @@ export function TimelineListView({
                   "flex w-full items-center gap-2 border-l-2 border-l-transparent px-2 py-1.5",
                   "transition-colors duration-75",
                   selected
-                    ? "border-l-accent bg-accent/8"
-                    : "hover:bg-card/40",
+                    ? "border-l-accent bg-white/[0.05]"
+                    : "hover:bg-white/[0.03]",
                 )}
               >
                 {/* Category color bar */}
@@ -140,7 +140,7 @@ export function TimelineListView({
 
                 {/* Label + kind */}
                 <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
-                  <span className="truncate font-mono text-[11px] text-fg">
+                  <span className="truncate font-sans text-[11px] text-fg">
                     {ev.label}
                   </span>
                   <span className="shrink-0 font-mono text-[9px] text-muted-fg/60">
@@ -162,7 +162,7 @@ export function TimelineListView({
                 {/* Status badge */}
                 <span
                   className={cn(
-                    "shrink-0 border px-1.5 py-px font-mono text-[9px] font-bold uppercase tracking-[0.5px]",
+                    "shrink-0 border rounded-md px-1.5 py-px font-mono text-[9px] font-bold uppercase tracking-[0.5px]",
                     getStatusClasses(ev.status),
                   )}
                 >

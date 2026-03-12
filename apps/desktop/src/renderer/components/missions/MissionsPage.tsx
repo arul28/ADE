@@ -250,15 +250,15 @@ export default function MissionsPage() {
   /* ── Loading screen ── */
   if (loading) {
     return (
-      <div className="flex h-full min-w-0 flex-col" style={{ background: COLORS.pageBg }}>
+      <div className="flex h-full min-w-0 flex-col bg-bg">
         <div className="flex flex-col items-center justify-center flex-1 gap-3">
           <div className="animate-pulse flex flex-col items-center gap-2">
-            <div className="h-4 w-48" style={{ background: COLORS.border }} />
-            <div className="h-3 w-32" style={{ background: `${COLORS.border}60` }} />
+            <div className="h-4 w-48 rounded-md bg-white/[0.06]" />
+            <div className="h-3 w-32 rounded-md bg-white/[0.04]" />
           </div>
           <div
-            className="text-[10px] font-bold uppercase tracking-widest"
-            style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}
+            className="text-[10px] font-bold uppercase tracking-widest text-muted-fg"
+            style={{ fontFamily: MONO_FONT }}
           >
             LOADING MISSIONS...
           </div>
@@ -273,8 +273,7 @@ export default function MissionsPage() {
       <Group
         id="missions-layout"
         orientation="horizontal"
-        className="flex h-full min-h-0"
-        style={{ background: COLORS.pageBg }}
+        className="flex h-full min-h-0 bg-bg"
       >
         {/* Sidebar (resizable 200-400px, VAL-UX-010) */}
         {!collapsed && (
@@ -291,15 +290,14 @@ export default function MissionsPage() {
             </Panel>
             <Separator
               id="missions-separator"
-              className="w-[4px] hover:bg-[#A78BFA30] active:bg-[#A78BFA50] transition-colors cursor-col-resize"
-              style={{ background: COLORS.border }}
+              className="w-[4px] bg-white/[0.06] hover:bg-[#A78BFA]/20 active:bg-[#A78BFA]/30 transition-colors cursor-col-resize"
             />
           </>
         )}
 
         {/* Main workspace */}
         <Panel id="missions-detail" minSize="50%">
-          <div className="flex flex-1 flex-col min-w-0 h-full" style={{ background: COLORS.pageBg }}>
+          <div className="flex flex-1 flex-col min-w-0 h-full bg-bg">
             <MissionDetailView />
           </div>
         </Panel>

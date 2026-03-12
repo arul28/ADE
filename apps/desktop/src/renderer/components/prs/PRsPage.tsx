@@ -104,12 +104,12 @@ function PRsPageInner() {
       <div className="flex h-full min-w-0 flex-col" style={{ background: "#0F0D14" }}>
         <div className="flex flex-1 flex-col items-center justify-center gap-3">
           <div className="animate-pulse flex flex-col items-center gap-2">
-            <div className="h-4 w-48 bg-[#1E1B26]" />
-            <div className="h-3 w-32 bg-[#1E1B26]/60" />
+            <div className="h-4 w-48 rounded-xl bg-white/[0.03]" />
+            <div className="h-3 w-32 rounded-xl bg-white/[0.02]" />
             <div className="mt-4 grid w-72 gap-2">
-              <div className="h-10 bg-[#13101A]" />
-              <div className="h-10 bg-[#13101A]" />
-              <div className="h-10 bg-[#13101A]" />
+              <div className="h-10 rounded-xl bg-white/[0.03] border border-white/[0.06]" />
+              <div className="h-10 rounded-xl bg-white/[0.03] border border-white/[0.06]" />
+              <div className="h-10 rounded-xl bg-white/[0.03] border border-white/[0.06]" />
             </div>
           </div>
           <div className="text-[10px] font-mono uppercase tracking-[1px] text-[#71717A]">LOADING PRS...</div>
@@ -120,21 +120,22 @@ function PRsPageInner() {
 
   return (
     <div className="flex h-full min-w-0 flex-col" style={{ background: "#0F0D14" }}>
-      <div className="flex h-16 shrink-0 items-center gap-6 px-6" style={{ borderBottom: "1px solid #1E1B26" }}>
+      {/* Header bar */}
+      <div className="flex h-16 shrink-0 items-center gap-6 px-6 border-b border-white/[0.06]">
         <div className="flex items-center gap-3">
           <GitPullRequest size={18} weight="bold" className="text-[#A78BFA]" />
-          <span className="text-[16px] font-bold tracking-[-0.3px] text-[#FAFAFA]" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
+          <span className="text-[16px] font-sans font-bold tracking-[-0.3px] text-[#FAFAFA]">
             PULL REQUESTS
           </span>
           <span
-            className="px-2.5 py-1 text-[9px] font-mono font-bold uppercase tracking-[1px] text-[#A78BFA]"
+            className="rounded-md px-2.5 py-1 text-[9px] font-mono font-bold uppercase tracking-[1px] text-[#A78BFA]"
             style={{ background: "#A78BFA18", border: "1px solid #A78BFA30" }}
           >
             {prs.length} LINKED
           </span>
         </div>
 
-        <div role="tablist" aria-label="PR surfaces" className="flex items-center gap-0.5">
+        <div role="tablist" aria-label="PR surfaces" className="flex items-center gap-1">
           {([
             { id: "github", num: "01", label: "GITHUB" },
             { id: "workflows", num: "02", label: "WORKFLOWS" },
@@ -146,16 +147,12 @@ function PRsPageInner() {
                 type="button"
                 role="tab"
                 aria-selected={active}
-                className="relative flex items-center gap-2 px-4 py-2.5 text-[10px] font-mono font-bold uppercase tracking-[1px] transition-colors duration-150"
-                style={active ? {
-                  background: "#A78BFA18",
-                  borderLeft: "2px solid #A78BFA",
-                  color: "#FAFAFA",
-                } : {
-                  background: "transparent",
-                  borderLeft: "2px solid transparent",
-                  color: "#71717A",
-                }}
+                className={cn(
+                  "relative flex items-center gap-2 rounded-md px-4 py-2.5 text-[10px] font-mono font-bold uppercase tracking-[1px] transition-all duration-200",
+                  active
+                    ? "bg-[#A78BFA]/10 text-[#FAFAFA] border border-[#A78BFA]/20"
+                    : "text-[#71717A] border border-transparent hover:bg-white/[0.03] hover:text-[#A1A1AA]"
+                )}
                 onClick={() => {
                   if (surface.id === "github") {
                     setActiveTab("normal");
@@ -164,7 +161,7 @@ function PRsPageInner() {
                   }
                 }}
               >
-                <span style={{ color: active ? "#A78BFA" : "#52525B" }}>{surface.num}</span>
+                <span className={active ? "text-[#A78BFA]" : "text-[#52525B]"}>{surface.num}</span>
                 <span>{surface.label}</span>
               </button>
             );
@@ -175,10 +172,7 @@ function PRsPageInner() {
           <button
             type="button"
             onClick={() => setCreatePrOpen(true)}
-            className={cn(
-              "flex items-center gap-2 h-8 px-5 text-[10px] font-mono font-bold uppercase tracking-[1px] text-[#0F0D14] transition-all duration-100 hover:brightness-110 active:scale-[0.97]"
-            )}
-            style={{ background: "#A78BFA" }}
+            className="flex items-center gap-2 h-8 px-5 rounded-md text-[10px] font-mono font-bold uppercase tracking-[1px] text-[#0F0D14] bg-[#A78BFA] transition-all duration-100 hover:brightness-110 active:scale-[0.97]"
           >
             <Plus size={14} weight="bold" />
             Create

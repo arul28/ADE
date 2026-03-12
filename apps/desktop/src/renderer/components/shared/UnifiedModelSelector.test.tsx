@@ -51,6 +51,6 @@ describe("UnifiedModelSelector", () => {
     });
 
     expect(screen.getByRole("option", { name: /Claude Sonnet 4\.6/i })).toBeTruthy();
-    expect(screen.queryByRole("option", { name: /GPT-5\.4 Codex/i })).toBeNull();
+    expect(screen.queryByRole("option", { name: /GPT-5\.4$/i })).toBeNull();
   });
 });

@@ -25,6 +25,7 @@ import {
 } from "./compactionEngine";
 import type { AdeDb } from "../state/kvDb";
 import type { CompactionFlushService } from "../memory/compactionFlushService";
+import type { DetectedAuth } from "./authDetector";
 
 export type UnifiedExecutorOpts = {
   modelId: string;
@@ -48,6 +49,7 @@ export type UnifiedExecutorOpts = {
   /** Optional memory service for wiring memory tools into the coding tool set. */
   memoryService?: unknown;
   compactionFlushService?: Pick<CompactionFlushService, "beforeCompaction">;
+  auth?: DetectedAuth[];
 };
 
 export type UnifiedResumeOpts = UnifiedExecutorOpts & {
@@ -69,7 +71,7 @@ export async function* executeUnified(
     return;
   }
 
-  const auth = await detectAllAuth();
+  const auth = opts.auth ?? await detectAllAuth();
   let sdkModel;
   try {
     sdkModel = await resolveModel(opts.modelId, auth);

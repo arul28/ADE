@@ -35,22 +35,22 @@
 }
 
 @theme {
-  --radius-xl: 0px;
-  --radius-lg: 0px;
-  --radius-md: 0px;
-  --radius-sm: 0px;
+  --radius-xl: 16px;
+  --radius-lg: 12px;
+  --radius-md: 8px;
+  --radius-sm: 6px;
   --radius-full: 9999px;
 
-  --pane-gap: 3px;
-  --pane-radius: 0px;
+  --pane-gap: 4px;
+  --pane-radius: 12px;
   --pane-minimized-height: 28px;
 
   --font-sans: "Space Grotesk", "Geist", -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: "JetBrains Mono", "Geist Mono", ui-monospace, monospace;
 
-  --shadow-card: 0 1px 6px -1px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(45, 40, 64, 0.3);
-  --shadow-card-hover: 0 4px 16px -2px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(45, 40, 64, 0.5);
-  --shadow-float: 0 8px 32px -8px rgba(0, 0, 0, 0.8);
+  --shadow-card: 0 2px 8px -2px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(45, 40, 64, 0.2);
+  --shadow-card-hover: 0 6px 20px -4px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(45, 40, 64, 0.35);
+  --shadow-float: 0 12px 40px -12px rgba(0, 0, 0, 0.7);
 
   --chat-radius-shell: 18px;
   --chat-radius-card: 16px;
@@ -109,61 +109,61 @@
   --shell-header-height: 40px;
   --shell-header-padding-start: 80px;
   --shell-header-padding-end: 14px;
-  --shell-header-bg: color-mix(in srgb, var(--color-surface-raised) 88%, var(--color-bg));
+  --shell-header-bg: rgba(14, 12, 20, 0.82);
   --shell-header-fg: var(--color-fg);
-  --shell-header-border: color-mix(in srgb, var(--color-border) 72%, transparent);
-  --shell-header-divider: color-mix(in srgb, var(--color-border) 54%, transparent);
+  --shell-header-border: rgba(255, 255, 255, 0.04);
+  --shell-header-divider: rgba(255, 255, 255, 0.04);
 
   --shell-sidebar-collapsed-width: 52px;
   --shell-sidebar-expanded-width: 168px;
-  --shell-sidebar-bg: linear-gradient(180deg, rgba(24, 20, 35, 0.96) 0%, rgba(11, 10, 15, 0.98) 100%);
-  --shell-sidebar-border: color-mix(in srgb, var(--color-border) 70%, transparent);
+  --shell-sidebar-bg: linear-gradient(180deg, rgba(20, 17, 29, 0.88) 0%, rgba(9, 8, 12, 0.92) 100%);
+  --shell-sidebar-border: rgba(255, 255, 255, 0.04);
   --shell-sidebar-item-height: 36px;
-  --shell-sidebar-item-fg: color-mix(in srgb, var(--color-muted-fg) 84%, var(--color-fg) 16%);
-  --shell-sidebar-item-hover-fg: var(--color-fg);
-  --shell-sidebar-item-hover-bg: color-mix(in srgb, var(--color-muted) 76%, transparent);
+  --shell-sidebar-item-fg: rgba(255, 255, 255, 0.45);
+  --shell-sidebar-item-hover-fg: rgba(255, 255, 255, 0.85);
+  --shell-sidebar-item-hover-bg: rgba(255, 255, 255, 0.05);
   --shell-sidebar-item-active-fg: var(--color-accent);
-  --shell-sidebar-item-active-bg: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  --shell-sidebar-item-active-bg: rgba(167, 139, 250, 0.1);
   --shell-sidebar-item-active-rail: var(--color-accent);
-  --shell-sidebar-separator: color-mix(in srgb, var(--color-border) 48%, transparent);
+  --shell-sidebar-separator: rgba(255, 255, 255, 0.04);
 
   --shell-project-tab-bg: transparent;
-  --shell-project-tab-fg: var(--color-muted-fg);
-  --shell-project-tab-hover-bg: color-mix(in srgb, var(--color-muted) 68%, transparent);
-  --shell-project-tab-hover-fg: var(--color-fg);
-  --shell-project-tab-hover-border: color-mix(in srgb, var(--color-accent) 22%, var(--color-border));
-  --shell-project-tab-active-bg: var(--color-accent);
-  --shell-project-tab-active-fg: var(--color-accent-fg);
-  --shell-project-tab-active-border: color-mix(in srgb, var(--color-accent) 52%, transparent);
-  --shell-project-tab-missing-bg: color-mix(in srgb, var(--color-error) 11%, transparent);
+  --shell-project-tab-fg: rgba(255, 255, 255, 0.45);
+  --shell-project-tab-hover-bg: rgba(255, 255, 255, 0.06);
+  --shell-project-tab-hover-fg: rgba(255, 255, 255, 0.85);
+  --shell-project-tab-hover-border: rgba(255, 255, 255, 0.08);
+  --shell-project-tab-active-bg: rgba(167, 139, 250, 0.15);
+  --shell-project-tab-active-fg: #e0d4ff;
+  --shell-project-tab-active-border: rgba(167, 139, 250, 0.25);
+  --shell-project-tab-missing-bg: rgba(239, 68, 68, 0.08);
   --shell-project-tab-missing-fg: color-mix(in srgb, var(--color-error) 82%, var(--color-fg) 18%);
-  --shell-project-tab-missing-border: color-mix(in srgb, var(--color-error) 34%, transparent);
-  --shell-project-tab-open-bg: color-mix(in srgb, var(--color-accent) 18%, transparent);
-  --shell-project-tab-open-fg: var(--color-fg);
-  --shell-project-tab-open-border: color-mix(in srgb, var(--color-accent) 40%, transparent);
-  --shell-project-tab-focus-bg: color-mix(in srgb, var(--color-accent) 12%, transparent);
-  --shell-project-tab-focus-fg: var(--color-fg);
-  --shell-project-tab-focus-border: color-mix(in srgb, var(--color-accent) 36%, transparent);
-  --shell-project-tab-focus-ring: color-mix(in srgb, var(--color-accent) 30%, transparent);
-  --shell-project-tab-font-family: var(--font-mono);
+  --shell-project-tab-missing-border: rgba(239, 68, 68, 0.2);
+  --shell-project-tab-open-bg: rgba(167, 139, 250, 0.1);
+  --shell-project-tab-open-fg: rgba(255, 255, 255, 0.85);
+  --shell-project-tab-open-border: rgba(167, 139, 250, 0.2);
+  --shell-project-tab-focus-bg: rgba(167, 139, 250, 0.08);
+  --shell-project-tab-focus-fg: rgba(255, 255, 255, 0.85);
+  --shell-project-tab-focus-border: rgba(167, 139, 250, 0.2);
+  --shell-project-tab-focus-ring: rgba(167, 139, 250, 0.15);
+  --shell-project-tab-font-family: var(--font-sans);
   --shell-project-tab-font-size: 11px;
   --shell-project-tab-letter-spacing: 0;
 
-  --shell-control-bg: var(--color-surface-recessed);
-  --shell-control-fg: var(--color-muted-fg);
-  --shell-control-border: color-mix(in srgb, var(--color-border) 85%, var(--color-muted-fg) 15%);
-  --shell-control-hover-bg: var(--color-surface-recessed);
-  --shell-control-hover-fg: var(--color-fg);
-  --shell-control-hover-border: color-mix(in srgb, var(--color-accent) 20%, var(--color-border));
-  --shell-control-open-bg: color-mix(in srgb, var(--color-accent) 14%, var(--shell-control-bg));
-  --shell-control-open-fg: var(--color-fg);
-  --shell-control-open-border: color-mix(in srgb, var(--color-accent) 46%, var(--shell-control-border));
-  --shell-control-focus-bg: var(--shell-control-hover-bg);
-  --shell-control-focus-fg: var(--shell-control-hover-fg);
-  --shell-control-focus-border: color-mix(in srgb, var(--color-accent) 38%, var(--shell-control-border));
-  --shell-control-focus-ring: color-mix(in srgb, var(--color-accent) 30%, transparent);
-  --shell-control-kbd-bg: color-mix(in srgb, var(--color-surface) 82%, var(--color-bg));
-  --shell-control-kbd-fg: var(--color-muted-fg);
+  --shell-control-bg: rgba(255, 255, 255, 0.03);
+  --shell-control-fg: rgba(255, 255, 255, 0.5);
+  --shell-control-border: rgba(255, 255, 255, 0.06);
+  --shell-control-hover-bg: rgba(255, 255, 255, 0.06);
+  --shell-control-hover-fg: rgba(255, 255, 255, 0.85);
+  --shell-control-hover-border: rgba(255, 255, 255, 0.1);
+  --shell-control-open-bg: rgba(167, 139, 250, 0.1);
+  --shell-control-open-fg: rgba(255, 255, 255, 0.9);
+  --shell-control-open-border: rgba(167, 139, 250, 0.2);
+  --shell-control-focus-bg: rgba(255, 255, 255, 0.06);
+  --shell-control-focus-fg: rgba(255, 255, 255, 0.85);
+  --shell-control-focus-border: rgba(167, 139, 250, 0.2);
+  --shell-control-focus-ring: rgba(167, 139, 250, 0.12);
+  --shell-control-kbd-bg: rgba(255, 255, 255, 0.04);
+  --shell-control-kbd-fg: rgba(255, 255, 255, 0.4);
 
   --shell-status-running: #34d399;
   --shell-status-attention: #fbbf24;
@@ -352,6 +352,8 @@ h6 {
   padding-right: var(--shell-header-padding-end);
   color: var(--shell-header-fg);
   background: var(--shell-header-bg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border-bottom: 1px solid var(--shell-header-border);
 }
 
@@ -366,7 +368,9 @@ h6 {
   color: var(--shell-project-tab-fg);
   background: var(--shell-project-tab-bg);
   border: 1px solid transparent;
+  border-radius: 8px;
   outline: none;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
 }
 
 .ade-shell-project-tab:hover {
@@ -404,7 +408,9 @@ h6 {
   color: var(--shell-control-fg);
   background: var(--shell-control-bg);
   border: 1px solid var(--shell-control-border);
+  border-radius: 8px;
   outline: none;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
 }
 
 .ade-shell-control:hover {
@@ -459,13 +465,15 @@ h6 {
 
 .ade-shell-sidebar-item {
   min-height: var(--shell-sidebar-item-height);
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-sans);
+  font-size: 11.5px;
   font-weight: 500;
-  letter-spacing: 0;
+  letter-spacing: -0.01em;
   color: var(--shell-sidebar-item-fg);
   background: transparent;
+  border-radius: 8px;
   outline: none;
+  transition: color 120ms ease, background 120ms ease;
 }
 
 .ade-shell-sidebar-item:hover {
@@ -508,13 +516,17 @@ h6 {
 .ade-shell-sidebar-menu {
   background: var(--shell-sidebar-bg);
   border: 1px solid var(--shell-sidebar-border);
+  border-radius: 12px;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 
 .ade-shell-sidebar-menu-item {
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-sans);
+  font-size: 11.5px;
   color: var(--shell-sidebar-item-fg);
   background: transparent;
+  border-radius: 8px;
 }
 
 .ade-shell-sidebar-menu-item:hover {
@@ -537,7 +549,7 @@ h6 {
 .ade-sidebar-clip {
   width: var(--shell-sidebar-collapsed-width);
   overflow: hidden;
-  border-right-color: var(--shell-sidebar-border);
+  border-right-color: rgba(255, 255, 255, 0.04);
   transition: width 200ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -549,6 +561,8 @@ h6 {
 .ade-sidebar {
   width: var(--shell-sidebar-expanded-width);
   background: var(--shell-sidebar-bg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 
 /* Phase-2 label animation: fade out immediately, fade in after width expands */
@@ -617,7 +631,7 @@ h6 {
 }
 
 .ade-gutter .ade-gutter-pill {
-  border-radius: 0px;
+  border-radius: 4px;
   background: var(--border-separator);
   opacity: 0;
   transition: opacity 0.1s ease, background-color 0.1s ease;
@@ -720,11 +734,11 @@ h6 {
 }
 
 .ade-floating-pane-header .ade-pane-title {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-family: var(--font-sans);
+  font-size: 11px;
   font-weight: 500;
   color: var(--color-muted-fg);
-  letter-spacing: 0.03em;
+  letter-spacing: 0.02em;
   text-transform: uppercase;
 }
 
@@ -1094,7 +1108,7 @@ h6 {
 .ade-pane-gutter:hover,
 .ade-pane-gutter[data-resize-handle-active] {
   background: color-mix(in srgb, var(--color-separator-active) 8%, transparent);
-  border-radius: 0px;
+  border-radius: 4px;
 }
 
 .ade-pane-gutter:hover::before,

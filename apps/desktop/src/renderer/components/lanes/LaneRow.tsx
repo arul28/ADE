@@ -48,11 +48,11 @@ function RemotePullBanner({ laneId, behindCount }: { laneId: string; behindCount
 
   return (
     <div
-      className="mt-2 flex items-center gap-2 px-3 py-2 text-[11px] font-mono"
+      className="mt-2 flex items-center gap-2 px-3 py-2 text-[11px] font-sans"
       style={{
         background: "rgba(59,130,246,0.06)",
         border: "1px solid rgba(59,130,246,0.20)",
-        borderRadius: 4,
+        borderRadius: 12,
       }}
     >
       <ArrowDown size={13} weight="bold" className="text-blue-400 shrink-0" />
@@ -63,7 +63,7 @@ function RemotePullBanner({ laneId, behindCount }: { laneId: string; behindCount
         type="button"
         disabled={pulling}
         onClick={(e) => { e.stopPropagation(); void handlePull(); }}
-        className="ml-auto font-bold uppercase tracking-[1px] text-[10px] px-2.5 py-1 transition-colors"
+        className="ml-auto font-bold uppercase tracking-[1px] text-[10px] px-2.5 py-1 rounded-md transition-colors"
         style={{
           background: "rgba(59,130,246,0.15)",
           border: "1px solid rgba(59,130,246,0.30)",
@@ -142,11 +142,11 @@ export const LaneRow = React.memo(function LaneRow({
   return (
     <div
       className={cn(
-        "group relative flex flex-col gap-1 rounded-lg bg-card/50 backdrop-blur-sm py-2.5 px-3 mb-1.5 transition-all duration-200 border border-border/10",
-        "hover:bg-card/70 hover:shadow-[0_4px_20px_-4px_rgba(0,0,0,0.4)] hover:-translate-y-[1px]",
-        "shadow-[0_2px_8px_-2px_rgba(0,0,0,0.3)]",
-        primary && "bg-card/80 shadow-[0_0_16px_-4px_rgba(16,185,129,0.15)] border-emerald-500/15 hover:border-emerald-500/25 hover:shadow-[0_0_20px_-4px_rgba(16,185,129,0.2)]",
-        selected && !primary && "bg-card/75 shadow-[0_0_16px_-4px_rgba(245,158,11,0.2)] ring-1 ring-amber-500/15 border-amber-500/15 hover:shadow-[0_0_20px_-4px_rgba(245,158,11,0.25)]"
+        "group relative flex flex-col gap-1 rounded-xl bg-white/[0.03] backdrop-blur-xl py-2.5 px-3 mb-1.5 transition-all duration-200 border border-white/[0.06]",
+        "hover:bg-white/[0.06] hover:border-[rgba(167,139,250,0.28)] hover:shadow-[0_4px_24px_-4px_rgba(0,0,0,0.35)] hover:-translate-y-[2px]",
+        "shadow-[0_2px_12px_-4px_rgba(0,0,0,0.2)]",
+        primary && "bg-white/[0.05] shadow-[0_0_16px_-4px_rgba(16,185,129,0.15)] border-emerald-500/15 hover:border-emerald-500/25 hover:shadow-[0_0_20px_-4px_rgba(16,185,129,0.2)]",
+        selected && !primary && "bg-white/[0.05] shadow-[0_0_16px_-4px_rgba(167,139,250,0.15)] ring-1 ring-[rgba(167,139,250,0.15)] border-[rgba(167,139,250,0.20)] hover:shadow-[0_0_20px_-4px_rgba(167,139,250,0.2)]"
       )}
       style={{ paddingLeft: `${12 + stackIndentPx}px` }}
       onClick={(event) => onSelect({ extend: event.shiftKey })}
@@ -159,7 +159,7 @@ export const LaneRow = React.memo(function LaneRow({
       {lane.parentLaneId ? (
         <>
           <div
-            className="pointer-events-none absolute w-px bg-border/25"
+            className="pointer-events-none absolute w-px bg-white/[0.08]"
             style={
               isLastSibling
                 ? { left: `${connectorLeft}px`, top: "0px", bottom: "50%" }
@@ -167,7 +167,7 @@ export const LaneRow = React.memo(function LaneRow({
             }
           />
           <div
-            className="pointer-events-none absolute h-px bg-border/25"
+            className="pointer-events-none absolute h-px bg-white/[0.08]"
             style={{ left: `${connectorLeft}px`, top: "20px", width: "10px" }}
           />
         </>
@@ -199,7 +199,7 @@ export const LaneRow = React.memo(function LaneRow({
             </span>
           </div>
           {lane.description ? (
-            <div className="mt-0.5 truncate pl-6 font-mono text-xs text-muted-fg opacity-80">{lane.description}</div>
+            <div className="mt-0.5 truncate pl-6 font-sans text-xs text-muted-fg opacity-80">{lane.description}</div>
           ) : null}
           {conflictChips && conflictChips.length > 0 ? (
             <div className="mt-1 flex flex-wrap gap-1 pl-6">
@@ -235,7 +235,7 @@ export const LaneRow = React.memo(function LaneRow({
             </Dialog.Trigger>
             <Dialog.Portal>
               <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-              <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(860px,calc(100vw-24px))] -translate-x-1/2 rounded bg-bg border border-border/40 p-3 shadow-float focus:outline-none">
+              <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(860px,calc(100vw-24px))] -translate-x-1/2 rounded-xl bg-bg/80 backdrop-blur-xl border border-white/[0.06] p-4 shadow-float focus:outline-none">
                 <div className="mb-3 flex items-center justify-between gap-3">
                   <Dialog.Title className="text-lg font-sans font-bold">Merge Simulation</Dialog.Title>
                   <Dialog.Close asChild>
@@ -301,7 +301,7 @@ export const LaneRow = React.memo(function LaneRow({
             </Dialog.Trigger>
             <Dialog.Portal>
               <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-              <Dialog.Content className="fixed left-1/2 top-[22%] z-50 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 rounded bg-bg border border-border/40 p-3 shadow-float focus:outline-none">
+              <Dialog.Content className="fixed left-1/2 top-[22%] z-50 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 rounded-xl bg-bg/80 backdrop-blur-xl border border-white/[0.06] p-4 shadow-float focus:outline-none">
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <Dialog.Title className="text-lg font-semibold">Rename Lane</Dialog.Title>
                   <Dialog.Close asChild>
@@ -317,7 +317,7 @@ export const LaneRow = React.memo(function LaneRow({
                     <input
                       value={draftName}
                       onChange={(event) => setDraftName(event.target.value)}
-                      className="block w-full rounded border border-border/15 bg-surface-recessed shadow-card px-3 py-2 text-lg focus:outline-none"
+                      className="block w-full rounded-lg border border-white/[0.06] bg-white/[0.03] shadow-card px-3 py-2 text-lg focus:outline-none"
                       autoFocus
                     />
                   </div>
@@ -362,7 +362,7 @@ export const LaneRow = React.memo(function LaneRow({
               </Dialog.Trigger>
               <Dialog.Portal>
                 <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-                <Dialog.Content className="fixed left-1/2 top-[22%] z-50 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 rounded bg-bg border border-border/40 p-3 shadow-float focus:outline-none">
+                <Dialog.Content className="fixed left-1/2 top-[22%] z-50 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 rounded-xl bg-bg/80 backdrop-blur-xl border border-white/[0.06] p-4 shadow-float focus:outline-none">
                   <div className="mb-4 flex items-center justify-between gap-3">
                     <Dialog.Title className="text-lg font-semibold">Archive Lane</Dialog.Title>
                     <Dialog.Close asChild>
@@ -421,7 +421,7 @@ export const LaneRow = React.memo(function LaneRow({
               </Dialog.Trigger>
               <Dialog.Portal>
                 <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
-                <Dialog.Content className="fixed left-1/2 top-[14%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded bg-bg border border-border/40 p-3 shadow-float focus:outline-none">
+                <Dialog.Content className="fixed left-1/2 top-[14%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded-xl bg-bg/80 backdrop-blur-xl border border-white/[0.06] p-4 shadow-float focus:outline-none">
                   <div className="mb-4 flex items-start justify-between gap-3">
                     <Dialog.Title className="flex items-center gap-2 text-lg font-semibold text-red-300">
                       <Warning size={20} />
@@ -435,11 +435,11 @@ export const LaneRow = React.memo(function LaneRow({
                   </div>
 
                 <div className="space-y-3 text-sm">
-                  <div className="rounded bg-red-950/30 p-3 text-red-200">
+                  <div className="rounded-lg bg-red-950/30 p-3 text-red-200">
                     This action permanently deletes this lane from your computer and git.
                   </div>
 
-                  <div className="rounded bg-card/70 shadow-card p-3 font-mono text-xs">
+                  <div className="rounded-lg bg-white/[0.03] shadow-card p-3 font-mono text-xs">
                     <div>Lane: {lane.name}</div>
                     <div>Branch to delete: {lane.branchRef}</div>
                     <div className="truncate">Worktree to remove: {lane.worktreePath}</div>
@@ -448,7 +448,7 @@ export const LaneRow = React.memo(function LaneRow({
                     ) : null}
                   </div>
 
-                  <label className="flex items-center gap-2 rounded bg-card/70 shadow-card p-2 text-xs">
+                  <label className="flex items-center gap-2 rounded-lg bg-white/[0.03] shadow-card p-2 text-xs">
                     <input
                       type="checkbox"
                       checked={deleteForce}
@@ -464,12 +464,12 @@ export const LaneRow = React.memo(function LaneRow({
                     <input
                       value={deleteConfirmText}
                       onChange={(event) => setDeleteConfirmText(event.target.value)}
-                      className="h-9 w-full rounded bg-card/70 shadow-card px-2 text-sm outline-none"
+                      className="h-9 w-full rounded-lg bg-white/[0.03] shadow-card px-2 text-sm outline-none"
                       autoFocus
                     />
                   </div>
 
-                  {deleteError ? <div className="rounded bg-red-950/20 p-2 text-xs text-red-300">{deleteError}</div> : null}
+                  {deleteError ? <div className="rounded-lg bg-red-950/20 p-2 text-xs text-red-300">{deleteError}</div> : null}
 
                   <div className="flex justify-end gap-2 pt-2">
                     <Button variant="outline" onClick={() => setDeleteOpen(false)} disabled={deleteBusy}>
@@ -510,19 +510,19 @@ export const LaneRow = React.memo(function LaneRow({
         <RemotePullBanner laneId={lane.id} behindCount={lane.status.remoteBehind} />
       )}
 
-      <div className="mt-2 grid grid-cols-3 gap-2 pt-2 border-t border-border/5 text-[11px] font-mono uppercase tracking-wider text-muted-fg">
-        <div className="flex flex-col rounded-md bg-card/30 p-1.5">
+      <div className="mt-2 grid grid-cols-3 gap-2 pt-2 border-t border-white/[0.04] text-[11px] font-sans uppercase tracking-wider text-muted-fg">
+        <div className="flex flex-col rounded-lg bg-white/[0.03] p-1.5">
           <span className="opacity-50">{lane.parentLaneId ? "Vs Parent" : "Pull"}</span>
           <span className="font-bold">
             <span className={cn(lane.status.ahead > 0 ? "text-emerald-400" : "text-fg")}>{lane.status.ahead}↑</span>{" "}
             <span className={cn(lane.status.behind > 0 ? "text-red-400" : "text-fg")}>{lane.status.behind}↓</span>
           </span>
         </div>
-        <div className="flex flex-col rounded-md bg-card/30 p-1.5">
+        <div className="flex flex-col rounded-lg bg-white/[0.03] p-1.5">
           <span className="opacity-50">State</span>
           <span className={cn("font-bold", lane.status.dirty ? "text-accent" : "text-fg")}>{lane.status.dirty ? "DIRTY" : "CLEAN"}</span>
         </div>
-        <div className="flex flex-col rounded-md bg-card/30 p-1.5">
+        <div className="flex flex-col rounded-lg bg-white/[0.03] p-1.5">
           <span className="opacity-50">Last Active</span>
           <span className="text-fg">{isPrimaryLane ? "Pinned" : "--"}</span>
         </div>

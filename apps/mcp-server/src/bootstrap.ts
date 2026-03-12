@@ -26,6 +26,10 @@ import { createAiOrchestratorService } from "../../desktop/src/main/services/orc
 import { createAiIntegrationService } from "../../desktop/src/main/services/ai/aiIntegrationService";
 import { createMissionBudgetService } from "../../desktop/src/main/services/orchestrator/missionBudgetService";
 import { createExternalMcpService, type ExternalMcpService } from "../../desktop/src/main/services/externalMcp/externalMcpService";
+import {
+  createComputerUseArtifactBrokerService,
+  type ComputerUseArtifactBrokerService,
+} from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 
 // ── Event Buffer ─────────────────────────────────────────────────
 // In-memory ring buffer for event streaming (10K cap, FIFO eviction).
@@ -117,6 +121,7 @@ export type AdeMcpRuntime = {
   ctoStateService: ReturnType<typeof createCtoStateService>;
   workerAgentService: ReturnType<typeof createWorkerAgentService>;
   externalMcpService: ExternalMcpService;
+  computerUseArtifactBrokerService: ComputerUseArtifactBrokerService;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
   aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;
   eventBuffer: EventBuffer;
@@ -371,6 +376,16 @@ export async function createAdeMcpRuntime(projectRootInput: string): Promise<Ade
     }
   });
 
+  const computerUseArtifactBrokerService = createComputerUseArtifactBrokerService({
+    db,
+    projectId,
+    projectRoot,
+    missionService,
+    orchestratorService,
+    externalMcpService,
+    logger,
+  });
+
   const aiOrchestratorService = createAiOrchestratorService({
     db,
     logger,
@@ -420,6 +435,7 @@ export async function createAdeMcpRuntime(projectRootInput: string): Promise<Ade
     ctoStateService,
     workerAgentService,
     externalMcpService,
+    computerUseArtifactBrokerService,
     orchestratorService,
     aiOrchestratorService,
     eventBuffer,

@@ -15,14 +15,11 @@ import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 import type { MissionBudgetService } from "../orchestrator/missionBudgetService";
 import { normalizeMissionPermissions } from "../orchestrator/permissionMapping";
 import type { MissionPermissionConfig } from "../../../shared/types/missions";
-import { isRecord, nowIso } from "../shared/utils";
+import { isRecord, nowIso, toOptionalString } from "../shared/utils";
 import type { HumanWorkDigestService } from "../memory/humanWorkDigestService";
 import { getCapabilityForRequirement } from "../computerUse/localComputerUse";
+import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 
-function toNonEmptyString(value: unknown): string | null {
-  const text = typeof value === "string" ? value.trim() : "";
-  return text.length > 0 ? text : null;
-}
 
 function normalizePhaseCards(phases: PhaseCard[]): PhaseCard[] {
   return [...phases]
@@ -71,7 +68,7 @@ function resolveSelectedPhases(args: {
   launch: MissionPreflightRequest["launch"];
   profiles: PhaseProfile[];
 }): { profile: PhaseProfile | null; phases: PhaseCard[] } {
-  const requestedProfileId = toNonEmptyString(args.launch.phaseProfileId);
+  const requestedProfileId = toOptionalString(args.launch.phaseProfileId);
   const selectedProfile = requestedProfileId
     ? args.profiles.find((profile) => profile.id === requestedProfileId) ?? null
     : args.profiles.find((profile) => profile.isDefault) ?? args.profiles[0] ?? null;
@@ -95,6 +92,7 @@ export function createMissionPreflightService(args: {
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   missionBudgetService: MissionBudgetService;
   humanWorkDigestService?: HumanWorkDigestService | null;
+  computerUseArtifactBrokerService?: ComputerUseArtifactBrokerService | null;
 }) {
   const {
     projectRoot,
@@ -103,6 +101,7 @@ export function createMissionPreflightService(args: {
     aiIntegrationService,
     projectConfigService,
     missionBudgetService,
+    computerUseArtifactBrokerService,
   } = args;
 
   const runPreflight = async (request: MissionPreflightRequest): Promise<MissionPreflightResult> => {
@@ -111,15 +110,16 @@ export function createMissionPreflightService(args: {
     const selected = resolveSelectedPhases({ launch, profiles });
 
     const checklist: MissionPreflightChecklistItem[] = [];
+    const backendStatus = computerUseArtifactBrokerService?.getBackendStatus() ?? null;
 
     const structuralIssues: string[] = [];
     for (const [index, phase] of selected.phases.entries()) {
       const prefix = `Phase ${index + 1} (${phase.name || phase.phaseKey || "unnamed"})`;
-      if (!toNonEmptyString(phase.phaseKey)) structuralIssues.push(`${prefix}: missing phase key.`);
-      if (!toNonEmptyString(phase.name)) structuralIssues.push(`${prefix}: missing phase name.`);
-      if (!toNonEmptyString(phase.description)) structuralIssues.push(`${prefix}: missing description.`);
-      if (!toNonEmptyString(phase.instructions)) structuralIssues.push(`${prefix}: missing instructions.`);
-      if (!toNonEmptyString(phase.model.modelId)) structuralIssues.push(`${prefix}: missing model ID.`);
+      if (!toOptionalString(phase.phaseKey)) structuralIssues.push(`${prefix}: missing phase key.`);
+      if (!toOptionalString(phase.name)) structuralIssues.push(`${prefix}: missing phase name.`);
+      if (!toOptionalString(phase.description)) structuralIssues.push(`${prefix}: missing description.`);
+      if (!toOptionalString(phase.instructions)) structuralIssues.push(`${prefix}: missing instructions.`);
+      if (!toOptionalString(phase.model.modelId)) structuralIssues.push(`${prefix}: missing model ID.`);
     }
     checklist.push(
       structuralIssues.length === 0
@@ -198,14 +198,14 @@ export function createMissionPreflightService(args: {
 
       const requestedModels: Array<{ label: string; modelId: string }> = [];
       for (const phase of selected.phases) {
-        if (toNonEmptyString(phase.model.modelId)) {
+        if (toOptionalString(phase.model.modelId)) {
           requestedModels.push({
             label: `${phase.name}`,
             modelId: phase.model.modelId,
           });
         }
       }
-      orchestratorModelId = toNonEmptyString(launch.modelConfig?.orchestratorModel?.modelId);
+      orchestratorModelId = toOptionalString(launch.modelConfig?.orchestratorModel?.modelId);
       if (orchestratorModelId) {
         requestedModels.push({
           label: "Orchestrator",
@@ -292,6 +292,10 @@ export function createMissionPreflightService(args: {
       }
       for (const requirement of evidenceRequirements) {
         const capability = getCapabilityForRequirement(requirement);
+        const externalCoverage = backendStatus?.backends.some((backend) =>
+          backend.available && backend.supportedKinds.includes(requirement)
+        ) ?? false;
+        if (externalCoverage) continue;
         if (!capability || capability.available) continue;
         const message = `${phase.name}: ${requirement.replace(/_/g, " ")} is required, but the local computer-use runtime is ${capability.state === "blocked_by_capability" ? "blocked by platform support" : "missing required tooling"} (${capability.detail}).`;
         if ((phase.validationGate.capabilityFallback ?? "block") === "block") capabilityIssues.push(message);
@@ -315,7 +319,7 @@ export function createMissionPreflightService(args: {
       capabilityIssues.push("Queue finalization cannot auto-land and dry-run the queue at the same time. Pick either auto-land or rehearse-only.");
     }
     if (selectedPrStrategy?.kind === "queue" && selectedPrStrategy.rehearseQueue === true) {
-      const targetBranch = toNonEmptyString(selectedPrStrategy.targetBranch) ?? "main";
+      const targetBranch = toOptionalString(selectedPrStrategy.targetBranch) ?? "main";
       const stripRefPrefix = (ref: string) => ref.trim().replace(/^refs\/heads\//, "").replace(/^origin\//, "");
       const targetExists = activeLanes.some((lane) => {
         const branchRef = stripRefPrefix(String((lane as { branchRef?: string }).branchRef ?? ""));
@@ -371,7 +375,7 @@ export function createMissionPreflightService(args: {
       const descriptor = getModelById(phase.model.modelId) ?? resolveModelAlias(phase.model.modelId);
       if (descriptor) requestedDescriptors.set(descriptor.id, descriptor);
     }
-    const orchestratorDescriptor = toNonEmptyString(launch.modelConfig?.orchestratorModel?.modelId)
+    const orchestratorDescriptor = toOptionalString(launch.modelConfig?.orchestratorModel?.modelId)
       ? getModelById(launch.modelConfig!.orchestratorModel.modelId)
         ?? resolveModelAlias(launch.modelConfig!.orchestratorModel.modelId)
       : null;
@@ -645,13 +649,13 @@ export function createMissionPreflightService(args: {
     const hardFailures = checklist.filter((item) => item.severity === "fail").length;
     const warnings = checklist.filter((item) => item.severity === "warning").length;
     const teamRuntimeConfig = launch.teamRuntime ?? launch.executionPolicy?.teamRuntime ?? null;
-    const selectedLaneId = toNonEmptyString(launch.laneId);
+    const selectedLaneId = toOptionalString(launch.laneId);
     const selectedLaneLabel = selectedLaneId
       ? activeLanes.find((lane) => lane.id === selectedLaneId)?.name ?? null
       : null;
     const approvalSummary: MissionPreflightResult["approvalSummary"] = {
       missionGoal:
-        toNonEmptyString(launch.title)
+        toOptionalString(launch.title)
         ?? launch.prompt.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0)
         ?? "Mission",
       laneId: selectedLaneId,

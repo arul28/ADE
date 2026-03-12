@@ -365,9 +365,10 @@ export function AgentChatPane({
   modelSelectionLocked?: boolean;
   permissionModeLocked?: boolean;
   presentation?: ChatSurfacePresentation;
-  onSessionCreated?: (sessionId: string) => void;
+  onSessionCreated?: (sessionId: string) => void | Promise<void>;
 }) {
   const forceDraft = forceDraftMode || forceNewSession;
+  const preferDraftStart = !lockSessionId && !initialSessionId && !forceNewSession;
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(lockSessionId ?? initialSessionId ?? null);
   const [eventsBySession, setEventsBySession] = useState<Record<string, AgentChatEventEnvelope[]>>({});
@@ -563,12 +564,12 @@ export function AgentChatPane({
     }
 
     setSelectedSessionId((current) => {
-      if (!current && (draftSelectionLockedRef.current || forceDraft)) return null;
+      if (!current && (draftSelectionLockedRef.current || forceDraft || preferDraftStart)) return null;
       if (current && rows.some((row) => row.sessionId === current)) return current;
       if (current && optimisticSessionIdsRef.current.has(current)) return current;
       return rows[0]?.sessionId ?? null;
     });
-  }, [forceDraft, laneId, lockSessionId]);
+  }, [forceDraft, laneId, lockSessionId, preferDraftStart]);
 
   const loadHistory = useCallback(async (sessionId: string) => {
     if (loadedHistoryRef.current.has(sessionId)) return;
@@ -853,7 +854,7 @@ export function AgentChatPane({
       optimisticSessionIdsRef.current.add(created.id);
       draftSelectionLockedRef.current = false;
       setSelectedSessionId(created.id);
-      onSessionCreated?.(created.id);
+      await onSessionCreated?.(created.id);
       void refreshSessions().catch(() => {});
       return created.id;
     })();
@@ -1183,7 +1184,7 @@ export function AgentChatPane({
             }}
           />
         }
-        bodyClassName="min-h-0"
+        bodyClassName="flex min-h-0 flex-col overflow-hidden"
       >
         {error ? (
           <div className="border-b border-red-500/10 px-4 py-2 font-mono text-[10px] text-red-300/80">
@@ -1191,7 +1192,7 @@ export function AgentChatPane({
           </div>
         ) : null}
 
-        <div className="min-h-0 flex-1">
+        <div className="min-h-0 flex-1 overflow-hidden">
           {loading ? (
             <div className="flex h-full items-center justify-center">
               <div className="flex flex-col items-center gap-3">
@@ -1207,7 +1208,7 @@ export function AgentChatPane({
             <AgentChatMessageList
               events={selectedEvents}
               showStreamingIndicator={turnActive}
-              className="border-0"
+              className="min-h-0 border-0"
               surfaceMode={surfaceMode}
               onApproval={(itemId, decision, responseText) => {
                 if (!selectedSessionId) return;

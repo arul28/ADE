@@ -710,7 +710,7 @@ describe("agentChatService", () => {
       await fixture.service.disposeAll();
     });
 
-    it("coalesces codex reasoning deltas into one activity and one reasoning event", async () => {
+    it("streams codex reasoning deltas immediately while keeping thinking activity deduped", async () => {
       const fixture = createFixture("codex");
       const codex = createMockCodexProcess();
       spawnMock.mockReturnValue(codex.proc as any);
@@ -747,8 +747,12 @@ describe("agentChatService", () => {
       const reasoningEvents = fixture.emitted.filter((entry) => entry.event.type === "reasoning");
 
       expect(thinkingEvents).toHaveLength(1);
-      expect(reasoningEvents).toHaveLength(1);
-      expect((reasoningEvents[0]?.event as any)?.text).toBe("Plan the fix");
+      expect(reasoningEvents).toHaveLength(2);
+      expect(
+        reasoningEvents
+          .map((entry) => (entry.event.type === "reasoning" ? entry.event.text : ""))
+          .join("")
+      ).toBe("Plan the fix");
 
       await fixture.service.disposeAll();
     });
@@ -790,8 +794,12 @@ describe("agentChatService", () => {
       const reasoningEvents = fixture.emitted.filter((entry) => entry.event.type === "reasoning");
 
       expect(thinkingEvents).toHaveLength(1);
-      expect(reasoningEvents).toHaveLength(1);
-      expect((reasoningEvents[0]?.event as any)?.text).toBe("Map the runtime");
+      expect(reasoningEvents).toHaveLength(2);
+      expect(
+        reasoningEvents
+          .map((entry) => (entry.event.type === "reasoning" ? entry.event.text : ""))
+          .join("")
+      ).toBe("Map the runtime");
 
       await fixture.service.disposeAll();
     });
@@ -1044,7 +1052,7 @@ describe("agentChatService", () => {
       await fixture.service.disposeAll();
     });
 
-    it("coalesces Claude reasoning deltas into one activity and one reasoning event", async () => {
+    it("streams Claude reasoning deltas immediately while keeping thinking activity deduped", async () => {
       const fixture = createFixture("claude");
 
       streamTextMock.mockImplementationOnce(() => ({
@@ -1064,8 +1072,12 @@ describe("agentChatService", () => {
       const reasoningEvents = fixture.emitted.filter((entry) => entry.event.type === "reasoning");
 
       expect(thinkingEvents).toHaveLength(1);
-      expect(reasoningEvents).toHaveLength(1);
-      expect((reasoningEvents[0]?.event as any)?.text).toBe("Plan the fix");
+      expect(reasoningEvents).toHaveLength(2);
+      expect(
+        reasoningEvents
+          .map((entry) => (entry.event.type === "reasoning" ? entry.event.text : ""))
+          .join("")
+      ).toBe("Plan the fix");
 
       await fixture.service.disposeAll();
     });
@@ -1491,7 +1503,96 @@ describe("agentChatService", () => {
       expect(models.length).toBeGreaterThan(0);
       expect(models[0]?.reasoningEfforts).toBeTruthy();
       expect(models[0]?.reasoningEfforts?.length).toBeGreaterThan(0);
-      expect(models[0]?.reasoningEfforts?.map((e) => e.effort)).toEqual(["low", "medium", "high", "max"]);
+      expect(models[0]?.reasoningEfforts?.map((e) => e.effort)).toEqual(["low", "medium", "high"]);
+
+      await fixture.service.disposeAll();
+    });
+
+    it("does not advertise reasoning efforts for non-reasoning Claude models", async () => {
+      const fixture = createFixture("claude");
+
+      const models = await fixture.service.getAvailableModels({ provider: "claude" });
+      const haiku = models.find((entry) => /haiku/i.test(entry.id) || /haiku/i.test(entry.displayName));
+
+      expect(haiku).toBeTruthy();
+      expect(haiku?.reasoningEfforts ?? []).toEqual([]);
+      expect(haiku?.maxThinkingTokens).toBeNull();
+
+      await fixture.service.disposeAll();
+    });
+
+    it("surfaces GPT-5.4 without the Codex suffix for codex chat models", async () => {
+      const fixture = createFixture("codex");
+      const codex = createMockCodexProcess();
+      spawnMock.mockReturnValue(codex.proc as any);
+
+      codex.onRequest("initialize", (msg) => codex.respond(msg.id!, {}));
+      codex.onRequest("model/list", (msg) => {
+        codex.respond(msg.id!, {
+          data: [
+            {
+              id: "gpt-5.4",
+              displayName: "GPT-5.4",
+              isDefault: true,
+              supportedReasoningEfforts: [
+                { reasoningEffort: "low", description: "quick" },
+                { reasoningEffort: "medium", description: "balanced" },
+                { reasoningEffort: "high", description: "deep" },
+                { reasoningEffort: "xhigh", description: "extra deep" }
+              ]
+            }
+          ]
+        });
+      });
+
+      const models = await fixture.service.getAvailableModels({ provider: "codex" });
+      const latest = models.find((entry) => entry.id === "gpt-5.4" || entry.id === "openai/gpt-5.4-codex");
+
+      expect(latest).toBeTruthy();
+      expect(latest?.displayName).toBe("GPT-5.4");
+
+      await fixture.service.disposeAll();
+    });
+
+    it("limits GPT-5.1 Codex Mini to medium/high reasoning", async () => {
+      const fixture = createFixture("codex");
+      const codex = createMockCodexProcess();
+      spawnMock.mockReturnValue(codex.proc as any);
+
+      codex.onRequest("initialize", (msg) => codex.respond(msg.id!, {}));
+      codex.onRequest("model/list", (msg) => {
+        codex.respond(msg.id!, {
+          data: [
+            {
+              id: "gpt-5.1-codex-mini",
+              displayName: "GPT-5.1 Codex Mini",
+              isDefault: false,
+              supportedReasoningEfforts: [
+                { reasoningEffort: "medium", description: "balanced" },
+                { reasoningEffort: "high", description: "deep" }
+              ]
+            }
+          ]
+        });
+      });
+
+      const models = await fixture.service.getAvailableModels({ provider: "codex" });
+      const mini = models.find((entry) => /gpt-5\.1-codex-mini/i.test(entry.id));
+
+      expect(mini).toBeTruthy();
+      expect((mini?.reasoningEfforts ?? []).map((entry) => entry.effort)).toEqual(["medium", "high"]);
+
+      await fixture.service.disposeAll();
+    });
+
+    it("advertises only native Claude reasoning efforts", async () => {
+      const fixture = createFixture("claude");
+
+      const models = await fixture.service.getAvailableModels({ provider: "claude" });
+      const sonnet = models.find((entry) => /sonnet/i.test(entry.id) || /sonnet/i.test(entry.displayName));
+
+      expect(sonnet).toBeTruthy();
+      expect((sonnet?.reasoningEfforts ?? []).map((entry) => entry.effort)).toEqual(["low", "medium", "high"]);
 
       await fixture.service.disposeAll();
     });
@@ -1541,6 +1642,88 @@ describe("agentChatService", () => {
       const callArg = streamTextMock.mock.calls[0]?.[0] as any;
       const modelOpts = callArg.model?.__options;
       expect(modelOpts?.maxThinkingTokens).toBe(4096); // medium = 4096
+
+      await fixture.service.disposeAll();
+    });
+
+    it("normalizes legacy Claude max reasoning effort down to high", async () => {
+      const fixture = createFixture("claude");
+
+      streamTextMock.mockImplementationOnce(() => ({
+        fullStream: makeFullStream([
+          { type: "text-delta", text: "ok" },
+          { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } }
+        ])
+      }) as any);
+
+      const session = await fixture.service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet", reasoningEffort: "max" });
+      expect(session.reasoningEffort).toBe("high");
+
+      await fixture.service.sendMessage({ sessionId: session.id, text: "test" });
+
+      const callArg = streamTextMock.mock.calls[0]?.[0] as any;
+      const modelOpts = callArg.model?.__options;
+      expect(modelOpts?.maxThinkingTokens).toBe(16384);
+
+      await fixture.service.disposeAll();
+    });
+
+    it("omits Claude thinking settings for non-reasoning models and emits working activity instead of reasoning", async () => {
+      const fixture = createFixture("claude");
+
+      streamTextMock.mockImplementationOnce(() => ({
+        fullStream: makeFullStream([
+          { type: "reasoning-start" },
+          { type: "reasoning-delta", text: "hidden chain of thought" },
+          { type: "text-delta", text: "quick answer" },
+          { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } }
+        ])
+      }) as any);
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "haiku",
+        modelId: "anthropic/claude-haiku-4-5",
+        reasoningEffort: "high",
+      });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "test" });
+
+      const callArg = streamTextMock.mock.calls[0]?.[0] as any;
+      const modelOpts = callArg.model?.__options;
+      expect(modelOpts?.thinking).toBeUndefined();
+      expect(modelOpts?.maxThinkingTokens).toBeUndefined();
+      expect(fixture.emitted.some((entry) => entry.event.type === "activity" && entry.event.activity === "working")).toBe(true);
+      expect(fixture.emitted.some((entry) => entry.event.type === "reasoning")).toBe(false);
+
+      await fixture.service.disposeAll();
+    });
+  });
+
+  describe("Unified prompt shaping", () => {
+    it("keeps memory tools available without auto-injecting a project memory dump", async () => {
+      const fixture = createFixture("unified");
+      const resolveModelSpy = vi.spyOn(providerResolver, "resolveModel").mockResolvedValue({ id: "mock-model" } as any);
+      (fixture.memoryService as any).getMemoryBudget = vi.fn(() => [
+        { compositeScore: 0.95, category: "decision", content: "Always ship on Fridays." }
+      ]);
+
+      streamTextMock.mockImplementationOnce(() => ({
+        fullStream: makeFullStream([{ type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } }])
+      }) as any);
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "anthropic/claude-sonnet-4-6-api",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+      });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "test" });
+
+      const streamInput = streamTextMock.mock.calls[0]?.[0] as any;
+      expect(String(streamInput.system ?? "")).toContain("Project memory tools are available");
+      expect(String(streamInput.system ?? "")).not.toContain("## Project Memory");
+      resolveModelSpy.mockRestore();
 
       await fixture.service.disposeAll();
     });

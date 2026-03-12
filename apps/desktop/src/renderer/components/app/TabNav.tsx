@@ -99,7 +99,7 @@ export function TabNav() {
         {isActive && (
           <motion.div
             layoutId="tab-indicator"
-            className="ade-shell-sidebar-active-rail absolute bottom-1 left-0 top-1 w-[2px]"
+            className="absolute inset-0 rounded-lg bg-white/[0.06]"
             transition={layoutTransition}
           />
         )}
@@ -177,12 +177,12 @@ export function TabNav() {
       {/* Context menu */}
       {contextMenu && project?.rootPath ? (
         <div
-          className="ade-shell-sidebar-menu fixed z-40 min-w-[170px] rounded-none p-0.5 shadow-float"
+          className="ade-shell-sidebar-menu fixed z-40 min-w-[170px] p-1 shadow-float"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onPointerDown={(e) => e.stopPropagation()}
         >
           <button
-            className="ade-shell-sidebar-menu-item block w-full rounded-none px-2 py-1 text-left"
+            className="ade-shell-sidebar-menu-item block w-full rounded-md px-2 py-1 text-left"
             onClick={() => {
               setContextMenu(null);
               window.ade.app.revealPath(project.rootPath).catch(() => {});

@@ -114,7 +114,7 @@ export function TimelineToolbar() {
 
   /* ── Render ────────────────────────────────────────────────── */
   return (
-    <div className="flex flex-col gap-2 border-b border-border/20 bg-[var(--color-surface-recessed)] px-3 py-2">
+    <div className="flex flex-col gap-2 border-b border-white/[0.06] bg-white/[0.02] backdrop-blur-xl px-3 py-2">
       {/* ── Row 1: View mode · Scope · Search · Gear ─────────── */}
       <div className="flex items-center gap-3">
         {/* View mode toggle */}
@@ -126,7 +126,7 @@ export function TimelineToolbar() {
               onClick={() => setViewMode(mode)}
               className={cn(
                 "flex h-7 w-7 items-center justify-center border transition-colors",
-                "rounded-none font-mono text-[10px]",
+                "rounded-md font-mono text-[10px]",
                 viewMode === mode
                   ? "border-[var(--color-accent)]/20 bg-[var(--color-accent)]/15 text-[var(--color-accent)]"
                   : "border-transparent text-[var(--color-muted-fg)] hover:bg-[var(--color-surface)]/60 hover:text-[var(--color-fg)]",
@@ -138,7 +138,7 @@ export function TimelineToolbar() {
         </div>
 
         {/* Separator */}
-        <div className="h-4 w-px bg-border/15" />
+        <div className="h-4 w-px bg-white/[0.06]" />
 
         {/* Scope selector */}
         <div className="flex items-center gap-0.5">
@@ -150,7 +150,7 @@ export function TimelineToolbar() {
               onClick={() => setScope(value)}
               className={cn(
                 "flex h-6 items-center px-2 border transition-colors",
-                "rounded-none font-mono text-[10px] font-bold uppercase tracking-[0.5px]",
+                "rounded-md font-mono text-[10px] font-bold uppercase tracking-[0.5px]",
                 scope === value
                   ? "border-[var(--color-accent)]/20 bg-[var(--color-accent)]/15 text-[var(--color-accent)]"
                   : "border-transparent text-[var(--color-muted-fg)]/50 hover:text-[var(--color-muted-fg)]",
@@ -162,7 +162,7 @@ export function TimelineToolbar() {
         </div>
 
         {/* Separator */}
-        <div className="h-4 w-px bg-border/15" />
+        <div className="h-4 w-px bg-white/[0.06]" />
 
         {/* Search */}
         <div className="relative flex-1">
@@ -176,7 +176,7 @@ export function TimelineToolbar() {
             value={filters.searchQuery}
             onChange={handleSearch}
             className={cn(
-              "h-8 w-full rounded-none border border-[var(--color-border)]/15 bg-[var(--color-surface-recessed)]",
+              "h-8 w-full rounded-md border border-white/[0.06] bg-white/[0.03]",
               "pl-7 pr-3 font-mono text-xs text-[var(--color-fg)]",
               "placeholder:text-[var(--color-muted-fg)]/50 focus:border-[var(--color-accent)]/40 focus:outline-none",
             )}
@@ -188,7 +188,7 @@ export function TimelineToolbar() {
           title="Column settings"
           onClick={() => toggleColumn("")}
           className={cn(
-            "flex h-7 w-7 items-center justify-center rounded-none border border-transparent",
+            "flex h-7 w-7 items-center justify-center rounded-md border border-transparent",
             "text-[var(--color-muted-fg)] transition-colors hover:bg-[var(--color-surface)]/60 hover:text-[var(--color-fg)]",
           )}
         >
@@ -199,7 +199,7 @@ export function TimelineToolbar() {
       {/* ── Row 2: Category · Status · Time · Lanes ────────── */}
       <div className="flex flex-wrap items-center gap-1.5">
         {/* Section label */}
-        <span className="mr-1 font-mono text-[10px] font-bold uppercase tracking-[1px] text-muted-fg/60">
+        <span className="mr-1 font-sans text-[10px] font-bold uppercase tracking-[1px] text-muted-fg/60">
           Filter
         </span>
 
@@ -236,7 +236,7 @@ export function TimelineToolbar() {
 
         {/* Divider dot */}
         {uniqueCategories.length > 0 && (
-          <Circle size={3} weight="fill" className="mx-0.5 text-border/30" />
+          <Circle size={3} weight="fill" className="mx-0.5 text-white/[0.08]" />
         )}
 
         {/* Status chips */}
@@ -270,7 +270,7 @@ export function TimelineToolbar() {
         })}
 
         {/* Divider dot */}
-        <Circle size={3} weight="fill" className="mx-0.5 text-border/30" />
+        <Circle size={3} weight="fill" className="mx-0.5 text-white/[0.08]" />
 
         {/* Time range chips */}
         {TIME_RANGES.map(({ value, label }) => (
@@ -292,7 +292,7 @@ export function TimelineToolbar() {
 
         {/* Divider dot */}
         {uniqueLanes.length > 0 && (
-          <Circle size={3} weight="fill" className="mx-0.5 text-border/30" />
+          <Circle size={3} weight="fill" className="mx-0.5 text-white/[0.08]" />
         )}
 
         {/* Lane chips */}

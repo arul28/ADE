@@ -3,7 +3,7 @@ import { ArrowSquareOut, GitMerge } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type { LaneSummary } from "../../../shared/types";
 import type { IntegrationLaneSource } from "../../lib/integrationLanes";
-import { COLORS, LABEL_STYLE, MONO_FONT, outlineButton } from "./laneDesignTokens";
+import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, outlineButton } from "./laneDesignTokens";
 
 const TREE_ROW_H = 28;
 const TREE_INDENT = 22;
@@ -168,7 +168,7 @@ function StackGraph({
         y1={parent.dotY + TREE_DOT_R + 2}
         x2={parent.dotX}
         y2={lastChild.dotY}
-        stroke={COLORS.border}
+        stroke="rgba(167,139,250,0.18)"
         strokeWidth={1.5}
       />
     );
@@ -181,7 +181,7 @@ function StackGraph({
           y1={child.dotY}
           x2={child.dotX - TREE_DOT_R - 3}
           y2={child.dotY}
-          stroke={COLORS.border}
+          stroke="rgba(167,139,250,0.18)"
           strokeWidth={1.5}
         />
       );
@@ -223,10 +223,11 @@ function StackGraph({
                 left: node.dotX + TREE_DOT_R + 5,
                 top: node.dotY - (TREE_ROW_H - 6) / 2,
                 height: TREE_ROW_H - 6,
-                padding: "0 6px",
+                padding: "0 8px",
+                borderRadius: 8,
                 background: isSelected ? COLORS.accentSubtle : "transparent",
+                border: isSelected ? `1px solid ${COLORS.accentBorder}` : "1px solid transparent",
                 color: isSelected ? COLORS.textPrimary : COLORS.textMuted,
-                border: "none",
                 cursor: "pointer",
               }}
               onClick={() => onSelect(lane.id)}
@@ -255,13 +256,13 @@ function StackGraph({
               <LaneRuntimeDot bucket={runtimeByLaneId.get(lane.id)?.bucket ?? "none"} />
               <span className="truncate" style={{
                 maxWidth: integrationSources.length > 0 ? 120 : 160,
-                fontFamily: MONO_FONT,
+                fontFamily: SANS_FONT,
                 fontSize: 11,
                 fontWeight: isSelected ? 600 : 500,
               }}>{lane.name}</span>
               {integrationSources.length > 0 ? (
                 <span
-                  className="inline-flex items-center gap-1 rounded border px-1 py-0 text-[9px] uppercase tracking-[0.08em]"
+                  className="inline-flex items-center gap-1 rounded-md border px-1 py-0 text-[9px] uppercase tracking-[0.08em]"
                   style={{
                     color: "#C4B5FD",
                     borderColor: "rgba(167,139,250,0.35)",
@@ -310,7 +311,7 @@ export function LaneStackPane({
     <div className="flex h-full flex-col" style={{ background: COLORS.pageBg }}>
       <div
         className="shrink-0 flex items-center justify-between"
-        style={{ height: 36, padding: "0 16px", background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}` }}
+        style={{ height: 36, padding: "0 16px", background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: `1px solid ${COLORS.border}` }}
       >
         <span style={{ ...LABEL_STYLE, color: COLORS.textDim }}>STACK GRAPH</span>
         <button
@@ -343,7 +344,7 @@ export function LaneStackPane({
             {selectedIntegrationSources.map((source) => (
               <span
                 key={source.laneId}
-                className="rounded border px-2 py-0.5 text-[10px] font-medium"
+                className="rounded-md border px-2 py-0.5 text-[10px] font-medium"
                 style={{
                   color: "#E9D5FF",
                   borderColor: "rgba(167,139,250,0.35)",

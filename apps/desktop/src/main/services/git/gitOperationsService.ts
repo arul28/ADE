@@ -42,10 +42,7 @@ type LaneInfo = {
 type CommitMessagePromptContext = {
   hasStagedChanges: boolean;
   stagedFiles: string;
-  stagedStat: string;
-  stagedPatch: string;
-  headSubject: string;
-  headSummary: string;
+  headFiles: string;
 };
 
 function localBranchNameFromRemoteRef(ref: string): string {
@@ -150,11 +147,6 @@ export function createGitOperationsService({
     return cleaned.slice(0, 72).trimEnd();
   }
 
-  function limitText(value: string, maxChars: number): string {
-    if (value.length <= maxChars) return value;
-    return `${value.slice(0, maxChars)}\n...(truncated)...`;
-  }
-
   async function assertCommitMessageGenerationEnabled(): Promise<string> {
     if (!aiIntegrationService.getFeatureFlag("commit_messages")) {
       throw new Error("AI commit messages are off. Enable Commit Messages in Settings or type a commit message manually.");
@@ -174,60 +166,39 @@ export function createGitOperationsService({
   }
 
   async function loadCommitMessagePromptContext(lane: LaneInfo): Promise<CommitMessagePromptContext> {
-    const [stagedFilesRes, stagedStatRes, stagedPatchRes, headSubjectRes, headSummaryRes] = await Promise.all([
+    const [stagedFilesRes, headFilesRes] = await Promise.all([
       runGit(["diff", "--cached", "--name-status", "--find-renames"], { cwd: lane.worktreePath, timeoutMs: 10_000 }),
-      runGit(["diff", "--cached", "--stat"], { cwd: lane.worktreePath, timeoutMs: 10_000 }),
-      runGit(["diff", "--cached", "--unified=0", "--no-color"], { cwd: lane.worktreePath, timeoutMs: 15_000 }),
-      runGit(["show", "-s", "--format=%s", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 8_000 }),
-      runGit(["show", "--stat", "--name-status", "--format=", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 12_000 })
+      runGit(["show", "--name-status", "--format=", "--find-renames", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 10_000 }),
     ]);
 
     const stagedFiles = stagedFilesRes.exitCode === 0 ? stagedFilesRes.stdout.trim() : "";
-    const stagedStat = stagedStatRes.exitCode === 0 ? stagedStatRes.stdout.trim() : "";
-    const stagedPatch = stagedPatchRes.exitCode === 0 ? stagedPatchRes.stdout.trim() : "";
-    const headSubject = headSubjectRes.exitCode === 0 ? headSubjectRes.stdout.trim() : "";
-    const headSummary = headSummaryRes.exitCode === 0 ? headSummaryRes.stdout.trim() : "";
+    const headFiles = headFilesRes.exitCode === 0 ? headFilesRes.stdout.trim() : "";
 
     return {
-      hasStagedChanges: stagedFiles.length > 0 || stagedPatch.length > 0 || stagedStat.length > 0,
+      hasStagedChanges: stagedFiles.length > 0,
       stagedFiles,
-      stagedStat,
-      stagedPatch,
-      headSubject,
-      headSummary
+      headFiles
     };
   }
 
-  function buildCommitMessagePrompt(lane: LaneInfo, args: GitGenerateCommitMessageArgs, context: CommitMessagePromptContext): string {
+  function buildCommitMessagePrompt(_lane: LaneInfo, args: GitGenerateCommitMessageArgs, context: CommitMessagePromptContext): string {
+    const changedFiles = context.hasStagedChanges ? context.stagedFiles : context.headFiles;
     return [
-      "Write a single git commit subject for these changes.",
+      "Write a single git commit subject for these changed files.",
       "Return plain text only.",
       "Rules:",
       "- one line only",
       "- imperative mood",
       "- concise and specific",
+      "- fewer than 10 words",
       "- 72 characters or fewer",
       "- no quotes",
       "- no trailing period",
       "",
-      `Branch: ${lane.branchRef}`,
-      `Base: ${lane.baseRef}`,
       `Amend mode: ${args.amend ? "yes" : "no"}`,
       "",
-      context.hasStagedChanges ? "Staged files:" : "Current HEAD summary:",
-      context.hasStagedChanges
-        ? limitText(context.stagedFiles || "(none)", 2_000)
-        : limitText(context.headSummary || "(none)", 2_000),
-      "",
-      context.hasStagedChanges ? "Staged diff stat:" : "Current HEAD subject:",
-      context.hasStagedChanges
-        ? limitText(context.stagedStat || "(none)", 2_000)
-        : (context.headSubject || "(none)"),
-      "",
-      context.hasStagedChanges ? "Staged patch preview:" : "Current HEAD patch stat:",
-      context.hasStagedChanges
-        ? limitText(context.stagedPatch || "(none)", 8_000)
-        : limitText(context.headSummary || "(none)", 2_000)
+      "Changed files:",
+      changedFiles || "(none)"
     ].join("\n");
   }
 

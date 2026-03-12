@@ -34,6 +34,13 @@ export function buildCodingAgentSystemPrompt(args: {
   const permissionMode = args.permissionMode ?? "edit";
   const toolNames = [...new Set((args.toolNames ?? []).filter((entry) => entry.trim().length > 0))];
   const interactive = args.interactive !== false;
+  const hasMemoryTools = toolNames.some((name) =>
+    name === "memorySearch"
+    || name === "memoryAdd"
+    || name === "memoryPin"
+    || name === "memoryUpdateCore"
+    || name.startsWith("memory_"),
+  );
 
   return [
     `You are ADE's software engineering agent working in ${args.cwd}.`,
@@ -66,6 +73,13 @@ export function buildCodingAgentSystemPrompt(args: {
       ? "If requirements are genuinely unclear and progress would otherwise stall, ask one concise question with concrete options."
       : "If requirements are unclear, make the safest reasonable assumption and continue. State the assumption in the final answer.",
     "If tool results fail or contradict the current plan, synthesize the finding and adapt rather than repeating the same failing action.",
+    ...(hasMemoryTools
+      ? [
+          "Project memory tools are available when earlier decisions, patterns, or gotchas might help.",
+          "Search memory when useful, but do not assume it has already been injected into the prompt.",
+          "Only write memory for durable project knowledge future sessions should reuse, such as decisions, conventions, repeatable patterns, stable preferences, or gotchas. Do not store ephemeral task chatter."
+        ]
+      : []),
     "",
     "## Editing Rules",
     "Prefer existing files and patterns over creating new abstractions.",

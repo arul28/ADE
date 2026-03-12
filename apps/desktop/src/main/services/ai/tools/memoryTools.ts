@@ -17,7 +17,7 @@ export function createMemoryTools(
   };
 
   const memorySearch = tool({
-    description: "Search project memory for relevant context, patterns, decisions, or gotchas from previous sessions.",
+    description: "Search project memory for relevant context, patterns, decisions, gotchas, or stable preferences from previous sessions.",
     inputSchema: z.object({
       query: z.string().describe("Search query for finding relevant memories"),
       scope: z.enum(["project", "agent", "mission"]).optional().describe("Scope to search within"),
@@ -51,7 +51,7 @@ export function createMemoryTools(
   });
 
   const memoryAdd = tool({
-    description: "Save an important finding, decision, pattern, or gotcha to project memory for future reference.",
+    description: "Save durable project knowledge for future sessions. Use this only for important decisions, conventions, repeatable patterns, stable preferences, or gotchas. Do not store ephemeral task chatter.",
     inputSchema: z.object({
       content: z.string().describe("The information to remember"),
       category: z.enum(["fact", "convention", "pattern", "decision", "gotcha", "preference"]).describe("Category of the memory"),
@@ -96,7 +96,7 @@ export function createMemoryTools(
   });
 
   const memoryPin = tool({
-    description: "Pin or unpin an existing memory entry (Tier-1 when pinned).",
+    description: "Pin or unpin an existing durable memory entry (Tier-1 when pinned).",
     inputSchema: z.object({
       id: z.string().describe("Memory id"),
       pinned: z.boolean().optional().default(true).describe("Whether to pin or unpin the memory")

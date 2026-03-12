@@ -77,7 +77,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       <div
         style={{
           padding: "8px 10px",
-          borderBottom: "1px solid var(--color-border)",
+          borderBottom: "1px solid rgba(255,255,255, 0.04)",
           display: "flex",
           gap: 4,
           fontFamily: MONO_FONT,
@@ -96,8 +96,9 @@ export const SessionListPane = React.memo(function SessionListPane({
                 alignItems: "center",
                 gap: 5,
                 padding: "5px 10px",
-                border: `1px solid ${active ? `${entry.color}40` : "var(--color-border)"}`,
-                background: active ? `${entry.color}12` : "transparent",
+                border: active ? `1px solid ${entry.color}30` : "1px solid transparent",
+                borderRadius: 12,
+                background: active ? `${entry.color}10` : "transparent",
                 color: active ? "var(--color-fg)" : "var(--color-muted-fg)",
                 fontFamily: MONO_FONT,
                 fontSize: 9,
@@ -119,7 +120,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       <div
         style={{
           padding: "6px 10px",
-          borderBottom: "1px solid var(--color-border)",
+          borderBottom: "1px solid rgba(255,255,255, 0.04)",
           display: "flex",
           flexDirection: "column",
           gap: 6,
@@ -138,7 +139,8 @@ export const SessionListPane = React.memo(function SessionListPane({
               fontFamily: MONO_FONT,
               textTransform: "uppercase",
               letterSpacing: "0.12em",
-              border: `1px solid ${filterLaneId === "all" ? "var(--color-fg)" : "var(--color-border)"}`,
+              borderRadius: 12,
+              border: `1px solid ${filterLaneId === "all" ? "var(--color-fg)" : "rgba(255,255,255, 0.04)"}`,
               background: filterLaneId === "all" ? "var(--color-fg)" : "transparent",
               color: filterLaneId === "all" ? "var(--color-card)" : "var(--color-muted-fg)",
               cursor: "pointer",
@@ -162,7 +164,8 @@ export const SessionListPane = React.memo(function SessionListPane({
                 fontFamily: MONO_FONT,
                 textTransform: "uppercase",
                 letterSpacing: "0.12em",
-                border: `1px solid ${filterLaneId === lane.id ? "var(--color-fg)" : "var(--color-border)"}`,
+                borderRadius: 12,
+                border: `1px solid ${filterLaneId === lane.id ? "var(--color-fg)" : "rgba(255,255,255, 0.04)"}`,
                 background: filterLaneId === lane.id ? "var(--color-fg)" : "transparent",
                 color: filterLaneId === lane.id ? "var(--color-card)" : "var(--color-muted-fg)",
                 cursor: "pointer",
@@ -195,7 +198,8 @@ export const SessionListPane = React.memo(function SessionListPane({
                   fontFamily: MONO_FONT,
                   textTransform: "uppercase",
                   letterSpacing: "0.12em",
-                  border: `1px solid ${active ? (opt.color ?? "var(--color-fg)") : "var(--color-border)"}`,
+                  borderRadius: 12,
+                  border: `1px solid ${active ? (opt.color ?? "var(--color-fg)") : "rgba(255,255,255, 0.04)"}`,
                   background: active && opt.color ? `color-mix(in srgb, ${opt.color} 14%, transparent)` : "transparent",
                   color: active ? (opt.color ?? "var(--color-fg)") : "var(--color-muted-fg)",
                   cursor: "pointer",
@@ -214,15 +218,16 @@ export const SessionListPane = React.memo(function SessionListPane({
           style={{
             height: 28,
             width: "100%",
-            border: "1px solid var(--color-border)",
-            background: "transparent",
+            borderRadius: 12,
+            border: "1px solid rgba(255,255,255, 0.06)",
+            background: "rgba(255,255,255, 0.02)",
             padding: "0 8px",
             fontSize: 10,
             fontFamily: MONO_FONT,
             color: "var(--color-fg)",
             outline: "none",
           }}
-          placeholder="SEARCH BY NAME, LANE, TYPE..."
+          placeholder="Search sessions..."
           value={q}
           onChange={(e) => setQ(e.target.value)}
         />
@@ -277,15 +282,15 @@ export const SessionListPane = React.memo(function SessionListPane({
                     style={{
                       height: 5,
                       width: 5,
+                      borderRadius: "50%",
                       background: "var(--color-success)",
-                      animation: "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite",
                       flexShrink: 0,
                     }}
                   />
                   <span style={{ fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", color: "var(--color-success)" }}>
                     Running · {runningFiltered.length}
                   </span>
-                  <span style={{ flex: 1, height: 1, marginLeft: 6, background: "color-mix(in srgb, var(--color-success) 20%, transparent)" }} />
+                  <span style={{ flex: 1, height: "1px", marginLeft: 6, background: "color-mix(in srgb, var(--color-success) 12%, transparent)" }} />
                 </div>
                 <div className="space-y-1">
                   {runningFiltered.map((session) => (
@@ -310,7 +315,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                   <span style={{ fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", color: "var(--color-warning)" }}>
                     Awaiting input · {awaitingInputFiltered.length}
                   </span>
-                  <span style={{ flex: 1, height: 1, marginLeft: 6, background: "color-mix(in srgb, var(--color-warning) 20%, transparent)" }} />
+                  <span style={{ flex: 1, height: "1px", marginLeft: 6, background: "color-mix(in srgb, var(--color-warning) 12%, transparent)" }} />
                 </div>
                 <div className="space-y-1">
                   {awaitingInputFiltered.map((session) => (
@@ -335,7 +340,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                   <span style={{ fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", color: "var(--color-error)" }}>
                     Ended · {endedFiltered.length}
                   </span>
-                  <span style={{ flex: 1, height: 1, marginLeft: 6, background: "color-mix(in srgb, var(--color-error) 20%, transparent)" }} />
+                  <span style={{ flex: 1, height: "1px", marginLeft: 6, background: "color-mix(in srgb, var(--color-error) 12%, transparent)" }} />
                 </div>
                 <div className="space-y-1">
                   {endedFiltered.map((session) => (

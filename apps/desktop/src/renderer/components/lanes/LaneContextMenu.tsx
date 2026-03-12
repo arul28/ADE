@@ -39,8 +39,11 @@ export function LaneContextMenu({
         position: "fixed",
         zIndex: 40,
         minWidth: 200,
-        background: COLORS.cardBg,
-        border: `1px solid ${COLORS.border}`,
+        background: COLORS.cardBgSolid,
+        backdropFilter: "blur(20px)",
+        WebkitBackdropFilter: "blur(20px)",
+        border: `1px solid ${COLORS.outlineBorder}`,
+        borderRadius: 12,
         padding: "4px 0",
         boxShadow: "0 8px 32px -8px rgba(0,0,0,0.5)",
         left: laneContextMenu.x,
@@ -52,7 +55,7 @@ export function LaneContextMenu({
         <>
           <button
             style={menuItemStyle}
-            onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.border; }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
             onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
             onClick={() => {
               onClose();
@@ -63,7 +66,7 @@ export function LaneContextMenu({
           </button>
           <button
             style={menuItemStyle}
-            onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.border; }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
             onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
             onClick={() => {
               onClose();
@@ -80,7 +83,7 @@ export function LaneContextMenu({
           {ctxLane.laneType === "attached" ? (
             <button
               style={menuItemStyle}
-              onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.border; }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
               onClick={() => {
                 const ctxLaneId = laneContextMenu.laneId;
@@ -94,7 +97,7 @@ export function LaneContextMenu({
           ) : null}
           <button
             style={menuItemStyle}
-            onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.border; }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
             onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
             onClick={() => {
               const ctxLaneId = laneContextMenu.laneId;

@@ -201,6 +201,27 @@ describe("aiIntegrationService", () => {
     expect(usageCall?.params[2]).toBe("commit_messages");
   });
 
+  it("treats detected providers as subscription-capable even when config mode is guest", async () => {
+    const { service } = makeService({
+      providerMode: "guest",
+      aiConfig: {
+        features: {
+          commit_messages: true,
+        },
+      },
+      availability: { claude: true, codex: false },
+    });
+
+    await service.generateCommitMessage({
+      cwd: "/tmp",
+      prompt: "Write a commit message",
+      model: "anthropic/claude-haiku-4-5",
+    });
+
+    expect(mockState.executeUnified).toHaveBeenCalledTimes(1);
+    await expect(service.getStatus()).resolves.toMatchObject({ mode: "subscription" });
+  });
+
   it("uses planning tools for mission planning tasks", async () => {
     const { service } = makeService();
 
@@ -313,7 +334,10 @@ describe("aiIntegrationService", () => {
   });
 
   it("fails in guest mode", async () => {
-    const { service } = makeService({ providerMode: "guest" });
+    const { service } = makeService({
+      providerMode: "guest",
+      availability: { claude: false, codex: false },
+    });
 
     await expect(
       service.executeTask({

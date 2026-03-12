@@ -81,8 +81,8 @@ export function AutomationsPage() {
     <div className="flex h-full w-full flex-col overflow-hidden bg-bg text-fg" data-testid="automations-page">
       {/* Tab bar */}
       <div
-        className="shrink-0 flex items-center gap-0"
-        style={{ background: "var(--color-surface)", borderBottom: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)", minHeight: 36 }}
+        className="shrink-0 flex items-center gap-0 border-b border-white/[0.06] bg-white/[0.02] backdrop-blur-xl"
+        style={{ minHeight: 36 }}
       >
         {TABS.map(({ id, label, icon: Icon }) => (
           <button
@@ -121,12 +121,12 @@ export function AutomationsPage() {
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
           <Dialog.Content
-            className="fixed left-1/2 top-[10%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 p-4 focus:outline-none"
-            style={{ background: "#181423", border: "1px solid #2D284060", boxShadow: "0 8px 32px -8px rgba(0,0,0,0.8)" }}
+            className="fixed left-1/2 top-[10%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded-xl bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] p-4 focus:outline-none"
+            style={{ boxShadow: "0 8px 32px -8px rgba(0,0,0,0.8)" }}
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <Dialog.Title className="text-sm font-semibold text-[#FAFAFA]" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
+                <Dialog.Title className="text-sm font-sans font-semibold text-[#FAFAFA]">
                   Morning Briefing
                 </Dialog.Title>
                 <Dialog.Description className="mt-1 text-xs text-[#8B8B9A]">
@@ -139,19 +139,19 @@ export function AutomationsPage() {
             {morningBriefing ? (
               <div className="mt-4 space-y-3">
                 <div className="grid grid-cols-4 gap-2">
-                  <div className="rounded p-3" style={{ background: "#14111D", border: "1px solid #1E1B26" }}>
+                  <div className="rounded-xl p-3 bg-white/[0.03] border border-white/[0.06]">
                     <div className="font-mono text-[9px] text-[#71717A]">runs</div>
                     <div className="mt-1 text-lg text-[#FAFAFA]">{morningBriefing.totalRuns}</div>
                   </div>
-                  <div className="rounded p-3" style={{ background: "#14111D", border: "1px solid #1E1B26" }}>
+                  <div className="rounded-xl p-3 bg-white/[0.03] border border-white/[0.06]">
                     <div className="font-mono text-[9px] text-[#71717A]">clean</div>
                     <div className="mt-1 text-lg text-[#22C55E]">{morningBriefing.succeededRuns}</div>
                   </div>
-                  <div className="rounded p-3" style={{ background: "#14111D", border: "1px solid #1E1B26" }}>
+                  <div className="rounded-xl p-3 bg-white/[0.03] border border-white/[0.06]">
                     <div className="font-mono text-[9px] text-[#71717A]">follow-up</div>
                     <div className="mt-1 text-lg text-[#F59E0B]">{morningBriefing.failedRuns}</div>
                   </div>
-                  <div className="rounded p-3" style={{ background: "#14111D", border: "1px solid #1E1B26" }}>
+                  <div className="rounded-xl p-3 bg-white/[0.03] border border-white/[0.06]">
                     <div className="font-mono text-[9px] text-[#71717A]">spend</div>
                     <div className="mt-1 text-lg text-[#FAFAFA]">${morningBriefing.totalSpendUsd.toFixed(2)}</div>
                   </div>
@@ -159,7 +159,7 @@ export function AutomationsPage() {
 
                 <div className="max-h-[40vh] space-y-2 overflow-y-auto">
                   {morningBriefing.cards.map((card) => (
-                    <div key={card.queueItemId} className="rounded p-3" style={{ background: "#14111D", border: "1px solid #1E1B26" }}>
+                    <div key={card.queueItemId} className="rounded-xl p-3 bg-white/[0.03] border border-white/[0.06]">
                       <div className="flex items-center justify-between gap-2">
                         <div className="text-xs font-semibold text-[#FAFAFA]">{card.title}</div>
                         {card.confidence ? <Chip className="text-[9px]">{card.confidence.label}</Chip> : null}

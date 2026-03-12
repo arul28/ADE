@@ -1136,7 +1136,7 @@ export function LanesPage() {
   return (
     <div className="flex h-full min-w-0 flex-col" style={{ background: COLORS.pageBg }}>
       {/* Header bar */}
-      <div style={{ padding: "0 24px", height: 64, display: "flex", alignItems: "center", gap: 24, background: COLORS.pageBg, borderBottom: `1px solid ${COLORS.border}` }}>
+      <div style={{ padding: "0 24px", height: 64, display: "flex", alignItems: "center", gap: 24, background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: `1px solid ${COLORS.border}` }}>
         {/* Numbered title group */}
         <div className="flex items-center gap-2 shrink-0">
           <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.accent }}>05</span>
@@ -1153,8 +1153,8 @@ export function LanesPage() {
               style={{
                 display: "inline-flex", alignItems: "center", gap: 8,
                 padding: "0 12px", height: 32, fontSize: 12, fontFamily: MONO_FONT, fontWeight: 600,
-                color: COLORS.success, background: "#18151F",
-                border: `1px solid ${COLORS.outlineBorder}`, cursor: "pointer",
+                color: COLORS.success, background: "rgba(255,255,255,0.03)",
+                border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 8, cursor: "pointer",
               }}
               onClick={() => setBranchDropdownOpen((prev) => !prev)}
               disabled={branchCheckoutBusy}
@@ -1164,7 +1164,7 @@ export function LanesPage() {
               <CaretDown size={12} style={{ opacity: 0.6 }} />
             </button>
             {branchDropdownOpen ? (
-              <div className="absolute left-0 top-full z-50 mt-1 max-h-80 overflow-auto" style={{ width: 288, background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "2px 0" }}>
+              <div className="absolute left-0 top-full z-50 mt-1 max-h-80 overflow-auto" style={{ width: 288, background: COLORS.cardBgSolid, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 12, padding: "4px 0" }}>
                 <div style={{ padding: "6px 12px", ...LABEL_STYLE }}>LOCAL BRANCHES</div>
                 {localPrimaryBranches.map((branch) => (
                   <button
@@ -1226,7 +1226,7 @@ export function LanesPage() {
           </div>
         ) : null}
         {branchCheckoutError && primaryLane && selectedLaneId === primaryLane.id ? (
-          <div className="inline-flex items-center gap-2 shrink-0" style={{ border: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}15`, padding: "4px 8px", fontSize: 12, color: COLORS.danger }}>
+          <div className="inline-flex items-center gap-2 shrink-0" style={{ border: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}15`, borderRadius: 8, padding: "4px 8px", fontSize: 12, color: COLORS.danger }}>
             <span>{branchCheckoutError}</span>
             <button
               type="button"
@@ -1250,8 +1250,8 @@ export function LanesPage() {
             title="Filter lanes (is:dirty is:pinned type:worktree)"
             style={{
               height: 32, width: 200, padding: "0 28px 0 28px", fontSize: 11,
-              fontFamily: MONO_FONT, background: "#18151F",
-              border: `1px solid ${COLORS.outlineBorder}`, color: COLORS.textSecondary,
+              fontFamily: MONO_FONT, background: "rgba(255,255,255,0.03)",
+              border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 8, color: COLORS.textSecondary,
               outline: "none", textTransform: "uppercase", letterSpacing: "1px",
             }}
           />
@@ -1292,8 +1292,9 @@ export function LanesPage() {
                   fontWeight: 700,
                   letterSpacing: "1px",
                   textTransform: "uppercase",
+                  borderRadius: 6,
                   border: active ? `1px solid ${chip.color}60` : `1px solid ${COLORS.outlineBorder}`,
-                  background: active ? `${chip.color}20` : "transparent",
+                  background: active ? `${chip.color}20` : "rgba(255,255,255,0.02)",
                   color: active ? chip.color : COLORS.textMuted,
                   cursor: "pointer",
                   whiteSpace: "nowrap",
@@ -1313,7 +1314,7 @@ export function LanesPage() {
             <Plus size={12} /> NEW LANE
           </button>
           {addLaneDropdownOpen ? (
-            <div className="absolute left-0 top-full z-50 mt-1" style={{ width: 224, background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "2px 0" }}>
+            <div className="absolute left-0 top-full z-50 mt-1" style={{ width: 224, background: COLORS.cardBgSolid, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 12, padding: "4px 0" }}>
               <button
                 type="button"
                 className="flex w-full items-center gap-2 text-left"
@@ -1352,7 +1353,7 @@ export function LanesPage() {
 
         {shouldShowAdoptHint && selectedAttachedLane ? (
           <div
-            className="shrink-0 flex items-center gap-2 rounded border px-2 py-1"
+            className="shrink-0 flex items-center gap-2 rounded-lg border px-2 py-1"
             style={{ borderColor: `${COLORS.info}55`, background: `${COLORS.info}15` }}
           >
             <button
@@ -1376,7 +1377,7 @@ export function LanesPage() {
             <div className="relative group">
               <Info size={12} style={{ color: COLORS.info }} />
               <div
-                className="pointer-events-none absolute left-1/2 top-full z-50 mt-2 -translate-x-1/2 whitespace-nowrap rounded border px-2 py-1 text-[10px] opacity-0 transition-opacity group-hover:opacity-100"
+                className="pointer-events-none absolute left-1/2 top-full z-50 mt-2 -translate-x-1/2 whitespace-nowrap rounded-lg border px-2 py-1 text-[10px] opacity-0 transition-opacity group-hover:opacity-100"
                 style={{
                   borderColor: `${COLORS.border}`,
                   background: COLORS.cardBg,
@@ -1407,8 +1408,8 @@ export function LanesPage() {
         </span>
       </div>
 
-      {/* Lane tabs — horizontal numbered tab bar */}
-      <div className="flex overflow-x-auto" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+      {/* Lane tabs -- horizontal numbered tab bar */}
+      <div className="flex overflow-x-auto" style={{ background: "rgba(255,255,255,0.01)", borderBottom: `1px solid ${COLORS.border}` }}>
         {filteredLanes.map((lane, index) => {
           const isVisible = visibleLaneIds.includes(lane.id);
           const isSelected = selectedLaneId === lane.id;
@@ -1494,7 +1495,7 @@ export function LanesPage() {
               {/* Lane name */}
               <span className="truncate" style={{
                 maxWidth: 180,
-                fontFamily: MONO_FONT, fontSize: 11, letterSpacing: "1px", textTransform: "uppercase",
+                fontFamily: SANS_FONT, fontSize: 12, letterSpacing: "0.5px", textTransform: "uppercase",
                 fontWeight: isSelected ? 600 : 500,
                 color: isSelected ? COLORS.textPrimary : COLORS.textMuted,
               }}>{lane.name}</span>
@@ -1503,15 +1504,15 @@ export function LanesPage() {
                 <span style={{
                   display: "inline-flex", alignItems: "center", padding: "2px 6px",
                   fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px",
-                  color: COLORS.accent, background: `${COLORS.accent}30`,
+                  borderRadius: 6, color: COLORS.accent, background: COLORS.accentSubtle, border: `1px solid ${COLORS.accentBorder}`,
                 }}>{lane.branchRef}</span>
               ) : null}
               {/* Behind badge (rebase suggestion) */}
               {rebaseSuggestion ? (
                 <span style={{
-                  display: "inline-flex", alignItems: "center", padding: "2px 6px",
+                  display: "inline-flex", alignItems: "center", padding: "2px 6px", borderRadius: 6,
                   fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700,
-                  color: COLORS.warning, background: `${COLORS.warning}18`,
+                  color: COLORS.warning, background: `${COLORS.warning}18`, border: `1px solid ${COLORS.warning}30`,
                 }} title={`Behind parent by ${rebaseSuggestion.behindCount} commit(s)`}>
                   ↑{rebaseSuggestion.behindCount}
                 </span>
@@ -1519,9 +1520,9 @@ export function LanesPage() {
               {/* Pinned badge */}
               {!isPrimary && isPinned ? (
                 <span style={{
-                  display: "inline-flex", alignItems: "center", padding: "2px 6px",
+                  display: "inline-flex", alignItems: "center", padding: "2px 6px", borderRadius: 6,
                   fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700,
-                  color: COLORS.textMuted, background: COLORS.outlineBorder,
+                  color: COLORS.textMuted, background: "rgba(255,255,255,0.04)", border: `1px solid ${COLORS.border}`,
                 }}>PINNED</span>
               ) : null}
               {/* Auto-rebase status badges */}
@@ -1797,7 +1798,7 @@ export function LanesPage() {
 
       {adoptConfirmOpen ? (
         <div className="fixed inset-0 z-[120] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }}>
-          <div style={{ width: "min(620px, 100%)", background: COLORS.pageBg, border: `1px solid ${COLORS.border}`, padding: 16 }}>
+          <div style={{ width: "min(620px, 100%)", background: COLORS.cardBgSolid, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 16, padding: 20 }}>
             <div style={{ ...LABEL_STYLE, color: COLORS.info }}>MOVE ATTACHED LANE</div>
             <div style={{ marginTop: 10, fontSize: 13, color: COLORS.textPrimary }}>
               Move <strong>{adoptTargetLane?.name ?? "this lane"}</strong> into <code>.ade/worktrees</code>.
@@ -1806,7 +1807,7 @@ export function LanesPage() {
               ADE uses <code>git worktree move</code>, so branch history and commits stay exactly the same.
             </div>
             {adoptTargetLane ? (
-              <div style={{ marginTop: 10, padding: "8px 10px", background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+              <div style={{ marginTop: 10, padding: "8px 10px", background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, borderRadius: 12 }}>
                 <div style={{ fontSize: 11, color: COLORS.textSecondary }}>Current path</div>
                 <div className="truncate" style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textPrimary }}>
                   {adoptTargetLane.worktreePath}
@@ -1814,7 +1815,7 @@ export function LanesPage() {
               </div>
             ) : null}
             {adoptError ? (
-              <div style={{ marginTop: 10, padding: "8px 10px", background: `${COLORS.danger}12`, border: `1px solid ${COLORS.danger}40`, color: "#FCA5A5", fontSize: 12 }}>
+              <div style={{ marginTop: 10, padding: "8px 10px", background: `${COLORS.danger}12`, border: `1px solid ${COLORS.danger}40`, borderRadius: 8, color: "#FCA5A5", fontSize: 12 }}>
                 {adoptError}
               </div>
             ) : null}
@@ -1846,7 +1847,7 @@ export function LanesPage() {
 
       {rebaseScopePrompt ? (
         <div className="fixed inset-0 z-[120] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }}>
-          <div style={{ width: "min(520px, 100%)", background: COLORS.pageBg, border: `1px solid ${COLORS.border}`, padding: 16 }}>
+          <div style={{ width: "min(520px, 100%)", background: COLORS.cardBgSolid, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 16, padding: 20 }}>
             <div style={{ ...LABEL_STYLE, color: COLORS.accent }}>REBASE SCOPE</div>
             <div style={{ marginTop: 10, fontSize: 13, color: COLORS.textPrimary }}>
               Choose how to rebase <strong>{rebaseScopePrompt.laneName}</strong>.
@@ -1891,7 +1892,7 @@ export function LanesPage() {
 
       {rebasePushReview ? (
         <div className="fixed inset-0 z-[120] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }}>
-          <div style={{ width: "min(620px, 100%)", background: COLORS.pageBg, border: `1px solid ${COLORS.border}`, padding: 16 }}>
+          <div style={{ width: "min(620px, 100%)", background: COLORS.cardBgSolid, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 16, padding: 20 }}>
             <div style={{ ...LABEL_STYLE, color: COLORS.accent }}>REVIEW THEN PUSH</div>
             <div style={{ marginTop: 10, fontSize: 13, color: COLORS.textPrimary }}>
               Select rebased lanes to push to remote.
@@ -1901,7 +1902,7 @@ export function LanesPage() {
                 <label
                   key={lane.laneId}
                   className="flex items-center gap-2"
-                  style={{ fontSize: 12, color: COLORS.textSecondary, border: `1px solid ${COLORS.border}`, padding: "8px 10px" }}
+                  style={{ fontSize: 12, color: COLORS.textSecondary, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "8px 10px" }}
                 >
                   <input
                     type="checkbox"

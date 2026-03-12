@@ -2606,7 +2606,7 @@ function GraphInner() {
           <div className="h-full w-full bg-bg [background-image:radial-gradient(var(--color-border)_1px,transparent_1px)] [background-size:16px_16px] [opacity:0.3]" />
         </div>
         <div className="absolute inset-0 flex items-center justify-center">
-          <div className="rounded-lg border border-border/10 bg-card/90 backdrop-blur-sm shadow-card px-4 py-3 text-sm text-muted-fg">
+          <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl shadow-card px-4 py-3 text-sm text-muted-fg">
             <div className="flex items-center gap-2">
               <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-muted-fg border-t-transparent" />
               Loading topology…
@@ -2635,15 +2635,15 @@ function GraphInner() {
       <ConfirmDialog state={graphConfirm.state} onClose={graphConfirm.close} />
       <div className="absolute inset-0 h-full w-full bg-bg [background-image:radial-gradient(var(--color-border)_1px,transparent_1px)] [background-size:16px_16px] [opacity:0.3]" />
 
-      <div className="absolute left-0 right-0 top-0 z-20 border-b border-border/10 bg-bg/95 px-3 py-2 backdrop-blur-sm">
+      <div className="absolute left-0 right-0 top-0 z-20 border-b border-white/[0.06] bg-white/[0.03] backdrop-blur-xl px-3 py-2">
         <div className="flex flex-wrap items-center gap-2">
-          <div className="inline-flex rounded-lg bg-surface-recessed p-0.5">
+          <div className="inline-flex rounded-xl bg-white/[0.02] p-0.5">
             {VIEW_MODES.map((mode) => (
               <button
                 key={mode}
                 type="button"
                 className={cn(
-                  "rounded px-2.5 py-1 text-xs font-semibold transition-colors",
+                  "rounded-md px-2.5 py-1 text-xs font-semibold transition-colors",
                   viewMode === mode ? "bg-accent text-accent-fg" : "text-muted-fg hover:text-fg"
                 )}
                 onClick={() => setViewMode(mode)}
@@ -2665,7 +2665,7 @@ function GraphInner() {
                 }));
               }}
               placeholder="Filter lanes or tags"
-              className="h-7 w-[220px] rounded-lg border border-border/15 bg-surface-recessed pl-7 pr-2 text-xs text-fg outline-none placeholder:text-muted-fg/50"
+              className="h-7 w-[220px] rounded-xl border border-white/[0.08] bg-white/[0.02] pl-7 pr-2 text-xs text-fg outline-none placeholder:text-muted-fg/50"
             />
           </div>
 
@@ -2695,7 +2695,7 @@ function GraphInner() {
               ) : null}
             </Button>
             {showFiltersPanel ? (
-              <div className="absolute right-0 top-8 z-40 w-[360px] rounded border border-border/10 bg-card/95 backdrop-blur-sm p-2 text-xs shadow-float">
+              <div className="absolute right-0 top-8 z-40 w-[360px] rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl p-2 text-xs shadow-float">
                 <div className="mb-2">
                   <div className="mb-1 text-[11px] uppercase tracking-wider text-muted-fg">Status</div>
                   <div className="flex flex-wrap gap-1">
@@ -2723,7 +2723,7 @@ function GraphInner() {
                                 ? "bg-amber-500/30 text-amber-200"
                                 : status === "clean"
                                   ? "bg-emerald-500/25 text-emerald-200"
-                                  : "bg-muted text-fg")
+                                  : "bg-white/[0.06] text-fg")
                         )}
                       >
                         {status}
@@ -2770,7 +2770,7 @@ function GraphInner() {
                           }
                         }))
                       }
-                      className={cn("cursor-pointer", filters.hidePrimary && "bg-muted text-fg")}
+                      className={cn("cursor-pointer", filters.hidePrimary && "bg-white/[0.06] text-fg")}
                     >
                       hide primary
                     </Chip>
@@ -2785,7 +2785,7 @@ function GraphInner() {
                           }
                         }))
                       }
-                      className={cn("cursor-pointer", filters.hideAttached && "bg-muted text-fg")}
+                      className={cn("cursor-pointer", filters.hideAttached && "bg-white/[0.06] text-fg")}
                     >
                       hide attached
                     </Chip>
@@ -2800,13 +2800,13 @@ function GraphInner() {
                           }
                         }))
                       }
-                        className={cn("cursor-pointer", filters.hideArchived && "bg-muted text-fg")}
+                        className={cn("cursor-pointer", filters.hideArchived && "bg-white/[0.06] text-fg")}
                     >
                       hide archived
                     </Chip>
                   </div>
                 </div>
-                <div className="mt-3 flex justify-between gap-2 border-t border-border/10 pt-3">
+                <div className="mt-3 flex justify-between gap-2 border-t border-white/[0.06] pt-3">
                   <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={resetView}>
                     Reset View
                   </Button>
@@ -2828,7 +2828,7 @@ function GraphInner() {
                           }
                         }))
                       }
-                      className="h-7 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs normal-case text-fg"
+                      className="h-7 rounded-xl border border-white/[0.08] bg-white/[0.02] px-2 text-xs normal-case text-fg"
                     >
                       <option value="">all stacks</option>
                       {rootLaneOptions.map((lane) => (
@@ -2852,7 +2852,7 @@ function GraphInner() {
                           }
                         }));
                       }}
-                      className="h-7 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs normal-case text-fg"
+                      className="h-7 rounded-xl border border-white/[0.08] bg-white/[0.02] px-2 text-xs normal-case text-fg"
                     >
                       <option value="">all tags</option>
                       {availableTags.map((tag) => (
@@ -3121,11 +3121,11 @@ function GraphInner() {
           />
           <Panel position="bottom-left">
             <div className="flex flex-col gap-2">
-              <div className="rounded-xl border border-border/10 bg-card/95 p-1 shadow-card backdrop-blur-sm">
+              <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl p-1 shadow-card">
                 <div className="flex flex-col gap-1">
                   <button
                     type="button"
-                    className="flex h-8 w-8 items-center justify-center rounded-lg text-fg transition-colors hover:bg-surface-recessed"
+                    className="flex h-8 w-8 items-center justify-center rounded-xl text-fg transition-colors hover:bg-white/[0.02]"
                     title="Zoom in"
                     onClick={() => reactFlow.zoomIn({ duration: 180 })}
                   >
@@ -3133,7 +3133,7 @@ function GraphInner() {
                   </button>
                   <button
                     type="button"
-                    className="flex h-8 w-8 items-center justify-center rounded-lg text-fg transition-colors hover:bg-surface-recessed"
+                    className="flex h-8 w-8 items-center justify-center rounded-xl text-fg transition-colors hover:bg-white/[0.02]"
                     title="Zoom out"
                     onClick={() => reactFlow.zoomOut({ duration: 180 })}
                   >
@@ -3141,7 +3141,7 @@ function GraphInner() {
                   </button>
                   <button
                     type="button"
-                    className="flex h-8 w-8 items-center justify-center rounded-lg text-fg transition-colors hover:bg-surface-recessed"
+                    className="flex h-8 w-8 items-center justify-center rounded-xl text-fg transition-colors hover:bg-white/[0.02]"
                     title="Fit graph"
                     onClick={() => void reactFlow.fitView({ duration: 500, padding: 0.2 })}
                   >
@@ -3149,7 +3149,7 @@ function GraphInner() {
                   </button>
                   <button
                     type="button"
-                    className="flex h-8 w-8 items-center justify-center rounded-lg text-fg transition-colors hover:bg-surface-recessed"
+                    className="flex h-8 w-8 items-center justify-center rounded-xl text-fg transition-colors hover:bg-white/[0.02]"
                     title="Reset view"
                     onClick={resetView}
                   >
@@ -3158,11 +3158,11 @@ function GraphInner() {
                 </div>
               </div>
               {loadingRisk ? (
-                <div className="rounded-lg bg-card/90 px-2 py-1 text-[11px] text-muted-fg">
+                <div className="rounded-xl bg-white/[0.03] backdrop-blur-xl px-2 py-1 text-[11px] text-muted-fg">
                   Loading conflict data…
                 </div>
               ) : batchProgress ? (
-                <div className="rounded-lg bg-card/90 px-2 py-1 text-[11px] text-muted-fg">
+                <div className="rounded-xl bg-white/[0.03] backdrop-blur-xl px-2 py-1 text-[11px] text-muted-fg">
                   Computing {batchProgress.completedPairs}/{batchProgress.totalPairs} pairs…
                 </div>
               ) : null}
@@ -3170,7 +3170,7 @@ function GraphInner() {
           </Panel>
           {lanes.length === 1 && lanes[0]?.laneType === "primary" ? (
             <Panel position="bottom-center">
-              <div className="rounded-lg bg-card/90 px-2 py-1 text-[11px] text-muted-fg">
+              <div className="rounded-xl bg-white/[0.03] backdrop-blur-xl px-2 py-1 text-[11px] text-muted-fg">
                 Create a worktree lane to see your topology.
               </div>
             </Panel>
@@ -3179,7 +3179,7 @@ function GraphInner() {
             <Panel position="top-left">
               <div
                 className={cn(
-                  "ade-drop-preview-pop rounded border px-2 py-1 text-[11px]",
+                  "ade-drop-preview-pop rounded-xl border px-2 py-1 text-[11px]",
                   dropPreview.tone === "safe" && "border-emerald-600/70 bg-emerald-900/20 text-emerald-200",
                   dropPreview.tone === "warn" && "border-amber-600/70 bg-amber-900/20 text-amber-200",
                   dropPreview.tone === "blocked" && "border-red-700/70 bg-red-900/25 text-red-200"
@@ -3192,14 +3192,14 @@ function GraphInner() {
           ) : null}
           <Panel position="top-right">
             <div className="flex w-[280px] flex-col gap-2 text-[11px]">
-              <div className="rounded-lg bg-card/92 p-3 shadow-card backdrop-blur-sm">
-                <div className="mb-2 font-semibold text-fg">Environments</div>
+              <div className="rounded-xl bg-white/[0.03] backdrop-blur-xl p-3 shadow-card">
+                <div className="mb-2 font-sans font-semibold text-fg">Environments</div>
                 {environmentLegendEntries.length === 0 ? (
                   <div className="text-muted-fg">No environment mappings configured.</div>
                 ) : (
                   <div className="space-y-2">
                     {environmentLegendEntries.map((entry) => (
-                      <div key={`${entry.env}:${entry.branch}`} className="rounded-lg border border-border/10 bg-card/60 px-2 py-1.5">
+                      <div key={`${entry.env}:${entry.branch}`} className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-2 py-1.5">
                         <div className="flex items-center gap-2">
                           <span
                             className="h-2.5 w-2.5 rounded-full ring-1 ring-border/30"
@@ -3217,11 +3217,11 @@ function GraphInner() {
                 )}
               </div>
 
-              <div className="rounded-lg bg-card/92 p-3 shadow-card backdrop-blur-sm">
-                <div className="mb-2 font-semibold text-fg">Status Key</div>
+              <div className="rounded-xl bg-white/[0.03] backdrop-blur-xl p-3 shadow-card">
+                <div className="mb-2 font-sans font-semibold text-fg">Status Key</div>
                 <div className="space-y-2">
                   {statusLegendEntries.map((entry) => (
-                    <div key={entry.label} className="rounded-lg border border-border/10 bg-card/60 px-2 py-1.5">
+                    <div key={entry.label} className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-2 py-1.5">
                       <div className={cn("font-medium", entry.tone)}>{entry.label}</div>
                       <div className="mt-0.5 text-[10px] text-muted-fg">{entry.detail}</div>
                     </div>
@@ -3232,8 +3232,8 @@ function GraphInner() {
               {lanesForLegend.length === 0 ? (
                 null
               ) : (
-                <div className="rounded-lg bg-card/92 p-3 shadow-card backdrop-blur-sm">
-                  <div className="mb-2 font-semibold text-fg">Custom Lane Colors</div>
+                <div className="rounded-xl bg-white/[0.03] backdrop-blur-xl p-3 shadow-card">
+                  <div className="mb-2 font-sans font-semibold text-fg">Custom Lane Colors</div>
                   <div className="space-y-1">
                     {lanesForLegend.map(([color, laneName]) => (
                       <div key={color} className="flex items-center gap-1.5">
@@ -3249,7 +3249,7 @@ function GraphInner() {
         </ReactFlow>
         {allNodesHidden ? (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center pt-[74px]">
-            <div className="pointer-events-auto rounded-lg border border-border/10 bg-card/90 backdrop-blur-sm shadow-card px-5 py-4 text-center">
+            <div className="pointer-events-auto rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl shadow-card px-5 py-4 text-center">
               <Funnel size={24} weight="regular" className="mx-auto mb-2 text-muted-fg" />
               <div className="text-sm font-medium text-fg">No visible lanes</div>
               <div className="mt-1 text-xs text-muted-fg">All lanes are hidden by the current filters.</div>
@@ -3287,7 +3287,7 @@ function GraphInner() {
 
       {contextMenu ? (
         <div
-          className="fixed z-[90] min-w-[190px] rounded border border-border/10 bg-card/95 backdrop-blur-sm p-1 shadow-float"
+          className="fixed z-[90] min-w-[190px] rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl p-1 shadow-float"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onMouseLeave={() => setContextMenu(null)}
         >
@@ -3366,7 +3366,7 @@ function GraphInner() {
                           ? "cursor-not-allowed text-muted-fg"
                           : item.danger
                             ? "text-red-200 hover:bg-red-900/20"
-                            : "text-fg hover:bg-card/80"
+                            : "text-fg hover:bg-white/[0.04]"
                       )}
                       title={item.disabled ? item.reason : undefined}
                       onClick={() => {
@@ -3385,8 +3385,8 @@ function GraphInner() {
       ) : null}
 
       {appearanceEditor ? (
-        <div className="fixed z-[95] w-[340px] rounded border border-border/10 bg-card/95 backdrop-blur-sm p-3 shadow-float" style={{ left: appearanceEditor.x, top: appearanceEditor.y }}>
-          <div className="mb-2 text-xs font-semibold text-fg">Customize Appearance</div>
+        <div className="fixed z-[95] w-[340px] rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl p-3 shadow-float" style={{ left: appearanceEditor.x, top: appearanceEditor.y }}>
+          <div className="mb-2 text-xs font-sans font-semibold text-fg">Customize Appearance</div>
           <div className="mb-2 text-xs text-muted-fg">Color</div>
           <div className="mb-3 flex flex-wrap gap-1.5">
             {COLOR_PALETTE.map((color) => (
@@ -3409,7 +3409,7 @@ function GraphInner() {
                 key={option.label}
                 type="button"
                 className={cn(
-                  "inline-flex h-7 items-center gap-1 rounded border border-border/10 bg-card/60 px-2 text-xs",
+                  "inline-flex h-7 items-center gap-1 rounded-xl border border-white/[0.06] bg-white/[0.02] px-2 text-xs",
                   appearanceEditor.icon === option.key && "bg-accent/20 ring-1 ring-accent"
                 )}
                 onClick={() => setAppearanceEditor((prev) => (prev ? { ...prev, icon: option.key } : prev))}
@@ -3422,7 +3422,7 @@ function GraphInner() {
           <div className="mb-2 text-xs text-muted-fg">Tags</div>
           <div className="mb-2 flex flex-wrap gap-1">
             {appearanceEditor.tags.map((tag) => (
-              <span key={tag} className="inline-flex items-center gap-1 rounded border border-border/10 bg-card/60 px-1 text-xs text-fg">
+              <span key={tag} className="inline-flex items-center gap-1 rounded-xl border border-white/[0.06] bg-white/[0.02] px-1 text-xs text-fg">
                 {tag}
                 <button
                   type="button"
@@ -3447,7 +3447,7 @@ function GraphInner() {
             <input
               value={appearanceEditor.newTag}
               onChange={(event) => setAppearanceEditor((prev) => (prev ? { ...prev, newTag: event.target.value } : prev))}
-              className="h-7 flex-1 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs outline-none"
+              className="h-7 flex-1 rounded-xl border border-white/[0.08] bg-white/[0.02] px-2 text-xs outline-none"
               placeholder="new tag"
             />
             <Button
@@ -3495,15 +3495,15 @@ function GraphInner() {
 
       {reparentDialog ? (
         <div className="fixed inset-0 z-[96] flex items-center justify-center bg-black/45 p-4">
-          <div className="w-[min(780px,100%)] rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4 shadow-float">
-            <div className="mb-2 text-sm font-semibold text-fg">Confirm Lane Drop</div>
+          <div className="w-[min(780px,100%)] rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl p-4 shadow-float">
+            <div className="mb-2 text-sm font-sans font-semibold text-fg">Confirm Lane Drop</div>
             {reparentDialog.integratePlan || reparentDialog.laneIds.length === 1 ? (
-              <div className="mb-2 inline-flex rounded-lg border border-border/10 bg-card/60 p-0.5 text-xs">
+              <div className="mb-2 inline-flex rounded-xl border border-white/[0.06] bg-white/[0.02] p-0.5 text-xs">
                 {reparentDialog.integratePlan ? (
                   <button
                     type="button"
                     className={cn(
-                      "rounded px-2 py-1",
+                      "rounded-md px-2 py-1",
                       reparentDialog.actionMode === "integrate" ? "bg-accent text-accent-fg" : "text-muted-fg hover:text-fg"
                     )}
                     onClick={() => setReparentDialog((prev) => (prev ? { ...prev, actionMode: "integrate" } : prev))}
@@ -3514,7 +3514,7 @@ function GraphInner() {
                 <button
                   type="button"
                   className={cn(
-                    "rounded px-2 py-1",
+                    "rounded-md px-2 py-1",
                     reparentDialog.actionMode === "reparent" ? "bg-accent text-accent-fg" : "text-muted-fg hover:text-fg"
                   )}
                   onClick={() => setReparentDialog((prev) => (prev ? { ...prev, actionMode: "reparent" } : prev))}
@@ -3525,7 +3525,7 @@ function GraphInner() {
                   <button
                     type="button"
                     className={cn(
-                      "rounded px-2 py-1",
+                      "rounded-md px-2 py-1",
                       reparentDialog.actionMode === "pr" ? "bg-accent text-accent-fg" : "text-muted-fg hover:text-fg"
                     )}
                     onClick={() => setReparentDialog((prev) => (prev ? { ...prev, actionMode: "pr" } : prev))}
@@ -3535,7 +3535,7 @@ function GraphInner() {
                 ) : null}
               </div>
             ) : null}
-            <div className="mb-2 rounded-lg border border-border/10 bg-card/60 p-2 text-xs text-muted-fg">
+            <div className="mb-2 rounded-xl border border-white/[0.06] bg-white/[0.02] p-2 text-xs text-muted-fg">
               {reparentDialog.actionMode === "integrate"
                 ? "Integrate keeps stack ancestry unchanged and brings source lane commits into the target lane."
                 : reparentDialog.actionMode === "pr"
@@ -3543,8 +3543,8 @@ function GraphInner() {
                 : "Reparent changes stack ancestry. ADE rebases selected lane commits onto the target parent branch."}
             </div>
             {reparentDialog.actionMode === "integrate" && reparentDialog.integratePlan ? (
-              <div className="mb-2 rounded-lg border border-border/10 bg-card/60 p-2 text-xs">
-                <div className="font-semibold text-fg">{reparentDialog.integratePlan.summary}</div>
+              <div className="mb-2 rounded-xl border border-white/[0.06] bg-white/[0.02] p-2 text-xs">
+                <div className="font-sans font-semibold text-fg">{reparentDialog.integratePlan.summary}</div>
                 <div className="mt-1 text-muted-fg">{reparentDialog.integratePlan.detail}</div>
               </div>
             ) : (
@@ -3552,7 +3552,7 @@ function GraphInner() {
                 <div className="mb-2 text-xs text-muted-fg">
                   Target parent: <span className="text-fg">{laneById.get(reparentDialog.targetLaneId)?.name ?? reparentDialog.targetLaneId}</span>
                 </div>
-                <div className="mb-2 rounded-lg border border-border/10 bg-card/60 p-2 text-xs">
+                <div className="mb-2 rounded-xl border border-white/[0.06] bg-white/[0.02] p-2 text-xs">
                   {reparentDialog.laneIds.length === 1 ? (
                     <div>
                       {laneById.get(reparentDialog.laneIds[0]!)?.name ?? reparentDialog.laneIds[0]} → {laneById.get(reparentDialog.targetLaneId)?.name ?? reparentDialog.targetLaneId}
@@ -3578,7 +3578,7 @@ function GraphInner() {
                 No overlapping files detected.
               </div>
             )}
-            <div className="mb-3 max-h-[180px] overflow-auto rounded-lg border border-border/10 bg-card/60 p-2 text-xs">
+            <div className="mb-3 max-h-[180px] overflow-auto rounded-xl border border-white/[0.06] bg-white/[0.02] p-2 text-xs">
               {reparentDialog.overlapFiles.length === 0
                 ? "No overlaps."
                 : reparentDialog.overlapFiles.slice(0, 12).map((file) => <div key={file}>{file}</div>)}
@@ -3594,7 +3594,7 @@ function GraphInner() {
                 : ""}
             </div>
             {reparentDialog.preview ? (
-              <div className="mb-3 rounded-lg border border-border/10 bg-card/60 p-2 text-xs">
+              <div className="mb-3 rounded-xl border border-white/[0.06] bg-white/[0.02] p-2 text-xs">
                 <div>Preview outcome: {reparentDialog.preview.outcome}</div>
                 <div>
                   files changed: {reparentDialog.preview.diffStat.filesChanged} · conflicts: {reparentDialog.preview.conflictingFiles.length}
@@ -3645,9 +3645,9 @@ function GraphInner() {
 
       {prDialog ? (
         <div className="fixed inset-0 z-[96] flex items-center justify-center bg-black/45 p-4">
-          <div className="w-[min(980px,100%)] rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4 shadow-float">
+          <div className="w-[min(980px,100%)] rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl p-4 shadow-float">
             <div className="mb-2 flex items-center justify-between gap-2">
-              <div className="text-sm font-semibold text-fg">
+              <div className="text-sm font-sans font-semibold text-fg">
                 {prDialog.existingPr ? `PR #${prDialog.existingPr.githubPrNumber}` : "Create Pull Request"}
               </div>
               <button type="button" className="text-muted-fg hover:text-fg" onClick={() => setPrDialog(null)}>
@@ -3668,7 +3668,7 @@ function GraphInner() {
             {!prDialog.existingPr ? (
               <div className="space-y-3">
                 {prDialog.loadingDraft ? (
-                  <div className="rounded-lg border border-border/10 bg-card/60 p-2 text-xs text-muted-fg">
+                  <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-2 text-xs text-muted-fg">
                     <div className="mb-1 inline-flex h-3 w-3 animate-spin rounded-full border-2 border-muted-fg border-t-transparent" />
                     Drafting description from pack…
                   </div>
@@ -3676,12 +3676,12 @@ function GraphInner() {
 
                 <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
                   <input
-                    className="h-9 rounded border border-border/15 bg-surface-recessed px-3 text-sm md:col-span-2"
+                    className="h-9 rounded-xl border border-white/[0.08] bg-white/[0.02] px-3 text-sm md:col-span-2"
                     placeholder="PR title"
                     value={prDialog.title}
                     onChange={(e) => setPrDialog((prev) => (prev ? { ...prev, title: e.target.value } : prev))}
                   />
-                  <label className="inline-flex h-9 items-center gap-2 rounded border border-border/15 bg-surface-recessed px-3 text-xs text-muted-fg">
+                  <label className="inline-flex h-9 items-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.02] px-3 text-xs text-muted-fg">
                     <input
                       type="checkbox"
                       checked={prDialog.draft}
@@ -3692,7 +3692,7 @@ function GraphInner() {
                 </div>
 
                 <textarea
-                  className="min-h-[240px] w-full rounded border border-border/15 bg-surface-recessed px-3 py-2 text-xs"
+                  className="min-h-[240px] w-full rounded-xl border border-white/[0.08] bg-white/[0.02] px-3 py-2 text-xs"
                   value={prDialog.body}
                   onChange={(e) => setPrDialog((prev) => (prev ? { ...prev, body: e.target.value } : prev))}
                   placeholder="PR description (markdown)"
@@ -3776,9 +3776,9 @@ function GraphInner() {
               </div>
             ) : prDialog.existingPr ? (
               <div className="flex h-[min(82vh,900px)] min-h-[680px] flex-col gap-3">
-                <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/10 bg-card/60 px-3 py-2 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.06] bg-white/[0.02] px-3 py-2 text-xs">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-semibold text-fg">Graph Actions</span>
+                    <span className="font-sans font-semibold text-fg">Graph Actions</span>
                     <InlinePrBadge {...getPrChecksBadge(prDialog.existingPr.checksStatus)} />
                     <InlinePrBadge {...getPrReviewsBadge(prDialog.existingPr.reviewStatus)} />
                     {prDialog.status ? (
@@ -3794,10 +3794,10 @@ function GraphInner() {
                         key={method}
                         type="button"
                         className={cn(
-                          "rounded border px-2 py-1 text-[11px] font-semibold uppercase tracking-wide",
+                          "rounded-xl border px-2 py-1 text-[11px] font-semibold uppercase tracking-wide",
                           prDialog.mergeMethod === method
                             ? "border-accent bg-accent/20 text-accent"
-                            : "border-border/20 bg-surface-recessed text-muted-fg hover:text-fg"
+                            : "border-white/[0.08] bg-white/[0.02] text-muted-fg hover:text-fg"
                         )}
                         onClick={() => setPrDialog((prev) => (prev ? { ...prev, mergeMethod: method } : prev))}
                       >
@@ -3809,7 +3809,7 @@ function GraphInner() {
                     </Button>
                   </div>
                 </div>
-                <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-border/10 bg-card">
+                <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl">
                   <PrDetailPane
                     pr={prDialog.existingPr}
                     status={prDialog.status}
@@ -3833,9 +3833,9 @@ function GraphInner() {
 
       {integrationDialog ? (
         <div className="fixed inset-0 z-[96] flex items-center justify-center bg-black/45 p-4">
-          <div className="w-[min(780px,100%)] rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4 shadow-float">
+          <div className="w-[min(780px,100%)] rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl p-4 shadow-float">
             <div className="mb-2 flex items-center justify-between gap-2">
-              <div className="text-sm font-semibold text-fg">Create Integration Lane</div>
+              <div className="text-sm font-sans font-semibold text-fg">Create Integration Lane</div>
               <button type="button" className="text-muted-fg hover:text-fg" onClick={() => setIntegrationDialog(null)}>
                 ×
               </button>
@@ -3853,19 +3853,19 @@ function GraphInner() {
 
             {integrationDialog.targetLaneId ? (
               <div className="mb-2 text-xs text-muted-fg">
-                Base lane: <span className="font-semibold text-fg">{laneById.get(integrationDialog.targetLaneId)?.name ?? integrationDialog.targetLaneId}</span>
+                Base lane: <span className="font-sans font-semibold text-fg">{laneById.get(integrationDialog.targetLaneId)?.name ?? integrationDialog.targetLaneId}</span>
               </div>
             ) : null}
 
             <input
-              className="mb-2 h-9 w-full rounded border border-border/15 bg-surface-recessed px-3 text-sm"
+              className="mb-2 h-9 w-full rounded-xl border border-white/[0.08] bg-white/[0.02] px-3 text-sm"
               value={integrationDialog.name}
               onChange={(e) => setIntegrationDialog((prev) => (prev ? { ...prev, name: e.target.value } : prev))}
               placeholder="Integration lane name"
               disabled={integrationDialog.busy}
             />
 
-            <div className="mb-3 max-h-[160px] overflow-auto rounded-lg border border-border/10 bg-card/60 p-2 text-xs text-muted-fg">
+            <div className="mb-3 max-h-[160px] overflow-auto rounded-xl border border-white/[0.06] bg-white/[0.02] p-2 text-xs text-muted-fg">
               {integrationDialog.laneIds.map((laneId) => (
                 <div key={laneId} className="truncate">
                   {laneById.get(laneId)?.name ?? laneId}
@@ -3874,7 +3874,7 @@ function GraphInner() {
             </div>
 
             {integrationDialog.step ? (
-              <div className="mb-3 rounded-lg border border-border/10 bg-card/60 p-2 text-xs text-muted-fg">{integrationDialog.step}</div>
+              <div className="mb-3 rounded-xl border border-white/[0.06] bg-white/[0.02] p-2 text-xs text-muted-fg">{integrationDialog.step}</div>
             ) : null}
 
             <div className="flex justify-end gap-2">
@@ -3932,10 +3932,10 @@ function GraphInner() {
 
       {selectedLane ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-3 z-[60] flex justify-center">
-          <div className="pointer-events-auto w-[min(1120px,calc(100%-24px))] rounded border border-border/10 bg-card/95 px-3 py-2 shadow-float backdrop-blur-sm">
+          <div className="pointer-events-auto w-[min(1120px,calc(100%-24px))] rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl px-3 py-2 shadow-float">
             <div className="flex flex-wrap items-center gap-3">
               <div className="min-w-0">
-                <div className="text-[11px] font-semibold text-fg">{selectedLane.name}</div>
+                <div className="text-[11px] font-sans font-semibold text-fg">{selectedLane.name}</div>
                 <div className="mt-1 truncate text-[11px] text-muted-fg">{selectedLane.branchRef}</div>
                 <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px]">
                   <Chip className={cn("px-1.5 py-0", selectedLane.status.dirty ? "text-amber-300" : "text-emerald-300")}>
@@ -4004,7 +4004,7 @@ function GraphInner() {
                     <CaretDown size={12} weight="bold" />
                   </Button>
                   {singleActionsOpen ? (
-                    <div className="absolute bottom-9 right-0 z-[70] w-[220px] rounded border border-border/10 bg-card/95 p-1 text-xs shadow-float backdrop-blur-sm">
+                    <div className="absolute bottom-9 right-0 z-[70] w-[220px] rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl p-1 text-xs shadow-float">
                       {singleLaneActionItems.map((item) => (
                         <button
                           key={item.key}
@@ -4015,7 +4015,7 @@ function GraphInner() {
                               ? "cursor-not-allowed text-muted-fg"
                               : item.danger
                                 ? "text-red-200 hover:bg-red-900/20"
-                                : "text-fg hover:bg-card/80"
+                                : "text-fg hover:bg-white/[0.04]"
                           )}
                           disabled={item.disabled}
                           onClick={() => {
@@ -4042,7 +4042,7 @@ function GraphInner() {
 
       {selectedLaneIds.length > 1 ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-3 z-[60] flex justify-center">
-          <div className="pointer-events-auto rounded border border-border/10 bg-card/95 backdrop-blur-sm px-3 py-2 shadow-float">
+          <div className="pointer-events-auto rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl px-3 py-2 shadow-float">
             <div className="mb-1 text-[11px] text-muted-fg">{selectedLaneIds.length} lanes selected</div>
             <div className="flex flex-wrap items-center gap-1">
               <Button
@@ -4064,14 +4064,14 @@ function GraphInner() {
                   <CaretDown size={12} weight="bold" />
                 </Button>
                 {batchActionsOpen ? (
-                  <div className="absolute bottom-9 right-0 z-[70] w-[200px] rounded border border-border/10 bg-card/95 p-1 text-xs shadow-float backdrop-blur-sm">
+                  <div className="absolute bottom-9 right-0 z-[70] w-[200px] rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl p-1 text-xs shadow-float">
                     {batchActionItems.map((item) => (
                       <button
                         key={item.key}
                         type="button"
                         className={cn(
                           "flex w-full items-center rounded px-2 py-1.5 text-left",
-                          item.danger ? "text-red-200 hover:bg-red-900/20" : "text-fg hover:bg-card/80"
+                          item.danger ? "text-red-200 hover:bg-red-900/20" : "text-fg hover:bg-white/[0.04]"
                         )}
                         onClick={() => {
                           setBatchActionsOpen(false);
@@ -4098,13 +4098,13 @@ function GraphInner() {
                 <div className="mb-1 text-muted-fg">
                   {batchOperationLabel(batchStatus.operation)} lane {Math.min(batchStatus.steps.length, batchStatus.activeIndex + 1)}/{batchStatus.steps.length}: {batchStatus.steps[batchStatus.activeIndex]?.laneName ?? "pending"}
                 </div>
-                <div className="mb-1 h-1.5 w-full rounded bg-muted">
+                <div className="mb-1 h-1.5 w-full rounded-md bg-white/[0.06]">
                   <div
                     className="h-1.5 rounded bg-accent transition-all"
                     style={{ width: `${(batchStatus.steps.filter((step) => step.status === "done" || step.status === "failed" || step.status === "skipped").length / Math.max(1, batchStatus.steps.length)) * 100}%` }}
                   />
                 </div>
-                <div className="max-h-[90px] overflow-auto rounded border border-border/10 bg-card/60 p-1">
+                <div className="max-h-[90px] overflow-auto rounded-xl border border-white/[0.06] bg-white/[0.02] p-1">
                   {batchStatus.steps.map((step) => (
                     <div key={step.laneId} className="flex items-center justify-between gap-2">
                       <span className="truncate">{step.laneName}</span>
@@ -4158,7 +4158,7 @@ function GraphInner() {
       ) : null}
 
       {undoToast ? (
-        <div className="absolute bottom-3 right-3 z-[90] rounded bg-card/95 px-3 py-2 text-xs shadow-float">
+        <div className="absolute bottom-3 right-3 z-[90] rounded bg-white/[0.03] backdrop-blur-xl px-3 py-2 text-xs shadow-float">
           <div className="mb-1">{undoToast.message}</div>
           <div className="flex justify-end gap-2">
             <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => setUndoToast(null)}>
@@ -4182,9 +4182,9 @@ function GraphInner() {
       ) : null}
 
       {edgeSimulation ? (
-        <div className={cn("absolute right-3 z-[89] w-[360px] rounded border border-border/10 bg-card/95 p-3 text-xs shadow-float backdrop-blur-sm", edgeSimulationTopClass)}>
+        <div className={cn("absolute right-3 z-[89] w-[360px] rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl p-3 text-xs shadow-float", edgeSimulationTopClass)}>
           <div className="mb-1 flex items-center justify-between gap-2">
-            <div className="font-semibold text-fg">Merge Simulation</div>
+            <div className="font-sans font-semibold text-fg">Merge Simulation</div>
             <button type="button" className="text-muted-fg hover:text-fg" onClick={() => setEdgeSimulation(null)}>
               ×
             </button>
@@ -4193,24 +4193,24 @@ function GraphInner() {
             {(laneById.get(edgeSimulation.laneAId)?.name ?? edgeSimulation.laneAId)} → {(laneById.get(edgeSimulation.laneBId)?.name ?? edgeSimulation.laneBId)}
           </div>
           {edgeSimulation.loading ? (
-            <div className="rounded-lg border border-border/10 bg-card/60 p-3 text-muted-fg">
+            <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-3 text-muted-fg">
               <div className="mb-1 inline-flex h-3 w-3 animate-spin rounded-full border-2 border-muted-fg border-t-transparent" />
               <div>Running merge simulation…</div>
             </div>
           ) : edgeSimulation.error ? (
-            <div className="rounded bg-red-900/30 p-2 text-red-200">
+            <div className="rounded-md bg-red-900/30 p-2 text-red-200">
               <div className="font-medium">Simulation failed</div>
               <div className="mt-1 font-mono text-[11px]">{edgeSimulation.error}</div>
             </div>
           ) : edgeSimulation.result ? (
             <div className="space-y-2">
-              <div className="rounded-lg border border-border/10 bg-card/60 p-2">
-                <div>Outcome: <span className="font-semibold text-fg">{edgeSimulation.result.outcome}</span></div>
+              <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-2">
+                <div>Outcome: <span className="font-sans font-semibold text-fg">{edgeSimulation.result.outcome}</span></div>
                 <div className="text-muted-fg">
                   files changed: {edgeSimulation.result.diffStat.filesChanged} · insertions: {edgeSimulation.result.diffStat.insertions} · deletions: {edgeSimulation.result.diffStat.deletions}
                 </div>
               </div>
-              <div className="max-h-[180px] overflow-auto rounded-lg border border-border/10 bg-card/60 p-2">
+              <div className="max-h-[180px] overflow-auto rounded-xl border border-white/[0.06] bg-white/[0.02] p-2">
                 {edgeSimulation.result.conflictingFiles.length === 0 ? (
                   <div className="text-muted-fg">No conflicting files.</div>
                 ) : (
@@ -4239,12 +4239,12 @@ function GraphInner() {
 
       {showRiskMatrix ? (
         <div
-          className="absolute bottom-3 left-3 z-[88] rounded-lg border border-border/10 bg-card/95 p-3 shadow-float backdrop-blur-sm"
+          className="absolute bottom-3 left-3 z-[88] rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl p-3 shadow-float"
           style={{ right: conflictPanel ? 450 : 12 }}
         >
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-semibold text-fg">Pair Matrix</div>
+              <div className="text-sm font-sans font-semibold text-fg">Pair Matrix</div>
               <div className="text-[11px] text-muted-fg">
                 Pairwise overlap and conflict risk across {lanes.length} lane{lanes.length === 1 ? "" : "s"}.
               </div>
@@ -4280,10 +4280,10 @@ function GraphInner() {
 
       {nodeTooltip && hoveredTooltipLane ? (
         <div
-          className="pointer-events-none fixed z-[92] min-w-[240px] rounded border border-border/10 bg-card/95 backdrop-blur-sm px-2.5 py-2 text-[11px] shadow-float ade-tooltip-motion ade-tooltip-open"
+          className="pointer-events-none fixed z-[92] min-w-[240px] rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl px-2.5 py-2 text-[11px] shadow-float ade-tooltip-motion ade-tooltip-open"
           style={{ left: nodeTooltip.x, top: nodeTooltip.y }}
         >
-          <div className="font-semibold text-fg">{hoveredTooltipLane.name}</div>
+          <div className="font-sans font-semibold text-fg">{hoveredTooltipLane.name}</div>
           <div className="truncate text-muted-fg">{hoveredTooltipLane.branchRef}</div>
           <div className="mt-1 text-muted-fg">dirty changes: {hoveredTooltipLane.status.dirty ? "yes" : "no"}</div>
           <div className="text-muted-fg">last activity: {toRelativeTime(lastActivityByLaneId[hoveredTooltipLane.id] ?? null)}</div>
@@ -4298,10 +4298,10 @@ function GraphInner() {
 
       {textPrompt ? (
         <div className="fixed inset-0 z-[96] flex items-center justify-center bg-black/45 p-4">
-          <div className="w-[min(460px,100%)] rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4 shadow-float">
-            <div className="text-sm font-semibold text-fg">{textPrompt.title}</div>
+          <div className="w-[min(460px,100%)] rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl p-4 shadow-float">
+            <div className="text-sm font-sans font-semibold text-fg">{textPrompt.title}</div>
             {textPrompt.message ? (
-              <div className="mt-1 max-h-[200px] overflow-auto whitespace-pre-wrap rounded-lg border border-border/10 bg-card/60 px-2 py-1 text-[11px] text-muted-fg">
+              <div className="mt-1 max-h-[200px] overflow-auto whitespace-pre-wrap rounded-xl border border-white/[0.06] bg-white/[0.02] px-2 py-1 text-[11px] text-muted-fg">
                 {textPrompt.message}
               </div>
             ) : null}
@@ -4323,7 +4323,7 @@ function GraphInner() {
                 }
               }}
               placeholder={textPrompt.placeholder}
-              className="mt-3 h-9 w-full rounded border border-border/15 bg-surface-recessed px-2 text-sm outline-none focus:ring-1 focus:ring-accent"
+              className="mt-3 h-9 w-full rounded-xl border border-white/[0.08] bg-white/[0.02] px-2 text-sm outline-none focus:ring-1 focus:ring-accent"
             />
             {textPromptError ? <div className="mt-2 text-xs text-red-300">{textPromptError}</div> : null}
             <div className="mt-4 flex justify-end gap-2">
@@ -4340,7 +4340,7 @@ function GraphInner() {
 
       {edgeHover ? (
         <div
-          className="pointer-events-none fixed z-[91] max-w-[420px] whitespace-pre-wrap rounded border border-border/10 bg-card/95 backdrop-blur-sm px-2 py-1 text-[11px] text-fg shadow-float"
+          className="pointer-events-none fixed z-[91] max-w-[420px] whitespace-pre-wrap rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl px-2 py-1 text-[11px] text-fg shadow-float"
           style={{ left: edgeHover.x, top: edgeHover.y }}
         >
           {edgeHover.label}

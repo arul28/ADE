@@ -264,7 +264,7 @@ describe("AgentChatMessageList", () => {
       />
     );
 
-    expect(screen.getAllByText("Live")).toHaveLength(2);
+    expect(screen.getAllByText("Thinking: Inspecting files")).toHaveLength(2);
 
     rerender(
       <AgentChatMessageList
@@ -277,7 +277,7 @@ describe("AgentChatMessageList", () => {
       />
     );
 
-    expect(screen.getAllByText("Live")).toHaveLength(1);
+    expect(screen.getAllByText("Thinking: Inspecting files")).toHaveLength(1);
   });
 
   it("auto-scrolls to bottom on new events unless user scrolled up", async () => {

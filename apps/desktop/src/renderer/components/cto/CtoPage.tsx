@@ -463,7 +463,7 @@ export function CtoPage() {
           {activeTab === "chat" && (
             <div className="flex flex-col h-full min-h-0">
               {/* Chat header */}
-              <div className="shrink-0 px-4 py-2.5 border-b border-border/20" style={{ background: "var(--color-card)" }}>
+              <div className="shrink-0 px-4 py-2.5 border-b border-white/[0.06] bg-white/[0.03] backdrop-blur-xl">
                 <div className="flex items-center gap-2">
                   <Brain size={14} className="text-accent" />
                   <span className="font-sans text-xs font-bold text-fg">
@@ -496,7 +496,7 @@ export function CtoPage() {
 
               {/* Chat pane */}
               {!selectedWorker && (
-                <div className="shrink-0 border-b border-border/20 px-4 py-3" style={{ background: "var(--color-surface-raised)" }}>
+                <div className="shrink-0 border-b border-white/[0.06] px-4 py-3 bg-white/[0.02] backdrop-blur-xl">
                   <OpenclawConnectionPanel
                     compact
                     showConfig={false}

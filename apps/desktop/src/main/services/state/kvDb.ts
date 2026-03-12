@@ -743,6 +743,45 @@ function migrate(db: Database) {
   db.run("create index if not exists idx_mission_events_project_created on mission_events(project_id, created_at)");
 
   db.run(`
+    create table if not exists computer_use_artifacts (
+      id text primary key,
+      project_id text not null,
+      artifact_kind text not null,
+      backend_style text not null,
+      backend_name text not null,
+      source_tool_name text,
+      original_type text,
+      title text not null,
+      description text,
+      uri text not null,
+      storage_kind text not null,
+      mime_type text,
+      metadata_json text not null default '{}',
+      created_at text not null,
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_computer_use_artifacts_project_created on computer_use_artifacts(project_id, created_at)");
+  db.run("create index if not exists idx_computer_use_artifacts_project_kind on computer_use_artifacts(project_id, artifact_kind)");
+
+  db.run(`
+    create table if not exists computer_use_artifact_links (
+      id text primary key,
+      artifact_id text not null,
+      project_id text not null,
+      owner_kind text not null,
+      owner_id text not null,
+      relation text not null default 'attached_to',
+      metadata_json text,
+      created_at text not null,
+      foreign key(artifact_id) references computer_use_artifacts(id),
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_computer_use_artifact_links_owner on computer_use_artifact_links(project_id, owner_kind, owner_id, created_at)");
+  db.run("create index if not exists idx_computer_use_artifact_links_artifact on computer_use_artifact_links(artifact_id)");
+
+  db.run(`
     create table if not exists mission_artifacts (
       id text primary key,
       mission_id text not null,

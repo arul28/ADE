@@ -1263,7 +1263,7 @@ export function FilesPage() {
       ),
       bodyClassName: "flex min-h-0 flex-col overflow-hidden",
       children: (
-        <div className="flex h-full min-h-0 flex-col" style={{ background: COLORS.cardBg }}>
+        <div className="flex h-full min-h-0 flex-col" style={{ background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderRadius: 12 }}>
           {/* Search bar */}
           <div style={{ padding: "8px 10px", borderBottom: `1px solid ${COLORS.border}` }}>
             <div className="relative flex items-center">
@@ -1276,7 +1276,7 @@ export function FilesPage() {
                 style={{
                   height: 30, width: "100%", padding: "0 28px 0 28px", fontSize: 10,
                   fontFamily: MONO_FONT, fontWeight: 500,
-                  background: COLORS.recessedBg,
+                  background: COLORS.recessedBg, borderRadius: 8,
                   border: `1px solid ${COLORS.outlineBorder}`, color: COLORS.textSecondary,
                   outline: "none", textTransform: "uppercase", letterSpacing: "1px",
                 }}
@@ -1346,7 +1346,7 @@ export function FilesPage() {
       headerActions: (
         <div className="flex items-center gap-1.5">
           {/* Mode toggle group */}
-          <div className="inline-flex items-center" style={{ border: `1px solid ${COLORS.outlineBorder}` }}>
+          <div className="inline-flex items-center" style={{ border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 8, overflow: "hidden" }}>
             {(["edit", "diff", "conflict"] as const).map((m) => {
               const label = m === "edit" ? "CODE" : m === "diff" ? "CHANGES" : "MERGE";
               const isActive = mode === m;
@@ -1396,7 +1396,7 @@ export function FilesPage() {
       ),
       bodyClassName: "flex flex-col",
       children: (
-        <div className="flex flex-col h-full min-h-0" style={{ background: COLORS.cardBg }}>
+        <div className="flex flex-col h-full min-h-0" style={{ background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderRadius: 12 }}>
           {/* Tab bar */}
           <div className="flex items-center shrink-0 overflow-x-auto" style={{ borderBottom: `1px solid ${COLORS.border}`, minHeight: 36 }}>
             {openTabs.length === 0 ? (
@@ -1649,7 +1649,7 @@ export function FilesPage() {
   return (
     <div className="relative flex h-full min-h-0 flex-col" style={{ background: COLORS.pageBg }}>
       {/* Header bar */}
-      <div style={{ padding: "0 24px", height: 64, display: "flex", alignItems: "center", gap: 20, background: COLORS.pageBg, borderBottom: `1px solid ${COLORS.border}` }}>
+      <div style={{ padding: "0 24px", height: 64, display: "flex", alignItems: "center", gap: 20, background: "transparent", borderBottom: `1px solid ${COLORS.border}` }}>
         {/* Numbered title group */}
         <div className="flex items-center gap-2 shrink-0">
           <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.accent }}>03</span>
@@ -1664,7 +1664,7 @@ export function FilesPage() {
           onChange={(e) => switchWorkspace(e.target.value)}
           style={{
             height: 32, padding: "0 12px", fontSize: 12, fontFamily: MONO_FONT, fontWeight: 600,
-            color: COLORS.success, background: "#18151F",
+            color: COLORS.success, background: COLORS.recessedBg, borderRadius: 8,
             border: `1px solid ${COLORS.outlineBorder}`, cursor: "pointer", outline: "none",
           }}
           onFocus={(e) => { e.currentTarget.style.borderColor = COLORS.accent; }}
@@ -1717,7 +1717,7 @@ export function FilesPage() {
             <ArrowSquareOut size={12} weight="regular" /> OPEN IN
           </button>
           {openInMenuOpen ? (
-            <div className="absolute right-0 top-full z-50 mt-1" style={{ width: 220, background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "2px 0" }}>
+            <div className="absolute right-0 top-full z-50 mt-1" style={{ width: 220, background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: "2px 0", overflow: "hidden" }}>
               {(
                 [
                   { key: "finder", label: revealLabel.toUpperCase() },
@@ -1823,7 +1823,7 @@ export function FilesPage() {
       {contextMenu ? (
         <div
           className="fixed z-40"
-          style={{ left: contextMenu.x, top: contextMenu.y, minWidth: 200, background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "4px 0" }}
+          style={{ left: contextMenu.x, top: contextMenu.y, minWidth: 200, background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: "4px 0" }}
           onPointerDown={(e) => e.stopPropagation()}
         >
           {contextMenu.nodeType === "file" ? (
@@ -1871,7 +1871,7 @@ export function FilesPage() {
       {/* Quick Open overlay */}
       {showQuickOpen ? (
         <div className="absolute inset-0 z-30 flex items-start justify-center" style={{ background: "rgba(0,0,0,0.6)", paddingTop: 80 }}>
-          <div style={{ width: 640, background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: 16 }}>
+          <div style={{ width: 640, background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 16 }}>
             <div style={{ ...LABEL_STYLE, marginBottom: 8, fontSize: 9 }}>QUICK OPEN</div>
             <div className="relative flex items-center">
               <Search size={14} weight="regular" className="pointer-events-none absolute" style={{ left: 10, color: COLORS.textDim }} />
@@ -1884,7 +1884,7 @@ export function FilesPage() {
                   height: 36, width: "100%", padding: "0 36px 0 32px",
                   fontSize: 12, fontFamily: MONO_FONT, fontWeight: 500,
                   background: COLORS.recessedBg, border: `1px solid ${COLORS.accent}`,
-                  color: COLORS.textPrimary, outline: "none",
+                  borderRadius: 8, color: COLORS.textPrimary, outline: "none",
                   letterSpacing: "0.3px",
                 }}
                 onKeyDown={(e) => { if (e.key === "Escape") setShowQuickOpen(false); }}
@@ -1896,7 +1896,7 @@ export function FilesPage() {
                 onClick={() => setShowQuickOpen(false)}
               >ESC</button>
             </div>
-            <div className="mt-2 max-h-[40vh] overflow-auto" style={{ border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg }}>
+            <div className="mt-2 max-h-[40vh] overflow-auto" style={{ border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, borderRadius: 8 }}>
               {quickOpenResults.map((item) => {
                 const qoFileIcon = getFileIcon(item.path.split("/").pop() ?? "");
                 const QoIcon = qoFileIcon.icon;
@@ -1923,7 +1923,7 @@ export function FilesPage() {
       {/* Text prompt modal */}
       {textPrompt ? (
         <div className="absolute inset-0 z-40 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.6)", padding: 16 }}>
-          <div style={{ width: 520, maxWidth: "100%", background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+          <div style={{ width: 520, maxWidth: "100%", background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.border}`, borderRadius: 16, overflow: "hidden" }}>
             {/* Modal header */}
             <div style={{ height: 48, padding: "0 16px", display: "flex", alignItems: "center", background: COLORS.recessedBg, borderBottom: `1px solid ${COLORS.border}` }}>
               <span style={{ fontFamily: SANS_FONT, fontSize: 14, fontWeight: 700, color: COLORS.textPrimary }}>{textPrompt.title.toUpperCase()}</span>
@@ -1948,7 +1948,7 @@ export function FilesPage() {
                 placeholder={textPrompt.placeholder}
                 style={{
                   height: 36, width: "100%", padding: "0 12px",
-                  fontSize: 12, fontFamily: MONO_FONT,
+                  fontSize: 12, fontFamily: MONO_FONT, borderRadius: 8,
                   background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`,
                   color: COLORS.textPrimary, outline: "none",
                 }}
@@ -2029,10 +2029,10 @@ function FilesDiffPanel({ laneId, path, theme }: { laneId: string; path: string;
   }, [laneId, path, mode, compareRef]);
 
   return (
-    <div className="flex h-full flex-col" style={{ background: COLORS.cardBg }}>
+    <div className="flex h-full flex-col" style={{ background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderRadius: 12 }}>
       <div className="flex items-center gap-2" style={{ padding: "6px 12px", borderBottom: `1px solid ${COLORS.border}` }}>
         {/* Mode toggle group */}
-        <div className="inline-flex items-center" style={{ border: `1px solid ${COLORS.outlineBorder}` }}>
+        <div className="inline-flex items-center" style={{ border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 8, overflow: "hidden" }}>
           {(["unstaged", "staged", "commit"] as const).map((m) => {
             const label = m === "unstaged" ? "WORKING TREE" : m === "staged" ? "STAGED" : "COMMIT";
             const isActive = mode === m;

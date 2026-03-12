@@ -165,7 +165,7 @@ export type AgentChatEvent =
     }
   | {
       type: "activity";
-      activity: "thinking" | "editing_file" | "running_command" | "searching" | "reading" | "tool_calling";
+      activity: "thinking" | "working" | "editing_file" | "running_command" | "searching" | "reading" | "tool_calling";
       detail?: string;
       turnId?: string;
     }

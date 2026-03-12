@@ -259,6 +259,7 @@ const MAX_CHAT_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 const CHAT_TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] chat transcript limit reached (8MB). Further events omitted.\n";
 const AUTO_TITLE_MAX_CHARS = 48;
 const REASONING_ACTIVITY_DETAIL = "Thinking through the answer";
+const WORKING_ACTIVITY_DETAIL = "Preparing response";
 const AUTO_TITLE_SYSTEM_PROMPT = `You title software development chat sessions.
 Return only the title text.
 - Use 2 to 6 words.
@@ -268,25 +269,22 @@ Return only the title text.
 - No emoji.
 - No trailing punctuation.`;
 const CODEX_REASONING_EFFORTS: Array<{ effort: string; description: string }> = [
-  { effort: "minimal", description: "Minimum reasoning, fastest responses." },
   { effort: "low", description: "Fastest turn-around with shallow reasoning." },
   { effort: "medium", description: "Balanced reasoning depth and speed." },
   { effort: "high", description: "Deeper reasoning for multi-step implementation." },
-  { effort: "xhigh", description: "Maximum reasoning depth for complex tasks." }
+  { effort: "xhigh", description: "Extra-high reasoning depth for complex tasks." }
 ];
 
 const CLAUDE_REASONING_EFFORTS: Array<{ effort: string; description: string }> = [
   { effort: "low", description: "Quick responses with minimal reasoning." },
   { effort: "medium", description: "Balanced reasoning depth and speed." },
   { effort: "high", description: "Deep reasoning for complex tasks." },
-  { effort: "max", description: "Maximum reasoning depth." }
 ];
 
 const CLAUDE_EFFORT_TO_TOKENS: Record<string, number> = {
   low: 1024,
   medium: 4096,
   high: 16384,
-  max: 32768
 };
 
 const KNOWN_CLAUDE_EFFORTS = new Set(CLAUDE_REASONING_EFFORTS.map((e) => e.effort));
@@ -306,10 +304,10 @@ const CLAUDE_FALLBACK_MODELS: AgentChatModelInfo[] = listModelDescriptorsForProv
   displayName: descriptor.displayName,
   description: describeClaudeModel(descriptor.displayName),
   isDefault: descriptor.id === DEFAULT_CLAUDE_DESCRIPTOR?.id,
-  reasoningEfforts: descriptor.reasoningTiers?.length
+  reasoningEfforts: descriptor.capabilities.reasoning && descriptor.reasoningTiers?.length
     ? CLAUDE_REASONING_EFFORTS.filter((effort) => descriptor.reasoningTiers?.includes(effort.effort))
-    : CLAUDE_REASONING_EFFORTS,
-  maxThinkingTokens: descriptor.id.includes("haiku") ? 8192 : 32768,
+    : [],
+  maxThinkingTokens: descriptor.capabilities.reasoning ? CLAUDE_EFFORT_TO_TOKENS.high : null,
 }));
 
 function normalizeReasoningEffort(value: unknown): string | null {
@@ -318,17 +316,44 @@ function normalizeReasoningEffort(value: unknown): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
+function resolveSessionModelDescriptor(session: AgentChatSession): ModelDescriptor | null {
+  if (session.modelId) {
+    return getModelById(session.modelId) ?? resolveModelAlias(session.modelId) ?? null;
+  }
+
+  if (session.provider === "claude") {
+    const resolvedClaudeModel = resolveClaudeCliModel(session.model);
+    return listModelDescriptorsForProvider("claude").find((descriptor) =>
+      descriptor.sdkModelId === resolvedClaudeModel
+      || descriptor.shortId === session.model
+      || descriptor.id === session.model,
+    ) ?? null;
+  }
+
+  if (session.provider === "codex") {
+    return listModelDescriptorsForProvider("codex").find((descriptor) =>
+      descriptor.sdkModelId === session.model
+      || descriptor.shortId === session.model
+      || descriptor.id === session.model,
+    ) ?? null;
+  }
+
+  return getModelById(session.model) ?? resolveModelAlias(session.model) ?? null;
+}
+
 const KNOWN_CODEX_EFFORTS = new Set(CODEX_REASONING_EFFORTS.map((e) => e.effort));
+
+const EFFORT_ALIASES: Record<string, Record<string, string>> = {
+  codex: { minimal: "low", max: "xhigh", none: "low" },
+  claude: { max: "high" },
+};
 
 function validateReasoningEffort(provider: "codex" | "claude", effort: string | null | undefined): string | null {
   if (!effort) return null;
-  if (provider === "codex" && !KNOWN_CODEX_EFFORTS.has(effort)) {
-    return DEFAULT_REASONING_EFFORT;
-  }
-  if (provider === "claude" && !KNOWN_CLAUDE_EFFORTS.has(effort)) {
-    return "medium";
-  }
-  return effort;
+  const aliased = EFFORT_ALIASES[provider]?.[effort] ?? effort;
+  const known = provider === "codex" ? KNOWN_CODEX_EFFORTS : KNOWN_CLAUDE_EFFORTS;
+  const fallback = provider === "codex" ? DEFAULT_REASONING_EFFORT : "medium";
+  return known.has(aliased) ? aliased : fallback;
 }
 
 function describeClaudeModel(value: string): string | null {
@@ -1351,38 +1376,10 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     event: Extract<AgentChatEvent, { type: "reasoning" }>,
   ): void => {
-    const buffered = managed.bufferedReasoning;
-    // Providers often rotate item ids and summary indexes while still emitting
-    // one continuous reasoning block for the same turn. Prefer turn-level
-    // aggregation so the UI does not splinter into dozens of tiny "thinking"
-    // fragments that mirror transport details instead of user-visible intent.
-    const sameChunk = buffered
-      && (
-        (
-          buffered.turnId != null
-          && event.turnId != null
-          && buffered.turnId === event.turnId
-        )
-        || (
-          buffered.turnId == null
-          && event.turnId == null
-          && (buffered.itemId ?? null) === (event.itemId ?? null)
-        )
-      );
-
-    if (sameChunk) {
-      buffered.text += event.text;
-      return;
-    }
-
-    flushBufferedReasoning(managed);
-
-    managed.bufferedReasoning = {
-      text: event.text,
-      ...(event.turnId ? { turnId: event.turnId } : {}),
-      ...(event.itemId ? { itemId: event.itemId } : {}),
-      ...(typeof event.summaryIndex === "number" ? { summaryIndex: event.summaryIndex } : {}),
-    };
+    // Stream reasoning deltas immediately so the renderer can surface live
+    // progress instead of waiting for a later non-reasoning event to flush.
+    // The renderer already collapses adjacent reasoning fragments by turn.
+    commitChatEvent(managed, event);
   };
 
   const emitChatEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
@@ -1996,23 +1993,10 @@ export function createAgentChatService(args: {
           permissionMode: unifiedRt.permissionMode,
           toolNames: Object.keys(tools),
         });
-        let system = harnessPrompt;
-        if (
-          memoryService
-          && projectId
-          && typeof (memoryService as { getMemoryBudget?: unknown }).getMemoryBudget === "function"
-        ) {
-          const mems = (memoryService as { getMemoryBudget: (projectId: string, level: string) => Array<{ compositeScore: number; category: string; content: string }> })
-            .getMemoryBudget(projectId, "lite")
-            .filter((m) => m.compositeScore >= 0.3);
-          if (mems.length > 0) {
-            system = `${harnessPrompt}\n\n## Project Memory\n${mems.map((m) => `- [${m.category}] ${m.content}`).join("\n")}`;
-          }
-        }
 
         stream = streamText({
           model: unifiedRt.resolvedModel,
-          system,
+          system: harnessPrompt,
           messages: streamMessages,
           tools,
           providerOptions: providerOptions as any,
@@ -2027,6 +2011,8 @@ export function createAgentChatService(args: {
         });
       } else {
         const claudeRt = runtime as ClaudeRuntime;
+        const claudeDescriptor = resolveSessionModelDescriptor(managed.session);
+        const claudeSupportsReasoning = claudeDescriptor?.capabilities.reasoning ?? true;
         const chatConfig = resolveChatConfig();
         const claudePermissionMode = managed.session.permissionMode
           ? mapPermissionToClaude(managed.session.permissionMode)
@@ -2080,7 +2066,7 @@ export function createAgentChatService(args: {
           maxBudgetUsd: chatConfig.sessionBudgetUsd ?? undefined,
           canUseTool
         };
-        if (managed.session.reasoningEffort) {
+        if (claudeSupportsReasoning && managed.session.reasoningEffort) {
           const tokens = CLAUDE_EFFORT_TO_TOKENS[managed.session.reasoningEffort];
           if (tokens) {
             claudeOpts.maxThinkingTokens = tokens;
@@ -2101,6 +2087,10 @@ export function createAgentChatService(args: {
       }
 
       // ── Shared stream processing loop ──
+      const streamModelDescriptor = runtime.kind === "unified"
+        ? runtime.modelDescriptor
+        : resolveSessionModelDescriptor(managed.session);
+      const streamSupportsReasoning = streamModelDescriptor?.capabilities.reasoning ?? true;
       for await (const part of stream.fullStream as AsyncIterable<any>) {
         if (!part || typeof part !== "object") continue;
 
@@ -2111,6 +2101,14 @@ export function createAgentChatService(args: {
             stepNumber: typeof part.stepNumber === "number" ? part.stepNumber + 1 : streamedStepCount,
             turnId,
           });
+          if (!streamSupportsReasoning && streamedStepCount === 1) {
+            emitChatEvent(managed, {
+              type: "activity",
+              activity: "working",
+              detail: WORKING_ACTIVITY_DETAIL,
+              turnId,
+            });
+          }
           continue;
         }
 
@@ -2145,8 +2143,8 @@ export function createAgentChatService(args: {
         if (part.type === "reasoning-start") {
           emitChatEvent(managed, {
             type: "activity",
-            activity: "thinking",
-            detail: REASONING_ACTIVITY_DETAIL,
+            activity: streamSupportsReasoning ? "thinking" : "working",
+            detail: streamSupportsReasoning ? REASONING_ACTIVITY_DETAIL : WORKING_ACTIVITY_DETAIL,
             turnId,
           });
           continue;
@@ -2155,6 +2153,15 @@ export function createAgentChatService(args: {
         if (part.type === "reasoning" || part.type === "reasoning-delta") {
           const delta = String(part.text ?? part.textDelta ?? part.delta ?? "");
           if (!delta.length) continue;
+          if (!streamSupportsReasoning) {
+            emitChatEvent(managed, {
+              type: "activity",
+              activity: "working",
+              detail: WORKING_ACTIVITY_DETAIL,
+              turnId,
+            });
+            continue;
+          }
           emitChatEvent(managed, {
             type: "activity",
             activity: "thinking",
@@ -3080,10 +3087,10 @@ export function createAgentChatService(args: {
           displayName,
           ...(description ? { description } : {}),
           isDefault: descriptor.id === DEFAULT_CLAUDE_DESCRIPTOR?.id,
-          reasoningEfforts: descriptor.reasoningTiers?.length
+          reasoningEfforts: descriptor.capabilities.reasoning && descriptor.reasoningTiers?.length
             ? CLAUDE_REASONING_EFFORTS.filter((effort) => descriptor.reasoningTiers?.includes(effort.effort))
-            : CLAUDE_REASONING_EFFORTS,
-          maxThinkingTokens: descriptor.id.includes("haiku") ? 8192 : 32768
+            : [],
+          maxThinkingTokens: descriptor.capabilities.reasoning ? CLAUDE_EFFORT_TO_TOKENS.high : null
         };
       });
 

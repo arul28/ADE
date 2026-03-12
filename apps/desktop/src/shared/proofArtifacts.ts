@@ -11,6 +11,14 @@ const PROOF_ARTIFACT_KEYS = new Set<MissionCloseoutRequirementKey>([
   "console_logs",
 ]);
 
+export const COMPUTER_USE_ARTIFACT_KINDS = [
+  "screenshot",
+  "browser_verification",
+  "browser_trace",
+  "video_recording",
+  "console_logs",
+] as const;
+
 const CLOSEOUT_ARTIFACT_KEY_SET = new Set<MissionCloseoutRequirementKey>([
   "planning_document",
   "research_summary",
@@ -121,6 +129,12 @@ function canonicalizeProofArtifactKey(value: string | null | undefined): Extract
     return "console_logs";
   }
   return null;
+}
+
+export function normalizeComputerUseArtifactKind(
+  value: string | null | undefined,
+): Extract<MissionArtifactType, "screenshot" | "browser_verification" | "browser_trace" | "video_recording" | "console_logs"> | null {
+  return canonicalizeProofArtifactKey(value);
 }
 
 function resolveMissionArtifactAlias(value: string | null | undefined): MissionArtifactType | null {

@@ -9,10 +9,11 @@ import {
   getLocalComputerUseCapabilities,
   toProjectArtifactUri,
 } from "../../desktop/src/main/services/computerUse/localComputerUse";
+import { loadAgentBrowserArtifactPayloadFromFile, parseAgentBrowserArtifactPayload } from "../../desktop/src/main/services/computerUse/agentBrowserArtifactAdapter";
 import { ReflectionValidationError } from "../../desktop/src/main/services/orchestrator/orchestratorService";
 import { getTeamMembersForRun, registerTeamMember, updateTeamMemberStatus } from "../../desktop/src/main/services/orchestrator/teamRuntimeState";
 import { runGit } from "../../desktop/src/main/services/git/git";
-import type { ContextExportLevel, MergeMethod } from "../../desktop/src/shared/types";
+import type { ComputerUseArtifactOwner, ContextExportLevel, MergeMethod } from "../../desktop/src/shared/types";
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
 import type { AdeMcpRuntime } from "./bootstrap";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
@@ -210,7 +211,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "memory_add",
-    description: "Save important discoveries to project memory for future missions and workers.",
+    description: "Save durable project knowledge for future missions and workers. Use this only for important decisions, conventions, repeatable patterns, stable preferences, or gotchas. Do not store ephemeral task chatter.",
     inputSchema: {
       type: "object",
       required: ["content", "category"],
@@ -281,7 +282,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "get_environment_info",
-    description: "Inspect local computer-use capability state, frontmost app context, and ADE artifact paths.",
+    description: "Inspect ADE local fallback computer-use capability state, frontmost app context, and ADE artifact paths.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -292,7 +293,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "launch_app",
-    description: "Launch or focus a local desktop application for proof capture flows.",
+    description: "Fallback-only: launch or focus a local desktop application for proof capture flows.",
     inputSchema: {
       type: "object",
       required: ["app"],
@@ -306,7 +307,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "interact_gui",
-    description: "Perform a local GUI interaction such as click, type, or keypress on macOS.",
+    description: "Fallback-only: perform a local GUI interaction such as click, type, or keypress on macOS.",
     inputSchema: {
       type: "object",
       required: ["action"],
@@ -323,7 +324,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "screenshot_environment",
-    description: "Capture a local screenshot and store it in ADE artifacts for proof attachment.",
+    description: "Fallback-only: capture a local screenshot and store it in ADE artifacts for proof attachment.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -336,7 +337,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "record_environment",
-    description: "Record a short local screen video and store it in ADE artifacts for proof attachment.",
+    description: "Fallback-only: record a short local screen video and store it in ADE artifacts for proof attachment.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -345,6 +346,109 @@ const TOOL_SPECS: ToolSpec[] = [
         displayId: { type: "number" },
         durationSec: { type: "number", minimum: 1, maximum: 120, default: 10 }
       }
+    }
+  },
+  {
+    name: "ingest_computer_use_artifacts",
+    description: "Register externally-produced computer-use proof artifacts into ADE for ownership, closeout, and publishing.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["backendStyle", "backendName"],
+      properties: {
+        backendStyle: { type: "string", enum: ["external_mcp", "external_cli", "manual", "local_fallback"] },
+        backendName: { type: "string", minLength: 1 },
+        toolName: { type: "string" },
+        command: { type: "string" },
+        manifestPath: { type: "string" },
+        inputs: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              kind: { type: "string" },
+              title: { type: "string" },
+              description: { type: "string" },
+              path: { type: "string" },
+              uri: { type: "string" },
+              text: { type: "string" },
+              json: {},
+              mimeType: { type: "string" },
+              rawType: { type: "string" },
+              metadata: { type: "object" },
+            }
+          }
+        },
+        owners: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["kind", "id"],
+            properties: {
+              kind: {
+                type: "string",
+                enum: [
+                  "lane",
+                  "mission",
+                  "orchestrator_run",
+                  "orchestrator_step",
+                  "orchestrator_attempt",
+                  "chat_session",
+                  "automation_run",
+                  "github_pr",
+                  "linear_issue",
+                ],
+              },
+              id: { type: "string", minLength: 1 },
+              relation: { type: "string", enum: ["attached_to", "produced_by", "published_to"] },
+              metadata: { type: "object" },
+            }
+          }
+        },
+        laneId: { type: "string" },
+        chatSessionId: { type: "string" },
+        automationRunId: { type: "string" },
+        prUrl: { type: "string" },
+        linearIssueId: { type: "string" },
+      }
+    }
+  },
+  {
+    name: "list_computer_use_artifacts",
+    description: "List ADE-managed computer-use artifacts by owner or canonical proof type.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        ownerKind: {
+          type: "string",
+          enum: [
+            "lane",
+            "mission",
+            "orchestrator_run",
+            "orchestrator_step",
+            "orchestrator_attempt",
+            "chat_session",
+            "automation_run",
+            "github_pr",
+            "linear_issue",
+          ],
+        },
+        ownerId: { type: "string" },
+        kind: { type: "string", enum: ["screenshot", "video_recording", "browser_trace", "browser_verification", "console_logs"] },
+        limit: { type: "number", minimum: 1, maximum: 200, default: 50 },
+      }
+    }
+  },
+  {
+    name: "get_computer_use_backend_status",
+    description: "Describe external-first computer-use backends available to ADE and the local fallback status.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {}
     }
   },
   {
@@ -900,6 +1004,14 @@ const AGENT_VISIBLE_COORDINATOR_TOOL_SPECS = COORDINATOR_TOOL_SPECS.filter((tool
   AGENT_VISIBLE_COORDINATOR_TOOL_NAMES.has(tool.name)
 );
 
+const LOCAL_COMPUTER_USE_TOOL_NAMES = new Set([
+  "get_environment_info",
+  "launch_app",
+  "interact_gui",
+  "screenshot_environment",
+  "record_environment",
+]);
+
 const ALL_TOOL_SPECS: ToolSpec[] = [...TOOL_SPECS, ...COORDINATOR_TOOL_SPECS];
 const COORDINATOR_TOOL_NAMES = new Set(COORDINATOR_TOOL_SPECS.map((tool) => tool.name));
 
@@ -911,7 +1023,9 @@ const READ_ONLY_TOOLS = new Set([
   "simulate_integration",
   "get_pr_health",
   "memory_search",
-  "get_environment_info"
+  "get_environment_info",
+  "list_computer_use_artifacts",
+  "get_computer_use_backend_status",
 ]);
 
 const MUTATION_TOOLS = new Set([
@@ -931,6 +1045,7 @@ const MUTATION_TOOLS = new Set([
   "interact_gui",
   "screenshot_environment",
   "record_environment",
+  "ingest_computer_use_artifacts",
   "spawn_agent"
 ]);
 
@@ -1007,6 +1122,45 @@ function assertNonEmptyString(value: unknown, field: string): string {
     throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${field} is required`);
   }
   return text;
+}
+
+function resolveComputerUseOwners(session: SessionState, toolArgs: Record<string, unknown>): ComputerUseArtifactOwner[] {
+  const owners: ComputerUseArtifactOwner[] = [];
+  const add = (
+    kind: ComputerUseArtifactOwner["kind"],
+    id: string | null | undefined,
+    relation: ComputerUseArtifactOwner["relation"] = "attached_to",
+  ) => {
+    if (!id || !id.trim().length) return;
+    owners.push({ kind, id: id.trim(), relation });
+  };
+
+  add("mission", session.identity.missionId);
+  add("orchestrator_run", session.identity.runId);
+  add("orchestrator_step", session.identity.stepId);
+  add("orchestrator_attempt", session.identity.attemptId, "produced_by");
+  add("lane", asOptionalTrimmedString(toolArgs.laneId));
+  add("chat_session", asOptionalTrimmedString(toolArgs.chatSessionId));
+  add("automation_run", asOptionalTrimmedString(toolArgs.automationRunId));
+  add("github_pr", asOptionalTrimmedString(toolArgs.prUrl), "published_to");
+  add("linear_issue", asOptionalTrimmedString(toolArgs.linearIssueId), "published_to");
+
+  const rawOwners = Array.isArray(toolArgs.owners) ? toolArgs.owners : [];
+  for (const entry of rawOwners) {
+    const owner = safeObject(entry);
+    const kind = asOptionalTrimmedString(owner.kind) as ComputerUseArtifactOwner["kind"] | null;
+    const id = asOptionalTrimmedString(owner.id);
+    const relation = asOptionalTrimmedString(owner.relation) as ComputerUseArtifactOwner["relation"] | null;
+    if (!kind || !id) continue;
+    owners.push({
+      kind,
+      id,
+      ...(relation ? { relation } : {}),
+      ...(isRecord(owner.metadata) ? { metadata: owner.metadata } : {}),
+    });
+  }
+
+  return owners;
 }
 
 function normalizeExportLevel(value: unknown, fallback: ContextExportLevel = "standard"): ContextExportLevel {
@@ -1359,11 +1513,17 @@ async function listToolSpecsForSession(runtime: AdeMcpRuntime, session: SessionS
     ? (await runtime.externalMcpService.listToolsForIdentity(session.identity)).map((tool) => ({
         name: tool.namespacedName,
         description: tool.description ?? `${tool.serverName}: ${tool.name}`,
-        inputSchema: tool.inputSchema,
-      }))
+      inputSchema: tool.inputSchema,
+    }))
     : [];
+  const externalComputerUseAvailable = runtime.computerUseArtifactBrokerService
+    .getBackendStatus()
+    .backends.some((backend) => backend.available);
   if (callerCtx.role === "agent") {
-    return [...TOOL_SPECS, ...AGENT_VISIBLE_COORDINATOR_TOOL_SPECS, ...externalToolSpecs];
+    const visibleTools = externalComputerUseAvailable
+      ? TOOL_SPECS.filter((tool) => !LOCAL_COMPUTER_USE_TOOL_NAMES.has(tool.name))
+      : TOOL_SPECS;
+    return [...visibleTools, ...AGENT_VISIBLE_COORDINATOR_TOOL_SPECS, ...externalToolSpecs];
   }
   return [...ALL_TOOL_SPECS, ...externalToolSpecs];
 }
@@ -2927,6 +3087,74 @@ async function runTool(args: {
         },
       },
     };
+  }
+
+  if (name === "ingest_computer_use_artifacts") {
+    const backendStyle = assertNonEmptyString(toolArgs.backendStyle, "backendStyle") as "external_mcp" | "external_cli" | "manual" | "local_fallback";
+    const backendName = assertNonEmptyString(toolArgs.backendName, "backendName");
+    const manifestPath = asOptionalTrimmedString(toolArgs.manifestPath);
+    let inputs = Array.isArray(toolArgs.inputs) ? toolArgs.inputs.map((entry) => safeObject(entry)) : [];
+    if (manifestPath) {
+      const resolvedManifest = path.isAbsolute(manifestPath) ? manifestPath : path.resolve(runtime.projectRoot, manifestPath);
+      inputs = loadAgentBrowserArtifactPayloadFromFile(resolvedManifest).map((entry) => ({
+        ...entry,
+        metadata: {
+          ...(isRecord(entry.metadata) ? entry.metadata : {}),
+          manifestPath: resolvedManifest,
+        },
+      }));
+    } else if (backendName === "agent-browser" && inputs.length === 1 && isRecord(inputs[0]?.json)) {
+      const adapted = parseAgentBrowserArtifactPayload(inputs[0].json);
+      if (adapted.length > 0) {
+        inputs = adapted.map((entry) => ({
+          ...entry,
+          metadata: {
+            ...(isRecord(entry.metadata) ? entry.metadata : {}),
+            adapter: "agent-browser-json",
+          },
+        }));
+      }
+    }
+    if (inputs.length === 0) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Provide inputs or manifestPath for computer-use ingestion.");
+    }
+    const result = runtime.computerUseArtifactBrokerService.ingest({
+      backend: {
+        style: backendStyle,
+        name: backendName,
+        toolName: asOptionalTrimmedString(toolArgs.toolName),
+        command: asOptionalTrimmedString(toolArgs.command),
+      },
+      inputs: inputs.map((entry) => ({
+        kind: asOptionalTrimmedString(entry.kind),
+        title: asOptionalTrimmedString(entry.title),
+        description: asOptionalTrimmedString(entry.description),
+        path: asOptionalTrimmedString(entry.path),
+        uri: asOptionalTrimmedString(entry.uri),
+        text: typeof entry.text === "string" ? entry.text : null,
+        ...(entry.json !== undefined ? { json: entry.json } : {}),
+        mimeType: asOptionalTrimmedString(entry.mimeType),
+        rawType: asOptionalTrimmedString(entry.rawType),
+        ...(isRecord(entry.metadata) ? { metadata: entry.metadata } : {}),
+      })),
+      owners: resolveComputerUseOwners(session, toolArgs),
+    });
+    return result;
+  }
+
+  if (name === "list_computer_use_artifacts") {
+    return {
+      artifacts: runtime.computerUseArtifactBrokerService.listArtifacts({
+        ownerKind: asOptionalTrimmedString(toolArgs.ownerKind) as any,
+        ownerId: asOptionalTrimmedString(toolArgs.ownerId),
+        kind: asOptionalTrimmedString(toolArgs.kind) as any,
+        limit: asNumber(toolArgs.limit, 50),
+      }),
+    };
+  }
+
+  if (name === "get_computer_use_backend_status") {
+    return runtime.computerUseArtifactBrokerService.getBackendStatus();
   }
 
   if (name === "memory_add") {

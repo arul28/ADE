@@ -65,7 +65,7 @@ function GitHubReadOnlyPane({
   );
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "auto", padding: 20, gap: 16 }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "auto", padding: 20, gap: 16, backdropFilter: "blur(20px)" }}>
       <div style={cardStyle()}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
           <div style={{ minWidth: 0 }}>
@@ -285,7 +285,7 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderBottom: `1px solid ${COLORS.border}` }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           {(["open", "closed", "merged", "all"] as GitHubFilter[]).map((state) => {
             const active = filter === state;
@@ -313,14 +313,14 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
       </div>
 
       {error ? (
-        <div style={{ padding: "10px 16px", borderBottom: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}10`, color: COLORS.danger, fontFamily: MONO_FONT, fontSize: 11 }}>
+        <div style={{ padding: "10px 16px", borderBottom: "1px solid rgba(239,68,68,0.2)", background: "rgba(239,68,68,0.06)", color: COLORS.danger, fontFamily: MONO_FONT, fontSize: 11, borderRadius: 0 }}>
           {error}
         </div>
       ) : null}
 
       <div style={{ display: "flex", minHeight: 0, flex: 1 }}>
-        <div style={{ width: 360, borderRight: `1px solid ${COLORS.border}`, overflow: "auto", flexShrink: 0 }}>
-          <div style={{ padding: "10px 14px", borderBottom: `1px solid ${COLORS.border}` }}>
+        <div style={{ width: 360, borderRight: "1px solid rgba(255,255,255,0.06)", overflow: "auto", flexShrink: 0 }}>
+          <div style={{ padding: "10px 14px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
             <div style={LABEL_STYLE}>Repo Pull Requests</div>
             <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>{repoItems.length} visible</div>
           </div>
@@ -345,15 +345,18 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
                     padding: "12px 14px",
                     textAlign: "left",
                     border: "none",
-                    borderLeft: selected ? `3px solid ${COLORS.accent}` : "3px solid transparent",
-                    borderBottom: `1px solid ${COLORS.border}`,
-                    background: selected ? COLORS.accentSubtle : "transparent",
+                    borderLeft: selected ? "3px solid #A78BFA" : "3px solid transparent",
+                    borderBottom: "1px solid rgba(255,255,255,0.04)",
+                    background: selected ? "rgba(167, 139, 250, 0.08)" : "transparent",
                     cursor: "pointer",
+                    transition: "background 150ms ease",
                   }}
+                  onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = "rgba(255,255,255,0.03)"; }}
+                  onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = "transparent"; }}
                 >
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>#{item.githubPrNumber}</span>
-                    <span style={{ fontSize: 12, fontWeight: 600, color: COLORS.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: COLORS.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "'Space Grotesk', sans-serif" }}>
                       {item.title}
                     </span>
                   </div>
@@ -368,7 +371,7 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
             })
           )}
 
-          <div style={{ borderTop: `1px solid ${COLORS.border}` }}>
+          <div style={{ borderTop: "1px solid rgba(255,255,255,0.06)" }}>
             <button
               type="button"
               onClick={() => setShowExternal((value) => !value)}
@@ -379,7 +382,7 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
                 gap: 8,
                 padding: "12px 14px",
                 border: "none",
-                borderBottom: `1px solid ${COLORS.border}`,
+                borderBottom: "1px solid rgba(255,255,255,0.04)",
                 background: "transparent",
                 cursor: "pointer",
                 color: COLORS.textPrimary,
@@ -388,6 +391,7 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
                 fontWeight: 700,
                 letterSpacing: "1px",
                 textTransform: "uppercase",
+                transition: "background 150ms ease",
               }}
             >
               {showExternal ? <CaretDown size={14} /> : <CaretRight size={14} />}
@@ -415,13 +419,16 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
                         padding: "12px 14px",
                         textAlign: "left",
                         border: "none",
-                        borderLeft: selected ? `3px solid ${COLORS.accent}` : "3px solid transparent",
-                        borderBottom: `1px solid ${COLORS.border}`,
-                        background: selected ? COLORS.accentSubtle : "transparent",
+                        borderLeft: selected ? "3px solid #A78BFA" : "3px solid transparent",
+                        borderBottom: "1px solid rgba(255,255,255,0.04)",
+                        background: selected ? "rgba(167, 139, 250, 0.08)" : "transparent",
                         cursor: "pointer",
+                        transition: "background 150ms ease",
                       }}
+                      onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = "rgba(255,255,255,0.03)"; }}
+                      onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = "transparent"; }}
                     >
-                      <div style={{ fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }}>{item.title}</div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: COLORS.textPrimary, fontFamily: "'Space Grotesk', sans-serif" }}>{item.title}</div>
                       <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
                         {item.repoOwner}/{item.repoName} #{item.githubPrNumber}
                       </div>

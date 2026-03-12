@@ -26,6 +26,15 @@ function mockSession(overrides: Partial<AgentChatSessionSummary> = {}): AgentCha
 
 let eventCallback: ((envelope: AgentChatEventEnvelope) => void) | null = null;
 
+function findAncestorWithClass(node: HTMLElement | null, className: string): HTMLElement | null {
+  let current = node;
+  while (current) {
+    if (current.classList.contains(className)) return current;
+    current = current.parentElement;
+  }
+  return null;
+}
+
 function clickEnabledModelOption(name: RegExp | string) {
   const option = screen
     .getAllByRole("option", { name })
@@ -163,15 +172,17 @@ describe("AgentChatPane", () => {
     render(<AgentChatPane laneId="lane-1" />);
 
     await waitFor(() => {
-      // After boot, the session list is loaded and the first session is auto-selected
       const ade = (window as any).ade;
       expect(ade.agentChat.list).toHaveBeenCalledWith({ laneId: "lane-1" });
     });
+
+    expect(screen.getByText("Start typing below")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Initial chat/i })).toBeTruthy();
   });
 
   it("creates a new session on first submit after New chat is clicked", async () => {
     setupWindowAde();
-    render(<AgentChatPane laneId="lane-1" />);
+    render(<AgentChatPane laneId="lane-1" initialSessionId="latest-session" />);
 
     await waitFor(() => {
       expect(screen.getByTitle("New chat")).toBeTruthy();
@@ -198,6 +209,49 @@ describe("AgentChatPane", () => {
     });
   });
 
+  it("waits for the session-created handoff before sending the first message", async () => {
+    setupWindowAde();
+    const ade = (window as any).ade;
+    let resolveHandoff: (() => void) | null = null;
+    const onSessionCreated = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveHandoff = resolve;
+        }),
+    );
+
+    render(<AgentChatPane laneId="lane-1" onSessionCreated={onSessionCreated} />);
+
+    const textarea = await screen.findByPlaceholderText("Message the agent...");
+
+    await act(async () => {
+      fireEvent.change(textarea, {
+        target: { value: "hello" },
+      });
+      fireEvent.click(screen.getByTitle("Send"));
+    });
+
+    await waitFor(() => {
+      expect(ade.agentChat.create).toHaveBeenCalled();
+      expect(onSessionCreated).toHaveBeenCalledWith("new-session-1");
+    });
+
+    expect(ade.agentChat.send).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveHandoff?.();
+    });
+
+    await waitFor(() => {
+      expect(ade.agentChat.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: "new-session-1",
+          text: "hello",
+        }),
+      );
+    });
+  });
+
   it("only creates and sends once for two rapid Enter submits when no session is selected", async () => {
     setupWindowAde();
     const ade = (window as any).ade;
@@ -219,7 +273,7 @@ describe("AgentChatPane", () => {
         })
     );
 
-    render(<AgentChatPane laneId="lane-1" />);
+    render(<AgentChatPane laneId="lane-1" initialSessionId="existing-session" />);
 
     const textarea = await screen.findByPlaceholderText("Message the agent...");
 
@@ -350,7 +404,7 @@ describe("AgentChatPane", () => {
 
   it("persists last used model ID to localStorage", async () => {
     setupWindowAde();
-    render(<AgentChatPane laneId="lane-1" />);
+    render(<AgentChatPane laneId="lane-1" initialSessionId="latest-session" />);
 
     await waitFor(() => {
       const stored = window.localStorage.getItem("ade.chat.lastModelId");
@@ -361,7 +415,7 @@ describe("AgentChatPane", () => {
   it("falls back to available model when current model is not available", async () => {
     // Only claude available, no codex
     setupWindowAde({ codexAvailable: false, claudeAvailable: true });
-    render(<AgentChatPane laneId="lane-1" />);
+    render(<AgentChatPane laneId="lane-1" initialSessionId="existing-session" />);
 
     await waitFor(() => {
       const stored = window.localStorage.getItem("ade.chat.lastModelId");
@@ -374,7 +428,7 @@ describe("AgentChatPane", () => {
     window.localStorage.setItem("ade.chat.lastModelId", "anthropic/claude-sonnet-4-6");
 
     setupWindowAde();
-    render(<AgentChatPane laneId="lane-1" />);
+    render(<AgentChatPane laneId="lane-1" initialSessionId="existing-session" />);
 
     await waitFor(() => {
       const stored = window.localStorage.getItem("ade.chat.lastModelId");
@@ -385,7 +439,7 @@ describe("AgentChatPane", () => {
   it("subscribes to chat events and updates on incoming events", async () => {
     const session = mockSession();
     setupWindowAde({ sessions: [session] });
-    render(<AgentChatPane laneId="lane-1" />);
+    render(<AgentChatPane laneId="lane-1" initialSessionId="latest-session" />);
 
     await waitFor(() => {
       expect(eventCallback).toBeTruthy();
@@ -409,9 +463,21 @@ describe("AgentChatPane", () => {
     expect(screen.queryByTitle("New chat")).toBeNull();
   });
 
+  it("clips the transcript region above the composer in locked sessions", async () => {
+    const session = mockSession();
+    setupWindowAde({ sessions: [session] });
+    render(<AgentChatPane laneId="lane-1" lockSessionId="session-1" />);
+
+    const emptyState = await screen.findByText("Chat feels alive here now.");
+    const scrollRegion = findAncestorWithClass(emptyState as HTMLElement, "overflow-auto");
+
+    expect(scrollRegion).toBeTruthy();
+    expect(scrollRegion?.parentElement?.classList.contains("overflow-hidden")).toBe(true);
+  });
+
   it("shows empty state when no session is selected", async () => {
     setupWindowAde({ sessions: [] });
-    render(<AgentChatPane laneId="lane-1" />);
+    render(<AgentChatPane laneId="lane-1" initialSessionId="existing-session" />);
 
     await waitFor(() => {
       expect(screen.getByText("Start typing below")).toBeTruthy();
@@ -462,7 +528,7 @@ describe("AgentChatPane", () => {
       truncated: false
     }));
 
-    render(<AgentChatPane laneId="lane-1" />);
+    render(<AgentChatPane laneId="lane-1" initialSessionId="existing-session" />);
 
     // Wait for boot to complete
     await waitFor(() => {
@@ -546,7 +612,7 @@ describe("AgentChatPane", () => {
     });
     setupWindowAde({ sessions: [session], codexAvailable: true, claudeAvailable: true });
 
-    render(<AgentChatPane laneId="lane-1" />);
+    render(<AgentChatPane laneId="lane-1" initialSessionId="latest-session" />);
 
     await waitFor(() => {
       const ade = (window as any).ade;
@@ -603,7 +669,7 @@ describe("AgentChatPane", () => {
     });
     setupWindowAde({ sessions: [session], codexAvailable: true, claudeAvailable: true });
 
-    render(<AgentChatPane laneId="lane-1" />);
+    render(<AgentChatPane laneId="lane-1" initialSessionId="existing-session" />);
 
     const modelButton = await screen.findByLabelText("Select model");
     await waitFor(() => {
@@ -648,7 +714,7 @@ describe("AgentChatPane", () => {
       claudeAvailable: true,
     });
 
-    render(<AgentChatPane laneId="lane-1" />);
+    render(<AgentChatPane laneId="lane-1" initialSessionId="latest-session" />);
 
     const modelButton = await screen.findByLabelText("Select model");
     await waitFor(() => {

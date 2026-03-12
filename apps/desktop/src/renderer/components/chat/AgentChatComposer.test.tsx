@@ -157,7 +157,7 @@ describe("AgentChatComposer", () => {
     expect(options).toContain("low");
     expect(options).toContain("medium");
     expect(options).toContain("high");
-    expect(options).toContain("max");
+    expect(options).not.toContain("max");
   });
 
   it("opens slash picker when / is typed at start of empty draft", async () => {
@@ -186,7 +186,7 @@ describe("AgentChatComposer", () => {
     // Toolbar has @ and # quick-action buttons and a send hint
     expect(screen.getByTitle("Attach files or images (@)")).toBeTruthy();
     expect(screen.getByTitle("Context packs (#)")).toBeTruthy();
-    expect(screen.getByText("Enter sends")).toBeTruthy();
+    expect(screen.getByTitle("Send")).toBeTruthy();
   });
 
   it("switches model and reasoning effort from dropdowns", async () => {

@@ -3,15 +3,16 @@ import type { ProcessRuntimeStatus } from "../../../shared/types";
 
 export const COLORS = {
   pageBg: "#09080C",
-  cardBg: "#181423",
-  recessedBg: "#0B0A0F",
-  hoverBg: "#1E1A2C",
-  border: "#2D2840",
-  outlineBorder: "#352F4A",
-  borderMuted: "#52525B",
+  cardBg: "rgba(255,255,255,0.03)",
+  cardBgSolid: "#181423",
+  recessedBg: "rgba(255,255,255,0.02)",
+  hoverBg: "rgba(255,255,255,0.06)",
+  border: "rgba(255,255,255,0.06)",
+  outlineBorder: "rgba(255,255,255,0.08)",
+  borderMuted: "rgba(255,255,255,0.04)",
   accent: "#A78BFA",
-  accentSubtle: "#A78BFA18",
-  accentBorder: "#A78BFA30",
+  accentSubtle: "rgba(167, 139, 250, 0.08)",
+  accentBorder: "rgba(167, 139, 250, 0.20)",
   textPrimary: "#FAFAFA",
   textSecondary: "#A1A1AA",
   textMuted: "#8B8B9A",
@@ -47,7 +48,7 @@ export function inlineBadge(color: string, overrides?: CSSProperties): CSSProper
     color,
     background: `${color}18`,
     border: `1px solid ${color}30`,
-    borderRadius: 0,
+    borderRadius: 8,
     ...overrides,
   };
 }
@@ -66,9 +67,9 @@ export function outlineButton(overrides?: CSSProperties): CSSProperties {
     textTransform: "uppercase",
     letterSpacing: "1px",
     color: COLORS.textSecondary,
-    background: "transparent",
-    border: `1px solid ${COLORS.outlineBorder}`,
-    borderRadius: 0,
+    background: "rgba(255,255,255,0.03)",
+    border: "1px solid rgba(255,255,255,0.06)",
+    borderRadius: 8,
     cursor: "pointer",
     ...overrides,
   };
@@ -90,7 +91,7 @@ export function primaryButton(overrides?: CSSProperties): CSSProperties {
     color: COLORS.pageBg,
     background: COLORS.accent,
     border: `1px solid ${COLORS.accent}`,
-    borderRadius: 0,
+    borderRadius: 8,
     cursor: "pointer",
     ...overrides,
   };
@@ -112,7 +113,7 @@ export function dangerButton(overrides?: CSSProperties): CSSProperties {
     color: COLORS.danger,
     background: `${COLORS.danger}18`,
     border: `1px solid ${COLORS.danger}30`,
-    borderRadius: 0,
+    borderRadius: 8,
     cursor: "pointer",
     ...overrides,
   };
@@ -120,8 +121,11 @@ export function dangerButton(overrides?: CSSProperties): CSSProperties {
 
 export function cardStyle(overrides?: CSSProperties): CSSProperties {
   return {
-    background: COLORS.cardBg,
-    border: `1px solid ${COLORS.border}`,
+    background: "rgba(255,255,255,0.03)",
+    backdropFilter: "blur(20px)",
+    WebkitBackdropFilter: "blur(20px)",
+    border: "1px solid rgba(255,255,255,0.06)",
+    borderRadius: 16,
     padding: 20,
     ...overrides,
   };
@@ -129,7 +133,9 @@ export function cardStyle(overrides?: CSSProperties): CSSProperties {
 
 export function recessedStyle(overrides?: CSSProperties): CSSProperties {
   return {
-    background: COLORS.recessedBg,
+    background: "rgba(255,255,255,0.01)",
+    border: "1px solid rgba(255,255,255,0.04)",
+    borderRadius: 12,
     padding: 12,
     ...overrides,
   };

@@ -81,7 +81,7 @@ const LOCAL_PROVIDER_ENDPOINTS: Record<LocalProviderFamily, string> = {
 
 export const MODEL_REGISTRY: ModelDescriptor[] = [
   // ---- Anthropic (CLI-wrapped via claude) ----
-  // Note: "max" thinking is API-only for Opus; CLI subscribers get up to "high"
+  // Claude chat surfaces in ADE use the native low/medium/high effort ladder.
   {
     id: "anthropic/claude-opus-4-6",
     shortId: "opus",
@@ -110,7 +110,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     contextWindow: 200_000,
     maxOutputTokens: 32_000,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "max"],
+    reasoningTiers: ["low", "medium", "high"],
     color: "#8B5CF6",
     sdkProvider: "ai-sdk-provider-claude-code",
     sdkModelId: "sonnet",
@@ -149,7 +149,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     contextWindow: 200_000,
     maxOutputTokens: 32_000,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "max"],
+    reasoningTiers: ["low", "medium", "high"],
     color: "#D97706",
     sdkProvider: "@ai-sdk/anthropic",
     sdkModelId: "claude-opus-4-6",
@@ -167,7 +167,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     contextWindow: 200_000,
     maxOutputTokens: 8_192,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "max"],
+    reasoningTiers: ["low", "medium", "high"],
     color: "#8B5CF6",
     sdkProvider: "@ai-sdk/anthropic",
     sdkModelId: "claude-sonnet-4-6",
@@ -195,19 +195,19 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   },
 
   // ---- OpenAI (CLI-wrapped via codex) ----
-  // Codex reasoning tiers: minimal | low | medium | high | xhigh (per config.toml reference)
-  // xhigh is model-dependent (gpt-5.1+ support it)
+  // ADE codex chat surfaces expose a consistent ladder:
+  // low | medium | high | xhigh, except Codex Mini which only exposes medium | high.
   {
     id: "openai/gpt-5.4-codex",
     shortId: "gpt-5.4",
     aliases: ["gpt-5.4-codex"],
-    displayName: "GPT-5.4 Codex",
+    displayName: "GPT-5.4",
     family: "openai",
     authTypes: ["cli-subscription"],
     contextWindow: 400_000,
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["minimal", "low", "medium", "high", "xhigh"],
+    reasoningTiers: ["low", "medium", "high", "xhigh"],
     color: "#10A37F",
     sdkProvider: "ai-sdk-provider-codex-cli",
     sdkModelId: "gpt-5.4",
@@ -243,7 +243,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     contextWindow: 192_000,
     maxOutputTokens: 16_384,
     capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
-    reasoningTiers: ["minimal", "low", "medium"],
+    reasoningTiers: ["low", "medium", "high", "xhigh"],
     color: "#34D399",
     sdkProvider: "ai-sdk-provider-codex-cli",
     sdkModelId: "gpt-5.3-codex-spark",
@@ -281,7 +281,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     contextWindow: 192_000,
     maxOutputTokens: 16_384,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["minimal", "low", "medium", "high", "xhigh"],
+    reasoningTiers: ["low", "medium", "high", "xhigh"],
     color: "#10B981",
     sdkProvider: "ai-sdk-provider-codex-cli",
     sdkModelId: "gpt-5.1-codex-max",
@@ -319,7 +319,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     contextWindow: 400_000,
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high"],
+    reasoningTiers: ["medium", "high"],
     color: "#2DD4BF",
     sdkProvider: "ai-sdk-provider-codex-cli",
     sdkModelId: "gpt-5.1-codex-mini",
@@ -338,7 +338,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     contextWindow: 400_000,
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["minimal", "low", "medium", "high"],
+    reasoningTiers: ["low", "medium", "high", "xhigh"],
     color: "#059669",
     sdkProvider: "ai-sdk-provider-codex-cli",
     sdkModelId: "gpt-5-codex",
@@ -357,7 +357,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     contextWindow: 200_000,
     maxOutputTokens: 100_000,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high"],
+    reasoningTiers: ["medium", "high"],
     color: "#34D399",
     sdkProvider: "ai-sdk-provider-codex-cli",
     sdkModelId: "codex-mini-latest",
@@ -529,7 +529,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     contextWindow: 400_000,
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["minimal", "low", "medium", "high"],
+    reasoningTiers: ["low", "medium", "high", "xhigh"],
     color: "#059669",
     sdkProvider: "@ai-sdk/openai",
     sdkModelId: "gpt-5-codex",

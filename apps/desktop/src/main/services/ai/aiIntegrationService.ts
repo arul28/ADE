@@ -235,6 +235,15 @@ function toCliAvailability(auth: DetectedAuth[]): { claude: boolean; codex: bool
   };
 }
 
+function hasUsableDetectedAuth(auth: DetectedAuth[]): boolean {
+  return auth.some((entry) => {
+    if (entry.type === "cli-subscription") {
+      return entry.authenticated || !entry.verified;
+    }
+    return true;
+  });
+}
+
 function redactDetectedAuth(
   auth: DetectedAuth[],
   cliStatuses: CliAuthStatus[],
@@ -332,6 +341,26 @@ export function createAiIntegrationService(args: {
     return await detectAllAuth(extractConfiguredApiKeys(snapshot));
   };
 
+  const deriveMode = (args: {
+    snapshot: ReturnType<ReturnType<typeof createProjectConfigService>["get"]>;
+    auth?: DetectedAuth[];
+  }): AiProviderMode => {
+    if (args.snapshot.effective.providerMode === "subscription") {
+      return "subscription";
+    }
+    if (args.auth && hasUsableDetectedAuth(args.auth)) {
+      return "subscription";
+    }
+    if (Object.keys(extractConfiguredApiKeys(args.snapshot)).length > 0) {
+      return "subscription";
+    }
+    const cachedCli = getCachedCliAuthStatuses();
+    if (cachedCli.some((entry) => entry.installed && (entry.authenticated || !entry.verified))) {
+      return "subscription";
+    }
+    return "guest";
+  };
+
   const getAvailabilitySync = () => {
     const statuses = getCachedCliAuthStatuses();
     const claude = statuses.find((entry) => entry.cli === "claude");
@@ -404,7 +433,7 @@ export function createAiIntegrationService(args: {
 
   const getMode = (): AiProviderMode => {
     const snapshot = projectConfigService.get();
-    return snapshot.effective.providerMode === "subscription" ? "subscription" : "guest";
+    return deriveMode({ snapshot });
   };
 
   const getFeatureFlag = (feature: AiFeatureKey): boolean => {
@@ -515,7 +544,11 @@ export function createAiIntegrationService(args: {
     );
   };
 
-  const resolveModelForTask = async (taskType: AiTaskType, modelIdHint?: string): Promise<string> => {
+  const resolveModelForTask = async (
+    taskType: AiTaskType,
+    modelIdHint?: string,
+    authHint?: DetectedAuth[],
+  ): Promise<string> => {
     const snapshot = projectConfigService.get();
     const aiConfig = extractAiConfig(snapshot);
     const taskRouting = isRecord(aiConfig.taskRouting) ? aiConfig.taskRouting : {};
@@ -537,7 +570,7 @@ export function createAiIntegrationService(args: {
 
     // Check task defaults and map provider family to model ID.
     const defaults = TASK_DEFAULTS[taskType];
-    const auth = await detectAuth();
+    const auth = authHint ?? await detectAuth();
     const available = getAvailableModels(auth);
 
     if (!available.length) {
@@ -607,7 +640,10 @@ export function createAiIntegrationService(args: {
     };
   };
 
-  const executeViaUnifiedPath = async (args: ExecuteAiTaskArgs): Promise<ExecuteAiTaskResult> => {
+  const executeViaUnifiedPath = async (
+    args: ExecuteAiTaskArgs,
+    auth?: DetectedAuth[],
+  ): Promise<ExecuteAiTaskResult> => {
     const modelId = args.model;
     if (!modelId) throw new Error("model is required for unified execution path");
 
@@ -619,6 +655,7 @@ export function createAiIntegrationService(args: {
         prompt: args.prompt,
         system: args.systemPrompt,
         cwd: args.cwd,
+        auth,
         tools: resolveUnifiedToolMode({
           feature: args.feature,
           taskType: args.taskType,
@@ -642,7 +679,10 @@ export function createAiIntegrationService(args: {
 
   const executeTask = async (args: ExecuteAiTaskArgs): Promise<ExecuteAiTaskResult> => {
     const requestId = randomUUID();
-    if (getMode() === "guest") {
+    const auth = await detectAuth();
+    const snapshot = projectConfigService.get();
+    const mode = deriveMode({ snapshot, auth });
+    if (mode === "guest") {
       logger.warn("ai.task.skipped_guest_mode", {
         requestId,
         taskType: args.taskType,
@@ -669,7 +709,7 @@ export function createAiIntegrationService(args: {
       throw new Error(`Unknown model '${requestedModel}'.`);
     }
 
-    const resolvedModelId = explicitDescriptor?.id ?? await resolveModelForTask(args.taskType, requestedModel ?? undefined);
+    const resolvedModelId = explicitDescriptor?.id ?? await resolveModelForTask(args.taskType, requestedModel ?? undefined, auth);
     logger.info("ai.task.begin", {
       requestId,
       taskType: args.taskType,
@@ -686,7 +726,7 @@ export function createAiIntegrationService(args: {
       const result = await executeViaUnifiedPath({
         ...args,
         model: resolvedModelId,
-      });
+      }, auth);
       logger.info("ai.task.done", {
         requestId,
         taskType: args.taskType,
@@ -792,7 +832,7 @@ export function createAiIntegrationService(args: {
       const cliStatuses = getCachedCliAuthStatuses();
       const availability = toCliAvailability(auth);
       const result: AiIntegrationStatus = {
-        mode: getMode(),
+        mode: deriveMode({ snapshot: projectConfigService.get(), auth }),
         availableProviders: availability,
         models: {
           claude: availability.claude ? await listModels("claude") : [],
@@ -963,13 +1003,15 @@ export function createAiIntegrationService(args: {
       runId?: string;
       stepId?: string;
     }): Promise<ExecuteAiTaskResult> {
-      const modelId = await resolveModelForTask(args.taskType, args.model);
+      const auth = await detectAuth();
+      const modelId = await resolveModelForTask(args.taskType, args.model, auth);
 
       return consumeEventStream(
         resumeUnified({
           modelId,
           prompt: args.prompt,
           cwd: args.cwd,
+          auth,
           timeout: args.timeoutMs,
           tools: "coding",
           previousAttemptId: args.previousAttemptId,

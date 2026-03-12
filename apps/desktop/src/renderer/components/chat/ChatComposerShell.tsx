@@ -22,19 +22,19 @@ export function ChatComposerShell({
   return (
     <div
       className={cn(
-        "relative overflow-hidden border border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.06),rgba(255,255,255,0.025))] shadow-[var(--chat-composer-shadow)] backdrop-blur-xl",
+        "relative overflow-hidden border border-white/[0.06] bg-white/[0.03] shadow-[var(--chat-composer-shadow)] backdrop-blur-2xl transition-colors",
         className,
       )}
       data-chat-composer-mode={mode}
     >
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_right,var(--chat-accent-glow),transparent_42%)] opacity-80" />
-      {pendingBanner ? <div className="relative border-b border-white/6">{pendingBanner}</div> : null}
-      {trays ? <div className="relative border-b border-white/6">{trays}</div> : null}
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_70%_0%,var(--chat-accent-faint),transparent_60%)] opacity-50" />
+      {pendingBanner ? <div className="relative border-b border-white/[0.04]">{pendingBanner}</div> : null}
+      {trays ? <div className="relative border-b border-white/[0.04]">{trays}</div> : null}
       <div className="relative">
         {pickerLayer}
         {children}
       </div>
-      {footer ? <div className="relative border-t border-white/6">{footer}</div> : null}
+      {footer ? <div className="relative border-t border-white/[0.04]">{footer}</div> : null}
     </div>
   );
 }

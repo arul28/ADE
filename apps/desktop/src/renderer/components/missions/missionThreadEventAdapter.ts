@@ -89,8 +89,9 @@ function normalizePlanStepStatus(value: unknown): "pending" | "in_progress" | "c
   }
 }
 
-function normalizeActivity(value: string | null): "thinking" | "editing_file" | "running_command" | "searching" | "reading" | "tool_calling" {
+function normalizeActivity(value: string | null): "thinking" | "working" | "editing_file" | "running_command" | "searching" | "reading" | "tool_calling" {
   switch (value) {
+    case "working":
     case "editing_file":
     case "running_command":
     case "searching":

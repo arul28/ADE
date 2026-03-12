@@ -79,7 +79,7 @@ export function WorkViewArea({
   setViewMode: (mode: WorkViewMode) => void;
   onSelectItem: (sessionId: string) => void;
   onCloseItem: (sessionId: string) => void;
-  onOpenChatSession: (sessionId: string) => void;
+  onOpenChatSession: (sessionId: string) => void | Promise<void>;
   onLaunchPtySession: (args: {
     laneId: string;
     profile: "claude" | "codex" | "shell";
@@ -112,7 +112,7 @@ export function WorkViewArea({
       <div className="flex h-full flex-col">
         <div
           className="flex items-center gap-3 px-3 py-1.5"
-          style={{ borderBottom: `1px solid ${THEME_BORDER}` }}
+          style={{ borderBottom: "1px solid rgba(255,255,255, 0.04)" }}
         >
           <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
           <span
@@ -138,8 +138,8 @@ export function WorkViewArea({
               letterSpacing: "1px",
               color: "rgba(var(--tab-tint-rgb, 113, 113, 122), 0.95)",
               background: "rgba(var(--tab-tint-rgb, 113, 113, 122), 0.14)",
-              border: "1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.24)",
-              borderRadius: 0,
+              border: "none",
+              borderRadius: 8,
             }}
           >
             {displaySessions.length}
@@ -175,16 +175,17 @@ export function WorkViewArea({
                     className="flex min-h-[260px] flex-col overflow-hidden"
                     style={{
                       border: isActive
-                        ? `1px solid ${laneColor}40`
-                        : `1px solid ${THEME_BORDER}`,
-                      background: THEME_CARD,
+                        ? `1px solid ${laneColor}30`
+                        : "1px solid rgba(255,255,255, 0.04)",
+                      background: "transparent",
+                      borderRadius: 16,
                     }}
                   >
                     <div
                       className="flex items-center gap-2 px-2 py-1.5"
                       style={{
-                        borderBottom: `1px solid ${THEME_BORDER}`,
-                        background: isActive ? `${laneColor}18` : THEME_CARD,
+                        borderBottom: "1px solid rgba(255,255,255, 0.04)",
+                        background: isActive ? `${laneColor}0C` : "transparent",
                       }}
                     >
                       <button
@@ -266,7 +267,7 @@ export function WorkViewArea({
         <div
           className="flex items-center gap-0 px-0.5"
           style={{
-            borderBottom: `1px solid ${THEME_BORDER}`,
+            borderBottom: "1px solid rgba(255,255,255, 0.04)",
             background: THEME_CARD,
             height: 28,
             minHeight: 28,
@@ -276,7 +277,7 @@ export function WorkViewArea({
         <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
           <div
             className="mx-1"
-            style={{ width: 1, height: 14, background: THEME_BORDER }}
+            style={{ width: 1, height: 14, background: "rgba(255,255,255, 0.06)" }}
           />
         <div className="flex-1 flex items-center gap-0 overflow-x-auto scrollbar-none min-w-0">
           {displaySessions.map((session) => {
@@ -299,7 +300,8 @@ export function WorkViewArea({
                   color: isActive ? THEME_FG : "var(--color-muted-fg)",
                   cursor: "pointer",
                   border: "none",
-                  borderBottom: isActive ? "1.5px solid var(--color-accent)" : "1.5px solid transparent",
+                  borderBottom: isActive ? "2px solid var(--color-accent)" : "2px solid transparent",
+                  borderRadius: "0",
                   opacity: isActive ? 1 : 0.5,
                 }}
                 onClick={() => onSelectItem(session.id)}

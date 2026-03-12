@@ -53,6 +53,14 @@ export function TerminalsPage() {
     [],
   );
 
+  const handleOpenChatSession = useCallback(
+    async (sessionId: string) => {
+      work.openSessionTab(sessionId);
+      await work.refresh({ showLoading: false });
+    },
+    [work],
+  );
+
   const handleGoToLane = useCallback(
     (session: TerminalSessionSummary) => {
       work.selectLane(session.laneId);
@@ -112,14 +120,14 @@ export function TerminalsPage() {
             setViewMode={work.setViewMode}
             onSelectItem={work.setActiveItemId}
             onCloseItem={work.closeTab}
-            onOpenChatSession={work.openSessionTab}
+            onOpenChatSession={handleOpenChatSession}
             onLaunchPtySession={work.launchPtySession}
             closingPtyIds={work.closingPtyIds}
           />
         ),
       },
     }),
-    [work, sortedLanes, handleSelectSession, handleInfoClick, handleContextMenu],
+    [work, sortedLanes, handleSelectSession, handleInfoClick, handleContextMenu, handleOpenChatSession],
   );
 
   return (

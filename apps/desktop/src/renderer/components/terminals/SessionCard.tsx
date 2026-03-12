@@ -37,29 +37,27 @@ const DELTA_CHIP_STYLE: React.CSSProperties = {
 };
 
 const SELECTED_CARD_BASE: React.CSSProperties = {
-  background: "linear-gradient(180deg, rgba(var(--tab-tint-rgb, 113, 113, 122), 0.18) 0%, color-mix(in srgb, var(--color-card) 92%, transparent) 100%)",
-  border: "1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.22)",
-  borderLeftWidth: 3,
-  borderLeftColor: "rgba(var(--tab-tint-rgb, 113, 113, 122), 0.9)",
-  boxShadow: "0 24px 56px -42px rgba(var(--tab-tint-rgb, 113, 113, 122), 0.75)",
+  background: "linear-gradient(135deg, rgba(var(--tab-tint-rgb, 113, 113, 122), 0.12) 0%, rgba(var(--tab-tint-rgb, 113, 113, 122), 0.04) 100%)",
+  border: "1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.18)",
+  boxShadow: "0 0 20px -8px rgba(var(--tab-tint-rgb, 113, 113, 122), 0.25), inset 0 1px 0 rgba(255,255,255,0.03)",
 };
 
 const UNSELECTED_CARD_BASE: React.CSSProperties = {
-  background: "linear-gradient(180deg, color-mix(in srgb, var(--color-card) 86%, transparent), color-mix(in srgb, var(--color-surface) 78%, transparent))",
-  border: "1px solid color-mix(in srgb, var(--color-border) 76%, transparent)",
-  boxShadow: "0 18px 42px -38px rgba(0, 0, 0, 0.8)",
+  background: "rgba(255,255,255, 0.02)",
+  border: "1px solid rgba(255,255,255, 0.04)",
+  boxShadow: "none",
 };
 
 const INFO_BUTTON_STYLE: React.CSSProperties = {
   borderRadius: 999,
-  border: "1px solid color-mix(in srgb, var(--color-border) 76%, transparent)",
-  background: "color-mix(in srgb, var(--color-card) 78%, transparent)",
+  border: "1px solid rgba(255,255,255, 0.06)",
+  background: "rgba(255,255,255, 0.04)",
 };
 
 const RESUME_BUTTON_STYLE: React.CSSProperties = {
   borderRadius: 999,
-  border: "1px solid color-mix(in srgb, var(--color-border) 76%, transparent)",
-  background: "color-mix(in srgb, var(--color-card) 78%, transparent)",
+  border: "1px solid rgba(255,255,255, 0.06)",
+  background: "rgba(255,255,255, 0.04)",
   fontSize: 11,
   fontWeight: 700,
   fontFamily: MONO_FONT,
@@ -97,7 +95,7 @@ export const SessionCard = React.memo(function SessionCard({
         type="button"
         className={cn(
           "ade-glass-card relative w-full overflow-hidden text-left transition-all duration-150",
-          isSelected ? "hover:brightness-105" : "hover:-translate-y-px",
+          isSelected ? "hover:bg-white/[0.02]" : "hover:bg-white/[0.03]",
         )}
         style={{
           fontFamily: MONO_FONT,
@@ -106,10 +104,7 @@ export const SessionCard = React.memo(function SessionCard({
         }}
         onClick={() => onSelect(session.id)}
       >
-        {/* Left accent gradient bar */}
-        <div className={cn("absolute left-0 top-0 bottom-0 w-[3px] bg-gradient-to-b", toolAccentGradient(session.toolType))} />
-
-        <div className="pl-3.5 pr-2 py-2">
+        <div className="pl-3 pr-2 py-2">
           {/* Top row: logo + title + status */}
           <div className="flex items-center gap-2 min-w-0">
             <span

@@ -100,6 +100,7 @@ import { createAiOrchestratorService } from "./services/orchestrator/aiOrchestra
 import { createMissionBudgetService } from "./services/orchestrator/missionBudgetService";
 import { transitionMissionStatus } from "./services/orchestrator/missionLifecycle";
 import { createExternalMcpService } from "./services/externalMcp/externalMcpService";
+import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
 import type { Logger } from "./services/logging/logger";
 
 /**
@@ -1218,16 +1219,7 @@ app.whenReady().then(async () => {
       aiIntegrationService,
       projectConfigService,
     });
-    const missionPreflightService = createMissionPreflightService({
-      logger,
-      projectRoot,
-      missionService,
-      laneService,
-      aiIntegrationService,
-      projectConfigService,
-      missionBudgetService,
-      humanWorkDigestService,
-    });
+    let missionPreflightService: ReturnType<typeof createMissionPreflightService>;
     const externalMcpService = createExternalMcpService({
       projectRoot,
       adeDir: adePaths.adeDir,
@@ -1292,6 +1284,26 @@ app.whenReady().then(async () => {
       }
     });
     orchestratorServiceRef = orchestratorService;
+    const computerUseArtifactBrokerService = createComputerUseArtifactBrokerService({
+      db,
+      projectId,
+      projectRoot,
+      missionService,
+      orchestratorService,
+      externalMcpService,
+      logger,
+    });
+    missionPreflightService = createMissionPreflightService({
+      logger,
+      projectRoot,
+      missionService,
+      laneService,
+      aiIntegrationService,
+      projectConfigService,
+      missionBudgetService,
+      humanWorkDigestService,
+      computerUseArtifactBrokerService,
+    });
     const aiOrchestratorService = createAiOrchestratorService({
       db,
       logger,
@@ -1309,6 +1321,7 @@ app.whenReady().then(async () => {
       missionBudgetService,
       humanWorkDigestService,
       missionMemoryLifecycleService,
+      computerUseArtifactBrokerService,
       onThreadEvent: (event) => emitProjectEvent(projectRoot, IPC.orchestratorThreadEvent, event),
       onDagMutation: (event) => emitProjectEvent(projectRoot, IPC.orchestratorDagMutation, event)
     });
@@ -1582,6 +1595,7 @@ app.whenReady().then(async () => {
       ctoStateService,
       workerAgentService,
       externalMcpService,
+      computerUseArtifactBrokerService,
       orchestratorService,
       aiOrchestratorService,
       eventBuffer: mcpEventBuffer,

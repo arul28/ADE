@@ -149,7 +149,7 @@ function QueueHistoryPanel({
         <div key={group.groupId} style={cardStyle()}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 10 }}>
             <div>
-              <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textPrimary }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textPrimary, fontFamily: "'Space Grotesk', sans-serif" }}>
                 {group.name ?? `Queue ${group.groupId.slice(0, 8)}`}
               </div>
               <div style={{ marginTop: 4, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
@@ -165,7 +165,7 @@ function QueueHistoryPanel({
             {group.members.map((member) => (
               <div key={member.prId} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
                 <div>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: COLORS.textPrimary, fontFamily: "'Space Grotesk', sans-serif" }}>
                     {member.pr?.title ?? member.laneName}
                   </div>
                   <div style={{ marginTop: 2, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
@@ -208,7 +208,7 @@ function RebaseHistoryPanel({
           <div key={need.laneId} style={cardStyle()}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
               <div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textPrimary }}>{need.laneName}</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textPrimary, fontFamily: "'Space Grotesk', sans-serif" }}>{need.laneName}</div>
                 <div style={{ marginTop: 4, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
                   base {need.baseBranch} · behind {need.behindBy}
                 </div>
@@ -325,7 +325,7 @@ function IntegrationWorkflowsTab({
 
   return (
     <div style={{ display: "flex", minHeight: 0, height: "100%" }}>
-      <div style={{ width: 340, borderRight: `1px solid ${COLORS.border}`, overflow: "auto", flexShrink: 0 }}>
+      <div style={{ width: 340, borderRight: "1px solid rgba(255,255,255,0.06)", overflow: "auto", flexShrink: 0 }}>
         {workflows.map((workflow) => {
           const selected = workflow.proposalId === selectedWorkflowId;
           const cleanupBadge = workflow.cleanupState === "required"
@@ -348,14 +348,17 @@ function IntegrationWorkflowsTab({
                 padding: "14px 16px",
                 textAlign: "left",
                 border: "none",
-                borderLeft: selected ? `3px solid ${COLORS.accent}` : "3px solid transparent",
-                borderBottom: `1px solid ${COLORS.border}`,
-                background: selected ? COLORS.accentSubtle : "transparent",
+                borderLeft: selected ? "3px solid #A78BFA" : "3px solid transparent",
+                borderBottom: "1px solid rgba(255,255,255,0.04)",
+                background: selected ? "rgba(167, 139, 250, 0.08)" : "transparent",
                 cursor: "pointer",
+                transition: "background 150ms ease",
               }}
+              onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = "rgba(255,255,255,0.03)"; }}
+              onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = "transparent"; }}
             >
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textPrimary }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textPrimary, fontFamily: "'Space Grotesk', sans-serif" }}>
                   {workflow.title || workflow.integrationLaneName || `Integration ${workflow.proposalId.slice(0, 8)}`}
                 </div>
                 <span style={inlineBadge(workflow.status === "proposed" ? COLORS.info : COLORS.accent)}>{workflow.status}</span>
@@ -417,7 +420,7 @@ function IntegrationWorkflowsTab({
               <div style={{ ...LABEL_STYLE, marginBottom: 10 }}>Stage 2 · Integration Lane</div>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
                 <div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textPrimary }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textPrimary, fontFamily: "'Space Grotesk', sans-serif" }}>
                     {selectedWorkflow.integrationLaneName || selectedWorkflow.integrationLaneId || "Pending lane creation"}
                   </div>
                   <div style={{ marginTop: 4, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
@@ -435,7 +438,7 @@ function IntegrationWorkflowsTab({
               {linkedPr ? (
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
                   <div>
-                    <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textPrimary }}>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textPrimary, fontFamily: "'Space Grotesk', sans-serif" }}>
                       #{linkedPr.githubPrNumber} {linkedPr.title}
                     </div>
                     <div style={{ marginTop: 4, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
@@ -590,7 +593,7 @@ export function WorkflowsTab({ activeCategory, onChangeCategory, onRefreshAll, o
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderBottom: `1px solid ${COLORS.border}` }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           {(["active", "history"] as WorkflowView[]).map((mode) => {
             const selected = view === mode;
@@ -639,7 +642,7 @@ export function WorkflowsTab({ activeCategory, onChangeCategory, onRefreshAll, o
       </div>
 
       {error ? (
-        <div style={{ padding: "10px 16px", borderBottom: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}10`, color: COLORS.danger, fontFamily: MONO_FONT, fontSize: 11 }}>
+        <div style={{ padding: "10px 16px", borderBottom: "1px solid rgba(239,68,68,0.2)", background: "rgba(239,68,68,0.06)", color: COLORS.danger, fontFamily: MONO_FONT, fontSize: 11 }}>
           {error}
         </div>
       ) : null}

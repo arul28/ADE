@@ -4,10 +4,10 @@ import { cn } from "../ui/cn";
 import { chatSurfaceVars } from "./chatSurfaceTheme";
 
 const MODE_OVERLAYS: Record<ChatSurfaceMode, string> = {
-  standard: "radial-gradient(circle at top right, var(--chat-accent-glow), transparent 38%), linear-gradient(180deg, rgba(255,255,255,0.02), transparent 22%)",
-  resolver: "radial-gradient(circle at top right, var(--chat-accent-glow), transparent 36%), linear-gradient(180deg, rgba(249,115,22,0.09), transparent 24%)",
-  "mission-thread": "radial-gradient(circle at top right, var(--chat-accent-glow), transparent 40%), linear-gradient(180deg, rgba(56,189,248,0.08), transparent 28%)",
-  "mission-feed": "radial-gradient(circle at top right, var(--chat-accent-glow), transparent 40%), linear-gradient(180deg, rgba(34,197,94,0.07), transparent 28%)",
+  standard: "radial-gradient(ellipse at 70% 0%, var(--chat-accent-faint), transparent 50%), radial-gradient(ellipse at 30% 100%, rgba(99,102,241,0.04), transparent 50%)",
+  resolver: "radial-gradient(ellipse at 70% 0%, rgba(249,115,22,0.08), transparent 50%), radial-gradient(ellipse at 30% 100%, rgba(249,115,22,0.03), transparent 50%)",
+  "mission-thread": "radial-gradient(ellipse at 70% 0%, rgba(56,189,248,0.06), transparent 50%), radial-gradient(ellipse at 30% 100%, rgba(56,189,248,0.03), transparent 50%)",
+  "mission-feed": "radial-gradient(ellipse at 70% 0%, rgba(34,197,94,0.05), transparent 50%), radial-gradient(ellipse at 30% 100%, rgba(34,197,94,0.03), transparent 50%)",
 };
 
 export function ChatSurfaceShell({
@@ -30,18 +30,17 @@ export function ChatSurfaceShell({
   return (
     <section
       className={cn(
-        "relative flex h-full min-h-0 flex-col overflow-hidden border border-border/15 bg-card/90 shadow-[var(--chat-shell-shadow)] backdrop-blur-xl",
+        "relative flex h-full min-h-0 flex-col overflow-hidden bg-card/80 backdrop-blur-2xl",
         className,
       )}
       style={chatSurfaceVars(mode, accentColor)}
     >
       <div
-        className="pointer-events-none absolute inset-0 opacity-90"
+        className="pointer-events-none absolute inset-0 opacity-70"
         style={{ background: MODE_OVERLAYS[mode] }}
       />
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-[color:color-mix(in_srgb,var(--chat-accent)_46%,transparent)]" />
       {header ? (
-        <div className="relative border-b border-border/10 bg-surface/55 backdrop-blur-xl">
+        <div className="relative border-b border-white/[0.04] bg-white/[0.02] backdrop-blur-xl">
           {header}
         </div>
       ) : null}
@@ -49,7 +48,7 @@ export function ChatSurfaceShell({
         {children}
       </div>
       {footer ? (
-        <div className="relative border-t border-border/10 bg-surface/55 backdrop-blur-xl">
+        <div className="relative border-t border-white/[0.04] bg-white/[0.02] backdrop-blur-xl">
           {footer}
         </div>
       ) : null}

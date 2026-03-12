@@ -32,9 +32,9 @@ export function TimelineRow({
       className={cn(
         "flex items-center w-full text-left transition-all group",
         "h-11 px-2 gap-2",
-        "border-b border-[var(--color-border)]/5",
-        selected && "bg-[var(--color-accent)]/8 border-l-[3px] border-l-[var(--color-accent)]",
-        !selected && "hover:bg-[var(--color-card)]/50",
+        "border-b border-white/[0.04]",
+        selected && "bg-white/[0.05] border-l-[3px] border-l-[var(--color-accent)]",
+        !selected && "hover:bg-white/[0.03]",
         dimmed && "opacity-30",
       )}
     >
@@ -56,7 +56,7 @@ export function TimelineRow({
           className="w-[8px] h-[8px] shrink-0"
           style={{ backgroundColor: event.color, borderRadius: event.shape === "circle" ? "50%" : "0" }}
         />
-        <span className="font-mono text-[11px] text-[var(--color-fg)] truncate font-medium">
+        <span className="font-sans text-[11px] text-[var(--color-fg)] truncate font-medium">
           {event.label}
         </span>
         {event.kind !== event.label && (
@@ -78,7 +78,7 @@ export function TimelineRow({
 
       {/* Status badge */}
       <span className={cn(
-        "font-mono text-[9px] font-bold uppercase tracking-[0.5px] px-1.5 py-0.5 border shrink-0",
+        "font-mono text-[9px] font-bold uppercase tracking-[0.5px] px-1.5 py-0.5 border rounded-md shrink-0",
         getStatusClasses(event.status),
       )}>
         {event.status === "running" ? "⏵" : event.status === "succeeded" ? "✓" : event.status === "failed" ? "✕" : "—"}

@@ -116,6 +116,7 @@ import type { createPrService } from "../prs/prService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createQueueRehearsalService } from "../prs/queueRehearsalService";
+import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { createMemoryService } from "../memory/memoryService";
 import { CoordinatorAgent } from "./coordinatorAgent";
 import { routeEventToCoordinator } from "./runtimeEventRouter";
@@ -753,6 +754,7 @@ export function createAiOrchestratorService(args: {
   missionBudgetService?: import("./missionBudgetService").MissionBudgetService | null;
   humanWorkDigestService?: import("../memory/humanWorkDigestService").HumanWorkDigestService | null;
   missionMemoryLifecycleService?: import("../memory/missionMemoryLifecycleService").MissionMemoryLifecycleService | null;
+  computerUseArtifactBrokerService?: ComputerUseArtifactBrokerService | null;
   projectRoot?: string;
   onThreadEvent?: (event: OrchestratorThreadEvent) => void;
   onDagMutation?: (event: DagMutationEvent) => void;
@@ -774,6 +776,7 @@ export function createAiOrchestratorService(args: {
     missionBudgetService,
     humanWorkDigestService,
     missionMemoryLifecycleService,
+    computerUseArtifactBrokerService,
     projectRoot,
     onThreadEvent,
     onDagMutation,
@@ -832,6 +835,7 @@ export function createAiOrchestratorService(args: {
     aiIntegrationService: aiIntegrationService ?? null,
     prService: prService ?? null,
     missionBudgetService: missionBudgetService ?? null,
+    computerUseArtifactBrokerService: computerUseArtifactBrokerService ?? null,
     projectRoot,
     onThreadEvent,
     onDagMutation,
@@ -2165,6 +2169,11 @@ Check all worker statuses and continue managing the mission from here. Read work
     finalization: MissionFinalizationState | null;
     stateDoc: MissionStateDocument | null;
   }): MissionCloseoutRequirement[] => {
+    const backendStatus = computerUseArtifactBrokerService?.getBackendStatus() ?? null;
+    const hasExternalCoverage = (requirementKey: MissionCloseoutRequirementKey): boolean =>
+      backendStatus?.backends.some((backend) =>
+        backend.available && backend.supportedKinds.includes(requirementKey as ValidationEvidenceRequirement)
+      ) ?? false;
     const outcomeSummary = buildOutcomeSummary(args.graph).trim();
     const modifiedFiles = args.stateDoc?.modifiedFiles ?? [];
     const completionDiagnostics = args.graph.completionEvaluation?.diagnostics ?? [];
@@ -2343,19 +2352,23 @@ Check all worker statuses and continue managing the mission from here. Read work
         required: true,
         status: artifact
           ? "present"
+          : hasExternalCoverage(requirementKey)
+            ? "missing"
           : capability && !capability.available
             ? "blocked_by_capability"
             : "missing",
         detail: artifact?.detail
           ?? artifact?.uri
           ?? (
-            capability && !capability.available
+            hasExternalCoverage(requirementKey)
+              ? `Required evidence "${requirementKey.replace(/_/g, " ")}" has not been attached yet, but an approved external computer-use backend is available.`
+            : capability && !capability.available
               ? `Required evidence "${requirementKey.replace(/_/g, " ")}" is blocked because the local computer-use runtime is unavailable. ${capability.detail}`
               : `Required evidence "${requirementKey.replace(/_/g, " ")}" has not been attached yet.`
           ),
         artifactId: artifact?.artifactId ?? null,
         uri: artifact?.uri ?? null,
-        source: artifact?.source ?? (capability && !capability.available ? "runtime" : "declared"),
+        source: artifact?.source ?? (capability && !capability.available && !hasExternalCoverage(requirementKey) ? "runtime" : "declared"),
       });
     }
 

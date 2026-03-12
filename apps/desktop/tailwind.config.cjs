@@ -21,10 +21,10 @@ module.exports = {
         glow: "var(--color-glow)"
       },
       borderRadius: {
-        xl: "0px",
-        lg: "0px",
-        md: "0px",
-        sm: "0px"
+        xl: "16px",
+        lg: "12px",
+        md: "8px",
+        sm: "6px"
       },
       fontFamily: {
         sans: ["var(--font-sans)"],

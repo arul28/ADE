@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { At, Image, Square, X, Hash, PaperPlaneTilt, Lightning, Paperclip, FolderOpen, Sparkle } from "@phosphor-icons/react";
+import { At, Image, Square, X, Hash, PaperPlaneTilt, Lightning } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   type AgentChatApprovalDecision,
@@ -47,18 +47,18 @@ function PermissionHoverPane({ opt }: { opt: PermissionOption }) {
     <div
       className={cn(
         "pointer-events-none absolute z-50 w-[260px]",
-        "border border-border/20 bg-surface-overlay/95 shadow-[var(--shadow-float)]",
+        "rounded-xl border border-white/[0.08] bg-card/95 shadow-[var(--shadow-float)] backdrop-blur-xl",
         "border-l-2",
         colors.border
       )}
       style={{ bottom: "calc(100% + 8px)", left: "50%", transform: "translateX(-50%)" }}
     >
-      <div className="flex items-center gap-2 border-b border-border/12 px-3 py-2">
-        <span className="font-mono text-[11px] font-bold uppercase tracking-wider text-fg/85">{opt.label}</span>
-        <span className={cn("ml-auto font-mono text-[9px] font-bold uppercase tracking-widest", colors.badge)}>{badgeLabel}</span>
+      <div className="flex items-center gap-2 border-b border-white/[0.04] px-3 py-2">
+        <span className="font-sans text-[11px] font-bold uppercase tracking-wider text-fg/85">{opt.label}</span>
+        <span className={cn("ml-auto font-sans text-[9px] font-bold uppercase tracking-widest", colors.badge)}>{badgeLabel}</span>
       </div>
       <div className="space-y-2.5 px-3 py-2.5">
-        <p className="font-mono text-[11px] leading-[1.5] text-fg/65">{opt.detail}</p>
+        <p className="font-sans text-[11px] leading-[1.5] text-fg/65">{opt.detail}</p>
         {opt.allows.length > 0 && (
           <div className="space-y-1">
             {opt.allows.map((item) => (
@@ -90,8 +90,8 @@ function PermissionHoverPane({ opt }: { opt: PermissionOption }) {
           </div>
         )}
         {opt.warning && (
-          <div className="border border-red-500/20 bg-red-500/[0.08] px-2 py-1.5">
-            <span className="font-mono text-[10px] leading-[1.4] text-red-400/80">{opt.warning}</span>
+          <div className="rounded-md border border-red-500/20 bg-red-500/[0.08] px-2 py-1.5">
+            <span className="font-sans text-[10px] leading-[1.4] text-red-400/80">{opt.warning}</span>
           </div>
         )}
       </div>
@@ -464,8 +464,8 @@ export function AgentChatComposer({
             }}
           />
           {slashPickerOpen && filteredSlashCommands.length > 0 ? (
-            <div className="absolute bottom-full left-3 z-10 mb-3 w-72 rounded-[var(--chat-radius-card)] border border-white/10 bg-card/95 shadow-[var(--chat-composer-shadow)] backdrop-blur-xl">
-              <div className="border-b border-white/6 px-3 py-2 font-mono text-[9px] font-bold uppercase tracking-widest text-muted-fg/35">
+            <div className="absolute bottom-full left-3 z-10 mb-3 w-72 rounded-[var(--chat-radius-card)] border border-white/[0.06] bg-card/95 shadow-[var(--chat-composer-shadow)] backdrop-blur-xl">
+              <div className="border-b border-white/[0.04] px-3 py-2 font-mono text-[9px] font-bold uppercase tracking-widest text-muted-fg/35">
                 Commands
               </div>
               <div className="max-h-52 overflow-auto py-1">
@@ -489,8 +489,8 @@ export function AgentChatComposer({
           ) : null}
 
           {contextPickerOpen ? (
-            <div className="absolute bottom-full left-3 z-10 mb-3 w-80 rounded-[var(--chat-radius-card)] border border-white/10 bg-card/95 shadow-[var(--chat-composer-shadow)] backdrop-blur-xl">
-              <div className="border-b border-white/6 px-3 py-2 font-mono text-[9px] font-bold uppercase tracking-widest text-muted-fg/35">
+            <div className="absolute bottom-full left-3 z-10 mb-3 w-80 rounded-[var(--chat-radius-card)] border border-white/[0.06] bg-card/95 shadow-[var(--chat-composer-shadow)] backdrop-blur-xl">
+              <div className="border-b border-white/[0.04] px-3 py-2 font-mono text-[9px] font-bold uppercase tracking-widest text-muted-fg/35">
                 Context Packs
               </div>
               <div className="max-h-52 overflow-auto py-1">
@@ -527,15 +527,15 @@ export function AgentChatComposer({
                   <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/30">No context packs available.</div>
                 )}
               </div>
-              <div className="border-t border-white/6 px-3 py-2">
+              <div className="border-t border-white/[0.04] px-3 py-2">
                 <button type="button" className="font-mono text-[10px] text-accent/60 hover:text-accent" onClick={() => setContextPickerOpen(false)}>Done</button>
               </div>
             </div>
           ) : null}
 
           {attachmentPickerOpen ? (
-            <div className="absolute bottom-full left-3 z-10 mb-3 w-80 rounded-[var(--chat-radius-card)] border border-white/10 bg-card/95 shadow-[var(--chat-composer-shadow)] backdrop-blur-xl">
-              <div className="flex items-center gap-2 border-b border-white/6 px-3 py-2">
+            <div className="absolute bottom-full left-3 z-10 mb-3 w-80 rounded-[var(--chat-radius-card)] border border-white/[0.06] bg-card/95 shadow-[var(--chat-composer-shadow)] backdrop-blur-xl">
+              <div className="flex items-center gap-2 border-b border-white/[0.04] px-3 py-2">
                 <At size={11} weight="bold" className="text-muted-fg/30" />
                 <input
                   ref={attachmentInputRef}
@@ -584,7 +584,7 @@ export function AgentChatComposer({
         </>
       }
       footer={
-        <div className="flex items-center gap-2 px-3 py-2">
+        <div className="flex items-center gap-2 px-3 py-1.5">
           <UnifiedModelSelector
             value={modelId}
             onChange={onModelChange}
@@ -607,7 +607,7 @@ export function AgentChatComposer({
                       "rounded-[var(--chat-radius-pill)] border px-2.5 py-1 font-mono text-[8px] font-bold uppercase tracking-[0.16em] transition-colors",
                       isActive
                         ? "text-fg/84"
-                        : "border-white/8 bg-black/10 text-muted-fg/28 hover:text-fg/62",
+                        : "border-white/[0.06] bg-black/10 text-muted-fg/28 hover:text-fg/62",
                     )}
                     style={isActive ? {
                       borderColor: `${option.accent}44`,
@@ -624,7 +624,7 @@ export function AgentChatComposer({
           ) : null}
 
           {permissionMode && onPermissionModeChange && permissionOptions.length > 0 && !permissionModeLocked ? (
-            <div className="relative flex items-center gap-px rounded-[var(--chat-radius-pill)] border border-white/8 bg-black/10">
+            <div className="relative flex items-center gap-px rounded-[var(--chat-radius-pill)] border border-white/[0.06] bg-black/10">
               {permissionOptions.map((opt) => {
                 const isActive = permissionMode === opt.value;
                 const isHovered = hoveredMode === opt.value;
@@ -671,9 +671,45 @@ export function AgentChatComposer({
               onClick={() => { setSlashPickerOpen(true); setSlashQuery(""); setSlashCursor(0); }}
               title="Commands (/)"
             >/</button>
-            <span className="ml-1 font-mono text-[8px] text-muted-fg/18">
-              {sendOnEnter ? "Enter sends" : "⌘↵ sends"}
-            </span>
+
+            {turnActive ? (
+              <>
+                {draft.trim().length > 0 && (
+                  <button
+                    type="button"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-[var(--chat-radius-pill)] border border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] transition-all hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)]"
+                    onClick={onSubmit}
+                    title="Steer"
+                  >
+                    <PaperPlaneTilt size={11} weight="fill" />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-[var(--chat-radius-pill)] border border-red-500/20 bg-red-500/[0.06] text-red-400/70 transition-all hover:border-red-500/35 hover:bg-red-500/12 hover:text-red-400"
+                  title="Interrupt (Cmd+.)"
+                  onClick={onInterrupt}
+                >
+                  <Square size={10} weight="fill" />
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className={cn(
+                  "inline-flex h-7 items-center justify-center rounded-[var(--chat-radius-pill)] border px-3 transition-all",
+                  busy || !draft.trim().length
+                    ? "border-white/[0.04] text-muted-fg/12"
+                    : "border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_20%,transparent)]",
+                )}
+                disabled={busy || !draft.trim().length}
+                onClick={onSubmit}
+                title="Send"
+              >
+                <PaperPlaneTilt size={11} weight="fill" />
+                <span className="ml-1 font-mono text-[9px] uppercase tracking-[0.14em]">Send</span>
+              </button>
+            )}
           </div>
         </div>
       }
@@ -693,148 +729,23 @@ export function AgentChatComposer({
           </div>
         ) : null}
 
-        <div className="flex items-start gap-3 px-4 py-4">
-          <div className="flex flex-col gap-2 pt-0.5">
-            <button
-              type="button"
-              className="inline-flex h-9 w-9 items-center justify-center rounded-[var(--chat-radius-pill)] border border-white/8 bg-black/12 text-fg/65 transition-colors hover:border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] hover:text-[var(--chat-accent)]"
-              title="Attach files"
-              disabled={!canAttach}
-              onClick={openUploadPicker}
-            >
-              <Paperclip size={14} weight="bold" />
-            </button>
-            <button
-              type="button"
-              className="inline-flex h-9 w-9 items-center justify-center rounded-[var(--chat-radius-pill)] border border-white/8 bg-black/12 text-fg/55 transition-colors hover:border-white/14 hover:text-fg/82"
-              title="Search project files (@)"
-              disabled={!canAttach}
-              onClick={() => canAttach && setAttachmentPickerOpen(true)}
-            >
-              <FolderOpen size={14} weight="bold" />
-            </button>
-          </div>
-
-          <div className="min-w-0 flex-1 space-y-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center gap-1 rounded-[var(--chat-radius-pill)] border border-[color:color-mix(in_srgb,var(--chat-accent)_20%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)] px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.16em] text-[var(--chat-accent)]">
-                <Sparkle size={10} weight="fill" />
-                {turnActive ? "Steer active turn" : "New message"}
-              </span>
-              <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/30">
-                Shift+Enter newline
-              </span>
-            </div>
-
-            <textarea
-              ref={textareaRef}
-              value={draft}
-              onChange={(event) => {
-                const val = event.target.value;
-                onDraftChange(val);
-                if (slashPickerOpen && !val.startsWith("/")) { setSlashPickerOpen(false); setSlashQuery(""); }
-                if (slashPickerOpen && val.startsWith("/")) { setSlashQuery(val.slice(1)); setSlashCursor(0); }
-              }}
-              className={cn(
-                "min-h-[84px] max-h-[220px] w-full resize-none rounded-[var(--chat-radius-card)] border border-white/8 bg-black/18 px-4 py-3 font-mono text-[12px] leading-[1.7] text-fg/84 outline-none transition-colors placeholder:text-muted-fg/22",
-                dragActive ? "border-[color:color-mix(in_srgb,var(--chat-accent)_32%,transparent)]" : "focus:border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)]",
-              )}
-              placeholder={turnActive ? "Steer the active turn..." : "Message the agent..."}
-              onKeyDown={handleKeyDown}
-              onPaste={handlePaste}
-            />
-
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1.5 rounded-[var(--chat-radius-pill)] border border-white/8 bg-black/10 px-3 py-1.5 font-mono text-[10px] text-fg/62 transition-colors hover:border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] hover:text-fg/82"
-                  title="Attach files"
-                  disabled={!canAttach}
-                  onClick={openUploadPicker}
-                >
-                  <Paperclip size={11} weight="bold" />
-                  Attach
-                </button>
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1.5 rounded-[var(--chat-radius-pill)] border border-white/8 bg-black/10 px-3 py-1.5 font-mono text-[10px] text-fg/58 transition-colors hover:border-white/14 hover:text-fg/82"
-                  title="Search attached context files"
-                  disabled={!canAttach}
-                  onClick={() => canAttach && setAttachmentPickerOpen((o) => !o)}
-                >
-                  <At size={11} weight="bold" />
-                  Search files
-                </button>
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1.5 rounded-[var(--chat-radius-pill)] border border-white/8 bg-black/10 px-3 py-1.5 font-mono text-[10px] text-fg/58 transition-colors hover:border-white/14 hover:text-fg/82"
-                  title="Open context packs"
-                  onClick={() => setContextPickerOpen((o) => !o)}
-                >
-                  <Hash size={11} weight="bold" />
-                  Context
-                </button>
-              </div>
-
-              <div className="flex items-center gap-2">
-                {turnActive ? (
-                  <>
-                    <button
-                      type="button"
-                      className={cn(
-                        "inline-flex h-10 items-center justify-center rounded-[var(--chat-radius-pill)] border px-3 transition-all",
-                        !draft.trim().length
-                          ? "border-border/8 text-muted-fg/12"
-                          : "border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)]",
-                      )}
-                      disabled={!draft.trim().length}
-                      onClick={onSubmit}
-                      title="Steer"
-                    >
-                      <PaperPlaneTilt size={12} weight="fill" />
-                    </button>
-                    <button
-                      type="button"
-                      className="group relative inline-flex h-10 w-10 items-center justify-center rounded-[var(--chat-radius-pill)] border border-red-500/25 bg-red-500/8 text-red-400/70 transition-all hover:border-red-500/40 hover:bg-red-500/15 hover:text-red-400"
-                      title="Interrupt (Cmd+.)"
-                      onClick={onInterrupt}
-                    >
-                      <Square size={12} weight="fill" />
-                      <span className="absolute inset-0 animate-pulse rounded-[var(--chat-radius-pill)] border border-red-500/15" />
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    className={cn(
-                      "inline-flex h-10 min-w-[78px] items-center justify-center rounded-[var(--chat-radius-pill)] border px-4 transition-all",
-                      busy || !draft.trim().length
-                        ? "border-border/8 text-muted-fg/12"
-                        : "border-[color:color-mix(in_srgb,var(--chat-accent)_32%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] text-[var(--chat-accent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)]",
-                    )}
-                    disabled={busy || !draft.trim().length}
-                    onClick={onSubmit}
-                    title="Send"
-                  >
-                    {busy ? (
-                      <div className="flex items-center gap-0.5">
-                        <span className="h-1 w-1 animate-bounce rounded-full bg-[var(--chat-accent)] [animation-delay:0ms]" />
-                        <span className="h-1 w-1 animate-bounce rounded-full bg-[var(--chat-accent)] [animation-delay:100ms]" />
-                        <span className="h-1 w-1 animate-bounce rounded-full bg-[var(--chat-accent)] [animation-delay:200ms]" />
-                      </div>
-                    ) : (
-                      <>
-                        <PaperPlaneTilt size={13} weight="fill" />
-                        <span className="ml-1 font-mono text-[10px] uppercase tracking-[0.16em]">Send</span>
-                      </>
-                    )}
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
+        <textarea
+          ref={textareaRef}
+          value={draft}
+          onChange={(event) => {
+            const val = event.target.value;
+            onDraftChange(val);
+            if (slashPickerOpen && !val.startsWith("/")) { setSlashPickerOpen(false); setSlashQuery(""); }
+            if (slashPickerOpen && val.startsWith("/")) { setSlashQuery(val.slice(1)); setSlashCursor(0); }
+          }}
+          className={cn(
+            "min-h-[40px] max-h-[160px] w-full resize-none bg-transparent px-4 py-3 text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/25",
+            dragActive ? "opacity-30" : "",
+          )}
+          placeholder={turnActive ? "Steer the active turn..." : "Message the agent..."}
+          onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
+        />
       </div>
     </ChatComposerShell>
   );

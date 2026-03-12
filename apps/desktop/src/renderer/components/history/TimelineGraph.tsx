@@ -60,7 +60,7 @@ export function TimelineGraph({
       {wipNodes.length > 0 && <WIPRow wipNodes={wipNodes} />}
 
       {/* Column Headers */}
-      <div className="flex items-center border-b border-[var(--color-border)]/15 bg-[var(--color-surface-recessed)]/30 shrink-0">
+      <div className="flex items-center border-b border-white/[0.06] bg-white/[0.02] backdrop-blur-xl shrink-0">
         {/* Graph-area lane indicators */}
         <div className="shrink-0" style={{ width: layout.graphWidth }}>
           <div
@@ -87,16 +87,16 @@ export function TimelineGraph({
 
         {/* Summary column labels */}
         <div className="flex items-center flex-1 h-8 px-2 gap-3">
-          <span className="font-mono text-[9px] font-bold uppercase tracking-[1px] text-[var(--color-muted-fg)] w-[60px]">
+          <span className="font-sans text-[9px] font-bold uppercase tracking-[1px] text-[var(--color-muted-fg)] w-[60px]">
             Time
           </span>
-          <span className="font-mono text-[9px] font-bold uppercase tracking-[1px] text-[var(--color-muted-fg)] flex-1">
+          <span className="font-sans text-[9px] font-bold uppercase tracking-[1px] text-[var(--color-muted-fg)] flex-1">
             Event
           </span>
-          <span className="font-mono text-[9px] font-bold uppercase tracking-[1px] text-[var(--color-muted-fg)] w-[80px]">
+          <span className="font-sans text-[9px] font-bold uppercase tracking-[1px] text-[var(--color-muted-fg)] w-[80px]">
             Lane
           </span>
-          <span className="font-mono text-[9px] font-bold uppercase tracking-[1px] text-[var(--color-muted-fg)] w-[48px]">
+          <span className="font-sans text-[9px] font-bold uppercase tracking-[1px] text-[var(--color-muted-fg)] w-[48px]">
             Status
           </span>
         </div>
@@ -202,7 +202,7 @@ export function TimelineGraph({
               return (
                 <React.Fragment key={event.id}>
                   {sep && i > 0 && (
-                    <div className="flex items-center h-5 px-2 border-t border-[var(--color-border)]/10">
+                    <div className="flex items-center h-5 px-2 border-t border-white/[0.04]">
                       <span className="font-mono text-[9px] text-[var(--color-muted-fg)]/50 uppercase tracking-[1px]">
                         {sep.label}
                       </span>
