@@ -97,4 +97,43 @@ describe("linearRoutingService", () => {
     expect(decision.workflowId).toBeNull();
     expect(decision.reason).toContain("No workflow matched");
   });
+
+  it("requires both assignee and workflow label, while allowing employee identity mappings", async () => {
+    const policy = buildPolicy();
+    policy.workflows[1] = {
+      ...policy.workflows[1]!,
+      triggers: {
+        ...policy.workflows[1]!.triggers,
+        assignees: ["agent-1"],
+      },
+    };
+    const service = createLinearRoutingService({
+      flowPolicyService: {
+        getPolicy: () => policy,
+        normalizePolicy: (input?: LinearWorkflowConfig) => input ?? policy,
+      } as any,
+      workerAgentService: {
+        listAgents: () => [
+          {
+            id: "agent-1",
+            slug: "backend-dev",
+            name: "Backend Dev",
+            linearIdentity: { userIds: ["user-1"], displayNames: ["Alex Johnson"], aliases: ["alex"] },
+          },
+        ],
+      } as any,
+    });
+
+    const missingLabel = await service.routeIssue({
+      issue: { ...baseIssue, assigneeId: "user-1", assigneeName: "Alex Johnson", labels: ["bug"] },
+    });
+    expect(missingLabel.workflowId).toBeNull();
+    expect(missingLabel.candidates[1]?.missingSignals).toContain("Missing label");
+
+    const matched = await service.routeIssue({
+      issue: { ...baseIssue, assigneeId: "user-1", assigneeName: "Alex Johnson", labels: ["fast-lane"] },
+    });
+    expect(matched.workflowId).toBe("fast-lane");
+    expect(matched.simulation?.explainsAndAcrossFields).toBe(true);
+  });
 });

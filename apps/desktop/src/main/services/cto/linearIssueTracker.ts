@@ -8,6 +8,14 @@ export function createLinearIssueTracker(args: { client: LinearClient }): IssueT
       return args.client.listProjects();
     },
 
+    listUsers() {
+      return args.client.listUsers();
+    },
+
+    listLabels(teamKey) {
+      return args.client.listLabels(teamKey);
+    },
+
     fetchCandidateIssues(query) {
       return args.client.fetchCandidateIssues(query);
     },
@@ -22,6 +30,10 @@ export function createLinearIssueTracker(args: { client: LinearClient }): IssueT
 
     fetchWorkflowStates(teamKey) {
       return args.client.fetchWorkflowStates(teamKey);
+    },
+
+    listWorkflowStates(teamKey) {
+      return args.client.listWorkflowStates(teamKey);
     },
 
     updateIssueState(issueId, stateId) {

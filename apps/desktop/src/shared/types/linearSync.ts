@@ -66,6 +66,7 @@ export type LinearWorkflowCloseoutPolicy = {
   reopenOnFailure?: boolean;
   resolveOnSuccess?: boolean;
   artifactMode?: "links" | "attachments";
+  reviewReadyWhen?: "work_complete" | "pr_created" | "pr_ready";
 };
 
 export type LinearWorkflowHumanReview = {
@@ -124,6 +125,7 @@ export type LinearWorkflowStep = {
   required?: boolean;
   mode?: "links" | "attachments";
   targetStatus?: "completed" | "failed" | "cancelled" | "any_terminal";
+  notifyOn?: "delegated" | "pr_linked" | "review_ready" | "completed" | "failed";
 };
 
 export type LinearWorkflowDefinition = {
@@ -199,6 +201,7 @@ export type LinearWorkflowMatchCandidate = {
   matched: boolean;
   reasons: string[];
   matchedSignals: string[];
+  missingSignals?: string[];
 };
 
 export type LinearWorkflowMatchResult = {
@@ -209,6 +212,40 @@ export type LinearWorkflowMatchResult = {
   reason: string;
   candidates: LinearWorkflowMatchCandidate[];
   nextStepsPreview: string[];
+  simulation?: {
+    matchedWorkflowId: string | null;
+    explainsAndAcrossFields: boolean;
+  };
+};
+
+export type LinearCatalogUser = {
+  id: string;
+  name: string;
+  displayName: string | null;
+  email: string | null;
+  active: boolean;
+};
+
+export type LinearCatalogLabel = {
+  id: string;
+  name: string;
+  color: string | null;
+  teamId: string | null;
+  teamKey: string | null;
+};
+
+export type LinearCatalogState = {
+  id: string;
+  name: string;
+  type: string;
+  teamId: string;
+  teamKey: string;
+};
+
+export type LinearWorkflowCatalog = {
+  users: LinearCatalogUser[];
+  labels: LinearCatalogLabel[];
+  states: LinearCatalogState[];
 };
 
 export type LinearWorkflowRunStatus =
@@ -271,6 +308,84 @@ export type LinearWorkflowRunEvent = {
   message?: string | null;
   payload?: Record<string, unknown> | null;
   createdAt: string;
+};
+
+export type LinearWorkflowNotificationLevel = "info" | "success" | "warning" | "error";
+
+export type LinearWorkflowEventPayload =
+  | {
+      type: "linear-workflow-ingress";
+      projectId: string;
+      source: LinearIngressSource;
+      issueId: string | null;
+      issueIdentifier: string | null;
+      summary: string;
+      createdAt: string;
+    }
+  | {
+      type: "linear-workflow-run";
+      projectId: string;
+      runId: string;
+      issueId: string;
+      issueIdentifier: string;
+      workflowId: string;
+      workflowName: string;
+      status: LinearWorkflowRunStatus;
+      milestone: "matched" | "delegated" | "pr_linked" | "review_ready" | "completed" | "failed";
+      message: string;
+      linkedPrId?: string | null;
+      linkedSessionId?: string | null;
+      createdAt: string;
+    }
+  | {
+      type: "linear-workflow-notification";
+      projectId: string;
+      runId: string;
+      issueIdentifier: string;
+      title: string;
+      message: string;
+      level: LinearWorkflowNotificationLevel;
+      createdAt: string;
+    };
+
+export type LinearIngressSource = "relay" | "local-webhook" | "reconciliation";
+
+export type LinearIngressEventRecord = {
+  id: string;
+  source: LinearIngressSource;
+  deliveryId: string;
+  eventId: string;
+  entityType: string;
+  action: string | null;
+  issueId: string | null;
+  issueIdentifier: string | null;
+  summary: string;
+  payload?: Record<string, unknown> | null;
+  createdAt: string;
+};
+
+export type LinearIngressEndpointStatus = {
+  configured: boolean;
+  healthy: boolean;
+  status: "disabled" | "starting" | "listening" | "ready" | "error";
+  url?: string | null;
+  port?: number | null;
+  endpointId?: string | null;
+  webhookUrl?: string | null;
+  lastCursor?: string | null;
+  lastDeliveryAt?: string | null;
+  lastError?: string | null;
+  lastPolledAt?: string | null;
+};
+
+export type LinearIngressStatus = {
+  localWebhook: LinearIngressEndpointStatus;
+  relay: LinearIngressEndpointStatus;
+  reconciliation: {
+    enabled: boolean;
+    intervalSec: number;
+    lastRunAt: string | null;
+  };
 };
 
 export type LinearSyncProjectConfig = {
@@ -483,7 +598,8 @@ export type CtoResolveLinearSyncQueueItemArgs = {
 export type LinearSyncDashboard = {
   enabled: boolean;
   running: boolean;
-  pollingIntervalSec: number;
+  ingressMode: "webhook-first";
+  reconciliationIntervalSec: number;
   lastPollAt: string | null;
   lastSuccessAt: string | null;
   lastError: string | null;
@@ -495,4 +611,12 @@ export type LinearSyncDashboard = {
     failed: number;
   };
   claimsActive: number;
+};
+
+export type CtoEnsureLinearWebhookArgs = {
+  force?: boolean;
+};
+
+export type CtoListLinearIngressEventsArgs = {
+  limit?: number;
 };
