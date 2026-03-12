@@ -69,6 +69,9 @@ describe("linearSyncService", () => {
         fetchCandidates: vi.fn(async () => [issueFixture]),
         persistSnapshot: vi.fn(() => {}),
       } as any,
+      issueTracker: {
+        fetchIssueById: vi.fn(async () => issueFixture),
+      } as any,
       dispatcherService: {
         findActiveRunForIssue: vi.fn(() => null),
         createRun: vi.fn(),

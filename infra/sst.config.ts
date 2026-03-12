@@ -317,6 +317,45 @@ export default $config({
       }
     });
 
+    const linearWebhookEndpointsTable = new sst.aws.Dynamo("LinearWebhookEndpoints", {
+      fields: {
+        endpointId: "string",
+        projectId: "string"
+      },
+      primaryIndex: {
+        hashKey: "endpointId",
+        rangeKey: "projectId"
+      },
+      globalIndexes: {
+        projectIndex: {
+          hashKey: "projectId",
+          rangeKey: "endpointId"
+        }
+      },
+      transform: {
+        table: (args: any) => {
+          args.name = `ade-${stage}-linear-webhook-endpoints`;
+        }
+      }
+    });
+
+    const linearEventsTable = new sst.aws.Dynamo("LinearEvents", {
+      fields: {
+        projectId: "string",
+        eventId: "string"
+      },
+      primaryIndex: {
+        hashKey: "projectId",
+        rangeKey: "eventId"
+      },
+      ttl: "expiresAt",
+      transform: {
+        table: (args: any) => {
+          args.name = `ade-${stage}-linear-events`;
+        }
+      }
+    });
+
     const jobsDlq = new sst.aws.Queue("JobsDlq", {
       visibilityTimeout: "5 minutes",
       transform: {
@@ -365,6 +404,8 @@ export default $config({
       GITHUB_CONNECT_STATES_TABLE_NAME: githubConnectStatesTable.name,
       GITHUB_INSTALLATIONS_TABLE_NAME: githubInstallationsTable.name,
       GITHUB_EVENTS_TABLE_NAME: githubEventsTable.name,
+      LINEAR_WEBHOOK_ENDPOINTS_TABLE_NAME: linearWebhookEndpointsTable.name,
+      LINEAR_EVENTS_TABLE_NAME: linearEventsTable.name,
       GITHUB_APP_ID: githubAppId.value,
       GITHUB_APP_SLUG: githubAppSlug.value,
       GITHUB_APP_PRIVATE_KEY_BASE64: githubAppPrivateKeyBase64.value,
@@ -380,6 +421,8 @@ export default $config({
       githubConnectStatesTable,
       githubInstallationsTable,
       githubEventsTable,
+      linearWebhookEndpointsTable,
+      linearEventsTable,
       blobsBucket,
       manifestsBucket,
       artifactsBucket,
@@ -477,9 +520,22 @@ export default $config({
       auth: protectedAuth
     });
 
+    api.route("POST /projects/{id}/linear/webhook/ensure", "packages/functions/src/api/linear.ensureWebhook", {
+      auth: protectedAuth
+    });
+
+    api.route("GET /projects/{id}/linear/events", "packages/functions/src/api/linear.listEvents", {
+      auth: protectedAuth
+    });
+
+    api.route("GET /projects/{id}/linear/events/stream", "packages/functions/src/api/linear.streamEvents", {
+      auth: protectedAuth
+    });
+
     // Webhooks + setup callbacks originate from GitHub, not the desktop client.
     api.route("GET /github/connect/callback", "packages/functions/src/api/github.connectCallback");
     api.route("POST /github/webhooks", "packages/functions/src/api/github.webhook");
+    api.route("POST /linear/webhooks/{endpointId}", "packages/functions/src/api/linear.webhook");
 
     const worker = jobsQueue.subscribe(
       {
@@ -511,6 +567,8 @@ export default $config({
           GITHUB_CONNECT_STATES_TABLE_NAME: githubConnectStatesTable.name,
           GITHUB_INSTALLATIONS_TABLE_NAME: githubInstallationsTable.name,
           GITHUB_EVENTS_TABLE_NAME: githubEventsTable.name,
+          LINEAR_WEBHOOK_ENDPOINTS_TABLE_NAME: linearWebhookEndpointsTable.name,
+          LINEAR_EVENTS_TABLE_NAME: linearEventsTable.name,
           GITHUB_APP_ID: githubAppId.value,
           GITHUB_APP_SLUG: githubAppSlug.value,
           GITHUB_APP_PRIVATE_KEY_BASE64: githubAppPrivateKeyBase64.value,

@@ -167,7 +167,8 @@ function buildBridge() {
       getLinearSyncDashboard: vi.fn(async () => ({
         enabled: true,
         running: false,
-        pollingIntervalSec: 300,
+        ingressMode: "webhook-first",
+        reconciliationIntervalSec: 30,
         lastPollAt: "2026-03-05T00:00:00.000Z",
         lastSuccessAt: "2026-03-05T00:05:00.000Z",
         lastError: null,
@@ -178,7 +179,8 @@ function buildBridge() {
       runLinearSyncNow: vi.fn(async () => ({
         enabled: true,
         running: false,
-        pollingIntervalSec: 300,
+        ingressMode: "webhook-first",
+        reconciliationIntervalSec: 30,
         lastPollAt: "2026-03-05T00:10:00.000Z",
         lastSuccessAt: "2026-03-05T00:10:00.000Z",
         lastError: null,

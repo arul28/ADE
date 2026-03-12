@@ -73,6 +73,12 @@ export type AgentRuntimeConfig = {
   maxConcurrentRuns?: number;
 };
 
+export type AgentLinearIdentity = {
+  userIds?: string[];
+  displayNames?: string[];
+  aliases?: string[];
+};
+
 export type AgentIdentity = {
   id: string;
   name: string;
@@ -85,6 +91,7 @@ export type AgentIdentity = {
   adapterType: AdapterType;
   adapterConfig: AgentAdapterConfig;
   runtimeConfig: AgentRuntimeConfig;
+  linearIdentity?: AgentLinearIdentity;
   externalMcpAccess?: ExternalMcpAccessPolicy;
   personality?: string;
   communicationStyle?: string;
@@ -245,6 +252,7 @@ export type AgentUpsertInput = {
   adapterType: AdapterType;
   adapterConfig?: Record<string, unknown>;
   runtimeConfig?: AgentRuntimeConfig;
+  linearIdentity?: AgentLinearIdentity;
   externalMcpAccess?: ExternalMcpAccessPolicy;
   budgetMonthlyCents?: number;
 };

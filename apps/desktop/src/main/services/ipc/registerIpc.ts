@@ -415,7 +415,12 @@ import type {
   CtoSaveFlowPolicyArgs,
   CtoRollbackFlowPolicyRevisionArgs,
   CtoSimulateFlowRouteArgs,
+  CtoEnsureLinearWebhookArgs,
+  CtoListLinearIngressEventsArgs,
   LinearRouteDecision,
+  LinearWorkflowCatalog,
+  LinearIngressEventRecord,
+  LinearIngressStatus,
   LinearSyncDashboard,
   LinearSyncQueueItem,
   CtoResolveLinearSyncQueueItemArgs,
@@ -501,6 +506,7 @@ import type { createLinearCredentialService } from "../cto/linearCredentialServi
 import { createLinearOAuthService, type LinearOAuthService } from "../cto/linearOAuthService";
 import type { createFlowPolicyService } from "../cto/flowPolicyService";
 import type { createLinearRoutingService } from "../cto/linearRoutingService";
+import type { createLinearIngressService } from "../cto/linearIngressService";
 import type { createLinearSyncService } from "../cto/linearSyncService";
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
 import type { createExternalMcpService } from "../externalMcp/externalMcpService";
@@ -584,6 +590,7 @@ export type AppContext = {
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
   flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
   linearRoutingService?: ReturnType<typeof createLinearRoutingService> | null;
+  linearIngressService?: ReturnType<typeof createLinearIngressService> | null;
   linearSyncService?: ReturnType<typeof createLinearSyncService> | null;
   externalMcpService?: ReturnType<typeof createExternalMcpService> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
@@ -5126,6 +5133,17 @@ export function registerIpc({
     return ctx.linearRoutingService.simulateRoute({ issue });
   });
 
+  ipcMain.handle(IPC.ctoGetLinearWorkflowCatalog, async (): Promise<LinearWorkflowCatalog> => {
+    const ctx = getCtx();
+    if (!ctx.linearIssueTracker) throw new Error("Linear issue tracker is not available.");
+    const [users, labels, states] = await Promise.all([
+      ctx.linearIssueTracker.listUsers(),
+      ctx.linearIssueTracker.listLabels(),
+      ctx.linearIssueTracker.listWorkflowStates(),
+    ]);
+    return { users, labels, states };
+  });
+
   ipcMain.handle(IPC.ctoGetLinearSyncDashboard, async (): Promise<LinearSyncDashboard> => {
     const ctx = getCtx();
     if (!ctx.linearSyncService) throw new Error("Linear sync service is not available.");
@@ -5152,6 +5170,28 @@ export function registerIpc({
       return ctx.linearSyncService.resolveQueueItem(arg);
     }
   );
+
+  ipcMain.handle(IPC.ctoGetLinearIngressStatus, async (): Promise<LinearIngressStatus> => {
+    const ctx = getCtx();
+    if (!ctx.linearIngressService) throw new Error("Linear ingress service is not available.");
+    return ctx.linearIngressService.getStatus();
+  });
+
+  ipcMain.handle(
+    IPC.ctoListLinearIngressEvents,
+    async (_event, arg: CtoListLinearIngressEventsArgs | undefined): Promise<LinearIngressEventRecord[]> => {
+      const ctx = getCtx();
+      if (!ctx.linearIngressService) throw new Error("Linear ingress service is not available.");
+      return ctx.linearIngressService.listRecentEvents(arg?.limit ?? 20);
+    }
+  );
+
+  ipcMain.handle(IPC.ctoEnsureLinearWebhook, async (_event, arg: CtoEnsureLinearWebhookArgs | undefined): Promise<LinearIngressStatus> => {
+    const ctx = getCtx();
+    if (!ctx.linearIngressService) throw new Error("Linear ingress service is not available.");
+    await ctx.linearIngressService.ensureRelayWebhook(arg?.force === true);
+    return ctx.linearIngressService.getStatus();
+  });
 
   // -- W-UX: Onboarding & Identity --
 
