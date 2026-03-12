@@ -14,7 +14,7 @@ This document is the canonical product direction for ADE Automations in W5 and b
 - Settings: Settings holds global defaults, connector auth, and policy presets. It is not the primary automation builder UI.
 - Runtime: automation executions use the same agent/runtime primitives as missions and CTO workers, including guardrails, memory, and audit history.
 - Current baseline: builder UI, Night Shift queue/review surfaces, budget tracking, automation-to-mission dispatch, local webhook/GitHub ingress, tool-family allowlists, and backward-compatible legacy actions (`run-command`, `run-tests`, `predict-conflicts`) are shipped.
-- Still pending in `W5b`: final review/publish polish, a few executor/runtime edge cases, and the `external-mcp` follow-through that depends on W8.
+- Still pending in `W5b`: final review/publish polish and a few executor/runtime edge cases. The external MCP substrate from W8 now exists; remaining automation follow-through is product polish and deeper adoption of that shipped surface.
 
 Implementation note: the current baseline still carries some config-era compatibility fields, but the product contract is the Automations tab as the canonical authoring and operations surface.
 
@@ -44,7 +44,7 @@ Automations are not a limited "run shell command" system. In the shipped W5b bas
 - **GitHub PR workflows**: open PRs, request reviews, post comments, merge
 - **Linear actions**: create/update issues, transition state, post comments
 - **Browser automation**: navigate, interact, screenshot
-- **External MCP tools** (W8): any user-configured MCP server once W8 lands
+- **External MCP tools** (W8): any ADE-configured external MCP server, exposed back through ADE as namespaced tools
 - **Memory tools**: read/write project memory, search knowledge base
 - **Conflict resolution**: detect and resolve merge conflicts
 - **Mission launch**: spawn sub-missions, validate outcomes, generate artifacts

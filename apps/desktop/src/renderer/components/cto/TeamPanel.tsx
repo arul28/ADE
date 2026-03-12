@@ -21,6 +21,7 @@ import { PaneHeader } from "../ui/PaneHeader";
 import { cn } from "../ui/cn";
 import { AgentStatusBadge } from "./shared/AgentStatusBadge";
 import { WorkerActivityFeed } from "./WorkerActivityFeed";
+import { ExternalMcpAccessEditor } from "../shared/ExternalMcpAccessEditor";
 
 /* ── Helpers ── */
 
@@ -68,6 +69,9 @@ export type WorkerEditorDraft = {
   activeHoursEnd: string;
   activeHoursTimezone: string;
   maxConcurrentRuns: number;
+  externalMcpAllowAll: boolean;
+  externalMcpAllowedServers: string[];
+  externalMcpBlockedServers: string[];
 };
 
 export function workerDraftFromAgent(agent?: AgentIdentity | null): WorkerEditorDraft {
@@ -99,6 +103,9 @@ export function workerDraftFromAgent(agent?: AgentIdentity | null): WorkerEditor
     activeHoursEnd: typeof activeHours?.end === "string" ? activeHours.end : "22:00",
     activeHoursTimezone: typeof activeHours?.timezone === "string" ? activeHours.timezone : "local",
     maxConcurrentRuns: Math.max(1, Math.min(10, Math.floor(Number(runtimeConfig.maxConcurrentRuns ?? 1)))),
+    externalMcpAllowAll: agent?.externalMcpAccess?.allowAll === true,
+    externalMcpAllowedServers: [...new Set(agent?.externalMcpAccess?.allowedServers ?? [])],
+    externalMcpBlockedServers: [...new Set(agent?.externalMcpAccess?.blockedServers ?? [])],
   };
 }
 
@@ -113,6 +120,7 @@ export function WorkerEditorPanel({
   draft,
   setDraft,
   agents,
+  availableExternalMcpServers,
   saving,
   error,
   onSave,
@@ -121,6 +129,7 @@ export function WorkerEditorPanel({
   draft: WorkerEditorDraft;
   setDraft: React.Dispatch<React.SetStateAction<WorkerEditorDraft>>;
   agents: AgentIdentity[];
+  availableExternalMcpServers: string[];
   saving: boolean;
   error: string | null;
   onSave: () => void;
@@ -216,6 +225,24 @@ export function WorkerEditorPanel({
           <div className={labelCls}>Max concurrent</div>
           <input className={inputCls} type="number" min={1} max={10} value={draft.maxConcurrentRuns} onChange={(e) => setDraft((d) => ({ ...d, maxConcurrentRuns: Number(e.target.value || 1) }))} />
         </label>
+      </div>
+
+      <div className="border border-border/10 bg-card/60 p-3">
+        <ExternalMcpAccessEditor
+          value={{
+            allowAll: draft.externalMcpAllowAll,
+            allowedServers: draft.externalMcpAllowedServers,
+            blockedServers: draft.externalMcpBlockedServers,
+          }}
+          availableServers={availableExternalMcpServers}
+          description="These rules control which ADE-managed external MCP servers this worker can see in direct chat or delegated work."
+          onChange={(next) => setDraft((current) => ({
+            ...current,
+            externalMcpAllowAll: next.allowAll,
+            externalMcpAllowedServers: next.allowedServers,
+            externalMcpBlockedServers: next.blockedServers,
+          }))}
+        />
       </div>
 
       {/* Heartbeat */}

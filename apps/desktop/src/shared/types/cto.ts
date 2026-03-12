@@ -1,5 +1,6 @@
 import type { ModelId } from "./core";
 import type { AgentChatPermissionMode } from "./chat";
+import type { ExternalMcpAccessPolicy } from "./externalMcp";
 
 export type CtoCapabilityMode = "full_mcp" | "fallback";
 
@@ -20,6 +21,7 @@ export type CtoIdentity = {
   communicationStyle?: CtoCommunicationStyle;
   constraints?: string[];
   systemPromptExtension?: string;
+  externalMcpAccess?: ExternalMcpAccessPolicy;
   onboardingState?: CtoOnboardingState;
   modelPreferences: {
     provider: string;

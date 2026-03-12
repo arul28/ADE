@@ -1,12 +1,13 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { ArrowCounterClockwise, PencilSimple } from "@phosphor-icons/react";
-import type { CtoCoreMemory, CtoIdentity, CtoSessionLogEntry } from "../../../shared/types";
+import type { CtoCoreMemory, CtoIdentity, CtoSessionLogEntry, ExternalMcpAccessPolicy } from "../../../shared/types";
 import { IdentityEditor } from "./IdentityEditor";
 import { TimelineEntry } from "./shared/TimelineEntry";
 import { Button } from "../ui/Button";
 import { PaneHeader } from "../ui/PaneHeader";
 import { cn } from "../ui/cn";
 import { inputCls, labelCls, textareaCls, cardCls } from "./shared/designTokens";
+import { ExternalMcpAccessEditor } from "../shared/ExternalMcpAccessEditor";
 
 /* ── Helpers ── */
 
@@ -30,6 +31,7 @@ export function CtoSettingsPanel({
   sessionLogs,
   onSaveIdentity,
   onSaveCoreMemory,
+  availableExternalMcpServers,
   onResetOnboarding,
 }: {
   identity: CtoIdentity | null;
@@ -37,6 +39,7 @@ export function CtoSettingsPanel({
   sessionLogs: CtoSessionLogEntry[];
   onSaveIdentity: (patch: Record<string, unknown>) => Promise<void>;
   onSaveCoreMemory: (patch: CoreMemoryPatch) => Promise<void>;
+  availableExternalMcpServers: string[];
   onResetOnboarding?: () => void;
 }) {
   /* Identity editor toggle */
@@ -47,6 +50,13 @@ export function CtoSettingsPanel({
   const [memoryDraft, setMemoryDraft] = useState({ projectSummary: "", criticalConventions: "", userPreferences: "", activeFocus: "", notes: "" });
   const [memorySaving, setMemorySaving] = useState(false);
   const [memoryError, setMemoryError] = useState<string | null>(null);
+  const [externalMcpDraft, setExternalMcpDraft] = useState<ExternalMcpAccessPolicy>({
+    allowAll: true,
+    allowedServers: [],
+    blockedServers: [],
+  });
+  const [externalMcpSaving, setExternalMcpSaving] = useState(false);
+  const [externalMcpError, setExternalMcpError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!memoryEditing && coreMemory) {
@@ -59,6 +69,14 @@ export function CtoSettingsPanel({
       });
     }
   }, [coreMemory, memoryEditing]);
+
+  useEffect(() => {
+    setExternalMcpDraft({
+      allowAll: identity?.externalMcpAccess?.allowAll !== false,
+      allowedServers: [...new Set(identity?.externalMcpAccess?.allowedServers ?? [])],
+      blockedServers: [...new Set(identity?.externalMcpAccess?.blockedServers ?? [])],
+    });
+  }, [identity]);
 
   const handleSaveMemory = async () => {
     setMemorySaving(true); setMemoryError(null);
@@ -74,6 +92,18 @@ export function CtoSettingsPanel({
     } catch (err) { setMemoryError(err instanceof Error ? err.message : "Save failed."); }
     finally { setMemorySaving(false); }
   };
+
+  const handleSaveExternalMcp = useCallback(async () => {
+    setExternalMcpSaving(true);
+    setExternalMcpError(null);
+    try {
+      await onSaveIdentity({ externalMcpAccess: externalMcpDraft });
+    } catch (err) {
+      setExternalMcpError(err instanceof Error ? err.message : "Save failed.");
+    } finally {
+      setExternalMcpSaving(false);
+    }
+  }, [externalMcpDraft, onSaveIdentity]);
 
   return (
     <div className="flex flex-col h-full min-h-0 overflow-y-auto p-4 gap-4">
@@ -133,6 +163,25 @@ export function CtoSettingsPanel({
         ) : (
           <div className="p-4 text-xs text-muted-fg/50">Loading identity...</div>
         )}
+      </div>
+
+      {/* Core Memory */}
+      <div className={cn(cardCls, "overflow-hidden")}>
+        <PaneHeader title="External MCP Access" />
+        <div className="p-4 space-y-3">
+          <ExternalMcpAccessEditor
+            value={externalMcpDraft}
+            availableServers={availableExternalMcpServers}
+            description="This policy applies to CTO-managed sessions and to ADE-managed mission workers that don’t belong to a named persistent worker profile."
+            onChange={setExternalMcpDraft}
+          />
+          {externalMcpError && <div className="text-xs text-error">{externalMcpError}</div>}
+          <div className="flex justify-end">
+            <Button variant="outline" size="sm" disabled={externalMcpSaving} onClick={() => void handleSaveExternalMcp()}>
+              {externalMcpSaving ? "Saving..." : "Save Access Policy"}
+            </Button>
+          </div>
+        </div>
       </div>
 
       {/* Core Memory */}

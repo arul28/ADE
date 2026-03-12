@@ -13,6 +13,7 @@ export * from "./files";
 export * from "./sessions";
 export * from "./chat";
 export * from "./cto";
+export * from "./externalMcp";
 export * from "./missions";
 export * from "./orchestrator";
 export * from "./config";
@@ -23,5 +24,7 @@ export * from "./budget";
 export * from "./usage";
 export * from "./memory";
 export * from "./projectState";
+export * from "./externalMcp";
 
 export * from "./linearSync";
+export * from "./externalMcp";

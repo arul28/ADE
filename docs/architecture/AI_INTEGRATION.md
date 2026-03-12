@@ -1009,9 +1009,9 @@ The memory architecture is informed by production systems and academic research 
 
 ### External MCP Consumption
 
-This section describes the planned `W8` external-MCP client architecture. It is not shipped in the current codebase yet. Today ADE exposes MCP outward, but it does not yet run a full external MCP client registry/connection layer for workers or the CTO.
+`W8` shipped the baseline ADE-managed external MCP substrate. ADE now acts as the single source of truth for external MCP configuration, connection lifecycle, discovery, permissioning, and audit for ADE-managed sessions.
 
-**Target configuration**: external MCP servers will be declared in `.ade/local.secret.yaml` under the `externalMcp` key:
+**Configuration**: external MCP servers are declared in `.ade/local.secret.yaml` under the `externalMcp` key:
 
 ```yaml
 externalMcp:
@@ -1019,20 +1019,36 @@ externalMcp:
     transport: stdio
     command: npx
     args: ["-y", "@modelcontextprotocol/server-github"]
-  - name: postgres
-    transport: stdio
-    command: npx
-    args: ["-y", "@modelcontextprotocol/server-postgres"]
+    autoStart: true
+  - name: notion
+    transport: http
+    url: https://mcp.notion.so/mcp
+    headers:
+      Authorization: "Bearer ${NOTION_TOKEN}"
+  - name: legacy-browser
+    transport: sse
+    url: https://example.com/sse
 ```
 
-**Planned connection management**: external MCP connections will be lazy by default, with optional auto-start and health-checked reconnection.
+`externalMcpService.ts` supports `stdio` and modern remote HTTP transport, while accepting `sse` as a compatibility alias. Connections are lazy by default, with optional auto-start, ping-based health checks, reconnect backoff, graceful drain-on-remove behavior, and manifest refresh on reconnect.
 
-**Planned security model**: external MCP tools will pass through the same permission and policy layer as ADE's internal tools:
-- Agent identity `allowedTools` / `deniedTools` lists apply to external tool names (prefixed with the server name, e.g., `github:create_pull_request`)
-- Mutation tools from external servers require the same claim-based authorization as internal mutation tools
-- All external tool invocations are logged to the call audit trail
+**Runtime model**: Claude Code and Codex workers still receive only ADE's MCP server at launch time. ADE does not inject third-party MCP servers directly into provider-global config. Instead:
 
-**Planned tool discovery**: when `W8` lands, ADE will query configured external MCP servers for their manifests and merge them into the agent-visible tool surface with namespaced identifiers.
+1. ADE connects to configured external servers.
+2. ADE discovers their tools and stores them as namespaced identifiers such as `ext.github.create_pull_request`.
+3. ADE's own MCP server exposes the filtered `ext.*` tool surface to ADE-managed workers, the CTO, and automations.
+
+That proxy model keeps policy, mission scoping, budgeting, and audit centralized inside ADE instead of distributing it across provider runtimes.
+
+**Security and permission model**: external MCP tools pass through ADE's existing policy layers:
+- Server-level config can `allow` or `block` specific tools.
+- CTO identities and worker identities can define `externalMcpAccess`.
+- Mission `permissionConfig.externalMcp` can disable external MCP entirely or narrow the allowed servers/tools per mission.
+- Read-only planning workers only receive read-safe external tools in their launch allowlist.
+- Mutation-classified external tools still use ADE's existing approval and guardrail path.
+- External invocations are logged with server, tool, safety, and usage metadata.
+
+**Tool discovery and exposure**: ADE queries configured external MCP servers for manifests, refreshes them on reconnect and `tools/list_changed`, and merges approved tools into the ADE-visible tool surface with namespaced identifiers. Structured MCP results are preserved when those tools are called through ADE MCP.
 
 ### CTO Agent Architecture
 
@@ -1710,12 +1726,12 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Worker Agents — org chart, multi-adapter, config versioning, budget (W2) | Complete | Phase 4 -- `workerAgentService.ts`, `workerRevisionService.ts`, `workerBudgetService.ts`, `workerTaskSessionService.ts`, `workerAdapterRuntimeService.ts` |
 | Heartbeat & Activation — timer pool, coalescing, orphan reaping (W3) | Complete | Phase 4 -- `workerHeartbeatService.ts` (789 lines), two-tier execution, deferred promotion, issue locking |
 | Bidirectional Linear Sync (W4) | Complete | Phase 4 -- `linearClient.ts`, `linearSyncService.ts`, `linearOutboundService.ts`, `linearRoutingService.ts`, `linearTemplateService.ts`, `linearCredentialService.ts`, `flowPolicyService.ts`, `issueTracker.ts` abstraction, `LinearSyncPanel.tsx` UI with 6-step flow composer |
-| External MCP consumption | Planned | Phase 4 -- agents connect to external MCP servers for extended capabilities |
+| External MCP consumption | Implemented baseline | Phase 4 -- ADE-managed external MCP registry/service, namespaced `ext.*` tool exposure through ADE MCP, mission/worker/CTO policy integration |
 | `.ade/` portable state | Complete | Phase 4 -- canonical tracked/shareable layout, startup repair, integrity normalization, config reload, Settings > Project health surface |
 | Task agents (lane artifacts) | Planned | Phase 4 -- specialized agents for artifact production within lanes |
 | Chat-to-mission escalation | Planned | Phase 4 -- promote a chat conversation into a full mission with pre-filled context |
 
-**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestrator implementation is functionally complete through Orchestrator Overhaul Phases 1-7. Phase 4 W1-W4, W6, W6½, W7a, W7b, and W10 are complete. M4 and M5 are complete, adding approval gates (`phase_approval` intervention type with blocking phase transition semantics), mandatory planning enforcement (constructor-injected planning phase with first-turn watchdog), multi-round deliberation (`canLoop`/`loopTarget`/`maxQuestions` on phase ordering constraints), adaptive runtime (`classifyTaskComplexity` → parallelism scaling, `evaluateModelDowngrade` → cheaper models under budget pressure), budget-gated spawns (hard cap checks before every worker spawn), and benign error classification (`BENIGN_SANDBOX_BLOCK_PATTERNS` for ExitPlanMode/Zod noise). Memory engine now includes lifecycle sweeps, batch consolidation, pre-compaction flush, local embedding pipeline (`@huggingface/transformers` all-MiniLM-L6-v2), hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking) with graceful lexical fallback, mission-memory-backed shared team knowledge, exact employee L2 injection for employee-owned runs, and the canonical `.ade` path contract. Remaining major Phase 4 workstreams after Wave 1: W8, W9, and W-UX/W7c follow-through. MCP dual-mode architecture shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
+**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestrator implementation is functionally complete through Orchestrator Overhaul Phases 1-7. Phase 4 W1-W4, W6, W6½, W7a, W7b, W8, and W10 are complete at baseline or better. M4 and M5 are complete, adding approval gates (`phase_approval` intervention type with blocking phase transition semantics), mandatory planning enforcement (constructor-injected planning phase with first-turn watchdog), multi-round deliberation (`canLoop`/`loopTarget`/`maxQuestions` on phase ordering constraints), adaptive runtime (`classifyTaskComplexity` → parallelism scaling, `evaluateModelDowngrade` → cheaper models under budget pressure), budget-gated spawns (hard cap checks before every worker spawn), and benign error classification (`BENIGN_SANDBOX_BLOCK_PATTERNS` for ExitPlanMode/Zod noise). Memory engine now includes lifecycle sweeps, batch consolidation, pre-compaction flush, local embedding pipeline (`@huggingface/transformers` all-MiniLM-L6-v2), hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking) with graceful lexical fallback, mission-memory-backed shared team knowledge, exact employee L2 injection for employee-owned runs, the canonical `.ade` path contract, and the ADE-managed external MCP substrate. Remaining major Phase 4 workstreams after Wave 1: W9 and W-UX/W7c/W5b follow-through. MCP dual-mode architecture shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
 
 ---
 

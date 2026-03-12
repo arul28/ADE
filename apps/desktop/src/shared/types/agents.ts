@@ -1,5 +1,6 @@
 import type { ModelId } from "./core";
 import type { AgentChatPermissionMode } from "./chat";
+import type { ExternalMcpAccessPolicy } from "./externalMcp";
 
 export type AgentRole =
   | "cto"
@@ -84,6 +85,7 @@ export type AgentIdentity = {
   adapterType: AdapterType;
   adapterConfig: AgentAdapterConfig;
   runtimeConfig: AgentRuntimeConfig;
+  externalMcpAccess?: ExternalMcpAccessPolicy;
   personality?: string;
   communicationStyle?: string;
   constraints?: string[];
@@ -243,6 +245,7 @@ export type AgentUpsertInput = {
   adapterType: AdapterType;
   adapterConfig?: Record<string, unknown>;
   runtimeConfig?: AgentRuntimeConfig;
+  externalMcpAccess?: ExternalMcpAccessPolicy;
   budgetMonthlyCents?: number;
 };
 

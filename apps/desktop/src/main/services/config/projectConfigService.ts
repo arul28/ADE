@@ -393,11 +393,24 @@ function coerceMissionPermissionConfig(value: unknown): MissionPermissionConfig 
         ...(asStringArray(value.providers.allowedTools)?.length ? { allowedTools: asStringArray(value.providers.allowedTools) } : {}),
       }
     : undefined;
-  if (!(cli && Object.keys(cli).length) && !inProcess && !(providers && Object.keys(providers).length)) return undefined;
+  const externalMcp = isRecord(value.externalMcp)
+    ? {
+        ...(asBool(value.externalMcp.enabled) != null ? { enabled: asBool(value.externalMcp.enabled)! } : {}),
+        ...(asStringArray(value.externalMcp.selectedServers)?.length ? { selectedServers: asStringArray(value.externalMcp.selectedServers) } : {}),
+        ...(asStringArray(value.externalMcp.selectedTools)?.length ? { selectedTools: asStringArray(value.externalMcp.selectedTools) } : {}),
+      }
+    : undefined;
+  if (
+    !(cli && Object.keys(cli).length)
+    && !inProcess
+    && !(providers && Object.keys(providers).length)
+    && !(externalMcp && Object.keys(externalMcp).length)
+  ) return undefined;
   return {
     ...(cli && Object.keys(cli).length ? { cli } : {}),
     ...(inProcess ? { inProcess } : {}),
     ...(providers && Object.keys(providers).length ? { providers } : {}),
+    ...(externalMcp && Object.keys(externalMcp).length ? { externalMcp } : {}),
   };
 }
 

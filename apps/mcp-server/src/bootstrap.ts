@@ -20,9 +20,12 @@ import type { createPrService } from "../../desktop/src/main/services/prs/prServ
 import { createMemoryService } from "../../desktop/src/main/services/memory/memoryService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createWorkerAgentService } from "../../desktop/src/main/services/cto/workerAgentService";
+import { createWorkerBudgetService } from "../../desktop/src/main/services/cto/workerBudgetService";
 import { createOrchestratorService } from "../../desktop/src/main/services/orchestrator/orchestratorService";
 import { createAiOrchestratorService } from "../../desktop/src/main/services/orchestrator/aiOrchestratorService";
 import { createAiIntegrationService } from "../../desktop/src/main/services/ai/aiIntegrationService";
+import { createMissionBudgetService } from "../../desktop/src/main/services/orchestrator/missionBudgetService";
+import { createExternalMcpService, type ExternalMcpService } from "../../desktop/src/main/services/externalMcp/externalMcpService";
 
 // ── Event Buffer ─────────────────────────────────────────────────
 // In-memory ring buffer for event streaming (10K cap, FIFO eviction).
@@ -113,6 +116,7 @@ export type AdeMcpRuntime = {
   memoryService: ReturnType<typeof createMemoryService>;
   ctoStateService: ReturnType<typeof createCtoStateService>;
   workerAgentService: ReturnType<typeof createWorkerAgentService>;
+  externalMcpService: ExternalMcpService;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
   aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;
   eventBuffer: EventBuffer;
@@ -285,6 +289,51 @@ export async function createAdeMcpRuntime(projectRootInput: string): Promise<Ade
     projectId,
     adeDir: paths.adeDir,
   });
+  const workerBudgetService = createWorkerBudgetService({
+    db,
+    projectId,
+    workerAgentService,
+    projectConfigService,
+  });
+  const missionBudgetService = createMissionBudgetService({
+    db,
+    logger,
+    projectId,
+    projectRoot,
+    missionService,
+    aiIntegrationService,
+    projectConfigService,
+  });
+  const externalMcpService = createExternalMcpService({
+    projectRoot,
+    adeDir: paths.adeDir,
+    logger,
+    workerAgentService,
+    ctoStateService,
+    missionService,
+    workerBudgetService,
+    missionBudgetService,
+  });
+  try {
+    await externalMcpService.start();
+  } catch (error) {
+    logger.warn("external_mcp.bootstrap_start_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  const externalMcpConfigWatcher = (() => {
+    try {
+      return fs.watch(paths.adeDir, (_eventType, fileName) => {
+        if (String(fileName ?? "").trim() !== "local.secret.yaml") return;
+        externalMcpService.reload();
+      });
+    } catch (error) {
+      logger.warn("external_mcp.bootstrap_watch_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  })();
 
   const orchestratorService = createOrchestratorService({
     db,
@@ -370,10 +419,17 @@ export async function createAdeMcpRuntime(projectRootInput: string): Promise<Ade
     memoryService,
     ctoStateService,
     workerAgentService,
+    externalMcpService,
     orchestratorService,
     aiOrchestratorService,
     eventBuffer,
     dispose: () => {
+      try {
+        externalMcpConfigWatcher?.close();
+      } catch {
+        // ignore
+      }
+      void externalMcpService.dispose().catch(() => {});
       try {
         aiOrchestratorService.dispose();
       } catch {

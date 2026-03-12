@@ -4,6 +4,7 @@ import { Brain, GearSix, GitBranch, BookOpenText, Robot, Terminal, Keyboard, Lig
 import { GeneralSection } from "../settings/GeneralSection";
 import { ProjectSection } from "../settings/ProjectSection";
 import { ProvidersSection } from "../settings/ProvidersSection";
+import { ExternalMcpSection } from "../settings/ExternalMcpSection";
 import { GitHubSection } from "../settings/GitHubSection";
 import { ContextSection } from "../settings/ContextSection";
 import { UsageDashboard } from "../missions/UsageDashboard";
@@ -24,6 +25,7 @@ const SECTIONS = [
   { id: "general", label: "General", icon: GearSix },
   { id: "project", label: "Project", icon: FolderSimple },
   { id: "providers", label: "Providers", icon: Plugs },
+  { id: "external-mcp", label: "External MCP", icon: Database },
   { id: "ai", label: "AI", icon: Brain },
   { id: "github", label: "GitHub", icon: GitBranch },
   { id: "memory", label: "Memory", icon: Database },
@@ -526,6 +528,7 @@ export function SettingsPage() {
         {section === "general" && <GeneralSection />}
         {section === "project" && <ProjectSection />}
         {section === "providers" && <ProvidersSection />}
+        {section === "external-mcp" && <ExternalMcpSection />}
         {section === "ai" && <AiFeaturesSection />}
         {section === "github" && <GitHubSection />}
         {section === "memory" && <MemoryHealthTab />}

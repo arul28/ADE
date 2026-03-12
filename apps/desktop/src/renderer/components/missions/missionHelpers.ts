@@ -199,6 +199,11 @@ export const DEFAULT_PERMISSION_CONFIG: MissionPermissionConfig = {
     unified: "full-auto",
     codexSandbox: "workspace-write",
   },
+  externalMcp: {
+    enabled: false,
+    selectedServers: [],
+    selectedTools: [],
+  },
 };
 
 export const DEFAULT_SMART_BUDGET: SmartBudgetConfig = {

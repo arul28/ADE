@@ -132,8 +132,12 @@ function buildDefaultModelConfig(
 }
 
 function createDefaultPermissionConfig(defaults: CreateMissionDefaults | null | undefined): MissionPermissionConfig {
-  if (defaults?.permissionConfig?.providers) {
-    return { ...defaults.permissionConfig };
+  if (defaults?.permissionConfig) {
+    return {
+      ...defaults.permissionConfig,
+      ...(defaults.permissionConfig.providers ? { providers: { ...defaults.permissionConfig.providers } } : {}),
+      ...(defaults.permissionConfig.externalMcp ? { externalMcp: { ...defaults.permissionConfig.externalMcp } } : {}),
+    };
   }
   return {
     providers: {

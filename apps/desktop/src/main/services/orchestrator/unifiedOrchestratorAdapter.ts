@@ -34,14 +34,22 @@ function buildWorkerEnvVars(args: {
   runId: string;
   stepId: string;
   attemptId: string;
+  ownerId?: string | null;
 }): string[] {
   return [
     `ADE_MISSION_ID=${shellEscapeArg(args.missionId)}`,
     `ADE_RUN_ID=${shellEscapeArg(args.runId)}`,
     `ADE_STEP_ID=${shellEscapeArg(args.stepId)}`,
     `ADE_ATTEMPT_ID=${shellEscapeArg(args.attemptId)}`,
-    `ADE_DEFAULT_ROLE=agent`
+    `ADE_DEFAULT_ROLE=agent`,
+    ...(args.ownerId ? [`ADE_OWNER_ID=${shellEscapeArg(args.ownerId)}`] : []),
   ];
+}
+
+function resolveWorkerOwnerId(metadata: Record<string, unknown> | null | undefined): string | null {
+  return typeof metadata?.employeeAgentId === "string" && metadata.employeeAgentId.trim().length > 0
+    ? metadata.employeeAgentId.trim()
+    : null;
 }
 
 export function resolveAdeMcpServerLaunch(args: {
@@ -110,6 +118,7 @@ function writeMcpConfigFile(args: {
   attemptId: string;
   missionId: string;
   stepId: string;
+  ownerId?: string | null;
 }): string {
   const configDir = resolveAdeLayout(args.workspaceRoot).mcpConfigsDir;
   fs.mkdirSync(configDir, { recursive: true });
@@ -123,7 +132,8 @@ function writeMcpConfigFile(args: {
     runId: args.runId,
     stepId: args.stepId,
     attemptId: args.attemptId,
-    defaultRole: "agent"
+    defaultRole: "agent",
+    ownerId: args.ownerId ?? undefined,
   });
 
   const config = {
@@ -180,7 +190,7 @@ function dedupeAllowedTools(entries: readonly string[]): string[] {
   return out;
 }
 
-export function buildClaudeReadOnlyWorkerAllowedTools(serverName = "ade"): string[] {
+export function buildClaudeReadOnlyWorkerAllowedTools(serverName = "ade", extraToolNames: readonly string[] = []): string[] {
   const trimmedServerName = serverName.trim();
   const resolvedServerName = trimmedServerName.length > 0 ? trimmedServerName : "ade";
   const mcpTools = CLAUDE_READ_ONLY_WORKER_MCP_TOOLS.map((tool) =>
@@ -189,6 +199,7 @@ export function buildClaudeReadOnlyWorkerAllowedTools(serverName = "ade"): strin
   return dedupeAllowedTools([
     ...CLAUDE_READ_ONLY_NATIVE_TOOLS,
     ...mcpTools,
+    ...extraToolNames.map((tool) => `mcp__${resolvedServerName}__${tool}`),
   ]);
 }
 
@@ -235,6 +246,7 @@ export function buildCodexMcpConfigFlags(args: {
   runId: string;
   stepId: string;
   attemptId: string;
+  ownerId?: string | null;
 }): string[] {
   const launch = resolveAdeMcpServerLaunch({
     workspaceRoot: args.workspaceRoot,
@@ -243,7 +255,8 @@ export function buildCodexMcpConfigFlags(args: {
     runId: args.runId,
     stepId: args.stepId,
     attemptId: args.attemptId,
-    defaultRole: "agent"
+    defaultRole: "agent",
+    ownerId: args.ownerId ?? undefined,
   });
 
   // Codex -c flag parses values as TOML
@@ -258,6 +271,9 @@ export function buildCodexMcpConfigFlags(args: {
     "-c", shellEscapeArg(`mcp_servers.ade.env.ADE_ATTEMPT_ID="${launch.env.ADE_ATTEMPT_ID}"`),
     "-c", shellEscapeArg(`mcp_servers.ade.env.ADE_DEFAULT_ROLE="${launch.env.ADE_DEFAULT_ROLE}"`)
   ];
+  if (launch.env.ADE_OWNER_ID?.trim()) {
+    flags.push("-c", shellEscapeArg(`mcp_servers.ade.env.ADE_OWNER_ID="${launch.env.ADE_OWNER_ID}"`));
+  }
   return flags;
 }
 
@@ -392,6 +408,9 @@ export function createUnifiedOrchestratorAdapter(options?: {
   workspaceRoot?: string;
   runtimeRoot?: string;
   agentChatService?: ReturnType<typeof createAgentChatService> | null;
+  externalMcpService?: {
+    getSnapshots: () => Array<{ tools: Array<{ namespacedName: string; enabled: boolean; safety: "read" | "write" | "unknown" }> }>;
+  } | null;
 }): OrchestratorExecutorAdapter {
   const runtimeRoot = typeof options?.runtimeRoot === "string" && options.runtimeRoot.trim().length
     ? options.runtimeRoot.trim()
@@ -399,6 +418,7 @@ export function createUnifiedOrchestratorAdapter(options?: {
   const workspaceRoot = typeof options?.workspaceRoot === "string" && options.workspaceRoot.trim().length
     ? options.workspaceRoot.trim()
     : runtimeRoot;
+  const externalMcpService = options?.externalMcpService ?? null;
 
   // Clean up stale MCP config files from previous runs
   cleanupStaleMcpConfigFiles(workspaceRoot);
@@ -423,15 +443,18 @@ export function createUnifiedOrchestratorAdapter(options?: {
         missionId: run.missionId,
         runId: run.id,
         stepId: step.id,
-        attemptId: attempt.id
+        attemptId: attempt.id,
+        ownerId: resolveWorkerOwnerId(run.metadata),
       });
+      const workerOwnerId = resolveWorkerOwnerId(run.metadata);
       const mcpIdentity = {
         workspaceRoot,
         runtimeRoot,
         missionId: run.missionId,
         runId: run.id,
         stepId: step.id,
-        attemptId: attempt.id
+        attemptId: attempt.id,
+        ownerId: workerOwnerId,
       };
 
       // Determine which CLI to use based on the model
@@ -446,8 +469,15 @@ export function createUnifiedOrchestratorAdapter(options?: {
           : mappedClaude;
         const configuredAllowedTools =
           effectivePermissionConfig?._providers?.allowedTools ?? effectivePermissionConfig?.cli?.allowedTools ?? [];
+        const readOnlyExternalTools = externalMcpService
+          ? externalMcpService
+              .getSnapshots()
+              .flatMap((snapshot) => snapshot.tools)
+              .filter((tool) => tool.enabled && tool.safety !== "write")
+              .map((tool) => tool.namespacedName)
+          : [];
         const allowedTools = readOnlyExecution
-          ? buildClaudeReadOnlyWorkerAllowedTools("ade")
+          ? buildClaudeReadOnlyWorkerAllowedTools("ade", readOnlyExternalTools)
           : dedupeAllowedTools(configuredAllowedTools);
 
         const parts: string[] = ["claude", "--model", shellEscapeArg(cliModel)];
@@ -625,6 +655,7 @@ export function createUnifiedOrchestratorAdapter(options?: {
         provider,
         teamRuntime,
       });
+      const workerOwnerId = resolveWorkerOwnerId(args.run.metadata);
 
       try {
         const session = await agentChatService.createSession({
@@ -634,6 +665,7 @@ export function createUnifiedOrchestratorAdapter(options?: {
           modelId: descriptor.id,
           reasoningEffort: reasoningEffort ?? null,
           permissionMode,
+          ...(workerOwnerId ? { identityKey: `agent:${workerOwnerId}` as const } : {}),
         });
         return {
           status: "accepted",

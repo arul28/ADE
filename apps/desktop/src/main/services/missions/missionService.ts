@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import {
+  isValidResolutionKind,
+} from "../../../shared/types";
 import type {
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
@@ -30,7 +33,6 @@ import type {
   MissionExecutionMode,
   MissionIntervention,
   MissionInterventionResolutionKind,
-  isValidResolutionKind,
   MissionInterventionStatus,
   MissionInterventionType,
   MissionPriority,
@@ -1839,6 +1841,17 @@ export function createMissionService({
         interventions,
         phaseConfiguration: resolveMissionPhaseConfiguration(id)
       };
+    },
+
+    getMetadata(missionId: string): Record<string, unknown> | null {
+      const id = missionId.trim();
+      if (!id.length) return null;
+
+      const row = db.get<{ metadata_json: string | null }>(
+        `select metadata_json from missions where id = ? and project_id = ? limit 1`,
+        [id, projectId]
+      );
+      return safeParseRecord(row?.metadata_json ?? null);
     },
 
     listPhaseItems(args: ListPhaseItemsArgs = {}): PhaseCard[] {

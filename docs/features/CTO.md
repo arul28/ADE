@@ -4,7 +4,7 @@
 
 > Last updated: 2026-03-11
 >
-> **Status: W1-W4, W6, W6½, W7a, and W7b complete; W5b/W-UX/W7c remain in follow-through** — CTO core identity, worker org chart, heartbeat/activation, bidirectional Linear sync, onboarding/memory/worker UI surfaces, and the native memory upgrade are in the codebase. Remaining Phase 4 work is concentrated in automations polish, UX polish, advanced knowledge capture validation, the unresolved W10 portability model, and the still-unstarted W8-W9 ecosystem work.
+> **Status: W1-W4, W6, W6½, W7a, W7b, and W8 complete at baseline or better; W5b/W-UX/W7c remain in follow-through** — CTO core identity, worker org chart, heartbeat/activation, bidirectional Linear sync, onboarding/memory/worker UI surfaces, the native memory upgrade, and the ADE-managed external MCP substrate are in the codebase. Remaining Phase 4 work is concentrated in automations polish, UX polish, advanced knowledge capture validation, and the still-pending W9 ecosystem bridge.
 
 ---
 

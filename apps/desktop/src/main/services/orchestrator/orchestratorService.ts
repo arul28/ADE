@@ -83,6 +83,7 @@ import type { createConflictService } from "../conflicts/conflictService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createPrService } from "../prs/prService";
 import type { createMemoryService } from "../memory/memoryService";
+import type { createExternalMcpService } from "../externalMcp/externalMcpService";
 import { asRecord, nowIso, parseJsonRecord, TERMINAL_STEP_STATUSES, filterExecutionSteps } from "./orchestratorContext";
 import { parseNumericDependencyIndices } from "./missionLifecycle";
 import { getMissionStateDocumentPath } from "./missionStateDoc";
@@ -781,6 +782,7 @@ export function createOrchestratorService({
   episodicSummaryService,
   proceduralLearningService,
   knowledgeCaptureService,
+  externalMcpService,
   onEvent
 }: {
   db: AdeDb;
@@ -799,11 +801,12 @@ export function createOrchestratorService({
   episodicSummaryService?: import("../memory/episodicSummaryService").EpisodicSummaryService | null;
   proceduralLearningService?: import("../memory/proceduralLearningService").ProceduralLearningService | null;
   knowledgeCaptureService?: import("../memory/knowledgeCaptureService").KnowledgeCaptureService | null;
+  externalMcpService?: ReturnType<typeof createExternalMcpService> | null;
   onEvent?: (event: OrchestratorEvent) => void;
 }) {
   const adapters = new Map<OrchestratorExecutorKind, OrchestratorExecutorAdapter>();
   // Register the unified adapter that handles all model providers
-  adapters.set("unified", createUnifiedOrchestratorAdapter({ workspaceRoot: projectRoot, agentChatService }));
+  adapters.set("unified", createUnifiedOrchestratorAdapter({ workspaceRoot: projectRoot, agentChatService, externalMcpService }));
   const autopilotRunLocks = new Set<string>();
   const recoveryLoopStates = new Map<string, RecoveryLoopState>();
   const toOptionalNonEmptyString = (value: unknown): string | null => {

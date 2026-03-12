@@ -1018,6 +1018,14 @@ function mcpTextResult(value: unknown, isError = false): Record<string, unknown>
   };
 }
 
+function isMcpToolResult(value: unknown): value is {
+  content: unknown[];
+  structuredContent?: unknown;
+  isError?: boolean;
+} {
+  return isRecord(value) && Array.isArray(value.content);
+}
+
 function sanitizeForAudit(value: unknown, depth = 0): unknown {
   if (depth > 4) return "[depth-clipped]";
   if (value == null) return value;
@@ -1266,12 +1274,19 @@ function canCallerAccessCoordinatorTool(name: string, callerCtx: CallerContext):
   return false;
 }
 
-function listToolSpecsForSession(session: SessionState): ToolSpec[] {
+async function listToolSpecsForSession(runtime: AdeMcpRuntime, session: SessionState): Promise<ToolSpec[]> {
   const callerCtx = resolveCallerContext(session);
+  const externalToolSpecs = runtime.externalMcpService
+    ? (await runtime.externalMcpService.listToolsForIdentity(session.identity)).map((tool) => ({
+        name: tool.namespacedName,
+        description: tool.description ?? `${tool.serverName}: ${tool.name}`,
+        inputSchema: tool.inputSchema,
+      }))
+    : [];
   if (callerCtx.role === "agent") {
-    return [...TOOL_SPECS, ...AGENT_VISIBLE_COORDINATOR_TOOL_SPECS];
+    return [...TOOL_SPECS, ...AGENT_VISIBLE_COORDINATOR_TOOL_SPECS, ...externalToolSpecs];
   }
-  return ALL_TOOL_SPECS;
+  return [...ALL_TOOL_SPECS, ...externalToolSpecs];
 }
 
 function parseInitializeIdentity(params: unknown): SessionIdentity {
@@ -1456,14 +1471,6 @@ function buildResourceList(args: {
   }
 
   return resources;
-}
-
-function findToolSpec(name: string): ToolSpec {
-  const match = ALL_TOOL_SPECS.find((entry) => entry.name === name);
-  if (!match) {
-    throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unknown MCP tool: ${name}`);
-  }
-  return match;
 }
 
 async function waitForTestRunCompletion(args: {
@@ -2377,6 +2384,13 @@ async function runTool(args: {
   const { runtime, session, name, toolArgs } = args;
   const callerCtx = resolveCallerContext(session);
 
+  if (name.startsWith("ext.")) {
+    if (!runtime.externalMcpService) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
+    }
+    return await runtime.externalMcpService.callTool(session.identity, name, toolArgs);
+  }
+
   if (COORDINATOR_TOOL_NAMES.has(name)) {
     if (!canCallerAccessCoordinatorTool(name, callerCtx)) {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
@@ -3177,7 +3191,8 @@ async function runTool(args: {
                 ADE_RUN_ID: runId,
                 ADE_STEP_ID: stepId ?? "",
                 ADE_ATTEMPT_ID: attemptId,
-                ADE_DEFAULT_ROLE: "agent"
+                ADE_DEFAULT_ROLE: "agent",
+                ADE_OWNER_ID: callerCtx.ownerId ?? "",
               }
             }
           }
@@ -3196,6 +3211,7 @@ async function runTool(args: {
     if (stepId) envPrefixParts.push(`ADE_STEP_ID=${shellEscapeArg(stepId)}`);
     if (attemptId) envPrefixParts.push(`ADE_ATTEMPT_ID=${shellEscapeArg(attemptId)}`);
     if (callerCtx.missionId) envPrefixParts.push(`ADE_MISSION_ID=${shellEscapeArg(callerCtx.missionId)}`);
+    if (callerCtx.ownerId) envPrefixParts.push(`ADE_OWNER_ID=${shellEscapeArg(callerCtx.ownerId)}`);
     envPrefixParts.push("ADE_DEFAULT_ROLE=agent");
 
     const startupCommand = envPrefixParts.length > 0
@@ -3980,7 +3996,7 @@ export function createMcpRequestHandler(args: {
 
     if (method === "tools/list") {
       return {
-        tools: listToolSpecsForSession(session).map((tool) => ({
+        tools: (await listToolSpecsForSession(runtime, session)).map((tool) => ({
           name: tool.name,
           description: tool.description,
           inputSchema: tool.inputSchema
@@ -3990,12 +4006,13 @@ export function createMcpRequestHandler(args: {
 
     if (method === "tools/call") {
       const toolName = assertNonEmptyString(params.name, "name");
-      const toolSpec = findToolSpec(toolName);
-      void toolSpec;
       const toolArgs = safeObject(params.arguments);
 
       try {
         const result = await auditToolCall(toolName, toolArgs, async () => {
+          if (toolName.startsWith("ext.")) {
+            return await runTool({ runtime, session, name: toolName, toolArgs });
+          }
 
           if (
             READ_ONLY_TOOLS.has(toolName) ||
@@ -4014,6 +4031,9 @@ export function createMcpRequestHandler(args: {
           throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${toolName}`);
         });
 
+        if (toolName.startsWith("ext.") && isRecord(result) && isMcpToolResult(result.result)) {
+          return result.result;
+        }
         return mcpTextResult(result);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

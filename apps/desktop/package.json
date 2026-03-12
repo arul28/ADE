@@ -28,6 +28,7 @@
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
     "@fontsource-variable/space-grotesk": "^5.2.10",
     "@huggingface/transformers": "^3.8.1",
+    "@modelcontextprotocol/sdk": "1.27.1",
     "@openai/codex-sdk": "^0.104.0",
     "@phosphor-icons/react": "^2.1.10",
     "@radix-ui/react-dialog": "^1.1.15",

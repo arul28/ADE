@@ -21,6 +21,9 @@ type ConfigReloadServiceArgs = {
   secretService?: {
     reload?: () => unknown;
   } | null;
+  externalMcpService?: {
+    reload?: () => unknown;
+  } | null;
   logger?: Logger | null;
   onEvent?: (event: AdeProjectEvent) => void;
 };
@@ -60,6 +63,14 @@ export function createConfigReloadService(args: ConfigReloadServiceArgs) {
         args.secretService?.reload?.();
       } catch (error) {
         args.logger?.warn("project.config_reload.secret_reload_failed", {
+          filePath,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      try {
+        args.externalMcpService?.reload?.();
+      } catch (error) {
+        args.logger?.warn("project.config_reload.external_mcp_reload_failed", {
           filePath,
           error: error instanceof Error ? error.message : String(error),
         });

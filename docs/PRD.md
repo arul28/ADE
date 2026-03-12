@@ -926,7 +926,7 @@ Implementation sequencing, future phases, and dependency ordering are now mainta
 
 - `docs/final-plan/README.md`
 
-Current status: Phases 1, 1.5, 2, and 5 are complete. Phase 3 is complete through the orchestrator overhaul. Phase 4 is partially complete overall: `W1-W4`, `W6`, `W6½`, `W7a`, `W7b`, and `W10` are shipped; `W7c` has a working core with follow-through still open; `W-UX` and `W5b` are partial; and `W8` and `W9` remain pending.
+Current status: Phases 1, 1.5, 2, and 5 are complete. Phase 3 is complete through the orchestrator overhaul. Phase 4 is partially complete overall: `W1-W4`, `W6`, `W6½`, `W7a`, `W7b`, `W8`, and `W10` are shipped at baseline or better; `W7c` has a working core with follow-through still open; `W-UX` and `W5b` are partial; and `W9` remains the main pending ecosystem workstream.
 
 This PRD intentionally focuses on product scope and behavior, while roadmap execution detail is centralized in the Final Plan to avoid drift.
 

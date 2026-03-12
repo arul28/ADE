@@ -189,10 +189,10 @@ const COORDINATOR_OBSERVATION_TOOL_NAMES = [
   "stream_events",
 ] as const;
 
-export function buildCoordinatorMcpAllowedTools(serverName = "ade"): string[] {
+export function buildCoordinatorMcpAllowedTools(serverName = "ade", extraToolNames: readonly string[] = []): string[] {
   const trimmed = serverName.trim();
   const resolvedServerName = trimmed.length > 0 ? trimmed : "ade";
-  return [...COORDINATOR_TOOL_NAMES, ...COORDINATOR_OBSERVATION_TOOL_NAMES].map(
+  return [...COORDINATOR_TOOL_NAMES, ...COORDINATOR_OBSERVATION_TOOL_NAMES, ...extraToolNames].map(
     (toolName) => `mcp__${resolvedServerName}__${toolName}`,
   );
 }

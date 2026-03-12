@@ -17,6 +17,6 @@ See [phase-4/README.md](phase-4/README.md) for the overview, execution order, de
 | [phase-4/W7a.md](phase-4/W7a.md) | W7a: Embeddings Pipeline | ✅ Complete |
 | [phase-4/W7b.md](phase-4/W7b.md) | W7b: Orchestrator ↔ Memory Integration | ✅ Complete |
 | [phase-4/W7c.md](phase-4/W7c.md) | W7c: Skills + Learning Pipeline | Largely implemented / advanced capture follow-through pending |
-| [phase-4/W8.md](phase-4/W8.md) | W8: External MCP Consumption | Not started |
+| [phase-4/W8.md](phase-4/W8.md) | W8: External MCP Consumption | Implemented baseline; ready for W9 |
 | [phase-4/W9.md](phase-4/W9.md) | W9: OpenClaw Bridge | Not started |
 | [phase-4/W10.md](phase-4/W10.md) | W10: .ade/ Portable State | ✅ Complete |

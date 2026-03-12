@@ -6,6 +6,7 @@ import type { ProviderMode, ModelId } from "./core";
 import type { AgentChatModelInfo } from "./chat";
 import type { LaneType } from "./lanes";
 import type { MissionExecutionPolicy, MissionPermissionConfig, MissionProviderPermissions } from "./missions";
+import type { ExternalMcpMissionSelection } from "./externalMcp";
 import type { MissionModelConfig, ModelConfig } from "./models";
 import type { LinearSyncConfig } from "./linearSync";
 
@@ -777,6 +778,7 @@ export type AiPermissionSettings = {
   inProcess?: AiInProcessPermissionSettings;
   /** Per-provider permission config (preferred over cli/inProcess for missions). */
   providers?: MissionProviderPermissions;
+  externalMcp?: ExternalMcpMissionSelection;
 };
 
 export type WorkerSafetyPolicy = {

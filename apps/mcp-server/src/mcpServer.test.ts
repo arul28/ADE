@@ -281,6 +281,15 @@ function createRuntime() {
         notes: []
       }))
     } as any,
+    externalMcpService: {
+      listToolsForIdentity: vi.fn(async () => []),
+      callTool: vi.fn(async () => ({
+        ok: true,
+        result: {
+          content: [{ type: "text", text: "ok" }],
+        },
+      })),
+    } as any,
     orchestratorService: {
       listRuns: vi.fn(() => []),
       pauseRun: vi.fn(({ runId }: any) => ({ id: runId, status: "paused" })),
@@ -611,6 +620,63 @@ describe("mcpServer", () => {
         "message_worker",
         "update_tool_profiles",
       ])
+    );
+  });
+
+  it("includes ADE-managed external MCP tools in tool discovery and preserves structured tool results", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.externalMcpService.listToolsForIdentity = vi.fn(async () => [
+      {
+        name: "search",
+        serverName: "notion",
+        namespacedName: "ext.notion.search",
+        description: "Search Notion pages",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: { type: "string" },
+          },
+          required: ["query"],
+        },
+        enabled: true,
+        safety: "read",
+      },
+    ]);
+    fixture.runtime.externalMcpService.callTool = vi.fn(async () => ({
+      ok: true,
+      result: {
+        content: [{ type: "text", text: "Found page" }],
+        structuredContent: { pageId: "page-1" },
+        isError: false,
+      },
+    }));
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-1",
+      attemptId: "attempt-1",
+    });
+
+    const listResult = await handler({ jsonrpc: "2.0", id: 3, method: "tools/list" }) as any;
+    expect((listResult.tools ?? []).map((tool: any) => tool.name)).toContain("ext.notion.search");
+
+    const callResult = await callTool(handler, "ext.notion.search", { query: "roadmap" });
+    expect(callResult).toMatchObject({
+      content: [{ type: "text", text: "Found page" }],
+      structuredContent: { pageId: "page-1" },
+      isError: false,
+    });
+    expect(fixture.runtime.externalMcpService.callTool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callerId: "worker-1",
+        missionId: "mission-1",
+      }),
+      "ext.notion.search",
+      { query: "roadmap" },
     );
   });
 

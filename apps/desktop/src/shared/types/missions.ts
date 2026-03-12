@@ -14,6 +14,7 @@ import type {
 } from "./orchestrator";
 import type { AiCliPermissionMode, AiCliSandboxPermissions, AiInProcessPermissionMode } from "./config";
 import type { AgentChatPermissionMode } from "./chat";
+import type { ExternalMcpMissionSelection } from "./externalMcp";
 
 /** @deprecated Use MissionProviderPermissions instead. Kept for backward compat with stored missions. */
 export type MissionCliPermissionMode = AiCliPermissionMode;
@@ -52,6 +53,7 @@ export type MissionPermissionConfig = {
   };
   /** New per-provider permission shape. Takes precedence over cli/inProcess when present. */
   providers?: MissionProviderPermissions;
+  externalMcp?: ExternalMcpMissionSelection;
 };
 
 export type MissionStatus =

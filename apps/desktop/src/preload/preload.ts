@@ -79,6 +79,9 @@ import type {
   LinearSyncQueueItem,
   CtoResolveLinearSyncQueueItemArgs,
   LinearSyncConfig,
+  ExternalMcpServerConfig,
+  ExternalMcpServerSnapshot,
+  ExternalMcpUsageEvent,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   AutomationsEventPayload,
@@ -557,6 +560,22 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.aiVerifyApiKey, { provider }),
     updateConfig: async (config: Partial<AiConfig>): Promise<void> =>
       ipcRenderer.invoke(IPC.aiUpdateConfig, config),
+  },
+  externalMcp: {
+    listServers: async (): Promise<ExternalMcpServerSnapshot[]> => ipcRenderer.invoke(IPC.externalMcpListServers),
+    listConfigs: async (): Promise<ExternalMcpServerConfig[]> => ipcRenderer.invoke(IPC.externalMcpListConfigs),
+    getUsageEvents: async (args: { limit?: number } = {}): Promise<ExternalMcpUsageEvent[]> =>
+      ipcRenderer.invoke(IPC.externalMcpGetUsageEvents, args),
+    connectServer: async (serverName: string): Promise<ExternalMcpServerSnapshot> =>
+      ipcRenderer.invoke(IPC.externalMcpConnectServer, { serverName }),
+    disconnectServer: async (serverName: string): Promise<ExternalMcpServerSnapshot | null> =>
+      ipcRenderer.invoke(IPC.externalMcpDisconnectServer, { serverName }),
+    testServer: async (config: ExternalMcpServerConfig): Promise<ExternalMcpServerSnapshot> =>
+      ipcRenderer.invoke(IPC.externalMcpTestServer, { config }),
+    saveServer: async (config: ExternalMcpServerConfig): Promise<ExternalMcpServerConfig[]> =>
+      ipcRenderer.invoke(IPC.externalMcpSaveServer, { config }),
+    removeServer: async (serverName: string): Promise<ExternalMcpServerConfig[]> =>
+      ipcRenderer.invoke(IPC.externalMcpRemoveServer, { serverName }),
   },
   agentTools: {
     detect: async (): Promise<AgentTool[]> => ipcRenderer.invoke(IPC.agentToolsDetect)

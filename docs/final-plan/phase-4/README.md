@@ -19,17 +19,17 @@ Goal: Add the CTO agent as a persistent project-aware assistant with a configura
 | W7a: Embeddings Pipeline | [W7a.md](W7a.md) | ✅ Complete |
 | W7b: Orchestrator ↔ Memory Integration | [W7b.md](W7b.md) | ✅ Complete |
 | W7c: Skills + Learning Pipeline | [W7c.md](W7c.md) | Largely implemented / advanced capture follow-through pending |
-| W8: External MCP Consumption | [W8.md](W8.md) | Not started |
+| W8: External MCP Consumption | [W8.md](W8.md) | Implemented baseline; ready for W9 |
 | W9: OpenClaw Bridge | [W9.md](W9.md) | Not started |
 | W10: .ade/ Portable State | [W10.md](W10.md) | ✅ Complete |
 
 ### Audit Snapshot (2026-03-11)
 
-- Complete: W1-W4, W6, W6½, W7a, W7b
+- Complete: W1-W4, W6, W6½, W7a, W7b, W8
 - Mostly implemented: W5b, W7c
 - Partially implemented: W-UX
-- Still genuinely pending: W8, W9
-- Highest-value follow-through still open inside shipped work: onboarding/polish in CTO UX, advanced knowledge capture validation/review, and W5b ecosystem polish before moving deeper into W8/W9.
+- Still genuinely pending: W9
+- Highest-value follow-through still open inside shipped work: onboarding/polish in CTO UX, advanced knowledge capture validation/review, and W5b ecosystem polish before moving deeper into W9.
 
 ### Reference docs
 
@@ -75,7 +75,7 @@ Workstreams are numbered by topic but executed in dependency order. W1-W4, W5a, 
 - CTO still needs a cleaner onboarding/setup experience, stronger activity visibility, and broader visual/system polish
 - Inconsistent theming and shared component treatment remain across CTO/Automations/Memory surfaces
 - Advanced learning capture from user interventions, repeated errors, and PR feedback still needs end-to-end follow-through even though the procedural pipeline is already in code
-- External MCP consumption remains the main ecosystem gap: W8 and W9 are still untouched after the `.ade` contract and local state surfaces landed.
+- OpenClaw bridge work remains the main ecosystem gap: W8 now ships the ADE-managed external MCP substrate that W9 is expected to build on.
 - Advanced knowledge capture still needs end-to-end confidence in production flows even though the extraction/export/indexing pipeline is already in place.
 
 ```
@@ -90,9 +90,9 @@ Wave 4 (shipped):
 Wave 5 (mostly shipped — advanced learning capture remains):
   W7c: Skills + Learning Pipeline         Largely implemented; advanced capture/review mining still open
 
-Wave 6 (ecosystem — independent, can parallel):
-  W8: External MCP Consumption            Pending
-  W9: OpenClaw Bridge                     Pending; needs W1, W8
+Wave 6 (ecosystem):
+  W8: External MCP Consumption            Implemented baseline
+  W9: OpenClaw Bridge                     Pending; builds on W1 + shipped W8 substrate
   W10: .ade/ Portable State               ✅ Complete
 ```
 
@@ -107,7 +107,7 @@ W1-W4 ✅
      │
      ├──→ W-UX (CTO + Org UX; partial)
      │
-     └──→ W8 (External MCP; pending) ──→ W9 (OpenClaw Bridge; pending)
+     └──→ W8 (External MCP; shipped baseline) ──→ W9 (OpenClaw Bridge; pending)
 ```
 
 Each workstream includes its own renderer/UI changes and tests (no standalone workstreams for these).
@@ -218,13 +218,13 @@ Phase 4 should enable a "tech department" loop: one persistent agent per employe
 - ✅ Automation briefing assembly and employee-memory mode exist in the runtime, using the same memory briefing service as other agent paths.
 - ✅ CTO-owned Linear intake vs automation-trigger boundary is implemented in product docs and current UI direction.
 - ✅ Webhook/GitHub ingress, tool allowlists, executor routing, and automation-to-mission dispatch are present in the current runtime.
-- Remaining: tighten the overnight review/publish UX, finish external-MCP follow-through once W8 exists, and clean up any remaining executor/runtime edge cases.
+- Remaining: tighten the overnight review/publish UX and clean up remaining executor/runtime edge cases now that the external-MCP substrate exists.
 
-**W8 — External MCP Consumption:**
-- ADE agents can consume external MCP servers declared in `local.secret.yaml`.
-- Tool discovery with namespace prefixing, per-server and per-agent permission model.
-- Dynamic config reload: hot-reload MCP server connections on config file change.
-- Lifecycle management with health checks, reconnection, and graceful shutdown.
+**W8 — External MCP Consumption: Implemented baseline**
+- ADE owns external MCP configuration in `.ade/local.secret.yaml`.
+- External MCP is consumed by ADE and re-exposed through ADE MCP as `ext.<server>.<tool>`.
+- Settings, CTO access controls, and mission-level server/tool selection are in the product surface.
+- Worker ownership, budget gating, config reload, discovery, and structured tool result passthrough are wired well enough for W9 to assume the substrate exists.
 
 **W9 — OpenClaw Bridge:**
 - Bidirectional communication between ADE CTO and OpenClaw agent gateway.

@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import YAML from "yaml";
 import type {
   AgentCoreMemory,
+  ExternalMcpAccessPolicy,
   AgentIdentity,
   AgentRole,
   AgentSessionLogEntry,
@@ -202,6 +203,9 @@ function normalizeIdentity(input: unknown): AgentIdentity | null {
     runtimeConfig: source.runtimeConfig && typeof source.runtimeConfig === "object"
       ? source.runtimeConfig as Record<string, unknown>
       : {},
+    ...(normalizeExternalMcpAccess(source.externalMcpAccess)
+      ? { externalMcpAccess: normalizeExternalMcpAccess(source.externalMcpAccess)! }
+      : {}),
     budgetMonthlyCents: Number.isFinite(Number(source.budgetMonthlyCents))
       ? Math.max(0, Math.floor(Number(source.budgetMonthlyCents)))
       : 0,
@@ -214,6 +218,18 @@ function normalizeIdentity(input: unknown): AgentIdentity | null {
     createdAt,
     updatedAt,
     deletedAt: typeof source.deletedAt === "string" && source.deletedAt.trim().length ? source.deletedAt.trim() : null,
+  };
+}
+
+function normalizeExternalMcpAccess(value: unknown): ExternalMcpAccessPolicy | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const source = value as Record<string, unknown>;
+  const allowedServers = uniqueStrings(asStringArray(source.allowedServers));
+  const blockedServers = uniqueStrings(asStringArray(source.blockedServers));
+  return {
+    allowAll: source.allowAll === true,
+    allowedServers,
+    blockedServers,
   };
 }
 
@@ -572,6 +588,10 @@ export function createWorkerAgentService(args: WorkerAgentServiceArgs) {
 
     const runtimeConfig = (input.runtimeConfig ?? existing?.runtimeConfig ?? {}) as Record<string, unknown>;
     assertEnvRefSecretPolicy(runtimeConfig, "runtimeConfig");
+    const externalMcpAccess =
+      normalizeExternalMcpAccess(input.externalMcpAccess)
+      ?? existing?.externalMcpAccess
+      ?? { allowAll: false, allowedServers: [], blockedServers: [] };
 
     const identity: AgentIdentity = {
       id,
@@ -585,6 +605,7 @@ export function createWorkerAgentService(args: WorkerAgentServiceArgs) {
       adapterType,
       adapterConfig,
       runtimeConfig,
+      externalMcpAccess,
       budgetMonthlyCents: Math.max(0, Math.floor(Number(input.budgetMonthlyCents ?? existing?.budgetMonthlyCents ?? 0))),
       spentMonthlyCents: existing?.spentMonthlyCents ?? 0,
       ...(existing?.lastHeartbeatAt ? { lastHeartbeatAt: existing.lastHeartbeatAt } : {}),
@@ -606,6 +627,11 @@ export function createWorkerAgentService(args: WorkerAgentServiceArgs) {
       slug: ensureUniqueSlug(snapshot.slug || snapshot.name, snapshot.id),
       name: snapshot.name.trim(),
       capabilities: uniqueStrings(snapshot.capabilities ?? []),
+      externalMcpAccess: normalizeExternalMcpAccess(snapshot.externalMcpAccess) ?? {
+        allowAll: false,
+        allowedServers: [],
+        blockedServers: [],
+      },
       budgetMonthlyCents: Math.max(0, Math.floor(Number(snapshot.budgetMonthlyCents ?? 0))),
       spentMonthlyCents: Math.max(0, Math.floor(Number(snapshot.spentMonthlyCents ?? 0))),
       updatedAt: nowIso(),

@@ -409,6 +409,9 @@ import type {
   CtoResolveLinearSyncQueueItemArgs,
   LinearSyncConfig,
   NormalizedLinearIssue,
+  ExternalMcpServerConfig,
+  ExternalMcpServerSnapshot,
+  ExternalMcpUsageEvent,
   UsageSnapshot,
   BudgetCheckResult,
   BudgetCapScope,
@@ -486,6 +489,7 @@ import type { createFlowPolicyService } from "../cto/flowPolicyService";
 import type { createLinearRoutingService } from "../cto/linearRoutingService";
 import type { createLinearSyncService } from "../cto/linearSyncService";
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
+import type { createExternalMcpService } from "../externalMcp/externalMcpService";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
 import type { createBudgetCapService } from "../usage/budgetCapService";
 import type { AdeProjectService } from "../projects/adeProjectService";
@@ -566,6 +570,7 @@ export type AppContext = {
   flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
   linearRoutingService?: ReturnType<typeof createLinearRoutingService> | null;
   linearSyncService?: ReturnType<typeof createLinearSyncService> | null;
+  externalMcpService?: ReturnType<typeof createExternalMcpService> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
   configReloadService?: ConfigReloadService | null;
@@ -580,6 +585,26 @@ function clampLayout(layout: DockLayout): DockLayout {
     out[k] = Math.max(0, Math.min(100, v));
   }
   return out;
+}
+
+function sanitizeExternalMcpSnapshot(
+  snapshot: ExternalMcpServerSnapshot,
+  rawConfig?: ExternalMcpServerConfig,
+): ExternalMcpServerSnapshot {
+  if (!rawConfig) return snapshot;
+  return {
+    ...snapshot,
+    config: {
+      ...snapshot.config,
+      transport: rawConfig.transport === "stdio" ? "stdio" : "http",
+      ...(rawConfig.command ? { command: rawConfig.command } : {}),
+      ...(rawConfig.args ? { args: rawConfig.args } : {}),
+      ...(rawConfig.env ? { env: rawConfig.env } : {}),
+      ...(rawConfig.cwd ? { cwd: rawConfig.cwd } : {}),
+      ...(rawConfig.url ? { url: rawConfig.url } : {}),
+      ...(rawConfig.headers ? { headers: rawConfig.headers } : {}),
+    },
+  };
 }
 
 function escapeCsvCell(value: string | null | undefined): string {
@@ -1589,6 +1614,59 @@ export function registerIpc({
     });
   });
 
+  ipcMain.handle(IPC.externalMcpListServers, async (): Promise<ExternalMcpServerSnapshot[]> => {
+    const service = getCtx().externalMcpService;
+    if (!service) return [];
+    const rawConfigs = service.getRawConfigs();
+    return service.getSnapshots().map((snapshot) =>
+      sanitizeExternalMcpSnapshot(
+        snapshot,
+        rawConfigs.find((entry) => entry.name === snapshot.config.name),
+      )
+    );
+  });
+  ipcMain.handle(IPC.externalMcpListConfigs, async (): Promise<ExternalMcpServerConfig[]> =>
+    getCtx().externalMcpService?.getRawConfigs() ?? []
+  );
+  ipcMain.handle(IPC.externalMcpGetUsageEvents, async (_event, arg: { limit?: number } = {}): Promise<ExternalMcpUsageEvent[]> =>
+    getCtx().externalMcpService?.getUsageEvents(arg.limit ?? 100) ?? []
+  );
+  ipcMain.handle(IPC.externalMcpConnectServer, async (_event, arg: { serverName: string }): Promise<ExternalMcpServerSnapshot> => {
+    const service = getCtx().externalMcpService;
+    if (!service) throw new Error("External MCP service is unavailable.");
+    const snapshot = await service.connectServer(arg.serverName);
+    return sanitizeExternalMcpSnapshot(
+      snapshot,
+      service.getRawConfigs().find((entry) => entry.name === snapshot.config.name),
+    );
+  });
+  ipcMain.handle(IPC.externalMcpDisconnectServer, async (_event, arg: { serverName: string }): Promise<ExternalMcpServerSnapshot | null> => {
+    const service = getCtx().externalMcpService;
+    if (!service) throw new Error("External MCP service is unavailable.");
+    const snapshot = await service.disconnectServer(arg.serverName);
+    return snapshot
+      ? sanitizeExternalMcpSnapshot(
+          snapshot,
+          service.getRawConfigs().find((entry) => entry.name === snapshot.config.name),
+        )
+      : null;
+  });
+  ipcMain.handle(IPC.externalMcpTestServer, async (_event, arg: { config: ExternalMcpServerConfig }): Promise<ExternalMcpServerSnapshot> => {
+    const service = getCtx().externalMcpService;
+    if (!service) throw new Error("External MCP service is unavailable.");
+    return sanitizeExternalMcpSnapshot(await service.testServer(arg.config), arg.config);
+  });
+  ipcMain.handle(IPC.externalMcpSaveServer, async (_event, arg: { config: ExternalMcpServerConfig }): Promise<ExternalMcpServerConfig[]> => {
+    const service = getCtx().externalMcpService;
+    if (!service) throw new Error("External MCP service is unavailable.");
+    return service.saveServer(arg.config);
+  });
+  ipcMain.handle(IPC.externalMcpRemoveServer, async (_event, arg: { serverName: string }): Promise<ExternalMcpServerConfig[]> => {
+    const service = getCtx().externalMcpService;
+    if (!service) throw new Error("External MCP service is unavailable.");
+    return service.removeServer(arg.serverName);
+  });
+
   ipcMain.handle(IPC.agentToolsDetect, async (): Promise<AgentTool[]> => {
     const ctx = getCtx();
     return ctx.agentToolsService.detect();
@@ -1926,8 +2004,9 @@ export function registerIpc({
           });
         } catch (error) {
           const message = getErrorMessage(error);
-          const launchFailure = error instanceof Error && isRecord((error as Record<string, unknown>).missionLaunchFailure)
-            ? ((error as Record<string, unknown>).missionLaunchFailure as Record<string, unknown>)
+          const errorRecord = error as unknown as Record<string, unknown>;
+          const launchFailure = error instanceof Error && isRecord(errorRecord.missionLaunchFailure)
+            ? (errorRecord.missionLaunchFailure as Record<string, unknown>)
             : null;
           ctx.logger.warn("missions.autostart_failed", {
             missionId: created.id,

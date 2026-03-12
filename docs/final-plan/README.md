@@ -202,7 +202,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Skill Library (recipe extraction + `.ade/skills/` materialization) | Phase 4 | Phase 4 Learning Packs + PROJ-039 viewer baseline | Mostly implemented (canonical export + ingestion shipped; advanced capture follow-through remains) |
 | .ade/ Portable State (canonical tracked/shareable contract) | Phase 4 | Phase 3 | Implemented |
 | .ade/ State Sync (cr-sqlite database sync) | Phase 6 | Phase 4 | Planned |
-| External MCP Consumption | Phase 4 | Phase 3 | Planned (not started) |
+| External MCP Consumption | Phase 4 | Phase 3 | Implemented baseline; ADE-managed external MCP substrate shipped |
 | OpenClaw Bridge (External Agent Gateway) | Phase 4 | Phase 4 W1 (CTO) + W8 (External MCP) | Planned (not started) |
 | Worker Agents & Org Chart | Phase 4 | Phase 4 W1 | Complete (W2) |
 | Heartbeat & Activation System (coalescing, deferred promotion) | Phase 4 | Phase 4 W1 | Complete (W3) |

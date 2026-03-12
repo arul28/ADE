@@ -24,3 +24,4 @@ __pycache__/
 /apps/mcp-server/dist/
 /apps/desktop/release/
 /apps/desktop/dist/
+/.ade

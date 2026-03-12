@@ -32,6 +32,22 @@ import {
   type MissionSettingsDraft,
 } from "./missionHelpers";
 
+function readBoolean(primary: unknown, fallback: unknown, defaultValue: boolean): boolean {
+  if (typeof primary === "boolean") return primary;
+  if (typeof fallback === "boolean") return fallback;
+  return defaultValue;
+}
+
+function readStringArray(primary: unknown, fallback: unknown): string[] {
+  const normalize = (value: unknown): string[] =>
+    Array.isArray(value)
+      ? [...new Set(value.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0))]
+      : [];
+  const primaryList = normalize(primary);
+  if (primaryList.length > 0) return primaryList;
+  return normalize(fallback);
+}
+
 /* ════════════════════ TYPES ════════════════════ */
 
 export type OrchestratorCheckpointStatus = {
@@ -446,6 +462,8 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
     const effectiveInProcess = isRecord(effectivePermissions.inProcess) ? effectivePermissions.inProcess : {};
     const localProviders = isRecord(localPermissions.providers) ? localPermissions.providers : {};
     const effectiveProviders = isRecord(effectivePermissions.providers) ? effectivePermissions.providers : {};
+    const localExternalMcp = isRecord(localPermissions.externalMcp) ? localPermissions.externalMcp : {};
+    const effectiveExternalMcp = isRecord(effectivePermissions.externalMcp) ? effectivePermissions.externalMcp : {};
 
     const rawPlannerProvider = readString(localOrchestrator.defaultPlannerProvider, effectiveOrchestrator.defaultPlannerProvider, "auto");
     const plannerProvider = toPlannerProvider(rawPlannerProvider);
@@ -476,6 +494,11 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
         codex: readString(localProviders.codex, effectiveProviders.codex, "full-auto") as import("../../../shared/types").AgentChatPermissionMode,
         unified: readString(localProviders.unified, effectiveProviders.unified, "full-auto") as import("../../../shared/types").AgentChatPermissionMode,
         codexSandbox: readString(localProviders.codexSandbox, effectiveProviders.codexSandbox, "workspace-write") as "read-only" | "workspace-write" | "danger-full-access",
+      },
+      externalMcp: {
+        enabled: readBoolean(localExternalMcp.enabled, effectiveExternalMcp.enabled, false),
+        selectedServers: readStringArray(localExternalMcp.selectedServers, effectiveExternalMcp.selectedServers),
+        selectedTools: readStringArray(localExternalMcp.selectedTools, effectiveExternalMcp.selectedTools),
       },
     };
 
@@ -557,6 +580,7 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
               cli: nextCli,
               inProcess: nextInProcess,
               providers: draft.permissionConfig?.providers ?? DEFAULT_PERMISSION_CONFIG.providers,
+              externalMcp: draft.permissionConfig?.externalMcp,
             },
           },
         },

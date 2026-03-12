@@ -5,6 +5,7 @@ import YAML from "yaml";
 import type {
   CtoCoreMemory,
   CtoIdentity,
+  ExternalMcpAccessPolicy,
   CtoOnboardingState,
   CtoSessionLogEntry,
   CtoSubordinateActivityEntry,
@@ -86,6 +87,7 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
     source.memoryPolicy && typeof source.memoryPolicy === "object"
       ? (source.memoryPolicy as Record<string, unknown>)
       : {};
+  const externalMcpAccess = normalizeExternalMcpAccess(source.externalMcpAccess);
 
   return {
     name,
@@ -115,7 +117,22 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
         ? Math.max(1, Math.floor(Number(memoryPolicyRaw.temporalDecayHalfLifeDays)))
         : 30,
     },
+    ...(externalMcpAccess ? { externalMcpAccess } : {}),
     updatedAt,
+  };
+}
+
+function normalizeExternalMcpAccess(value: unknown): ExternalMcpAccessPolicy | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const source = value as Record<string, unknown>;
+  const toStringArray = (input: unknown): string[] =>
+    Array.isArray(input)
+      ? [...new Set(input.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0))]
+      : [];
+  return {
+    allowAll: source.allowAll !== false,
+    allowedServers: toStringArray(source.allowedServers),
+    blockedServers: toStringArray(source.blockedServers),
   };
 }
 
@@ -205,6 +222,11 @@ function makeDefaultIdentity(): CtoIdentity {
       compactionThreshold: 0.7,
       preCompactionFlush: true,
       temporalDecayHalfLifeDays: 30,
+    },
+    externalMcpAccess: {
+      allowAll: true,
+      allowedServers: [],
+      blockedServers: [],
     },
     updatedAt: timestamp,
   };
@@ -681,6 +703,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       ...patch,
       modelPreferences: { ...current.modelPreferences, ...(patch.modelPreferences ?? {}) },
       memoryPolicy: { ...current.memoryPolicy, ...(patch.memoryPolicy ?? {}) },
+      externalMcpAccess: normalizeExternalMcpAccess(patch.externalMcpAccess) ?? current.externalMcpAccess,
       version: current.version + 1,
       updatedAt: timestamp,
     };

@@ -154,6 +154,9 @@ import type {
   LinearSyncQueueItem,
   CtoResolveLinearSyncQueueItemArgs,
   LinearSyncConfig,
+  ExternalMcpServerConfig,
+  ExternalMcpServerSnapshot,
+  ExternalMcpUsageEvent,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   KeybindingOverride,
@@ -520,6 +523,16 @@ declare global {
         listApiKeys: () => Promise<string[]>;
         verifyApiKey: (provider: string) => Promise<AiApiKeyVerificationResult>;
         updateConfig: (config: Partial<AiConfig>) => Promise<void>;
+      };
+      externalMcp: {
+        listServers: () => Promise<ExternalMcpServerSnapshot[]>;
+        listConfigs: () => Promise<ExternalMcpServerConfig[]>;
+        getUsageEvents: (args?: { limit?: number }) => Promise<ExternalMcpUsageEvent[]>;
+        connectServer: (serverName: string) => Promise<ExternalMcpServerSnapshot>;
+        disconnectServer: (serverName: string) => Promise<ExternalMcpServerSnapshot | null>;
+        testServer: (config: ExternalMcpServerConfig) => Promise<ExternalMcpServerSnapshot>;
+        saveServer: (config: ExternalMcpServerConfig) => Promise<ExternalMcpServerConfig[]>;
+        removeServer: (serverName: string) => Promise<ExternalMcpServerConfig[]>;
       };
       agentTools: {
         detect: () => Promise<AgentTool[]>;

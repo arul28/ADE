@@ -93,6 +93,7 @@ import { createLinearSyncService } from "./services/cto/linearSyncService";
 import { createOrchestratorService } from "./services/orchestrator/orchestratorService";
 import { createAiOrchestratorService } from "./services/orchestrator/aiOrchestratorService";
 import { createMissionBudgetService } from "./services/orchestrator/missionBudgetService";
+import { createExternalMcpService } from "./services/externalMcp/externalMcpService";
 import type { Logger } from "./services/logging/logger";
 
 /**
@@ -545,7 +546,7 @@ app.whenReady().then(async () => {
       );
       if (String(laneTypeRow?.lane_type ?? "").trim() === "primary") {
         void humanWorkDigestService
-          .onHeadChanged({ preHeadSha: prev, postHeadSha })
+          ?.onHeadChanged({ preHeadSha: prev, postHeadSha })
           .catch(() => {});
       }
       void rebaseSuggestionService
@@ -1190,6 +1191,23 @@ app.whenReady().then(async () => {
       missionBudgetService,
       humanWorkDigestService,
     });
+    const externalMcpService = createExternalMcpService({
+      projectRoot,
+      adeDir: adePaths.adeDir,
+      logger,
+      workerAgentService,
+      ctoStateService,
+      missionService,
+      workerBudgetService,
+      missionBudgetService,
+    });
+    try {
+      await externalMcpService.start();
+    } catch (error) {
+      logger.warn("external_mcp.start_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     const orchestratorService = createOrchestratorService({
       db,
@@ -1208,6 +1226,7 @@ app.whenReady().then(async () => {
       episodicSummaryService,
       proceduralLearningService,
       knowledgeCaptureService,
+      externalMcpService,
       onEvent: (event) => {
         aiOrchestratorServiceRef?.onOrchestratorRuntimeEvent(event);
         emitProjectEvent(projectRoot, IPC.orchestratorEvent, event);
@@ -1311,6 +1330,7 @@ app.whenReady().then(async () => {
       adeProjectService,
       automationService,
       secretService: automationSecretService,
+      externalMcpService,
       logger,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.projectStateEvent, event),
     });
@@ -1488,6 +1508,7 @@ app.whenReady().then(async () => {
       memoryService,
       ctoStateService,
       workerAgentService,
+      externalMcpService,
       orchestratorService,
       aiOrchestratorService,
       eventBuffer: mcpEventBuffer,
@@ -1604,6 +1625,7 @@ app.whenReady().then(async () => {
       flowPolicyService,
       linearRoutingService,
       linearSyncService,
+      externalMcpService,
       configReloadService,
       mcpSocketServer,
       mcpSocketPath
@@ -1691,6 +1713,7 @@ app.whenReady().then(async () => {
       flowPolicyService: null,
       linearRoutingService: null,
       linearSyncService: null,
+      externalMcpService: null,
       configReloadService: null
     } as unknown as AppContext);
   };
@@ -1733,6 +1756,11 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.workerHeartbeatService?.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      await ctx.externalMcpService?.dispose?.();
     } catch {
       // ignore
     }

@@ -65,6 +65,12 @@ describe("buildClaudeReadOnlyWorkerAllowedTools", () => {
     expect(tools).toContain("mcp__ade__memory_search");
     expect(tools).toContain("mcp__ade__memory_add");
   });
+
+  it("adds ADE-proxied external MCP tools to the allowlist for read-only Claude workers", () => {
+    expect(buildClaudeReadOnlyWorkerAllowedTools("ade", ["ext.notion.search"])).toContain(
+      "mcp__ade__ext.notion.search",
+    );
+  });
 });
 
 describe("createUnifiedOrchestratorAdapter", () => {
@@ -252,5 +258,66 @@ describe("createUnifiedOrchestratorAdapter", () => {
     expect(fs.readFileSync(path.join(workspaceRoot, ".ade", "orchestrator", "worker-prompts", "worker-attempt-1.txt"), "utf8"))
       .toContain("Mission goal: Plan the work");
     expect(startupCommand).not.toContain("\n");
+  });
+
+  it("exposes read-only ADE-proxied external MCP tools to Claude planning workers", async () => {
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-unified-external-mcp-"));
+    let startupCommand = "";
+    const adapter = createUnifiedOrchestratorAdapter({
+      workspaceRoot,
+      runtimeRoot: path.join(workspaceRoot, "runtime"),
+      externalMcpService: {
+        getSnapshots: () => [
+          {
+            tools: [
+              { namespacedName: "ext.notion.search", enabled: true, safety: "read" },
+              { namespacedName: "ext.notion.update", enabled: true, safety: "write" },
+            ],
+          },
+        ],
+      },
+    });
+
+    const result = await adapter.start({
+      run: {
+        id: "run-1",
+        missionId: "mission-1",
+        metadata: {
+          missionGoal: "Plan the work",
+        },
+      } as any,
+      step: {
+        id: "step-1",
+        title: "Planning worker",
+        stepKey: "planning-worker",
+        laneId: "lane-1",
+        metadata: {
+          modelId: "anthropic/claude-sonnet-4-6",
+          requiresPlanApproval: true,
+        },
+        dependencyStepIds: [],
+        joinPolicy: "all_success",
+      } as any,
+      attempt: { id: "attempt-1" } as any,
+      allSteps: [],
+      contextProfile: {} as any,
+      laneExport: null,
+      projectExport: { content: "" } as any,
+      docsRefs: [],
+      fullDocs: [],
+      permissionConfig: {
+        _providers: {
+          claude: "full-auto",
+        },
+      } as any,
+      createTrackedSession: async ({ startupCommand: command }: { startupCommand: string }) => {
+        startupCommand = command;
+        return { ptyId: "pty-1", sessionId: "session-1" };
+      },
+    } as any);
+
+    expect(result.status).toBe("accepted");
+    expect(startupCommand).toContain("mcp__ade__ext.notion.search");
+    expect(startupCommand).not.toContain("mcp__ade__ext.notion.update");
   });
 });

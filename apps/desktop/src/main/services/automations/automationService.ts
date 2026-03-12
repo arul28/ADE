@@ -877,6 +877,7 @@ export function createAutomationService({
             },
           }),
       ...(rule.permissionConfig?.inProcess ? { inProcess: rule.permissionConfig.inProcess } : {}),
+      ...(rule.permissionConfig?.externalMcp ? { externalMcp: rule.permissionConfig.externalMcp } : {}),
       providers: {
         claude: providers?.claude ?? "edit",
         codex: providers?.codex ?? "edit",
