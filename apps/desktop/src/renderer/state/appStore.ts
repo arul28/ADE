@@ -235,10 +235,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       keybindings: null,
       terminalAttention: EMPTY_TERMINAL_ATTENTION
     });
-    // Refresh lanes for the newly opened project.
-    await get().refreshLanes();
-    await get().refreshProviderMode().catch(() => { });
-    await get().refreshKeybindings().catch(() => { });
+    void Promise.allSettled([
+      get().refreshLanes(),
+      get().refreshProviderMode(),
+      get().refreshKeybindings()
+    ]);
     return project;
   },
 
@@ -255,9 +256,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       keybindings: null,
       terminalAttention: EMPTY_TERMINAL_ATTENTION
     });
-    await get().refreshLanes();
-    await get().refreshProviderMode().catch(() => { });
-    await get().refreshKeybindings().catch(() => { });
+    void Promise.allSettled([
+      get().refreshLanes(),
+      get().refreshProviderMode(),
+      get().refreshKeybindings()
+    ]);
   },
 
   closeProject: async () => {

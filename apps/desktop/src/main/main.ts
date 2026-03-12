@@ -992,13 +992,22 @@ app.whenReady().then(async () => {
       ctoStateService,
       workerAgentService,
     });
-    const integrityCleanup = adeProjectService.runIntegrityCheck();
-    if (integrityCleanup.changed) {
-      logger.info("ade.project.integrity_repaired", {
-        projectRoot,
-        actions: integrityCleanup.actions.length,
-      });
-    }
+    setImmediate(() => {
+      try {
+        const integrityCleanup = adeProjectService.runIntegrityCheck();
+        if (integrityCleanup.changed) {
+          logger.info("ade.project.integrity_repaired", {
+            projectRoot,
+            actions: integrityCleanup.actions.length,
+          });
+        }
+      } catch (error) {
+        logger.warn("ade.project.integrity_check_failed", {
+          projectRoot,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
 
     const workerRevisionService = createWorkerRevisionService({
       db,
@@ -1224,6 +1233,19 @@ app.whenReady().then(async () => {
       projectConfigService,
     });
     let missionPreflightService: ReturnType<typeof createMissionPreflightService>;
+    const deferredProjectStartHandles = new Set<NodeJS.Immediate>();
+    const scheduleDeferredProjectStart = (
+      task: () => Promise<unknown> | unknown,
+      onError: (error: unknown) => void,
+    ) => {
+      const handle = setImmediate(() => {
+        deferredProjectStartHandles.delete(handle);
+        Promise.resolve()
+          .then(task)
+          .catch(onError);
+      });
+      deferredProjectStartHandles.add(handle);
+    };
     const externalMcpService = createExternalMcpService({
       projectRoot,
       adeDir: adePaths.adeDir,
@@ -1234,13 +1256,14 @@ app.whenReady().then(async () => {
       workerBudgetService,
       missionBudgetService,
     });
-    try {
-      await externalMcpService.start();
-    } catch (error) {
-      logger.warn("external_mcp.start_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    scheduleDeferredProjectStart(
+      () => externalMcpService.start(),
+      (error) => {
+        logger.warn("external_mcp.start_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    );
 
     const openclawBridgeService = createOpenclawBridgeService({
       projectRoot,
@@ -1255,13 +1278,14 @@ app.whenReady().then(async () => {
       onStatusChange: (status) => emitProjectEvent(projectRoot, IPC.openclawConnectionStatus, status),
     });
     openclawBridgeServiceRef = openclawBridgeService;
-    try {
-      await openclawBridgeService.start();
-    } catch (error) {
-      logger.warn("openclaw_bridge.start_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    scheduleDeferredProjectStart(
+      () => openclawBridgeService.start(),
+      (error) => {
+        logger.warn("openclaw_bridge.start_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    );
 
     const orchestratorService = createOrchestratorService({
       db,
@@ -1395,11 +1419,14 @@ app.whenReady().then(async () => {
         }
       },
     });
-    void linearIngressService.start().catch((error) => {
-      logger.warn("linear.ingress_start_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
+    scheduleDeferredProjectStart(
+      () => linearIngressService.start(),
+      (error) => {
+        logger.warn("linear.ingress_start_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    );
 
     // Resume any active team runtimes that were running before app restart
     setImmediate(() => aiOrchestratorService.resumeActiveTeamRuntimes());
@@ -1419,7 +1446,14 @@ app.whenReady().then(async () => {
         emitProjectEvent(projectRoot, IPC.usageEvent, snapshot);
       }
     });
-    usageTrackingService.start();
+    scheduleDeferredProjectStart(
+      () => usageTrackingService.start(),
+      (error) => {
+        logger.warn("usage.start_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    );
 
     const budgetCapService = createBudgetCapService({
       db,
@@ -1436,11 +1470,14 @@ app.whenReady().then(async () => {
       workerHeartbeatService,
       automationRoutingService,
     });
-    void automationIngressService.start().catch((error) => {
-      logger.warn("automations.ingress_start_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
+    scheduleDeferredProjectStart(
+      () => automationIngressService.start(),
+      (error) => {
+        logger.warn("automations.ingress_start_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    );
 
     const configReloadService = createConfigReloadService({
       paths: {
@@ -1456,42 +1493,60 @@ app.whenReady().then(async () => {
       logger,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.projectStateEvent, event),
     });
-    void configReloadService.start().catch((error) => {
-      logger.warn("project.config_reload_start_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
+    scheduleDeferredProjectStart(
+      () => configReloadService.start(),
+      (error) => {
+        logger.warn("project.config_reload_start_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    );
 
-    void memoryLifecycleService.runStartupSweepIfDue().catch((error) => {
-      logger.warn("memory.lifecycle.startup_sweep_failed", {
-        projectId,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    });
-    void batchConsolidationService.runAutoConsolidationIfNeeded().catch((error: unknown) => {
-      logger.warn("memory.consolidation.startup_check_failed", {
-        projectId,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    });
-    void embeddingWorkerService.start().catch((error) => {
-      logger.warn("memory.embedding_worker.start_failed", {
-        projectId,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    });
-    void humanWorkDigestService.syncKnowledge().catch((error) => {
-      logger.warn("memory.human_digest.startup_sync_failed", {
-        projectId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
-    void skillRegistryService.start().catch((error) => {
-      logger.warn("memory.skill_registry.start_failed", {
-        projectId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
+    scheduleDeferredProjectStart(
+      () => memoryLifecycleService.runStartupSweepIfDue(),
+      (error) => {
+        logger.warn("memory.lifecycle.startup_sweep_failed", {
+          projectId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      },
+    );
+    scheduleDeferredProjectStart(
+      () => batchConsolidationService.runAutoConsolidationIfNeeded(),
+      (error) => {
+        logger.warn("memory.consolidation.startup_check_failed", {
+          projectId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      },
+    );
+    scheduleDeferredProjectStart(
+      () => embeddingWorkerService.start(),
+      (error) => {
+        logger.warn("memory.embedding_worker.start_failed", {
+          projectId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      },
+    );
+    scheduleDeferredProjectStart(
+      () => humanWorkDigestService.syncKnowledge(),
+      (error) => {
+        logger.warn("memory.human_digest.startup_sync_failed", {
+          projectId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    );
+    scheduleDeferredProjectStart(
+      () => skillRegistryService.start(),
+      (error) => {
+        logger.warn("memory.skill_registry.start_failed", {
+          projectId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    );
 
     // Head watcher: detects commits/rebases made outside ADE's Git UI (e.g. in the terminal),
     // then routes them through the same onHeadChanged pipeline (packs, automations, rebase suggestions).
@@ -1593,6 +1648,10 @@ app.whenReady().then(async () => {
 
     const disposeHeadWatcher = () => {
       headWatcherActive = false;
+      for (const handle of deferredProjectStartHandles) {
+        clearImmediate(handle);
+      }
+      deferredProjectStartHandles.clear();
       if (!headWatcherTimer) return;
       clearTimeout(headWatcherTimer);
       headWatcherTimer = null;
@@ -2043,17 +2102,6 @@ app.whenReady().then(async () => {
 
   dormantContext = createDormantProjectContext();
 
-  // Initial project context: only load a user-specified project automatically (e.g. ADE_PROJECT_ROOT).
-  // Otherwise, start in a no-project state until the user selects one.
-  if (startupUserSelected) {
-    try {
-      await switchProjectFromDialog(initialCandidate);
-    } catch {
-      setActiveProject(null);
-      dormantContext = createDormantProjectContext();
-    }
-  }
-
   process.on("uncaughtException", (err) => {
     getActiveContext().logger.error("process.uncaught_exception", {
       err: String(err),
@@ -2082,6 +2130,19 @@ app.whenReady().then(async () => {
   });
 
   await createWindow(getActiveContext().logger);
+
+  // Initial project context: load AFTER the window is visible so the main
+  // thread isn't blocked (DB load + service init) before anything renders.
+  if (startupUserSelected) {
+    void (async () => {
+      try {
+        await switchProjectFromDialog(initialCandidate);
+      } catch {
+        setActiveProject(null);
+        dormantContext = createDormantProjectContext();
+      }
+    })();
+  }
 
   app.on("activate", async () => {
     if (BrowserWindow.getAllWindows().length === 0) {

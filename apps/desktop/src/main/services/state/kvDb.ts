@@ -2322,6 +2322,7 @@ function migrate(db: Database) {
   db.run("create index if not exists idx_budget_usage_records_provider_week on budget_usage_records(provider, week_key)");
 }
 
+
 export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
   const wasmDir = resolveSqlJsWasmDir();
 
@@ -2336,7 +2337,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
   }
 
   ensureParentDir(dbPath);
-  const data = fs.existsSync(dbPath) ? fs.readFileSync(dbPath) : null;
+  const data = fs.existsSync(dbPath) ? await fs.promises.readFile(dbPath) : null;
   const db: Database = new SQL.Database(data);
 
   migrate(db);

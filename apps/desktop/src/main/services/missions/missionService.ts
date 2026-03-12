@@ -931,6 +931,28 @@ export function createMissionService({
       [next, startedAt, completedAt, updatedAt, args.missionId, projectId]
     );
 
+    // Strip orchestrator chat cache from metadata when mission reaches a terminal
+    // state — it's redundant with orchestrator_chat_messages and can be large.
+    if (TERMINAL_MISSION_STATUSES.has(next)) {
+      try {
+        db.run(
+          `
+            update missions
+            set metadata_json = json_remove(
+              json_remove(metadata_json, '$.orchestratorChat'),
+              '$.orchestratorChatSession'
+            )
+            where id = ?
+              and project_id = ?
+              and metadata_json is not null
+          `,
+          [args.missionId, projectId]
+        );
+      } catch {
+        // Non-critical — don't let cleanup failures break the status transition.
+      }
+    }
+
 
     if (previous !== next) {
       recordEvent({

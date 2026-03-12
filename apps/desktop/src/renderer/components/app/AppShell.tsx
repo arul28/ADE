@@ -93,8 +93,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       try {
         const nextProject = await window.ade.app.getProject();
         if (cancelled) return;
-        const status = await window.ade.onboarding.getStatus().catch(() => null);
-        if (cancelled) return;
 
         const hasStoredProject = Boolean(nextProject);
         if (nextProject) {
@@ -106,13 +104,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         }
 
         if (hasStoredProject) {
-          await Promise.all([
+          void Promise.allSettled([
             refreshLanes(),
             refreshProviderMode(),
-            refreshKeybindings().catch(() => { })
+            refreshKeybindings()
           ]);
         }
-        setOnboardingIncomplete(Boolean(status && !status.completedAt));
+        void window.ade.onboarding
+          .getStatus()
+          .then((status) => {
+            if (cancelled) return;
+            setOnboardingIncomplete(Boolean(status && !status.completedAt));
+          })
+          .catch(() => {
+            if (cancelled) return;
+            setOnboardingIncomplete(false);
+          });
       } catch {
         if (cancelled) return;
         setProject(null);

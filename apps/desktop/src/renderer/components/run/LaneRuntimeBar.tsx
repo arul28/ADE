@@ -32,19 +32,30 @@ export function LaneRuntimeBar({ laneId }: LaneRuntimeBarProps) {
       return;
     }
     let cancelled = false;
-    Promise.all([
+    const deferredTimer = window.setTimeout(() => {
+      void Promise.all([
+        window.ade.lanes.proxyGetPreviewInfo({ laneId }).catch(() => null),
+        window.ade.lanes.oauthListSessions().catch(() => [] as OAuthSession[]),
+      ]).then(([p, sessions]) => {
+        if (cancelled) return;
+        setPreview(p);
+        setOauthCount(sessions.filter((s) => s.laneId === laneId && s.status === "active").length);
+      });
+    }, 350);
+
+    void Promise.all([
       window.ade.lanes.diagnosticsGetLaneHealth({ laneId }).catch(() => null),
       window.ade.lanes.portGetLease({ laneId }).catch(() => null),
-      window.ade.lanes.proxyGetPreviewInfo({ laneId }).catch(() => null),
-      window.ade.lanes.oauthListSessions().catch(() => [] as OAuthSession[]),
-    ]).then(([h, l, p, sessions]) => {
+    ]).then(([h, l]) => {
       if (cancelled) return;
       setHealth(h);
       setPortLease(l);
-      setPreview(p);
-      setOauthCount(sessions.filter((s) => s.laneId === laneId && s.status === "active").length);
     });
-    return () => { cancelled = true; };
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(deferredTimer);
+    };
   }, [laneId]);
 
   // Live subscriptions for real-time updates
