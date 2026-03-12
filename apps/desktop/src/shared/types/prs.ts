@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type {
+  ConflictFileType,
   ConflictResolverOriginSurface,
   ConflictResolverPermissionMode,
   ConflictRiskLevel,
@@ -353,6 +354,7 @@ export type IntegrationProposalStep = {
   outcome: "clean" | "conflict" | "blocked" | "pending";
   conflictingFiles: Array<{
     path: string;
+    conflictType?: ConflictFileType | null;
     conflictMarkers: string;
     oursExcerpt: string | null;
     theirsExcerpt: string | null;
@@ -369,6 +371,7 @@ export type IntegrationPairwiseResult = {
   outcome: "clean" | "conflict";
   conflictingFiles: Array<{
     path: string;
+    conflictType?: ConflictFileType | null;
     conflictMarkers: string;
     oursExcerpt: string | null;
     theirsExcerpt: string | null;
@@ -528,6 +531,20 @@ export type PrAiResolutionContext = {
   scenario?: "single-merge" | "sequential-merge" | "integration-merge";
 };
 
+export type PrAiResolutionSessionStatus = "idle" | "running" | "completed" | "failed" | "cancelled";
+
+export type PrAiResolutionSessionInfo = {
+  contextKey: string;
+  sessionId: string;
+  provider: "codex" | "claude";
+  model: string | null;
+  modelId: string | null;
+  reasoning: string | null;
+  permissionMode: AiPermissionMode | null;
+  context: PrAiResolutionContext;
+  status: PrAiResolutionSessionStatus;
+};
+
 export type PrAiResolutionStartArgs = {
   context: PrAiResolutionContext;
   model: string;
@@ -559,6 +576,51 @@ export type PrAiResolutionEventPayload = {
   message: string | null;
   timestamp: string;
 };
+
+export type PrAiResolutionGetSessionArgs = {
+  context: PrAiResolutionContext;
+};
+
+export type PrAiResolutionGetSessionResult = PrAiResolutionSessionInfo | null;
+
+export function normalizePrAiResolutionContext(context: PrAiResolutionContext): PrAiResolutionContext {
+  const sourceLaneIds = Array.from(
+    new Set(
+      (context.sourceLaneIds ?? [])
+        .map((value) => value.trim())
+        .filter(Boolean)
+    ),
+  ).sort((a, b) => a.localeCompare(b));
+  const sourceLaneId = context.sourceLaneId?.trim() || null;
+  if (sourceLaneId && !sourceLaneIds.includes(sourceLaneId)) {
+    sourceLaneIds.push(sourceLaneId);
+  }
+  sourceLaneIds.sort((a, b) => a.localeCompare(b));
+  return {
+    sourceTab: context.sourceTab,
+    ...(sourceLaneId ? { sourceLaneId } : {}),
+    ...(sourceLaneIds.length ? { sourceLaneIds } : {}),
+    ...(context.targetLaneId?.trim() ? { targetLaneId: context.targetLaneId.trim() } : {}),
+    ...(context.proposalId?.trim() ? { proposalId: context.proposalId.trim() } : {}),
+    ...(context.integrationLaneId?.trim() ? { integrationLaneId: context.integrationLaneId.trim() } : {}),
+    ...(context.laneId?.trim() ? { laneId: context.laneId.trim() } : {}),
+    ...(context.scenario ? { scenario: context.scenario } : {}),
+  };
+}
+
+export function buildPrAiResolutionContextKey(context: PrAiResolutionContext): string {
+  const normalized = normalizePrAiResolutionContext(context);
+  return JSON.stringify({
+    sourceTab: normalized.sourceTab,
+    sourceLaneId: normalized.sourceLaneId ?? null,
+    sourceLaneIds: normalized.sourceLaneIds ?? [],
+    targetLaneId: normalized.targetLaneId ?? null,
+    proposalId: normalized.proposalId ?? null,
+    integrationLaneId: normalized.integrationLaneId ?? null,
+    laneId: normalized.laneId ?? null,
+    scenario: normalized.scenario ?? null,
+  });
+}
 
 export type RecheckIntegrationStepArgs = {
   proposalId: string;

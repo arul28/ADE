@@ -1,4 +1,7 @@
 import type {
+  AdeCleanupResult,
+  AdeProjectEvent,
+  AdeProjectSnapshot,
   BatchAssessmentResult,
   ApplyConflictProposalArgs,
   AttachLaneArgs,
@@ -194,6 +197,8 @@ import type {
   RecheckIntegrationStepResult,
   PrAiResolutionStartArgs,
   PrAiResolutionStartResult,
+  PrAiResolutionGetSessionArgs,
+  PrAiResolutionGetSessionResult,
   PrAiResolutionInputArgs,
   PrAiResolutionStopArgs,
   PrAiResolutionEventPayload,
@@ -492,14 +497,18 @@ declare global {
       project: {
         openRepo: () => Promise<ProjectInfo | null>;
         openAdeFolder: () => Promise<void>;
-        clearLocalData: (args?: ClearLocalAdeDataArgs) => Promise<ClearLocalAdeDataResult>;
-        listRecent: () => Promise<RecentProjectSummary[]>;
-        closeCurrent: () => Promise<void>;
-        switchToPath: (rootPath: string) => Promise<ProjectInfo>;
-        forgetRecent: (rootPath: string) => Promise<RecentProjectSummary[]>;
-        reorderRecent: (orderedPaths: string[]) => Promise<RecentProjectSummary[]>;
-        onMissing: (cb: (data: { rootPath: string }) => void) => () => void;
-      };
+      clearLocalData: (args?: ClearLocalAdeDataArgs) => Promise<ClearLocalAdeDataResult>;
+      listRecent: () => Promise<RecentProjectSummary[]>;
+      closeCurrent: () => Promise<void>;
+      switchToPath: (rootPath: string) => Promise<ProjectInfo>;
+      forgetRecent: (rootPath: string) => Promise<RecentProjectSummary[]>;
+      reorderRecent: (orderedPaths: string[]) => Promise<RecentProjectSummary[]>;
+      getSnapshot: () => Promise<AdeProjectSnapshot>;
+      initializeOrRepair: () => Promise<AdeCleanupResult>;
+      runIntegrityCheck: () => Promise<AdeCleanupResult>;
+      onMissing: (cb: (data: { rootPath: string }) => void) => () => void;
+      onStateEvent: (cb: (event: AdeProjectEvent) => void) => () => void;
+    };
       keybindings: {
         get: () => Promise<KeybindingsSnapshot>;
         set: (overrides: KeybindingOverride[]) => Promise<KeybindingsSnapshot>;
@@ -851,6 +860,7 @@ declare global {
         recheckIntegrationStep(args: RecheckIntegrationStepArgs): Promise<RecheckIntegrationStepResult>;
         getIntegrationResolutionState(proposalId: string): Promise<IntegrationResolutionState | null>;
         aiResolutionStart(args: PrAiResolutionStartArgs): Promise<PrAiResolutionStartResult>;
+        aiResolutionGetSession(args: PrAiResolutionGetSessionArgs): Promise<PrAiResolutionGetSessionResult>;
         aiResolutionInput(args: PrAiResolutionInputArgs): Promise<void>;
         aiResolutionStop(args: PrAiResolutionStopArgs): Promise<void>;
         onAiResolutionEvent: (cb: (ev: PrAiResolutionEventPayload) => void) => () => void;

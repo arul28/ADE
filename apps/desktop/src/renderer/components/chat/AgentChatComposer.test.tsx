@@ -12,6 +12,7 @@ function renderComposer(overrides: Partial<React.ComponentProps<typeof AgentChat
   const onSubmit = vi.fn();
   const onInterrupt = vi.fn();
   const onApproval = vi.fn();
+  const onPermissionModeChange = vi.fn();
   const onAddAttachment = vi.fn();
   const onRemoveAttachment = vi.fn();
   const onSearchAttachments = vi.fn(async () => []);
@@ -34,6 +35,8 @@ function renderComposer(overrides: Partial<React.ComponentProps<typeof AgentChat
     onSubmit,
     onInterrupt,
     onApproval,
+    permissionMode: "edit",
+    onPermissionModeChange,
     onAddAttachment,
     onRemoveAttachment,
     onSearchAttachments,
@@ -53,6 +56,7 @@ function renderComposer(overrides: Partial<React.ComponentProps<typeof AgentChat
     onSubmit,
     onInterrupt,
     onApproval,
+    onPermissionModeChange,
     onAddAttachment,
     onRemoveAttachment,
     onSearchAttachments,
@@ -121,6 +125,13 @@ describe("AgentChatComposer", () => {
 
     expect(onApproval).toHaveBeenCalledWith("accept");
     expect(onApproval).toHaveBeenCalledWith("decline");
+  });
+
+  it("hides permission controls when the permission mode is locked", () => {
+    renderComposer({ permissionModeLocked: true });
+
+    expect(screen.queryByRole("button", { name: "Guarded Edit" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Full Auto" })).toBeNull();
   });
 
   it("shows reasoning dropdown for Claude provider", () => {

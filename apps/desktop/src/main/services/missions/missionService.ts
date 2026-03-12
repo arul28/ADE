@@ -29,6 +29,8 @@ import type {
   MissionEvent,
   MissionExecutionMode,
   MissionIntervention,
+  MissionInterventionResolutionKind,
+  isValidResolutionKind,
   MissionInterventionStatus,
   MissionInterventionType,
   MissionPriority,
@@ -177,6 +179,7 @@ type MissionInterventionRow = {
   mission_id: string;
   intervention_type: string;
   status: string;
+  resolution_kind: string | null;
   title: string;
   body: string;
   requested_action: string | null;
@@ -677,11 +680,15 @@ function toMissionArtifact(row: MissionArtifactRow): MissionArtifact {
 }
 
 function toMissionIntervention(row: MissionInterventionRow): MissionIntervention {
+  const resolutionKindRaw = typeof row.resolution_kind === "string" ? row.resolution_kind.trim() : "";
+  const resolutionKind: MissionInterventionResolutionKind | null =
+    isValidResolutionKind(resolutionKindRaw) ? resolutionKindRaw : null;
   return {
     id: row.id,
     missionId: row.mission_id,
     interventionType: normalizeInterventionType(row.intervention_type),
     status: normalizeInterventionStatus(row.status),
+    resolutionKind,
     title: row.title,
     body: row.body,
     requestedAction: row.requested_action,
@@ -1040,6 +1047,7 @@ export function createMissionService({
           project_id,
           intervention_type,
           status,
+          resolution_kind,
           title,
           body,
           requested_action,
@@ -1049,7 +1057,7 @@ export function createMissionService({
           created_at,
           updated_at,
           resolved_at
-        ) values (?, ?, ?, ?, 'open', ?, ?, ?, null, ?, ?, ?, ?, null)
+        ) values (?, ?, ?, ?, 'open', null, ?, ?, ?, null, ?, ?, ?, ?, null)
       `,
       [
         id,
@@ -1071,6 +1079,7 @@ export function createMissionService({
       missionId: args.missionId,
       interventionType: args.interventionType,
       status: "open",
+      resolutionKind: null,
       title,
       body,
       requestedAction: sanitizeOptionalText(args.requestedAction ?? null),
@@ -1801,6 +1810,7 @@ export function createMissionService({
               mission_id,
               intervention_type,
               status,
+              resolution_kind,
               title,
               body,
               requested_action,
@@ -3456,7 +3466,7 @@ export function createMissionService({
 
       const existingOpenRows = db.all<MissionInterventionRow>(
         `select id, mission_id, intervention_type, status, title, body,
-                requested_action, resolution_note, lane_id,
+                requested_action, resolution_kind, resolution_note, lane_id,
                 created_at, updated_at, resolved_at, metadata_json
          from mission_interventions
          where mission_id = ? and project_id = ? and status = 'open'
@@ -3537,6 +3547,7 @@ export function createMissionService({
             mission_id,
             intervention_type,
             status,
+            resolution_kind,
             title,
             body,
             requested_action,
@@ -3560,6 +3571,7 @@ export function createMissionService({
       }
 
       const targetStatus = args.status;
+      const resolutionKind = args.resolutionKind ?? null;
       const note = sanitizeOptionalText(args.note ?? null);
       const resolvedAt = nowIso();
 
@@ -3567,6 +3579,7 @@ export function createMissionService({
         `
           update mission_interventions
           set status = ?,
+              resolution_kind = ?,
               resolution_note = ?,
               resolved_at = ?,
               updated_at = ?
@@ -3574,17 +3587,26 @@ export function createMissionService({
             and mission_id = ?
             and project_id = ?
         `,
-        [targetStatus, note, resolvedAt, resolvedAt, interventionId, missionId, projectId]
+        [targetStatus, resolutionKind, note, resolvedAt, resolvedAt, interventionId, missionId, projectId]
       );
+
+      const resolutionSummary = (() => {
+        if (resolutionKind === "accept_defaults") return `${row.title} — user accepted defaults.`;
+        if (resolutionKind === "skip_question") return `${row.title} — user skipped the question.`;
+        if (resolutionKind === "cancel_run") return `${row.title} — user canceled the run.`;
+        if (targetStatus === "dismissed") return `${row.title} — dismissed.`;
+        return `${row.title} — answer provided.`;
+      })();
 
       recordEvent({
         missionId,
         eventType: "mission_intervention_resolved",
         actor: "user",
-        summary: `Intervention ${targetStatus}: ${row.title}`,
+        summary: resolutionSummary,
         payload: {
           interventionId,
           status: targetStatus,
+          ...(resolutionKind ? { resolutionKind } : {}),
           ...(note ? { note } : {})
         }
       });
@@ -3628,6 +3650,7 @@ export function createMissionService({
             mission_id,
             intervention_type,
             status,
+            resolution_kind,
             title,
             body,
             requested_action,

@@ -17,9 +17,9 @@ import type {
   MissionStateStepOutcome,
   MissionStateStepOutcomePartial,
 } from "../../../shared/types";
+import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { isRecord, nowIso } from "./orchestratorContext";
 
-const MISSION_STATE_DIR = ".ade";
 const COORDINATOR_CHECKPOINT_VERSION = 1;
 const MAX_DECISIONS = 30;
 const MAX_STEP_OUTCOMES = 40;
@@ -68,11 +68,11 @@ function missionStateQueueKey(projectRoot: string, runId: string): string {
 }
 
 export function getMissionStateDocumentPath(projectRoot: string, runId: string): string {
-  return path.join(projectRoot, MISSION_STATE_DIR, `mission-state-${runId}.json`);
+  return path.join(resolveAdeLayout(projectRoot).missionStateDir, `mission-state-${runId}.json`);
 }
 
 export function getCoordinatorCheckpointPath(projectRoot: string, runId: string): string {
-  return path.join(projectRoot, MISSION_STATE_DIR, `coordinator-checkpoint-${runId}.json`);
+  return path.join(resolveAdeLayout(projectRoot).missionStateDir, `coordinator-checkpoint-${runId}.json`);
 }
 
 function normalizeProgress(value: unknown): MissionStateProgress {

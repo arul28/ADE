@@ -35,7 +35,9 @@ import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
 import { createQueueLandingService } from "./services/prs/queueLandingService";
 import { createQueueRehearsalService } from "./services/prs/queueRehearsalService";
-import { detectDefaultBaseRef, ensureAdeExcluded, resolveRepoRoot, toProjectInfo, upsertProjectRow } from "./services/projects/projectService";
+import { detectDefaultBaseRef, resolveRepoRoot, toProjectInfo, upsertProjectRow } from "./services/projects/projectService";
+import { createAdeProjectService } from "./services/projects/adeProjectService";
+import { createConfigReloadService } from "./services/projects/configReloadService";
 import { IPC } from "../shared/ipc";
 import type { ProjectInfo } from "../shared/types";
 import type { AppContext } from "./services/ipc/registerIpc";
@@ -489,7 +491,7 @@ app.whenReady().then(async () => {
   }): Promise<AppContext> => {
     const adePaths = ensureAdeDirs(projectRoot);
     const { initApiKeyStore } = await import("./services/ai/apiKeyStore");
-    initApiKeyStore(adePaths.adeDir);
+    initApiKeyStore(projectRoot);
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
 
     logger.info("project.init", { projectRoot, baseRef, ensureExclude });
@@ -498,15 +500,6 @@ app.whenReady().then(async () => {
     const keybindingsService = createKeybindingsService({ db });
     const terminalProfilesService = createTerminalProfilesService({ db });
     const agentToolsService = createAgentToolsService({ logger });
-
-    // Avoid surprising git changes; use .git/info/exclude by default.
-    if (ensureExclude) {
-      try {
-        await ensureAdeExcluded(projectRoot);
-      } catch (err) {
-        logger.warn("project.exclude_failed", { projectRoot, err: String(err) });
-      }
-    }
 
     const project = toProjectInfo(projectRoot, baseRef);
     const { projectId } = upsertProjectRow({ db, repoRoot: projectRoot, displayName: project.displayName, baseRef });
@@ -720,7 +713,6 @@ app.whenReady().then(async () => {
 
     const githubService = createGithubService({
       logger,
-      adeDir: adePaths.adeDir,
       projectRoot
     });
 
@@ -979,6 +971,22 @@ app.whenReady().then(async () => {
       projectId,
       adeDir: adePaths.adeDir,
     });
+    const adeProjectService = createAdeProjectService({
+      projectRoot,
+      db,
+      projectId,
+      logger,
+      projectConfigService,
+      ctoStateService,
+      workerAgentService,
+    });
+    const integrityCleanup = adeProjectService.runIntegrityCheck();
+    if (integrityCleanup.changed) {
+      logger.info("ade.project.integrity_repaired", {
+        projectRoot,
+        actions: integrityCleanup.actions.length,
+      });
+    }
 
     const workerRevisionService = createWorkerRevisionService({
       db,
@@ -1055,7 +1063,6 @@ app.whenReady().then(async () => {
 
     const agentChatService = createAgentChatService({
       projectRoot,
-      adeDir: adePaths.adeDir,
       transcriptsDir: adePaths.transcriptsDir,
       projectId,
       memoryService,
@@ -1294,6 +1301,25 @@ app.whenReady().then(async () => {
       });
     });
 
+    const configReloadService = createConfigReloadService({
+      paths: {
+        sharedPath: adeProjectService.paths.sharedConfigPath,
+        localPath: adeProjectService.paths.localConfigPath,
+        secretPath: adeProjectService.paths.secretConfigPath,
+      },
+      projectConfigService,
+      adeProjectService,
+      automationService,
+      secretService: automationSecretService,
+      logger,
+      onEvent: (event) => emitProjectEvent(projectRoot, IPC.projectStateEvent, event),
+    });
+    void configReloadService.start().catch((error) => {
+      logger.warn("project.config_reload_start_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+
     void memoryLifecycleService.runStartupSweepIfDue().catch((error) => {
       logger.warn("memory.lifecycle.startup_sweep_failed", {
         projectId,
@@ -1469,7 +1495,7 @@ app.whenReady().then(async () => {
     };
 
     const mcpHandler = createMcpRequestHandler({ runtime: mcpRuntime, serverVersion: app.getVersion() });
-    const mcpSocketPath = path.join(adePaths.adeDir, "mcp.sock");
+    const mcpSocketPath = adePaths.socketPath;
 
     // Clean stale socket from prior crash
     try { fs.unlinkSync(mcpSocketPath); } catch {}
@@ -1568,6 +1594,7 @@ app.whenReady().then(async () => {
       embeddingWorkerService,
       ctoStateService,
       workerAgentService,
+      adeProjectService,
       workerRevisionService,
       workerBudgetService,
       workerHeartbeatService,
@@ -1577,6 +1604,7 @@ app.whenReady().then(async () => {
       flowPolicyService,
       linearRoutingService,
       linearSyncService,
+      configReloadService,
       mcpSocketServer,
       mcpSocketPath
     };
@@ -1653,6 +1681,7 @@ app.whenReady().then(async () => {
       skillRegistryService: null,
       ctoStateService: null,
       workerAgentService: null,
+      adeProjectService: null,
       workerRevisionService: null,
       workerBudgetService: null,
       workerHeartbeatService: null,
@@ -1661,7 +1690,8 @@ app.whenReady().then(async () => {
       linearIssueTracker: null,
       flowPolicyService: null,
       linearRoutingService: null,
-      linearSyncService: null
+      linearSyncService: null,
+      configReloadService: null
     } as unknown as AppContext);
   };
 
@@ -1708,6 +1738,11 @@ app.whenReady().then(async () => {
     }
     try {
       await ctx.skillRegistryService?.dispose?.();
+    } catch {
+      // ignore
+    }
+    try {
+      await ctx.configReloadService?.dispose?.();
     } catch {
       // ignore
     }

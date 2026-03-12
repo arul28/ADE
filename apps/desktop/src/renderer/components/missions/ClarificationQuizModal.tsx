@@ -1,6 +1,11 @@
 import React, { useState, useCallback, useMemo } from "react";
 import { X, CaretLeft, CaretRight, CheckCircle, Warning, Question, Flag } from "@phosphor-icons/react";
-import type { ClarificationQuestion, ClarificationAnswer, ClarificationQuiz } from "../../../shared/types";
+import type {
+  ClarificationQuestion,
+  ClarificationAnswer,
+  ClarificationQuiz,
+  MissionInterventionResolutionKind,
+} from "../../../shared/types";
 import {
   COLORS,
   MONO_FONT,
@@ -19,7 +24,7 @@ export type ClarificationQuizModalProps = {
   missionId: string;
   questions: ClarificationQuestion[];
   phase?: string | null;
-  onSubmit: (quiz: ClarificationQuiz) => Promise<void>;
+  onSubmit: (quiz: ClarificationQuiz, resolutionKind?: MissionInterventionResolutionKind) => Promise<void>;
   onClose: () => void;
 };
 
@@ -78,6 +83,10 @@ export function ClarificationQuizModal({
     drafts.filter((_, i) => hasAnswer(i)).length,
     [drafts, hasAnswer]
   );
+  const canAcceptDefaults = useMemo(
+    () => questions.every((question) => typeof question.defaultAssumption === "string" && question.defaultAssumption.trim().length > 0),
+    [questions],
+  );
 
   const handleNext = useCallback(() => {
     if (currentIndex < total - 1) {
@@ -95,28 +104,43 @@ export function ClarificationQuizModal({
     }
   }, [currentIndex, showSummary]);
 
+  const buildQuiz = useCallback((forceDefaults = false): ClarificationQuiz => {
+    const answers: ClarificationAnswer[] = drafts.map((d, i) => ({
+      questionIndex: i,
+      answer: forceDefaults
+        ? (questions[i].defaultAssumption ?? "")
+        : d.useDefault
+          ? (questions[i].defaultAssumption ?? "")
+          : (d.selectedOption ?? d.text.trim()),
+      source: forceDefaults || d.useDefault ? "default_assumption" as const : "user" as const,
+      markedConfusing: d.markedConfusing || undefined,
+    }));
+    return {
+      questions,
+      answers,
+      phase: phase ?? undefined,
+      submittedAt: new Date().toISOString(),
+    };
+  }, [drafts, phase, questions]);
+
   const handleSubmit = useCallback(async () => {
     setSubmitting(true);
     try {
-      const answers: ClarificationAnswer[] = drafts.map((d, i) => ({
-        questionIndex: i,
-        answer: d.useDefault
-          ? (questions[i].defaultAssumption ?? "")
-          : (d.selectedOption ?? d.text.trim()),
-        source: d.useDefault ? "default_assumption" as const : "user" as const,
-        markedConfusing: d.markedConfusing || undefined,
-      }));
-      const quiz: ClarificationQuiz = {
-        questions,
-        answers,
-        phase: phase ?? undefined,
-        submittedAt: new Date().toISOString(),
-      };
-      await onSubmit(quiz);
+      await onSubmit(buildQuiz(false), "answer_provided");
     } finally {
       setSubmitting(false);
     }
-  }, [drafts, questions, phase, onSubmit]);
+  }, [buildQuiz, onSubmit]);
+
+  const handleResolveAction = useCallback(async (resolutionKind: MissionInterventionResolutionKind) => {
+    setSubmitting(true);
+    try {
+      const quiz = buildQuiz(resolutionKind === "accept_defaults");
+      await onSubmit(quiz, resolutionKind);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [buildQuiz, onSubmit]);
 
   // Overlay backdrop
   return (
@@ -244,17 +268,49 @@ export function ClarificationQuizModal({
           </span>
 
           {showSummary ? (
-            <button
-              style={primaryButton({
-                opacity: (!allAnswered || submitting) ? 0.5 : 1,
-                cursor: (!allAnswered || submitting) ? "not-allowed" : "pointer",
-              })}
-              disabled={!allAnswered || submitting}
-              onClick={() => void handleSubmit()}
-            >
-              <CheckCircle style={{ width: 12, height: 12 }} />
-              {submitting ? "SUBMITTING..." : "SUBMIT ANSWERS"}
-            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <button
+                style={outlineButton({
+                  opacity: (!canAcceptDefaults || submitting) ? 0.5 : 1,
+                  cursor: (!canAcceptDefaults || submitting) ? "not-allowed" : "pointer",
+                })}
+                disabled={!canAcceptDefaults || submitting}
+                onClick={() => void handleResolveAction("accept_defaults")}
+              >
+                USE DEFAULTS
+              </button>
+              <button
+                style={outlineButton({
+                  opacity: submitting ? 0.5 : 1,
+                  cursor: submitting ? "not-allowed" : "pointer",
+                })}
+                disabled={submitting}
+                onClick={() => void handleResolveAction("skip_question")}
+              >
+                SKIP QUESTION
+              </button>
+              <button
+                style={outlineButton({
+                  opacity: submitting ? 0.5 : 1,
+                  cursor: submitting ? "not-allowed" : "pointer",
+                })}
+                disabled={submitting}
+                onClick={() => void handleResolveAction("cancel_run")}
+              >
+                CANCEL RUN
+              </button>
+              <button
+                style={primaryButton({
+                  opacity: (!allAnswered || submitting) ? 0.5 : 1,
+                  cursor: (!allAnswered || submitting) ? "not-allowed" : "pointer",
+                })}
+                disabled={!allAnswered || submitting}
+                onClick={() => void handleSubmit()}
+              >
+                <CheckCircle style={{ width: 12, height: 12 }} />
+                {submitting ? "SUBMITTING..." : "SUBMIT ANSWERS"}
+              </button>
+            </div>
           ) : (
             <button
               style={primaryButton()}

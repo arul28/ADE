@@ -29,10 +29,11 @@ The ADE configuration system manages project-level and workspace-level settings 
 
 ADE uses a two-file configuration system that balances shared project defaults with personal customization:
 
-- **`.ade/ade.yaml`** is the shared baseline config in the product model. It defines process commands, stack buttons, test suites, lane templates, and workflow defaults.
+- **`.ade/ade.yaml`** is the tracked shared baseline config. It defines process commands, stack buttons, test suites, lane templates, and workflow defaults.
 - **`.ade/local.yaml`** contains machine-local overrides such as environment variables, local AI/provider preferences, and personal process tweaks.
+- **`.ade/local.secret.yaml`** is the machine-local secret companion file for external MCP config and other secret-backed integrations.
 
-Today, both files live under `.ade/`, and ADE currently excludes the entire `.ade/` directory via `.git/info/exclude` when a project is initialized. That means the codebase already uses the shared/local split, but the future "selectively tracked/shareable `.ade/` subset" described in Phase 4 W10 is not live yet.
+ADE now uses a canonical `.ade/` contract. The tracked/shareable subset lives alongside a tracked `.ade/.gitignore` that ignores machine-local runtime state (`local.yaml`, `local.secret.yaml`, databases, caches, transcripts, worktrees, secrets, and generated artifacts).
 
 ---
 
@@ -44,7 +45,7 @@ YAML supports comments (critical for documenting config choices), has cleaner sy
 
 ### Why Two Files Instead of One?
 
-A single config file creates a constant tension between "what the project wants" and "what I need locally." Developers end up with perpetual unstaged changes to the shared config, risk accidentally committing personal settings, and struggle with merge conflicts on config changes. The two-file approach cleanly separates these concerns: shared decisions go in `ade.yaml`, personal tweaks go in `local.yaml`. Making `ade.yaml` selectively shareable in git is still roadmap work under W10.
+A single config file creates a constant tension between "what the project wants" and "what I need locally." Developers end up with perpetual unstaged changes to the shared config, risk accidentally committing personal settings, and struggle with merge conflicts on config changes. The two-file approach cleanly separates these concerns: shared decisions go in `ade.yaml`, personal tweaks go in `local.yaml`. Secret-backed integration config lives beside them in `local.secret.yaml`, but outside the normal shared/local merge.
 
 ### Why a Trust Model?
 
@@ -60,22 +61,25 @@ GPG signing adds significant complexity (key management, distribution, revocatio
 
 ### Config File Locations
 
-Both configuration files reside in the `.ade/` directory at the project root.
+The shared, local, and secret config files all reside in the `.ade/` directory at the project root.
 
 ```
 project-root/
 ├── .ade/
+│   ├── .gitignore        # Tracks ignored machine-local ADE state
 │   ├── ade.yaml          # Shared baseline config
-│   ├── local.yaml        # Local override config
-│   └── transcripts/      # Terminal session transcripts
-├── .git/
-│   └── info/
-│       └── exclude       # Currently contains ".ade/" entry
+│   ├── local.yaml        # Local override config (ignored)
+│   ├── local.secret.yaml # Secret companion config (ignored)
+│   ├── transcripts/      # Terminal session transcripts (ignored)
+│   ├── cache/            # Runtime scratch state (ignored)
+│   ├── artifacts/        # Generated compatibility artifacts (ignored)
+│   ├── worktrees/        # Lane worktrees (ignored)
+│   └── secrets/          # Local secret material (ignored)
 ├── src/
 └── ...
 ```
 
-ADE currently adds the entire `.ade/` directory to `.git/info/exclude` (the per-repo gitignore that is not itself tracked) when it initializes a project. This keeps all current `.ade/` state out of `git status`. Selective tracking of a portable/shareable subset is future W10 work, not current behavior.
+ADE writes a tracked `.ade/.gitignore` file that defines the ignored machine-local subset. On startup, `adeProjectService.ts` also removes stale `.git/info/exclude` rules that previously hid the entire `.ade/` directory.
 
 ### Config Layering
 
@@ -444,8 +448,12 @@ Overlay policies are evaluated in order. Later policies override earlier ones fo
 ### Project Config Service (`projectConfigService.ts`)
 
 - Central service that loads, validates, merges, and caches configuration.
-- Watches `ade.yaml` and `local.yaml` for changes using file system watchers.
-- Emits events when configuration changes, triggering UI updates.
+- Handles schema validation and trust-state snapshots for `ade.yaml` + `local.yaml`.
+
+### Config Reload Service (`configReloadService.ts`)
+
+- Watches `ade.yaml`, `local.yaml`, and `local.secret.yaml` using `chokidar`.
+- Refreshes config reads, reloads automation schedules, reloads secret-backed services on secret changes, and emits renderer-facing project-state refresh events.
 
 ### Trust System
 
@@ -458,7 +466,7 @@ Overlay policies are evaluated in order. Later policies override earlier ones fo
 - `config:get` — Returns the current config snapshot.
 - `config:save` — Writes config to disk (with validation).
 - `config:confirmTrust` — Records trust approval.
-- `config:onChange` — Event emitted when config files change on disk.
+- `ade.project.state.event` — Project-state event emitted when watched config files change on disk.
 
 ---
 
@@ -473,9 +481,9 @@ Overlay policies are evaluated in order. Later policies override earlier ones fo
 | Trust model (SHA-based approval) | Done | Hash stored in SQLite kv table |
 | Trust UI dialog | Done | Renderer shows diff on hash mismatch |
 | Config service (`projectConfigService.ts`) | Done | Full CRUD + validation + trust |
-| File system watchers for config changes | Not started | No config hot-reload/watch layer is wired in `projectConfigService.ts` today |
+| File system watchers for config changes | Done | `configReloadService.ts` watches `ade.yaml`, `local.yaml`, and `local.secret.yaml` |
 | IPC endpoints for config operations | Done | `config:get`, `config:save`, `config:confirmTrust` |
-| `.ade/` exclude setup | Done | Added to `.git/info/exclude` on init |
+| Canonical `.ade/` git contract | Done | Tracked `.ade/.gitignore` defines ignored runtime state; stale `.git/info/exclude` rules are scrubbed |
 | AI provider auto-detection | Done | Detects Claude Code and Codex CLI tools |
 | Per-task model routing | Done | Task type → provider → model configuration |
 | Meta-reasoner configuration | Done | Fan-out strategies, model selection, breadth limits |
@@ -486,7 +494,7 @@ Overlay policies are evaluated in order. Later policies override earlier ones fo
 | Lane overlay policies | Done | Implemented via `laneOverlayMatcher.ts` (Phase 4) |
 | Config versioning layer | N/A | Runtime consumes version 1 config shape directly; no legacy provider-mode migration path is maintained |
 
-**Overall status**: Core configuration system is DONE for parsing, layering, validation, trust, and CRUD operations. AI provider detection and per-task model routing are DONE. Lane overlay policies are DONE (Phase 4, `laneOverlayMatcher.ts`). Orchestrator evolution configuration (meta-reasoner, compaction, memory, shared facts, run narrative) is DONE. Lane profiles are NOT YET STARTED. Config hot reload/watchers and the broader portable `.ade/` sharing story are still future work.
+**Overall status**: Core configuration system is DONE for parsing, layering, validation, trust, CRUD operations, and runtime reload. AI provider detection and per-task model routing are DONE. Lane overlay policies are DONE (Phase 4, `laneOverlayMatcher.ts`). Orchestrator evolution configuration (meta-reasoner, compaction, memory, shared facts, run narrative) is DONE. Lane profiles are NOT YET STARTED. The current repo already uses the canonical W10 `.ade` structure and tracked `.ade/.gitignore` model.
 
 ---
 

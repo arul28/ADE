@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { Buffer } from "node:buffer";
 import net from "node:net";
 import path from "node:path";
+import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
 import { createAdeMcpRuntime } from "./bootstrap";
 import { startJsonRpcServer } from "./jsonrpc";
 import { createMcpRequestHandler } from "./mcpServer";
@@ -222,7 +223,7 @@ async function startHeadless(projectRoot: string): Promise<void> {
 
 async function main(): Promise<void> {
   const projectRoot = resolveProjectRoot();
-  const socketPath = path.join(projectRoot, ".ade", "mcp.sock");
+  const socketPath = resolveAdeLayout(projectRoot).socketPath;
 
   if (fs.existsSync(socketPath)) {
     // Desktop is running — proxy mode: relay stdio <-> socket

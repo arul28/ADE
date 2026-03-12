@@ -480,6 +480,14 @@ export type WorkerStatusReport = {
   reportedAt: string;
 };
 
+export type WorkerPlanResult = {
+  markdown: string;
+  summary?: string | null;
+  title?: string | null;
+  format?: "markdown";
+  artifactPath?: string | null;
+};
+
 export type WorkerResultReport = {
   workerId: string;
   stepId?: string | null;
@@ -488,6 +496,7 @@ export type WorkerResultReport = {
   missionId: string;
   outcome: "succeeded" | "failed" | "partial";
   summary: string;
+  plan?: WorkerPlanResult | null;
   artifacts: Array<{ type: string; title: string; uri?: string | null; metadata?: Record<string, unknown> }>;
   filesChanged: string[];
   testsRun: {

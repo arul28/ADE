@@ -4862,6 +4862,15 @@ describe("aiOrchestratorService", () => {
           )
         );
       });
+      const waitingIntervention = fixture.missionService
+        .get(mission.id)
+        ?.interventions.find(
+          (entry) =>
+            entry.status === "open"
+            && entry.interventionType === "manual_input"
+            && String(entry.metadata?.attemptId ?? "") === attempt.id
+        );
+      if (!waitingIntervention) throw new Error("Expected waiting intervention");
 
       const questionEvent = fixture.orchestratorService
         .listRuntimeEvents({ attemptId: attempt.id, eventTypes: ["question"], limit: 5 })
@@ -4870,8 +4879,10 @@ describe("aiOrchestratorService", () => {
 
       fixture.aiOrchestratorService.steerMission({
         missionId: mission.id,
+        interventionId: waitingIntervention.id,
         directive: "Proceed with option A and keep changes scoped to auth files.",
-        priority: "instruction"
+        priority: "instruction",
+        resolutionKind: "answer_provided",
       });
 
       await waitFor(() => {

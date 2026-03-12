@@ -24,6 +24,7 @@ import type {
   AutomationValidateDraftResult,
   TestSuiteDefinition
 } from "../../../shared/types";
+import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { Logger } from "../logging/logger";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createLaneService } from "../lanes/laneService";
@@ -291,7 +292,7 @@ async function runCodexExec(args: {
   webSearch: boolean;
   additionalWritableDirs: string[];
 }): Promise<{ jsonText: string; commandPreview: string }> {
-  const tmpRoot = path.join(path.resolve(args.cwd), ".ade", "tmp");
+  const tmpRoot = resolveAdeLayout(path.resolve(args.cwd)).tmpDir;
   fs.mkdirSync(tmpRoot, { recursive: true });
   const tmpDir = fs.mkdtempSync(path.join(tmpRoot, "automation-planner-codex-"));
   const schemaPath = path.join(tmpDir, "schema.json");

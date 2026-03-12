@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame } from "electron";
 import { IPC } from "../shared/ipc";
+import type { AdeCleanupResult, AdeProjectEvent, AdeProjectSnapshot } from "../shared/types";
 import type {
   BatchAssessmentResult,
   ApplyConflictProposalArgs,
@@ -281,6 +282,8 @@ import type {
   CleanupIntegrationWorkflowResult,
   PrAiResolutionStartArgs,
   PrAiResolutionStartResult,
+  PrAiResolutionGetSessionArgs,
+  PrAiResolutionGetSessionResult,
   PrAiResolutionInputArgs,
   PrAiResolutionStopArgs,
   PrAiResolutionEventPayload,
@@ -523,10 +526,18 @@ contextBridge.exposeInMainWorld("ade", {
     switchToPath: async (rootPath: string): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.projectSwitchToPath, { rootPath }),
     forgetRecent: async (rootPath: string): Promise<RecentProjectSummary[]> => ipcRenderer.invoke(IPC.projectForgetRecent, { rootPath }),
     reorderRecent: async (orderedPaths: string[]): Promise<RecentProjectSummary[]> => ipcRenderer.invoke(IPC.projectReorderRecent, { orderedPaths }),
+    getSnapshot: async (): Promise<AdeProjectSnapshot> => ipcRenderer.invoke(IPC.projectStateGetSnapshot),
+    initializeOrRepair: async (): Promise<AdeCleanupResult> => ipcRenderer.invoke(IPC.projectStateInitializeOrRepair),
+    runIntegrityCheck: async (): Promise<AdeCleanupResult> => ipcRenderer.invoke(IPC.projectStateRunIntegrityCheck),
     onMissing: (cb: (data: { rootPath: string }) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: { rootPath: string }) => cb(payload);
       ipcRenderer.on(IPC.projectMissing, listener);
       return () => ipcRenderer.removeListener(IPC.projectMissing, listener);
+    },
+    onStateEvent: (cb: (event: AdeProjectEvent) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: AdeProjectEvent) => cb(payload);
+      ipcRenderer.on(IPC.projectStateEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.projectStateEvent, listener);
     }
   },
   keybindings: {
@@ -1255,6 +1266,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.prsRecheckIntegrationStep, args),
     aiResolutionStart: (args: PrAiResolutionStartArgs): Promise<PrAiResolutionStartResult> =>
       ipcRenderer.invoke(IPC.prsAiResolutionStart, args),
+    aiResolutionGetSession: (args: PrAiResolutionGetSessionArgs): Promise<PrAiResolutionGetSessionResult> =>
+      ipcRenderer.invoke(IPC.prsAiResolutionGetSession, args),
     aiResolutionInput: (args: PrAiResolutionInputArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.prsAiResolutionInput, args),
     aiResolutionStop: (args: PrAiResolutionStopArgs): Promise<void> =>

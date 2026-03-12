@@ -207,6 +207,7 @@ export type ConflictExternalResolverRunSummary = {
   originMissionId: string | null;
   originRunId: string | null;
   originLabel: string | null;
+  resolverContextKey?: string | null;
   ptyId: string | null;
   sessionId: string | null;
   committedAt?: string | null;
@@ -252,6 +253,7 @@ export type CommitExternalConflictResolverRunResult = {
 export type ConflictProposalPreviewFile = {
   path: string;
   includeReason: "conflicted" | "overlap";
+  conflictType?: ConflictFileType | null;
   markerPreview: string | null;
   laneDiff: string;
   peerDiff: string | null;
@@ -289,6 +291,7 @@ export type ConflictRelevantFileV1 = {
   path: string;
   includeReason: "conflicted" | "overlap" | "touched" | "predicted";
   selectedBecause: string;
+  conflictType?: ConflictFileType | null;
 };
 
 export type ConflictFileHunkV1 = {
@@ -313,6 +316,7 @@ export type ConflictFileContextSideV1 = {
 export type ConflictFileContextV1 = {
   path: string;
   selectedBecause: string;
+  conflictType?: ConflictFileType | null;
   hunks: ConflictFileHunkV1[];
   base: ConflictFileContextSideV1 | null;
   left: ConflictFileContextSideV1 | null;
@@ -321,10 +325,37 @@ export type ConflictFileContextV1 = {
   omittedReasonTags?: string[] | null;
 };
 
+export type ConflictRelationshipV1 = "source-vs-target" | "peer-vs-peer";
+
+export type ConflictBranchIntentV1 = {
+  laneId: string;
+  laneName: string | null;
+  branchRef: string | null;
+  role: "source" | "peer" | "target";
+  mergeBaseRef: string | null;
+  commitMessages: string[];
+};
+
+export type ConflictMergeTimelineStepV1 = {
+  laneId: string;
+  laneName: string;
+  position: number;
+  outcome: "clean" | "conflict" | "blocked" | "pending";
+  resolution: "pending" | "merged-clean" | "resolving" | "resolved" | "failed" | null;
+  touchedFiles: string[];
+};
+
 export type ConflictJobContextV1 = {
   schema: "ade.conflictJobContext.v1";
   relevantFilesForConflict?: ConflictRelevantFileV1[] | null;
   fileContexts?: ConflictFileContextV1[] | null;
+  relationship?: ConflictRelationshipV1 | null;
+  intent?: {
+    source: ConflictBranchIntentV1;
+    peer?: ConflictBranchIntentV1 | null;
+    target?: ConflictBranchIntentV1 | null;
+  } | null;
+  mergeTimeline?: ConflictMergeTimelineStepV1[] | null;
   stalePolicy?: { ttlMs: number } | null;
   predictionAgeMs?: number | null;
   predictionStalenessMs?: number | null;
@@ -368,6 +399,7 @@ export type PrepareResolverSessionArgs = {
   cwdLaneId?: string;
   integrationLaneName?: string;
   proposalId?: string | null;
+  sourceTab?: "rebase" | "normal" | "integration" | "queue" | "conflicts" | null;
   scenario?: ResolverSessionScenario;
   model?: string | null;
   reasoningEffort?: string | null;
@@ -397,7 +429,7 @@ export type FinalizeResolverSessionArgs = {
 
 export type AttachResolverSessionArgs = {
   runId: string;
-  ptyId: string;
+  ptyId?: string | null;
   sessionId: string;
   command?: string[];
 };

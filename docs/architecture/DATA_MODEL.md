@@ -29,7 +29,7 @@
 
 ADE uses a dual persistence strategy: structured data lives in a SQLite database (via sql.js, an in-process WASM implementation), while large artifacts (terminal transcripts, logs, generated docs, and compatibility/history artifacts) are stored as files on the filesystem. This split balances the need for efficient querying of metadata with the practical reality that large text blobs are better served by filesystem storage.
 
-All persistence is local to the project. The primary database and all artifact files reside under the `.ade/` directory within the project root, ensuring that ADE's state travels with the repository and can be included or excluded from version control as desired. Unified memory in SQLite is the canonical durable memory backend. Persisted `.ade/packs/...` files may still exist for compatibility/history, but live runtime exports are generated from current local state rather than loaded from pre-refreshed pack files. A separate global state file tracks the user's recent project list.
+All persistence is local to the project. The primary database and all ADE artifact files live under the `.ade/` directory within the project root. `.ade` now has a canonical tracked/shareable subset (`ade.yaml`, `cto/`, `agents/`, `templates/`, `context/`, `memory/`, `history/`, `reflections/`, `skills/`) plus a tracked `.ade/.gitignore` that ignores machine-local runtime state (`local.yaml`, `local.secret.yaml`, databases, caches, transcripts, worktrees, secrets, and generated artifacts). Unified memory in SQLite is the canonical durable memory backend. Persisted pack files under `.ade/artifacts/packs/...` remain compatibility/history artifacts, but live runtime exports are generated from current local state rather than loaded from pre-refreshed pack files. A separate global state file tracks the user's recent project list.
 
 ---
 
@@ -1016,39 +1016,49 @@ All ADE artifacts live under `.ade/` in the project root:
 ```
 <project_root>/
 └── .ade/
-    ├── ade.db                           # SQLite database
-    ├── ade.yaml                         # Shared config (git-tracked)
-    ├── local.yaml                       # Local config (gitignored)
-    ├── logs/
-    │   └── main.jsonl                   # Structured JSON logs
+    ├── .gitignore                       # Tracked ignore rules for machine-local ADE state
+    ├── ade.db                           # SQLite database (ignored)
+    ├── ade.yaml                         # Shared config (tracked)
+    ├── local.yaml                       # Local config (ignored)
+    ├── local.secret.yaml                # Secret config (ignored)
+    ├── cto/                             # Tracked CTO identity/core-memory/session files
+    ├── agents/                          # Tracked worker identity/core-memory/session files
+    ├── templates/                       # Tracked mission templates
+    ├── context/                         # Tracked context docs
+    ├── memory/                          # Tracked file-backed memory artifacts
+    ├── history/                         # Tracked history / mission JSONL
+    ├── reflections/                     # Tracked reflections / retrospectives
+    ├── skills/                          # Tracked learned skill exports
     ├── worktrees/
     │   ├── <lane-slug-1>-<uuid>/        # Git worktree for lane 1
     │   └── <lane-slug-2>-<uuid>/        # Git worktree for lane 2
     ├── transcripts/
     │   └── <session-uuid>.log           # Raw terminal output capture
-    ├── packs/                           # Compatibility pack artifacts + export history
-    │   ├── project_pack.md              # Optional persisted project context artifact
-    │   ├── versions/                    # Immutable pack version snapshots
-    │   │   └── <pack-key>/
-    │   │       └── v<N>.md
-    │   ├── conflicts/
-    │   │   └── predictions/
-    │   │       └── <lane-id>.json       # Deterministic conflict prediction summary
-    │   ├── external-resolver-runs/
-    │   │   └── <run-id>/                # Generated per-run resolver context files + prompt/log/patch
-    │   └── lanes/
-    │       └── <lane-uuid>/
-    │           ├── lane_pack.md         # Optional persisted lane context artifact
-    │           └── plan_pack.md         # Optional persisted lane plan artifact
-    ├── process-logs/
-    │   └── <process-key>-<run-uuid>.log # Process stdout/stderr
-    └── test-logs/
-        └── <suite-key>-<run-uuid>.log   # Test suite output
+    ├── artifacts/
+    │   ├── log-bundles/                 # Exported runtime bundles / diagnostics
+    │   └── packs/                       # Compatibility pack artifacts + export history
+    │       ├── project_pack.md          # Optional persisted project context artifact
+    │       ├── versions/                # Immutable pack version snapshots
+    │       │   └── <pack-key>/
+    │       │       └── v<N>.md
+    │       ├── conflicts/
+    │       │   └── predictions/
+    │       │       └── <lane-id>.json   # Deterministic conflict prediction summary
+    │       ├── external-resolver-runs/
+    │       │   └── <run-id>/            # Generated per-run resolver context files + prompt/log/patch
+    │       └── lanes/
+    │           └── <lane-uuid>/
+    │               ├── lane_pack.md     # Optional persisted lane context artifact
+    │               └── plan_pack.md     # Optional persisted lane plan artifact
+    └── cache/
+        ├── chat-sessions/               # Persisted chat session state
+        ├── mission-state/               # Mission/coordinator scratch documents
+        └── orchestrator/                # Worker prompts, MCP context/config scratch
 ```
 
-The `.ade/` directory is excluded from git tracking via `.git/info/exclude` (added automatically by `ensureAdeExcluded()` on project initialization). The `ade.yaml` file is the exception -- it is intended to be committed to the repository for shared configuration.
+The `.ade/` directory is no longer hidden via `.git/info/exclude`. ADE now keeps the tracked/shareable subset visible to git and relies on the tracked `.ade/.gitignore` file for machine-local runtime paths.
 
-Runtime note: the canonical W6 context path is live local state plus unified memory. `.ade/packs/` is retained for compatibility exports, history, and audit artifacts rather than as the primary runtime source of truth.
+Runtime note: the canonical W6 context path is live local state plus unified memory. `.ade/artifacts/packs/` is retained for compatibility exports, history, and audit artifacts rather than as the primary runtime source of truth.
 
 ### Global State
 
@@ -1119,7 +1129,7 @@ Updated whenever a project is opened. Used to restore the last-opened project on
 - Lanes table extended with: `lane_type`, `attached_root_path`, `is_edit_protected`, `parent_lane_id`, `color`, `icon`, `tags_json`
 - Terminal sessions table extended with: `tracked`, `goal`, `tool_type`, `pinned`, `summary`
 - Process runtime table uses required `lane_id` (per-lane process isolation)
-- Filesystem artifact directories (transcripts, packs, process-logs, test-logs, worktrees)
+- Filesystem artifact directories (transcripts, artifacts/packs, cache, worktrees, secrets)
 - Global state persistence (recent projects)
 - Idempotent schema bootstrap with `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS`
 

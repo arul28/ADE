@@ -914,18 +914,28 @@ export function extractAndRegisterArtifacts(
     // Register planning artifact for planning steps
     const stepType = typeof stepMeta.stepType === "string" ? stepMeta.stepType.trim().toLowerCase() : "";
     const phaseKey = typeof stepMeta.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
-    const isPlanningStep =
-      stepType === "planning"
-      || phaseKey === "planning"
-      || stepMeta.readOnlyExecution === true;
+    const isPlanningStep = stepType === "planning" || stepType === "analysis" || phaseKey === "planning";
     if (isPlanningStep && !registeredKeys.has("plan")) {
+      const reportedPlan = isRecord(lastResultReport?.plan) ? lastResultReport.plan : null;
       const planSummary =
-        typeof envelope.summary === "string" && envelope.summary.trim().length > 0
+        typeof reportedPlan?.summary === "string" && reportedPlan.summary.trim().length > 0
+          ? reportedPlan.summary.trim()
+          : typeof envelope.summary === "string" && envelope.summary.trim().length > 0
           ? envelope.summary.trim()
           : "Planning step completed.";
+      const planMarkdown =
+        typeof reportedPlan?.markdown === "string" && reportedPlan.markdown.trim().length > 0
+          ? reportedPlan.markdown.trim()
+          : "";
+      const requestedPlanPath =
+        typeof reportedPlan?.artifactPath === "string" && reportedPlan.artifactPath.trim().length > 0
+          ? reportedPlan.artifactPath.trim()
+          : typeof outputs.planPath === "string" && outputs.planPath.trim().length > 0
+            ? outputs.planPath.trim()
+            : "";
       const planValue =
-        typeof outputs.planPath === "string" && outputs.planPath.trim().length > 0
-          ? outputs.planPath.trim()
+        requestedPlanPath.startsWith(".ade/plans/")
+          ? requestedPlanPath
           : ".ade/plans/mission-plan.md";
       const laneWorktreeRow = step?.laneId
         ? ctx.db.get<{ worktree_path: string | null }>(
@@ -939,11 +949,12 @@ export function extractAndRegisterArtifacts(
       const absolutePlanPath = worktreePath
         ? (path.isAbsolute(planValue) ? planValue : path.join(worktreePath, planValue))
         : (path.isAbsolute(planValue) ? planValue : null);
-      const planExists = absolutePlanPath ? fs.existsSync(absolutePlanPath) : false;
-      if (planExists) {
+      if (absolutePlanPath && planMarkdown.length > 0) {
+        fs.mkdirSync(path.dirname(absolutePlanPath), { recursive: true });
+        fs.writeFileSync(absolutePlanPath, planMarkdown.endsWith("\n") ? planMarkdown : `${planMarkdown}\n`, "utf8");
         register("plan", "custom", planValue, {
           planType: "mission_plan",
-          source: "planning_worker",
+          source: "ade_persisted_plan",
           summary: planSummary,
           absolutePath: absolutePlanPath,
         });
@@ -958,7 +969,7 @@ export function extractAndRegisterArtifacts(
           },
         });
       } else {
-        const missingPlanDetail = `Planning worker completed without writing a usable plan file under .ade/plans/. Expected ${planValue}.`;
+        const missingPlanDetail = "Planning worker completed without returning a usable plan payload in report_result.plan.markdown.";
         ctx.logger.warn("ai_orchestrator.plan_artifact_missing", {
           missionId: graph.run.missionId,
           runId: attempt.runId,
@@ -972,7 +983,7 @@ export function extractAndRegisterArtifacts(
           stepId: attempt.stepId,
           attemptId: attempt.id,
           eventType: "planning_artifact_missing",
-          reason: "plan_file_missing",
+          reason: "plan_payload_missing",
           detail: {
             expectedPlanPath: planValue,
             absolutePlanPath,
@@ -982,16 +993,16 @@ export function extractAndRegisterArtifacts(
         const intervention = ctx.missionService.addIntervention({
           missionId: graph.run.missionId,
           interventionType: "failed_step",
-          title: "Planning artifact missing",
+          title: "Planner result missing plan",
           body: missingPlanDetail,
-          requestedAction: "Re-run planning and ensure the final plan file is written inside .ade/plans/ before completing the worker.",
+          requestedAction: "Retry planning only after the planner can return report_result.plan.markdown. ADE will persist the canonical plan artifact after completion.",
           metadata: {
             runId: attempt.runId,
             stepId: step?.id ?? attempt.stepId,
             stepKey: step?.stepKey ?? null,
             ...(phaseKey.length > 0 ? { phaseKey } : {}),
             ...(stepType.length > 0 ? { stepType } : {}),
-            reasonCode: "plan_artifact_missing",
+            reasonCode: "planner_plan_missing",
             expectedPlanPath: planValue,
           },
         });
@@ -1005,7 +1016,7 @@ export function extractAndRegisterArtifacts(
           payload: {
             interventionId: intervention.id,
             interventionType: intervention.interventionType,
-            reason: "plan_artifact_missing",
+            reason: "planner_plan_missing",
             expectedPlanPath: planValue,
           },
         });

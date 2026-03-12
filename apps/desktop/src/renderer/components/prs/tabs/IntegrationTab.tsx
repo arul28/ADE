@@ -480,8 +480,10 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     setActiveTab,
     resolverModel,
     resolverReasoningLevel,
+    resolverPermissionMode,
     setResolverModel,
-    setResolverReasoningLevel
+    setResolverReasoningLevel,
+    setResolverPermissionMode,
   } = usePrs();
 
   const [simulateResult, setSimulateResult] = React.useState<IntegrationProposal | null>(null);
@@ -1795,10 +1797,12 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
             }}
             modelId={resolverModel}
             reasoningEffort={resolverReasoningLevel}
+            permissionMode={resolverPermissionMode}
             onModelChange={(model, effort) => {
               setResolverModel(model);
               setResolverReasoningLevel(effort || resolverReasoningLevel);
             }}
+            onPermissionModeChange={setResolverPermissionMode}
             onCompleted={() => {
               void onRefresh();
             }}
@@ -2488,10 +2492,12 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
               }}
               modelId={resolverModel}
               reasoningEffort={resolverReasoningLevel}
+              permissionMode={resolverPermissionMode}
               onModelChange={(model, effort) => {
                 setResolverModel(model);
                 setResolverReasoningLevel(effort || resolverReasoningLevel);
               }}
+              onPermissionModeChange={setResolverPermissionMode}
               onStarted={() => {
                 const startedLaneIds = [...proposalResolverConfig.recheckLaneIds];
                 setResolutionPanelDismissed(false);

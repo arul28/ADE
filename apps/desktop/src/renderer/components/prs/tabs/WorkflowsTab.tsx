@@ -530,8 +530,10 @@ export function WorkflowsTab({ activeCategory, onChangeCategory, onRefreshAll, o
     queueRehearsals,
     resolverModel,
     resolverReasoningLevel,
+    resolverPermissionMode,
     setResolverModel,
     setResolverReasoningLevel,
+    setResolverPermissionMode,
   } = usePrs();
 
   const [view, setView] = React.useState<WorkflowView>("active");
@@ -681,10 +683,12 @@ export function WorkflowsTab({ activeCategory, onChangeCategory, onRefreshAll, o
               onSelectItem={setSelectedRebaseItemId}
               resolverModel={resolverModel}
               resolverReasoningLevel={resolverReasoningLevel}
+              resolverPermissionMode={resolverPermissionMode}
               onResolverChange={(model, level) => {
                 setResolverModel(model);
                 setResolverReasoningLevel(level);
               }}
+              onResolverPermissionChange={setResolverPermissionMode}
               onRefresh={refreshWorkflows}
             />
           ) : (

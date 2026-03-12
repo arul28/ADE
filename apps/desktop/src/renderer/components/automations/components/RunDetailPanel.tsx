@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CheckCircle, ArchiveBox, Moon, Prohibit } from "@phosphor-icons/react";
+import { CheckCircle, Archive, Moon, Prohibit } from "@phosphor-icons/react";
 import type { AutomationRunDetail } from "../../../../shared/types";
 import { Chip } from "../../ui/Chip";
 import { Button } from "../../ui/Button";
@@ -133,7 +133,7 @@ export function RunDetailPanel({
               Accept
             </Button>
             <Button size="sm" variant="outline" disabled={busyAction != null} onClick={() => void queueAction("archive")}>
-              <ArchiveBox size={12} weight="regular" />
+              <Archive size={12} weight="regular" />
               Archive
             </Button>
             <Button size="sm" variant="outline" disabled={busyAction != null} onClick={() => void queueAction("queue-overnight")}>

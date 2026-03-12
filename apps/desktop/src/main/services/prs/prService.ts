@@ -2147,6 +2147,7 @@ export function createPrService({
               const detail = await extractConflictDetail(treeOid, filePath, projectRoot);
               conflictingFiles.push({
                 path: filePath,
+                conflictType: detail.conflictType ?? null,
                 conflictMarkers: detail.conflictMarkers,
                 oursExcerpt: detail.oursExcerpt || null,
                 theirsExcerpt: detail.theirsExcerpt || null,
@@ -2166,6 +2167,7 @@ export function createPrService({
               } catch { /* best-effort */ }
               conflictingFiles.push({
                 path: filePath,
+                conflictType: null,
                 conflictMarkers: "",
                 oursExcerpt,
                 theirsExcerpt,

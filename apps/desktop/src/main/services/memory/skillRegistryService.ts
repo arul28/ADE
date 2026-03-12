@@ -23,6 +23,7 @@ type SkillIndexRow = {
 };
 
 const WATCH_PATTERNS = [
+  ".ade/skills/**/*.md",
   ".claude/skills/**/*.md",
   ".claude/commands/**/*.md",
   "CLAUDE.md",
@@ -355,6 +356,7 @@ export function createSkillRegistryService(args: {
         crawl(path.join(currentPath, child));
       }
     };
+    crawl(path.join(projectRoot, ".ade", "skills"));
     crawl(path.join(projectRoot, ".claude", "skills"));
     crawl(path.join(projectRoot, ".claude", "commands"));
     for (const fileName of ["CLAUDE.md", "agents.md"]) {
@@ -381,7 +383,7 @@ export function createSkillRegistryService(args: {
     const slugBase = slugify(title);
     let slug = slugBase;
     let counter = 2;
-    let destinationDir = path.join(projectRoot, ".claude", "skills", slug);
+    let destinationDir = path.join(projectRoot, ".ade", "skills", slug);
     let destinationPath = path.join(destinationDir, "SKILL.md");
     while (fs.existsSync(destinationPath)) {
       slug = `${slugBase}-${counter}`;

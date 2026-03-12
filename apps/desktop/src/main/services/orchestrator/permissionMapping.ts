@@ -34,10 +34,13 @@ export function mapPermissionToCodex(mode: AgentChatPermissionMode | undefined):
   if (mode === "full-auto") {
     return { approvalPolicy: "never", sandbox: "danger-full-access" };
   }
+  if (mode === "edit") {
+    return { approvalPolicy: "on-failure", sandbox: "workspace-write" };
+  }
   if (mode === "config-toml") {
     return null;
   }
-  // "default" / "plan" / "edit" / undefined → suggest mode (approval required)
+  // "default" / "plan" / undefined → read-only suggest mode
   return { approvalPolicy: "untrusted", sandbox: "read-only" };
 }
 

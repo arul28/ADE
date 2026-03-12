@@ -1,5 +1,5 @@
 # W7c: Skills + Learning Pipeline
-> Source: [Factory.ai missions](https://factory.ai/news/missions) — skill extraction pattern (missions extract skills, skill library compounds over time). [LangMem procedural memory](https://langchain-ai.github.io/langmem/concepts/) — episodic → semantic → procedural extraction pipeline. [Vercel/Anthropic skills format](https://docs.anthropic.com/en/docs/claude-code/skills) — `.claude/skills/` universal markdown convention. [Paperclip runtime skill injection](https://github.com/paperclipai/paperclip/blob/main/doc/SPEC.md) — SKILLS.md injected into agent context at runtime. [CrewAI long-term memory](https://docs.crewai.com/concepts/memory) — confidence evolution and automatic archival.
+> Source: [Factory.ai missions](https://factory.ai/news/missions) — skill extraction pattern (missions extract skills, skill library compounds over time). [LangMem procedural memory](https://langchain-ai.github.io/langmem/concepts/) — episodic → semantic → procedural extraction pipeline. [Vercel/Anthropic skills format](https://docs.anthropic.com/en/docs/claude-code/skills) — universal `SKILL.md` markdown convention. [Paperclip runtime skill injection](https://github.com/paperclipai/paperclip/blob/main/doc/SPEC.md) — SKILLS.md injected into agent context at runtime. [CrewAI long-term memory](https://docs.crewai.com/concepts/memory) — confidence evolution and automatic archival.
 
 Dependencies: **W7a** (embeddings — needed for cosine similarity in episode clustering and procedure dedup) + **W7b** (episodic summaries — needed as input to the extraction pipeline).
 
@@ -10,7 +10,7 @@ Dependencies: **W7a** (embeddings — needed for cosine similarity in episode cl
 | [Factory.ai Missions Blog](https://factory.ai/news/missions) | Full post — how missions extract skills that compound over time | Core concept: agent work produces reusable skills. Skill library grows with each mission. |
 | [LangMem Concepts — Memory Types](https://langchain-ai.github.io/langmem/concepts/) | Episodic, Semantic, and Procedural memory sections | Three-stage pipeline: episodes (what happened) → semantic facts (what we know) → procedures (what to do). Extraction triggers and consolidation. |
 | [LangMem Source — `knowledge/`](https://github.com/langchain-ai/langmem/tree/main/langmem/knowledge) | Extraction logic, clustering, and procedural generation | Pattern detection from episode clusters, LLM-driven procedure extraction. |
-| [Claude Code Skills Docs](https://docs.anthropic.com/en/docs/claude-code/skills) | Skills format, directory convention, how skills are loaded | `.claude/skills/<name>/SKILL.md` format — universal markdown, any agent can consume. Trigger description + step-by-step instructions. |
+| [Claude Code Skills Docs](https://docs.anthropic.com/en/docs/claude-code/skills) | Skills format, directory convention, how skills are loaded | `SKILL.md` format — universal markdown, any agent can consume. ADE materializes project-local skills under `.ade/skills/<name>/SKILL.md`. |
 | [Paperclip SKILLS.md Injection](https://github.com/paperclipai/paperclip/blob/main/doc/SPEC.md) | §7 Runtime Context, SKILLS.md section | Skills injected into agent system prompt at activation time. Goal hierarchy provides skill selection context. |
 | [CrewAI Memory — Long-Term](https://docs.crewai.com/concepts/memory) | Long-term memory and learning sections | Confidence evolution: success/failure tracking, automatic archival of low-confidence procedures. |
 
@@ -19,7 +19,7 @@ W7c builds the extraction and materialization layer on top of W7a's embeddings a
 ##### Audit Snapshot (2026-03-11)
 
 - Implemented in code today: `proceduralLearningService.ts`, `skillRegistryService.ts`, and the Procedures/Skills views in `MemoryHealthTab.tsx`.
-- Episode clustering, procedure creation/update, confidence history, export to `.claude/skills/`, and filesystem re-indexing are all present.
+- Episode clustering, procedure creation/update, confidence history, export to `.ade/skills/`, and filesystem re-indexing are all present.
 - `knowledgeCaptureService.ts` now captures resolved interventions, recurring error clusters, and PR feedback, and is wired into current runtime flows.
 - Not yet fully done: validate coverage, close any gaps in automatic source capture, and improve the review/inspection UX around these advanced knowledge sources.
 
@@ -101,8 +101,8 @@ Automatic capture from agent interactions into project memory. These entries fee
 Confirmed procedural memories can be exported as universal skill files, following the [Claude Code skills convention](https://docs.anthropic.com/en/docs/claude-code/skills):
 
 - User reviews procedural memories in Settings > Memory > Procedures tab.
-- User clicks "Export as Skill" on a procedure → system materializes it as `.claude/skills/<name>/SKILL.md`.
-- Phase 4 follow-through should consolidate durable skill exports under `.ade/` so portable project state and learned artifacts live under one root. Treat the current `.claude/skills/` path as transition behavior to be cleaned up rather than the desired long-term destination.
+- User clicks "Export as Skill" on a procedure → system materializes it as `.ade/skills/<name>/SKILL.md`.
+- `.ade/skills/` is the canonical project-local skill export path. Legacy `.claude/skills/` content is still read and indexed when present.
 - **Skill file format**: Plain markdown with trigger description, step-by-step instructions, and context notes. Follows the Vercel/Anthropic skills convention — any agent that reads markdown can consume it:
   ```markdown
   # Auth Migration
@@ -126,7 +126,7 @@ Confirmed procedural memories can be exported as universal skill files, followin
 - Skills are indexed back into project memory (see Skill Ingestion below) so ADE's own agents discover them via `memorySearch`.
 
 ```
-.claude/
+.ade/
   skills/
     auth-migration/
       SKILL.md          # "When changing auth module: 1. Run migration..."
@@ -138,8 +138,8 @@ Confirmed procedural memories can be exported as universal skill files, followin
 
 Read existing skill and command files into project memory so that ADE agents can discover and use them:
 
-- **Scan triggers**: On app startup and on filesystem change (via `fs.watch` on `.claude/` and project root for `CLAUDE.md`, `agents.md`).
-- **Scan targets**: `.claude/skills/**/*.md`, `.claude/commands/**/*.md`, `CLAUDE.md`, `agents.md`.
+- **Scan triggers**: On app startup and on filesystem change.
+- **Scan targets**: `.ade/skills/**/*.md`, legacy `.claude/skills/**/*.md`, `.claude/commands/**/*.md`, `CLAUDE.md`, `agents.md`.
 - **Parse and index**: Each file is parsed and indexed into project memory as a Tier 2 entry with `category: "procedure"`, `sourceType: "user"`, `status: "promoted"`. User-authored skills start at `confidence: 1.0` (user is the authority).
 - **Dedup with existing entries**: Before inserting, check for existing entries via embedding similarity (cosine > 0.85, W7a). If a near-duplicate exists:
   - If existing entry is `sourceType: "user"` → update content in place (user edited the file).
@@ -161,7 +161,7 @@ Read existing skill and command files into project memory so that ADE agents can
 
   Procedures sorted by confidence (descending) by default. Filter by status, category, file scope.
 
-- **Settings > Memory > Skills tab**: Table of `.claude/skills/` files showing:
+- **Settings > Memory > Skills tab**: Table of indexed skill files showing:
   | Column | Description |
   |--------|-------------|
   | Name | Skill directory name |
@@ -175,7 +175,7 @@ Read existing skill and command files into project memory so that ADE agents can
 
 - **Export flow**: "Export as Skill" button opens a confirmation dialog showing the generated `SKILL.md` content with an editable name field. User confirms → file written → skill tab updated → memory entry linked.
 
-**Implementation status (2026-03-11):** Largely implemented; advanced capture follow-through and `.ade/` export consolidation still pending.
+**Implementation status (2026-03-11):** Largely implemented; advanced capture follow-through still pending.
 
 **Tests:**
 - Procedural extraction: 3+ similar episodes trigger extraction, LLM extraction call produces valid `ProceduralMemory`, confidence initialized from LLM estimate, source episode IDs recorded.
@@ -185,8 +185,8 @@ Read existing skill and command files into project memory so that ADE agents can
 - Knowledge capture — failures: step failure + resolution recorded as gotcha with file scope, enters as candidate with medium confidence.
 - Knowledge capture — interventions: user steering message analyzed, implicit rule saved as candidate convention, promoted after 2+ observations via write gate dedupe boost.
 - Knowledge capture — repeated errors: 3+ matching error gotchas escalate importance to high, embedding search (cosine > 0.85) identifies matches.
-- Skill materialization: procedure exported as `.claude/skills/<name>/SKILL.md`, correct markdown format with trigger/steps/context sections, slug naming with collision avoidance.
-- Skill ingestion: `.claude/skills/` scan on startup, parse and index as Tier 2 procedure, dedup with existing entries via embeddings, file deletion marks entry archived.
+- Skill materialization: procedure exported as `.ade/skills/<name>/SKILL.md`, correct markdown format with trigger/steps/context sections, slug naming with collision avoidance.
+- Skill ingestion: `.ade/skills/` plus legacy `.claude/skills/` scanned on startup, parsed and indexed as Tier 2 procedure entries, deduped with existing entries via embeddings, file deletion marks entry archived.
 - Skill ingestion — user vs system: user-authored skill supersedes machine-extracted procedure, updated file content refreshes existing entry in place.
 - Runtime injection: matching procedure appears in L1 briefing assembly search results, high-confidence procedures rank above low-confidence ones.
 - End-to-end: mission run → episodic summary (W7b) → pattern detected across 3+ episodes → procedure extracted → user confirms → skill file created → future mission worker receives skill in briefing.

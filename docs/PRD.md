@@ -565,7 +565,7 @@ Packs are ADE's core differentiator for agentic workflows. They provide a durabl
 
 **Update pipeline**: On session end, the pipeline creates a checkpoint, appends events, materializes lane/project/feature packs, predicts conflicts, updates conflict packs if needed, and optionally requests AI narrative augmentation via the agent SDKs. This pipeline runs through the job engine with coalescing to avoid redundant work.
 
-**Storage**: Packs are stored under `.ade/packs/` with immutable versions, head pointers, and materialized current views. History artifacts (checkpoints, events) are stored under `.ade/history/`. All storage is local-only.
+**Storage**: Packs are stored under `.ade/artifacts/packs/` with immutable versions, head pointers, and materialized current views. History artifacts (checkpoints, events) are stored under `.ade/history/`. All storage is local-only.
 
 See: [features/PACKS.md](features/PACKS.md)
 
@@ -740,15 +740,15 @@ Development baseline: ADE assumes a modern Git CLI (worktrees, `git restore`, `g
 
 ### 10.11 Cross-Machine Portability
 
-This is a roadmap target, not the fully shipped baseline. Today ADE already persists some state under `.ade/` (for example CTO/worker identity files, templates, config, and skill exports), but the project-wide portable-state contract is still Phase 4 `W10`, and real-time multi-device replication is still Phase 6.
+ADE now ships a canonical `.ade` contract. The tracked/shareable subset is committed alongside the repo, while machine-local runtime state is ignored by the tracked `.ade/.gitignore`. Real-time multi-device replication is still Phase 6 work.
 
 Current baseline:
-- Git is the only reliable cross-machine transport for code.
-- Parts of `.ade/` are already used as file-backed state, but the full directory contract, startup validation, integrity checks, and migration flow are not finished.
-- Machine-specific credentials remain local-only, either in gitignored files or encrypted local storage.
+- Git is the reliable cross-machine transport for code and tracked ADE state.
+- `.ade` has a defined tracked/shareable subset plus ignored machine-local runtime buckets.
+- Startup repair, validation, integrity normalization, and config reload are live.
+- Machine-specific credentials remain local-only, either in ignored files or encrypted local storage.
 
 Roadmap direction:
-- Phase 4 `W10` formalizes the portable `.ade/` structure and tracked-vs-local boundaries.
 - Phase 6 adds cr-sqlite state sync, device registry, and the brain/viewer model.
 - Phase 7 builds remote/mobile control on top of that sync foundation.
 
@@ -841,21 +841,23 @@ ADE's security model is built on explicit trust boundaries and conservative defa
 
 ## 12. Configuration Model
 
-ADE configuration lives in the `.ade/` folder at the project root. In the current implementation, ADE excludes the entire `.ade/` directory via `.git/info/exclude` by default. CTO/worker identity and memory are already file-backed under `.ade/`, but the selective tracked/shareable subset described in the Phase 4 W10 roadmap is not implemented yet. Machine-specific files such as caches, logs, and transcripts are still intended to remain local regardless.
+ADE configuration lives in the `.ade/` folder at the project root. The current repo uses a canonical tracked/shareable subset plus a tracked `.ade/.gitignore` that ignores machine-local runtime state. CTO/worker identity and memory are file-backed under `.ade/`, while caches, logs, databases, worktrees, and secret stores remain local-only.
 
 **File layout**:
 
 | File | Purpose | Shareable |
 |------|---------|-----------|
-| `.ade/ade.yaml` | Shared baseline config (processes, stack buttons, test suites, lane profiles, overlay policies, AI task-type routing defaults, phase profiles, automation definitions) | Planned shareable; currently excluded with the rest of `.ade/` |
+| `.ade/ade.yaml` | Shared baseline config (processes, stack buttons, test suites, lane profiles, overlay policies, AI task-type routing defaults, phase profiles, automation definitions) | Yes |
 | `.ade/local.yaml` | Machine-specific overrides (including local AI provider preferences and CLI tool paths) | No |
-| `.ade/cto/` | CTO identity, memory, and configuration | Planned shareable; currently file-backed but excluded |
-| `.ade/memory/` | Project-scope memory, learning pack entries, vector embeddings | Planned shareable in part; currently excluded |
-| `.ade/packs/` | Pack versions and materialized views | Planned shareable; currently excluded |
-| `.ade/history/` | Checkpoints, events, and mission records | Planned shareable in part; currently excluded |
+| `.ade/local.secret.yaml` | Machine-local secret config for external MCP and secret-backed integrations | No |
+| `.ade/cto/` | CTO identity, memory, and configuration | Yes |
+| `.ade/agents/` | Worker identity, memory, and configuration | Yes |
+| `.ade/memory/` | Project-scope file-backed memory artifacts | Yes |
+| `.ade/artifacts/packs/` | Pack versions and materialized views | No |
+| `.ade/history/` | Mission records and tracked JSONL history | Yes |
 | `.ade/artifacts/` | Screenshots, videos, test results attached to missions/lanes | No in current design |
 | `.ade/transcripts/` | Terminal session transcripts | No |
-| `.ade/logs/` | Process and test logs | No |
+| `.ade/transcripts/logs/` | Process and test logs | No |
 | `.ade/cache/` | Local cache | No |
 
 **Config layering** (load order):
@@ -864,7 +866,7 @@ ADE configuration lives in the `.ade/` folder at the project root. In the curren
 2. `.ade/ade.yaml` (shared baseline)
 3. `.ade/local.yaml` (machine override)
 
-Arrays of objects merge by stable `id`. Unresolved references (such as stack buttons referencing unknown process IDs) fail validation. Commands are never executed until config passes validation. The current product already uses this layered `.ade/ade.yaml` + `.ade/local.yaml` model even though the broader portable-state sharing policy is still roadmap work.
+Arrays of objects merge by stable `id`. Unresolved references (such as stack buttons referencing unknown process IDs) fail validation. Commands are never executed until config passes validation. `local.secret.yaml` is a companion secret file for secret-backed integrations rather than part of the shared/local merge.
 
 **AI task-type routing config**:
 
@@ -924,7 +926,7 @@ Implementation sequencing, future phases, and dependency ordering are now mainta
 
 - `docs/final-plan/README.md`
 
-Current status: Phases 1, 1.5, 2, and 5 are complete. Phase 3 is complete through the orchestrator overhaul. Phase 4 is partially complete: `W1-W4`, `W6`, `W6½`, and `W7a` are shipped; `W7b` is mostly implemented; `W7c` has a working core; `W-UX` and `W5b` are partial; and `W8`, `W9`, and `W10` are still pending.
+Current status: Phases 1, 1.5, 2, and 5 are complete. Phase 3 is complete through the orchestrator overhaul. Phase 4 is partially complete overall: `W1-W4`, `W6`, `W6½`, `W7a`, `W7b`, and `W10` are shipped; `W7c` has a working core with follow-through still open; `W-UX` and `W5b` are partial; and `W8` and `W9` remain pending.
 
 This PRD intentionally focuses on product scope and behavior, while roadmap execution detail is centralized in the Final Plan to avoid drift.
 

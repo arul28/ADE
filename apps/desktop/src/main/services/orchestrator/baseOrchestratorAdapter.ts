@@ -270,9 +270,10 @@ export function buildFullPrompt(
       systemParts.push(
         [
           "PLANNING ARTIFACTS:",
-          "- Write your plan output to `.ade/plans/` in your working directory. Create the `.ade/plans/` directory if it does not exist.",
-          "- Do NOT write plans to any provider-specific location (e.g. home-directory plan folders).",
+          "- This planning step is inspect-only. Do not create directories or write plan files yourself.",
           "- Do NOT use ExitPlanMode or any provider-native plan approval flow. Return your plan directly via `report_result`.",
+          "- Your `report_result` payload must include a first-class `plan` object with markdown content plus summary metadata.",
+          "- ADE will persist the canonical mission plan artifact after you complete successfully.",
           "- If you need clarification from the user and phase policy allows it, use `ask_user` to surface structured questions yourself.",
         ].join("\n")
       );
@@ -285,6 +286,7 @@ export function buildFullPrompt(
           "RESULT REPORTING:",
           "- Use `report_status` for short progress updates when you make meaningful progress or hit a blocker.",
           "- Before you exit, ALWAYS call `report_result` with your outcome, summary, filesChanged, and testsRun fields filled in as accurately as possible.",
+          "- Planning steps must also include `plan.markdown` in `report_result`.",
           ...(readOnlyExecution
             ? [
                 "- This step cannot write files. Do NOT attempt `.ade/checkpoints/...` or `.ade/step-output-...md` writes.",

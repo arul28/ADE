@@ -91,6 +91,31 @@ export type MissionInterventionType =
   | "phase_approval";
 
 export type MissionInterventionStatus = "open" | "resolved" | "dismissed";
+export type MissionInterventionResolutionKind =
+  | "answer_provided"
+  | "accept_defaults"
+  | "skip_question"
+  | "cancel_run";
+
+export const RESOLUTION_KINDS = new Set<MissionInterventionResolutionKind>([
+  "answer_provided",
+  "accept_defaults",
+  "skip_question",
+  "cancel_run",
+]);
+
+export function isValidResolutionKind(value: string): value is MissionInterventionResolutionKind {
+  return RESOLUTION_KINDS.has(value as MissionInterventionResolutionKind);
+}
+
+export function resolutionKindLabel(kind: MissionInterventionResolutionKind): string {
+  switch (kind) {
+    case "accept_defaults": return "Accept the default assumptions and continue.";
+    case "skip_question": return "Skip this clarification and continue with best-effort assumptions.";
+    case "cancel_run": return "Cancel the run.";
+    case "answer_provided": return "Answer provided.";
+  }
+}
 
 export type MissionPlannerEngine = "auto" | "claude_cli" | "codex_cli";
 
@@ -598,6 +623,7 @@ export type MissionIntervention = {
   missionId: string;
   interventionType: MissionInterventionType;
   status: MissionInterventionStatus;
+  resolutionKind?: MissionInterventionResolutionKind | null;
   title: string;
   body: string;
   requestedAction: string | null;
@@ -905,6 +931,7 @@ export type ResolveMissionInterventionArgs = {
   interventionId: string;
   status: Exclude<MissionInterventionStatus, "open">;
   note?: string | null;
+  resolutionKind?: MissionInterventionResolutionKind | null;
 };
 
 export type DeleteMissionArgs = {
@@ -988,6 +1015,7 @@ export type UserSteeringDirective = {
 
 export type SteerMissionArgs = UserSteeringDirective & {
   interventionId?: string | null;
+  resolutionKind?: MissionInterventionResolutionKind | null;
 };
 
 export type SteerMissionResult = {

@@ -21,15 +21,15 @@ Goal: Add the CTO agent as a persistent project-aware assistant with a configura
 | W7c: Skills + Learning Pipeline | [W7c.md](W7c.md) | Largely implemented / advanced capture follow-through pending |
 | W8: External MCP Consumption | [W8.md](W8.md) | Not started |
 | W9: OpenClaw Bridge | [W9.md](W9.md) | Not started |
-| W10: .ade/ Portable State | [W10.md](W10.md) | Partial foundation exists; portable git model pending |
+| W10: .ade/ Portable State | [W10.md](W10.md) | ✅ Complete |
 
 ### Audit Snapshot (2026-03-11)
 
 - Complete: W1-W4, W6, W6½, W7a, W7b
 - Mostly implemented: W5b, W7c
-- Partially implemented: W-UX, W10
+- Partially implemented: W-UX
 - Still genuinely pending: W8, W9
-- Highest-value follow-through still open inside shipped work: onboarding/polish in CTO UX, advanced knowledge capture review, and a code-backed decision on how portable `.ade/` state should work before Phase 6
+- Highest-value follow-through still open inside shipped work: onboarding/polish in CTO UX, advanced knowledge capture validation/review, and W5b ecosystem polish before moving deeper into W8/W9.
 
 ### Reference docs
 
@@ -75,8 +75,8 @@ Workstreams are numbered by topic but executed in dependency order. W1-W4, W5a, 
 - CTO still needs a cleaner onboarding/setup experience, stronger activity visibility, and broader visual/system polish
 - Inconsistent theming and shared component treatment remain across CTO/Automations/Memory surfaces
 - Advanced learning capture from user interventions, repeated errors, and PR feedback still needs end-to-end follow-through even though the procedural pipeline is already in code
-- Portable `.ade/` policy is unresolved: file-backed CTO/worker state exists today, but the selective tracked/shareable model described for W10 is not yet implemented
-- Export/storage consolidation is unresolved: durable learned artifacts should converge under `.ade/` rather than remaining split across other top-level folders
+- External MCP consumption remains the main ecosystem gap: W8 and W9 are still untouched after the `.ade` contract and local state surfaces landed.
+- Advanced knowledge capture still needs end-to-end confidence in production flows even though the extraction/export/indexing pipeline is already in place.
 
 ```
 Wave 3 (partially shipped — UX polish still open):
@@ -93,7 +93,7 @@ Wave 5 (mostly shipped — advanced learning capture remains):
 Wave 6 (ecosystem — independent, can parallel):
   W8: External MCP Consumption            Pending
   W9: OpenClaw Bridge                     Pending; needs W1, W8
-  W10: .ade/ Portable State               Partial foundation exists; portable git/share model still pending
+  W10: .ade/ Portable State               ✅ Complete
 ```
 
 Dependency graph:
@@ -103,7 +103,7 @@ W1-W4 ✅
      ├──→ W6 ✅ ──→ W6½ ✅ ──→ W7a ✅ ──→ W7b ✅
      │                          └──────→ W7c (Skills; core shipped, advanced capture pending)
      │
-     ├──→ W10 (.ade/ State; partial foundation, portability pending)
+     ├──→ W10 (.ade/ State; complete)
      │
      ├──→ W-UX (CTO + Org UX; partial)
      │
@@ -208,10 +208,10 @@ Phase 4 should enable a "tech department" loop: one persistent agent per employe
 **W7c — Skills + Learning Pipeline: Largely implemented / advanced capture follow-through pending (2026-03-11 audit)**
 - ✅ Procedural memory extraction from clusters of similar episodic summaries exists.
 - ✅ Confidence evolution, success/failure history, and auto promote/archive behavior exist.
-- ✅ Skill materialization/export to `.claude/skills/<name>/SKILL.md` exists.
-- ✅ Skill ingestion/indexing for `.claude/skills/`, `.claude/commands/`, `CLAUDE.md`, and `agents.md` exists.
+- ✅ Skill materialization/export to `.ade/skills/<name>/SKILL.md` exists.
+- ✅ Skill ingestion/indexing for `.ade/skills/`, legacy `.claude/skills/`, `.claude/commands/`, `CLAUDE.md`, and `agents.md` exists.
 - ✅ Knowledge capture service exists for resolved interventions, recurring error clusters, and PR feedback, and is wired into current runtime flows.
-- Remaining: validate coverage, fill end-to-end gaps, polish the review/inspection UX around these advanced capture sources, and move durable skill export/storage into the `.ade/` model.
+- Remaining: validate coverage, fill end-to-end gaps, and polish the review/inspection UX around these advanced capture sources.
 
 **W5b — Automations Full: Mostly implemented (2026-03-11 audit)**
 - ✅ Automations tab, rule builder/planner, run history, usage surfaces, and Night Shift scheduling/queue plumbing are present in the product.
@@ -232,11 +232,12 @@ Phase 4 should enable a "tech department" loop: one persistent agent per employe
 - HTTP + WebSocket transport with idempotency and device pairing.
 - Fallback skill-only mode for simpler setups.
 
-**W10 — .ade/ Portable State: Partial foundation exists**
-- ✅ CTO and worker identity/core-memory/session files already live under `.ade/cto/` and `.ade/agents/`, with file-vs-DB reconciliation behavior in code.
-- ✅ Current config layering already uses `.ade/ade.yaml` + `.ade/local.yaml`.
-- Remaining: decide and implement the selective git-tracked/shareable subset for `.ade/`, add startup validation/integrity tooling, add config reload where needed, consolidate durable exports under `.ade/`, and land the one-time migration/health surfaces.
-- Current limitation: ADE still excludes the entire `.ade/` directory via `.git/info/exclude`, so the portable-shareable model described here is not the live behavior yet.
+**W10 — .ade/ Portable State: Complete**
+- ✅ `.ade` now has one canonical layout shared by desktop startup and MCP bootstrap (`adeLayout.ts`).
+- ✅ Startup repair writes tracked `.ade/.gitignore`, removes stale `.git/info/exclude` `.ade` rules, and rehomes legacy runtime folders into `artifacts/`, `transcripts/`, `cache/`, and `secrets/`.
+- ✅ `adeProjectService.ts` surfaces structure/config/health snapshots and non-blocking validation warnings.
+- ✅ `configReloadService.ts` watches `ade.yaml`, `local.yaml`, and `local.secret.yaml` and refreshes dependent services plus renderer state.
+- ✅ Learned skill export now writes to `.ade/skills/`, with `.claude/skills` retained only as a legacy read/index source.
 
 ### Cross-Cutting: Orchestrator + Mission UX Hardening (2026-03-09)
 

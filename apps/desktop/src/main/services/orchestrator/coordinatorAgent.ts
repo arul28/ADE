@@ -26,6 +26,7 @@ import { asRecord, filterExecutionSteps } from "./orchestratorContext";
 import { readMissionStateDocument, writeCoordinatorCheckpoint } from "./missionStateDoc";
 import { resolveModel } from "../ai/providerResolver";
 import { detectAllAuth } from "../ai/authDetector";
+import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { resolveModelDescriptor } from "../../../shared/modelRegistry";
 import type { createOrchestratorService } from "./orchestratorService";
 import type {
@@ -165,7 +166,7 @@ export function buildCoordinatorCliOptions(args: {
   }
 
   if (descriptor.family === "anthropic") {
-    const logDir = path.join(args.projectRoot, ".ade", "logs");
+    const logDir = resolveAdeLayout(args.projectRoot).logsDir;
     fs.mkdirSync(logDir, { recursive: true });
     const mcpServerNames = Object.keys(args.mcpServers ?? {});
     const coordinatorMcpServerName = mcpServerNames.includes("ade")
@@ -635,7 +636,7 @@ export class CoordinatorAgent {
         "- Identify dependencies, risks, sequencing, and the best execution DAG.",
         "- Do not modify files, run write operations, or ask for plan-exit approval.",
         "- Do NOT use ExitPlanMode or any provider-native plan approval flow.",
-        "- Write your plan output to `.ade/plans/` in your working directory, NOT to `~/.claude/plans/`.",
+        "- Return the plan through report_result with a first-class plan payload; ADE will persist the canonical plan artifact.",
         "- If you need clarification, use `ask_user` to surface structured questions.",
         "- Return a concrete plan the coordinator can use to enter Development automatically.",
       ].join("\n"),
@@ -654,11 +655,6 @@ export class CoordinatorAgent {
     if (this.hasPlanningExecutionRecord()) return;
     if (this.hasOpenPlanningClarification()) return;
 
-    const spawnWorkerTool = this.tools.spawn_worker as { execute?: (args: unknown) => Promise<any> } | undefined;
-    if (typeof spawnWorkerTool?.execute !== "function") {
-      throw new Error("Planning watchdog could not recover because spawn_worker is unavailable.");
-    }
-
     this.deps.logger.warn("coordinator_agent.planning_watchdog_triggered", {
       runId: this.deps.runId,
       turnId,
@@ -668,13 +664,21 @@ export class CoordinatorAgent {
       type: "error",
       turnId,
       message:
-        "Coordinator first turn did not create the planning worker. ADE recovered by forcing a read-only planning worker so the mission can continue.",
+        "Coordinator first turn did not create the planning worker. ADE stopped planning and opened an explicit failure instead of silently spawning a replacement planner.",
     });
-
-    const recoveryResult = await spawnWorkerTool.execute(this.buildPlanningRecoveryPrompt());
-    if (!recoveryResult?.ok) {
-      throw new Error(`Planning watchdog recovery failed: ${recoveryResult?.error ?? "unknown recovery failure"}`);
-    }
+    this.deps.missionService.addIntervention({
+      missionId: this.deps.missionId,
+      interventionType: "failed_step",
+      title: "Planner was never started",
+      body: "The coordinator did not spawn the required planning worker on its first turn, so ADE stopped instead of silently starting a replacement planner.",
+      requestedAction: "Decide whether to retry planning explicitly or cancel this run.",
+      metadata: {
+        runId: this.deps.runId,
+        phaseKey: "planning",
+        reasonCode: "planner_not_started",
+      },
+    });
+    throw new Error("Planning watchdog stopped the run because the planner was never started.");
   }
 
   private async runTurn(): Promise<void> {

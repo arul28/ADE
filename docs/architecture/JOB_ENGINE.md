@@ -30,7 +30,7 @@ The Job Engine is ADE's background task scheduling system. It processes asynchro
 
 The engine is an in-process queue with per-lane deduplication for compatibility pack refreshes and a debounced conflict prediction queue. The pack service it depends on has been decomposed into sub-modules (`packUtils`, `projectPackBuilder`, `missionPackBuilder`, `conflictPackBuilder`), but the job engine interacts only with the top-level `packService` facade. After each deterministic refresh, the engine optionally triggers AI narrative generation (via Vercel AI SDK using configured providers: CLI/API/local) in a non-blocking async flow. Conflict prediction runs on a debounced schedule (900ms-1500ms depending on trigger type) plus a periodic 120-second interval.
 
-Phase 1.5 introduces a separate orchestrator runtime service for mission step scheduling/execution state machines. The job engine remains focused on background compatibility artifact maintenance (packs, narratives, conflict prediction) and does not coordinate orchestrator step transitions. W6 runtime context exports are generated live from current local state and unified memory rather than waiting on pre-refreshed `.ade/packs/...` files.
+Phase 1.5 introduces a separate orchestrator runtime service for mission step scheduling/execution state machines. The job engine remains focused on background compatibility artifact maintenance (packs, narratives, conflict prediction) and does not coordinate orchestrator step transitions. W6 runtime context exports are generated live from current local state and unified memory rather than waiting on pre-refreshed `.ade/artifacts/packs/...` files.
 
 ---
 
@@ -197,14 +197,14 @@ runLaneRefresh(laneId)
   ├── packService.refreshLanePack({ laneId, reason, sessionId })   # compatibility artifact
   │     ├── computeSessionDelta() if sessionId provided
   │     ├── Build lane pack markdown body
-  │     ├── Write to .ade/packs/lanes/<laneId>/lane_pack.md
+  │     ├── Write to .ade/artifacts/packs/lanes/<laneId>/lane_pack.md
   │     └── Upsert packs_index row
   │
   └── packService.refreshProjectPack({ reason, laneId })           # compatibility artifact
         ├── Read project config
         ├── List all active lanes with status
         ├── Build project pack markdown body
-        ├── Write to .ade/packs/project_pack.md
+        ├── Write to .ade/artifacts/packs/project_pack.md
         └── Upsert packs_index row
 ```
 

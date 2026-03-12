@@ -13,6 +13,7 @@ import type {
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
 import { nowIso, parseIsoToEpoch, safeJsonParse, uniqueStrings, writeTextAtomic } from "../shared/utils";
+import { createLogIntegrityService } from "../projects/logIntegrityService";
 
 type CtoStateServiceArgs = {
   db: AdeDb;
@@ -153,6 +154,7 @@ function normalizeSessionLogEntry(input: unknown): CtoSessionLogEntry | null {
   const capabilityMode = source.capabilityMode === "full_mcp" ? "full_mcp" : "fallback";
   return {
     id: typeof source.id === "string" && source.id.trim().length ? source.id.trim() : randomUUID(),
+    prevHash: typeof source.prevHash === "string" && source.prevHash.trim().length ? source.prevHash.trim() : null,
     sessionId,
     summary,
     startedAt,
@@ -222,6 +224,7 @@ function makeDefaultCoreMemory(): CtoCoreMemory {
 }
 
 export function createCtoStateService(args: CtoStateServiceArgs) {
+  const logIntegrityService = createLogIntegrityService();
   const ctoDir = path.join(args.adeDir, "cto");
   const identityPath = path.join(ctoDir, "identity.yaml");
   const coreMemoryPath = path.join(ctoDir, "core-memory.json");
@@ -372,9 +375,9 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     return entries;
   };
 
-  const appendSessionLogToFile = (entry: CtoSessionLogEntry): void => {
+  const appendSessionLogToFile = (entry: CtoSessionLogEntry): CtoSessionLogEntry => {
     fs.mkdirSync(path.dirname(sessionsPath), { recursive: true });
-    fs.appendFileSync(sessionsPath, `${JSON.stringify(entry)}\n`, "utf8");
+    return logIntegrityService.appendEntry(sessionsPath, entry) as CtoSessionLogEntry;
   };
 
   const listSubordinateActivityFromFile = (): CtoSubordinateActivityEntry[] => {
@@ -534,8 +537,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       createdAt: nowIso(),
     };
     insertSessionLogToDb(next);
-    appendSessionLogToFile(next);
-    return next;
+    return appendSessionLogToFile(next);
   };
 
   const getSubordinateActivityLogs = (limit = 20): CtoSubordinateActivityEntry[] => {

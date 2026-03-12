@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { runGit, runGitOrThrow } from "../git/git";
@@ -26,23 +25,6 @@ export async function detectDefaultBaseRef(repoRoot: string): Promise<string> {
   }
 
   return "main";
-}
-
-export async function getGitCommonDir(repoRoot: string): Promise<string> {
-  const out = await runGitOrThrow(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: repoRoot, timeoutMs: 6_000 });
-  return out.trim();
-}
-
-export async function ensureAdeExcluded(repoRoot: string): Promise<void> {
-  const gitCommonDir = await getGitCommonDir(repoRoot);
-  const excludePath = path.join(gitCommonDir, "info", "exclude");
-  fs.mkdirSync(path.dirname(excludePath), { recursive: true });
-  const existing = fs.existsSync(excludePath) ? fs.readFileSync(excludePath, "utf8") : "";
-  const lines = existing.split("\n");
-  const has = lines.some((l) => l.trim() === ".ade/" || l.trim() === ".ade");
-  if (has) return;
-  const next = `${existing.trimEnd()}\n.ade/\n`;
-  fs.writeFileSync(excludePath, next, "utf8");
 }
 
 export function upsertProjectRow({
@@ -78,4 +60,3 @@ export function upsertProjectRow({
 export function toProjectInfo(repoRoot: string, baseRef: string): ProjectInfo {
   return { rootPath: repoRoot, displayName: path.basename(repoRoot), baseRef };
 }
-

@@ -36,6 +36,7 @@ import type { AgentChatApprovalDecision, AgentChatEvent, AgentChatEventEnvelope 
 import { getModelById } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { formatTime } from "../../lib/format";
+import { describeToolIdentifier, replaceInternalToolNames } from "./toolPresentation";
 
 /* ── Per-tool metadata ── */
 
@@ -114,8 +115,20 @@ const TOOL_META: Record<string, ToolMeta> = {
 };
 
 function getToolMeta(toolName: string): ToolMeta {
-  return TOOL_META[toolName] ?? {
-    label: toolName,
+  const direct = TOOL_META[toolName];
+  if (direct) return direct;
+
+  const candidateKeys = [
+    toolName.split(".").at(-1) ?? "",
+    toolName.split("__").at(-1) ?? "",
+  ].filter(Boolean);
+  for (const candidate of candidateKeys) {
+    const candidateMeta = TOOL_META[candidate];
+    if (candidateMeta) return candidateMeta;
+  }
+
+  return {
+    label: describeToolIdentifier(toolName).label,
     icon: Wrench,
     color: "#A78BFA",
     badgeCls: "border-accent/25 bg-accent/10 text-accent/80",
@@ -509,7 +522,7 @@ const ACTIVITY_LABELS: Record<string, string> = {
 
 function ActivityIndicator({ activity, detail }: { activity: string; detail?: string }) {
   const label = ACTIVITY_LABELS[activity] ?? activity;
-  const displayText = detail ? `${label}: ${detail}` : `${label}...`;
+  const displayText = detail ? `${label}: ${replaceInternalToolNames(detail)}` : `${label}...`;
 
   return (
     <div className="flex items-center gap-3 border-l border-l-accent/20 px-4 py-2.5 font-mono text-[11px] text-fg/60">
@@ -531,6 +544,7 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
   const [expanded, setExpanded] = useState(false);
   const meta = getToolMeta(event.tool);
   const ToolIcon = meta.icon;
+  const toolDisplay = describeToolIdentifier(event.tool);
   const resultStr = formatStructuredValue(event.result);
   const isTruncated = resultStr.length > TOOL_RESULT_TRUNCATE_LIMIT;
   const displayStr = !expanded && isTruncated ? `${resultStr.slice(0, TOOL_RESULT_TRUNCATE_LIMIT)}...` : resultStr;
@@ -546,7 +560,9 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
             <ToolIcon size={11} weight="bold" />
             {meta.label}
           </span>
-          <span className="font-bold text-fg/75">{event.tool}</span>
+          {toolDisplay.secondaryLabel ? (
+            <span className="font-bold text-fg/75">{toolDisplay.secondaryLabel}</span>
+          ) : null}
           {preview.length ? <span className="max-w-[360px] truncate text-[10px] text-fg/40">{preview}</span> : null}
           {event.status ? (
             <span className={cn(
@@ -804,9 +820,11 @@ function renderEvent(
   if (event.type === "tool_invocation") {
     const meta = getToolMeta(event.tool);
     const ToolIcon = meta.icon;
+    const toolDisplay = describeToolIdentifier(event.tool);
     const args = readRecord(event.args) ?? {};
     const resultText = event.result === undefined ? null : formatStructuredValue(event.result);
     const targetLine = meta.getTarget ? meta.getTarget(args) : null;
+    const secondaryLabel = targetLine ?? toolDisplay.secondaryLabel;
     const argCount = Object.keys(args).length;
 
     return (
@@ -819,7 +837,7 @@ function renderEvent(
               <ToolIcon size={11} weight="bold" />
               {meta.label}
             </span>
-            {targetLine ? <span className="flex-1 truncate text-[10px] text-fg/45">{targetLine}</span> : null}
+            {secondaryLabel ? <span className="flex-1 truncate text-[10px] text-fg/45">{secondaryLabel}</span> : null}
             {event.parentItemId ? (
               <span className="border border-violet-500/18 bg-violet-500/[0.08] px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.16em] text-violet-300/80">
                 subagent
@@ -865,10 +883,12 @@ function renderEvent(
   if (event.type === "tool_call") {
     const meta = getToolMeta(event.tool);
     const ToolIcon = meta.icon;
+    const toolDisplay = describeToolIdentifier(event.tool);
     const args = event.args as Record<string, unknown> | null;
     const safeArgs = args && typeof args === "object" ? args : {};
 
     const targetLine = meta.getTarget ? meta.getTarget(safeArgs) : null;
+    const secondaryLabel = targetLine ?? toolDisplay.secondaryLabel;
     const argCount = Object.keys(safeArgs).length;
 
     // Build expandable args display
@@ -914,8 +934,8 @@ function renderEvent(
               <ToolIcon size={11} weight="bold" />
               {meta.label}
             </span>
-            {targetLine ? (
-              <span className="flex-1 truncate text-[10px] text-fg/45">{targetLine}</span>
+            {secondaryLabel ? (
+              <span className="flex-1 truncate text-[10px] text-fg/45">{secondaryLabel}</span>
             ) : null}
             <span className="text-[9px] uppercase tracking-[0.16em] text-muted-fg/30">
               {argCount} arg{argCount === 1 ? "" : "s"}

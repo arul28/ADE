@@ -48,6 +48,7 @@ import { runGit } from "../git/git";
 import { detectAllAuth } from "../ai/authDetector";
 import * as providerResolver from "../ai/providerResolver";
 import { createAgentChatService } from "./agentChatService";
+import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type {
   AgentChatEventEnvelope,
   AgentChatProvider,
@@ -865,6 +866,48 @@ describe("agentChatService", () => {
       await fixture.service.disposeAll();
     });
 
+    it("treats provider-native approval requests as planner contract violations in plan mode", async () => {
+      const fixture = createFixture("codex");
+      const codex = createMockCodexProcess();
+      spawnMock.mockReturnValue(codex.proc as any);
+
+      codex.onRequest("initialize", (msg) => codex.respond(msg.id!, {}));
+      codex.onRequest("thread/start", (msg) => codex.respond(msg.id!, { thread: { id: "thread-plan-approval" } }));
+      codex.onRequest("turn/start", (msg) => codex.respond(msg.id!, { turn: { id: "turn-plan-approval" } }));
+      codex.onRequest("turn/interrupt", (msg) => codex.respond(msg.id!, {}));
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.3-codex",
+        permissionMode: "plan",
+      });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "inspect only" });
+
+      codex.serverRequest(7002, "item/commandExecution/requestApproval", {
+        itemId: "cmd-plan-approval",
+        command: "mkdir -p .ade/plans",
+        cwd: fixture.laneWorktreePath,
+        reason: "Needs write approval",
+      });
+
+      const error = await waitForEvent(
+        fixture.emitted,
+        (entry) => entry.event.type === "error" && entry.event.message.includes("PLANNER CONTRACT VIOLATION"),
+      );
+      expect(error?.event.type).toBe("error");
+      expect(
+        fixture.emitted.some(
+          (entry) => entry.event.type === "approval_request" && entry.event.itemId === "cmd-plan-approval",
+        ),
+      ).toBe(false);
+
+      const response = codex.sent.find((entry) => entry.id === 7002 && Object.prototype.hasOwnProperty.call(entry, "result"));
+      expect(response?.result?.decision).toBe("decline");
+
+      await fixture.service.disposeAll();
+    });
+
     it("sends turn/steer while turn is active", async () => {
       const fixture = createFixture("codex");
       const codex = createMockCodexProcess();
@@ -1094,6 +1137,33 @@ describe("agentChatService", () => {
       await fixture.service.disposeAll();
     });
 
+    it("converts SDK approval requests into planner contract violations in plan mode", async () => {
+      const fixture = createFixture("claude");
+
+      streamTextMock.mockImplementationOnce(() => ({
+        fullStream: makeFullStream([
+          { type: "tool-approval-request", toolCall: { toolName: "Write" } },
+          { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } },
+        ]),
+      }) as any);
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        permissionMode: "plan",
+      });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "Plan the work only" });
+
+      const error = fixture.emitted.find(
+        (entry) => entry.event.type === "error" && entry.event.message.includes("PLANNER CONTRACT VIOLATION"),
+      );
+      expect(error?.event.type).toBe("error");
+      expect(fixture.emitted.some((entry) => entry.event.type === "approval_request")).toBe(false);
+
+      await fixture.service.disposeAll();
+    });
+
     it("queues steer text and runs it as follow-up turn after completion", async () => {
       const fixture = createFixture("claude");
       let releaseFirstTurn: (() => void) | null = null;
@@ -1200,7 +1270,7 @@ describe("agentChatService", () => {
       await fixture.service.sendMessage({ sessionId: session.id, text: "first-message" });
       await fixture.service.dispose({ sessionId: session.id });
 
-      const metadataPath = path.join(fixture.adeDir, "chat-sessions", `${session.id}.json`);
+      const metadataPath = path.join(resolveAdeLayout(fixture.projectRoot).chatSessionsDir, `${session.id}.json`);
       expect(fs.existsSync(metadataPath)).toBe(true);
 
       const persisted = JSON.parse(fs.readFileSync(metadataPath, "utf8")) as {
@@ -1302,7 +1372,7 @@ describe("agentChatService", () => {
         reasoningEffort: "xhigh"
       });
 
-      const metadataPath = path.join(fixture.adeDir, "chat-sessions", `${session.id}.json`);
+      const metadataPath = path.join(resolveAdeLayout(fixture.projectRoot).chatSessionsDir, `${session.id}.json`);
       const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8")) as {
         reasoningEffort?: string;
         modelId?: string;
@@ -1586,7 +1656,7 @@ describe("agentChatService", () => {
       expect(first.identityKey).toBe("cto");
       expect(first.capabilityMode).toBe("full_mcp");
 
-      const metadataPath = path.join(fixture.adeDir, "chat-sessions", `${first.id}.json`);
+      const metadataPath = path.join(resolveAdeLayout(fixture.projectRoot).chatSessionsDir, `${first.id}.json`);
       const persisted = JSON.parse(fs.readFileSync(metadataPath, "utf8")) as {
         identityKey?: string;
         capabilityMode?: string;

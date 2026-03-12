@@ -278,9 +278,6 @@ describe("conflictService conflict context integrity", () => {
     const projectId = "proj-external-single";
     await seedProjectAndLane(db, projectId, repoRoot);
     const packsRoot = path.join(repoRoot, ".ade", "packs");
-    fs.mkdirSync(path.join(repoRoot, "docs", "architecture"), { recursive: true });
-    fs.writeFileSync(path.join(repoRoot, "docs", "PRD.ade.md"), "# PRD\n", "utf8");
-    fs.writeFileSync(path.join(repoRoot, "docs", "architecture", "ARCHITECTURE.ade.md"), "# Architecture\n", "utf8");
 
     insertPrediction({
       db,
@@ -356,12 +353,17 @@ describe("conflictService conflict context integrity", () => {
     expect(prompt).toContain(sourceLaneContextPath);
     expect(prompt).toContain(targetLaneContextPath);
     expect(prompt).toContain(conflictContextPath);
-    expect(prompt).toContain(path.join(repoRoot, "docs", "PRD.ade.md"));
+    expect(prompt).not.toContain("## Optional Docs");
     expect(fs.existsSync(projectContextPath)).toBe(true);
     expect(fs.existsSync(sourceLaneContextPath)).toBe(true);
     expect(fs.existsSync(targetLaneContextPath)).toBe(true);
     expect(fs.existsSync(conflictContextPath)).toBe(true);
     expect(prompt).toContain("Do not run: git add, git commit, git push");
+    expect(prompt).toContain("Modify/delete or rename/delete conflicts default to the target-side deletion");
+    const conflictContext = JSON.parse(fs.readFileSync(conflictContextPath, "utf8"));
+    expect(conflictContext.relationship).toBe("source-vs-target");
+    expect(conflictContext.intent?.source?.laneId).toBe("lane-1");
+    expect(conflictContext).not.toHaveProperty("conflictContext");
   });
 
   it("commits only external resolver patch paths when quick-commit is used", async () => {
@@ -596,6 +598,7 @@ describe("conflictService conflict context integrity", () => {
     expect(preparedSummary?.model).toBe("anthropic/claude-sonnet-4-6");
     expect(preparedSummary?.reasoningEffort).toBe("high");
     expect(preparedSummary?.permissionMode).toBe("full_edit");
+    expect(preparedSummary?.resolverContextKey).toBeTruthy();
 
     const attached = await service.attachResolverSession({
       runId: prepared.runId,
@@ -793,10 +796,13 @@ describe("conflictService conflict context integrity", () => {
     const prompt = fs.readFileSync(prepared.promptFilePath, "utf8");
     expect(prompt).toContain("### Pair lane-1 -> lane-2");
     expect(prompt).not.toContain("### Pair lane-1 -> lane-target");
+    expect(prompt).toContain("Relationship: peer-vs-peer");
+    expect(prompt).toContain("Prior integration steps:");
 
-    const runRecordPath = path.join(repoRoot, ".ade", "packs", "external-resolver-runs", prepared.runId, "run.json");
+    const runRecordPath = path.join(path.dirname(prepared.promptFilePath), "run.json");
     const runRecord = JSON.parse(fs.readFileSync(runRecordPath, "utf8"));
     expect(runRecord.integrationLaneId).toBe("lane-integration");
     expect(runRecord.sourceLaneIds).toEqual(["lane-1", "lane-2"]);
+    expect(runRecord.resolverContextKey).toBeTruthy();
   });
 });

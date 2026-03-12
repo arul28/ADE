@@ -147,7 +147,7 @@ An **agent chat session** is an interactive conversation with an AI agent (Codex
 | Resume | Re-run stored command | Resume conversation with full context (Codex: `thread/resume`, Claude: reload messages) |
 
 **What chat sessions track**:
-- All `ChatEvent` items logged to `.ade/transcripts/<session-id>.chat.jsonl` (JSONL format, one event per line)
+- All `ChatEvent` items logged to `.ade/transcripts/<session-id>.chat.jsonl` (JSONL format, one event per line) and mirrored to `.ade/transcripts/chat/<session-id>.jsonl`
 - Git state: `head_sha_start` and `head_sha_end` captured for delta computation
 - Session delta: computed from file changes made during the chat (same algorithm as PTY sessions)
 - Summary: deterministic summary from last turn outcome + optional AI-enhanced summary
@@ -640,7 +640,8 @@ CREATE INDEX idx_deltas_lane_id ON session_deltas(lane_id);
 | `.ade/transcripts/` | Directory containing all session transcript files |
 | `.ade/transcripts/<session-id>.log` | Raw terminal output for a specific session (includes ANSI codes) |
 | `.ade/transcripts/<session-id>.chat.jsonl` | Structured chat event log for agent chat sessions (JSONL, one ChatEvent per line) |
-| `.ade/chat-sessions/<session-id>.json` | Claude chat session state (messages array) for resume support |
+| `.ade/transcripts/chat/<session-id>.jsonl` | Mirrored chat-event log kept in the canonical chat transcript subdirectory |
+| `.ade/cache/chat-sessions/<session-id>.json` | Chat session state (messages array) for resume support |
 
 **Transcript file sizing**:
 - Typical interactive session: 10 KB - 1 MB

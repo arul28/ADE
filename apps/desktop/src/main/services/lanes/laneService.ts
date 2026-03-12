@@ -32,6 +32,7 @@ import type {
   StackChainItem,
   UpdateLaneAppearanceArgs
 } from "../../../shared/types";
+import { resolveAdeLayout } from "../../../shared/adeLayout";
 
 type LaneRow = {
   id: string;
@@ -356,6 +357,18 @@ export function createLaneService({
     return args.scope === "lane_and_descendants"
       ? collectDepthFirstIds({ rootLaneId: args.rootLaneId, childrenByParent, includeSelf: true })
       : [args.rootLaneId];
+  };
+
+  const resolveRootAncestorId = (rowsById: Map<string, LaneRow>, laneId: string): string => {
+    let currentId = laneId;
+    const visited = new Set<string>();
+    while (!visited.has(currentId)) {
+      visited.add(currentId);
+      const row = rowsById.get(currentId);
+      if (!row?.parent_lane_id) return currentId;
+      currentId = row.parent_lane_id;
+    }
+    return laneId;
   };
 
   const getStoredRebaseRun = (runId: string): RebaseRun => {
@@ -1014,6 +1027,15 @@ export function createLaneService({
       const runId = randomUUID();
       const startedAt = new Date().toISOString();
       const order = resolveRebaseOrder({ rootLaneId: target.id, scope });
+      const rowsById = getRowsById(false);
+      const rootStackId = resolveRootAncestorId(rowsById, target.id);
+      const conflictingRun = [...rebaseRuns.values()].find((existingRun) =>
+        existingRun.state === "running"
+        && resolveRootAncestorId(rowsById, existingRun.rootLaneId) === rootStackId
+      );
+      if (conflictingRun) {
+        throw new Error(`A rebase run is already active for this lane stack (${conflictingRun.runId.slice(0, 8)}).`);
+      }
 
       const lanes: RebaseRunLane[] = order.map((laneId) => {
         const lane = getLaneRow(laneId);
@@ -1062,6 +1084,18 @@ export function createLaneService({
         return { runId, run: cloneRebaseRun(run) };
       }
 
+      const failRunAtLane = (laneItem: RebaseRunLane, laneId: string, index: number, errorMsg: string): void => {
+        laneItem.status = "blocked";
+        laneItem.error = errorMsg;
+        run.state = "failed";
+        run.failedLaneId = laneId;
+        run.error = errorMsg;
+        for (let i = index + 1; i < run.lanes.length; i += 1) {
+          const pending = run.lanes[i]!;
+          if (pending.status === "pending") pending.status = "blocked";
+        }
+      };
+
       for (let index = 0; index < run.lanes.length; index += 1) {
         const laneItem = run.lanes[index]!;
         const lane = getLaneRow(laneItem.laneId);
@@ -1079,36 +1113,46 @@ export function createLaneService({
 
         const parent = getLaneRow(lane.parent_lane_id);
         if (!parent) {
-          laneItem.status = "blocked";
-          laneItem.error = `Parent lane not found for ${lane.name}`;
-          run.state = "failed";
-          run.failedLaneId = lane.id;
-          run.error = laneItem.error;
-          for (let i = index + 1; i < run.lanes.length; i += 1) {
-            const pending = run.lanes[i]!;
-            if (pending.status === "pending") pending.status = "blocked";
-          }
+          failRunAtLane(laneItem, lane.id, index, `Parent lane not found for ${lane.name}`);
           break;
         }
 
         const parentHead = await getHeadSha(parent.worktree_path);
         if (!parentHead) {
-          laneItem.status = "blocked";
-          laneItem.error = `Unable to resolve parent HEAD for ${parent.name}`;
-          run.state = "failed";
-          run.failedLaneId = lane.id;
-          run.error = laneItem.error;
-          for (let i = index + 1; i < run.lanes.length; i += 1) {
-            const pending = run.lanes[i]!;
-            if (pending.status === "pending") pending.status = "blocked";
-          }
+          failRunAtLane(laneItem, lane.id, index, `Unable to resolve parent HEAD for ${parent.name}`);
           break;
         }
 
         run.currentLaneId = lane.id;
+        laneItem.preHeadSha = await getHeadSha(lane.worktree_path);
+        if (!laneItem.preHeadSha) {
+          failRunAtLane(laneItem, lane.id, index, `Unable to resolve HEAD for ${lane.name}`);
+          break;
+        }
+
+        const alreadyCurrent = await runGit(["merge-base", "--is-ancestor", parentHead, laneItem.preHeadSha], {
+          cwd: lane.worktree_path,
+          timeoutMs: 15_000,
+        });
+        if (alreadyCurrent.exitCode === 0) {
+          laneItem.status = "skipped";
+          laneItem.postHeadSha = laneItem.preHeadSha;
+          run.currentLaneId = null;
+          emitRunLog({
+            runId,
+            laneId: lane.id,
+            message: `${lane.name} is already up to date with ${parent.name}; skipping rebase.`,
+          });
+          emitRunUpdated(run);
+          continue;
+        }
+        if (alreadyCurrent.exitCode !== 1) {
+          failRunAtLane(laneItem, lane.id, index, alreadyCurrent.stderr.trim() || `Unable to compare ${lane.name} with ${parent.name}`);
+          break;
+        }
+
         laneItem.status = "running";
         laneItem.error = null;
-        laneItem.preHeadSha = await getHeadSha(lane.worktree_path);
         emitRunUpdated(run);
         emitRunLog({
           runId,
@@ -1524,7 +1568,7 @@ export function createLaneService({
         }
       }
 
-      const lanePackDir = path.join(projectRoot, ".ade", "packs", "lanes", laneId);
+      const lanePackDir = path.join(resolveAdeLayout(projectRoot).packsDir, "lanes", laneId);
       try {
         fs.rmSync(lanePackDir, { recursive: true, force: true });
       } catch {

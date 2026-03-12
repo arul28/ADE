@@ -298,7 +298,7 @@ Pack event recorded + narrative applied
 
 Conflict prediction summaries are stored on disk for each lane:
 
-- `.ade/packs/conflicts/predictions/<laneId>.json`
+- `.ade/artifacts/packs/conflicts/predictions/<laneId>.json`
 
 This file is deterministic and must remain useful in Guest mode.
 

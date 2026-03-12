@@ -136,11 +136,11 @@ async function createFixture() {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// VAL-PLAN-001: Planning artifacts written to .ade/plans/
+// VAL-PLAN-001: Planning workers return plan payloads instead of writing files
 // ─────────────────────────────────────────────────────────────────
 
-describe("VAL-PLAN-001: Planning artifacts written to .ade/plans/", () => {
-  it("buildFullPrompt for planning step includes .ade/plans/ instruction", () => {
+describe("VAL-PLAN-001: Planning workers return plan payloads", () => {
+  it("buildFullPrompt for planning step forbids plan file writes and requires report_result plan payload", () => {
     const result = buildFullPrompt(
       {
         run: {
@@ -174,10 +174,9 @@ describe("VAL-PLAN-001: Planning artifacts written to .ade/plans/", () => {
       {}
     );
 
-    // Must mention .ade/plans/ for plan output location
-    expect(result.prompt).toContain(".ade/plans/");
-    // Must NOT reference ~/.claude/plans/
-    expect(result.prompt).not.toContain("~/.claude/plans");
+    expect(result.prompt).toContain("Do not create directories or write plan files yourself.");
+    expect(result.prompt).toContain("plan` object");
+    expect(result.prompt).toContain("ADE will persist the canonical mission plan artifact");
   });
 
   it("planning step prompt includes 'Do not use ExitPlanMode' instruction", () => {

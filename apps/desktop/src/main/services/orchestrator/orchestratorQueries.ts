@@ -777,11 +777,12 @@ export function clipText(value: string, maxChars: number): string {
  */
 export type BlockingWarningClassification = {
   hasBlockingFailure: boolean;
-  category: 'sandbox_block' | 'permission_denied' | 'tool_failure' | 'missing_auth' | 'worker_no_output' | null;
+  category: 'sandbox_block' | 'permission_denied' | 'tool_failure' | 'missing_auth' | 'worker_no_output' | 'planner_contract_violation' | null;
   detail: string | null;
 };
 
 const BLOCKING_WARNING_PATTERNS: Array<{ pattern: RegExp; category: BlockingWarningClassification['category'] }> = [
+  { pattern: /PLANNER CONTRACT VIOLATION/i, category: 'planner_contract_violation' },
   { pattern: /SANDBOX BLOCKED/i, category: 'sandbox_block' },
   { pattern: /sandbox.?block/i, category: 'sandbox_block' },
   { pattern: /File path outside sandbox/i, category: 'sandbox_block' },

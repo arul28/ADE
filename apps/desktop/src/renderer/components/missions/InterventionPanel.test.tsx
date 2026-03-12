@@ -152,6 +152,7 @@ describe("InterventionPanel", () => {
         interventionId: "manual-question",
         directive: "Put it in the main navigation group.",
         priority: "instruction",
+        resolutionKind: "answer_provided",
       })
     );
   });

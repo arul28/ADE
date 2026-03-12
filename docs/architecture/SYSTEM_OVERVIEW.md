@@ -67,12 +67,12 @@ Rather than using branches alone, ADE maps each lane (unit of work) to a dedicat
 
 ### Deterministic Context Exports + Unified Memory
 
-W6 is now complete as a runtime migration: unified memory is the canonical durable memory backend and renderer inspection surface, and runtime context assembly no longer depends on persisted `.ade/packs/...` files.
+W6 is now complete as a runtime migration: unified memory is the canonical durable memory backend and renderer inspection surface, and runtime context assembly no longer depends on persisted `.ade/artifacts/packs/...` files.
 
 ADE still keeps deterministic markdown context exports as explicit compatibility and audit surfaces for:
 - MCP `read_context` resources and `ade://pack/...` URIs
 - Agent chat context-export selection
-- Optional persisted pack refresh/version history for users or integrations that still inspect `.ade/packs/...`
+- Optional persisted pack refresh/version history for users or integrations that still inspect `.ade/artifacts/packs/...`
 
 This keeps prompts reproducible and auditable without leaving persisted pack artifacts on the critical runtime path.
 
@@ -193,7 +193,7 @@ Common utility code is consolidated into shared modules to eliminate duplication
 | `memoryService` | `memoryService.ts` | Unified durable memory backend backed by `unified_memories`: project/agent/mission scopes, pinned/hot/cold tiers, hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking), pin/promote/archive flows, lifecycle sweeps (temporal decay, tier demotion, hard limits, orphan cleanup), batch consolidation (Jaccard trigram clustering + LLM merge), and DB-backed persistence in `.ade/ade.db`. Local embeddings via `@huggingface/transformers` (all-MiniLM-L6-v2) with background worker and graceful lexical fallback. |
 | `ctoAgent` | `ctoStateService.ts` | CTO/employee subsystem — persistent identities, layered memory (CTO core memory, employee core memory, shared project memory, subordinate activity feed), org chart, heartbeat, Linear sync, budget enforcement |
 | `externalMcpClient` | *Planned* | Connects to external MCP servers for extended agent capabilities — lazy connect, permission integration, tool manifest merging |
-| `adeStateManager` | *Planned* | Manages `.ade/` portable state directory — cross-machine sync via git, embedding regeneration on clone, state integrity checks |
+| `adeProjectService` + `configReloadService` | `adeProjectService.ts`, `configReloadService.ts` | Canonical `.ade` structure repair, tracked-vs-ignored path snapshotting, health validation, JSONL normalization, config reload, and renderer project-state events |
 | `laneEnvironmentService` | `laneEnvironmentService.ts` | Lane environment initialization (env files, ports, Docker, deps) |
 | `laneProxyService` | `laneProxyService.ts` | Per-lane hostname proxy (*.localhost routing); preview launch is embedded here (not a standalone service) |
 | `browserProfileService` | *Planned* | Chrome profile isolation per lane |
@@ -451,19 +451,20 @@ Real-time events (PTY data, process status changes, test run updates, AI streami
 
 ADE is designed to be fully portable across developer machines without requiring a central hub, cloud backend, or relay for state synchronization.
 
-**Git-based state sync**: All durable ADE state lives in the `.ade/` directory at the project root. This directory is committed to git alongside the codebase, enabling state to travel with the repository:
+**Git-based state sync**: ADE now uses a canonical `.ade` contract with tracked/shareable roots plus a tracked `.ade/.gitignore` for machine-local runtime state:
 
 | State Category | Location | Git-tracked | Notes |
 |----------------|----------|:-----------:|-------|
-| Unified memory tables | `.ade/ade.db` (`unified_memories`, `unified_memory_embeddings`) | Project policy dependent | Primary runtime memory store |
-| Agent definitions | `.ade/agents/*.yaml` | Yes | Agent role and capability configs |
-| Agent identities | `.ade/identities/*.yaml` | Yes | Agent persona and policy profiles |
-| Mission history | `.ade/missions/history.jsonl` | Yes | Completed mission records |
-| Deterministic context exports | `.ade/packs/**` | Project policy dependent | Compatibility artifacts used by orchestrator/MCP/context-doc tooling |
-| Shared config | `.ade/local.yaml` | Yes | Project-level settings |
+| Unified memory tables | `.ade/ade.db` (`unified_memories`, `unified_memory_embeddings`) | No | Primary runtime memory store |
+| Agent definitions + worker state | `.ade/agents/**` | Yes | Worker identity, core memory, session logs |
+| CTO state | `.ade/cto/**` | Yes | CTO identity, core memory, session logs |
+| Mission history | `.ade/history/**` | Yes | Mission JSONL history and related tracked logs |
+| Deterministic context exports | `.ade/artifacts/packs/**` | No | Compatibility artifacts used by orchestrator/MCP/context-doc tooling |
+| Shared config | `.ade/ade.yaml` | Yes | Project-level defaults |
+| Local config | `.ade/local.yaml` | No | Machine-local override config |
 | MCP socket | `.ade/mcp.sock` | No | Runtime artifact |
 | Session transcripts | `.ade/transcripts/` | No | Large, ephemeral |
-| Private config | `.ade/local.private.yaml` | No | Machine-specific secrets/paths |
+| Secret config + secret stores | `.ade/local.secret.yaml`, `.ade/secrets/**` | No | Machine-specific secrets/paths |
 
 **No hub needed**: Unlike systems that require a central server for state sync, ADE relies entirely on git. When a developer pushes their `.ade/` changes, other machines receive the state on the next pull. This is intentionally simple and works with any git hosting provider.
 
@@ -506,16 +507,16 @@ Current codebase status is feature-rich across lanes, files, terminals, conflict
 | Unified Memory System (W6) — replaces pack-first renderer surfaces and unifies retrieval | Complete (Phase 4) |
 | Memory Engine Hardening (W6½) — lifecycle sweeps, batch consolidation, pre-compaction flush | Complete (Phase 4) |
 | Embeddings Pipeline (W7a) — local all-MiniLM-L6-v2, hybrid FTS+cosine retrieval, MMR re-ranking | Complete (Phase 4) |
-| Skills + Learning Pipeline (W7) — procedural extraction, skill materialization to `.claude/skills/` | Core implemented (Phase 4); advanced capture still pending |
+| Skills + Learning Pipeline (W7) — procedural extraction, skill materialization to `.ade/skills/` | Core implemented (Phase 4); advanced capture still pending |
 | CTO Agent — core identity, memory, persistent chat (W1) | Complete (Phase 4) |
 | Worker Agents — org chart, multi-adapter, config versioning, budget, task sessions (W2) | Complete (Phase 4) |
 | Heartbeat & Activation — timer pool, two-tier execution, coalescing, orphan reaping (W3) | Complete (Phase 4) |
 | Bidirectional Linear Sync (W4) | Complete (Phase 4) |
 | External MCP consumption (agents connect to external MCP servers) | Planned (Phase 4) |
-| `.ade/` portable state (cross-machine git sync) | Planned (Phase 4) |
+| `.ade/` portable state (canonical tracked/shareable contract) | Complete (Phase 4) |
 | Play Runtime Isolation (Phase 5) — laneEnvironmentService, laneProxyService, portAllocationService, laneTemplateService, oauthRedirectService, runtimeDiagnosticsService | Complete |
 | Compute backend abstraction (Phase 5.5) | Dropped (VPS is just another machine running ADE) |
 
-Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is complete — orchestrator evolution shipped (meta-reasoner, compaction engine, session persistence, inter-agent messaging, mission chat workspace, scoped memory architecture, shared facts, run narrative, phase-based planning runtime, PR strategies, adaptive runtime with `classifyTaskComplexity` and model downgrade, approval gates with `phase_approval` events, multi-round deliberation, completion gates). MCP dual-mode architecture shipped: transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding at `.ade/mcp.sock`, smart entry point auto-detection, 35 tools available in both modes. Phase 4 W1-W4, W6, W6½, and W7a are complete. Memory engine now includes lifecycle sweeps (temporal decay, tier demotion, hard limits, orphan cleanup), batch consolidation (Jaccard trigram clustering + LLM merge), pre-compaction flush, local embedding pipeline (`@huggingface/transformers` all-MiniLM-L6-v2), and hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking) with graceful lexical fallback. Memory Health dashboard in Settings provides visibility into entry counts, sweep/consolidation logs, embedding progress, and hard limit usage. Remaining major Phase 4 workstreams: W5b, W8, W9, W10. W-UX is partially implemented, W7b is mostly implemented, and W7c has its core pipeline implemented with advanced capture still pending. Phase 5 (Play Runtime Isolation) is complete. Phase 5.5 (Compute Backend Abstraction) was dropped — VPS is just another machine running ADE. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
+Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is complete — orchestrator evolution shipped (meta-reasoner, compaction engine, session persistence, inter-agent messaging, mission chat workspace, scoped memory architecture, shared facts, run narrative, phase-based planning runtime, PR strategies, adaptive runtime with `classifyTaskComplexity` and model downgrade, approval gates with `phase_approval` events, multi-round deliberation, completion gates). MCP dual-mode architecture shipped: transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding at `.ade/mcp.sock`, smart entry point auto-detection, 35 tools available in both modes. Phase 4 W1-W4, W6, W6½, W7a, W7b, and W10 are complete. Memory engine now includes lifecycle sweeps (temporal decay, tier demotion, hard limits, orphan cleanup), batch consolidation (Jaccard trigram clustering + LLM merge), pre-compaction flush, local embedding pipeline (`@huggingface/transformers` all-MiniLM-L6-v2), and hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking) with graceful lexical fallback. Memory Health dashboard in Settings provides visibility into entry counts, sweep/consolidation logs, embedding progress, and hard limit usage. Remaining major Phase 4 workstreams: W5b, W8, W9, and W-UX/W7c follow-through. Phase 5 (Play Runtime Isolation) is complete. Phase 5.5 (Compute Backend Abstraction) was dropped — VPS is just another machine running ADE. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
 
 - `docs/final-plan/README.md`

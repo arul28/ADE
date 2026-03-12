@@ -1,9 +1,9 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import type { LaneSummary, RebaseNeed, RebaseRun } from "../../../../shared/types";
+import type { AiPermissionMode, LaneSummary, RebaseNeed, RebaseRun } from "../../../../shared/types";
 import { RebaseTab } from "./RebaseTab";
 
 vi.mock("../../ui/PaneTilingLayout", () => ({
@@ -25,8 +25,23 @@ vi.mock("../shared/UrgencyGroup", () => ({
   ),
 }));
 
+const prAiResolverPanelSpy = vi.fn();
 vi.mock("../shared/PrAiResolverPanel", () => ({
-  PrAiResolverPanel: () => <div>AI resolver</div>,
+  PrAiResolverPanel: (props: Record<string, unknown>) => {
+    prAiResolverPanelSpy(props);
+    const context = (props.context as Record<string, unknown> | undefined) ?? {};
+    return (
+      <div
+        data-testid="ai-resolver"
+        data-permission-mode={String(props.permissionMode ?? "")}
+        data-source-tab={String(context.sourceTab ?? "")}
+        data-source-lane-id={String(context.sourceLaneId ?? "")}
+        data-target-lane-id={String(context.targetLaneId ?? "")}
+      >
+        AI resolver
+      </div>
+    );
+  },
 }));
 
 function makeLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
@@ -90,6 +105,24 @@ function makeRun(scope: RebaseRun["scope"] = "lane_only"): RebaseRun {
   };
 }
 
+function renderRebaseTab(overrides: Partial<React.ComponentProps<typeof RebaseTab>> = {}) {
+  return render(
+    <RebaseTab
+      rebaseNeeds={[makeNeed()]}
+      lanes={[makeLane(), makeLane({ id: "lane-main", name: "Primary", laneType: "primary", parentLaneId: null, childCount: 1, branchRef: "main", status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false } })]}
+      selectedItemId="lane-1"
+      onSelectItem={vi.fn()}
+      resolverModel="anthropic/claude-sonnet-4-6"
+      resolverReasoningLevel="medium"
+      resolverPermissionMode={"guarded_edit" satisfies AiPermissionMode}
+      onResolverChange={vi.fn()}
+      onResolverPermissionChange={vi.fn()}
+      onRefresh={vi.fn(async () => {})}
+      {...overrides}
+    />,
+  );
+}
+
 describe("RebaseTab", () => {
   const rebaseStart = vi.fn();
   const rebaseSubscribe = vi.fn(() => () => {});
@@ -124,6 +157,7 @@ describe("RebaseTab", () => {
   }));
 
   beforeEach(() => {
+    prAiResolverPanelSpy.mockClear();
     rebaseStart.mockReset();
     rebaseSubscribe.mockClear();
     scanNeeds.mockClear();
@@ -146,126 +180,58 @@ describe("RebaseTab", () => {
   });
 
   afterEach(() => {
+    cleanup();
     delete (window as any).ade;
   });
 
-  it("hides descendant scope and rebase-tab defer-dismiss controls for lanes without children", () => {
-    render(
-      <RebaseTab
-        rebaseNeeds={[makeNeed()]}
-        lanes={[makeLane(), makeLane({ id: "lane-main", name: "Primary", laneType: "primary", parentLaneId: null, childCount: 1, branchRef: "main", status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false } })]}
-        selectedItemId="lane-1"
-        onSelectItem={vi.fn()}
-        resolverModel="anthropic/claude-sonnet-4-6"
-        resolverReasoningLevel="medium"
-        onResolverChange={vi.fn()}
-        onRefresh={vi.fn(async () => {})}
-      />,
-    );
+  it("renders the selected lane rebase controls", () => {
+    renderRebaseTab();
 
-    expect(screen.queryByText("LANE + CHILDREN")).toBeNull();
-    expect(screen.getByText("This lane has no child lanes, so only the current lane will be rebased.")).toBeTruthy();
-    expect(screen.queryByText("DEFER 4H")).toBeNull();
-    expect(screen.queryByText("DISMISS")).toBeNull();
-    expect(screen.queryByText("REBASE RUN CONTROL CENTER")).toBeNull();
-    expect(screen.queryByText("CONTINUE")).toBeNull();
-    expect(screen.queryByText("SKIP LANE")).toBeNull();
+    expect(screen.getByText("REBASE RUN CONTROL CENTER")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "CURRENT LANE ONLY" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "LANE + CHILDREN" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "DEFER 4H" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "DISMISS" })).toBeTruthy();
+    expect(screen.getByText("Pick the model here, then it locks once the resolver starts.")).toBeTruthy();
   });
 
-  it("rebases zero-child lanes with lane_only scope and rescans rebase needs immediately", async () => {
+  it("starts a local rebase and rescans rebase needs immediately", async () => {
     rebaseStart.mockResolvedValue({ runId: "run-1", run: makeRun("lane_only") });
-    render(
-      <RebaseTab
-        rebaseNeeds={[makeNeed({ conflictPredicted: false, conflictingFiles: [] })]}
-        lanes={[makeLane(), makeLane({ id: "lane-main", name: "Primary", laneType: "primary", parentLaneId: null, childCount: 1, branchRef: "main", status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false } })]}
-        selectedItemId="lane-1"
-        onSelectItem={vi.fn()}
-        resolverModel="anthropic/claude-sonnet-4-6"
-        resolverReasoningLevel="medium"
-        onResolverChange={vi.fn()}
-        onRefresh={vi.fn(async () => {})}
-      />,
-    );
+    const onRefresh = vi.fn(async () => {});
+    renderRebaseTab({
+      rebaseNeeds: [makeNeed({ conflictPredicted: false, conflictingFiles: [] })],
+      onRefresh,
+    });
 
+    fireEvent.click(screen.getAllByRole("button", { name: "CURRENT LANE ONLY" })[0]!);
     fireEvent.click(screen.getAllByRole("button", { name: "REBASE NOW (LOCAL ONLY)" })[0]!);
 
     await waitFor(() => {
-      expect(rebaseStart).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-1", scope: "lane_only" }));
+      expect(rebaseStart).toHaveBeenCalledWith(
+        expect.objectContaining({ laneId: "lane-1", pushMode: "none", actor: "user" }),
+      );
     });
     await waitFor(() => {
-      expect(scanNeeds).toHaveBeenCalled();
+      expect(onRefresh).toHaveBeenCalled();
     });
   });
 
-  it("loads overlap previews in preview mode so blocked parent stacks do not hard-fail the tab", async () => {
-    prepareProposal.mockResolvedValue({
-      laneId: "lane-1",
-      peerLaneId: "lane-main",
-      provider: "subscription",
-      preparedAt: "2026-03-11T12:00:00.000Z",
-      contextDigest: "digest",
-      activeConflict: {
-        laneId: "lane-1",
-        kind: null,
-        inProgress: false,
-        conflictedFiles: [],
-        canContinue: false,
-        canAbort: false,
-      },
-      laneExportLite: null,
-      peerLaneExportLite: null,
-      conflictExportStandard: null,
-      files: [
-        {
-          path: "apps/desktop/src/renderer/components/automations/AutomationsPage.test.tsx",
-          conflictType: "content",
-          laneDiff: "@@ -1 +1 @@\n-old\n+new\n",
-          peerDiff: "@@ -1 +1 @@\n-old\n+peer\n",
-          markerPreview: null,
-        },
-      ],
-      stats: {
-        approxChars: 100,
-        laneExportChars: 0,
-        peerLaneExportChars: 0,
-        conflictExportChars: 0,
-        fileCount: 1,
-      },
-      warnings: [
-        "Subscription AI is unavailable; proposal preview is prepared for manual/external resolution.",
-        "Pack refresh removed in W6; using live git/conflict state only.",
-        "Conflict/lane pack exports removed in W6; AI context uses direct overlap/conflict payloads.",
-        "Peer diff (apps/desktop/src/renderer/components/automations/AutomationsPage.test.tsx) truncated to 6000 characters.",
-      ],
-      existingProposalId: null,
-    });
+  it("opens the inline AI resolver with rebase-specific context", async () => {
+    renderRebaseTab();
+    fireEvent.click(screen.getAllByRole("button", { name: "REBASE WITH AI" })[1]!);
 
-    render(
-      <RebaseTab
-        rebaseNeeds={[makeNeed()]}
-        lanes={[makeLane(), makeLane({ id: "lane-main", name: "Primary", laneType: "primary", parentLaneId: null, childCount: 1, branchRef: "main", status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false } })]}
-        selectedItemId="lane-1"
-        onSelectItem={vi.fn()}
-        resolverModel="anthropic/claude-sonnet-4-6"
-        resolverReasoningLevel="medium"
-        onResolverChange={vi.fn()}
-        onRefresh={vi.fn(async () => {})}
-      />,
-    );
+    const resolver = await screen.findByTestId("ai-resolver");
+    expect(resolver.getAttribute("data-source-tab")).toBe("rebase");
+    expect(resolver.getAttribute("data-source-lane-id")).toBe("lane-1");
+    expect(resolver.getAttribute("data-target-lane-id")).toBe("lane-main");
+    expect(prAiResolverPanelSpy).toHaveBeenCalled();
+  });
 
-    await waitFor(() => {
-      expect(prepareProposal).toHaveBeenCalledWith(
-        expect.objectContaining({
-          laneId: "lane-1",
-          peerLaneId: "lane-main",
-          allowBlockedParentPreview: true,
-        }),
-      );
-    });
+  it("passes the selected resolver permission into the PR AI panel", async () => {
+    renderRebaseTab({ resolverPermissionMode: "full_edit" });
+    fireEvent.click(screen.getAllByRole("button", { name: "REBASE WITH AI" })[1]!);
 
-    expect(screen.queryByText(/Subscription AI is unavailable/i)).toBeNull();
-    expect(screen.queryByText(/Pack refresh removed in W6/i)).toBeNull();
-    expect(screen.queryByText(/Conflict\/lane pack exports removed in W6/i)).toBeNull();
-    expect(screen.getByText(/truncated to 6000 characters/i)).toBeTruthy();
+    const resolver = await screen.findByTestId("ai-resolver");
+    expect(resolver.getAttribute("data-permission-mode")).toBe("full_edit");
   });
 });

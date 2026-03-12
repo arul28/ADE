@@ -18,9 +18,11 @@ import type {
   OrchestratorChatMessage,
 } from "../../../shared/types";
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
+import { relativeWhen } from "../../lib/format";
 import { MissionThreadMessageList } from "./MissionThreadMessageList";
 import type { Channel } from "./ChatChannelList";
 import { getMissionInterventionOwnerLabel } from "./missionHelpers";
+import type { MissionStateNarrative } from "./missionFeedPresentation";
 
 // ── Design tokens ──
 const MONO = MONO_FONT;
@@ -53,6 +55,7 @@ export type ChatMessageAreaProps = {
   threadIntervention: MissionIntervention | null;
   onOpenIntervention: (interventionId: string) => void;
   showStreamingIndicator: boolean;
+  missionNarrative: MissionStateNarrative | null;
   runtimeSummary: { title: string; detail: string } | null;
   agentRuntimeConfig: MissionAgentRuntimeConfig | null;
   onApproval: (
@@ -74,6 +77,7 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
   threadIntervention,
   onOpenIntervention,
   showStreamingIndicator,
+  missionNarrative,
   runtimeSummary,
   agentRuntimeConfig,
   onApproval,
@@ -145,6 +149,40 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
           )}
         </div>
       </div>
+
+      {missionNarrative && selectedChannel?.kind === "global" && (
+        <div
+          className="flex items-start gap-3 px-3 py-2"
+          style={{
+            borderBottom: `1px solid ${BORDER}`,
+            background: `${severityColorForNarrative(missionNarrative.severity)}10`,
+          }}
+        >
+          <span
+            className="mt-1 inline-block h-2 w-2 rounded-full"
+            style={{ backgroundColor: severityColorForNarrative(missionNarrative.severity) }}
+          />
+          <div className="min-w-0 flex-1">
+            <div
+              className="text-[10px] font-bold uppercase tracking-[0.12em]"
+              style={{ color: TEXT_MUTED, fontFamily: MONO }}
+            >
+              Mission state
+            </div>
+            <div className="mt-0.5 text-[11px] font-semibold" style={{ color: TEXT_PRIMARY }}>
+              {missionNarrative.title}
+            </div>
+            <div className="mt-0.5 text-[11px] leading-[1.45]" style={{ color: TEXT_SECONDARY }}>
+              {missionNarrative.detail}
+            </div>
+          </div>
+          {missionNarrative.at ? (
+            <span className="shrink-0 text-[10px]" style={{ color: TEXT_MUTED }}>
+              {relativeWhen(missionNarrative.at)}
+            </span>
+          ) : null}
+        </div>
+      )}
 
       {jumpNotice && (
         <div
@@ -284,4 +322,17 @@ function RuntimeFlagPill({ label, enabled }: { label: string; enabled: boolean }
       <span>{enabled ? "on" : "off"}</span>
     </span>
   );
+}
+
+function severityColorForNarrative(severity: MissionStateNarrative["severity"]): string {
+  switch (severity) {
+    case "success":
+      return COLORS.success;
+    case "warning":
+      return COLORS.warning;
+    case "error":
+      return COLORS.danger;
+    default:
+      return COLORS.accent;
+  }
 }

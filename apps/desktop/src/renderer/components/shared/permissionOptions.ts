@@ -84,6 +84,15 @@ export function getPermissionOptions(opts: {
         safety: "safe",
       },
       {
+        value: "edit",
+        label: "Guarded Edit",
+        shortDesc: "Writable sandbox with approval on failures",
+        detail: "Workspace-write sandbox with approval policy set to on-failure. Codex can edit files and run commands autonomously inside the worktree, but escalations and sandbox failures still stop for approval.",
+        allows: ["File reads", "File writes & patches", "Shell commands in workspace-write sandbox"],
+        gates: ["Escalations after sandbox failure", "Operations that exceed workspace sandbox"],
+        safety: "semi-auto",
+      },
+      {
         value: "full-auto",
         label: "Full Auto",
         shortDesc: "Unrestricted \u2014 skips all approval prompts",

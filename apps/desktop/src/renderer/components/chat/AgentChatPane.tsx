@@ -349,6 +349,7 @@ export function AgentChatPane({
   availableModelIdsOverride,
   modelSelectionLocked = false,
   compactResolverView = false,
+  permissionModeLocked = false,
   onSessionCreated,
 }: {
   laneId: string | null;
@@ -362,6 +363,7 @@ export function AgentChatPane({
   availableModelIdsOverride?: string[];
   modelSelectionLocked?: boolean;
   compactResolverView?: boolean;
+  permissionModeLocked?: boolean;
   onSessionCreated?: (sessionId: string) => void;
 }) {
   const forceDraft = forceDraftMode || forceNewSession;
@@ -1133,6 +1135,7 @@ export function AgentChatPane({
         executionMode={selectedExecutionMode?.value ?? "focused"}
         executionModeOptions={launchModeEditable ? executionModeOptions : []}
         modelSelectionLocked={modelSelectionLocked}
+        permissionModeLocked={permissionModeLocked}
         onExecutionModeChange={setExecutionMode}
         onPermissionModeChange={handlePermissionModeChange}
         onModelChange={(nextModelId) => {

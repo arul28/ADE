@@ -17,7 +17,8 @@ import type {
 import type { MentionParticipant } from "../shared/MentionInput";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { useMissionPolling } from "./useMissionPolling";
-import { formatMissionWorkerPresentation, looksLikeLowSignalNoise } from "./missionHelpers";
+import { formatMissionWorkerPresentation } from "./missionHelpers";
+import { buildMissionStateNarrative, prepareMissionFeedItems } from "./missionFeedPresentation";
 import {
   isSignalMessage,
   readRecord,
@@ -31,30 +32,6 @@ import { ChatMessageArea } from "./ChatMessageArea";
 import { ChatInput, type QuickTarget } from "./ChatInput";
 
 const BG_PAGE = COLORS.pageBg;
-
-function isDismissiveSteerMessage(value: string): boolean {
-  return /^(acknowledged\.?|dismissed by user\b.*proceed without action\.?)$/i.test(value.trim());
-}
-
-function buildMissionFeedSignature(item: { kind: string; title: string; detail: string; stepKey?: string | null; attemptId?: string | null }): string {
-  return [
-    item.kind,
-    item.stepKey ?? "",
-    item.attemptId ?? "",
-    item.title.trim().toLowerCase(),
-    item.detail.trim().toLowerCase(),
-  ].join("::");
-}
-
-function shouldIncludeMissionFeedItem(item: MissionRunView["progressLog"][number]): boolean {
-  const title = item.title.trim();
-  const detail = item.detail.trim();
-  if (!title.length && !detail.length) return false;
-  if (isDismissiveSteerMessage(title) || isDismissiveSteerMessage(detail)) return false;
-  if (item.kind === "user" && isDismissiveSteerMessage(detail || title)) return false;
-  if (looksLikeLowSignalNoise(title) && (!detail.length || looksLikeLowSignalNoise(detail))) return false;
-  return true;
-}
 
 function findThreadIntervention(args: {
   interventions: MissionIntervention[];
@@ -289,11 +266,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   const displayMessages = useMemo(() => {
     if (selectedChannel?.kind === "global") {
       if (globalViewMode === "signal" && runView?.progressLog?.length) {
-        const deduped = [...runView.progressLog]
-          .sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
-          .filter(shouldIncludeMissionFeedItem)
-          .filter((item, index, items) => index === 0 || buildMissionFeedSignature(item) !== buildMissionFeedSignature(items[index - 1]!));
-        return deduped.map((item) => ({
+        return prepareMissionFeedItems(runView.progressLog).map((item) => ({
           id: `mission-feed:${item.id}`,
           missionId,
           role: item.kind === "worker" ? "worker" : item.kind === "user" ? "user" : "orchestrator",
@@ -361,6 +334,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   const appendMentionTarget = useCallback((targetId: string) => { setInput((prev) => { const token = `@${targetId}`; if (prev.includes(token)) return prev; const base = prev.trimEnd(); return `${base}${base.length ? " " : ""}${token} `; }); }, []);
 
   const runtimeSummary = useMemo(() => { if (teamRuntimeConfig?.enabled) { const c = teamRuntimeState?.teammateIds.length ?? teamRuntimeConfig.teammateCount ?? 0; return { title: "Team runtime", detail: `${teamRuntimeState?.phase ?? "bootstrapping"} · ${c} teammate${c === 1 ? "" : "s"} · ${teamRuntimeConfig.targetProvider === "auto" ? "auto" : teamRuntimeConfig.targetProvider}` }; } if (agentRuntimeConfig) return { title: "Coordinator chat", detail: "Direct worker targeting is available from here." }; return null; }, [agentRuntimeConfig, teamRuntimeConfig, teamRuntimeState]);
+  const missionNarrative = useMemo(() => buildMissionStateNarrative(runView), [runView]);
 
   // ── Send message ──
   const handleSend = useCallback(async (message: string, mentions: string[]) => {
@@ -416,6 +390,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
           threadIntervention={threadIntervention}
           onOpenIntervention={onOpenIntervention}
           showStreamingIndicator={showStreaming}
+          missionNarrative={selectedChannel?.kind === "global" ? missionNarrative : null}
           runtimeSummary={runtimeSummary}
           agentRuntimeConfig={agentRuntimeConfig}
           onApproval={handleApproval}

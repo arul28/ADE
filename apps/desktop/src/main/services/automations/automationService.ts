@@ -2951,6 +2951,11 @@ export function createAutomationService({
       void syncWorkerRun(args.workerRunId.trim());
     },
 
+    reloadFromConfig() {
+      syncFromConfig();
+      emit({ type: "night-shift-updated" });
+    },
+
     dispose() {
       clearInterval(nightShiftTimer);
       for (const task of scheduleTasks.values()) {

@@ -69,7 +69,7 @@ Legacy `providers.mode` does not drive agent/runtime mode.
 Agent runtime context is assembled from the modern `.ade` state layout:
 
 - context docs: `.ade/context/PRD.ade.md`, `.ade/context/ARCHITECTURE.ade.md`
-- packs: `.ade/packs/*`
+- packs: `.ade/artifacts/packs/*`
 - mission/automation runtime records in ADE local state
 
 This keeps agent execution aligned with the same deterministic context system used by missions, packs, conflicts, and PR tooling.

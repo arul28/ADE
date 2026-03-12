@@ -1,15 +1,18 @@
 import React from "react";
 import { CaretDown, CaretRight, CircleNotch, Sparkle, X } from "@phosphor-icons/react";
 import type {
+  AiPermissionMode,
   PrAiResolutionContext,
   PrAiResolutionEventPayload,
+  PrAiResolutionSessionInfo,
   PrAiResolutionStartResult,
 } from "../../../../shared/types";
+import { buildPrAiResolutionContextKey } from "../../../../shared/types";
 import { AgentChatPane } from "../../chat/AgentChatPane";
-import { UnifiedModelSelector } from "../../shared/UnifiedModelSelector";
+import { usePrs } from "../state/PrsContext";
+import { PrResolverLaunchControls } from "./PrResolverLaunchControls";
 import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
-import { deriveConfiguredModelIds } from "../../../lib/modelOptions";
 
 type PrAiResolverCompletion = {
   sessionId: string;
@@ -24,7 +27,9 @@ type PrAiResolverPanelProps = {
   context: PrAiResolutionContext | null;
   modelId: string;
   reasoningEffort: string;
+  permissionMode: AiPermissionMode;
   onModelChange: (modelId: string, reasoningEffort: string) => void;
+  onPermissionModeChange: (mode: AiPermissionMode) => void;
   onStarted?: (result: PrAiResolutionStartResult) => void;
   onCompleted?: (result: PrAiResolverCompletion) => void;
   onDismiss?: () => void;
@@ -44,13 +49,41 @@ function defaultLaneId(context: PrAiResolutionContext | null): string | null {
   return context.laneId ?? context.integrationLaneId ?? context.sourceLaneId ?? context.targetLaneId ?? null;
 }
 
+function buildSessionInfo(args: {
+  context: PrAiResolutionContext;
+  sessionId: string;
+  provider: "codex" | "claude";
+  model: string;
+  reasoning: string | null;
+  permissionMode: AiPermissionMode;
+  status: PrAiResolutionSessionInfo["status"];
+}): PrAiResolutionSessionInfo {
+  const normalizedContext = {
+    ...args.context,
+    ...(args.context.sourceLaneIds?.length ? { sourceLaneIds: args.context.sourceLaneIds } : {}),
+  };
+  return {
+    contextKey: buildPrAiResolutionContextKey(normalizedContext),
+    sessionId: args.sessionId,
+    provider: args.provider,
+    model: args.model,
+    modelId: args.model,
+    reasoning: args.reasoning,
+    permissionMode: args.permissionMode,
+    context: normalizedContext,
+    status: args.status,
+  };
+}
+
 export function PrAiResolverPanel({
   title,
   description,
   context,
   modelId,
   reasoningEffort,
+  permissionMode,
   onModelChange,
+  onPermissionModeChange,
   onStarted,
   onCompleted,
   onDismiss,
@@ -59,36 +92,47 @@ export function PrAiResolverPanel({
   defaultExpanded = true,
   sessionShellClassName,
 }: PrAiResolverPanelProps) {
-  const [availableModelIds, setAvailableModelIds] = React.useState<string[]>([]);
+  const { resolverSessionsByContextKey, upsertResolverSession } = usePrs();
   const [launching, setLaunching] = React.useState(false);
-  const [sessionId, setSessionId] = React.useState<string | null>(null);
-  const [sessionLaneId, setSessionLaneId] = React.useState<string | null>(defaultLaneId(context));
   const [status, setStatus] = React.useState<"idle" | "starting" | "running" | "completed" | "failed" | "cancelled">("idle");
   const [message, setMessage] = React.useState<string | null>(null);
   const [expanded, setExpanded] = React.useState(defaultExpanded);
   const terminalStatusRef = React.useRef<PrAiResolverCompletion["status"] | null>(null);
+  const contextKey = React.useMemo(() => (context ? buildPrAiResolutionContextKey(context) : null), [context]);
+  const activeSession = React.useMemo(
+    () => (contextKey ? resolverSessionsByContextKey[contextKey] ?? null : null),
+    [contextKey, resolverSessionsByContextKey],
+  );
+  const sessionId = activeSession?.sessionId ?? null;
+  const sessionLaneId = defaultLaneId(activeSession?.context ?? context);
+  const displayModelId = activeSession?.modelId ?? modelId;
+  const displayReasoning = activeSession?.reasoning ?? normalizeReasoning(reasoningEffort) ?? "";
+  const displayPermissionMode = activeSession?.permissionMode ?? permissionMode;
 
   React.useEffect(() => {
-    setSessionLaneId(defaultLaneId(context));
-  }, [context]);
+    setStatus(activeSession?.status ?? "idle");
+    if (!activeSession) {
+      setMessage(null);
+      terminalStatusRef.current = null;
+    }
+  }, [activeSession]);
 
   React.useEffect(() => {
+    if (!context || !contextKey || activeSession) return;
     let cancelled = false;
-    void window.ade.ai.getStatus()
-      .then((status) => {
-        if (!cancelled) {
-          setAvailableModelIds(deriveConfiguredModelIds(status));
+    void window.ade.prs.aiResolutionGetSession({ context })
+      .then((result) => {
+        if (!cancelled && result) {
+          upsertResolverSession(result);
         }
       })
       .catch(() => {
-        if (!cancelled) {
-          setAvailableModelIds([]);
-        }
+        // ignore lookup failures; the panel can still launch a fresh resolver
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [activeSession, context, contextKey, upsertResolverSession]);
 
   React.useEffect(() => {
     const unsubscribe = window.ade.prs.onAiResolutionEvent((event: PrAiResolutionEventPayload) => {
@@ -99,6 +143,17 @@ export function PrAiResolverPanel({
         return;
       }
       setStatus(event.status);
+      if (context) {
+        upsertResolverSession(buildSessionInfo({
+          context,
+          sessionId,
+          provider: activeSession?.provider ?? "codex",
+          model: displayModelId,
+          reasoning: normalizeReasoning(displayReasoning),
+          permissionMode: displayPermissionMode,
+          status: event.status,
+        }));
+      }
       if (terminalStatusRef.current === event.status || !context) return;
       terminalStatusRef.current = event.status;
       onCompleted?.({
@@ -109,19 +164,19 @@ export function PrAiResolverPanel({
       });
     });
     return unsubscribe;
-  }, [context, onCompleted, sessionId]);
+  }, [activeSession?.provider, context, displayModelId, displayPermissionMode, displayReasoning, onCompleted, sessionId, upsertResolverSession]);
 
   const handleStart = React.useCallback(async () => {
-    if (!context || launching || !modelId.trim()) return;
+    if (!context || launching || !displayModelId.trim()) return;
     setLaunching(true);
     setMessage(null);
     setStatus("starting");
     terminalStatusRef.current = null;
     try {
       const result = await window.ade.prs.aiResolutionStart({
-        model: modelId,
-        reasoning: normalizeReasoning(reasoningEffort),
-        permissionMode: "guarded_edit",
+        model: displayModelId,
+        reasoning: normalizeReasoning(displayReasoning),
+        permissionMode: displayPermissionMode,
         context,
       });
       if (result.status !== "started") {
@@ -129,8 +184,15 @@ export function PrAiResolverPanel({
         setMessage(result.error ?? "Unable to start AI resolution.");
         return;
       }
-      setSessionId(result.sessionId);
-      setSessionLaneId(defaultLaneId(result.context));
+      upsertResolverSession(buildSessionInfo({
+        context: result.context,
+        sessionId: result.sessionId,
+        provider: result.provider,
+        model: displayModelId,
+        reasoning: normalizeReasoning(displayReasoning),
+        permissionMode: displayPermissionMode,
+        status: "running",
+      }));
       setStatus("running");
       onStarted?.(result);
     } catch (error) {
@@ -139,9 +201,17 @@ export function PrAiResolverPanel({
     } finally {
       setLaunching(false);
     }
-  }, [context, launching, modelId, onStarted, reasoningEffort]);
+  }, [
+    context,
+    displayModelId,
+    displayPermissionMode,
+    displayReasoning,
+    launching,
+    onStarted,
+    upsertResolverSession,
+  ]);
 
-  const canStart = Boolean(context && modelId.trim().length) && !launching && !sessionId;
+  const canStart = Boolean(context && displayModelId.trim().length) && !launching && !sessionId;
 
   return (
     <div className={cn("overflow-hidden border border-border/15 bg-card/70", className)}>
@@ -193,13 +263,15 @@ export function PrAiResolverPanel({
       {expanded ? (!sessionId ? (
         <div className="space-y-4 px-4 py-4">
           <div className="flex flex-wrap items-center gap-3">
-            <UnifiedModelSelector
-              value={modelId}
-              onChange={(nextModelId) => onModelChange(nextModelId, reasoningEffort)}
-              availableModelIds={availableModelIds}
-              showReasoning
-              reasoningEffort={normalizeReasoning(reasoningEffort)}
-              onReasoningEffortChange={(nextReasoning) => onModelChange(modelId, nextReasoning ?? "")}
+            <PrResolverLaunchControls
+              modelId={displayModelId}
+              reasoningEffort={displayReasoning}
+              permissionMode={displayPermissionMode}
+              onModelChange={(nextModelId) => onModelChange(nextModelId, displayReasoning)}
+              onReasoningEffortChange={(nextReasoning) => onModelChange(displayModelId, nextReasoning)}
+              onPermissionModeChange={onPermissionModeChange}
+              permissionLocked={Boolean(sessionId)}
+              disabled={launching}
             />
             <Button
               size="sm"
@@ -231,9 +303,10 @@ export function PrAiResolverPanel({
               laneId={sessionLaneId}
               lockSessionId={sessionId}
               hideSessionTabs
-              availableModelIdsOverride={[modelId]}
+              availableModelIdsOverride={[displayModelId]}
               modelSelectionLocked
               compactResolverView
+              permissionModeLocked
             />
           </div>
         </div>

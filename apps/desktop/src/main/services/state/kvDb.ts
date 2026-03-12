@@ -770,6 +770,7 @@ function migrate(db: Database) {
       project_id text not null,
       intervention_type text not null,
       status text not null,
+      resolution_kind text,
       title text not null,
       body text not null,
       requested_action text,
@@ -784,6 +785,7 @@ function migrate(db: Database) {
       foreign key(lane_id) references lanes(id)
     )
   `);
+  try { db.run("alter table mission_interventions add column resolution_kind text"); } catch {}
   db.run("create index if not exists idx_mission_interventions_mission_status on mission_interventions(mission_id, status)");
   db.run("create index if not exists idx_mission_interventions_project_status on mission_interventions(project_id, status)");
 

@@ -166,9 +166,10 @@ ADE implements multiple layers of protection to prevent secrets from being expos
 
 | Secret Type | Storage Location | Encryption |
 |-------------|-----------------|------------|
-| GitHub PAT (local) | `.ade/local.yaml` (gitignored) | Plaintext on disk (protected by OS file permissions) |
+| GitHub PAT (local) | `.ade/secrets/github/github-token.v1.bin` | Encrypted with Electron `safeStorage` |
+| API provider keys | `.ade/secrets/api-keys.json` | Plaintext on disk with `0600` permissions |
 
-ADE does not store any API keys or authentication tokens. AI features are powered by CLI tools (Claude Code, Codex) that manage their own authentication independently.
+ADE keeps CLI-backed authentication with the tools themselves (Claude Code, Codex). When ADE stores local secrets for secret-backed integrations, they remain on disk under the machine-local `.ade/secrets/` area or in `.ade/local.secret.yaml`.
 
 #### AI Context Exports (Bounded Payloads)
 

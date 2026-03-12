@@ -53,10 +53,11 @@ import {
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { detectAllAuth } from "../ai/authDetector";
-import { resolveModel, buildProviderOptions, isModelCliWrapped, normalizeCliMcpServers } from "../ai/providerResolver";
+import * as providerResolver from "../ai/providerResolver";
 import { createUniversalToolSet, type PermissionMode } from "../ai/tools/universalTools";
 import { buildCodingAgentSystemPrompt, composeSystemPrompt } from "../ai/tools/systemPrompt";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
+import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { createMemoryService } from "../memory/memoryService";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { createWorkerAgentService } from "../cto/workerAgentService";
@@ -405,6 +406,14 @@ function mapApprovalDecisionForCodex(decision: AgentChatApprovalDecision): "acce
   if (decision === "accept") return "accept";
   if (decision === "cancel") return "cancel";
   return "decline";
+}
+
+function isPlanningApprovalGuarded(managed: ManagedChatSession): boolean {
+  return managed.session.permissionMode === "plan";
+}
+
+function buildPlanningApprovalViolation(toolName: string): string {
+  return `PLANNER CONTRACT VIOLATION: '${toolName}' requested a provider-native approval flow during a planning step. Planning workers must stay inspect-only and return the plan via report_result instead.`;
 }
 
 function normalizePreview(text: string, maxChars = 220): string | null {
@@ -765,7 +774,7 @@ function resolveMcpRuntimeRoot(): string {
 
 export function createAgentChatService(args: {
   projectRoot: string;
-  adeDir: string;
+  adeDir?: string;
   transcriptsDir: string;
   projectId?: string;
   memoryService?: ReturnType<typeof createMemoryService> | null;
@@ -783,7 +792,6 @@ export function createAgentChatService(args: {
 }) {
   const {
     projectRoot,
-    adeDir,
     transcriptsDir,
     projectId,
     memoryService,
@@ -800,8 +808,9 @@ export function createAgentChatService(args: {
     onSessionEnded
   } = args;
 
-  const chatSessionsDir = path.join(adeDir, "chat-sessions");
-  const chatTranscriptsDir = path.join(adeDir, "chat-transcripts");
+  const layout = resolveAdeLayout(projectRoot);
+  const chatSessionsDir = layout.chatSessionsDir;
+  const chatTranscriptsDir = layout.chatTranscriptsDir;
   fs.mkdirSync(chatSessionsDir, { recursive: true });
   fs.mkdirSync(transcriptsDir, { recursive: true });
   fs.mkdirSync(chatTranscriptsDir, { recursive: true });
@@ -820,7 +829,7 @@ export function createAgentChatService(args: {
       defaultRole,
       ownerId: ownerId ?? undefined,
     });
-    return normalizeCliMcpServers(provider, {
+    return providerResolver.normalizeCliMcpServers(provider, {
       ade: {
         command: launch.command,
         args: launch.cmdArgs,
@@ -941,7 +950,7 @@ export function createAgentChatService(args: {
 
     managed.autoTitleInFlight = true;
     try {
-      const resolvedModel = await resolveModel(descriptor.id, auth, {
+      const resolvedModel = await providerResolver.resolveModel(descriptor.id, auth, {
         cwd: managed.laneWorktreePath,
         middleware: false,
       });
@@ -989,7 +998,7 @@ export function createAgentChatService(args: {
     });
 
     const auth = await detectAuth();
-    const resolvedModel = await resolveModel(modelId, auth, {
+    const resolvedModel = await providerResolver.resolveModel(modelId, auth, {
       cwd: managed.laneWorktreePath,
     });
 
@@ -1217,7 +1226,7 @@ export function createAgentChatService(args: {
       // ignore transcript write failures
     }
 
-    // Also write to the dedicated chat-transcripts directory for persistence
+    // Also write to the dedicated transcript cache directory for persistence
     writeChatTranscriptLine(managed.session.id, envelope);
   };
 
@@ -1486,7 +1495,7 @@ export function createAgentChatService(args: {
     ].filter(Boolean).join("\n");
 
     try {
-      const resolvedModel = await resolveModel(descriptor.id, auth, {
+      const resolvedModel = await providerResolver.resolveModel(descriptor.id, auth, {
         cwd: managed.laneWorktreePath,
         middleware: false,
       });
@@ -1980,7 +1989,7 @@ export function createAgentChatService(args: {
         });
 
         const thinkingLevel = mapReasoningEffortToThinking(managed.session.reasoningEffort);
-        const providerOptions = buildProviderOptions(unifiedRt.modelDescriptor, thinkingLevel);
+        const providerOptions = providerResolver.buildProviderOptions(unifiedRt.modelDescriptor, thinkingLevel);
         const harnessPrompt = buildCodingAgentSystemPrompt({
           cwd: managed.laneWorktreePath,
           mode: "chat",
@@ -1988,8 +1997,13 @@ export function createAgentChatService(args: {
           toolNames: Object.keys(tools),
         });
         let system = harnessPrompt;
-        if (memoryService && projectId) {
-          const mems = memoryService.getMemoryBudget(projectId, "lite")
+        if (
+          memoryService
+          && projectId
+          && typeof (memoryService as { getMemoryBudget?: unknown }).getMemoryBudget === "function"
+        ) {
+          const mems = (memoryService as { getMemoryBudget: (projectId: string, level: string) => Array<{ compositeScore: number; category: string; content: string }> })
+            .getMemoryBudget(projectId, "lite")
             .filter((m) => m.compositeScore >= 0.3);
           if (mems.length > 0) {
             system = `${harnessPrompt}\n\n## Project Memory\n${mems.map((m) => `- [${m.category}] ${m.content}`).join("\n")}`;
@@ -2019,6 +2033,13 @@ export function createAgentChatService(args: {
           : chatConfig.claudePermissionMode;
 
         const canUseTool = async (toolName: string, toolInput: unknown): Promise<ClaudeToolPermissionResult> => {
+          if (isPlanningApprovalGuarded(managed)) {
+            return {
+              behavior: "deny",
+              message: buildPlanningApprovalViolation(toolName),
+              interrupt: false,
+            };
+          }
           const itemId = randomUUID();
           emitChatEvent(managed, {
             type: "approval_request",
@@ -2199,9 +2220,12 @@ export function createAgentChatService(args: {
         }
 
         if (part.type === "tool-approval-request") {
+          const toolName = String(part.toolCall?.toolName ?? "tool");
           emitChatEvent(managed, {
             type: "error",
-            message: `Unexpected SDK approval request for '${String(part.toolCall?.toolName ?? "tool")}'. This tool should use ADE-managed approvals instead.`,
+            message: isPlanningApprovalGuarded(managed)
+              ? buildPlanningApprovalViolation(toolName)
+              : `Unexpected SDK approval request for '${toolName}'. This tool should use ADE-managed approvals instead.`,
             turnId
           });
           continue;
@@ -2342,6 +2366,15 @@ export function createAgentChatService(args: {
 
     if (method === "item/commandExecution/requestApproval") {
       const params = (payload.params as { itemId?: string; command?: string; cwd?: string; reason?: string } | null) ?? {};
+      if (isPlanningApprovalGuarded(managed)) {
+        emitChatEvent(managed, {
+          type: "error",
+          message: buildPlanningApprovalViolation(params.command?.trim() || "command"),
+          turnId: runtime.activeTurnId ?? undefined,
+        });
+        runtime.sendResponse(id, { decision: "decline" });
+        return;
+      }
       const itemId = String(params.itemId ?? randomUUID());
       runtime.approvals.set(itemId, { requestId: id, kind: "command" });
       emitChatEvent(managed, {
@@ -2361,6 +2394,15 @@ export function createAgentChatService(args: {
 
     if (method === "item/fileChange/requestApproval") {
       const params = (payload.params as { itemId?: string; reason?: string; grantRoot?: string } | null) ?? {};
+      if (isPlanningApprovalGuarded(managed)) {
+        emitChatEvent(managed, {
+          type: "error",
+          message: buildPlanningApprovalViolation(params.reason?.trim() || "file change"),
+          turnId: runtime.activeTurnId ?? undefined,
+        });
+        runtime.sendResponse(id, { decision: "decline" });
+        return;
+      }
       const itemId = String(params.itemId ?? randomUUID());
       runtime.approvals.set(itemId, { requestId: id, kind: "file_change" });
       emitChatEvent(managed, {
@@ -3435,7 +3477,7 @@ export function createAgentChatService(args: {
           await startFreshCodexThread(managed, runtime, codexPolicy, mcpServers);
         }
       }
-    } else if (managed.runtime?.kind === "unified" || (managed.session.modelId && !isModelCliWrapped(managed.session.modelId))) {
+    } else if (managed.runtime?.kind === "unified" || (managed.session.modelId && !providerResolver.isModelCliWrapped(managed.session.modelId))) {
       // Unified runtime resume — re-resolve the model
       const result = await startUnifiedSession(managed);
       if (result === "handled" && managed.runtime?.kind === "unified") {

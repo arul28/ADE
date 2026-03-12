@@ -1,6 +1,6 @@
 import React from "react";
 import { ArrowsDownUp, Clock, CheckCircle, Warning, Sparkle, Eye, XCircle } from "@phosphor-icons/react";
-import type { LaneSummary, RebaseNeed, RebaseRun, RebaseScope } from "../../../../shared/types";
+import type { AiPermissionMode, LaneSummary, RebaseNeed, RebaseRun, RebaseScope } from "../../../../shared/types";
 import { Button } from "../../ui/Button";
 import { EmptyState } from "../../ui/EmptyState";
 import { cn } from "../../ui/cn";
@@ -17,7 +17,9 @@ type RebaseTabProps = {
   onSelectItem: (id: string | null) => void;
   resolverModel: string;
   resolverReasoningLevel: string;
+  resolverPermissionMode: AiPermissionMode;
   onResolverChange: (model: string, level: string) => void;
+  onResolverPermissionChange: (mode: AiPermissionMode) => void;
   onRefresh: () => Promise<void>;
 };
 
@@ -58,7 +60,9 @@ export function RebaseTab({
   onSelectItem,
   resolverModel,
   resolverReasoningLevel,
+  resolverPermissionMode,
   onResolverChange,
+  onResolverPermissionChange,
   onRefresh,
 }: RebaseTabProps) {
   const laneById = React.useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
@@ -70,6 +74,7 @@ export function RebaseTab({
   const [activeRun, setActiveRun] = React.useState<RebaseRun | null>(null);
   const [runLogs, setRunLogs] = React.useState<string[]>([]);
   const [selectedPushLaneIds, setSelectedPushLaneIds] = React.useState<string[]>([]);
+  const activeRunIdRef = React.useRef<string | null>(null);
 
   const [collapsed, setCollapsed] = React.useState<Record<UrgencyCategory, boolean>>({
     attention: false,
@@ -127,15 +132,23 @@ export function RebaseTab({
   }, [selectedItemId]);
 
   React.useEffect(() => {
+    activeRunIdRef.current = activeRun?.runId ?? null;
+  }, [activeRun]);
+
+  React.useEffect(() => {
     const unsubscribe = window.ade.lanes.rebaseSubscribe((event) => {
       if (event.type === "rebase-run-updated") {
         setActiveRun((prev) => {
-          if (!selectedNeed) return prev;
-          if (event.run.rootLaneId !== selectedNeed.laneId && prev?.runId !== event.run.runId) return prev;
+          if (prev?.runId) {
+            return event.run.runId === prev.runId ? event.run : prev;
+          }
+          if (!selectedNeed || event.run.rootLaneId !== selectedNeed.laneId) return prev;
           return event.run;
         });
       } else if (event.type === "rebase-run-log") {
         setRunLogs((prev) => {
+          const activeRunId = activeRunIdRef.current;
+          if (!activeRunId || event.runId !== activeRunId) return prev;
           const line = `[${new Date(event.timestamp).toLocaleTimeString()}] ${event.message}`;
           const next = [...prev, line];
           return next.slice(-80);
@@ -180,6 +193,7 @@ export function RebaseTab({
       setRebaseBusy(false);
     }
   };
+  const selectedRunIsActive = activeRun?.state === "running";
 
   const handleAbortRun = async () => {
     if (!activeRun) return;
@@ -639,6 +653,7 @@ export function RebaseTab({
                 <button
                   type="button"
                   onClick={() => setRunScope("lane_only")}
+                  disabled={selectedRunIsActive}
                   style={{
                     fontSize: 10,
                     padding: "4px 8px",
@@ -652,6 +667,7 @@ export function RebaseTab({
                 <button
                   type="button"
                   onClick={() => setRunScope("lane_and_descendants")}
+                  disabled={selectedRunIsActive}
                   style={{
                     fontSize: 10,
                     padding: "4px 8px",
@@ -796,7 +812,7 @@ export function RebaseTab({
                 <Button
                   size="sm"
                   variant="primary"
-                  disabled={rebaseBusy || selectedNeed.behindBy === 0}
+                  disabled={rebaseBusy || selectedNeed.behindBy === 0 || selectedRunIsActive}
                   onClick={() => void handleRebase(true)}
                   style={{ borderRadius: 0 }}
                 >
@@ -811,7 +827,7 @@ export function RebaseTab({
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={rebaseBusy || selectedNeed.behindBy === 0}
+                  disabled={rebaseBusy || selectedNeed.behindBy === 0 || selectedRunIsActive}
                   onClick={() => void handleRebase(false, "none")}
                   style={{
                     borderRadius: 0,
@@ -828,7 +844,7 @@ export function RebaseTab({
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={rebaseBusy || selectedNeed.behindBy === 0}
+                  disabled={rebaseBusy || selectedNeed.behindBy === 0 || selectedRunIsActive}
                   onClick={() => void handleRebase(false, "review_then_push")}
                   style={{
                     borderRadius: 0,
@@ -914,7 +930,9 @@ export function RebaseTab({
                     }}
                     modelId={resolverModel}
                     reasoningEffort={resolverReasoningLevel}
+                    permissionMode={resolverPermissionMode}
                     onModelChange={onResolverChange}
+                    onPermissionModeChange={onResolverPermissionChange}
                     onCompleted={() => {
                       void onRefresh();
                     }}

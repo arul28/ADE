@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { ChatCircle, Warning, X } from "@phosphor-icons/react";
-import type { MissionIntervention } from "../../../shared/types";
+import type { MissionIntervention, MissionInterventionResolutionKind } from "../../../shared/types";
 import {
   COLORS,
   LABEL_STYLE,
@@ -14,7 +14,7 @@ import { getMissionInterventionOwnerLabel } from "./missionHelpers";
 export type ManualInputResponseModalProps = {
   intervention: MissionIntervention;
   onClose: () => void;
-  onSubmit: (answer: string) => Promise<void>;
+  onSubmit: (answer: string, resolutionKind?: MissionInterventionResolutionKind) => Promise<void>;
 };
 
 export function ManualInputResponseModal({
@@ -68,11 +68,20 @@ export function ManualInputResponseModal({
     if (!trimmed.length) return;
     setSubmitting(true);
     try {
-      await onSubmit(trimmed);
+      await onSubmit(trimmed, "answer_provided");
     } finally {
       setSubmitting(false);
     }
   }, [answer, onSubmit]);
+
+  const handleSemanticAction = useCallback(async (resolutionKind: MissionInterventionResolutionKind, answerText: string) => {
+    setSubmitting(true);
+    try {
+      await onSubmit(answerText, resolutionKind);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [onSubmit]);
 
   return (
     <div
@@ -259,6 +268,29 @@ export function ManualInputResponseModal({
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <button style={outlineButton()} onClick={onClose} disabled={submitting}>
               CLOSE
+            </button>
+            {canProceedWithoutAnswer ? (
+              <button
+                style={outlineButton()}
+                onClick={() => void handleSemanticAction("accept_defaults", "Accept the default assumptions and continue.")}
+                disabled={submitting}
+              >
+                ACCEPT DEFAULTS
+              </button>
+            ) : null}
+            <button
+              style={outlineButton()}
+              onClick={() => void handleSemanticAction("skip_question", "Skip this question and continue with best-effort assumptions.")}
+              disabled={submitting}
+            >
+              SKIP QUESTION
+            </button>
+            <button
+              style={outlineButton({ borderColor: `${COLORS.warning}40`, color: COLORS.warning })}
+              onClick={() => void handleSemanticAction("cancel_run", "Cancel the run.")}
+              disabled={submitting}
+            >
+              CANCEL RUN
             </button>
             <button
               style={primaryButton()}

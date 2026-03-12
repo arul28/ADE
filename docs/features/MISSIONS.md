@@ -76,7 +76,7 @@ Mission persistence includes:
 - timeline and intervention records,
 - worker session lineage and transcripts,
 - mission artifacts,
-- mission-pack updates under `.ade/packs/missions/<missionId>/mission_pack.md`.
+- mission-pack updates under `.ade/artifacts/packs/missions/<missionId>/mission_pack.md`.
 
 Mission memory is intentionally task-centric rather than identity-centric:
 

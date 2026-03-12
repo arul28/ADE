@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { resolveAdeLayout } from "../../../shared/adeLayout";
 
 /**
  * Simple file-based API key store.
@@ -36,8 +37,8 @@ function persist(): void {
   fs.writeFileSync(storePath, JSON.stringify(cache, null, 2), { encoding: "utf8", mode: 0o600 });
 }
 
-export function initApiKeyStore(adeDir: string): void {
-  storePath = path.join(adeDir, "api-keys.json");
+export function initApiKeyStore(projectRoot: string): void {
+  storePath = resolveAdeLayout(projectRoot).apiKeysPath;
 }
 
 export function storeApiKey(provider: string, key: string): void {

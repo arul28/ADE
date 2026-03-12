@@ -307,12 +307,25 @@ export function mergeMissionThreadEvents(
 }
 
 function filterLowSignalStructuredEvents(events: AgentChatEventEnvelope[]): AgentChatEventEnvelope[] {
-  return events.filter((envelope) => {
+  const filtered = events.filter((envelope) => {
     const event = envelope.event;
     if ((event.type === "text" || event.type === "reasoning") && looksLikeLowSignalNoise(event.text)) {
       return false;
     }
+    if (event.type === "activity") {
+      const detail = normalizeInlineText(event.detail ?? "");
+      if (!detail.length) return false;
+      if (event.activity === "thinking" && looksLikeLowSignalNoise(detail)) return false;
+    }
     return true;
+  });
+
+  return filtered.filter((envelope, index, entries) => {
+    if (envelope.event.type !== "activity") return true;
+    const previous = entries[index - 1];
+    if (!previous || previous.event.type !== "activity") return true;
+    return previous.event.activity !== envelope.event.activity
+      || normalizeInlineText(previous.event.detail ?? "") !== normalizeInlineText(envelope.event.detail ?? "");
   });
 }
 

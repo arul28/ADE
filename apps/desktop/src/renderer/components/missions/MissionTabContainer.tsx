@@ -4,7 +4,6 @@ import {
   ChatCircle,
   Pulse,
 } from "@phosphor-icons/react";
-import { Group, Panel } from "react-resizable-panels";
 import type {
   OrchestratorAttempt,
 } from "../../../shared/types";
@@ -29,7 +28,6 @@ import { MissionActivePhasePanel } from "./MissionActivePhasePanel";
 import { PromptInspectorCard } from "./PromptInspectorCard";
 import { buildMissionArtifactGroups, deriveActivePhaseViewModel } from "./missionControlViewModel";
 import { useMissionRunView } from "./useMissionRunView";
-import { ResizeGutter } from "../ui/SplitPane";
 
 /* ════════════════════ TAB NAVIGATION ════════════════════ */
 
@@ -386,57 +384,20 @@ export function MissionTabContent() {
         )}
 
         {activeTab === "chat" && selectedMissionId && (
-          runView ? (
-            <Group
-              id="missions-chat-layout"
-              orientation="horizontal"
-              className="flex min-h-0 flex-1 overflow-hidden bg-transparent"
-            >
-              <Panel minSize={46} className="min-w-0">
-                <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
-                  <MissionChatV2
-                    missionId={selectedMissionId}
-                    missionStatus={selectedMission?.status ?? null}
-                    runId={runGraph?.run.id ?? null}
-                    runStatus={runGraph?.run.status ?? null}
-                    runMetadata={runGraph?.run.metadata ?? null}
-                    runView={runView}
-                    interventions={selectedMission?.interventions ?? []}
-                    jumpTarget={chatJumpTarget}
-                    onJumpHandled={() => useMissionsStore.getState().setChatJumpTarget(null)}
-                    onOpenIntervention={handleOpenIntervention}
-                  />
-                </div>
-              </Panel>
-              <ResizeGutter orientation="vertical" thin />
-              <Panel minSize={22} className="min-w-0">
-                <div className="h-full min-h-0 overflow-y-auto p-2" style={{ background: COLORS.pageBg }}>
-                  <MissionRunPanel
-                    runView={runView}
-                    interventions={selectedMission?.interventions}
-                    onOpenIntervention={handleOpenIntervention}
-                    showInterventions={false}
-                    hideInterventionHaltReason
-                  />
-                </div>
-              </Panel>
-            </Group>
-          ) : (
-            <div className="flex flex-1 min-h-0 min-w-0 overflow-hidden">
-              <MissionChatV2
-                missionId={selectedMissionId}
-                missionStatus={selectedMission?.status ?? null}
-                runId={runGraph?.run.id ?? null}
-                runStatus={runGraph?.run.status ?? null}
-                runMetadata={runGraph?.run.metadata ?? null}
-                runView={runView}
-                interventions={selectedMission?.interventions ?? []}
-                jumpTarget={chatJumpTarget}
-                onJumpHandled={() => useMissionsStore.getState().setChatJumpTarget(null)}
-                onOpenIntervention={handleOpenIntervention}
-              />
-            </div>
-          )
+          <div className="flex flex-1 min-h-0 min-w-0 overflow-hidden">
+            <MissionChatV2
+              missionId={selectedMissionId}
+              missionStatus={selectedMission?.status ?? null}
+              runId={runGraph?.run.id ?? null}
+              runStatus={runGraph?.run.status ?? null}
+              runMetadata={runGraph?.run.metadata ?? null}
+              runView={runView}
+              interventions={selectedMission?.interventions ?? []}
+              jumpTarget={chatJumpTarget}
+              onJumpHandled={() => useMissionsStore.getState().setChatJumpTarget(null)}
+              onOpenIntervention={handleOpenIntervention}
+            />
+          </div>
         )}
 
         {activeTab === "artifacts" && (

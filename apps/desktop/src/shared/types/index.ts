@@ -22,5 +22,6 @@ export * from "./agents";
 export * from "./budget";
 export * from "./usage";
 export * from "./memory";
+export * from "./projectState";
 
 export * from "./linearSync";

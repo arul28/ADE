@@ -10,7 +10,7 @@ import {
   Play,
   Trash,
   RocketLaunch,
-  ArchiveBox,
+  Archive,
   CheckCircle,
   Eye,
 } from "@phosphor-icons/react";
@@ -106,7 +106,7 @@ function BriefingActionBar({
         Accept
       </Button>
       <Button size="sm" variant="outline" onClick={() => onQueueAction(card.queueItemId, "archive")}>
-        <ArchiveBox size={12} weight="regular" />
+        <Archive size={12} weight="regular" />
         Archive
       </Button>
       <Button size="sm" variant="outline" onClick={() => onQueueAction(card.queueItemId, "queue-overnight")}>

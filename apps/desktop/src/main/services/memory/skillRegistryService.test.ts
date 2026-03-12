@@ -113,6 +113,7 @@ describe("skillRegistryService", () => {
     const exported = await service.exportProcedureSkill({ id: "proc-1", name: "Prompt Snapshot Skill" });
     if (!exported) throw new Error("Expected exported skill");
 
+    expect(exported.path).toContain(path.join(".ade", "skills", "prompt-snapshot-skill", "SKILL.md"));
     const content = fs.readFileSync(exported.path, "utf8");
     expect(content).toContain("## When to use");
     expect(content).toContain("Use this when updating prompt snapshots.");

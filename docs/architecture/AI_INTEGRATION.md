@@ -920,7 +920,7 @@ Memory tools follow the same MCP permission model as other agent tools. Read ope
 
 > **Full spec**: `docs/final-plan/phase-4.md` W6 (Unified Memory System) contains the comprehensive implementation plan including schema, write gate, scoring formula, lifecycle algorithms, and pack removal strategy.
 
-The memory system provides agents with durable, searchable long-term memory that persists across sessions and runs. Phase 4 W6, W6½, W7a, and W7b are complete: `unifiedMemoryService.ts` is the canonical durable memory backend (project/agent/mission scopes with pinned/hot/cold tiers) with hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking), lifecycle sweeps, batch consolidation, pre-compaction flush, and orchestrator mission-memory wiring. Persisted `.ade/packs/...` artifacts are no longer required for runtime context assembly. Deterministic context exports (`packService`) and CTO identity state (`ctoStateService`) remain as explicit compatibility and audit surfaces.
+The memory system provides agents with durable, searchable long-term memory that persists across sessions and runs. Phase 4 W6, W6½, W7a, and W7b are complete: `unifiedMemoryService.ts` is the canonical durable memory backend (project/agent/mission scopes with pinned/hot/cold tiers) with hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking), lifecycle sweeps, batch consolidation, pre-compaction flush, and orchestrator mission-memory wiring. Persisted `.ade/artifacts/packs/...` artifacts are no longer required for runtime context assembly. Deterministic context exports (`packService`) and CTO identity state (`ctoStateService`) remain as explicit compatibility and audit surfaces.
 
 #### Storage Layer
 
@@ -1100,30 +1100,28 @@ External MCP Request           User (CTO Tab)
 
 ### Cross-Machine Portability
 
-ADE stores all portable state in the `.ade/` directory at the project root, enabling cross-machine synchronization via git without any cloud backend or hub.
+ADE now ships a canonical `.ade` contract. The tracked/shareable subset lives alongside a tracked `.ade/.gitignore` that ignores machine-local runtime state.
 
-**Portable state** (project policy dependent):
-- `ade.db` — primary runtime database (lanes, missions, orchestrator, unified memory, usage, etc.)
-- `agents/` — agent definition YAML files
+**Tracked/shareable state**:
+- `ade.yaml` — shared baseline config
 - `cto/` — CTO identity/core-memory/session-log files
-- `packs/` — deterministic context export artifacts used by compatibility flows
-- `local.yaml` — project-level configuration (shared settings)
+- `agents/` — worker identity/core-memory/session-log files
+- `templates/`, `context/`, `memory/`, `history/`, `reflections/`, `skills/`
 
-**Non-portable state**:
-- `mcp.sock` — Unix socket for embedded MCP (runtime artifact)
-- `transcripts/` — raw session transcripts (large, ephemeral)
-- `chat-transcripts/` — chat transcript artifacts (runtime data)
-- `local.private.yaml` — machine-specific overrides (API keys, paths)
+**Machine-local state**:
+- `local.yaml`, `local.secret.yaml`
+- `ade.db`, `embeddings.db`
+- `mcp.sock`
+- `artifacts/`, `transcripts/`, `cache/`, `worktrees/`, `secrets/`
 
-**Sync workflow**:
-```
-Machine A: Agent discovers pattern → memoryAdd → `.ade/ade.db` updated → optional git commit + push
-Machine B: git pull → `.ade/ade.db` updated → memory retrieval reflects new entries
-```
+**Repair and integrity baseline**:
+- startup repair creates the canonical tree, rewrites `.ade/.gitignore`, and removes stale `.git/info/exclude` rules for `.ade`
+- legacy runtime folders are moved into `artifacts/`, `transcripts/`, `cache/`, and `secrets/`
+- tracked JSONL files under `history/`, `cto/`, and `agents/` are normalized and hash-chained with `prevHash`
 
-**Embedding behavior**: Embeddings are generated locally by `@huggingface/transformers` (all-MiniLM-L6-v2, 384-dim) and stored in `unified_memory_embeddings` within `.ade/ade.db`. Hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking) is the active search path. On clone/pull, the background embedding worker backfills any entries missing embeddings automatically.
+**Embedding behavior**: Embeddings are generated locally by `@huggingface/transformers` (all-MiniLM-L6-v2, 384-dim) and stored in `unified_memory_embeddings` within `.ade/ade.db`. Hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking) is the active search path. The background embedding worker backfills missing embeddings automatically from the DB-backed memory store.
 
-**No cloud dependency**: State sync is entirely git-based. There is no central hub, relay, or cloud service involved in state portability. The Phase 8 relay is for real-time remote control of a running ADE instance — not for state synchronization.
+**No cloud dependency**: ADE's local filesystem contract is git-friendly, but real-time multi-device sync is still Phase 6 work. The Phase 8 relay is for real-time remote control of a running ADE instance, not for state synchronization.
 
 ### Phase 3 Implementation Status
 
@@ -1530,7 +1528,7 @@ async function* sendMessage(text: string): AsyncIterable<ChatEvent> {
 | Session persistence | App server manages on disk | ADE persists `messages[]` to JSON |
 | Resume | `thread/resume` (native) | Reload `messages[]` and continue |
 
-**Session persistence**: Claude sessions are stored at `.ade/chat-sessions/<sessionId>.json` containing the `messages[]` array. This enables resume after app restart. Messages are bounded by token budget — when approaching the limit, older messages are summarized and rotated.
+**Session persistence**: Chat session metadata is stored at `.ade/cache/chat-sessions/<sessionId>.json`, and structured chat events are logged to `.ade/transcripts/<session-id>.chat.jsonl` with a mirrored JSONL copy under `.ade/transcripts/chat/<session-id>.jsonl`. This enables resume after app restart while keeping chat-specific runtime files in the canonical W10 layout.
 
 **Limitations**: The Claude backend may not support all UI features that Codex provides (plans, reasoning blocks). The chat UI gracefully handles missing features — items that Claude doesn't produce simply don't appear in the UI.
 
@@ -1558,7 +1556,7 @@ Agent chat sessions integrate into ADE's existing session tracking infrastructur
 2. User sends messages, agent works
    → agentChatService.sendMessage() yields ChatEvent stream
    → Events rendered in AgentChatMessageList
-   → Chat events logged to .ade/transcripts/<session-id>.chat.jsonl
+   → Chat events logged to `.ade/transcripts/<session-id>.chat.jsonl` and mirrored to `.ade/transcripts/chat/<session-id>.jsonl`
    → File changes update the lane worktree (visible in git actions)
 
 3. Approvals
@@ -1646,9 +1644,9 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 - Repeated errors across 3+ sessions (recorded as gotcha patterns with file scope)
 - PR review feedback patterns
 
-**Skill materialization**: Confirmed procedural memories are exported as `.claude/skills/<name>/SKILL.md` — universal markdown format consumable by any agent. Skills are also indexed back into project memory.
+**Skill materialization**: Confirmed procedural memories are exported as `.ade/skills/<name>/SKILL.md` — universal markdown format consumable by any agent. Skills are also indexed back into project memory.
 
-**Skill ingestion**: On startup/file change, scans `.claude/skills/`, `.claude/commands/`, `CLAUDE.md`, `agents.md` and indexes into project memory as Tier 2 procedure entries.
+**Skill ingestion**: On startup/file change, ADE scans `.ade/skills/` plus legacy external sources (`.claude/skills/`, `.claude/commands/`, `CLAUDE.md`, `agents.md`) and indexes them into project memory as Tier 2 procedure entries.
 
 ---
 
@@ -1707,17 +1705,17 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Memory Engine Hardening (W6½) — lifecycle sweeps, batch consolidation, pre-compaction flush | Complete | Temporal decay, tier demotion, hard limits, orphan cleanup, Jaccard+LLM consolidation, pre-compaction flush, Memory Health dashboard |
 | Embeddings Pipeline (W7a) — local embedding + hybrid retrieval | Complete | Local all-MiniLM-L6-v2 via @huggingface/transformers, FTS4 BM25 + cosine similarity + MMR re-ranking, graceful lexical fallback |
 | Orchestrator Memory Wiring (W7b) — mission-memory SSoT + exact employee L2 injection | Complete | Retired `orchestrator_shared_facts`, compaction writes back to mission memory, worker briefings derive shared team knowledge from mission memory, exact `employeeAgentId` launch metadata controls agent-memory injection |
-| Skills + Learning Pipeline (W7) — procedural extraction + skill materialization | Core implemented; advanced capture pending | Phase 4 — episodic→procedural extraction, `.claude/skills/SKILL.md` materialization, and skill ingestion are present; remaining work is knowledge source capture from failures/interventions/repeated errors/PR feedback |
+| Skills + Learning Pipeline (W7) — procedural extraction + skill materialization | Core implemented; advanced capture pending | Phase 4 — episodic→procedural extraction, `.ade/skills/SKILL.md` materialization, and skill ingestion are present; remaining work is knowledge source capture from failures/interventions/repeated errors/PR feedback |
 | CTO Agent — core identity, persistent chat, core memory (W1) | Complete | Phase 4 -- `ctoStateService.ts`, dual-canonical persistence (DB + file), session reconstruction, CtoPage with chat |
 | Worker Agents — org chart, multi-adapter, config versioning, budget (W2) | Complete | Phase 4 -- `workerAgentService.ts`, `workerRevisionService.ts`, `workerBudgetService.ts`, `workerTaskSessionService.ts`, `workerAdapterRuntimeService.ts` |
 | Heartbeat & Activation — timer pool, coalescing, orphan reaping (W3) | Complete | Phase 4 -- `workerHeartbeatService.ts` (789 lines), two-tier execution, deferred promotion, issue locking |
 | Bidirectional Linear Sync (W4) | Complete | Phase 4 -- `linearClient.ts`, `linearSyncService.ts`, `linearOutboundService.ts`, `linearRoutingService.ts`, `linearTemplateService.ts`, `linearCredentialService.ts`, `flowPolicyService.ts`, `issueTracker.ts` abstraction, `LinearSyncPanel.tsx` UI with 6-step flow composer |
 | External MCP consumption | Planned | Phase 4 -- agents connect to external MCP servers for extended capabilities |
-| `.ade/` portable state | Planned | Phase 4 -- git-based cross-machine state sync, embedding regeneration on clone |
+| `.ade/` portable state | Complete | Phase 4 -- canonical tracked/shareable layout, startup repair, integrity normalization, config reload, Settings > Project health surface |
 | Task agents (lane artifacts) | Planned | Phase 4 -- specialized agents for artifact production within lanes |
 | Chat-to-mission escalation | Planned | Phase 4 -- promote a chat conversation into a full mission with pre-filled context |
 
-**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestrator implementation is functionally complete through Orchestrator Overhaul Phases 1-7. Phase 4 W1-W4, W6, W6½, W7a, and W7b are complete. M4 and M5 are complete, adding approval gates (`phase_approval` intervention type with blocking phase transition semantics), mandatory planning enforcement (constructor-injected planning phase with first-turn watchdog), multi-round deliberation (`canLoop`/`loopTarget`/`maxQuestions` on phase ordering constraints), adaptive runtime (`classifyTaskComplexity` → parallelism scaling, `evaluateModelDowngrade` → cheaper models under budget pressure), budget-gated spawns (hard cap checks before every worker spawn), and benign error classification (`BENIGN_SANDBOX_BLOCK_PATTERNS` for ExitPlanMode/Zod noise). Memory engine now includes lifecycle sweeps, batch consolidation, pre-compaction flush, local embedding pipeline (`@huggingface/transformers` all-MiniLM-L6-v2), hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking) with graceful lexical fallback, mission-memory-backed shared team knowledge, and exact employee L2 injection for employee-owned runs. Remaining major Phase 4 workstreams after Wave 1: W8, W9, W10. W-UX is partially implemented, and W7c has its core pipeline implemented with advanced capture still pending. MCP dual-mode architecture shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
+**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 orchestrator implementation is functionally complete through Orchestrator Overhaul Phases 1-7. Phase 4 W1-W4, W6, W6½, W7a, W7b, and W10 are complete. M4 and M5 are complete, adding approval gates (`phase_approval` intervention type with blocking phase transition semantics), mandatory planning enforcement (constructor-injected planning phase with first-turn watchdog), multi-round deliberation (`canLoop`/`loopTarget`/`maxQuestions` on phase ordering constraints), adaptive runtime (`classifyTaskComplexity` → parallelism scaling, `evaluateModelDowngrade` → cheaper models under budget pressure), budget-gated spawns (hard cap checks before every worker spawn), and benign error classification (`BENIGN_SANDBOX_BLOCK_PATTERNS` for ExitPlanMode/Zod noise). Memory engine now includes lifecycle sweeps, batch consolidation, pre-compaction flush, local embedding pipeline (`@huggingface/transformers` all-MiniLM-L6-v2), hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking) with graceful lexical fallback, mission-memory-backed shared team knowledge, exact employee L2 injection for employee-owned runs, and the canonical `.ade` path contract. Remaining major Phase 4 workstreams after Wave 1: W8, W9, and W-UX/W7c follow-through. MCP dual-mode architecture shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
 
 ---
 

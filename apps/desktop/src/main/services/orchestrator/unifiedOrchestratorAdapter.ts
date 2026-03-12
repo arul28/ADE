@@ -15,6 +15,7 @@ import type {
   TeamRuntimeConfig,
 } from "../../../shared/types";
 import type { MissionPermissionConfig, MissionProviderPermissions } from "../../../shared/types/missions";
+import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { resolveClaudeCliModel, resolveCodexCliModel } from "../ai/claudeModelUtils";
 import type { createAgentChatService } from "../chat/agentChatService";
 import {
@@ -110,7 +111,7 @@ function writeMcpConfigFile(args: {
   missionId: string;
   stepId: string;
 }): string {
-  const configDir = path.join(args.workspaceRoot, ".ade", "orchestrator", "mcp-configs");
+  const configDir = resolveAdeLayout(args.workspaceRoot).mcpConfigsDir;
   fs.mkdirSync(configDir, { recursive: true });
 
   const configPath = path.join(configDir, `worker-${args.attemptId}.json`);
@@ -145,7 +146,7 @@ function workerLocalMcpConfigFileName(attemptId: string): string {
 }
 
 function workerPromptFilePath(projectRoot: string, attemptId: string): string {
-  return path.join(projectRoot, ".ade", "orchestrator", "worker-prompts", `worker-${attemptId}.txt`);
+  return path.join(resolveAdeLayout(projectRoot).workerPromptsDir, `worker-${attemptId}.txt`);
 }
 
 const CLAUDE_READ_ONLY_NATIVE_TOOLS = [
@@ -264,7 +265,7 @@ export function buildCodexMcpConfigFlags(args: {
  * Remove a single worker MCP config file created by writeMcpConfigFile.
  */
 export function cleanupMcpConfigFile(projectRoot: string, attemptId: string, laneWorktreePath?: string | null): void {
-  const configPath = path.join(projectRoot, ".ade", "orchestrator", "mcp-configs", `worker-${attemptId}.json`);
+  const configPath = path.join(resolveAdeLayout(projectRoot).mcpConfigsDir, `worker-${attemptId}.json`);
   try {
     fs.unlinkSync(configPath);
   } catch {
@@ -302,12 +303,13 @@ function cleanupStaleFilesInDir(dir: string, prefix: string, suffix: string): vo
 }
 
 function cleanupStaleMcpConfigFiles(projectRoot: string): void {
+  const layout = resolveAdeLayout(projectRoot);
   cleanupStaleFilesInDir(
-    path.join(projectRoot, ".ade", "orchestrator", "mcp-configs"),
+    layout.mcpConfigsDir,
     "worker-", ".json",
   );
   cleanupStaleFilesInDir(
-    path.join(projectRoot, ".ade", "orchestrator", "worker-prompts"),
+    layout.workerPromptsDir,
     "worker-", ".txt",
   );
 }

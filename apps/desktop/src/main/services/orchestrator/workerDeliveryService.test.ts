@@ -232,6 +232,48 @@ describe("workerDeliveryService routeMessageToCoordinatorCtx", () => {
     expect(deps.steerMission).toHaveBeenCalledTimes(1);
     expect(deps.enqueueChatResponse).toHaveBeenCalledTimes(1);
   });
+
+  it("treats plain coordinator chat as conversation instead of steering", () => {
+    const ctx = {
+      disposed: { current: false },
+      logger: { debug: vi.fn() },
+      aiIntegrationService: {},
+      projectRoot: "/tmp/project",
+      chatMessages: new Map(),
+      sessionRuntimeSignals: new Map(),
+      orchestratorService: {
+        listRuns: vi.fn(() => []),
+        getRunGraph: vi.fn(),
+      },
+    } as any;
+    const deps = {
+      appendChatMessage: vi.fn((message) => message),
+      steerMission: vi.fn(),
+      enqueueChatResponse: vi.fn(),
+      runHealthSweep: vi.fn(),
+    };
+
+    routeMessageToCoordinatorCtx(
+      ctx,
+      {
+        missionId: "mission-1",
+        content: "hello there",
+        threadId: "thread-1",
+        target: { kind: "coordinator", runId: "run-1" },
+      } as any,
+      deps as any,
+    );
+
+    expect(deps.steerMission).not.toHaveBeenCalled();
+    expect(deps.enqueueChatResponse).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          coordinatorChatMode: "conversation",
+        }),
+      }),
+      expect.any(String),
+    );
+  });
 });
 
 describe("workerDeliveryService resolveWorkerDeliverySessionCtx", () => {

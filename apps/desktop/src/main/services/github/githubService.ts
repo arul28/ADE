@@ -4,6 +4,7 @@ import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
 import { runGit } from "../git/git";
 import type { GitHubRepoRef, GitHubStatus } from "../../../shared/types";
+import { resolveAdeLayout } from "../../../shared/adeLayout";
 
 import { nowIso, asString } from "../shared/utils";
 
@@ -42,14 +43,12 @@ function parseGitHubRepoFromRemoteUrl(remoteUrlRaw: string): GitHubRepoRef | nul
 
 export function createGithubService({
   logger,
-  adeDir,
   projectRoot
 }: {
   logger: Logger;
-  adeDir: string;
   projectRoot: string;
 }) {
-  const githubStateDir = path.join(adeDir, "github");
+  const githubStateDir = resolveAdeLayout(projectRoot).githubSecretsDir;
   const tokenPath = path.join(githubStateDir, AUTH_STORE_FILE_NAME);
 
   const readStoredToken = (): string | null => {

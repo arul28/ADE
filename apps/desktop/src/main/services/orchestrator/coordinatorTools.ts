@@ -3007,6 +3007,13 @@ export function createCoordinatorToolSet(deps: {
       workerId: z.string().describe("Worker step key"),
       outcome: z.enum(["succeeded", "failed", "partial"]).describe("Outcome classification"),
       summary: z.string().describe("Result summary"),
+      plan: z.object({
+        markdown: z.string().min(1).describe("Markdown plan content for planning/read-only planning steps"),
+        summary: z.string().optional().describe("One-line plan summary"),
+        title: z.string().optional().describe("Optional display title"),
+        format: z.literal("markdown").optional(),
+        artifactPath: z.string().optional().describe("Optional canonical relative plan path hint"),
+      }).nullable().optional(),
       artifacts: z.array(
         z.object({
           type: z.string(),
@@ -3025,11 +3032,36 @@ export function createCoordinatorToolSet(deps: {
       }).nullable().optional(),
       laneId: z.string().nullable().optional(),
     }),
-    execute: async ({ workerId, outcome, summary, artifacts, filesChanged, testsRun, laneId }) => {
+    execute: async ({ workerId, outcome, summary, plan, artifacts, filesChanged, testsRun, laneId }) => {
       try {
         const g = graph();
         const step = resolveStep(g, workerId);
         if (!step) return { ok: false, error: `Worker not found: ${workerId}` };
+        const stepMetadata = asRecord(step.metadata) ?? {};
+        const stepType = typeof stepMetadata.stepType === "string" ? stepMetadata.stepType.trim().toLowerCase() : "";
+        const phaseKey = typeof stepMetadata.phaseKey === "string" ? stepMetadata.phaseKey.trim().toLowerCase() : "";
+        const requiresPlanPayload =
+          stepType === "planning"
+          || stepType === "analysis"
+          || phaseKey === "planning";
+        const normalizedPlan = (() => {
+          const rawPlan = plan;
+          return rawPlan && typeof rawPlan.markdown === "string" && rawPlan.markdown.trim().length > 0
+            ? {
+                markdown: rawPlan.markdown.trim(),
+                ...(typeof rawPlan.summary === "string" && rawPlan.summary.trim().length > 0 ? { summary: rawPlan.summary.trim() } : {}),
+                ...(typeof rawPlan.title === "string" && rawPlan.title.trim().length > 0 ? { title: rawPlan.title.trim() } : {}),
+                ...(rawPlan.format === "markdown" ? { format: "markdown" as const } : {}),
+                ...(typeof rawPlan.artifactPath === "string" && rawPlan.artifactPath.trim().length > 0 ? { artifactPath: rawPlan.artifactPath.trim() } : {}),
+              }
+            : null;
+        })();
+        if (requiresPlanPayload && outcome === "succeeded" && !normalizedPlan) {
+          return {
+            ok: false,
+            error: "Planning workers must return a non-empty plan.markdown payload in report_result. ADE will persist the plan artifact after completion.",
+          };
+        }
         const normalizedArtifacts = Array.isArray(artifacts) ? artifacts : [];
         const normalizedFilesChanged = Array.isArray(filesChanged) ? filesChanged : [];
         const normalizedSummary = typeof summary === "string" ? summary.trim() : "";
@@ -3041,6 +3073,7 @@ export function createCoordinatorToolSet(deps: {
           missionId,
           outcome,
           summary: normalizedSummary || "Worker completed without a structured summary.",
+          ...(normalizedPlan ? { plan: normalizedPlan } : {}),
           artifacts: normalizedArtifacts.map((artifact) => ({
             type: typeof artifact?.type === "string" ? artifact.type : "artifact",
             title: typeof artifact?.title === "string" ? artifact.title : "Untitled artifact",
@@ -5345,6 +5378,12 @@ export function createCoordinatorToolSet(deps: {
           return { ok: false as const, error: questionBlockReason };
         }
         const policy = resolveCurrentPhaseQuestionPolicy(g);
+        if (policy.isPlanning) {
+          return {
+            ok: false as const,
+            error: "During Planning, the active planning worker must ask any clarification directly. Spawn or wait for the planner instead of opening coordinator-owned planning questions.",
+          };
+        }
         const priorInterventions = listPhaseQuestionInterventions(g);
         const openQuestion = priorInterventions.find((entry) => entry.status === "open") ?? null;
         if (openQuestion) {

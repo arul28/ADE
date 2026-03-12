@@ -1,7 +1,8 @@
 import { app } from "electron";
-import fs from "node:fs";
 import path from "node:path";
 import type { ProjectInfo } from "../../../shared/types";
+import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { initializeOrRepairAdeProject } from "../projects/adeProjectService";
 
 export type AdePaths = {
   adeDir: string;
@@ -12,6 +13,13 @@ export type AdePaths = {
   worktreesDir: string;
   packsDir: string;
   dbPath: string;
+  socketPath: string;
+  cacheDir: string;
+  artifactsDir: string;
+  chatSessionsDir: string;
+  chatTranscriptsDir: string;
+  orchestratorCacheDir: string;
+  missionStateDir: string;
 };
 
 function resolveProjectRoot(): string {
@@ -39,34 +47,23 @@ export function getProjectInfo(): ProjectInfo {
 }
 
 export function ensureAdeDirs(projectRoot: string): AdePaths {
-  const adeDir = path.join(projectRoot, ".ade");
-  const logsDir = path.join(adeDir, "logs");
-  const processLogsDir = path.join(logsDir, "processes");
-  const testLogsDir = path.join(logsDir, "tests");
-  const transcriptsDir = path.join(adeDir, "transcripts");
-  const worktreesDir = path.join(adeDir, "worktrees");
-  const packsDir = path.join(adeDir, "packs");
-  const dbPath = path.join(adeDir, "ade.db");
-
-  fs.mkdirSync(processLogsDir, { recursive: true });
-  fs.mkdirSync(testLogsDir, { recursive: true });
-  fs.mkdirSync(transcriptsDir, { recursive: true });
-  fs.mkdirSync(worktreesDir, { recursive: true });
-  fs.mkdirSync(packsDir, { recursive: true });
-
-  // A small marker helps debugging state location quickly.
-  try {
-    const markerPath = path.join(adeDir, "README.txt");
-    if (!fs.existsSync(markerPath)) {
-      fs.writeFileSync(
-        markerPath,
-        "ADE local state. Safe to delete. This folder is intended to be git-ignored.\n",
-        "utf8"
-      );
-    }
-  } catch {
-    // Ignore marker failures.
-  }
-
-  return { adeDir, logsDir, processLogsDir, testLogsDir, transcriptsDir, worktreesDir, packsDir, dbPath };
+  const { paths } = initializeOrRepairAdeProject(projectRoot);
+  const layout = resolveAdeLayout(projectRoot);
+  return {
+    adeDir: paths.adeDir,
+    logsDir: paths.logsDir,
+    processLogsDir: paths.processLogsDir,
+    testLogsDir: paths.testLogsDir,
+    transcriptsDir: paths.transcriptsDir,
+    worktreesDir: paths.worktreesDir,
+    packsDir: paths.packsDir,
+    dbPath: paths.dbPath,
+    socketPath: paths.socketPath,
+    cacheDir: layout.cacheDir,
+    artifactsDir: layout.artifactsDir,
+    chatSessionsDir: layout.chatSessionsDir,
+    chatTranscriptsDir: layout.chatTranscriptsDir,
+    orchestratorCacheDir: layout.orchestratorCacheDir,
+    missionStateDir: layout.missionStateDir,
+  };
 }

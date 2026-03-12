@@ -113,6 +113,7 @@ export function AgentChatComposer({
   executionMode,
   executionModeOptions = [],
   modelSelectionLocked = false,
+  permissionModeLocked = false,
   onModelChange,
   onReasoningEffortChange,
   onDraftChange,
@@ -148,6 +149,7 @@ export function AgentChatComposer({
   executionMode?: AgentChatExecutionMode | null;
   executionModeOptions?: ExecutionModeOption[];
   modelSelectionLocked?: boolean;
+  permissionModeLocked?: boolean;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
   onDraftChange: (value: string) => void;
@@ -597,7 +599,7 @@ export function AgentChatComposer({
               />
 
         {/* Permission mode */}
-        {permissionMode && onPermissionModeChange && permissionOptions.length > 0 ? (
+        {permissionMode && onPermissionModeChange && permissionOptions.length > 0 && !permissionModeLocked ? (
           <div className="relative flex items-center gap-px border border-border/10 bg-surface-recessed/40">
             {permissionOptions.map((opt) => {
               const isActive = permissionMode === opt.value;

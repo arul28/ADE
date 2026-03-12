@@ -100,6 +100,7 @@ import {
   DEFAULT_RECOVERY_LOOP_POLICY,
   DEFAULT_INTEGRATION_PR_POLICY,
 } from "./orchestratorConstants";
+import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { modelConfigToServiceModel } from "../../../shared/modelProfiles";
 import { getModelById } from "../../../shared/modelRegistry";
 import { isWorkerBootstrapNoiseLine } from "../../../shared/workerRuntimeNoise";
@@ -4697,10 +4698,20 @@ Check all worker statuses and continue managing the mission from here. Read work
   // Communication routing: user messages to coordinator thread get injected
   // into the coordinator agent directly instead of going through the old
   // text-command parser.
-  const routeUserMessageToCoordinator = (_missionId: string, runId: string, content: string): boolean => {
+  const routeUserMessageToCoordinator = (
+    _missionId: string,
+    runId: string,
+    content: string,
+    mode: "conversation" | "instruction" = "conversation",
+  ): boolean => {
     const coordAgent = coordinatorAgents.get(runId);
     if (!coordAgent?.isAlive) return false;
-    coordAgent.injectMessage(`[USER MESSAGE] ${content}`);
+    const header = mode === "instruction" ? "[USER INSTRUCTION]" : "[USER CHAT]";
+    const guidance =
+      mode === "instruction"
+        ? "Respond to the human in plain language. Their intent has already been recorded as mission steering when applicable. Do not forward their raw words to workers."
+        : "Answer the human directly in plain language. Do not treat this as worker steering unless they explicitly ask for an operational change.";
+    coordAgent.injectMessage(`${header}\n${guidance}\n\n${content}`);
     return true;
   };
 
@@ -4713,13 +4724,15 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (!mission) return;
 
     const latestUserMessage = clipTextForContext(chatArgs.content, MAX_LATEST_CHAT_MESSAGE_CHARS);
+    const metadata = isRecord(chatArgs.metadata) ? chatArgs.metadata : null;
+    const chatMode = metadata?.coordinatorChatMode === "instruction" ? "instruction" : "conversation";
 
     // Route user messages directly to the coordinator agent (tool-based)
     const runs = orchestratorService.listRuns({ missionId: chatArgs.missionId });
     const latestRun = runs[0] ?? null;
     const activeRun = runs.find((r) => r.status === "active" || r.status === "bootstrapping" || r.status === "queued" || r.status === "paused");
     if (activeRun) {
-      const routed = routeUserMessageToCoordinator(chatArgs.missionId, activeRun.id, latestUserMessage);
+      const routed = routeUserMessageToCoordinator(chatArgs.missionId, activeRun.id, latestUserMessage, chatMode);
       if (routed) return;
       if (activeRun.status === "paused") {
         emitOrchestratorMessage(
@@ -4733,7 +4746,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (latestRun && (latestRun.status === "succeeded" || latestRun.status === "failed" || latestRun.status === "canceled")) {
       const coordAgent = coordinatorAgents.get(latestRun.id);
       if (coordAgent?.isAlive) {
-        const consultMessage = `[FOLLOW-UP CONSULT ONLY]\nThe mission run is already terminal (${latestRun.status}). Answer questions, explain decisions, and recommend next steps. Do not mutate the completed run. If more implementation work is requested, instruct the operator to start a continuation.\n\nUser message:\n${latestUserMessage}`;
+        const consultMessage = `[FOLLOW-UP CONSULT ONLY]\nThe mission run is already terminal (${latestRun.status}). Answer questions, explain decisions, and recommend next steps. Do not mutate the completed run. If more implementation work is requested, instruct the operator to start a continuation.\n\nChat mode: ${chatMode}\nUser message:\n${latestUserMessage}`;
         coordAgent.injectMessage(consultMessage);
         return;
       }
@@ -6903,26 +6916,31 @@ Check all worker statuses and continue managing the mission from here. Read work
           ...(phaseRuntime ? { phaseRuntime } : {}),
         }
       });
+      if (!started) {
+        throw new Error("Mission run failed to start.");
+      }
+      const startedRun = started.run;
+      const startedRunId = startedRun.id;
 
       startupStage = "memory_init";
       if (missionMemoryLifecycleService && missionProjectId.length > 0) {
         missionMemoryLifecycleService.startMission({
           projectId: missionProjectId,
           missionId,
-          runId: started.run.id,
+          runId: startedRunId,
           initialDecision: initialMission.prompt ?? initialMission.title,
         });
       }
 
       startupStage = "lane_create";
       const missionLaneId = await ensureMissionLaneForRun({
-        runId: started.run.id,
+        runId: startedRunId,
         missionId,
         missionTitle: initialMission.title,
       });
       if (!missionLaneId) {
         pauseRunWithIntervention({
-          runId: started.run.id,
+          runId: startedRunId,
           missionId,
           source: "transition_decision",
           reasonCode: "mission_lane_unavailable",
@@ -6934,11 +6952,11 @@ Check all worker statuses and continue managing the mission from here. Read work
             isolationRequired: true,
           }
         });
-        const blockedRun = orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === started.run.id) ?? started.run;
+        const blockedRun = orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === startedRunId) ?? startedRun;
         return {
           started: {
             run: blockedRun,
-            steps: orchestratorService.listSteps(started.run.id),
+            steps: orchestratorService.listSteps(startedRunId),
           },
           mission: missionService.get(missionId),
         };
@@ -6946,7 +6964,7 @@ Check all worker statuses and continue managing the mission from here. Read work
 
       startupStage = "coordinator_start";
       const coordinatorModelConfig = resolveOrchestratorModelConfig(missionId, "coordinator");
-      const coordinatorAgent = startCoordinatorAgentV2(missionId, started.run.id, missionGoal, coordinatorModelConfig, {
+      const coordinatorAgent = startCoordinatorAgentV2(missionId, startedRunId, missionGoal, coordinatorModelConfig, {
         userRules,
         projectContext: coordinatorProjectContext,
         availableProviders,
@@ -6955,7 +6973,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       });
       if (!coordinatorAgent?.isAlive) {
         pauseRunWithIntervention({
-          runId: started.run.id,
+          runId: startedRunId,
           missionId,
           source: "transition_decision",
           reasonCode: "coordinator_start_failed",
@@ -6966,18 +6984,18 @@ Check all worker statuses and continue managing the mission from here. Read work
             startupPath: "start_mission_run"
           }
         });
-        const failedRun = orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === started.run.id) ?? started.run;
+        const failedRun = orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === startedRunId) ?? startedRun;
         return {
           started: {
             run: failedRun,
-            steps: orchestratorService.listSteps(started.run.id)
+            steps: orchestratorService.listSteps(startedRunId)
           },
           mission: missionService.get(missionId),
         };
       }
 
       startupStage = "run_activate";
-      const activatedRun = orchestratorService.activateRun(started.run.id);
+      const activatedRun = orchestratorService.activateRun(startedRunId);
       transitionMissionStatus(missionId, "in_progress");
       emitOrchestratorMessage(
         missionId,
@@ -7442,6 +7460,38 @@ Check all worker statuses and continue managing the mission from here. Read work
       priority: steerArgs.priority ?? "suggestion",
       targetStepKey: steerArgs.targetStepKey ?? null
     };
+    const resolutionKind = steerArgs.resolutionKind ?? (targetedInterventionId ? "answer_provided" : null);
+    const missionRuns = (() => {
+      try {
+        return orchestratorService.listRuns({ missionId, limit: 200 });
+      } catch {
+        return [];
+      }
+    })();
+    const missionRunIds = new Set(missionRuns.map((run) => run.id));
+    const runGraphById = new Map<string, OrchestratorRunGraph | null>();
+    const loadRunGraph = (runId: string): OrchestratorRunGraph | null => {
+      if (runGraphById.has(runId)) {
+        return runGraphById.get(runId) ?? null;
+      }
+      try {
+        const graph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+        runGraphById.set(runId, graph);
+        return graph;
+      } catch {
+        runGraphById.set(runId, null);
+        return null;
+      }
+    };
+    const isLiveSteeringWorker = (attemptId: string, ws: OrchestratorWorkerState): boolean => {
+      if (!ws.runId || ws.state !== "working" || !ws.sessionId) return false;
+      if (!missionRunIds.has(ws.runId)) return false;
+      const graph = loadRunGraph(ws.runId);
+      if (!graph) return false;
+      const attempt = graph.attempts.find((entry) => entry.id === attemptId);
+      if (!attempt || attempt.status !== "running") return false;
+      return true;
+    };
 
     // Store in memory for active use by AI decision points
     const existing = activeSteeringDirectives.get(missionId) ?? loadSteeringDirectivesFromMetadata(missionId);
@@ -7467,70 +7517,6 @@ Check all worker statuses and continue managing the mission from here. Read work
       });
     }
 
-    // ── Real-time steering injection ──
-    // If the directive targets a specific step with an active agent session,
-    // inject it directly into the running session for zero-latency delivery.
-    if (directive.targetStepKey && agentChatService) {
-      try {
-        const runs = orchestratorService.listRuns({ missionId });
-        const activeRun = runs.find(
-          (r) => r.status === "active" || r.status === "bootstrapping" || r.status === "queued" || r.status === "paused"
-        );
-        if (activeRun) {
-          const graph = orchestratorService.getRunGraph({ runId: activeRun.id, timelineLimit: 0 });
-          const targetStep = graph.steps.find((s) => s.stepKey === directive.targetStepKey);
-          if (targetStep) {
-            const runningWorkers = [...workerStates.entries()].filter(
-              ([, ws]) =>
-                ws.state === "working" &&
-                ws.sessionId &&
-                ws.stepId === targetStep.id &&
-                ws.runId === activeRun.id
-            );
-            for (const [attemptId, ws] of runningWorkers) {
-              const sessionId = ws.sessionId!;
-              const steerContent = `[STEERING DIRECTIVE] ${directive.directive}`;
-              void sendWorkerMessageToSession(sessionId, steerContent)
-                .then(() => {
-                  updateMissionMetadata(missionId, (meta) => {
-                    const delivered = Array.isArray(meta._liveDeliveredDirectives)
-                      ? (meta._liveDeliveredDirectives as unknown[])
-                      : [];
-                    delivered.push({
-                      attemptId,
-                      sessionId,
-                      stepKey: directive.targetStepKey,
-                      deliveredAt: nowIso()
-                    });
-                    meta._liveDeliveredDirectives = delivered.slice(-20);
-                  });
-                  logger.info("ai_orchestrator.steering_live_injected", {
-                    missionId,
-                    targetStepKey: directive.targetStepKey,
-                    attemptId,
-                    sessionId
-                  });
-                })
-                .catch((injectError) => {
-                  logger.debug("ai_orchestrator.steering_live_inject_failed", {
-                    missionId,
-                    targetStepKey: directive.targetStepKey,
-                    attemptId,
-                    error: injectError instanceof Error ? injectError.message : String(injectError)
-                  });
-                });
-              break; // Only inject into one matching session
-            }
-          }
-        }
-      } catch (liveInjectError) {
-        logger.debug("ai_orchestrator.steering_live_inject_outer_failed", {
-          missionId,
-          error: liveInjectError instanceof Error ? liveInjectError.message : String(liveInjectError)
-        });
-      }
-    }
-
     logger.info("ai_orchestrator.mission_steered", {
       missionId,
       priority: directive.priority,
@@ -7543,26 +7529,73 @@ Check all worker statuses and continue managing the mission from here. Read work
     const resolvedInterventions: string[] = [];
     const resumedRunIds = new Set<string>();
     const refreshedMission = missionService.get(missionId);
-    const openManualInput = refreshedMission?.interventions.filter((entry) => {
-      if (entry.status !== "open" || entry.interventionType !== "manual_input") return false;
-      return !targetedInterventionId || entry.id === targetedInterventionId;
-    }) ?? [];
+    const openManualInput = targetedInterventionId
+      ? refreshedMission?.interventions.filter((entry) => {
+          if (entry.status !== "open" || entry.interventionType !== "manual_input") return false;
+          return entry.id === targetedInterventionId;
+        }) ?? []
+      : [];
     for (const intervention of openManualInput) {
       try {
+        const meta = isRecord(intervention.metadata) ? intervention.metadata : null;
+        const runId = typeof meta?.runId === "string" ? meta.runId.trim() : "";
+        const attemptId = typeof meta?.attemptId === "string" ? meta.attemptId.trim() : "";
+        const stepId = typeof meta?.stepId === "string" ? meta.stepId.trim() : "";
+        const sessionId = typeof meta?.sessionId === "string" ? meta.sessionId.trim() : "";
+        const ownerGraph = runId ? loadRunGraph(runId) : null;
+        const ownerAttempt = attemptId.length > 0 ? ownerGraph?.attempts.find((entry) => entry.id === attemptId) ?? null : null;
+        const ownerStep = stepId.length > 0 ? ownerGraph?.steps.find((entry) => entry.id === stepId) ?? null : null;
+        const ownerStepMeta = isRecord(ownerStep?.metadata) ? ownerStep.metadata : null;
+        const ownerPlanningLike =
+          String(ownerStepMeta?.stepType ?? "").trim().toLowerCase() === "planning"
+          || String(ownerStepMeta?.stepType ?? "").trim().toLowerCase() === "analysis"
+          || String(ownerStepMeta?.phaseKey ?? "").trim().toLowerCase() === "planning";
+        const ownerCanResume = attemptId.length === 0 || Boolean(ownerAttempt && ownerAttempt.status === "running");
+
+        if (resolutionKind !== "cancel_run" && !ownerCanResume) {
+          const failureTitle = ownerPlanningLike ? "Planner can no longer continue" : "Question owner is no longer active";
+          const failureBody = ownerPlanningLike
+            ? "The planner that asked this question has already failed or exited, so ADE cannot continue planning with that same thread."
+            : "The worker that opened this question is no longer active, so ADE cannot safely resume it from this answer.";
+          missionService.addIntervention({
+            missionId,
+            interventionType: "failed_step",
+            title: failureTitle,
+            body: failureBody,
+            requestedAction: ownerPlanningLike
+              ? "Review the planner failure and explicitly choose whether to retry planning."
+              : "Review the worker failure and choose whether to retry or replace that step.",
+            metadata: {
+              runId: runId || null,
+              stepId: stepId || null,
+              stepKey: ownerStep?.stepKey ?? null,
+              attemptId: attemptId || null,
+              reasonCode: ownerPlanningLike ? "planner_cannot_resume" : "question_owner_inactive",
+            },
+          });
+          continue;
+        }
+
         missionService.resolveIntervention({
           missionId,
           interventionId: intervention.id,
           status: "resolved",
-          note: `Resolved by steering directive (${directive.priority}).`
+          resolutionKind: resolutionKind ?? "answer_provided",
+          note:
+            resolutionKind === "accept_defaults"
+              ? "Resolved by accepting defaults."
+              : resolutionKind === "skip_question"
+                ? "Resolved by skipping the question."
+                : resolutionKind === "cancel_run"
+                  ? "Resolved by canceling the run."
+                  : `Resolved by user answer (${directive.priority}).`
         });
         resolvedInterventions.push(intervention.id);
-        const meta = isRecord(intervention.metadata) ? intervention.metadata : null;
-        const runId = typeof meta?.runId === "string" ? meta.runId : "";
         if (runId.length > 0) {
           const threadId = typeof meta?.threadId === "string" ? meta.threadId.trim() : "";
           const replyTo = typeof meta?.messageId === "string" ? meta.messageId.trim() : "";
           const questionReplyLink =
-            threadId.length > 0 && replyTo.length > 0
+            resolutionKind !== "cancel_run" && threadId.length > 0 && replyTo.length > 0
               ? buildQuestionReplyLink({
                   threadId,
                   replyTo,
@@ -7579,9 +7612,10 @@ Check all worker statuses and continue managing the mission from here. Read work
             eventKey: questionReplyLink?.messageId ?? `intervention_resolved:${intervention.id}:${directive.priority}`,
             payload: {
               interventionId: intervention.id,
-              reason: "steering_directive",
+              reason: resolutionKind === "cancel_run" ? "cancel_run" : "steering_directive",
               priority: directive.priority,
               directive: clipTextForContext(directive.directive, 220),
+              resolutionKind,
               threadId: questionReplyLink?.threadId ?? null,
               messageId: questionReplyLink?.messageId ?? null,
               replyTo: questionReplyLink?.replyTo ?? null
@@ -7604,9 +7638,7 @@ Check all worker statuses and continue managing the mission from here. Read work
               }
             });
           }
-          const attemptId = typeof meta?.attemptId === "string" ? meta.attemptId.trim() : "";
-          const stepId = typeof meta?.stepId === "string" ? meta.stepId.trim() : "";
-          if (attemptId.length > 0 && stepId.length > 0) {
+          if (resolutionKind !== "cancel_run" && attemptId.length > 0 && stepId.length > 0) {
             const existingWorker = workerStates.get(attemptId);
             const executorKindRaw = typeof meta?.executorKind === "string" ? meta.executorKind : null;
             const executorKind: OrchestratorExecutorKind =
@@ -7627,7 +7659,20 @@ Check all worker statuses and continue managing the mission from here. Read work
               tracker.lastQuestionMessageId = questionReplyLink.messageId;
             }
           }
-          resumedRunIds.add(runId);
+          if (resolutionKind === "cancel_run") {
+            void cancelRunGracefully({
+              runId,
+              reason: "User canceled the run from an intervention.",
+            }).catch((error) => {
+              logger.warn("ai_orchestrator.cancel_run_from_intervention_failed", {
+                missionId,
+                runId,
+                error: getErrorMessage(error),
+              });
+            });
+          } else {
+            resumedRunIds.add(runId);
+          }
         }
       } catch (error) {
         logger.debug("ai_orchestrator.steer_resolve_intervention_failed", {
@@ -7648,7 +7693,13 @@ Check all worker statuses and continue managing the mission from here. Read work
       }
       emitOrchestratorMessage(
         missionId,
-        `Applied steering and resolved ${resolvedInterventions.length} waiting-input intervention${resolvedInterventions.length === 1 ? "" : "s"}.`,
+        resolutionKind === "cancel_run"
+          ? `Resolved ${resolvedInterventions.length} intervention${resolvedInterventions.length === 1 ? "" : "s"} and started canceling the run.`
+          : resolutionKind === "accept_defaults"
+            ? `Accepted defaults for ${resolvedInterventions.length} intervention${resolvedInterventions.length === 1 ? "" : "s"} and resumed the owning worker.`
+            : resolutionKind === "skip_question"
+              ? `Skipped ${resolvedInterventions.length} question${resolvedInterventions.length === 1 ? "" : "s"} and resumed the owning worker.`
+              : `Applied user answers and resolved ${resolvedInterventions.length} waiting-input intervention${resolvedInterventions.length === 1 ? "" : "s"}.`,
         directive.targetStepKey ?? null,
         {
           interventionIds: resolvedInterventions,
@@ -7699,36 +7750,21 @@ Check all worker statuses and continue managing the mission from here. Read work
 
     // Real-time delivery: try to deliver the directive to running worker sessions
     if (agentChatService) {
-      // Build a set of runIds that belong to this mission for fast lookup
-      const missionRunIds = new Set<string>();
-      // Build a map of stepId -> stepKey for resolving targeted delivery
       const stepIdToStepKey = new Map<string, string>();
-      try {
-        const runs = orchestratorService.listRuns({ missionId, limit: 200 });
-        for (const run of runs) {
-          missionRunIds.add(run.id);
-          if (directive.targetStepKey) {
-            try {
-              const graph = orchestratorService.getRunGraph({ runId: run.id, timelineLimit: 0 });
-              for (const step of graph.steps) {
-                stepIdToStepKey.set(step.id, step.stepKey);
-              }
-            } catch {
-              // ignore graph lookup failures
-            }
-          }
+      for (const run of missionRuns) {
+        const graph = loadRunGraph(run.id);
+        if (!graph) continue;
+        for (const step of graph.steps) {
+          stepIdToStepKey.set(step.id, step.stepKey);
         }
-      } catch {
-        // ignore listRuns failures — fall through with empty sets
       }
 
       const formattedDirective = `[ADE ORCHESTRATOR STEERING]: ${directive.directive}`;
 
       if (directive.targetStepKey) {
         // Targeted delivery: find the specific worker for this step
-        const targetWorker = [...workerStates.entries()].find(([, ws]) => {
-          if (!ws.runId || ws.state !== "working" || !ws.sessionId) return false;
-          if (!missionRunIds.has(ws.runId)) return false;
+        const targetWorker = [...workerStates.entries()].find(([attemptId, ws]) => {
+          if (!isLiveSteeringWorker(attemptId, ws)) return false;
           const workerStepKey = stepIdToStepKey.get(ws.stepId);
           return workerStepKey === directive.targetStepKey;
         });
@@ -7762,7 +7798,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       } else {
         // No target — deliver to ALL running workers for this mission
         for (const [attemptId, ws] of workerStates.entries()) {
-          if (ws.runId && ws.state === "working" && ws.sessionId && missionRunIds.has(ws.runId)) {
+          if (isLiveSteeringWorker(attemptId, ws)) {
             void (async () => {
               try {
                 await sendWorkerMessageToSession(ws.sessionId!, formattedDirective);
@@ -8394,6 +8430,18 @@ Check all worker statuses and continue managing the mission from here. Read work
           stepKey: step?.stepKey ?? null,
           attemptId: event.attemptId,
         };
+      case "planning_artifact_missing":
+        return {
+          id: `timeline:${event.id}`,
+          at: event.createdAt,
+          kind: "intervention",
+          title: "Planner failed to return a plan",
+          detail: detailSummary ?? `${stepLabel} completed without a usable plan payload.`,
+          severity: "error",
+          stepId: event.stepId,
+          stepKey: step?.stepKey ?? null,
+          attemptId: event.attemptId,
+        };
       default:
         if (
           event.eventType.startsWith("validation_")
@@ -8442,6 +8490,40 @@ Check all worker statuses and continue managing the mission from here. Read work
         title: event.eventType === "coordinator_broadcast" ? "Broadcast sent" : "Steering applied",
         detail: detail ?? "Mission steering was applied.",
         severity: "info",
+        stepId: event.stepId,
+        stepKey: step?.stepKey ?? null,
+        attemptId: event.attemptId,
+      };
+    }
+    if (event.eventType === "intervention_opened") {
+      return {
+        id: `runtime:${event.id}`,
+        at: event.occurredAt,
+        kind: "intervention",
+        title: "Question opened",
+        detail: detail ?? "ADE opened a clarification and paused the mission.",
+        severity: "warning",
+        stepId: event.stepId,
+        stepKey: step?.stepKey ?? null,
+        attemptId: event.attemptId,
+      };
+    }
+    if (event.eventType === "intervention_resolved") {
+      const resolutionLabel =
+        payload?.resolutionKind === "accept_defaults"
+          ? "Defaults accepted"
+          : payload?.resolutionKind === "skip_question"
+            ? "Question skipped"
+            : payload?.resolutionKind === "cancel_run"
+              ? "Run canceled"
+              : "Answer received";
+      return {
+        id: `runtime:${event.id}`,
+        at: event.occurredAt,
+        kind: "user",
+        title: resolutionLabel,
+        detail: detail ?? "ADE applied the intervention outcome.",
+        severity: payload?.resolutionKind === "cancel_run" ? "warning" : "info",
         stepId: event.stepId,
         stepKey: step?.stepKey ?? null,
         attemptId: event.attemptId,
@@ -8504,7 +8586,16 @@ Check all worker statuses and continue managing the mission from here. Read work
         id: `mission:${event.id}`,
         at: event.createdAt,
         kind: event.eventType === "mission_intervention_resolved" ? "user" : "system",
-        title: event.eventType === "mission_intervention_resolved" ? "Intervention resolved" : "Mission update",
+        title:
+          event.eventType === "mission_intervention_resolved"
+            ? (() => {
+                const payload = isRecord(event.payload) ? event.payload : null;
+                if (payload?.resolutionKind === "accept_defaults") return "Defaults accepted";
+                if (payload?.resolutionKind === "skip_question") return "Question skipped";
+                if (payload?.resolutionKind === "cancel_run") return "Run canceled";
+                return "Intervention resolved";
+              })()
+            : "Mission update",
         detail: event.summary,
         severity: toRunViewSeverity(event.eventType),
       });
@@ -9185,7 +9276,7 @@ Check all worker statuses and continue managing the mission from here. Read work
 
     const root = projectRoot ?? process.cwd();
     const runPart = runId ?? "latest";
-    const bundlePath = nodePath.join(root, ".ade", "log-bundles", missionId, runPart);
+    const bundlePath = nodePath.join(resolveAdeLayout(root).logBundlesDir, missionId, runPart);
     fs.mkdirSync(bundlePath, { recursive: true });
 
     const files: ExportMissionLogsResult["manifest"]["files"] = [];
@@ -9251,6 +9342,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       );
       if (runId) {
         const runGraph = orchestratorService.getRunGraph({ runId, timelineLimit: 5_000 });
+        const logsDir = resolveAdeLayout(root).logsDir;
         writeBundleFile("run-graph.json", `${JSON.stringify(runGraph, null, 2)}\n`);
         writeBundleFile(
           "worker-checkpoints.json",
@@ -9258,9 +9350,9 @@ Check all worker statuses and continue managing the mission from here. Read work
         );
         copyBundleFile("mission-state.json", getMissionStateDocumentPath(root, runId));
         copyBundleFile("coordinator-checkpoint.json", getCoordinatorCheckpointPath(root, runId));
-        copyBundleFile("logs/main.jsonl", nodePath.join(root, ".ade", "logs", "main.jsonl"));
-        copyBundleFile("logs/runtime.log", nodePath.join(root, ".ade", "logs", "runtime.log"));
-        copyBundleFile("logs/coordinator.claude.log", nodePath.join(root, ".ade", "logs", `coordinator-${runId}.claude.log`));
+        copyBundleFile("logs/main.jsonl", nodePath.join(logsDir, "main.jsonl"));
+        copyBundleFile("logs/runtime.log", nodePath.join(logsDir, "runtime.log"));
+        copyBundleFile("logs/coordinator.claude.log", nodePath.join(logsDir, `coordinator-${runId}.claude.log`));
         for (const attempt of runGraph.attempts) {
           const metadata = isRecord(attempt.metadata) ? attempt.metadata : null;
           const transcriptPath = typeof metadata?.transcriptPath === "string" ? metadata.transcriptPath.trim() : "";

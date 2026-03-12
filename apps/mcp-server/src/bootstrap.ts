@@ -4,6 +4,7 @@ import * as nodePty from "node-pty";
 import { createFileLogger, type Logger } from "../../desktop/src/main/services/logging/logger";
 import { openKvDb, type AdeDb } from "../../desktop/src/main/services/state/kvDb";
 import { detectDefaultBaseRef, toProjectInfo, upsertProjectRow } from "../../desktop/src/main/services/projects/projectService";
+import { initializeOrRepairAdeProject } from "../../desktop/src/main/services/projects/adeProjectService";
 import { createOperationService } from "../../desktop/src/main/services/history/operationService";
 import { createLaneService } from "../../desktop/src/main/services/lanes/laneService";
 import { createSessionService } from "../../desktop/src/main/services/sessions/sessionService";
@@ -81,6 +82,13 @@ export type AdeMcpPaths = {
   worktreesDir: string;
   packsDir: string;
   dbPath: string;
+  socketPath: string;
+  cacheDir: string;
+  artifactsDir: string;
+  chatSessionsDir: string;
+  chatTranscriptsDir: string;
+  orchestratorCacheDir: string;
+  missionStateDir: string;
 };
 
 export type AdeMcpRuntime = {
@@ -112,30 +120,23 @@ export type AdeMcpRuntime = {
 };
 
 export function ensureAdePaths(projectRoot: string): AdeMcpPaths {
-  const adeDir = path.join(projectRoot, ".ade");
-  const logsDir = path.join(adeDir, "logs");
-  const processLogsDir = path.join(logsDir, "processes");
-  const testLogsDir = path.join(logsDir, "tests");
-  const transcriptsDir = path.join(adeDir, "transcripts");
-  const worktreesDir = path.join(adeDir, "worktrees");
-  const packsDir = path.join(adeDir, "packs");
-  const dbPath = path.join(adeDir, "ade.db");
-
-  fs.mkdirSync(processLogsDir, { recursive: true });
-  fs.mkdirSync(testLogsDir, { recursive: true });
-  fs.mkdirSync(transcriptsDir, { recursive: true });
-  fs.mkdirSync(worktreesDir, { recursive: true });
-  fs.mkdirSync(packsDir, { recursive: true });
-
+  const { paths } = initializeOrRepairAdeProject(projectRoot);
   return {
-    adeDir,
-    logsDir,
-    processLogsDir,
-    testLogsDir,
-    transcriptsDir,
-    worktreesDir,
-    packsDir,
-    dbPath
+    adeDir: paths.adeDir,
+    logsDir: paths.logsDir,
+    processLogsDir: paths.processLogsDir,
+    testLogsDir: paths.testLogsDir,
+    transcriptsDir: paths.transcriptsDir,
+    worktreesDir: paths.worktreesDir,
+    packsDir: paths.packsDir,
+    dbPath: paths.dbPath,
+    socketPath: paths.socketPath,
+    cacheDir: paths.cacheDir,
+    artifactsDir: paths.artifactsDir,
+    chatSessionsDir: paths.chatSessionsDir,
+    chatTranscriptsDir: paths.chatTranscriptsDir,
+    orchestratorCacheDir: paths.orchestratorCacheDir,
+    missionStateDir: paths.missionStateDir,
   };
 }
 

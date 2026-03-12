@@ -7,6 +7,9 @@ import React, {
   useMemo,
 } from "react";
 import type {
+  AiPermissionMode,
+  PrAiResolutionContext,
+  PrAiResolutionSessionInfo,
   PrWithConflicts,
   PrMergeContext,
   PrCheck,
@@ -23,6 +26,8 @@ import type {
   AutoRebaseLaneStatus,
   AutoRebaseEventPayload,
 } from "../../../../shared/types";
+import { buildPrAiResolutionContextKey } from "../../../../shared/types";
+import { getModelById } from "../../../../shared/modelRegistry";
 
 type PrTab = "normal" | "queue" | "integration" | "rebase";
 
@@ -68,6 +73,8 @@ type PrsState = {
   // Resolver preferences
   resolverModel: string;
   resolverReasoningLevel: string;
+  resolverPermissionMode: AiPermissionMode;
+  resolverSessionsByContextKey: Record<string, PrAiResolutionSessionInfo>;
 };
 
 type PrsContextValue = PrsState & {
@@ -78,6 +85,9 @@ type PrsContextValue = PrsState & {
   setMergeMethod: (method: MergeMethod) => void;
   setResolverModel: (model: string) => void;
   setResolverReasoningLevel: (level: string) => void;
+  setResolverPermissionMode: (mode: AiPermissionMode, modelId?: string) => void;
+  upsertResolverSession: (session: PrAiResolutionSessionInfo) => void;
+  clearResolverSession: (context: PrAiResolutionContext) => void;
   setInlineTerminal: (terminal: InlineTerminalState) => void;
   refresh: () => Promise<void>;
 };
@@ -85,6 +95,41 @@ type PrsContextValue = PrsState & {
 const PrsContext = createContext<PrsContextValue | null>(null);
 
 const LS_MODEL_KEY = "ade:prs:resolverModel";
+const LS_PERMISSION_KEY = "ade:prs:resolverPermissions";
+
+type ResolverPermissionPreferences = {
+  claude: AiPermissionMode;
+  codex: AiPermissionMode;
+};
+
+const DEFAULT_RESOLVER_PERMISSIONS: ResolverPermissionPreferences = {
+  claude: "guarded_edit",
+  codex: "full_edit",
+};
+
+function normalizeResolverPermissionMode(value: unknown): AiPermissionMode | null {
+  if (value === "read_only" || value === "guarded_edit" || value === "full_edit") return value;
+  return null;
+}
+
+function readPersistedResolverPermissions(): ResolverPermissionPreferences {
+  try {
+    const raw = localStorage.getItem(LS_PERMISSION_KEY);
+    if (!raw) return DEFAULT_RESOLVER_PERMISSIONS;
+    const parsed = JSON.parse(raw) as Partial<ResolverPermissionPreferences>;
+    return {
+      claude: normalizeResolverPermissionMode(parsed?.claude) ?? DEFAULT_RESOLVER_PERMISSIONS.claude,
+      codex: normalizeResolverPermissionMode(parsed?.codex) ?? DEFAULT_RESOLVER_PERMISSIONS.codex,
+    };
+  } catch {
+    return DEFAULT_RESOLVER_PERMISSIONS;
+  }
+}
+
+function resolvePermissionFamilyForModel(modelId: string): keyof ResolverPermissionPreferences {
+  const descriptor = getModelById(modelId);
+  return descriptor?.family === "anthropic" ? "claude" : "codex";
+}
 
 function readPersistedModel(): string {
   try {
@@ -143,6 +188,8 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   // Resolver preferences
   const [resolverModel, setResolverModelRaw] = useState<string>(readPersistedModel);
   const [resolverReasoningLevel, setResolverReasoningLevel] = useState("medium");
+  const [resolverPermissions, setResolverPermissions] = useState<ResolverPermissionPreferences>(readPersistedResolverPermissions);
+  const [resolverSessionsByContextKey, setResolverSessionsByContextKey] = useState<Record<string, PrAiResolutionSessionInfo>>({});
 
   const setResolverModel = useCallback((model: string) => {
     setResolverModelRaw(model);
@@ -151,6 +198,33 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     } catch {
       /* ignore */
     }
+  }, []);
+
+  const setResolverPermissionMode = useCallback((mode: AiPermissionMode, modelId = resolverModel) => {
+    const family = resolvePermissionFamilyForModel(modelId);
+    setResolverPermissions((prev) => {
+      const next = { ...prev, [family]: mode };
+      try {
+        localStorage.setItem(LS_PERMISSION_KEY, JSON.stringify(next));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }, [resolverModel]);
+
+  const upsertResolverSession = useCallback((session: PrAiResolutionSessionInfo) => {
+    setResolverSessionsByContextKey((prev) => ({ ...prev, [session.contextKey]: session }));
+  }, []);
+
+  const clearResolverSession = useCallback((context: PrAiResolutionContext) => {
+    const key = buildPrAiResolutionContextKey(context);
+    setResolverSessionsByContextKey((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
   }, []);
 
   // Concurrency guard for refresh
@@ -400,6 +474,8 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       inlineTerminal,
       resolverModel,
       resolverReasoningLevel,
+      resolverPermissionMode: resolverPermissions[resolvePermissionFamilyForModel(resolverModel)],
+      resolverSessionsByContextKey,
       setActiveTab,
       setSelectedPrId,
       setSelectedQueueGroupId,
@@ -407,6 +483,9 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       setMergeMethod,
       setResolverModel,
       setResolverReasoningLevel,
+      setResolverPermissionMode,
+      upsertResolverSession,
+      clearResolverSession,
       setInlineTerminal,
       refresh,
     }),
@@ -438,7 +517,12 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       inlineTerminal,
       resolverModel,
       resolverReasoningLevel,
+      resolverPermissions,
+      resolverSessionsByContextKey,
       setResolverModel,
+      setResolverPermissionMode,
+      upsertResolverSession,
+      clearResolverSession,
       refresh,
     ],
   );

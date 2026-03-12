@@ -164,17 +164,11 @@ describe("VAL-ART-001: Planning step registers plan artifact", () => {
     };
   }
 
-  function ensurePlanFile(worktreePath: string, relativePlanPath = ".ade/plans/mission-plan.md") {
-    const absolutePlanPath = path.join(worktreePath, relativePlanPath);
-    fs.mkdirSync(path.dirname(absolutePlanPath), { recursive: true });
-    fs.writeFileSync(absolutePlanPath, "# Mission plan\n", "utf8");
-    return absolutePlanPath;
-  }
-
   function buildPlanningAttempt(overrides?: {
     stepMeta?: Record<string, unknown>;
     envelopeSummary?: string;
     outputs?: Record<string, unknown>;
+    plan?: Record<string, unknown> | null;
   }): {
     graph: OrchestratorRunGraph;
     attempt: OrchestratorRunGraph["attempts"][number];
@@ -218,7 +212,27 @@ describe("VAL-ART-001: Planning step registers plan artifact", () => {
           title: "Plan the feature",
           laneId: "lane-1",
           status: "running",
-          metadata: stepMeta,
+          metadata: {
+            ...stepMeta,
+            lastResultReport: {
+              workerId: "planning-worker",
+              runId: "run-1",
+              missionId: "mission-1",
+              outcome: "succeeded",
+              summary: overrides?.envelopeSummary ?? "Planning completed. Created architecture plan.",
+              plan: overrides?.plan === null
+                ? null
+                : {
+                    markdown: "# Mission plan\n\n- Investigate auth flow\n- Update tests\n",
+                    ...(overrides?.outputs?.planPath ? { artifactPath: String(overrides.outputs.planPath) } : {}),
+                    ...(overrides?.plan ?? {}),
+                  },
+              artifacts: [],
+              filesChanged: [],
+              testsRun: null,
+              reportedAt: "2026-03-10T00:05:00.000Z",
+            },
+          },
           dependencyStepIds: [],
           joinPolicy: "all_success",
           retryCount: 0,
@@ -232,9 +246,8 @@ describe("VAL-ART-001: Planning step registers plan artifact", () => {
   }
 
   it("registers a 'plan' artifact for planning steps on success", () => {
-    const { ctx, registeredArtifacts, worktreePath } = buildMockCtx();
+    const { ctx, registeredArtifacts } = buildMockCtx();
     const { graph, attempt } = buildPlanningAttempt();
-    ensurePlanFile(worktreePath);
 
     extractAndRegisterArtifacts(ctx, { graph, attempt });
 
@@ -245,14 +258,13 @@ describe("VAL-ART-001: Planning step registers plan artifact", () => {
     expect(planArtifact!.kind).toBe("custom");
     expect(planArtifact!.metadata).toMatchObject({
       planType: "mission_plan",
-      source: "planning_worker",
+      source: "ade_persisted_plan",
     });
   });
 
   it("plan artifact has valid value path", () => {
-    const { ctx, registeredArtifacts, worktreePath } = buildMockCtx();
+    const { ctx, registeredArtifacts } = buildMockCtx();
     const { graph, attempt } = buildPlanningAttempt();
-    ensurePlanFile(worktreePath);
 
     extractAndRegisterArtifacts(ctx, { graph, attempt });
 
@@ -265,11 +277,10 @@ describe("VAL-ART-001: Planning step registers plan artifact", () => {
   });
 
   it("uses custom planPath from outputs when provided", () => {
-    const { ctx, registeredArtifacts, worktreePath } = buildMockCtx();
+    const { ctx, registeredArtifacts } = buildMockCtx();
     const { graph, attempt } = buildPlanningAttempt({
       outputs: { planPath: ".ade/plans/custom-plan.md" },
     });
-    ensurePlanFile(worktreePath, ".ade/plans/custom-plan.md");
 
     extractAndRegisterArtifacts(ctx, { graph, attempt });
 
@@ -281,11 +292,10 @@ describe("VAL-ART-001: Planning step registers plan artifact", () => {
   });
 
   it("falls back to default plan path when outputs.planPath is absent", () => {
-    const { ctx, registeredArtifacts, worktreePath } = buildMockCtx();
+    const { ctx, registeredArtifacts } = buildMockCtx();
     const { graph, attempt } = buildPlanningAttempt({
       outputs: {},
     });
-    ensurePlanFile(worktreePath);
 
     extractAndRegisterArtifacts(ctx, { graph, attempt });
 
@@ -310,27 +320,11 @@ describe("VAL-ART-001: Planning step registers plan artifact", () => {
     expect(planArtifact).toBeUndefined();
   });
 
-  it("registers plan artifact for readOnlyExecution steps", () => {
-    const { ctx, registeredArtifacts, worktreePath } = buildMockCtx();
-    const { graph, attempt } = buildPlanningAttempt({
-      stepMeta: { readOnlyExecution: true },
-    });
-    ensurePlanFile(worktreePath);
-
-    extractAndRegisterArtifacts(ctx, { graph, attempt });
-
-    const planArtifact = registeredArtifacts.find(
-      (a) => a.artifactKey === "plan"
-    );
-    expect(planArtifact).toBeTruthy();
-  });
-
   it("registers plan artifact for phaseKey=planning steps", () => {
-    const { ctx, registeredArtifacts, worktreePath } = buildMockCtx();
+    const { ctx, registeredArtifacts } = buildMockCtx();
     const { graph, attempt } = buildPlanningAttempt({
       stepMeta: { phaseKey: "Planning" },
     });
-    ensurePlanFile(worktreePath);
 
     extractAndRegisterArtifacts(ctx, { graph, attempt });
 
@@ -341,11 +335,10 @@ describe("VAL-ART-001: Planning step registers plan artifact", () => {
   });
 
   it("plan artifact metadata includes envelope summary", () => {
-    const { ctx, registeredArtifacts, worktreePath } = buildMockCtx();
+    const { ctx, registeredArtifacts } = buildMockCtx();
     const { graph, attempt } = buildPlanningAttempt({
       envelopeSummary: "Designed API for auth module with 3 endpoints.",
     });
-    ensurePlanFile(worktreePath);
 
     extractAndRegisterArtifacts(ctx, { graph, attempt });
 
@@ -359,9 +352,8 @@ describe("VAL-ART-001: Planning step registers plan artifact", () => {
   });
 
   it("plan artifact is queryable (registered via registerArtifact on orchestratorService)", () => {
-    const { ctx, worktreePath } = buildMockCtx();
+    const { ctx } = buildMockCtx();
     const { graph, attempt } = buildPlanningAttempt();
-    ensurePlanFile(worktreePath);
 
     extractAndRegisterArtifacts(ctx, { graph, attempt });
 
@@ -379,5 +371,21 @@ describe("VAL-ART-001: Planning step registers plan artifact", () => {
       artifactKey: "plan",
       kind: "custom",
     });
+  });
+
+  it("opens an explicit failed_step intervention when the plan payload is missing", () => {
+    const { ctx } = buildMockCtx();
+    const { graph, attempt } = buildPlanningAttempt({
+      plan: null,
+    });
+
+    extractAndRegisterArtifacts(ctx, { graph, attempt });
+
+    expect(ctx.missionService.addIntervention).toHaveBeenCalledWith(
+      expect.objectContaining({
+        interventionType: "failed_step",
+        title: "Planner result missing plan",
+      }),
+    );
   });
 });

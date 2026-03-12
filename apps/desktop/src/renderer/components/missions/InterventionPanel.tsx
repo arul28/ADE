@@ -122,6 +122,7 @@ export function InterventionPanel({ compact }: { compact: boolean }) {
           interventionId,
           directive: responseText.trim() || "Acknowledged.",
           priority: "instruction",
+          resolutionKind: "answer_provided",
         });
         setResponseText("");
         await s.refreshMissionList({ preserveSelection: true, silent: true });
@@ -145,8 +146,9 @@ export function InterventionPanel({ compact }: { compact: boolean }) {
         await window.ade.orchestrator.steerMission({
           missionId: s.selectedMission.id,
           interventionId,
-          directive: "Dismissed by user — proceed without action.",
+          directive: "Skip this question and continue with best-effort assumptions.",
           priority: "instruction",
+          resolutionKind: "skip_question",
         });
         await s.refreshMissionList({ preserveSelection: true, silent: true });
         await s.loadMissionDetail(s.selectedMission.id);

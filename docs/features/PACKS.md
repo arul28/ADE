@@ -23,17 +23,17 @@ Pack files and pack version history still exist as compatibility artifacts for:
 
 ### Pack roots
 
-Compatibility pack bodies and history live under `.ade/packs`:
+Compatibility pack bodies and history live under `.ade/artifacts/packs`:
 
-- project pack: `.ade/packs/project_pack.md`
-- lane pack: `.ade/packs/lanes/<laneId>/lane_pack.md`
-- feature pack: `.ade/packs/features/<featureKey>/feature_pack.md`
-- plan pack: `.ade/packs/plans/<laneId>/plan_pack.md`
-- mission pack: `.ade/packs/missions/<missionId>/mission_pack.md`
-- conflict pack: `.ade/packs/conflicts/v2/<laneId>__<peer>.md`
-- external resolver runs: `.ade/packs/external-resolver-runs/<runId>/`
+- project pack: `.ade/artifacts/packs/project_pack.md`
+- lane pack: `.ade/artifacts/packs/lanes/<laneId>/lane_pack.md`
+- feature pack: `.ade/artifacts/packs/features/<featureKey>/feature_pack.md`
+- plan pack: `.ade/artifacts/packs/plans/<laneId>/plan_pack.md`
+- mission pack: `.ade/artifacts/packs/missions/<missionId>/mission_pack.md`
+- conflict pack: `.ade/artifacts/packs/conflicts/v2/<laneId>__<peer>.md`
+- external resolver runs: `.ade/artifacts/packs/external-resolver-runs/<runId>/`
 
-Version/history support is maintained under `.ade/history` and `.ade/packs/versions`.
+Version/history support is maintained under `.ade/history` and `.ade/artifacts/packs/versions`.
 
 ### Context docs consumed by packs
 
@@ -75,7 +75,7 @@ Doc discovery prioritizes:
 
 Runtime exports (`getProjectExport`, `getLaneExport`, `getConflictExport`, `getFeatureExport`, `getPlanExport`, `getMissionExport`) are synthesized from current local state when requested. They do not require a pre-refreshed on-disk pack file to exist first.
 
-Conflict external-resolver runs now consume generated per-run context files plus optional docs, rather than assuming `.ade/packs/...` files are already present.
+Conflict external-resolver runs now consume generated per-run context files plus optional docs, rather than assuming `.ade/artifacts/packs/...` files are already present.
 
 ## Refresh Triggers and Cadence
 
@@ -110,7 +110,7 @@ Mission planning/execution consumes live bounded exports plus ADE context docs. 
 
 ### Conflicts
 
-Conflict tooling keeps prediction artifacts under `.ade/packs/conflicts`, but external resolver prompts should prefer generated per-run context files and optional `.ade/context/*.ade.md` docs.
+Conflict tooling keeps prediction artifacts under `.ade/artifacts/packs/conflicts`, but external resolver prompts should prefer generated per-run context files and optional `.ade/context/*.ade.md` docs.
 
 ### PRs
 

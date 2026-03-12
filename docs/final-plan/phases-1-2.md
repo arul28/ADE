@@ -276,7 +276,7 @@ Goal: Build a native agent chat interface inside ADE — a rich, provider-agnost
   - Tool results → `ChatEvent.tool_result`
   - Structured output → extracted from final text
 - Tool use approval: `canUseTool` callback intercepts every tool invocation → present in chat UI → user approves/denies → callback returns decision.
-- Session state: maintain `messages[]` in memory (bounded by token budget). Persist to disk for resume (`.ade/chat-sessions/<sessionId>.json`).
+- Session state: maintain `messages[]` in memory (bounded by token budget). Persist to disk for resume (`.ade/cache/chat-sessions/<sessionId>.json`).
 - Model selection: use `supportedModels()` from SDK for `getAvailableModels()`.
 - Permission control: inherit from Settings (Phase 1 W12) — `permissionMode`, `allowedTools`, `maxBudgetUsd`.
 
@@ -285,7 +285,7 @@ Goal: Build a native agent chat interface inside ADE — a rich, provider-agnost
   - `tool_type`: `"codex-chat"`, `"claude-chat"`, or `"ai-chat"` (new values added to `TerminalToolType` union).
   - `pty_id`: null (no PTY — chat uses JSON-RPC / SDK streams instead).
   - `tracked`: always `true` (chat sessions always produce context).
-  - `transcript_path`: points to chat message log (`.ade/transcripts/<session-id>.chat.jsonl` — JSONL format with all ChatEvents).
+  - `transcript_path`: points to chat message log (`.ade/transcripts/<session-id>.chat.jsonl` — JSONL format with all ChatEvents, mirrored to `.ade/transcripts/chat/<session-id>.jsonl`).
   - `head_sha_start` / `head_sha_end`: captured at session create and last turn complete.
   - `summary`: generated from chat transcript (deterministic: last turn's outcome. AI: full session summary).
   - `last_output_preview`: last agent message text (truncated).

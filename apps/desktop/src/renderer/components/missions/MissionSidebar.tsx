@@ -1,4 +1,4 @@
-import { useMemo, useRef, type MouseEvent as ReactMouseEvent } from "react";
+import { useMemo, useRef, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import {
   Rocket,
   SpinnerGap,
@@ -10,7 +10,7 @@ import {
   Kanban,
 } from "@phosphor-icons/react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { MissionSummary } from "../../../shared/types";
+import type { MissionRunViewDisplayStatus, MissionSummary } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton } from "../lanes/laneDesignTokens";
 import { relativeWhen } from "../../lib/format";
@@ -21,14 +21,18 @@ import {
   MISSION_BOARD_COLUMNS,
   type MissionListViewMode,
 } from "./missionHelpers";
+import { buildMissionStateNarrative } from "./missionFeedPresentation";
 import { useMissionsStore } from "./useMissionsStore";
 import { openMissionCreateDialog } from "./missionCreateDialogStore";
+import { useMissionRunView } from "./useMissionRunView";
 
 /* ════════════════════ MISSION SIDEBAR ════════════════════ */
 
 export function MissionSidebar() {
   const missions = useMissionsStore((s) => s.missions);
   const selectedMissionId = useMissionsStore((s) => s.selectedMissionId);
+  const selectedMission = useMissionsStore((s) => s.selectedMission);
+  const runGraph = useMissionsStore((s) => s.runGraph);
   const searchFilter = useMissionsStore((s) => s.searchFilter);
   const missionListView = useMissionsStore((s) => s.missionListView);
   const refreshing = useMissionsStore((s) => s.refreshing);
@@ -43,6 +47,8 @@ export function MissionSidebar() {
   const setMissionSettingsError = useMissionsStore((s) => s.setMissionSettingsError);
   const refreshMissionList = useMissionsStore((s) => s.refreshMissionList);
   const loadMissionSettings = useMissionsStore((s) => s.loadMissionSettings);
+  const { runView } = useMissionRunView(selectedMissionId, runGraph?.run.id ?? null);
+  const selectedMissionNarrative = useMemo(() => buildMissionStateNarrative(runView), [runView]);
 
   const filteredMissions = useMemo(() => {
     if (!searchFilter.trim()) return missions;
@@ -214,6 +220,127 @@ export function MissionSidebar() {
             onSelect={setSelectedMissionId}
             onContextMenu={handleMissionContextMenu}
           />
+        )}
+      </div>
+
+      <MissionSidebarStatusBlock
+        missionTitle={selectedMission?.title ?? null}
+        missionPrompt={selectedMission?.prompt ?? null}
+        openInterventions={selectedMission?.openInterventions ?? 0}
+        artifactCount={selectedMission?.artifactCount ?? 0}
+        status={runView?.lifecycle.displayStatus ?? null}
+        summary={selectedMissionNarrative?.detail ?? null}
+        headline={selectedMissionNarrative?.title ?? null}
+        phaseName={runView?.active.phaseName ?? null}
+        stepTitle={runView?.active.stepTitle ?? null}
+        updatedAt={selectedMissionNarrative?.at ?? runView?.lastMeaningfulProgress?.at ?? selectedMission?.updatedAt ?? null}
+      />
+    </div>
+  );
+}
+
+const SIDEBAR_STATUS_TONES: Record<MissionRunViewDisplayStatus, { style: CSSProperties; label: string }> = {
+  not_started: { style: { background: "#6B728018", color: "#6B7280", border: "1px solid #6B728030" }, label: "Not started" },
+  starting: { style: { background: "#A78BFA18", color: "#A78BFA", border: "1px solid #A78BFA30" }, label: "Starting" },
+  running: { style: { background: "#22C55E18", color: "#22C55E", border: "1px solid #22C55E30" }, label: "Running" },
+  paused: { style: { background: "#F59E0B18", color: "#F59E0B", border: "1px solid #F59E0B30" }, label: "Paused" },
+  blocked: { style: { background: "#F59E0B18", color: "#F59E0B", border: "1px solid #F59E0B30" }, label: "Blocked" },
+  completed: { style: { background: "#22C55E18", color: "#22C55E", border: "1px solid #22C55E30" }, label: "Completed" },
+  failed: { style: { background: "#EF444418", color: "#EF4444", border: "1px solid #EF444430" }, label: "Failed" },
+  canceled: { style: { background: "#6B728018", color: "#6B7280", border: "1px solid #6B728030" }, label: "Canceled" },
+};
+
+function MissionSidebarStatusBlock(props: {
+  missionTitle: string | null;
+  missionPrompt: string | null;
+  openInterventions: number;
+  artifactCount: number;
+  status: MissionRunViewDisplayStatus | null;
+  headline: string | null;
+  summary: string | null;
+  phaseName: string | null;
+  stepTitle: string | null;
+  updatedAt: string | null;
+}) {
+  const {
+    missionTitle,
+    missionPrompt,
+    openInterventions,
+    artifactCount,
+    status,
+    headline,
+    summary,
+    phaseName,
+    stepTitle,
+    updatedAt,
+  } = props;
+
+  return (
+    <div className="shrink-0 px-2.5 pb-2.5 pt-2" style={{ borderTop: `1px solid ${COLORS.border}` }}>
+      <div className="space-y-2" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, padding: "10px" }}>
+        <div className="flex items-center justify-between gap-2">
+          <span
+            className="text-[10px] font-bold uppercase tracking-[1px]"
+            style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}
+          >
+            Selected mission
+          </span>
+          {updatedAt ? (
+            <span className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+              {relativeWhen(updatedAt)}
+            </span>
+          ) : null}
+        </div>
+
+        {missionTitle ? (
+          <>
+            <div className="space-y-1">
+              <div className="text-[12px] font-semibold leading-[1.35]" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
+                {missionTitle}
+              </div>
+              {status ? (
+                <span
+                  className="inline-flex items-center px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.9px]"
+                  style={SIDEBAR_STATUS_TONES[status].style}
+                >
+                  {SIDEBAR_STATUS_TONES[status].label}
+                </span>
+              ) : null}
+            </div>
+
+            {headline ? (
+              <div className="text-[11px] font-semibold leading-[1.45]" style={{ color: COLORS.textSecondary }}>
+                {headline}
+              </div>
+            ) : null}
+
+            <div className="space-y-1 text-[11px] leading-[1.45]" style={{ color: COLORS.textMuted }}>
+              <div>{summary || missionPrompt || "Open this mission to see its latest runtime state."}</div>
+              {(phaseName || stepTitle) && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {phaseName ? (
+                    <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.6px]" style={{ background: `${COLORS.accent}16`, border: `1px solid ${COLORS.accent}28`, color: COLORS.accent, fontFamily: MONO_FONT }}>
+                      {phaseName}
+                    </span>
+                  ) : null}
+                  {stepTitle ? (
+                    <span className="truncate" style={{ color: COLORS.textSecondary }}>
+                      {stepTitle}
+                    </span>
+                  ) : null}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
+              <span>{openInterventions} open</span>
+              <span>{artifactCount} artifacts</span>
+            </div>
+          </>
+        ) : (
+          <div className="text-[11px] leading-[1.45]" style={{ color: COLORS.textMuted }}>
+            Pick a mission to keep its current run state visible while you browse the queue.
+          </div>
         )}
       </div>
     </div>

@@ -103,6 +103,22 @@ function isCoordinatorStatusQuery(content: string): boolean {
   return !directiveLead.test(normalized) && !explicitWorkerCommand.test(normalized);
 }
 
+function isExplicitCoordinatorInstruction(
+  content: string,
+  target: OrchestratorChatMessage["target"] | null | undefined,
+): boolean {
+  const normalized = content.trim().toLowerCase();
+  if (!normalized.length) return false;
+  if (target?.kind === "worker" || target?.kind === "teammate") return true;
+  if (normalized.includes("?")) return false;
+  if (
+    /\b(accept defaults|skip question|cancel run|resume run|retry planner|switch model|send note|tell planner|tell worker|ask planner|ask worker)\b/i.test(normalized)
+  ) {
+    return true;
+  }
+  return /^(please\s+)?(?:retry|resume|cancel|stop|pause|restart|switch|use|tell|ask|send|apply|accept|skip|continue|proceed|delegate|spawn|open|close|mark|set|prioritize|focus)\b/i.test(normalized);
+}
+
 function buildCoordinatorStatusReply(
   ctx: OrchestratorContext,
   missionId: string,
@@ -336,13 +352,6 @@ export function resolveWorkerDeliveryContextCtx(
       }
     }
   }
-  if (!attemptContext) {
-    const laneId = toOptionalString(baseTarget.laneId) ?? toOptionalString(thread?.laneId) ?? toOptionalString(message.laneId);
-    if (laneId) {
-      attemptContext = selectAttemptDeliveryContextCtx(ctx, `s.lane_id = ? and a.executor_session_id is not null`, [laneId]);
-    }
-  }
-
   const runId =
     toOptionalString(baseTarget.runId)
     ?? toOptionalString(thread?.runId)
@@ -1416,6 +1425,7 @@ export function routeMessageToCoordinatorCtx(
   message: OrchestratorChatMessage,
   deps: RouteToCoordinatorDeps
 ): void {
+  const explicitInstruction = isExplicitCoordinatorInstruction(message.content, message.target);
   const chatArgs: SendOrchestratorChatArgs = {
     missionId: message.missionId,
     content: message.content,
@@ -1425,7 +1435,10 @@ export function routeMessageToCoordinatorCtx(
       runId: message.runId ?? null
     },
     visibilityMode: message.visibility ?? DEFAULT_CHAT_VISIBILITY,
-    metadata: message.metadata ?? null
+    metadata: {
+      ...(isRecord(message.metadata) ? message.metadata : {}),
+      coordinatorChatMode: explicitInstruction ? "instruction" : "conversation",
+    }
   };
   const recentChatContext = formatRecentChatContext(ctx.chatMessages.get(message.missionId) ?? [message]);
   const statusIntent = isCoordinatorStatusQuery(message.content);
@@ -1456,24 +1469,35 @@ export function routeMessageToCoordinatorCtx(
     return;
   }
 
-  try {
-    deps.steerMission({
-      missionId: message.missionId,
-      directive: message.content,
-      priority: "instruction",
-      targetStepKey: message.target?.kind === "worker" ? message.target.stepKey ?? null : null
-    });
-  } catch {
-    // Ignore missing mission / invalid status transitions and preserve chat UX.
+  if (explicitInstruction) {
+    try {
+      deps.steerMission({
+        missionId: message.missionId,
+        directive: message.content,
+        priority: "instruction",
+        targetStepKey: message.target?.kind === "worker" ? message.target.stepKey ?? null : null
+      });
+    } catch {
+      // Ignore missing mission / invalid status transitions and preserve chat UX.
+    }
   }
 
   if (ctx.aiIntegrationService && ctx.projectRoot) {
     deps.enqueueChatResponse(chatArgs, recentChatContext);
-  } else if (!statusIntent) {
+  } else if (explicitInstruction) {
     emitOrchestratorMessage(
       ctx,
       message.missionId,
       "Directive received. I will apply it at the next planning/evaluation decision point.",
+      undefined,
+      undefined,
+      { appendChatMessage: deps.appendChatMessage }
+    );
+  } else {
+    emitOrchestratorMessage(
+      ctx,
+      message.missionId,
+      "Coordinator chat is unavailable right now. Start or resume the run if you want a live response.",
       undefined,
       undefined,
       { appendChatMessage: deps.appendChatMessage }

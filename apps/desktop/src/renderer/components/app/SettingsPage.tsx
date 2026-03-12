@@ -1,7 +1,8 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Brain, GearSix, GitBranch, BookOpenText, Robot, Terminal, Keyboard, Lightning, Plugs, SquaresFour, Stack, Globe, Database, Plus, X } from "@phosphor-icons/react";
+import { Brain, GearSix, GitBranch, BookOpenText, Robot, Terminal, Keyboard, Lightning, Plugs, SquaresFour, Stack, Globe, Database, FolderSimple, Plus, X } from "@phosphor-icons/react";
 import { GeneralSection } from "../settings/GeneralSection";
+import { ProjectSection } from "../settings/ProjectSection";
 import { ProvidersSection } from "../settings/ProvidersSection";
 import { GitHubSection } from "../settings/GitHubSection";
 import { ContextSection } from "../settings/ContextSection";
@@ -21,6 +22,7 @@ import { PhaseCardEditor } from "../missions/PhaseCardEditor";
 
 const SECTIONS = [
   { id: "general", label: "General", icon: GearSix },
+  { id: "project", label: "Project", icon: FolderSimple },
   { id: "providers", label: "Providers", icon: Plugs },
   { id: "ai", label: "AI", icon: Brain },
   { id: "github", label: "GitHub", icon: GitBranch },
@@ -522,6 +524,7 @@ export function SettingsPage() {
         }}
       >
         {section === "general" && <GeneralSection />}
+        {section === "project" && <ProjectSection />}
         {section === "providers" && <ProvidersSection />}
         {section === "ai" && <AiFeaturesSection />}
         {section === "github" && <GitHubSection />}

@@ -5,6 +5,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import { getModelById } from "../../../shared/modelRegistry";
+import { buildPrAiResolutionContextKey } from "../../../shared/types";
+import type { AdeCleanupResult, AdeProjectSnapshot } from "../../../shared/types";
 import type {
   ApplyConflictProposalArgs,
   BatchAssessmentResult,
@@ -112,11 +114,15 @@ import type {
   RecheckIntegrationStepArgs,
   RecheckIntegrationStepResult,
   PrAiResolutionInputArgs,
+  PrAiResolutionGetSessionArgs,
+  PrAiResolutionGetSessionResult,
   PrAiResolutionStartArgs,
   PrAiResolutionStartResult,
   PrAiResolutionStopArgs,
   PrAiResolutionEventPayload,
   PrAiResolutionContext,
+  PrAiResolutionSessionInfo,
+  PrAiResolutionSessionStatus,
   AiPermissionMode,
   LinkPrToLaneArgs,
   LandResult,
@@ -482,6 +488,8 @@ import type { createLinearSyncService } from "../cto/linearSyncService";
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
 import type { createBudgetCapService } from "../usage/budgetCapService";
+import type { AdeProjectService } from "../projects/adeProjectService";
+import type { ConfigReloadService } from "../projects/configReloadService";
 import { getErrorMessage, isRecord, nowIso } from "../shared/utils";
 
 export type AppContext = {
@@ -548,6 +556,7 @@ export type AppContext = {
   embeddingWorkerService?: ReturnType<typeof createEmbeddingWorkerService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
+  adeProjectService?: AdeProjectService | null;
   workerRevisionService?: ReturnType<typeof createWorkerRevisionService> | null;
   workerBudgetService?: ReturnType<typeof createWorkerBudgetService> | null;
   workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
@@ -559,6 +568,7 @@ export type AppContext = {
   linearSyncService?: ReturnType<typeof createLinearSyncService> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
+  configReloadService?: ConfigReloadService | null;
   mcpSocketServer?: import("node:net").Server;
   mcpSocketPath?: string;
 };
@@ -1080,6 +1090,20 @@ function mapPrAiPermissionMode(mode: AiPermissionMode): AgentChatPermissionMode 
   return "plan";
 }
 
+function mapAgentChatPermissionModeToPrAi(mode: AgentChatPermissionMode | null | undefined): AiPermissionMode | null {
+  if (mode === "full-auto") return "full_edit";
+  if (mode === "edit") return "guarded_edit";
+  if (mode === "plan" || mode === "default") return "read_only";
+  return null;
+}
+
+function mapExternalResolverStatusToPrAi(status: ConflictExternalResolverRunSummary["status"]): PrAiResolutionSessionStatus {
+  if (status === "completed") return "completed";
+  if (status === "failed" || status === "blocked") return "failed";
+  if (status === "canceled") return "cancelled";
+  return "running";
+}
+
 function buildPrAiDisplayText(context: PrAiResolutionContext): string {
   if (context.sourceTab === "rebase") {
     return "Resolve this rebase with AI.";
@@ -1160,12 +1184,17 @@ export function registerIpc({
     ptyId: string | null;
     runId: string;
     provider: "codex" | "claude";
+    contextKey: string;
     context: PrAiResolutionContext;
+    modelId: string;
+    reasoning: string | null;
+    permissionMode: AiPermissionMode;
     pollTimer: ReturnType<typeof setInterval> | null;
     finalizing: boolean;
   };
 
   const prAiSessions = new Map<string, PrAiRuntimeSession>();
+  const prAiSessionsByContextKey = new Map<string, string>();
 
   const emitPrAiResolutionEvent = (payload: PrAiResolutionEventPayload): void => {
     for (const win of BrowserWindow.getAllWindows()) {
@@ -1183,6 +1212,9 @@ export function registerIpc({
     if (!runtime) return;
     if (runtime.pollTimer) {
       clearInterval(runtime.pollTimer);
+    }
+    if (prAiSessionsByContextKey.get(runtime.contextKey) === sessionId) {
+      prAiSessionsByContextKey.delete(runtime.contextKey);
     }
     prAiSessions.delete(sessionId);
   };
@@ -1229,6 +1261,28 @@ export function registerIpc({
       clearPrAiSession(sessionId);
     }
   };
+
+  const buildPrAiSessionInfo = (args: {
+    context: PrAiResolutionContext;
+    contextKey: string;
+    sessionId: string;
+    provider: "codex" | "claude";
+    model: string | null;
+    modelId: string | null;
+    reasoning: string | null;
+    permissionMode: AiPermissionMode | null;
+    status: PrAiResolutionSessionStatus;
+  }): PrAiResolutionSessionInfo => ({
+    contextKey: args.contextKey,
+    sessionId: args.sessionId,
+    provider: args.provider,
+    model: args.model,
+    modelId: args.modelId,
+    reasoning: args.reasoning,
+    permissionMode: args.permissionMode,
+    context: args.context,
+    status: args.status,
+  });
 
   ipcMain.handle(IPC.appPing, async () => "pong" as const);
 
@@ -1383,6 +1437,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.projectClearLocalData, async (_event, arg: ClearLocalAdeDataArgs = {}): Promise<ClearLocalAdeDataResult> => {
     const ctx = getCtx();
+    const adePaths = ctx.adeProjectService?.paths;
     const clearedAt = nowIso();
     const deletedPaths: string[] = [];
 
@@ -1397,9 +1452,9 @@ export function registerIpc({
       deletedPaths.push(resolved);
     };
 
-    if (arg.packs) rmrf(path.join(ctx.adeDir, "packs"));
-    if (arg.logs) rmrf(path.join(ctx.adeDir, "logs"));
-    if (arg.transcripts) rmrf(path.join(ctx.adeDir, "transcripts"));
+    if (arg.packs) rmrf(adePaths?.artifactsDir ?? path.join(ctx.adeDir, "artifacts"));
+    if (arg.logs) rmrf(adePaths?.logsDir ?? path.join(ctx.adeDir, "transcripts", "logs"));
+    if (arg.transcripts) rmrf(adePaths?.transcriptsDir ?? path.join(ctx.adeDir, "transcripts"));
 
     return { deletedPaths, clearedAt };
   });
@@ -1451,6 +1506,24 @@ export function registerIpc({
     const ctx = getCtx();
     if (ctx.hasUserSelectedProject && rootPath === ctx.project.rootPath) return ctx.project;
     return await switchProjectFromDialog(rootPath);
+  });
+
+  ipcMain.handle(IPC.projectStateGetSnapshot, async (): Promise<AdeProjectSnapshot> => {
+    const ctx = getCtx();
+    if (!ctx.adeProjectService) throw new Error("Project state service unavailable.");
+    return ctx.adeProjectService.getSnapshot();
+  });
+
+  ipcMain.handle(IPC.projectStateInitializeOrRepair, async (): Promise<AdeCleanupResult> => {
+    const ctx = getCtx();
+    if (!ctx.adeProjectService) throw new Error("Project state service unavailable.");
+    return ctx.adeProjectService.initializeOrRepair();
+  });
+
+  ipcMain.handle(IPC.projectStateRunIntegrityCheck, async (): Promise<AdeCleanupResult> => {
+    const ctx = getCtx();
+    if (!ctx.adeProjectService) throw new Error("Project state service unavailable.");
+    return ctx.adeProjectService.runIntegrityCheck();
   });
 
   ipcMain.handle(IPC.keybindingsGet, async (): Promise<KeybindingsSnapshot> => {
@@ -3796,6 +3869,53 @@ export function registerIpc({
   ipcMain.handle(IPC.prsRecheckIntegrationStep, async (_event, arg: RecheckIntegrationStepArgs): Promise<RecheckIntegrationStepResult> =>
     getCtx().prService.recheckIntegrationStep(arg));
 
+  ipcMain.handle(IPC.prsAiResolutionGetSession, async (_event, arg: PrAiResolutionGetSessionArgs): Promise<PrAiResolutionGetSessionResult> => {
+    const ctx = getCtx();
+    const context = (arg?.context ?? {}) as PrAiResolutionContext;
+    const contextKey = buildPrAiResolutionContextKey(context);
+    const liveSessionId = prAiSessionsByContextKey.get(contextKey);
+    const sessionSummaries = await ctx.agentChatService.listSessions();
+
+    if (liveSessionId) {
+      const runtime = prAiSessions.get(liveSessionId);
+      if (runtime) {
+        const summary = sessionSummaries.find((entry) => entry.sessionId === liveSessionId) ?? null;
+        return buildPrAiSessionInfo({
+          context: runtime.context,
+          contextKey,
+          sessionId: liveSessionId,
+          provider: runtime.provider,
+          model: summary?.model ?? runtime.modelId,
+          modelId: summary?.modelId ?? runtime.modelId,
+          reasoning: summary?.reasoningEffort ?? runtime.reasoning,
+          permissionMode: mapAgentChatPermissionModeToPrAi(summary?.permissionMode) ?? runtime.permissionMode,
+          status: "running",
+        });
+      }
+      prAiSessionsByContextKey.delete(contextKey);
+    }
+
+    const persistedRun = ctx.conflictService
+      .listExternalResolverRuns({ limit: 200 })
+      .find((entry) => entry.resolverContextKey === contextKey && entry.sessionId);
+    if (!persistedRun?.sessionId) {
+      return null;
+    }
+
+    const summary = sessionSummaries.find((entry) => entry.sessionId === persistedRun.sessionId) ?? null;
+    return buildPrAiSessionInfo({
+      context,
+      contextKey,
+      sessionId: persistedRun.sessionId,
+      provider: persistedRun.provider,
+      model: summary?.model ?? persistedRun.model ?? null,
+      modelId: summary?.modelId ?? persistedRun.model ?? null,
+      reasoning: summary?.reasoningEffort ?? persistedRun.reasoningEffort ?? null,
+      permissionMode: mapAgentChatPermissionModeToPrAi(summary?.permissionMode) ?? persistedRun.permissionMode ?? null,
+      status: mapExternalResolverStatusToPrAi(persistedRun.status),
+    });
+  });
+
   ipcMain.handle(IPC.prsAiResolutionStart, async (_event, arg: PrAiResolutionStartArgs): Promise<PrAiResolutionStartResult> => {
     const ctx = getCtx();
     const context = (arg?.context ?? {}) as PrAiResolutionContext;
@@ -3857,6 +3977,7 @@ export function registerIpc({
         proposalId: typeof context.proposalId === "string" && context.proposalId.trim().length > 0
           ? context.proposalId.trim()
           : undefined,
+        sourceTab: context.sourceTab,
         scenario: context.scenario ?? (sourceLaneIds.length > 1 ? "integration-merge" : "single-merge"),
         model,
         reasoningEffort: reasoning,
@@ -3903,16 +4024,27 @@ export function registerIpc({
         sourceLaneIds,
         integrationLaneId: prep.integrationLaneId ?? context.integrationLaneId ?? null,
       };
+      const contextKey = buildPrAiResolutionContextKey(runtimeContext);
 
       const runtime: PrAiRuntimeSession = {
         sessionId: session.id,
         ptyId: null,
         runId: prep.runId,
         provider,
+        contextKey,
         context: runtimeContext,
+        modelId: model,
+        reasoning,
+        permissionMode,
         pollTimer: null,
         finalizing: false
       };
+      await ctx.conflictService.attachResolverSession({
+        runId: prep.runId,
+        ptyId: null,
+        sessionId: session.id,
+        command: []
+      });
       runtime.pollTimer = setInterval(() => {
         const current = prAiSessions.get(runtime.sessionId);
         if (!current || current.finalizing) return;
@@ -3921,6 +4053,7 @@ export function registerIpc({
         void finalizePrAiSession(runtime.sessionId);
       }, 1_000);
       prAiSessions.set(runtime.sessionId, runtime);
+      prAiSessionsByContextKey.set(contextKey, runtime.sessionId);
       emitPrAiResolutionEvent({
         sessionId: runtime.sessionId,
         status: "running",

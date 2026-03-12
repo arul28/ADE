@@ -1,7 +1,7 @@
 import { useMemo, useEffect, useRef, useCallback } from "react";
 import { X, WarningCircle } from "@phosphor-icons/react";
 import { motion, AnimatePresence } from "motion/react";
-import type { ClarificationQuiz } from "../../../shared/types";
+import { type ClarificationQuiz, type MissionInterventionResolutionKind, resolutionKindLabel } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 import { useMissionsStore, type MissionAttentionToast } from "./useMissionsStore";
 import { MissionHeader } from "./MissionHeader";
@@ -36,12 +36,20 @@ export function MissionDetailView() {
   const compactPhaseChrome = chatFocused;
 
   const handleInterventionResponse = useCallback(
-    async (interventionId: string, directiveText: string) => {
+    async (
+      interventionId: string,
+      directiveText: string,
+      resolutionKind: MissionInterventionResolutionKind = "answer_provided",
+    ) => {
       if (!selectedMission) return;
       setSteerBusy(true);
       try {
         await window.ade.orchestrator.steerMission({
-          missionId: selectedMission.id, interventionId, directive: directiveText, priority: "instruction",
+          missionId: selectedMission.id,
+          interventionId,
+          directive: directiveText,
+          priority: "instruction",
+          resolutionKind,
         });
         setActiveInterventionId(null);
         await refreshMissionList({ preserveSelection: true, silent: true });
@@ -91,7 +99,15 @@ export function MissionDetailView() {
 
 /* ════════════════════ INTERVENTION MODALS ════════════════════ */
 
-function InterventionModals({ onInterventionResponse }: { onInterventionResponse: (id: string, directive: string) => Promise<void> }) {
+function InterventionModals({
+  onInterventionResponse,
+}: {
+  onInterventionResponse: (
+    id: string,
+    directive: string,
+    resolutionKind?: MissionInterventionResolutionKind,
+  ) => Promise<void>;
+}) {
   const activeInterventionId = useMissionsStore((s) => s.activeInterventionId);
   const selectedMission = useMissionsStore((s) => s.selectedMission);
   const setActiveInterventionId = useMissionsStore((s) => s.setActiveInterventionId);
@@ -124,12 +140,16 @@ function InterventionModals({ onInterventionResponse }: { onInterventionResponse
       <ClarificationQuizModal
         interventionId={iv.id} missionId={selectedMission.id} questions={iv.metadata.questions} phase={phase}
         onClose={() => setActiveInterventionId(null)}
-        onSubmit={async (quiz: ClarificationQuiz) => {
+        onSubmit={async (quiz: ClarificationQuiz, resolutionKind = "answer_provided") => {
           const lines = quiz.answers.map((a, i) => {
             const q = quiz.questions[i]?.question?.trim() || `Question ${i + 1}`;
             return `- ${q}: ${a.answer} (${a.source === "default_assumption" ? "default assumption" : "user answer"})`;
           });
-          await onInterventionResponse(iv.id, ["Coordinator question answers:", ...lines, "Proceed using these answers."].join("\n"));
+          const directive =
+            resolutionKind !== "answer_provided"
+              ? resolutionKindLabel(resolutionKind as MissionInterventionResolutionKind)
+              : ["Coordinator question answers:", ...lines, "Proceed using these answers."].join("\n");
+          await onInterventionResponse(iv.id, directive, resolutionKind);
         }}
       />
     );
@@ -137,7 +157,9 @@ function InterventionModals({ onInterventionResponse }: { onInterventionResponse
   return (
     <ManualInputResponseModal
       intervention={iv} onClose={() => setActiveInterventionId(null)}
-      onSubmit={async (answer) => { await onInterventionResponse(iv.id, answer); }}
+      onSubmit={async (answer, resolutionKind = "answer_provided") => {
+        await onInterventionResponse(iv.id, answer, resolutionKind);
+      }}
     />
   );
 }

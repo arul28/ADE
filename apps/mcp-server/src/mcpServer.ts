@@ -7,6 +7,7 @@ import { ReflectionValidationError } from "../../desktop/src/main/services/orche
 import { getTeamMembersForRun, registerTeamMember, updateTeamMemberStatus } from "../../desktop/src/main/services/orchestrator/teamRuntimeState";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import type { ContextExportLevel, MergeMethod } from "../../desktop/src/shared/types";
+import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
 import type { AdeMcpRuntime } from "./bootstrap";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
 
@@ -1137,7 +1138,7 @@ function resolveSpawnContextFile(args: {
     };
   }
 
-  const baseDir = path.join(args.runtime.projectRoot, ".ade", "orchestrator", "mcp-context");
+  const baseDir = resolveAdeLayout(args.runtime.projectRoot).mcpContextDir;
   const runSegment = args.runId ?? "standalone";
   const dir = path.join(baseDir, runSegment);
   fs.mkdirSync(dir, { recursive: true });
@@ -2647,13 +2648,21 @@ async function runTool(args: {
 
     const sharedFactAttempted = Boolean(callerCtx.runId) && requestedScope === "mission";
     const sharedFactType = mapMemoryCategoryToSharedFactType(category);
+    const sharedFactMemoryService = runtime.memoryService as typeof runtime.memoryService & {
+      addSharedFact?: (args: {
+        runId: string;
+        stepId?: string;
+        factType: string;
+        content: string;
+      }) => { id: string };
+    };
     let sharedFactWritten = false;
     let sharedFactId: string | null = null;
     let sharedFactError: string | null = null;
 
-    if (sharedFactAttempted) {
+    if (sharedFactAttempted && typeof sharedFactMemoryService.addSharedFact === "function") {
       try {
-        const sharedFact = runtime.memoryService.addSharedFact({
+        const sharedFact = sharedFactMemoryService.addSharedFact({
           runId: callerCtx.runId as string,
           stepId: callerCtx.stepId ?? undefined,
           factType: sharedFactType,
@@ -3148,7 +3157,7 @@ async function runTool(args: {
 
       // Bind ADE MCP server to Claude workers via --mcp-config
       if (runId && attemptId) {
-        const mcpConfigDir = path.join(runtime.projectRoot, ".ade", "orchestrator", "mcp-configs");
+        const mcpConfigDir = resolveAdeLayout(runtime.projectRoot).mcpConfigsDir;
         fs.mkdirSync(mcpConfigDir, { recursive: true });
         const mcpConfigPath = path.join(mcpConfigDir, `spawn-${attemptId ?? Date.now()}.json`);
         const builtEntry = path.join(runtime.projectRoot, "apps", "mcp-server", "dist", "index.cjs");
@@ -3308,6 +3317,8 @@ async function runTool(args: {
     const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
     const directive = assertNonEmptyString(toolArgs.directive, "directive");
     const targetStepKey = asOptionalTrimmedString(toolArgs.targetStepKey);
+    const interventionId = asOptionalTrimmedString(toolArgs.interventionId);
+    const resolutionKind = asOptionalTrimmedString(toolArgs.resolutionKind);
     const priorityRaw = asOptionalTrimmedString(toolArgs.priority);
     const validPriorities = new Set(["suggestion", "instruction", "override"]);
     const priority: "suggestion" | "instruction" | "override" =
@@ -3318,7 +3329,9 @@ async function runTool(args: {
       missionId,
       directive,
       priority,
-      ...(targetStepKey ? { targetStepKey } : {})
+      ...(targetStepKey ? { targetStepKey } : {}),
+      ...(interventionId ? { interventionId } : {}),
+      ...(resolutionKind ? { resolutionKind: resolutionKind as any } : {})
     });
     return result;
   }
@@ -3330,11 +3343,13 @@ async function runTool(args: {
     const statusRaw = assertNonEmptyString(toolArgs.status, "status");
     const status = statusRaw === "dismissed" ? "dismissed" as const : "resolved" as const;
     const note = asOptionalTrimmedString(toolArgs.note);
+    const resolutionKind = asOptionalTrimmedString(toolArgs.resolutionKind);
     const intervention = runtime.missionService.resolveIntervention({
       missionId,
       interventionId,
       status,
-      ...(note ? { note } : {})
+      ...(note ? { note } : {}),
+      ...(resolutionKind ? { resolutionKind: resolutionKind as any } : {})
     });
     return { intervention };
   }

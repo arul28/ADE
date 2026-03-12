@@ -48,6 +48,7 @@ export type CtoCoreMemory = {
 
 export type CtoSessionLogEntry = {
   id: string;
+  prevHash?: string | null;
   sessionId: string;
   summary: string;
   startedAt: string;

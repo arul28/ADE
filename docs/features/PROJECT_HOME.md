@@ -253,7 +253,7 @@ The processes section displays a table of all managed processes defined in the c
 - Scrollable output panel showing stdout and stderr from the focused process.
 - Auto-scroll to bottom (toggleable).
 - Search/filter bar to find specific log lines.
-- Log lines are captured to disk at `.ade/process-logs/<proc>.log`.
+- Log lines are captured to disk under `.ade/transcripts/logs/processes/`.
 
 ### Test Suites Section
 
@@ -352,8 +352,8 @@ stopped ──► starting ──► running ──► stopping ──► exited
 
 | Service | Responsibility |
 |---------|---------------|
-| `processService` | Spawns and monitors managed processes using Node.js `child_process`. Performs readiness checks (port probe, log regex). Captures stdout/stderr to log files at `.ade/process-logs/`. Manages lifecycle state transitions. Handles dependency resolution for ordered startup. |
-| `testService` | Spawns test commands as ephemeral child processes. Tracks status (running, passed, failed). Enforces timeouts with forced termination. Captures output to `.ade/test-logs/`. Maintains run history. |
+| `processService` | Spawns and monitors managed processes using Node.js `child_process`. Performs readiness checks (port probe, log regex). Captures stdout/stderr to log files under `.ade/transcripts/logs/processes/`. Manages lifecycle state transitions. Handles dependency resolution for ordered startup. |
+| `testService` | Spawns test commands as ephemeral child processes. Tracks status (running, passed, failed). Enforces timeouts with forced termination. Captures output under `.ade/transcripts/logs/tests/`. Maintains run history. |
 | `projectConfigService` | Reads, validates, and saves YAML configuration files. Merges shared and local configs (local overrides shared). Implements the trust model for shared config modifications. Notifies other services when config changes. |
 
 ### IPC Channels
@@ -465,9 +465,8 @@ test_runs (
 
 | Path | Description |
 |------|-------------|
-| `.ade/process-logs/<proc>.log` | Captured stdout/stderr for each managed process |
-| `.ade/test-logs/<suite>.log` | Captured output for the most recent test run of each suite |
-| `.ade/test-logs/<suite>-<run-id>.log` | Archived output for historical test runs |
+| `.ade/transcripts/logs/processes/` | Captured stdout/stderr for managed processes |
+| `.ade/transcripts/logs/tests/` | Captured output for current and historical test runs |
 
 ---
 

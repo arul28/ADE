@@ -130,6 +130,7 @@ import {
 import { normalizeAgentRuntimeFlags } from "./teamRuntimeConfig";
 import { normalizeMissionPermissions, providerPermissionsToLegacyConfig, mapPermissionToInProcess } from "./permissionMapping";
 import type { MissionPermissionConfig } from "../../../shared/types/missions";
+import { resolveAdeLayout } from "../../../shared/adeLayout";
 
 // Row types, StepPolicy, and other extracted types are imported from
 // ./orchestratorQueries and ./stepPolicyResolver
@@ -424,7 +425,7 @@ function computePainTrendStatus(previousPainScore: number, currentPainScore: num
 }
 
 function ensureReflectionLedgerDir(projectRoot: string): string {
-  const dir = path.join(projectRoot, ".ade", "reflections");
+  const dir = resolveAdeLayout(projectRoot).reflectionsDir;
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -3629,7 +3630,7 @@ export function createOrchestratorService({
         }
         const title = `[orchestrator:${kind}] ${args.step.title}`;
         try {
-          const contextDir = path.join(projectRoot, ".ade", "orchestrator", "contexts", args.run.id);
+          const contextDir = path.join(resolveAdeLayout(projectRoot).orchestratorContextsDir, args.run.id);
           fs.mkdirSync(contextDir, { recursive: true });
           const contextFilePath = path.join(contextDir, `${args.attempt.id}.json`);
           const memoryHierarchy = (() => {
@@ -7440,15 +7441,26 @@ export function createOrchestratorService({
 	          ? Math.min(10 * 60_000, Math.floor(aiRetryBackoffRaw))
 	          : null;
 	      const computedBackoff = shouldRetry ? (aiRetryBackoffMs ?? 0) : 0;
-		      const reportedFilesChanged = Array.isArray(lastResultReport?.filesChanged)
-		        ? lastResultReport.filesChanged
-		            .map((entry) => String(entry ?? "").trim())
-		            .filter((entry) => entry.length > 0)
-		        : [];
-		      const reportedTests = asRecord(lastResultReport?.testsRun);
-		      const implicitOutputs = (() => {
-		        if (status !== "succeeded") return null;
+	      const reportedFilesChanged = Array.isArray(lastResultReport?.filesChanged)
+	        ? lastResultReport.filesChanged
+	            .map((entry) => String(entry ?? "").trim())
+	            .filter((entry) => entry.length > 0)
+	        : [];
+	      const reportedPlan = asRecord(lastResultReport?.plan);
+	      const reportedTests = asRecord(lastResultReport?.testsRun);
+	      const implicitOutputs = (() => {
+	        if (status !== "succeeded") return null;
 		        const outputs: Record<string, unknown> = {};
+		        if (typeof reportedPlan?.markdown === "string" && reportedPlan.markdown.trim().length > 0) {
+		          outputs.planMarkdown = reportedPlan.markdown.trim();
+		          outputs.planPath =
+		            typeof reportedPlan.artifactPath === "string" && reportedPlan.artifactPath.trim().length > 0
+		              ? reportedPlan.artifactPath.trim()
+		              : ".ade/plans/mission-plan.md";
+		          if (typeof reportedPlan.summary === "string" && reportedPlan.summary.trim().length > 0) {
+		            outputs.planSummary = reportedPlan.summary.trim();
+		          }
+		        }
 		        if (reportedFilesChanged.length > 0) {
 		          outputs.filesChanged = reportedFilesChanged;
 		        }
@@ -10624,8 +10636,8 @@ export function createOrchestratorService({
             : `Mission ${run.missionId}`,
           finalStatus: finalStatus === "succeeded" ? "success" : finalStatus === "failed" ? "failure" : "partial",
           startedAt: run.startedAt,
-          endedAt: updatedMeta.finalizedAt,
-          sharedFacts: sharedFacts.map((fact) => `[${fact.factType}] ${fact.content}`),
+          endedAt: finalizedAt,
+          sharedFacts,
           decisions,
           gotchas,
           workerOutputs: steps

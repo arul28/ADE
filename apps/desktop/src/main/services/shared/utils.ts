@@ -7,7 +7,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 // ── Type guards ─────────────────────────────────────────────────────
 
@@ -194,6 +194,29 @@ export function parseIsoToEpoch(value: string | null | undefined): number {
   if (!value) return Number.NaN;
   const epoch = Date.parse(value);
   return Number.isFinite(epoch) ? epoch : Number.NaN;
+}
+
+// ── Hashing helpers ─────────────────────────────────────────────────
+
+/** SHA-256 hex digest of a string or Buffer. */
+export function sha256Hex(data: string | Buffer): string {
+  return createHash("sha256").update(data).digest("hex");
+}
+
+/** Deterministic JSON.stringify with sorted keys (deep). */
+export function stableStringify(value: unknown): string {
+  const normalize = (input: unknown): unknown => {
+    if (Array.isArray(input)) return input.map((entry) => normalize(entry));
+    if (input && typeof input === "object") {
+      const next: Record<string, unknown> = {};
+      for (const key of Object.keys(input as Record<string, unknown>).sort()) {
+        next[key] = normalize((input as Record<string, unknown>)[key]);
+      }
+      return next;
+    }
+    return input;
+  };
+  return JSON.stringify(normalize(value));
 }
 
 // ── Secret detection helpers ────────────────────────────────────────

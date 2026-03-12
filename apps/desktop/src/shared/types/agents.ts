@@ -119,6 +119,7 @@ export type AgentCoreMemory = {
 
 export type AgentSessionLogEntry = {
   id: string;
+  prevHash?: string | null;
   sessionId: string;
   summary: string;
   startedAt: string;

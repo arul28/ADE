@@ -22,7 +22,9 @@ import {
   hasEnvRefToken,
   looksSensitiveKey,
   looksSensitiveValue,
+  stableStringify,
 } from "../shared/utils";
+import { createLogIntegrityService } from "../projects/logIntegrityService";
 
 type WorkerAgentServiceArgs = {
   db: AdeDb;
@@ -152,6 +154,7 @@ function normalizeWorkerSessionLogEntry(input: unknown): AgentSessionLogEntry | 
   const capabilityMode = source.capabilityMode === "full_mcp" ? "full_mcp" : "fallback";
   return {
     id: typeof source.id === "string" && source.id.trim().length ? source.id.trim() : randomUUID(),
+    prevHash: typeof source.prevHash === "string" && source.prevHash.trim().length ? source.prevHash.trim() : null,
     sessionId,
     summary,
     startedAt,
@@ -298,23 +301,11 @@ function normalizeAdapterConfig(adapterType: AdapterType, config: Record<string,
   return result;
 }
 
-function toStableJson(value: unknown): string {
-  const normalize = (input: unknown): unknown => {
-    if (Array.isArray(input)) return input.map((entry) => normalize(entry));
-    if (input && typeof input === "object") {
-      const record = input as Record<string, unknown>;
-      const next: Record<string, unknown> = {};
-      for (const key of Object.keys(record).sort()) {
-        next[key] = normalize(record[key]);
-      }
-      return next;
-    }
-    return input;
-  };
-  return JSON.stringify(normalize(value));
-}
+/** @deprecated Use stableStringify from shared/utils instead. Kept as alias. */
+const toStableJson = stableStringify;
 
 export function createWorkerAgentService(args: WorkerAgentServiceArgs) {
+  const logIntegrityService = createLogIntegrityService();
   const agentsRootDir = path.join(args.adeDir, "agents");
   fs.mkdirSync(agentsRootDir, { recursive: true });
 
@@ -786,8 +777,7 @@ export function createWorkerAgentService(args: WorkerAgentServiceArgs) {
       capabilityMode: entry.capabilityMode,
       createdAt: nowIso(),
     };
-    fs.appendFileSync(sessionsPathForSlug(identity.slug), `${JSON.stringify(next)}\n`, "utf8");
-    return next;
+    return logIntegrityService.appendEntry(sessionsPathForSlug(identity.slug), next) as AgentSessionLogEntry;
   };
 
   const buildReconstructionContext = (agentId: string, recentLimit = 8): string => {

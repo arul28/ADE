@@ -2385,6 +2385,8 @@ describe("mcpServer", () => {
     const response = await callTool(handler, "steer_mission", {
       missionId: "mission-1",
       directive: "Focus on API layer first",
+      interventionId: "intervention-1",
+      resolutionKind: "answer_provided",
       targetStepKey: "step-a",
       priority: "instruction"
     });
@@ -2395,6 +2397,8 @@ describe("mcpServer", () => {
       expect.objectContaining({
         missionId: "mission-1",
         directive: "Focus on API layer first",
+        interventionId: "intervention-1",
+        resolutionKind: "answer_provided",
         priority: "instruction",
         targetStepKey: "step-a"
       })
@@ -2410,6 +2414,7 @@ describe("mcpServer", () => {
       missionId: "mission-1",
       interventionId: "intervention-1",
       status: "resolved",
+      resolutionKind: "skip_question",
       note: "Issue addressed"
     });
 
@@ -2421,6 +2426,7 @@ describe("mcpServer", () => {
         missionId: "mission-1",
         interventionId: "intervention-1",
         status: "resolved",
+        resolutionKind: "skip_question",
         note: "Issue addressed"
       })
     );

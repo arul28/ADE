@@ -17,6 +17,7 @@ import { usePrs } from "../state/PrsContext";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
 import { normalizeBranchName } from "../shared/prHelpers";
 import { PrAiResolverPanel } from "../shared/PrAiResolverPanel";
+import { PrResolverLaunchControls } from "../shared/PrResolverLaunchControls";
 
 type QueueGroup = {
   groupId: string;
@@ -128,8 +129,10 @@ export function QueueTab({
     setActiveTab,
     resolverModel,
     resolverReasoningLevel,
+    resolverPermissionMode,
     setResolverModel,
-    setResolverReasoningLevel
+    setResolverReasoningLevel,
+    setResolverPermissionMode,
   } = usePrs();
 
   const [landBusy, setLandBusy] = React.useState(false);
@@ -277,7 +280,7 @@ export function QueueTab({
         ciGating: queueCiGating,
         resolverModel,
         reasoningEffort: resolverReasoningLevel,
-        permissionMode: "guarded_edit",
+        permissionMode: resolverPermissionMode,
         originSurface: "queue",
         originLabel: selectedGroup.name ?? selectedGroup.groupId,
       });
@@ -303,7 +306,7 @@ export function QueueTab({
         ciGating: queueCiGating,
         resolverModel,
         reasoningEffort: resolverReasoningLevel,
-        permissionMode: "guarded_edit",
+        permissionMode: resolverPermissionMode,
       });
       setAutoResolveAll(autoResolve);
       await onRefresh();
@@ -353,7 +356,7 @@ export function QueueTab({
         autoResolve: autoResolveAll,
         resolverModel,
         reasoningEffort: resolverReasoningLevel,
-        permissionMode: "guarded_edit",
+        permissionMode: resolverPermissionMode,
         preserveScratchLane: true,
         originSurface: "queue",
         originLabel: selectedGroup.name ?? selectedGroup.groupId,
@@ -674,6 +677,17 @@ export function QueueTab({
             </div>
           </div>
 
+          <PrResolverLaunchControls
+            modelId={resolverModel}
+            reasoningEffort={resolverReasoningLevel}
+            permissionMode={resolverPermissionMode}
+            onModelChange={setResolverModel}
+            onReasoningEffortChange={(effort) => setResolverReasoningLevel(effort || "medium")}
+            onPermissionModeChange={setResolverPermissionMode}
+            disabled={queueActionBusy}
+            className="mb-4"
+          />
+
           {resolverConfig ? (
             <PrAiResolverPanel
               key={`${resolverConfig.sourceLaneId}:${resolverConfig.targetLaneId}`}
@@ -688,10 +702,12 @@ export function QueueTab({
               }}
               modelId={resolverModel}
               reasoningEffort={resolverReasoningLevel}
+              permissionMode={resolverPermissionMode}
               onModelChange={(model, effort) => {
                 setResolverModel(model);
                 setResolverReasoningLevel(effort || "medium");
               }}
+              onPermissionModeChange={setResolverPermissionMode}
               onCompleted={() => {
                 void onRefresh();
               }}

@@ -148,8 +148,8 @@ A context bundle assembled for conflict resolution. Contains:
 - Lane pack summaries for both sides (developer intent context)
 
 Storage:
-- Conflict pack v2 markdown: `.ade/packs/conflicts/v2/<laneId>__<peerKey>.md`
-- Conflict prediction summaries (deterministic): `.ade/packs/conflicts/predictions/<laneId>.json`
+- Conflict pack v2 markdown: `.ade/artifacts/packs/conflicts/v2/<laneId>__<peerKey>.md`
+- Conflict prediction summaries (deterministic): `.ade/artifacts/packs/conflicts/predictions/<laneId>.json`
 - AI consumption should use exports (`ConflictExport*`, `LaneExport*`), not raw files.
 
 Prediction summary packs are versioned by schema evolution (unknown fields are ignored). Newer payloads may include:
@@ -455,7 +455,7 @@ Core prediction, UI, simulation, and resolution proposals are **DONE** (Phases 5
 | Job engine integration | Periodic prediction jobs via `processService`, configurable intervals |
 | Database schema | `conflict_predictions` + `conflict_proposals` tables with SHA tracking, expiry, and proposal lifecycle |
 | Git merge-tree integration | Dry-merge via `git merge-tree` for zero-side-effect conflict detection |
-| External resolver infrastructure | Run artifacts at `.ade/packs/external-resolver-runs/<runId>/`, JSON run records (`ade.conflictExternalRun.v1`), pack ref building, context gap detection, commit workflow |
+| External resolver infrastructure | Run artifacts at `.ade/artifacts/packs/external-resolver-runs/<runId>/`, JSON run records (`ade.conflictExternalRun.v1`), pack ref building, context gap detection, commit workflow |
 | Rebase suggestion integration | `rebaseSuggestionService.ts` — detects parent-advanced children, dismiss/defer/emit lifecycle, integrated into Lanes and PR rebase workflows |
 | Phase 4/5 gap resolution | G3 (risk tooltip hover details), G4 (conflict file diff language detection), G5 (batch conflict assessment) — all resolved |
 
@@ -524,7 +524,7 @@ Core prediction, UI, simulation, and resolution proposals are **DONE** (Phases 5
 | CONF-026 | Merge continue/abort from active conflict surfaces | DONE — Phase 8 (Continue + Abort buttons with confirmation dialog in live conflict flows) |
 | CONF-027 | External CLI resolver (Codex/Claude) | DONE — Phase 8 (`runExternalResolver` in conflictService, pack ref building, context validation, insufficient-context blocking) |
 | CONF-028 | External resolver commit workflow | DONE — Phase 8 (`commitExternalResolverRun` — stage + commit with generated message) |
-| CONF-029 | External resolver run history | DONE — Phase 8 (`listExternalResolverRuns`, run artifacts at `.ade/packs/external-resolver-runs/`) |
+| CONF-029 | External resolver run history | DONE — Phase 8 (`listExternalResolverRuns`, run artifacts at `.ade/artifacts/packs/external-resolver-runs/`) |
 | CONF-030 | Merge-plan UI (sequential multi-lane merge) | DONE — Phase 8 (target lane selection, source checkboxes, stack-depth ordering, pause on conflicts) |
 | CONF-031 | Integration lane creation from merge-plan surfaces | DONE — Phase 8 (create child lane as merge target, auto-selects and initializes merge plan) |
 | CONF-032 | Rebase suggestion integration in Lanes/PRs | DONE — Phase 8 (rebase banner with Rebase Now / Defer / Dismiss, via `rebaseSuggestionService`) |
@@ -613,7 +613,7 @@ Conflict resolution generation now defaults to **external local CLIs** (Codex or
 1. ADE refreshes lane/conflict packs and builds bounded conflict context.
 2. ADE validates context completeness (`relevantFilesForConflict` + `fileContexts`).
 3. ADE executes external CLI with deterministic prompt + context refs.
-4. ADE captures stdout/stderr, summary, and patch artifact path under `.ade/packs/external-resolver-runs/<runId>/`.
+4. ADE captures stdout/stderr, summary, and patch artifact path under `.ade/artifacts/packs/external-resolver-runs/<runId>/`.
 5. ADE exposes run history via IPC and the Conflicts UI.
 
 ### CWD policy

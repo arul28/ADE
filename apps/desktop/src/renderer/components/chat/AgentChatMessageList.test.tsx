@@ -340,4 +340,24 @@ describe("AgentChatMessageList", () => {
     expect(screen.getAllByText("Read")).toHaveLength(1);
     expect(screen.getByText(/completed/i)).toBeTruthy();
   });
+
+  it("hides raw namespaced tool identifiers behind human-readable labels", () => {
+    render(
+      <AgentChatMessageList
+        events={[
+          envelope({
+            type: "tool_call",
+            tool: "mcp__linear__get_issue",
+            args: { id: "ADE-42" },
+            itemId: "tool-linear-1",
+            turnId: "turn-1",
+          }),
+        ]}
+      />
+    );
+
+    expect(screen.getByText("Linear")).toBeTruthy();
+    expect(screen.getByText("Get Issue")).toBeTruthy();
+    expect(screen.queryByText("mcp__linear__get_issue")).toBeNull();
+  });
 });

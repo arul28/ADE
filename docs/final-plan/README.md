@@ -199,8 +199,8 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Memory Architecture Upgrade (vector search, tiers) | Phase 4 | Phase 3 | Complete through W7b, with W7c follow-through still open |
 | Candidate Memory Triage Automation (auto-promote + stale archive sweep) | Phase 4 | Phase 3 memory lifecycle baseline | Complete (W6 + W6½) |
 | Mem0 Sidecar Integration (optional semantic index) | Post-Phase 4 | Phase 4 memory foundation | Deferred (evaluate after native memory upgrade + CTO baseline) |
-| Skill Library (recipe extraction + `.claude/skills/` materialization) | Phase 4 | Phase 4 Learning Packs + PROJ-039 viewer baseline | Mostly implemented (export + ingestion shipped; advanced capture follow-through remains) |
-| .ade/ Portable State (git-tracked configs) | Phase 4 | Phase 3 | Partial foundation exists; tracked/shareable model still planned |
+| Skill Library (recipe extraction + `.ade/skills/` materialization) | Phase 4 | Phase 4 Learning Packs + PROJ-039 viewer baseline | Mostly implemented (canonical export + ingestion shipped; advanced capture follow-through remains) |
+| .ade/ Portable State (canonical tracked/shareable contract) | Phase 4 | Phase 3 | Implemented |
 | .ade/ State Sync (cr-sqlite database sync) | Phase 6 | Phase 4 | Planned |
 | External MCP Consumption | Phase 4 | Phase 3 | Planned (not started) |
 | OpenClaw Bridge (External Agent Gateway) | Phase 4 | Phase 4 W1 (CTO) + W8 (External MCP) | Planned (not started) |
