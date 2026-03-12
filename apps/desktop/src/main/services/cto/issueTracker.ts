@@ -1,4 +1,10 @@
-import type { CtoLinearProject, NormalizedLinearIssue } from "../../../shared/types";
+import type {
+  CtoLinearProject,
+  LinearCatalogLabel,
+  LinearCatalogState,
+  LinearCatalogUser,
+  NormalizedLinearIssue,
+} from "../../../shared/types";
 
 export type IssueTrackerCandidateQuery = {
   projectSlugs: string[];
@@ -19,10 +25,13 @@ export type IssueTrackerWorkflowState = {
 
 export type IssueTracker = {
   listProjects(): Promise<CtoLinearProject[]>;
+  listUsers(): Promise<LinearCatalogUser[]>;
+  listLabels(teamKey?: string | null): Promise<LinearCatalogLabel[]>;
   fetchCandidateIssues(query: IssueTrackerCandidateQuery): Promise<NormalizedLinearIssue[]>;
   fetchIssueById(issueId: string): Promise<NormalizedLinearIssue | null>;
   fetchIssuesByIds(issueIds: string[]): Promise<Map<string, NormalizedLinearIssue>>;
   fetchWorkflowStates(teamKey: string): Promise<IssueTrackerWorkflowState[]>;
+  listWorkflowStates(teamKey?: string | null): Promise<LinearCatalogState[]>;
   updateIssueState(issueId: string, stateId: string): Promise<void>;
   updateIssueAssignee(issueId: string, assigneeId: string | null): Promise<void>;
   createComment(issueId: string, body: string): Promise<IssueTrackerWorkpadResult>;

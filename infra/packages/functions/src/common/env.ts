@@ -32,6 +32,8 @@ export const sharedEnv = {
   githubConnectStatesTableName: required("GITHUB_CONNECT_STATES_TABLE_NAME"),
   githubInstallationsTableName: required("GITHUB_INSTALLATIONS_TABLE_NAME"),
   githubEventsTableName: required("GITHUB_EVENTS_TABLE_NAME"),
+  linearWebhookEndpointsTableName: required("LINEAR_WEBHOOK_ENDPOINTS_TABLE_NAME"),
+  linearEventsTableName: required("LINEAR_EVENTS_TABLE_NAME"),
   blobsBucketName: required("BLOBS_BUCKET_NAME"),
   manifestsBucketName: required("MANIFESTS_BUCKET_NAME"),
   artifactsBucketName: required("ARTIFACTS_BUCKET_NAME"),

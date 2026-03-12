@@ -1,7 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Logger } from "../logging/logger";
-import type { CtoLinearProject, LinearPriorityLabel, NormalizedLinearIssue } from "../../../shared/types";
+import type {
+  CtoLinearProject,
+  LinearCatalogLabel,
+  LinearCatalogState,
+  LinearCatalogUser,
+  LinearPriorityLabel,
+  NormalizedLinearIssue,
+} from "../../../shared/types";
 import type { LinearCredentialService } from "./linearCredentialService";
 import { isRecord, toOptionalString as asString, asArray, sleep, getErrorMessage } from "../shared/utils";
 
@@ -98,6 +105,15 @@ export type LinearClientArgs = {
   credentials: LinearCredentialService;
   logger?: Logger | null;
   fetchImpl?: typeof fetch;
+};
+
+type LinearWebhookSummary = {
+  id: string;
+  url: string;
+  enabled: boolean;
+  label: string | null;
+  resourceTypes: string[];
+  allPublicTeams: boolean;
 };
 
 export function createLinearClient(args: LinearClientArgs) {
@@ -209,6 +225,94 @@ export function createLinearClient(args: LinearClientArgs) {
         return { id, name, slug, teamName };
       })
       .filter((entry): entry is CtoLinearProject => entry != null)
+      .sort((left, right) => left.name.localeCompare(right.name));
+  };
+
+  const listUsers = async (): Promise<LinearCatalogUser[]> => {
+    const data = await request<{
+      users?: {
+        nodes?: Array<Record<string, unknown>>;
+      };
+    }>({
+      query: `
+        query Users {
+          users(first: 250, filter: { active: { eq: true } }) {
+            nodes {
+              id
+              name
+              displayName
+              email
+              active
+            }
+          }
+        }
+      `,
+      maxRetries: 2,
+    });
+
+    return asArray(data.users?.nodes)
+      .map((node) => {
+        if (!isRecord(node)) return null;
+        const id = asString(node.id);
+        const name = asString(node.name);
+        if (!id || !name) return null;
+        return {
+          id,
+          name,
+          displayName: asString(node.displayName),
+          email: asString(node.email),
+          active: node.active !== false,
+        };
+      })
+      .filter((entry): entry is LinearCatalogUser => entry != null)
+      .sort((left, right) => (left.displayName ?? left.name).localeCompare(right.displayName ?? right.name));
+  };
+
+  const listLabels = async (teamKey?: string | null): Promise<LinearCatalogLabel[]> => {
+    const data = await request<{
+      issueLabels?: {
+        nodes?: Array<Record<string, unknown>>;
+      };
+    }>({
+      query: `
+        query IssueLabels {
+          issueLabels(first: 250) {
+            nodes {
+              id
+              name
+              color
+              team {
+                id
+                key
+              }
+            }
+          }
+        }
+      `,
+      maxRetries: 2,
+    });
+
+    return asArray(data.issueLabels?.nodes)
+      .map((node) => {
+        if (!isRecord(node)) return null;
+        const id = asString(node.id);
+        const name = asString(node.name);
+        if (!id || !name) return null;
+        const team = isRecord(node.team) ? node.team : null;
+        return {
+          id,
+          name,
+          color: asString(node.color),
+          teamId: team ? asString(team.id) : null,
+          teamKey: team ? asString(team.key) : null,
+        };
+      })
+      .filter((entry) => {
+        if (!entry) return false;
+        if (!teamKey?.trim()) return true;
+        return entry.teamKey?.toLowerCase() === teamKey.trim().toLowerCase();
+      })
+      .filter((entry): entry is LinearCatalogLabel => entry != null)
       .sort((left, right) => left.name.localeCompare(right.name));
   };
 
@@ -398,6 +502,65 @@ export function createLinearClient(args: LinearClientArgs) {
         return { id: stateId, name: stateName, type: stateType, teamId: id, teamKey: key };
       })
       .filter((entry): entry is NonNullable<typeof entry> => entry != null);
+  };
+
+  const listWorkflowStates = async (teamKey?: string | null): Promise<LinearCatalogState[]> => {
+    if (teamKey?.trim()) {
+      return fetchWorkflowStates(teamKey.trim());
+    }
+
+    const data = await request<{
+      teams?: {
+        nodes?: Array<{
+          id?: string;
+          key?: string;
+          states?: { nodes?: Array<{ id?: string; name?: string; type?: string }> };
+        }>;
+      };
+    }>({
+      query: `
+        query AllTeamStates {
+          teams(first: 100) {
+            nodes {
+              id
+              key
+              states {
+                nodes {
+                  id
+                  name
+                  type
+                }
+              }
+            }
+          }
+        }
+      `,
+      maxRetries: 2,
+    });
+
+    return asArray(data.teams?.nodes).flatMap((teamNode) => {
+      if (!isRecord(teamNode)) return [];
+      const id = asString(teamNode.id);
+      const key = asString(teamNode.key);
+      if (!id || !key) return [];
+      const states = isRecord(teamNode.states) ? asArray(teamNode.states.nodes) : [];
+      return states
+        .map((entry) => {
+          if (!isRecord(entry)) return null;
+          const stateId = asString(entry.id);
+          const stateName = asString(entry.name);
+          const stateType = asString(entry.type);
+          if (!stateId || !stateName || !stateType) return null;
+          return {
+            id: stateId,
+            name: stateName,
+            type: stateType,
+            teamId: id,
+            teamKey: key,
+          };
+        })
+        .filter((entry): entry is LinearCatalogState => entry != null);
+    });
   };
 
   const updateIssueState = async (issueId: string, stateId: string): Promise<void> => {
@@ -600,14 +763,129 @@ export function createLinearClient(args: LinearClientArgs) {
     };
   };
 
+  const listWebhooks = async (): Promise<LinearWebhookSummary[]> => {
+    const data = await request<{
+      webhooks?: {
+        nodes?: Array<Record<string, unknown>>;
+      };
+    }>({
+      query: `
+        query Webhooks {
+          webhooks(first: 100) {
+            nodes {
+              id
+              url
+              enabled
+              label
+              resourceTypes
+              allPublicTeams
+            }
+          }
+        }
+      `,
+      maxRetries: 1,
+    });
+
+    return asArray(data.webhooks?.nodes)
+      .map((node) => {
+        if (!isRecord(node)) return null;
+        const id = asString(node.id);
+        const url = asString(node.url);
+        if (!id || !url) return null;
+        return {
+          id,
+          url,
+          enabled: node.enabled !== false,
+          label: asString(node.label),
+          resourceTypes: asArray(node.resourceTypes).map((entry) => String(entry)).filter(Boolean),
+          allPublicTeams: node.allPublicTeams === true,
+        };
+      })
+      .filter((entry): entry is LinearWebhookSummary => entry != null);
+  };
+
+  const createWebhook = async (params: {
+    url: string;
+    secret: string;
+    label?: string;
+    resourceTypes?: string[];
+    allPublicTeams?: boolean;
+  }): Promise<LinearWebhookSummary> => {
+    const data = await request<{
+      webhookCreate?: {
+        success?: boolean;
+        webhook?: Record<string, unknown>;
+      };
+    }>({
+      query: `
+        mutation CreateWebhook(
+          $url: String!,
+          $secret: String!,
+          $label: String!,
+          $resourceTypes: [String!]!,
+          $allPublicTeams: Boolean!
+        ) {
+          webhookCreate(input: {
+            url: $url,
+            secret: $secret,
+            label: $label,
+            resourceTypes: $resourceTypes,
+            allPublicTeams: $allPublicTeams
+          }) {
+            success
+            webhook {
+              id
+              url
+              enabled
+              label
+              resourceTypes
+              allPublicTeams
+            }
+          }
+        }
+      `,
+      variables: {
+        url: params.url,
+        secret: params.secret,
+        label: params.label?.trim() || "ADE workflow ingress",
+        resourceTypes: params.resourceTypes?.length ? params.resourceTypes : ["Issue", "IssueLabel"],
+        allPublicTeams: params.allPublicTeams !== false,
+      },
+      maxRetries: 1,
+    });
+
+    const webhook = data.webhookCreate?.webhook;
+    if (!webhook || !isRecord(webhook)) {
+      throw new Error("Linear webhookCreate did not return a webhook.");
+    }
+    const id = asString(webhook.id);
+    const url = asString(webhook.url);
+    if (!id || !url) {
+      throw new Error("Linear webhookCreate returned an invalid webhook.");
+    }
+    return {
+      id,
+      url,
+      enabled: webhook.enabled !== false,
+      label: asString(webhook.label),
+      resourceTypes: asArray(webhook.resourceTypes).map((entry) => String(entry)).filter(Boolean),
+      allPublicTeams: webhook.allPublicTeams === true,
+    };
+  };
+
   return {
     request,
     getViewer,
     listProjects,
+    listUsers,
+    listLabels,
+    listWebhooks,
+    createWebhook,
     fetchCandidateIssues,
     fetchIssueById,
     fetchIssuesByIds,
     fetchWorkflowStates,
+    listWorkflowStates,
     updateIssueState,
     updateIssueAssignee,
     createComment,

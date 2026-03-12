@@ -6,6 +6,7 @@ import type {
   AgentCoreMemory,
   ExternalMcpAccessPolicy,
   AgentIdentity,
+  AgentLinearIdentity,
   AgentRole,
   AgentSessionLogEntry,
   AgentStatus,
@@ -203,6 +204,9 @@ function normalizeIdentity(input: unknown): AgentIdentity | null {
     runtimeConfig: source.runtimeConfig && typeof source.runtimeConfig === "object"
       ? source.runtimeConfig as Record<string, unknown>
       : {},
+    ...(normalizeLinearIdentity(source.linearIdentity)
+      ? { linearIdentity: normalizeLinearIdentity(source.linearIdentity)! }
+      : {}),
     ...(normalizeExternalMcpAccess(source.externalMcpAccess)
       ? { externalMcpAccess: normalizeExternalMcpAccess(source.externalMcpAccess)! }
       : {}),
@@ -230,6 +234,20 @@ function normalizeExternalMcpAccess(value: unknown): ExternalMcpAccessPolicy | u
     allowAll: source.allowAll === true,
     allowedServers,
     blockedServers,
+  };
+}
+
+function normalizeLinearIdentity(value: unknown): AgentLinearIdentity | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const source = value as Record<string, unknown>;
+  const userIds = uniqueStrings(asStringArray(source.userIds));
+  const displayNames = uniqueStrings(asStringArray(source.displayNames));
+  const aliases = uniqueStrings(asStringArray(source.aliases));
+  if (!userIds.length && !displayNames.length && !aliases.length) return undefined;
+  return {
+    userIds,
+    displayNames,
+    aliases,
   };
 }
 
@@ -361,6 +379,7 @@ export function createWorkerAgentService(args: WorkerAgentServiceArgs) {
       adapterType: row.adapter_type,
       adapterConfig: safeJsonParse(typeof row.adapter_config_json === "string" ? row.adapter_config_json : null, {}),
       runtimeConfig: safeJsonParse(typeof row.runtime_config_json === "string" ? row.runtime_config_json : null, {}),
+      linearIdentity: safeJsonParse(typeof row.linear_identity_json === "string" ? row.linear_identity_json : null, {}),
       budgetMonthlyCents: row.budget_monthly_cents,
       spentMonthlyCents: row.spent_monthly_cents,
       lastHeartbeatAt: row.last_heartbeat_at,
@@ -375,10 +394,10 @@ export function createWorkerAgentService(args: WorkerAgentServiceArgs) {
       `
         insert into worker_agents(
           id, project_id, slug, name, role, title, reports_to, capabilities_json, status,
-          adapter_type, adapter_config_json, runtime_config_json, budget_monthly_cents, spent_monthly_cents,
+          adapter_type, adapter_config_json, runtime_config_json, linear_identity_json, budget_monthly_cents, spent_monthly_cents,
           last_heartbeat_at, created_at, updated_at, deleted_at
         )
-        values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         on conflict(id) do update set
           slug = excluded.slug,
           name = excluded.name,
@@ -390,6 +409,7 @@ export function createWorkerAgentService(args: WorkerAgentServiceArgs) {
           adapter_type = excluded.adapter_type,
           adapter_config_json = excluded.adapter_config_json,
           runtime_config_json = excluded.runtime_config_json,
+          linear_identity_json = excluded.linear_identity_json,
           budget_monthly_cents = excluded.budget_monthly_cents,
           spent_monthly_cents = excluded.spent_monthly_cents,
           last_heartbeat_at = excluded.last_heartbeat_at,
@@ -409,6 +429,7 @@ export function createWorkerAgentService(args: WorkerAgentServiceArgs) {
         identity.adapterType,
         JSON.stringify(identity.adapterConfig ?? {}),
         JSON.stringify(identity.runtimeConfig ?? {}),
+        JSON.stringify(identity.linearIdentity ?? {}),
         identity.budgetMonthlyCents,
         identity.spentMonthlyCents,
         identity.lastHeartbeatAt ?? null,
@@ -592,6 +613,10 @@ export function createWorkerAgentService(args: WorkerAgentServiceArgs) {
       normalizeExternalMcpAccess(input.externalMcpAccess)
       ?? existing?.externalMcpAccess
       ?? { allowAll: false, allowedServers: [], blockedServers: [] };
+    const linearIdentity =
+      normalizeLinearIdentity(input.linearIdentity)
+      ?? existing?.linearIdentity
+      ?? undefined;
 
     const identity: AgentIdentity = {
       id,
@@ -605,6 +630,7 @@ export function createWorkerAgentService(args: WorkerAgentServiceArgs) {
       adapterType,
       adapterConfig,
       runtimeConfig,
+      ...(linearIdentity ? { linearIdentity } : {}),
       externalMcpAccess,
       budgetMonthlyCents: Math.max(0, Math.floor(Number(input.budgetMonthlyCents ?? existing?.budgetMonthlyCents ?? 0))),
       spentMonthlyCents: existing?.spentMonthlyCents ?? 0,
@@ -627,6 +653,9 @@ export function createWorkerAgentService(args: WorkerAgentServiceArgs) {
       slug: ensureUniqueSlug(snapshot.slug || snapshot.name, snapshot.id),
       name: snapshot.name.trim(),
       capabilities: uniqueStrings(snapshot.capabilities ?? []),
+      ...(normalizeLinearIdentity(snapshot.linearIdentity)
+        ? { linearIdentity: normalizeLinearIdentity(snapshot.linearIdentity)! }
+        : {}),
       externalMcpAccess: normalizeExternalMcpAccess(snapshot.externalMcpAccess) ?? {
         allowAll: false,
         allowedServers: [],

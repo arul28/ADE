@@ -1276,7 +1276,20 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       listAgentRuns: resolved([]),
       getAgentCoreMemory: resolvedArg({ version: 1, updatedAt: now, projectSummary: "Mock worker memory", criticalConventions: [], userPreferences: [], activeFocus: [], notes: [] }),
       updateAgentCoreMemory: resolvedArg({ version: 2, updatedAt: now, projectSummary: "Mock worker memory", criticalConventions: [], userPreferences: [], activeFocus: [], notes: [] }),
-      listAgentSessionLogs: resolvedArg([])
+      listAgentSessionLogs: resolvedArg([]),
+      getLinearWorkflowCatalog: resolvedArg({ users: [], labels: [], states: [] }),
+      getLinearIngressStatus: resolvedArg({
+        localWebhook: { configured: false, healthy: false, status: "disabled" },
+        relay: { configured: false, healthy: false, status: "disabled" },
+        reconciliation: { enabled: true, intervalSec: 30, lastRunAt: null },
+      }),
+      listLinearIngressEvents: resolvedArg([]),
+      ensureLinearWebhook: resolvedArg({
+        localWebhook: { configured: false, healthy: false, status: "disabled" },
+        relay: { configured: true, healthy: true, status: "ready", webhookUrl: "https://example.com/linear/webhooks/mock", endpointId: "mock-endpoint" },
+        reconciliation: { enabled: true, intervalSec: 30, lastRunAt: null },
+      }),
+      onLinearWorkflowEvent: noop,
     },
     pty: {
       create: resolvedArg({ ptyId: "mock" }),

@@ -81,15 +81,21 @@ import type {
   CtoListOpenclawMessagesResult,
   CtoSendOpenclawMessageArgs,
   LinearConnectionStatus,
+  LinearIngressEventRecord,
+  LinearIngressStatus,
   CtoSetLinearTokenArgs,
   CtoSaveFlowPolicyArgs,
   CtoFlowPolicyRevision,
   CtoRollbackFlowPolicyRevisionArgs,
   CtoSimulateFlowRouteArgs,
   LinearRouteDecision,
+  LinearWorkflowCatalog,
   LinearSyncDashboard,
   LinearSyncQueueItem,
+  LinearWorkflowEventPayload,
   CtoResolveLinearSyncQueueItemArgs,
+  CtoEnsureLinearWebhookArgs,
+  CtoListLinearIngressEventsArgs,
   LinearWorkflowConfig,
   OpenclawBridgeStatus,
   ExternalMcpServerConfig,
@@ -1572,6 +1578,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.ctoRollbackFlowPolicyRevision, args),
     simulateFlowRoute: async (args: CtoSimulateFlowRouteArgs): Promise<LinearRouteDecision> =>
       ipcRenderer.invoke(IPC.ctoSimulateFlowRoute, args),
+    getLinearWorkflowCatalog: async (): Promise<LinearWorkflowCatalog> =>
+      ipcRenderer.invoke(IPC.ctoGetLinearWorkflowCatalog),
     getLinearSyncDashboard: async (): Promise<LinearSyncDashboard> =>
       ipcRenderer.invoke(IPC.ctoGetLinearSyncDashboard),
     runLinearSyncNow: async (): Promise<LinearSyncDashboard> =>
@@ -1580,6 +1588,17 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.ctoListLinearSyncQueue),
     resolveLinearSyncQueueItem: async (args: CtoResolveLinearSyncQueueItemArgs): Promise<LinearSyncQueueItem | null> =>
       ipcRenderer.invoke(IPC.ctoResolveLinearSyncQueueItem, args),
+    getLinearIngressStatus: async (): Promise<LinearIngressStatus> =>
+      ipcRenderer.invoke(IPC.ctoGetLinearIngressStatus),
+    listLinearIngressEvents: async (args: CtoListLinearIngressEventsArgs = {}): Promise<LinearIngressEventRecord[]> =>
+      ipcRenderer.invoke(IPC.ctoListLinearIngressEvents, args),
+    ensureLinearWebhook: async (args: CtoEnsureLinearWebhookArgs = {}): Promise<LinearIngressStatus> =>
+      ipcRenderer.invoke(IPC.ctoEnsureLinearWebhook, args),
+    onLinearWorkflowEvent: (cb: (event: LinearWorkflowEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: LinearWorkflowEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.ctoLinearWorkflowEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.ctoLinearWorkflowEvent, listener);
+    },
     listAgentTaskSessions: async (args: CtoListAgentTaskSessionsArgs): Promise<AgentTaskSession[]> =>
       ipcRenderer.invoke(IPC.ctoListAgentTaskSessions, args),
     clearAgentTaskSession: async (args: CtoClearAgentTaskSessionArgs): Promise<void> =>

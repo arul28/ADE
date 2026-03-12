@@ -11,6 +11,7 @@ import type { FlowPolicyService } from "./flowPolicyService";
 import type { LinearRoutingService } from "./linearRoutingService";
 import type { LinearIntakeService } from "./linearIntakeService";
 import type { LinearDispatcherService } from "./linearDispatcherService";
+import type { IssueTracker } from "./issueTracker";
 import { getErrorMessage, nowIso } from "../shared/utils";
 
 function isIssueOpen(issue: NormalizedLinearIssue): boolean {
@@ -35,12 +36,15 @@ export function createLinearSyncService(args: {
   flowPolicyService: FlowPolicyService;
   routingService: LinearRoutingService;
   intakeService: LinearIntakeService;
+  issueTracker: IssueTracker;
   dispatcherService: LinearDispatcherService;
+  reconciliationIntervalSec?: number;
   autoStart?: boolean;
 }) {
   let disposed = false;
   let timer: NodeJS.Timeout | null = null;
   let inFlight = false;
+  const reconciliationIntervalSec = Math.max(15, Math.floor(args.reconciliationIntervalSec ?? 30));
 
   const setSyncState = (patch: {
     enabled?: boolean;
@@ -107,14 +111,23 @@ export function createLinearSyncService(args: {
   const dispatchNewRuns = async (policy: LinearWorkflowConfig) => {
     const candidates = await args.intakeService.fetchCandidates(policy);
     for (const issue of candidates) {
-      args.intakeService.persistSnapshot(issue);
-      if (!isIssueOpen(issue)) continue;
-      if (!snapshotChanged(issue)) continue;
-      if (args.dispatcherService.findActiveRunForIssue(issue.id)) continue;
-      const match = await args.routingService.routeIssue({ issue, policy });
-      if (!match.workflow) continue;
-      args.dispatcherService.createRun(issue, match);
+      await processIssueSnapshot(issue, policy);
     }
+  };
+
+  const processIssueSnapshot = async (issue: NormalizedLinearIssue, policy: LinearWorkflowConfig): Promise<void> => {
+    args.intakeService.persistSnapshot(issue);
+    if (!isIssueOpen(issue)) return;
+    const activeRun = args.dispatcherService.findActiveRunForIssue(issue.id);
+    if (!activeRun && !snapshotChanged(issue)) return;
+    if (!activeRun) {
+      const match = await args.routingService.routeIssue({ issue, policy });
+      if (!match.workflow) return;
+      const run = args.dispatcherService.createRun(issue, match);
+      await args.dispatcherService.advanceRun(run.id, policy);
+      return;
+    }
+    await args.dispatcherService.advanceRun(activeRun.id, policy);
   };
 
   const advanceRuns = async (policy: LinearWorkflowConfig) => {
@@ -161,6 +174,41 @@ export function createLinearSyncService(args: {
     }
   };
 
+  const processIssueUpdate = async (issueId: string): Promise<void> => {
+    if (disposed) return;
+    const issue = await args.issueTracker.fetchIssueById(issueId);
+    if (!issue) return;
+    const policy = args.flowPolicyService.getPolicy();
+    setSyncState({
+      enabled: workflowEnabled(policy),
+      running: true,
+      lastPollAt: nowIso(),
+      lastError: null,
+    });
+    try {
+      releaseDueRetries();
+      await processIssueSnapshot(issue, policy);
+      await advanceRuns(policy);
+      setSyncState({
+        running: false,
+        lastSuccessAt: nowIso(),
+      });
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setSyncState({
+        running: false,
+        lastError: message,
+      });
+      throw error;
+    }
+  };
+
+  const processActiveRunsNow = async (): Promise<void> => {
+    if (disposed) return;
+    const policy = args.flowPolicyService.getPolicy();
+    await advanceRuns(policy);
+  };
+
   const getDashboard = (): LinearSyncDashboard => {
     const state = args.db.get<{
       enabled: number;
@@ -193,7 +241,8 @@ export function createLinearSyncService(args: {
     return {
       enabled: Boolean(state?.enabled ?? 0),
       running: Boolean(state?.running ?? 0),
-      pollingIntervalSec: 300,
+      ingressMode: "webhook-first",
+      reconciliationIntervalSec,
       lastPollAt: state?.last_poll_at ?? null,
       lastSuccessAt: state?.last_success_at ?? null,
       lastError: state?.last_error ?? null,
@@ -228,12 +277,14 @@ export function createLinearSyncService(args: {
   if (args.autoStart !== false) {
     timer = setInterval(() => {
       void runCycle();
-    }, 300_000);
+    }, reconciliationIntervalSec * 1000);
     void runCycle();
   }
 
   return {
     runSyncNow,
+    processIssueUpdate,
+    processActiveRunsNow,
     getDashboard,
     listQueue,
     resolveQueueItem,
