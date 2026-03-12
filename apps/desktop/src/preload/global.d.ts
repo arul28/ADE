@@ -163,7 +163,13 @@ import type {
   LinearRouteDecision,
   LinearSyncDashboard,
   LinearSyncQueueItem,
+  LinearIngressEventRecord,
+  LinearIngressStatus,
+  LinearWorkflowCatalog,
+  LinearWorkflowEventPayload,
   CtoResolveLinearSyncQueueItemArgs,
+  CtoEnsureLinearWebhookArgs,
+  CtoListLinearIngressEventsArgs,
   LinearWorkflowConfig,
   OpenclawBridgeStatus,
   ExternalMcpServerConfig,
@@ -1077,6 +1083,11 @@ declare global {
         runLinearSyncNow: () => Promise<LinearSyncDashboard>;
         listLinearSyncQueue: () => Promise<LinearSyncQueueItem[]>;
         resolveLinearSyncQueueItem: (args: CtoResolveLinearSyncQueueItemArgs) => Promise<LinearSyncQueueItem | null>;
+        getLinearWorkflowCatalog: () => Promise<LinearWorkflowCatalog>;
+        getLinearIngressStatus: () => Promise<LinearIngressStatus>;
+        listLinearIngressEvents: (args?: CtoListLinearIngressEventsArgs) => Promise<LinearIngressEventRecord[]>;
+        ensureLinearWebhook: (args?: CtoEnsureLinearWebhookArgs) => Promise<LinearIngressStatus>;
+        onLinearWorkflowEvent: (cb: (event: LinearWorkflowEventPayload) => void) => () => void;
         listAgentTaskSessions: (args: CtoListAgentTaskSessionsArgs) => Promise<AgentTaskSession[]>;
         clearAgentTaskSession: (args: CtoClearAgentTaskSessionArgs) => Promise<void>;
         getOnboardingState: () => Promise<CtoOnboardingState>;

@@ -8,6 +8,7 @@ import type {
   NormalizedLinearIssue,
 } from "../../../shared/types";
 import type { FlowPolicyService } from "./flowPolicyService";
+import type { WorkerAgentService } from "./workerAgentService";
 
 function normalizeText(value: string | null | undefined): string {
   return (value ?? "").trim().toLowerCase();
@@ -44,37 +45,66 @@ function describeStep(step: LinearWorkflowStep): string {
   }
 }
 
-function matchesAssignee(policy: LinearWorkflowConfig, issue: NormalizedLinearIssue, values: string[]): string[] {
+function buildEmployeeAliasMap(policy: LinearWorkflowConfig, workerAgentService?: WorkerAgentService | null): Map<string, Set<string>> {
+  const aliasMap = new Map<string, Set<string>>();
+
+  const register = (label: string, rawValues: Array<string | null | undefined>) => {
+    const tokens = rawValues.map(normalizeText).filter(Boolean);
+    if (!tokens.length) return;
+    const current = aliasMap.get(label) ?? new Set<string>();
+    for (const token of tokens) current.add(token);
+    aliasMap.set(label, current);
+  };
+
+  register("CTO", [
+    policy.settings.ctoLinearAssigneeId ?? "",
+    policy.settings.ctoLinearAssigneeName ?? "",
+    ...(policy.settings.ctoLinearAssigneeAliases ?? []),
+    "cto",
+  ]);
+
+  const workers = workerAgentService?.listAgents({ includeDeleted: false }) ?? [];
+  for (const worker of workers) {
+    register(worker.id, [
+      worker.id,
+      worker.slug,
+      worker.name,
+      ...(worker.linearIdentity?.userIds ?? []),
+      ...(worker.linearIdentity?.displayNames ?? []),
+      ...(worker.linearIdentity?.aliases ?? []),
+    ]);
+  }
+
+  return aliasMap;
+}
+
+function matchesAssignee(
+  policy: LinearWorkflowConfig,
+  issue: NormalizedLinearIssue,
+  values: string[],
+  workerAgentService?: WorkerAgentService | null
+): string[] {
   if (!values.length) return [];
-  const aliases = new Set<string>(
-    [
-      policy.settings.ctoLinearAssigneeId ?? "",
-      policy.settings.ctoLinearAssigneeName ?? "",
-      ...(policy.settings.ctoLinearAssigneeAliases ?? []),
-      "cto",
-    ]
-      .map(normalizeText)
-      .filter(Boolean)
-  );
+  const aliasMap = buildEmployeeAliasMap(policy, workerAgentService);
   const issueValues = new Set(
     [issue.assigneeId, issue.assigneeName]
       .map(normalizeText)
       .filter(Boolean)
   );
 
-  const matched = values.some((value) => {
+  const matchedValues = values.filter((value) => {
     const normalized = normalizeText(value);
-    if (!normalized) return false;
-    if (aliases.has(normalized)) {
+    if (!normalized.length) return false;
+    for (const aliases of aliasMap.values()) {
+      if (!aliases.has(normalized)) continue;
       for (const issueValue of issueValues) {
         if (aliases.has(issueValue)) return true;
       }
-      return false;
     }
     return issueValues.has(normalized);
   });
 
-  return matched ? [`Assignee matched ${values.join(", ")}`] : [];
+  return matchedValues.length ? [`Assigned to ${matchedValues.join(", ")}`] : [];
 }
 
 function matchesStringField(actualValues: Array<string | null | undefined>, wanted: string[], label: string): string[] {
@@ -104,13 +134,19 @@ function matchesStateTransition(issue: NormalizedLinearIssue, transitions: NonNu
   return matched ? ["State transition matched"] : [];
 }
 
-function evaluateWorkflow(policy: LinearWorkflowConfig, workflow: LinearWorkflowDefinition, issue: NormalizedLinearIssue): LinearWorkflowMatchCandidate {
+function evaluateWorkflow(
+  policy: LinearWorkflowConfig,
+  workflow: LinearWorkflowDefinition,
+  issue: NormalizedLinearIssue,
+  workerAgentService?: WorkerAgentService | null
+): LinearWorkflowMatchCandidate {
   const reasons: string[] = [];
   const matchedSignals: string[] = [];
+  const missingSignals: string[] = [];
   let matched = true;
 
   const checks = [
-    matchesAssignee(policy, issue, workflow.triggers.assignees ?? []),
+    matchesAssignee(policy, issue, workflow.triggers.assignees ?? [], workerAgentService),
     matchesStringField(issue.labels, workflow.triggers.labels ?? [], "Label"),
     matchesStringField([issue.projectSlug], workflow.triggers.projectSlugs ?? [], "Project"),
     matchesStringField([issue.teamKey], workflow.triggers.teamKeys ?? [], "Team"),
@@ -140,7 +176,9 @@ function evaluateWorkflow(policy: LinearWorkflowConfig, workflow: LinearWorkflow
       reasons.push(...result);
       matchedSignals.push(...result);
     } else {
-      reasons.push(`Missing ${["assignee", "label", "project", "team", "priority", "state transition", "owner", "creator", "metadata tag"][index]}`);
+      const missing = `Missing ${["assignee", "label", "project", "team", "priority", "state transition", "owner", "creator", "metadata tag"][index]}`;
+      reasons.push(missing);
+      missingSignals.push(missing);
     }
   });
 
@@ -156,18 +194,22 @@ function evaluateWorkflow(policy: LinearWorkflowConfig, workflow: LinearWorkflow
     matched,
     reasons,
     matchedSignals,
+    missingSignals,
   };
 }
 
 export function createLinearRoutingService(args: {
   flowPolicyService: FlowPolicyService;
+  workerAgentService?: WorkerAgentService | null;
 }) {
   const routeIssue = async (input: {
     issue: NormalizedLinearIssue;
     policy?: LinearWorkflowConfig;
   }): Promise<LinearRouteDecision> => {
     const policy = args.flowPolicyService.normalizePolicy(input.policy ?? args.flowPolicyService.getPolicy());
-    const candidates = policy.workflows.map((workflow) => evaluateWorkflow(policy, workflow, input.issue));
+    const candidates = policy.workflows.map((workflow) =>
+      evaluateWorkflow(policy, workflow, input.issue, args.workerAgentService)
+    );
     const winnerCandidate = candidates
       .filter((candidate) => candidate.matched)
       .sort((left, right) => right.priority - left.priority || left.workflowName.localeCompare(right.workflowName))[0] ?? null;
@@ -185,6 +227,10 @@ export function createLinearRoutingService(args: {
         : "No workflow matched the current issue snapshot.",
       candidates,
       nextStepsPreview: workflow ? workflow.steps.map(describeStep) : [],
+      simulation: {
+        matchedWorkflowId: workflow?.id ?? null,
+        explainsAndAcrossFields: true,
+      },
     };
   };
 

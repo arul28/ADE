@@ -93,6 +93,7 @@ import { createLinearIntakeService } from "./services/cto/linearIntakeService";
 import { createLinearOutboundService } from "./services/cto/linearOutboundService";
 import { createLinearCloseoutService } from "./services/cto/linearCloseoutService";
 import { createLinearDispatcherService } from "./services/cto/linearDispatcherService";
+import { createLinearIngressService } from "./services/cto/linearIngressService";
 import { createLinearSyncService } from "./services/cto/linearSyncService";
 import { createOpenclawBridgeService } from "./services/cto/openclawBridgeService";
 import { createOrchestratorService } from "./services/orchestrator/orchestratorService";
@@ -794,6 +795,7 @@ app.whenReady().then(async () => {
     let orchestratorServiceRef: ReturnType<typeof createOrchestratorService> | null = null;
     let aiOrchestratorServiceRef: ReturnType<typeof createAiOrchestratorService> | null = null;
     let openclawBridgeServiceRef: ReturnType<typeof createOpenclawBridgeService> | null = null;
+    let linearSyncServiceRef: ReturnType<typeof createLinearSyncService> | null = null;
     const queueLandingService = createQueueLandingService({
       db,
       logger,
@@ -831,6 +833,7 @@ app.whenReady().then(async () => {
     const onTrackedSessionEnded = ({ laneId, sessionId, exitCode }: { laneId: string; sessionId: string; exitCode: number | null }) => {
       jobEngine?.onSessionEnded({ laneId, sessionId });
       automationService?.onSessionEnded({ laneId, sessionId });
+      void linearSyncServiceRef?.processActiveRunsNow().catch(() => {});
       if (orchestratorServiceRef) {
         void orchestratorServiceRef
           .onTrackedSessionEnded({
@@ -1061,6 +1064,7 @@ app.whenReady().then(async () => {
     });
     const linearRoutingService = createLinearRoutingService({
       flowPolicyService,
+      workerAgentService,
     });
     const linearIntakeService = createLinearIntakeService({
       db,
@@ -1339,6 +1343,9 @@ app.whenReady().then(async () => {
       laneService,
       templateService: linearTemplateService,
       closeoutService: linearCloseoutService,
+      workerTaskSessionService,
+      prService,
+      onEvent: (event) => emitProjectEvent(projectRoot, IPC.ctoLinearWorkflowEvent, event),
     });
 
     const linearSyncService = createLinearSyncService({
@@ -1348,8 +1355,37 @@ app.whenReady().then(async () => {
       flowPolicyService,
       routingService: linearRoutingService,
       intakeService: linearIntakeService,
+      issueTracker: linearIssueTracker,
       dispatcherService: linearDispatcherService,
       autoStart: true,
+    });
+    linearSyncServiceRef = linearSyncService;
+
+    const linearIngressService = createLinearIngressService({
+      db,
+      logger,
+      projectId,
+      linearClient,
+      secretService: automationSecretService,
+      onEvent: async (event) => {
+        emitProjectEvent(projectRoot, IPC.ctoLinearWorkflowEvent, {
+          type: "linear-workflow-ingress",
+          projectId,
+          source: event.source,
+          issueId: event.issueId,
+          issueIdentifier: event.issueIdentifier,
+          summary: event.summary,
+          createdAt: event.createdAt,
+        });
+        if (event.issueId) {
+          await linearSyncService.processIssueUpdate(event.issueId);
+        }
+      },
+    });
+    void linearIngressService.start().catch((error) => {
+      logger.warn("linear.ingress_start_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
     });
 
     // Resume any active team runtimes that were running before app restart
@@ -1698,6 +1734,7 @@ app.whenReady().then(async () => {
       linearIssueTracker,
       flowPolicyService,
       linearRoutingService,
+      linearIngressService,
       linearSyncService,
       externalMcpService,
       configReloadService,
@@ -1787,6 +1824,7 @@ app.whenReady().then(async () => {
       linearIssueTracker: null,
       flowPolicyService: null,
       linearRoutingService: null,
+      linearIngressService: null,
       linearSyncService: null,
       externalMcpService: null,
       configReloadService: null
@@ -1821,6 +1859,11 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.aiOrchestratorService.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.linearIngressService?.dispose();
     } catch {
       // ignore
     }

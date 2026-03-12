@@ -829,7 +829,7 @@ export function RulesTab({
           </div>
           {linearDashboard && (
             <div className="mt-1 font-mono text-[9px] text-[#71717A]">
-              Last success: {formatDate(linearDashboard.lastSuccessAt)} | Polling: {linearDashboard.pollingIntervalSec}s
+              Last success: {formatDate(linearDashboard.lastSuccessAt)} | Reconcile: {linearDashboard.reconciliationIntervalSec}s
             </div>
           )}
           {linearCardError && <div className="mt-1 text-xs text-red-300">{linearCardError}</div>}

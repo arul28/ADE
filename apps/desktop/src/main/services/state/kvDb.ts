@@ -1940,6 +1940,7 @@ function migrate(db: Database) {
       adapter_type text not null default 'claude-local',
       adapter_config_json text not null default '{}',
       runtime_config_json text not null default '{}',
+      linear_identity_json text not null default '{}',
       budget_monthly_cents integer not null default 0,
       spent_monthly_cents integer not null default 0,
       last_heartbeat_at text,
@@ -1948,8 +1949,38 @@ function migrate(db: Database) {
       deleted_at text
     )
   `);
+  try { db.run("alter table worker_agents add column linear_identity_json text not null default '{}'"); } catch {}
   db.run("create index if not exists idx_worker_agents_project on worker_agents(project_id)");
   db.run("create index if not exists idx_worker_agents_project_active on worker_agents(project_id, deleted_at)");
+
+  db.run(`
+    create table if not exists linear_ingress_state (
+      project_id text primary key,
+      local_webhook_json text not null default '{}',
+      relay_json text not null default '{}',
+      reconciliation_json text not null default '{}',
+      updated_at text not null
+    )
+  `);
+
+  db.run(`
+    create table if not exists linear_ingress_events (
+      id text primary key,
+      project_id text not null,
+      source text not null,
+      delivery_id text not null,
+      event_id text not null,
+      entity_type text not null,
+      action text,
+      issue_id text,
+      issue_identifier text,
+      summary text not null,
+      payload_json text,
+      created_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_linear_ingress_events_project_created on linear_ingress_events(project_id, created_at desc)");
+  db.run("create unique index if not exists idx_linear_ingress_events_project_event on linear_ingress_events(project_id, event_id)");
 
   // Phase 4 W2: Worker agent config revisions (audit trail)
   db.run(`

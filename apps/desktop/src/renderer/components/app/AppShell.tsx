@@ -8,7 +8,7 @@ import { TabBackground } from "../ui/TabBackground";
 import { GenerateDocsModal } from "../context/GenerateDocsModal";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
-import type { ContextStatus, PrEventPayload, TerminalSessionSummary } from "../../../shared/types";
+import type { ContextStatus, LinearWorkflowEventPayload, PrEventPayload, TerminalSessionSummary } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { summarizeTerminalAttention } from "../../lib/terminalAttention";
 import { getStoredZoomLevel, displayZoomToLevel } from "../../lib/zoom";
@@ -25,6 +25,11 @@ type AiBannerState = {
   status: string | null;
   error: string;
   createdAt: string;
+};
+
+type LinearWorkflowToast = {
+  id: string;
+  event: Extract<LinearWorkflowEventPayload, { type: "linear-workflow-notification" }>;
 };
 
 const EMPTY_TERMINAL_ATTENTION = {
@@ -66,6 +71,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const isFirstVisit = !visitedTabsRef.current.has(location.pathname);
   const [prToasts, setPrToasts] = useState<PrToast[]>([]);
   const toastTimersRef = useRef<Map<string, number>>(new Map());
+  const [linearWorkflowToasts, setLinearWorkflowToasts] = useState<LinearWorkflowToast[]>([]);
+  const linearToastTimersRef = useRef<Map<string, number>>(new Map());
   const [aiFailure, setAiFailure] = useState<AiBannerState | null>(null);
   const [aiMockProvider, setAiMockProvider] = useState<{ createdAt: string } | null>(null);
   const [onboardingIncomplete, setOnboardingIncomplete] = useState(false);
@@ -270,6 +277,32 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     } catch {
       // ignore
     }
+  }, []);
+
+  useEffect(() => {
+    const dismiss = (id: string) => {
+      setLinearWorkflowToasts((prev) => prev.filter((toast) => toast.id !== id));
+      const timer = linearToastTimersRef.current.get(id);
+      if (timer != null) window.clearTimeout(timer);
+      linearToastTimersRef.current.delete(id);
+    };
+
+    const unsub =
+      window.ade.cto?.onLinearWorkflowEvent?.((event: LinearWorkflowEventPayload) => {
+        if (event.type !== "linear-workflow-notification") return;
+        const id = globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+        setLinearWorkflowToasts((prev) => [{ id, event }, ...prev].slice(0, 4));
+        const timer = window.setTimeout(() => dismiss(id), 18_000);
+        linearToastTimersRef.current.set(id, timer);
+      }) ?? (() => {});
+
+    return () => {
+      unsub();
+      for (const timer of linearToastTimersRef.current.values()) {
+        window.clearTimeout(timer);
+      }
+      linearToastTimersRef.current.clear();
+    };
   }, []);
 
   useEffect(() => {
@@ -554,6 +587,35 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   </div>
                 );
               })}
+            </div>
+          ) : null}
+
+          {linearWorkflowToasts.length > 0 ? (
+            <div className="pointer-events-none absolute bottom-2 left-2 z-[95] flex w-[min(360px,calc(100vw-20px))] flex-col gap-1.5">
+              {linearWorkflowToasts.map((toast) => (
+                <div key={toast.id} className="pointer-events-auto rounded border border-border/50 bg-card px-3 py-2 text-[11px] font-mono shadow-float">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-semibold text-fg truncate">{toast.event.title}</div>
+                      <div className="mt-0.5 truncate text-muted-fg">{toast.event.issueIdentifier}</div>
+                    </div>
+                    <button
+                      type="button"
+                      className="shrink-0 text-muted-fg hover:text-fg"
+                      onClick={() => {
+                        setLinearWorkflowToasts((prev) => prev.filter((t) => t.id !== toast.id));
+                        const timer = linearToastTimersRef.current.get(toast.id);
+                        if (timer != null) window.clearTimeout(timer);
+                        linearToastTimersRef.current.delete(toast.id);
+                      }}
+                      title="Dismiss"
+                    >
+                      ×
+                    </button>
+                  </div>
+                  <div className="mt-1 text-[11px] text-muted-fg line-clamp-3">{toast.event.message}</div>
+                </div>
+              ))}
             </div>
           ) : null}
         </main>
