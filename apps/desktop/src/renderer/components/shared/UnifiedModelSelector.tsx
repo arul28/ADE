@@ -7,6 +7,7 @@ import {
 } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { CaretDown, Check, MagnifyingGlass, X } from "@phosphor-icons/react";
+import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
 
 type UnifiedModelSelectorProps = {
   value: string;
@@ -144,6 +145,21 @@ function modelAvailabilityLabel(model: ModelDescriptor, isAvailable: boolean): s
 function tierLabel(tier: string): string {
   if (tier === "xhigh") return "Extra High";
   return tier.charAt(0).toUpperCase() + tier.slice(1);
+}
+
+function ModelGlyph({ model, size = 12 }: { model: ModelDescriptor; size?: number }) {
+  if (model.family === "anthropic" || model.cliCommand === "claude") {
+    return <ClaudeLogo size={size} className="shrink-0" />;
+  }
+  if (model.cliCommand === "codex") {
+    return <CodexLogo size={size} className="shrink-0 text-fg/80" />;
+  }
+  return (
+    <span
+      className="inline-block shrink-0 rounded-full"
+      style={{ width: size * 0.55, height: size * 0.55, backgroundColor: model.color ?? "#A78BFA" }}
+    />
+  );
 }
 
 function matchesQuery(model: ModelDescriptor, query: string): boolean {
@@ -511,10 +527,9 @@ export function UnifiedModelSelector({
                         )}
                         onClick={() => handleSelect(model.id, isAvailable)}
                       >
-                        <span
-                          className="inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full"
-                          style={{ backgroundColor: model.color ?? "#A78BFA", opacity: isAvailable ? 1 : 0.45 }}
-                        />
+                        <span className={cn("inline-flex flex-shrink-0 items-center justify-center", !isAvailable && "opacity-45")}>
+                          <ModelGlyph model={model} size={13} />
+                        </span>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
                             <div className="truncate">{model.displayName}</div>
@@ -595,10 +610,7 @@ export function UnifiedModelSelector({
           aria-haspopup="dialog"
           aria-expanded={open}
         >
-          <span
-            className="inline-block h-2 w-2 flex-shrink-0 rounded-full"
-            style={{ backgroundColor: selectedModel?.color ?? "#A78BFA" }}
-          />
+          {selectedModel ? <ModelGlyph model={selectedModel} size={14} /> : null}
           <span className="flex-1 truncate text-left">
             {selectedModel?.displayName ?? value}
           </span>

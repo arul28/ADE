@@ -204,7 +204,7 @@ describe("AgentChatPane", () => {
       expect(ade.agentChat.create).toHaveBeenCalled();
       // New API passes modelId
       expect(ade.agentChat.create).toHaveBeenCalledWith(
-        expect.objectContaining({ modelId: expect.any(String) })
+        expect.objectContaining({ modelId: expect.any(String), sessionProfile: "light" })
       );
     });
   });

@@ -17,22 +17,63 @@ const menuItemStyle: React.CSSProperties = {
   transition: "background 100ms",
 };
 
+const menuHeaderStyle: React.CSSProperties = {
+  padding: "5px 14px 3px",
+  fontSize: 9,
+  fontFamily: MONO_FONT,
+  fontWeight: 700,
+  letterSpacing: "0.12em",
+  textTransform: "uppercase",
+  color: COLORS.textDim,
+};
+
+function HoverButton({ style, children, onClick }: { style: React.CSSProperties; children: React.ReactNode; onClick: () => void }) {
+  return (
+    <button
+      style={style}
+      onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  );
+}
+
 export function LaneContextMenu({
   laneContextMenu,
   lanesById,
+  visibleLaneIds,
   onClose,
   onAdoptAttached,
   onManage,
-  selectLane
+  selectLane,
+  onRemoveFromSplit,
+  onCloseOtherSplits,
+  onSelectAll,
+  onBatchManage,
 }: {
   laneContextMenu: { laneId: string; x: number; y: number };
   lanesById: Map<string, LaneSummary>;
+  visibleLaneIds: string[];
   onClose: () => void;
   onAdoptAttached: (laneId: string) => void;
   onManage: (laneId: string) => void;
   selectLane: (id: string) => void;
+  onRemoveFromSplit: (laneId: string) => void;
+  onCloseOtherSplits: (keepLaneId: string) => void;
+  onSelectAll: () => void;
+  onBatchManage: (laneIds: string[]) => void;
 }) {
   const ctxLane = lanesById.get(laneContextMenu.laneId) ?? null;
+  const isInSplit = visibleLaneIds.includes(laneContextMenu.laneId);
+  const splitCount = visibleLaneIds.length;
+  const isPrimary = ctxLane?.laneType === "primary";
+  const deletableVisibleIds = visibleLaneIds.filter((id) => {
+    const lane = lanesById.get(id);
+    return lane && lane.laneType !== "primary";
+  });
+
   return (
     <div
       style={{
@@ -53,38 +94,33 @@ export function LaneContextMenu({
     >
       {ctxLane?.worktreePath ? (
         <>
-          <button
+          <HoverButton
             style={menuItemStyle}
-            onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
             onClick={() => {
               onClose();
               window.ade.app.revealPath(ctxLane.worktreePath).catch(() => {});
             }}
           >
             {revealLabel}
-          </button>
-          <button
+          </HoverButton>
+          <HoverButton
             style={menuItemStyle}
-            onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
             onClick={() => {
               onClose();
               navigator.clipboard.writeText(ctxLane.worktreePath).catch(() => {});
             }}
           >
             Copy Path
-          </button>
+          </HoverButton>
         </>
       ) : null}
-      {ctxLane && ctxLane.laneType !== "primary" ? (
+
+      {ctxLane && !isPrimary ? (
         <>
           <div style={{ height: 1, background: COLORS.border, margin: "4px 0" }} />
           {ctxLane.laneType === "attached" ? (
-            <button
+            <HoverButton
               style={menuItemStyle}
-              onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
               onClick={() => {
                 const ctxLaneId = laneContextMenu.laneId;
                 onClose();
@@ -93,12 +129,10 @@ export function LaneContextMenu({
               }}
             >
               Move To .ade/worktrees
-            </button>
+            </HoverButton>
           ) : null}
-          <button
+          <HoverButton
             style={menuItemStyle}
-            onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
             onClick={() => {
               const ctxLaneId = laneContextMenu.laneId;
               onClose();
@@ -107,7 +141,78 @@ export function LaneContextMenu({
             }}
           >
             Manage Lane
-          </button>
+          </HoverButton>
+        </>
+      ) : null}
+
+      {/* ── Split / multi-tab actions ── */}
+      {splitCount > 1 || !isInSplit ? (
+        <>
+          <div style={{ height: 1, background: COLORS.border, margin: "4px 0" }} />
+          <div style={menuHeaderStyle}>
+            {splitCount > 1 ? `${splitCount} tabs open` : "Tabs"}
+          </div>
+        </>
+      ) : null}
+
+      {!isInSplit ? (
+        <HoverButton
+          style={menuItemStyle}
+          onClick={() => {
+            onClose();
+            selectLane(laneContextMenu.laneId);
+          }}
+        >
+          Open in Split
+        </HoverButton>
+      ) : null}
+
+      {isInSplit && splitCount > 1 && !isPrimary ? (
+        <HoverButton
+          style={menuItemStyle}
+          onClick={() => {
+            onClose();
+            onRemoveFromSplit(laneContextMenu.laneId);
+          }}
+        >
+          Remove from Split
+        </HoverButton>
+      ) : null}
+
+      {isInSplit && splitCount > 1 ? (
+        <HoverButton
+          style={menuItemStyle}
+          onClick={() => {
+            onClose();
+            onCloseOtherSplits(laneContextMenu.laneId);
+          }}
+        >
+          Close Other Tabs
+        </HoverButton>
+      ) : null}
+
+      <HoverButton
+        style={menuItemStyle}
+        onClick={() => {
+          onClose();
+          onSelectAll();
+        }}
+      >
+        Select All Lanes
+      </HoverButton>
+
+      {deletableVisibleIds.length > 1 ? (
+        <>
+          <div style={{ height: 1, background: COLORS.border, margin: "4px 0" }} />
+          <HoverButton
+            style={menuItemStyle}
+            onClick={() => {
+              onClose();
+              onBatchManage(deletableVisibleIds);
+            }}
+          >
+            Manage {deletableVisibleIds.length} Open Lanes...
+          </HoverButton>
         </>
       ) : null}
     </div>

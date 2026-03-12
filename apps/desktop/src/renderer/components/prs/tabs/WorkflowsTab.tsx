@@ -20,6 +20,7 @@ import type {
 import { COLORS, LABEL_STYLE, MONO_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
 import { QueueTab } from "./QueueTab";
 import { RebaseTab } from "./RebaseTab";
+import { IntegrationTab } from "./IntegrationTab";
 import { usePrs } from "../state/PrsContext";
 
 export type WorkflowCategory = "integration" | "queue" | "rebase";
@@ -29,7 +30,10 @@ type WorkflowsTabProps = {
   activeCategory: WorkflowCategory;
   onChangeCategory: (category: WorkflowCategory) => void;
   onRefreshAll: () => Promise<void>;
+  selectedPrId: string | null;
+  onSelectPr: (prId: string | null) => void;
   onOpenGitHubTab: (prId: string) => void;
+  integrationRefreshNonce?: number;
 };
 
 type QueueGroupSummary = {
@@ -518,7 +522,15 @@ function IntegrationWorkflowsTab({
   );
 }
 
-export function WorkflowsTab({ activeCategory, onChangeCategory, onRefreshAll, onOpenGitHubTab }: WorkflowsTabProps) {
+export function WorkflowsTab({
+  activeCategory,
+  onChangeCategory,
+  onRefreshAll,
+  selectedPrId,
+  onSelectPr,
+  onOpenGitHubTab,
+  integrationRefreshNonce = 0,
+}: WorkflowsTabProps) {
   const {
     prs,
     lanes,
@@ -649,15 +661,28 @@ export function WorkflowsTab({ activeCategory, onChangeCategory, onRefreshAll, o
 
       <div style={{ flex: 1, minHeight: 0 }}>
         {activeCategory === "integration" ? (
-          <IntegrationWorkflowsTab
-            workflows={integrationByView[view]}
-            lanes={lanes}
-            prs={prs}
-            view={view}
-            busy={loading}
-            onRefresh={refreshWorkflows}
-            onOpenGitHubTab={onOpenGitHubTab}
-          />
+          view === "active" ? (
+            <IntegrationTab
+              prs={prs}
+              lanes={lanes}
+              mergeContextByPrId={mergeContextByPrId}
+              mergeMethod={mergeMethod}
+              selectedPrId={selectedPrId}
+              onSelectPr={onSelectPr}
+              onRefresh={refreshWorkflows}
+              refreshNonce={integrationRefreshNonce}
+            />
+          ) : (
+            <IntegrationWorkflowsTab
+              workflows={integrationByView.history}
+              lanes={lanes}
+              prs={prs}
+              view={view}
+              busy={loading}
+              onRefresh={refreshWorkflows}
+              onOpenGitHubTab={onOpenGitHubTab}
+            />
+          )
         ) : null}
 
         {activeCategory === "queue" ? (

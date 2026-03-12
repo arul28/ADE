@@ -8,6 +8,7 @@ import type { CtoCapabilityMode } from "./cto";
 export type AgentChatProvider = "codex" | "claude" | "unified" | (string & {});
 
 export type AgentChatSessionStatus = "active" | "idle" | "ended";
+export type AgentChatSessionProfile = "light" | "workflow";
 
 export type ChatSurfaceMode = "standard" | "resolver" | "mission-thread" | "mission-feed";
 
@@ -202,6 +203,7 @@ export type AgentChatSession = {
   provider: AgentChatProvider;
   model: string;
   modelId?: ModelId;
+  sessionProfile?: AgentChatSessionProfile;
   reasoningEffort?: string | null;
   executionMode?: AgentChatExecutionMode | null;
   permissionMode?: AgentChatPermissionMode;
@@ -219,6 +221,7 @@ export type AgentChatSessionSummary = {
   provider: AgentChatProvider;
   model: string;
   modelId?: ModelId;
+  sessionProfile?: AgentChatSessionProfile;
   title?: string | null;
   goal?: string | null;
   reasoningEffort?: string | null;
@@ -255,6 +258,7 @@ export type AgentChatCreateArgs = {
   provider: AgentChatProvider;
   model: string;
   modelId?: ModelId;
+  sessionProfile?: AgentChatSessionProfile;
   reasoningEffort?: string | null;
   permissionMode?: AgentChatPermissionMode;
   identityKey?: AgentChatIdentityKey;

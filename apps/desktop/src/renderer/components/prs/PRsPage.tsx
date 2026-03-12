@@ -28,6 +28,7 @@ function PRsPageInner() {
 
   const [createPrOpen, setCreatePrOpen] = React.useState(false);
   const [lastWorkflowTab, setLastWorkflowTab] = React.useState<WorkflowCategory>("integration");
+  const [integrationRefreshNonce, setIntegrationRefreshNonce] = React.useState(0);
 
   React.useEffect(() => {
     if (activeTab !== "normal") {
@@ -40,6 +41,7 @@ function PRsPageInner() {
       refresh(),
       refreshLanes().catch(() => {}),
     ]);
+    setIntegrationRefreshNonce((prev) => prev + 1);
   }, [refresh, refreshLanes]);
 
   React.useEffect(() => {
@@ -194,10 +196,13 @@ function PRsPageInner() {
             activeCategory={activeTab === "normal" ? lastWorkflowTab : activeTab}
             onChangeCategory={(category) => setActiveTab(category)}
             onRefreshAll={handleRefresh}
+            selectedPrId={selectedPrId}
+            onSelectPr={setSelectedPrId}
             onOpenGitHubTab={(prId) => {
               setSelectedPrId(prId);
               setActiveTab("normal");
             }}
+            integrationRefreshNonce={integrationRefreshNonce}
           />
         )}
       </div>

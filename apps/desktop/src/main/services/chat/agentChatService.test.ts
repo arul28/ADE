@@ -757,6 +757,76 @@ describe("agentChatService", () => {
       await fixture.service.disposeAll();
     });
 
+    it("emits an immediate thinking activity when a reasoning-capable codex turn starts", async () => {
+      const fixture = createFixture("codex");
+      const codex = createMockCodexProcess();
+      spawnMock.mockReturnValue(codex.proc as any);
+
+      codex.onRequest("initialize", (msg) => codex.respond(msg.id!, {}));
+      codex.onRequest("thread/start", (msg) => codex.respond(msg.id!, { thread: { id: "thread-1" } }));
+      codex.onRequest("turn/start", (msg) => {
+        codex.respond(msg.id!, { turn: { id: "turn-started" } });
+        codex.notify("turn/completed", {
+          turn: {
+            id: "turn-started",
+            status: "completed",
+          }
+        });
+      });
+      codex.onRequest("turn/interrupt", (msg) => codex.respond(msg.id!, {}));
+
+      const session = await fixture.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.3-codex" });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "test" });
+
+      const thinkingEvents = fixture.emitted.filter(
+        (entry) => entry.event.type === "activity" && entry.event.activity === "thinking",
+      );
+
+      expect(thinkingEvents).toHaveLength(1);
+      expect(thinkingEvents[0]?.event.type).toBe("activity");
+      if (thinkingEvents[0]?.event.type === "activity") {
+        expect(thinkingEvents[0].event.detail).toBe("Thinking through the answer");
+      }
+
+      await fixture.service.disposeAll();
+    });
+
+    it("includes codex usage metadata when the app-server provides it", async () => {
+      const fixture = createFixture("codex");
+      const codex = createMockCodexProcess();
+      spawnMock.mockReturnValue(codex.proc as any);
+
+      codex.onRequest("initialize", (msg) => codex.respond(msg.id!, {}));
+      codex.onRequest("thread/start", (msg) => codex.respond(msg.id!, { thread: { id: "thread-1" } }));
+      codex.onRequest("turn/start", (msg) => {
+        codex.respond(msg.id!, { turn: { id: "turn-usage" } });
+        codex.notify("turn/completed", {
+          turn: {
+            id: "turn-usage",
+            status: "completed",
+            usage: {
+              inputTokens: 21,
+              outputTokens: 8,
+            },
+          }
+        });
+      });
+      codex.onRequest("turn/interrupt", (msg) => codex.respond(msg.id!, {}));
+
+      const session = await fixture.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.3-codex" });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "test" });
+
+      const done = fixture.emitted.find(
+        (entry) => entry.event.type === "done" && entry.event.turnId === "turn-usage",
+      );
+      expect(done?.event.type).toBe("done");
+      if (done?.event.type === "done") {
+        expect(done.event.usage).toEqual({ inputTokens: 21, outputTokens: 8 });
+      }
+
+      await fixture.service.disposeAll();
+    });
+
     it("keeps codex reasoning collapsed when the runtime rotates reasoning item ids inside one turn", async () => {
       const fixture = createFixture("codex");
       const codex = createMockCodexProcess();
@@ -1668,6 +1738,34 @@ describe("agentChatService", () => {
       await fixture.service.disposeAll();
     });
 
+    it("uses lightweight Claude runtime settings for generic chats", async () => {
+      const fixture = createFixture("claude");
+
+      streamTextMock.mockImplementationOnce(() => ({
+        fullStream: makeFullStream([
+          { type: "text-delta", text: "hello" },
+          { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } }
+        ])
+      }) as any);
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "haiku",
+        modelId: "anthropic/claude-haiku-4-5",
+        sessionProfile: "light",
+      });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "test" });
+
+      const callArg = streamTextMock.mock.calls[0]?.[0] as any;
+      const modelOpts = callArg.model?.__options;
+      expect(modelOpts?.systemPrompt).toBeUndefined();
+      expect(modelOpts?.settingSources).toBeUndefined();
+      expect(modelOpts?.mcpServers).toBeUndefined();
+
+      await fixture.service.disposeAll();
+    });
+
     it("omits Claude thinking settings for non-reasoning models and emits working activity instead of reasoning", async () => {
       const fixture = createFixture("claude");
 
@@ -1701,6 +1799,34 @@ describe("agentChatService", () => {
   });
 
   describe("Unified prompt shaping", () => {
+    it("skips the coding harness and tool schema for lightweight generic chats", async () => {
+      const fixture = createFixture("unified");
+      const resolveModelSpy = vi.spyOn(providerResolver, "resolveModel").mockResolvedValue({ id: "mock-model" } as any);
+
+      streamTextMock.mockImplementationOnce(() => ({
+        fullStream: makeFullStream([
+          { type: "text-delta", text: "hello" },
+          { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } }
+        ])
+      }) as any);
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "openai/gpt-5.4",
+        modelId: "openai/gpt-5.4",
+        sessionProfile: "light",
+      });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "test" });
+
+      const callArg = streamTextMock.mock.calls[0]?.[0] as any;
+      expect(callArg.system).toBeUndefined();
+      expect(callArg.tools).toBeUndefined();
+
+      resolveModelSpy.mockRestore();
+      await fixture.service.disposeAll();
+    });
+
     it("keeps memory tools available without auto-injecting a project memory dump", async () => {
       const fixture = createFixture("unified");
       const resolveModelSpy = vi.spyOn(providerResolver, "resolveModel").mockResolvedValue({ id: "mock-model" } as any);

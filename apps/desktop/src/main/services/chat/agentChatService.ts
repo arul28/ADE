@@ -94,6 +94,7 @@ type PersistedChatState = {
   provider: AgentChatProvider;
   model: string;
   modelId?: string;
+  sessionProfile?: "light" | "workflow";
   reasoningEffort?: string | null;
   executionMode?: AgentChatExecutionMode | null;
   permissionMode?: AgentChatSession["permissionMode"];
@@ -126,6 +127,7 @@ type CodexRuntime = {
   pending: Map<string, PendingRpc>;
   approvals: Map<string, PendingCodexApproval>;
   activeTurnId: string | null;
+  startedTurnId: string | null;
   threadResumed: boolean;
   commandOutputByItemId: Map<string, string>;
   fileDeltaByItemId: Map<string, string>;
@@ -339,6 +341,35 @@ function resolveSessionModelDescriptor(session: AgentChatSession): ModelDescript
   }
 
   return getModelById(session.model) ?? resolveModelAlias(session.model) ?? null;
+}
+
+function sessionSupportsReasoning(session: AgentChatSession): boolean {
+  return resolveSessionModelDescriptor(session)?.capabilities.reasoning ?? true;
+}
+
+function normalizeUsagePayload(
+  value: unknown
+): { inputTokens?: number | null; outputTokens?: number | null } | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const payload = value as {
+    inputTokens?: unknown;
+    outputTokens?: unknown;
+    promptTokens?: unknown;
+    completionTokens?: unknown;
+  };
+  const inputTokens = typeof payload.inputTokens === "number"
+    ? payload.inputTokens
+    : typeof payload.promptTokens === "number"
+      ? payload.promptTokens
+      : null;
+  const outputTokens = typeof payload.outputTokens === "number"
+    ? payload.outputTokens
+    : typeof payload.completionTokens === "number"
+      ? payload.completionTokens
+      : null;
+
+  if (inputTokens == null && outputTokens == null) return undefined;
+  return { inputTokens, outputTokens };
 }
 
 const KNOWN_CODEX_EFFORTS = new Set(CODEX_REASONING_EFFORTS.map((e) => e.effort));
@@ -772,8 +803,18 @@ function normalizeCapabilityMode(value: unknown): CtoCapabilityMode | undefined 
   return undefined;
 }
 
+function normalizeSessionProfile(value: unknown): "light" | "workflow" | undefined {
+  if (value === "light" || value === "workflow") return value;
+  if (value === "agent") return "workflow";
+  return undefined;
+}
+
 function inferCapabilityMode(provider: AgentChatProvider): CtoCapabilityMode {
   return provider === "codex" || provider === "claude" ? "full_mcp" : "fallback";
+}
+
+function isLightweightSession(session: Pick<AgentChatSession, "sessionProfile">): boolean {
+  return session.sessionProfile === "light";
 }
 
 let _mcpRuntimeRootCache: string | null = null;
@@ -1146,6 +1187,7 @@ export function createAgentChatService(args: {
       provider: managed.session.provider,
       model: managed.session.model,
       ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+      ...(managed.session.sessionProfile ? { sessionProfile: managed.session.sessionProfile } : {}),
       ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
       ...(managed.session.executionMode ? { executionMode: managed.session.executionMode } : {}),
       ...(managed.session.permissionMode ? { permissionMode: managed.session.permissionMode } : {}),
@@ -1185,6 +1227,7 @@ export function createAgentChatService(args: {
       const modelId = typeof record.modelId === "string" && record.modelId.trim().length
         ? (getModelById(record.modelId.trim()) ? record.modelId.trim() : undefined)
         : resolveModelIdFromStoredValue(model, provider);
+      const sessionProfile = normalizeSessionProfile(record.sessionProfile);
       const reasoningEffort = normalizeReasoningEffort(record.reasoningEffort);
       const executionMode = normalizePersistedExecutionMode(record.executionMode);
       const permissionMode = normalizePersistedPermissionMode(record.permissionMode);
@@ -1207,6 +1250,7 @@ export function createAgentChatService(args: {
         provider,
         model,
         ...(modelId ? { modelId } : {}),
+        ...(sessionProfile ? { sessionProfile } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(executionMode ? { executionMode } : {}),
         ...(permissionMode ? { permissionMode } : {}),
@@ -1642,6 +1686,7 @@ export function createAgentChatService(args: {
         provider,
         model,
         ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
+        ...(persisted?.sessionProfile ? { sessionProfile: persisted.sessionProfile } : {}),
         reasoningEffort: persisted?.reasoningEffort ?? null,
         executionMode: persisted?.executionMode ?? null,
         ...(persisted?.permissionMode ? { permissionMode: persisted.permissionMode } : {}),
@@ -1739,6 +1784,22 @@ export function createAgentChatService(args: {
     const turnId = typeof result?.turn?.id === "string" ? result.turn.id : null;
     if (turnId) {
       managed.runtime.activeTurnId = turnId;
+      if (managed.runtime.startedTurnId !== turnId) {
+        const reasoningActivity = sessionSupportsReasoning(managed.session)
+          ? { activity: "thinking" as const, detail: REASONING_ACTIVITY_DETAIL }
+          : { activity: "working" as const, detail: WORKING_ACTIVITY_DETAIL };
+        managed.runtime.startedTurnId = turnId;
+        emitChatEvent(managed, {
+          type: "status",
+          turnStatus: "started",
+          turnId,
+        });
+        emitChatEvent(managed, {
+          type: "activity",
+          ...reasoningActivity,
+          turnId,
+        });
+      }
     }
     persistChatState(managed);
   };
@@ -1891,116 +1952,120 @@ export function createAgentChatService(args: {
 
       if (isUnified) {
         const unifiedRt = runtime as UnifiedRuntime;
-
-        const tools = createUniversalToolSet(managed.laneWorktreePath, {
-          permissionMode: unifiedRt.permissionMode,
-          ...(memoryService && projectId ? { memoryService, projectId } : {}),
-          agentScopeOwnerId: managed.session.identityKey ?? managed.session.id,
-          ...(() => {
-            if (managed.session.identityKey === "cto" && ctoStateService) {
-              return {
-                onMemoryUpdateCore: (patch: any) => {
-                  const snapshot = ctoStateService.updateCoreMemory(patch);
+        const lightweight = isLightweightSession(managed.session);
+        const tools = lightweight
+          ? {}
+          : createUniversalToolSet(managed.laneWorktreePath, {
+              permissionMode: unifiedRt.permissionMode,
+              ...(memoryService && projectId ? { memoryService, projectId } : {}),
+              agentScopeOwnerId: managed.session.identityKey ?? managed.session.id,
+              ...(() => {
+                if (managed.session.identityKey === "cto" && ctoStateService) {
                   return {
-                    version: snapshot.coreMemory.version,
-                    updatedAt: snapshot.coreMemory.updatedAt
+                    onMemoryUpdateCore: (patch: any) => {
+                      const snapshot = ctoStateService.updateCoreMemory(patch);
+                      return {
+                        version: snapshot.coreMemory.version,
+                        updatedAt: snapshot.coreMemory.updatedAt
+                      };
+                    }
                   };
                 }
-              };
-            }
-            const workerAgentId = resolveWorkerIdentityAgentId(managed.session.identityKey);
-            if (workerAgentId && workerAgentService) {
-              return {
-                onMemoryUpdateCore: (patch: any) => {
-                  const snapshot = workerAgentService.updateCoreMemory(workerAgentId, patch);
+                const workerAgentId = resolveWorkerIdentityAgentId(managed.session.identityKey);
+                if (workerAgentId && workerAgentService) {
                   return {
-                    version: snapshot.version,
-                    updatedAt: snapshot.updatedAt
+                    onMemoryUpdateCore: (patch: any) => {
+                      const snapshot = workerAgentService.updateCoreMemory(workerAgentId, patch);
+                      return {
+                        version: snapshot.version,
+                        updatedAt: snapshot.updatedAt
+                      };
+                    }
                   };
                 }
-              };
-            }
-            return {};
-          })(),
-          onApprovalRequest: async ({ category, description, detail }) => {
-            if (unifiedRt.approvalOverrides.has(category)) {
-              return {
-                approved: true,
-                decision: "accept_for_session",
-                reason: "Already approved for this session.",
-              };
-            }
+                return {};
+              })(),
+              onApprovalRequest: async ({ category, description, detail }) => {
+                if (unifiedRt.approvalOverrides.has(category)) {
+                  return {
+                    approved: true,
+                    decision: "accept_for_session",
+                    reason: "Already approved for this session.",
+                  };
+                }
 
-            const approvalItemId = randomUUID();
-            emitChatEvent(managed, {
-              type: "approval_request",
-              itemId: approvalItemId,
-              kind: category === "bash" ? "command" : "file_change",
-              description,
-              detail,
-              turnId,
+                const approvalItemId = randomUUID();
+                emitChatEvent(managed, {
+                  type: "approval_request",
+                  itemId: approvalItemId,
+                  kind: category === "bash" ? "command" : "file_change",
+                  description,
+                  detail,
+                  turnId,
+                });
+
+                const response = await new Promise<{ decision: AgentChatApprovalDecision; responseText?: string | null }>((resolve) => {
+                  unifiedRt.pendingApprovals.set(approvalItemId, { category, resolve });
+                });
+                unifiedRt.pendingApprovals.delete(approvalItemId);
+
+                if (response.decision === "accept_for_session") {
+                  unifiedRt.approvalOverrides.add(category);
+                }
+
+                const approved = response.decision === "accept" || response.decision === "accept_for_session";
+                const trimmedReason = typeof response.responseText === "string" ? response.responseText.trim() : "";
+                return {
+                  approved,
+                  decision: response.decision,
+                  reason: trimmedReason.length
+                    ? trimmedReason
+                    : approved
+                      ? "User approved the action."
+                      : "User denied the action.",
+                };
+              },
+              onAskUser: async (question) => {
+                const askItemId = randomUUID();
+                emitChatEvent(managed, {
+                  type: "approval_request",
+                  itemId: askItemId,
+                  kind: "tool_call",
+                  description: question,
+                  detail: { tool: "askUser", question, inputType: "text" },
+                  turnId,
+                });
+
+                const response = await new Promise<{ decision: AgentChatApprovalDecision; responseText?: string | null }>((resolve) => {
+                  unifiedRt.pendingApprovals.set(askItemId, { category: "askUser", resolve });
+                });
+                unifiedRt.pendingApprovals.delete(askItemId);
+                const trimmedResponse = typeof response.responseText === "string" ? response.responseText.trim() : "";
+                if (trimmedResponse.length) return trimmedResponse;
+                if (response.decision === "accept") return "yes";
+                if (response.decision === "decline") return "no";
+                return String(response.decision);
+              },
             });
-
-            const response = await new Promise<{ decision: AgentChatApprovalDecision; responseText?: string | null }>((resolve) => {
-              unifiedRt.pendingApprovals.set(approvalItemId, { category, resolve });
-            });
-            unifiedRt.pendingApprovals.delete(approvalItemId);
-
-            if (response.decision === "accept_for_session") {
-              unifiedRt.approvalOverrides.add(category);
-            }
-
-            const approved = response.decision === "accept" || response.decision === "accept_for_session";
-            const trimmedReason = typeof response.responseText === "string" ? response.responseText.trim() : "";
-            return {
-              approved,
-              decision: response.decision,
-              reason: trimmedReason.length
-                ? trimmedReason
-                : approved
-                  ? "User approved the action."
-                  : "User denied the action.",
-            };
-          },
-          onAskUser: async (question) => {
-            const askItemId = randomUUID();
-            emitChatEvent(managed, {
-              type: "approval_request",
-              itemId: askItemId,
-              kind: "tool_call",
-              description: question,
-              detail: { tool: "askUser", question, inputType: "text" },
-              turnId,
-            });
-
-            const response = await new Promise<{ decision: AgentChatApprovalDecision; responseText?: string | null }>((resolve) => {
-              unifiedRt.pendingApprovals.set(askItemId, { category: "askUser", resolve });
-            });
-            unifiedRt.pendingApprovals.delete(askItemId);
-            const trimmedResponse = typeof response.responseText === "string" ? response.responseText.trim() : "";
-            if (trimmedResponse.length) return trimmedResponse;
-            if (response.decision === "accept") return "yes";
-            if (response.decision === "decline") return "no";
-            return String(response.decision);
-          },
-        });
 
         const thinkingLevel = mapReasoningEffortToThinking(managed.session.reasoningEffort);
         const providerOptions = providerResolver.buildProviderOptions(unifiedRt.modelDescriptor, thinkingLevel);
-        const harnessPrompt = buildCodingAgentSystemPrompt({
-          cwd: managed.laneWorktreePath,
-          mode: "chat",
-          permissionMode: unifiedRt.permissionMode,
-          toolNames: Object.keys(tools),
-        });
+        const harnessPrompt = lightweight
+          ? undefined
+          : buildCodingAgentSystemPrompt({
+              cwd: managed.laneWorktreePath,
+              mode: "chat",
+              permissionMode: unifiedRt.permissionMode,
+              toolNames: Object.keys(tools),
+            });
 
         stream = streamText({
           model: unifiedRt.resolvedModel,
-          system: harnessPrompt,
+          ...(harnessPrompt ? { system: harnessPrompt } : {}),
           messages: streamMessages,
-          tools,
+          ...(Object.keys(tools).length ? { tools } : {}),
           providerOptions: providerOptions as any,
-          stopWhen: stepCountIs(20),
+          ...(!lightweight ? { stopWhen: stepCountIs(20) } : {}),
           abortSignal: abortController.signal,
           onError({ error }) {
             logger.warn("agent_chat.unified_stream_error", {
@@ -2052,20 +2117,23 @@ export function createAgentChatService(args: {
           };
         };
 
+        const lightweight = isLightweightSession(managed.session);
         const claudeOpts: Record<string, unknown> = {
           cwd: managed.laneWorktreePath,
           permissionMode: claudePermissionMode,
-          systemPrompt: { type: "preset", preset: "claude_code" },
-          settingSources: ["user", "project", "local"],
           streamingInput: "always",
-          mcpServers: buildAdeMcpServers(
+          maxBudgetUsd: chatConfig.sessionBudgetUsd ?? undefined,
+        };
+        if (!lightweight) {
+          claudeOpts.systemPrompt = { type: "preset", preset: "claude_code" };
+          claudeOpts.settingSources = ["user", "project", "local"];
+          claudeOpts.mcpServers = buildAdeMcpServers(
             "claude",
             managed.session.identityKey === "cto" ? "cto" : "agent",
             resolveWorkerIdentityAgentId(managed.session.identityKey)
-          ),
-          maxBudgetUsd: chatConfig.sessionBudgetUsd ?? undefined,
-          canUseTool
-        };
+          );
+          claudeOpts.canUseTool = canUseTool;
+        }
         if (claudeSupportsReasoning && managed.session.reasoningEffort) {
           const tokens = CLAUDE_EFFORT_TO_TOKENS[managed.session.reasoningEffort];
           if (tokens) {
@@ -2087,10 +2155,9 @@ export function createAgentChatService(args: {
       }
 
       // ── Shared stream processing loop ──
-      const streamModelDescriptor = runtime.kind === "unified"
-        ? runtime.modelDescriptor
-        : resolveSessionModelDescriptor(managed.session);
-      const streamSupportsReasoning = streamModelDescriptor?.capabilities.reasoning ?? true;
+      const streamSupportsReasoning = runtime.kind === "unified"
+        ? runtime.modelDescriptor.capabilities.reasoning
+        : sessionSupportsReasoning(managed.session);
       for await (const part of stream.fullStream as AsyncIterable<any>) {
         if (!part || typeof part !== "object") continue;
 
@@ -2239,18 +2306,7 @@ export function createAgentChatService(args: {
         }
 
         if (part.type === "finish") {
-          const usagePayload = (part.totalUsage ?? part.usage) as
-            | {
-                inputTokens?: number;
-                outputTokens?: number;
-                promptTokens?: number;
-                completionTokens?: number;
-              }
-            | undefined;
-          usage = {
-            inputTokens: usagePayload?.inputTokens ?? usagePayload?.promptTokens ?? null,
-            outputTokens: usagePayload?.outputTokens ?? usagePayload?.completionTokens ?? null,
-          };
+          usage = normalizeUsagePayload(part.totalUsage ?? part.usage);
           continue;
         }
 
@@ -2547,20 +2603,39 @@ export function createAgentChatService(args: {
       const turnId = typeof turn?.id === "string" ? turn.id : null;
       runtime.activeTurnId = turnId;
       managed.session.status = "active";
-      emitChatEvent(managed, {
-        type: "status",
-        turnStatus: "started",
-        ...(turnId ? { turnId } : {})
-      });
+      if (!turnId || runtime.startedTurnId !== turnId) {
+        const reasoningActivity = sessionSupportsReasoning(managed.session)
+          ? { activity: "thinking" as const, detail: REASONING_ACTIVITY_DETAIL }
+          : { activity: "working" as const, detail: WORKING_ACTIVITY_DETAIL };
+        runtime.startedTurnId = turnId;
+        emitChatEvent(managed, {
+          type: "status",
+          turnStatus: "started",
+          ...(turnId ? { turnId } : {})
+        });
+        emitChatEvent(managed, {
+          type: "activity",
+          ...reasoningActivity,
+          ...(turnId ? { turnId } : {})
+        });
+      }
       persistChatState(managed);
       return;
     }
 
     if (method === "turn/completed") {
-      const turn = (params.turn as { id?: unknown; status?: unknown; error?: { message?: unknown; codexErrorInfo?: unknown } | null } | null) ?? null;
+      const turn = (params.turn as {
+        id?: unknown;
+        status?: unknown;
+        usage?: unknown;
+        totalUsage?: unknown;
+        error?: { message?: unknown; codexErrorInfo?: unknown } | null;
+      } | null) ?? null;
       const turnId = typeof turn?.id === "string" ? turn.id : runtime.activeTurnId ?? randomUUID();
       runtime.activeTurnId = null;
+      runtime.startedTurnId = null;
       const status = mapCodexTurnStatus(turn?.status);
+      const usage = normalizeUsagePayload(turn?.usage ?? turn?.totalUsage);
       managed.session.status = "idle";
 
       if (status === "failed" && turn?.error?.message) {
@@ -2587,6 +2662,7 @@ export function createAgentChatService(args: {
         status,
         model: managed.session.model,
         ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        ...(usage ? { usage } : {}),
       });
 
       const endSha = await computeHeadShaBestEffort(managed.session.laneId).catch(() => null);
@@ -2613,12 +2689,6 @@ export function createAgentChatService(args: {
     if (method === "item/reasoning/summaryTextDelta" || method === "item/reasoning/textDelta") {
       const delta = String((params.delta as string | undefined) ?? "");
       if (!delta.length) return;
-      emitChatEvent(managed, {
-        type: "activity",
-        activity: "thinking",
-        detail: REASONING_ACTIVITY_DETAIL,
-        turnId: typeof params.turnId === "string" ? params.turnId : undefined,
-      });
       emitChatEvent(managed, {
         type: "reasoning",
         text: delta,
@@ -2759,6 +2829,7 @@ export function createAgentChatService(args: {
       pending,
       approvals: new Map<string, PendingCodexApproval>(),
       activeTurnId: null,
+      startedTurnId: null,
       threadResumed: false,
       commandOutputByItemId: new Map<string, string>(),
       fileDeltaByItemId: new Map<string, string>(),
@@ -2898,19 +2969,21 @@ export function createAgentChatService(args: {
     sandbox: "read-only" | "workspace-write" | "danger-full-access";
   } | null;
 
-  const resolveCodexThreadParams = (managed: ManagedChatSession): {
-    codexPolicy: CodexPolicy;
-    mcpServers: Record<string, Record<string, unknown>>;
-  } => {
-    const config = resolveChatConfig();
-    const codexPolicy = managed.session.permissionMode
-      ? mapPermissionToCodex(managed.session.permissionMode)
-      : { approvalPolicy: config.codexApprovalPolicy, sandbox: config.codexSandboxMode };
-    const mcpServers = buildAdeMcpServers(
-      "codex",
-      managed.session.identityKey === "cto" ? "cto" : "agent",
-      resolveWorkerIdentityAgentId(managed.session.identityKey)
-    );
+    const resolveCodexThreadParams = (managed: ManagedChatSession): {
+      codexPolicy: CodexPolicy;
+      mcpServers: Record<string, Record<string, unknown>>;
+    } => {
+      const config = resolveChatConfig();
+      const codexPolicy = managed.session.permissionMode
+        ? mapPermissionToCodex(managed.session.permissionMode)
+        : { approvalPolicy: config.codexApprovalPolicy, sandbox: config.codexSandboxMode };
+    const mcpServers = isLightweightSession(managed.session)
+      ? {}
+      : buildAdeMcpServers(
+          "codex",
+          managed.session.identityKey === "cto" ? "cto" : "agent",
+          resolveWorkerIdentityAgentId(managed.session.identityKey)
+        );
     return { codexPolicy, mcpServers };
   };
 
@@ -3111,6 +3184,7 @@ export function createAgentChatService(args: {
     provider,
     model,
     modelId,
+    sessionProfile,
     reasoningEffort,
     permissionMode: requestedPermMode,
     identityKey
@@ -3192,6 +3266,7 @@ export function createAgentChatService(args: {
         provider: effectiveProvider,
         model: normalizedModel,
         ...(resolvedModelId ? { modelId: resolvedModelId } : {}),
+        sessionProfile: sessionProfile ?? "workflow",
         ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
         ...(requestedPermMode ? { permissionMode: requestedPermMode } : {}),
         ...(identityKey ? { identityKey } : {}),

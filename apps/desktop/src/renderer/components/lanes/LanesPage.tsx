@@ -42,6 +42,7 @@ import type {
   GitCommitSummary,
   LaneEnvInitEvent,
   LaneEnvInitProgress,
+  LaneSummary,
   RebaseRun,
   RebaseScope,
   RebaseSuggestion,
@@ -129,6 +130,7 @@ export function LanesPage() {
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [laneActionBusy, setLaneActionBusy] = useState(false);
   const [laneActionError, setLaneActionError] = useState<string | null>(null);
+  const [managedLaneIds, setManagedLaneIds] = useState<string[]>([]);
   const [conflictStatusByLane, setConflictStatusByLane] = useState<Record<string, ConflictStatus>>({});
   const [conflictChipsByLane, setConflictChipsByLane] = useState<Record<string, ConflictChip[]>>({});
   const chipTimersRef = useRef<Map<string, number>>(new Map());
@@ -286,7 +288,16 @@ export function LanesPage() {
   );
 
   const managedLane = selectedLaneId ? lanesById.get(selectedLaneId) ?? null : null;
-  const deletePhrase = managedLane ? `delete ${managedLane.name}` : "";
+  const managedLanes = useMemo(
+    () => managedLaneIds.map((id) => lanesById.get(id)).filter((l): l is LaneSummary => l != null && l.laneType !== "primary"),
+    [managedLaneIds, lanesById],
+  );
+  const isBatchManage = managedLanes.length > 1;
+  const deletePhrase = isBatchManage
+    ? `delete ${managedLanes.length} lanes`
+    : managedLane
+      ? `delete ${managedLane.name}`
+      : "";
   const selectedAttachedLane = managedLane?.laneType === "attached" ? managedLane : null;
   const shouldShowAdoptHint = Boolean(selectedAttachedLane && !adoptHintDismissed);
   const adoptTargetLane = adoptTargetLaneId ? lanesById.get(adoptTargetLaneId) ?? null : null;
@@ -463,14 +474,23 @@ export function LanesPage() {
   }, [refreshIntegrationProposals, lanes.length, project?.rootPath]);
 
   useEffect(() => {
-    const unsubPtyData = window.ade.pty.onData(() => { void refreshAllSessions(); });
-    const unsubPtyExit = window.ade.pty.onExit(() => { void refreshAllSessions(); });
-    const unsubChat = window.ade.agentChat.onEvent(() => { void refreshAllSessions(); });
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleRefresh = () => {
+      if (timer) return; // already scheduled
+      timer = setTimeout(() => {
+        timer = null;
+        void refreshAllSessions();
+      }, 300);
+    };
+    const unsubPtyData = window.ade.pty.onData(scheduleRefresh);
+    const unsubPtyExit = window.ade.pty.onExit(scheduleRefresh);
+    const unsubChat = window.ade.agentChat.onEvent(scheduleRefresh);
     const intervalId = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       void refreshAllSessions();
     }, 5_000);
     return () => {
+      if (timer) clearTimeout(timer);
       try {
         unsubPtyData();
       } catch {
@@ -736,31 +756,64 @@ export function LanesPage() {
     }
   }, [primaryLane, refreshLanes]);
 
-  const archiveManagedLane = async () => {
-    if (!managedLane || managedLane.laneType === "primary") return;
+  const archiveManagedLanes = async () => {
+    const targets = isBatchManage ? managedLanes : managedLane ? [managedLane] : [];
+    const actionable = targets.filter((l) => l.laneType !== "primary");
+    if (actionable.length === 0) return;
     await runLaneAction(async () => {
-      await window.ade.lanes.archive({ laneId: managedLane.id });
+      for (const lane of actionable) {
+        await window.ade.lanes.archive({ laneId: lane.id });
+      }
     });
   };
 
-  const deleteManagedLane = async () => {
-    if (!managedLane || managedLane.laneType === "primary") return;
+  const deleteManagedLanes = async () => {
+    const targets = isBatchManage ? managedLanes : managedLane ? [managedLane] : [];
+    const actionable = targets.filter((l) => l.laneType !== "primary");
+    if (actionable.length === 0) return;
     if (deleteConfirmText.trim().toLowerCase() !== deletePhrase.toLowerCase()) return;
     await runLaneAction(async () => {
-      const args: DeleteLaneArgs = { laneId: managedLane.id, force: deleteForce };
-      if (deleteMode === "worktree") {
-        args.deleteBranch = false;
-      } else {
-        args.deleteBranch = true;
-        if (deleteMode === "remote_branch") {
-          args.deleteRemoteBranch = true;
-          args.remoteName = deleteRemoteName.trim() || "origin";
+      const errors: string[] = [];
+      for (const lane of actionable) {
+        try {
+          const args: DeleteLaneArgs = { laneId: lane.id, force: deleteForce };
+          if (deleteMode === "worktree") {
+            args.deleteBranch = false;
+          } else {
+            args.deleteBranch = true;
+            if (deleteMode === "remote_branch") {
+              args.deleteRemoteBranch = true;
+              args.remoteName = deleteRemoteName.trim() || "origin";
+            }
+          }
+          await window.ade.lanes.delete(args);
+        } catch (err) {
+          errors.push(`${lane.name}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
-      await window.ade.lanes.delete(args);
-      if (selectedLaneId === managedLane.id) selectLane(null);
+      if (errors.length > 0) {
+        throw new Error(errors.join("\n"));
+      }
+      const deletedIds = new Set(actionable.map((l) => l.id));
+      if (deletedIds.has(selectedLaneId ?? "")) selectLane(null);
+      setActiveLaneIds((prev) => prev.filter((id) => !deletedIds.has(id)));
     });
   };
+
+  const openBatchManage = useCallback((laneIds: string[]) => {
+    const manageable = laneIds.filter((id) => {
+      const lane = lanesById.get(id);
+      return lane && lane.laneType !== "primary";
+    });
+    if (manageable.length === 0) return;
+    setManagedLaneIds(manageable);
+    setLaneActionError(null);
+    setDeleteForce(false);
+    setDeleteMode("worktree");
+    setDeleteRemoteName("origin");
+    setDeleteConfirmText("");
+    setManageOpen(true);
+  }, [lanesById]);
 
   const handleLaneSelect = useCallback((laneId: string, args: { extend: boolean }) => {
     const lane = lanesById.get(laneId);
@@ -1045,6 +1098,7 @@ export function LanesPage() {
 
   const openManageDialog = useCallback((laneId: string) => {
     selectLane(laneId);
+    setManagedLaneIds([laneId]);
     setLaneActionError(null);
     setAdoptError(null);
     setDeleteForce(false);
@@ -1409,10 +1463,11 @@ export function LanesPage() {
       </div>
 
       {/* Lane tabs -- horizontal numbered tab bar */}
-      <div className="flex overflow-x-auto" style={{ background: "rgba(255,255,255,0.01)", borderBottom: `1px solid ${COLORS.border}` }}>
+      <div className="flex select-none overflow-x-auto" style={{ background: "rgba(255,255,255,0.01)", borderBottom: `1px solid ${COLORS.border}` }}>
         {filteredLanes.map((lane, index) => {
           const isVisible = visibleLaneIds.includes(lane.id);
           const isSelected = selectedLaneId === lane.id;
+          const isInSplit = isVisible && !isSelected;
           const isPrimary = lane.laneType === "primary";
           const isPinned = pinnedLaneIds.has(lane.id);
           const closable = isVisible && visibleLaneIds.length > 1 && !isPinned;
@@ -1440,8 +1495,17 @@ export function LanesPage() {
                 height: 44,
                 borderLeft: isSelected
                   ? `2px solid ${COLORS.accent}`
-                  : "2px solid transparent",
-                background: isSelected ? COLORS.accentSubtle : "transparent",
+                  : isInSplit
+                    ? `2px solid rgba(167,139,250,0.35)`
+                    : "2px solid transparent",
+                background: isSelected
+                  ? COLORS.accentSubtle
+                  : isInSplit
+                    ? "rgba(167,139,250,0.06)"
+                    : "transparent",
+                borderBottom: isInSplit
+                  ? `1px solid rgba(167,139,250,0.18)`
+                  : "1px solid transparent",
               }}
               onClick={(event) => {
                 handleLaneSelect(lane.id, {
@@ -1453,10 +1517,10 @@ export function LanesPage() {
                 setLaneContextMenu({ laneId: lane.id, x: event.clientX, y: event.clientY });
               }}
               onMouseEnter={(e) => {
-                if (!isSelected) e.currentTarget.style.background = COLORS.hoverBg;
+                if (!isSelected && !isInSplit) e.currentTarget.style.background = COLORS.hoverBg;
               }}
               onMouseLeave={(e) => {
-                if (!isSelected) e.currentTarget.style.background = "transparent";
+                if (!isSelected) e.currentTarget.style.background = isInSplit ? "rgba(167,139,250,0.06)" : "transparent";
               }}
             >
               {/* Tab number */}
@@ -1719,6 +1783,7 @@ export function LanesPage() {
         <LaneContextMenu
           laneContextMenu={laneContextMenu}
           lanesById={lanesById}
+          visibleLaneIds={visibleLaneIds}
           onClose={() => setLaneContextMenu(null)}
           onAdoptAttached={(laneId) => {
             reopenAdoptHint();
@@ -1726,6 +1791,17 @@ export function LanesPage() {
           }}
           onManage={openManageDialog}
           selectLane={selectLane}
+          onRemoveFromSplit={removeSplitLane}
+          onCloseOtherSplits={(keepLaneId) => {
+            const pinned = Array.from(pinnedLaneIds).filter((id) => lanesById.has(id));
+            setActiveLaneIds(mergeUnique([keepLaneId], pinned));
+            selectLane(keepLaneId);
+          }}
+          onSelectAll={() => {
+            const allIds = filteredLanes.map((lane) => lane.id);
+            setActiveLaneIds(allIds);
+          }}
+          onBatchManage={openBatchManage}
         />
       ) : null}
 
@@ -1734,6 +1810,7 @@ export function LanesPage() {
         open={manageOpen}
         onOpenChange={setManageOpen}
         managedLane={managedLane}
+        managedLanes={managedLanes}
         deleteMode={deleteMode}
         setDeleteMode={setDeleteMode}
         deleteRemoteName={deleteRemoteName}
@@ -1750,9 +1827,11 @@ export function LanesPage() {
           reopenAdoptHint();
           requestAdoptAttachedLane(managedLane.id);
         }}
-        onArchive={() => { archiveManagedLane().catch(() => {}); }}
-        onDelete={() => { deleteManagedLane().catch(() => {}); }}
+        onArchive={() => { archiveManagedLanes().catch(() => {}); }}
+        onDelete={() => { deleteManagedLanes().catch(() => {}); }}
       />
+
+
 
       {/* Create Lane dialog */}
       <CreateLaneDialog

@@ -25,13 +25,14 @@ import type {
   ChatSurfaceChipTone,
   ChatSurfaceMode,
 } from "../../../shared/types";
-import { getModelById } from "../../../shared/modelRegistry";
+import { getModelById, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { formatTime } from "../../lib/format";
 import { describeToolIdentifier, replaceInternalToolNames } from "./toolPresentation";
 import { chatChipToneClass } from "./chatSurfaceTheme";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { getToolMeta } from "./chatToolAppearance";
+import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
 
 function formatStructuredValue(value: unknown): string {
   if (typeof value === "string") return value;
@@ -154,6 +155,10 @@ function textJoinSeparator(a: string, b: string): string {
   return "";
 }
 
+function isAbstractActivity(activity: string): boolean {
+  return activity === "thinking" || activity === "working" || activity === "searching" || activity === "reading";
+}
+
 function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnvelope, sequence: number): void {
   const { event } = envelope;
 
@@ -164,6 +169,9 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
   // Activity events are useful for the live streaming indicator, but too noisy
   // to render inline when they carry no useful detail.
   if (event.type === "activity") {
+    if (!isAbstractActivity(event.activity)) {
+      return;
+    }
     const detail = summarizeInlineText(event.detail ?? "", 120);
     if (!detail.length && event.activity === "thinking") {
       return;
@@ -532,11 +540,13 @@ const ACTIVITY_LABELS: Record<string, string> = {
 function ActivityIndicator({ activity, detail }: { activity: string; detail?: string }) {
   const label = ACTIVITY_LABELS[activity] ?? activity;
   const displayText = detail ? `${label}: ${replaceInternalToolNames(detail)}` : `${label}...`;
+  const isThinking = activity === "thinking";
+  const Icon = isThinking ? Brain : SpinnerGap;
 
   return (
     <div className="flex items-center gap-3 rounded-[var(--chat-radius-card)] border border-white/[0.04] bg-white/[0.03] px-4 py-2.5 font-mono text-[11px] text-fg/68 backdrop-blur-xl">
       <div className="flex h-6 w-6 items-center justify-center rounded-full border border-[var(--chat-accent-faint)] bg-[var(--chat-accent-faint)]">
-        <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--chat-accent)]" />
+        <Icon size={12} weight="bold" className={cn("text-[var(--chat-accent)]", isThinking ? "animate-pulse" : "animate-spin")} />
       </div>
       <div className="min-w-0 flex-1">
         <span className="block truncate font-medium">{displayText}</span>
@@ -622,11 +632,45 @@ function resolveModelLabel(modelId?: string, model?: string): string | null {
   return null;
 }
 
+function resolveModelMeta(modelId?: string, model?: string): { label: string | null; family: string | null; cliCommand: string | null } {
+  const descriptor = modelId
+    ? getModelById(modelId) ?? resolveModelDescriptor(modelId)
+    : model
+      ? getModelById(model) ?? resolveModelDescriptor(model)
+      : undefined;
+  return {
+    label: resolveModelLabel(modelId, model),
+    family: descriptor?.family ?? null,
+    cliCommand: descriptor?.cliCommand ?? null,
+  };
+}
+
+function ModelGlyph({
+  modelId,
+  model,
+  size = 12,
+  className,
+}: {
+  modelId?: string;
+  model?: string;
+  size?: number;
+  className?: string;
+}) {
+  const meta = resolveModelMeta(modelId, model);
+  if (meta.family === "anthropic" || meta.cliCommand === "claude") {
+    return <ClaudeLogo size={size} className={className} />;
+  }
+  if (meta.cliCommand === "codex") {
+    return <CodexLogo size={size} className={className} />;
+  }
+  return <Robot size={size} weight="bold" className={className} />;
+}
+
 function renderEvent(
   envelope: RenderEnvelope,
   options?: {
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
-    turnModelLabel?: string | null;
+    turnModel?: { label: string; modelId?: string; model?: string } | null;
     surfaceMode?: ChatSurfaceMode;
   }
 ) {
@@ -667,15 +711,20 @@ function renderEvent(
         <div className={cn(GLASS_CARD_CLASS, "max-w-[94%] px-4 py-3")} style={surfaceInlineCardStyle()}>
           <div className="mb-2 flex items-center gap-2">
             <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-white/8 bg-black/15">
-              <Robot size={11} weight="bold" className="text-[var(--chat-accent)]" />
+              <ModelGlyph
+                size={11}
+                modelId={options?.turnModel?.modelId}
+                model={options?.turnModel?.model ?? options?.turnModel?.label ?? undefined}
+                className="text-[var(--chat-accent)]"
+              />
             </span>
             <span className="font-mono text-[9px] font-bold uppercase tracking-[1.5px] text-[var(--chat-accent)]">Agent</span>
             <span className="ml-auto font-mono text-[9px] text-muted-fg/20">{formatTime(envelope.timestamp)}</span>
           </div>
           <MarkdownBlock markdown={event.text} />
-          {options?.turnModelLabel ? (
+          {options?.turnModel?.label ? (
             <div className="mt-3 border-t border-white/[0.04] pt-2 font-mono text-[9px] uppercase tracking-[1.4px] text-muted-fg/30">
-              {options.turnModelLabel}
+              {options.turnModel.label}
             </div>
           ) : null}
         </div>
@@ -1115,9 +1164,12 @@ function renderEvent(
 
   /* ── Done ── */
   if (event.type === "done") {
-    const modelLabel = resolveModelLabel(event.modelId, event.model);
+    const { label: modelLabel } = resolveModelMeta(event.modelId, event.model);
     const inputTokens = formatTokenCount(event.usage?.inputTokens);
     const outputTokens = formatTokenCount(event.usage?.outputTokens);
+    if (event.status === "completed" && !inputTokens && !outputTokens) {
+      return null;
+    }
     const statusTone = event.status === "completed"
       ? "border-border/12 bg-surface-recessed/55 text-fg/52"
       : event.status === "failed"
@@ -1129,7 +1181,12 @@ function renderEvent(
         <span className="inline-flex items-center gap-1 border border-border/15 bg-surface/50 px-1.5 py-0.5 text-[8px] font-bold tracking-[0.18em] text-fg/55">
           Usage
         </span>
-        {modelLabel ? <span className="text-[9px] text-fg/45">{modelLabel}</span> : null}
+        {modelLabel ? (
+          <span className="inline-flex items-center gap-1.5 text-[9px] text-fg/45">
+            <ModelGlyph modelId={event.modelId} model={event.model} size={10} className="text-fg/55" />
+            <span>{modelLabel}</span>
+          </span>
+        ) : null}
         {inputTokens ? <span className="text-[9px] text-fg/40">In {inputTokens}</span> : null}
         {outputTokens ? <span className="text-[9px] text-fg/40">Out {outputTokens}</span> : null}
         {event.status !== "completed" ? (
@@ -1229,7 +1286,10 @@ function ToolGroupCard({ group }: { group: ToolGroup }) {
 function deriveLatestActivity(events: AgentChatEventEnvelope[]): { activity: string; detail?: string } | null {
   for (let i = events.length - 1; i >= 0; i--) {
     const evt = events[i]!.event;
-    if (evt.type === "activity") return { activity: evt.activity, detail: evt.detail };
+    if (evt.type === "activity") {
+      if (!isAbstractActivity(evt.activity)) continue;
+      return { activity: evt.activity, detail: evt.detail };
+    }
     if (evt.type === "done" || evt.type === "status") return null;
   }
   return null;
@@ -1241,7 +1301,7 @@ type EventRowProps = {
   envelope: RenderEnvelope;
   showTurnDivider: boolean;
   turnDividerLabel: string | null;
-  turnModelLabel: string | null;
+  turnModel: { label: string; modelId?: string; model?: string } | null;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
   surfaceMode?: ChatSurfaceMode;
 };
@@ -1250,7 +1310,7 @@ const EventRow = React.memo(function EventRow({
   envelope,
   showTurnDivider,
   turnDividerLabel,
-  turnModelLabel,
+  turnModel,
   onApproval,
   surfaceMode = "standard",
 }: EventRowProps) {
@@ -1265,7 +1325,7 @@ const EventRow = React.memo(function EventRow({
           <div className="h-px flex-1 bg-[color:color-mix(in_srgb,var(--chat-accent)_20%,transparent)]" />
         </div>
       ) : null}
-      {renderEvent(envelope, { onApproval, turnModelLabel, surfaceMode })}
+      {renderEvent(envelope, { onApproval, turnModel, surfaceMode })}
     </div>
   );
 });
@@ -1353,14 +1413,18 @@ export function AgentChatMessageList({
   const latestActivity = useMemo(() => (showStreamingIndicator ? deriveLatestActivity(events) : null), [events, showStreamingIndicator]);
   const latestRowIsActivity = rows[rows.length - 1]?.event.type === "activity";
 
-  const turnModelLabelMap = useMemo(() => {
-    const map = new Map<string, string>();
+  const turnModelMap = useMemo(() => {
+    const map = new Map<string, { label: string; modelId?: string; model?: string }>();
     for (const envelope of events) {
       const evt = envelope.event;
       if (evt.type !== "done") continue;
       const modelLabel = resolveModelLabel(evt.modelId, evt.model);
       if (!evt.turnId || !modelLabel) continue;
-      map.set(evt.turnId, modelLabel);
+      map.set(evt.turnId, {
+        label: modelLabel,
+        ...(evt.modelId ? { modelId: evt.modelId } : {}),
+        ...(evt.model ? { model: evt.model } : {}),
+      });
     }
     return map;
   }, [events]);
@@ -1507,7 +1571,7 @@ export function AgentChatMessageList({
     const turnDividerLabel = showTurnDivider
       ? formatTime(envelope.timestamp)
       : null;
-    const turnModelLabel = currentTurn ? (turnModelLabelMap.get(currentTurn) ?? null) : null;
+    const turnModel = currentTurn ? (turnModelMap.get(currentTurn) ?? null) : null;
 
     if (virtualized) {
       return (
@@ -1518,7 +1582,7 @@ export function AgentChatMessageList({
           envelope={envelope}
           showTurnDivider={Boolean(showTurnDivider)}
           turnDividerLabel={turnDividerLabel}
-          turnModelLabel={turnModelLabel}
+          turnModel={turnModel}
           onApproval={handleApproval}
           surfaceMode={surfaceMode}
         />
@@ -1531,12 +1595,12 @@ export function AgentChatMessageList({
         envelope={envelope}
         showTurnDivider={Boolean(showTurnDivider)}
         turnDividerLabel={turnDividerLabel}
-        turnModelLabel={turnModelLabel}
+        turnModel={turnModel}
         onApproval={handleApproval}
         surfaceMode={surfaceMode}
       />
     );
-  }, [surfaceMode, rows, turnModelLabelMap, handleApproval, handleMeasure]);
+  }, [surfaceMode, rows, turnModelMap, handleApproval, handleMeasure]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

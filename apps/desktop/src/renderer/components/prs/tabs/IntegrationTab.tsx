@@ -648,6 +648,8 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       }
     } catch (err: unknown) {
       setCommitError(err instanceof Error ? err.message : String(err));
+      await loadProposals();
+      await onRefresh().catch(() => {});
     } finally {
       setCommitBusy(false);
     }
@@ -666,16 +668,36 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     setResimBusy(true);
     setCommitError(null);
     try {
-      await window.ade.prs.deleteProposal({
-        proposalId: p.proposalId,
-        deleteIntegrationLane,
-      });
       const result = await window.ade.prs.simulateIntegration({
         sourceLaneIds: p.sourceLaneIds,
         baseBranch: p.baseBranch,
       });
+
+      if (p.title || p.body || p.draft || p.integrationLaneName) {
+        await window.ade.prs.updateProposal({
+          proposalId: result.proposalId,
+          title: p.title,
+          body: p.body,
+          draft: p.draft,
+          integrationLaneName: p.integrationLaneName,
+        });
+      }
+
+      let cleanupWarning: string | null = null;
+      try {
+        await window.ade.prs.deleteProposal({
+          proposalId: p.proposalId,
+          deleteIntegrationLane,
+        });
+      } catch (cleanupError) {
+        cleanupWarning = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+      }
+
       await loadProposals();
       setSelectedProposalId(result.proposalId);
+      if (cleanupWarning) {
+        setCommitError(`Re-simulated successfully, but the previous proposal could not be removed: ${cleanupWarning}`);
+      }
     } catch (err: unknown) {
       setCommitError(err instanceof Error ? err.message : String(err));
     } finally {

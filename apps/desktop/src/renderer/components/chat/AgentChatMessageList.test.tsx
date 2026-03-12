@@ -203,6 +203,23 @@ describe("AgentChatMessageList", () => {
     expect(screen.getByText("Out 13")).toBeTruthy();
   });
 
+  it("suppresses completed usage rows when no usage metadata is available", () => {
+    render(
+      <AgentChatMessageList
+        events={[
+          envelope({
+            type: "done",
+            turnId: "turn-1",
+            status: "completed",
+            modelId: "openai/gpt-5.4-codex",
+          })
+        ]}
+      />
+    );
+
+    expect(screen.queryByText("Usage")).toBeNull();
+  });
+
   it("renders error with red styling", () => {
     const { container } = render(
       <AgentChatMessageList
@@ -413,5 +430,50 @@ describe("AgentChatMessageList", () => {
     expect(screen.getByText("Linear")).toBeTruthy();
     expect(screen.getByText("Get Issue")).toBeTruthy();
     expect(screen.queryByText("mcp__linear__get_issue")).toBeNull();
+  });
+
+  it("does not render duplicate running-command activity rows above command cards", () => {
+    render(
+      <AgentChatMessageList
+        showStreamingIndicator
+        events={[
+          envelope({ type: "activity", activity: "running_command", detail: "npm test", turnId: "turn-1" }),
+          envelope({
+            type: "command",
+            itemId: "cmd-1",
+            command: "npm test",
+            cwd: "/tmp",
+            output: "still running",
+            status: "running",
+            turnId: "turn-1",
+          }, 1),
+        ]}
+      />
+    );
+
+    expect(screen.queryByText("Running command: npm test")).toBeNull();
+    expect(screen.getByText("BASH")).toBeTruthy();
+  });
+
+  it("keeps the streaming indicator focused on abstract work states", () => {
+    render(
+      <AgentChatMessageList
+        showStreamingIndicator
+        events={[
+          envelope({ type: "activity", activity: "working", detail: "Preparing response", turnId: "turn-1" }),
+          envelope({ type: "activity", activity: "tool_calling", detail: "exec_command", turnId: "turn-1" }, 1),
+          envelope({
+            type: "tool_call",
+            tool: "functions.exec_command",
+            args: { cmd: "pwd" },
+            itemId: "tool-1",
+            turnId: "turn-1",
+          }, 2),
+        ]}
+      />
+    );
+
+    expect(screen.getAllByText("Working: Preparing response")).toHaveLength(2);
+    expect(screen.queryByText(/Calling tool:/i)).toBeNull();
   });
 });

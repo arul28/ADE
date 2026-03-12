@@ -842,11 +842,13 @@ export function AgentChatPane({
         ? (desc.family === "openai" ? "codex" : "claude")
         : "unified";
       const model = provider === "unified" ? modelId : (desc?.shortId ?? modelId);
+      const sessionProfile = !lockSessionId && !selectedSessionId ? "light" : "workflow";
       const created = await window.ade.agentChat.create({
         laneId,
         provider,
         model,
         modelId,
+        sessionProfile,
         reasoningEffort,
         permissionMode
       });
@@ -866,7 +868,7 @@ export function AgentChatPane({
         createSessionPromiseRef.current = null;
       }
     }
-  }, [laneId, modelId, onSessionCreated, permissionMode, reasoningEffort, refreshSessions]);
+  }, [laneId, lockSessionId, modelId, onSessionCreated, permissionMode, reasoningEffort, refreshSessions, selectedSessionId]);
 
   const submit = useCallback(async () => {
     if (submitInFlightRef.current || busy) return;
