@@ -7,6 +7,7 @@ import {
   GearSix,
   X,
   Circle,
+  Funnel,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
@@ -15,6 +16,7 @@ import type { ViewMode, TimeRange } from "./timelineTypes";
 import type { EventCategory } from "./eventTaxonomy";
 import { CATEGORY_META } from "./eventTaxonomy";
 import { useTimelineStore } from "./useTimelineStore";
+import type { ScopeLevel } from "./useTimelineStore";
 
 /* ── Constants ──────────────────────────────────────────────── */
 
@@ -43,6 +45,13 @@ const STATUS_OPTIONS: {
   { value: "canceled", label: "Canceled", color: "#6B7280" },
 ];
 
+const SCOPE_OPTIONS: { value: ScopeLevel; label: string; tip: string }[] = [
+  { value: "important", label: "Key",      tip: "Only high-impact events" },
+  { value: "standard",  label: "Standard", tip: "High + medium events (default)" },
+  { value: "detailed",  label: "Detailed", tip: "All except internal noise" },
+  { value: "all",       label: "All",      tip: "Everything including tool calls" },
+];
+
 /* ── Component ──────────────────────────────────────────────── */
 
 export function TimelineToolbar() {
@@ -53,6 +62,8 @@ export function TimelineToolbar() {
   const uniqueLanes = useTimelineStore((s) => s.uniqueLanes);
   const uniqueCategories = useTimelineStore((s) => s.uniqueCategories);
   const visibility = useTimelineStore((s) => s.visibility);
+  const scope = useTimelineStore((s) => s.scope);
+  const setScope = useTimelineStore((s) => s.setScope);
   const setSearchQuery = useTimelineStore((s) => s.setSearchQuery);
   const setCategoryFilter = useTimelineStore((s) => s.setCategoryFilter);
   const setStatusFilter = useTimelineStore((s) => s.setStatusFilter);
@@ -96,14 +107,15 @@ export function TimelineToolbar() {
     filters.statuses.length > 0 ||
     filters.laneIds.length > 0 ||
     filters.searchQuery.length > 0 ||
-    filters.timeRange !== "all";
+    filters.timeRange !== "all" ||
+    scope !== "standard";
 
   const hasSolo = visibility.soloedLaneIds.size > 0;
 
   /* ── Render ────────────────────────────────────────────────── */
   return (
-    <div className="flex flex-col gap-2 border-b border-border/20 bg-surface-recessed/50 px-3 py-2">
-      {/* ── Row 1: View mode · Search · Gear ───────────────── */}
+    <div className="flex flex-col gap-2 border-b border-border/20 bg-[var(--color-surface-recessed)] px-3 py-2">
+      {/* ── Row 1: View mode · Scope · Search · Gear ─────────── */}
       <div className="flex items-center gap-3">
         {/* View mode toggle */}
         <div className="flex items-center gap-0.5">
@@ -116,11 +128,35 @@ export function TimelineToolbar() {
                 "flex h-7 w-7 items-center justify-center border transition-colors",
                 "rounded-none font-mono text-[10px]",
                 viewMode === mode
-                  ? "border-accent/20 bg-accent/15 text-accent"
-                  : "border-transparent text-muted-fg hover:bg-surface-raised/60 hover:text-fg",
+                  ? "border-[var(--color-accent)]/20 bg-[var(--color-accent)]/15 text-[var(--color-accent)]"
+                  : "border-transparent text-[var(--color-muted-fg)] hover:bg-[var(--color-surface)]/60 hover:text-[var(--color-fg)]",
               )}
             >
               <Icon size={14} weight={viewMode === mode ? "fill" : "regular"} />
+            </button>
+          ))}
+        </div>
+
+        {/* Separator */}
+        <div className="h-4 w-px bg-border/15" />
+
+        {/* Scope selector */}
+        <div className="flex items-center gap-0.5">
+          <Funnel size={12} weight="bold" className="mr-1 text-[var(--color-muted-fg)]/50" />
+          {SCOPE_OPTIONS.map(({ value, label, tip }) => (
+            <button
+              key={value}
+              title={tip}
+              onClick={() => setScope(value)}
+              className={cn(
+                "flex h-6 items-center px-2 border transition-colors",
+                "rounded-none font-mono text-[10px] font-bold uppercase tracking-[0.5px]",
+                scope === value
+                  ? "border-[var(--color-accent)]/20 bg-[var(--color-accent)]/15 text-[var(--color-accent)]"
+                  : "border-transparent text-[var(--color-muted-fg)]/50 hover:text-[var(--color-muted-fg)]",
+              )}
+            >
+              {label}
             </button>
           ))}
         </div>
@@ -132,7 +168,7 @@ export function TimelineToolbar() {
         <div className="relative flex-1">
           <MagnifyingGlass
             size={12}
-            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-fg/50"
+            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--color-muted-fg)]/50"
           />
           <input
             type="text"
@@ -140,9 +176,9 @@ export function TimelineToolbar() {
             value={filters.searchQuery}
             onChange={handleSearch}
             className={cn(
-              "h-8 w-full rounded-none border border-border/15 bg-surface-recessed",
-              "pl-7 pr-3 font-mono text-xs text-fg",
-              "placeholder:text-muted-fg/50 focus:border-accent/40 focus:outline-none",
+              "h-8 w-full rounded-none border border-[var(--color-border)]/15 bg-[var(--color-surface-recessed)]",
+              "pl-7 pr-3 font-mono text-xs text-[var(--color-fg)]",
+              "placeholder:text-[var(--color-muted-fg)]/50 focus:border-[var(--color-accent)]/40 focus:outline-none",
             )}
           />
         </div>
@@ -153,7 +189,7 @@ export function TimelineToolbar() {
           onClick={() => toggleColumn("")}
           className={cn(
             "flex h-7 w-7 items-center justify-center rounded-none border border-transparent",
-            "text-muted-fg transition-colors hover:bg-surface-raised/60 hover:text-fg",
+            "text-[var(--color-muted-fg)] transition-colors hover:bg-[var(--color-surface)]/60 hover:text-[var(--color-fg)]",
           )}
         >
           <GearSix size={14} />

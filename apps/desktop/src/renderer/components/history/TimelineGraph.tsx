@@ -46,7 +46,7 @@ export function TimelineGraph({
 
   if (events.length === 0) {
     return (
-      <div className="flex-1 flex items-center justify-center text-muted-fg font-mono text-[11px]">
+      <div className="flex-1 flex items-center justify-center text-[var(--color-muted-fg)] font-mono text-[11px]">
         No events match the current filters
       </div>
     );
@@ -60,11 +60,11 @@ export function TimelineGraph({
       {wipNodes.length > 0 && <WIPRow wipNodes={wipNodes} />}
 
       {/* Column Headers */}
-      <div className="flex items-center border-b border-border/15 bg-surface-recessed/30 shrink-0">
+      <div className="flex items-center border-b border-[var(--color-border)]/15 bg-[var(--color-surface-recessed)]/30 shrink-0">
         {/* Graph-area lane indicators */}
         <div className="shrink-0" style={{ width: layout.graphWidth }}>
           <div
-            className="flex items-center h-7"
+            className="flex items-center h-8"
             style={{ paddingLeft: GRAPH_PADDING_LEFT }}
           >
             {layout.tracks.map((track) => (
@@ -77,7 +77,7 @@ export function TimelineGraph({
                 onMouseLeave={() => onHoverLane(null)}
               >
                 <div
-                  className="w-[6px] h-[6px]"
+                  className="w-[8px] h-[8px]"
                   style={{ backgroundColor: track.color }}
                 />
               </div>
@@ -86,17 +86,17 @@ export function TimelineGraph({
         </div>
 
         {/* Summary column labels */}
-        <div className="flex items-center flex-1 h-7 px-2 gap-3">
-          <span className="font-mono text-[9px] font-bold uppercase tracking-[1px] text-muted-fg w-[60px]">
+        <div className="flex items-center flex-1 h-8 px-2 gap-3">
+          <span className="font-mono text-[9px] font-bold uppercase tracking-[1px] text-[var(--color-muted-fg)] w-[60px]">
             Time
           </span>
-          <span className="font-mono text-[9px] font-bold uppercase tracking-[1px] text-muted-fg flex-1">
+          <span className="font-mono text-[9px] font-bold uppercase tracking-[1px] text-[var(--color-muted-fg)] flex-1">
             Event
           </span>
-          <span className="font-mono text-[9px] font-bold uppercase tracking-[1px] text-muted-fg w-[80px]">
+          <span className="font-mono text-[9px] font-bold uppercase tracking-[1px] text-[var(--color-muted-fg)] w-[80px]">
             Lane
           </span>
-          <span className="font-mono text-[9px] font-bold uppercase tracking-[1px] text-muted-fg w-[48px]">
+          <span className="font-mono text-[9px] font-bold uppercase tracking-[1px] text-[var(--color-muted-fg)] w-[48px]">
             Status
           </span>
         </div>
@@ -202,8 +202,8 @@ export function TimelineGraph({
               return (
                 <React.Fragment key={event.id}>
                   {sep && i > 0 && (
-                    <div className="flex items-center h-5 px-2 border-t border-border/10">
-                      <span className="font-mono text-[9px] text-muted-fg/50 uppercase tracking-[1px]">
+                    <div className="flex items-center h-5 px-2 border-t border-[var(--color-border)]/10">
+                      <span className="font-mono text-[9px] text-[var(--color-muted-fg)]/50 uppercase tracking-[1px]">
                         {sep.label}
                       </span>
                     </div>

@@ -14,10 +14,10 @@ type EventNodeProps = {
   onMouseLeave?: () => void;
 };
 
-export function EventNode({ x, y, shape, color, selected, running, size = 6, onClick, onMouseEnter, onMouseLeave }: EventNodeProps) {
-  const fill = selected ? color : `${color}40`;
+export function EventNode({ x, y, shape, color, selected, running, size = 8, onClick, onMouseEnter, onMouseLeave }: EventNodeProps) {
+  const fill = selected ? color : `${color}90`;
   const stroke = color;
-  const strokeWidth = selected ? 2 : 1.5;
+  const strokeWidth = selected ? 2.5 : 2;
   const s = size;
 
   const commonProps = {
@@ -32,7 +32,8 @@ export function EventNode({ x, y, shape, color, selected, running, size = 6, onC
     return (
       <g className="ade-timeline-node-pulse">
         {node}
-        <circle cx={x} cy={y} r={s + 4} fill="none" stroke={color} strokeWidth={1} opacity={0.3} />
+        <circle cx={x} cy={y} r={s + 5} fill="none" stroke={color} strokeWidth={1.5} opacity={0.4} />
+        <circle cx={x} cy={y} r={s + 10} fill="none" stroke={color} strokeWidth={0.5} opacity={0.15} />
       </g>
     );
   };
@@ -124,7 +125,9 @@ export function EventNode({ x, y, shape, color, selected, running, size = 6, onC
   if (selected) {
     return (
       <g>
-        <circle cx={x} cy={y} r={s + 6} fill={`${color}15`} stroke="none" />
+        {/* Outer glow ring */}
+        <circle cx={x} cy={y} r={s + 8} fill={`${color}10`} stroke={`${color}30`} strokeWidth={1} />
+        <circle cx={x} cy={y} r={s + 4} fill={`${color}18`} stroke="none" />
         {wrapRunning(element)}
       </g>
     );

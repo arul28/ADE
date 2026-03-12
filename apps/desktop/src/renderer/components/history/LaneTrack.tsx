@@ -9,17 +9,33 @@ type LaneTrackProps = {
   width?: number;
 };
 
-export function LaneTrack({ x, y1, y2, color, dimmed, width = 1.5 }: LaneTrackProps) {
+export function LaneTrack({ x, y1, y2, color, dimmed, width = 2.5 }: LaneTrackProps) {
   return (
-    <line
-      x1={x}
-      y1={y1}
-      x2={x}
-      y2={y2}
-      stroke={color}
-      strokeWidth={width}
-      opacity={dimmed ? 0.12 : 0.35}
-      strokeLinecap="square"
-    />
+    <g>
+      {/* Glow layer — wider, very transparent for bold ambient color */}
+      {!dimmed && (
+        <line
+          x1={x}
+          y1={y1}
+          x2={x}
+          y2={y2}
+          stroke={color}
+          strokeWidth={8}
+          opacity={0.06}
+          strokeLinecap="square"
+        />
+      )}
+      {/* Main track line */}
+      <line
+        x1={x}
+        y1={y1}
+        x2={x}
+        y2={y2}
+        stroke={color}
+        strokeWidth={width}
+        opacity={dimmed ? 0.08 : 0.55}
+        strokeLinecap="square"
+      />
+    </g>
   );
 }

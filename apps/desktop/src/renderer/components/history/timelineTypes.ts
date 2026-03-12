@@ -1,5 +1,5 @@
 import type { OperationRecord } from "../../../shared/types";
-import type { EventCategory, NodeShape } from "./eventTaxonomy";
+import type { EventCategory, EventImportance, NodeShape } from "./eventTaxonomy";
 
 // ── View Modes ───────────────────────────────────────────────────
 export type ViewMode = "graph" | "list" | "compact";
@@ -20,6 +20,8 @@ export type TimelineEvent = OperationRecord & {
   metadata: Record<string, unknown> | null;
   /** Duration in ms (computed from startedAt/endedAt) */
   durationMs: number | null;
+  /** Event importance level (controls default visibility) */
+  importance: EventImportance;
 };
 
 // ── Lane Track (column in the graph view) ────────────────────────

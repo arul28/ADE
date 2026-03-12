@@ -11,7 +11,7 @@ import type {
 } from "./timelineTypes";
 import { DEFAULT_COLUMNS } from "./timelineTypes";
 import { getEventMeta } from "./eventTaxonomy";
-import type { EventCategory } from "./eventTaxonomy";
+import type { EventCategory, EventImportance } from "./eventTaxonomy";
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -40,11 +40,31 @@ export function enrichEvent(op: OperationRecord): TimelineEvent {
     shape: meta.categoryMeta.shape,
     metadata: parsed,
     durationMs,
+    importance: meta.importance,
   };
 }
 
+/** Minimum importance levels that pass each scope setting. */
+const SCOPE_THRESHOLDS: Record<string, Set<EventImportance>> = {
+  important: new Set(["high"]),
+  standard:  new Set(["high", "medium"]),
+  detailed:  new Set(["high", "medium", "low"]),
+  all:       new Set(["high", "medium", "low", "noise"]),
+};
+
+/** Scope level names for the UI */
+export type ScopeLevel = "important" | "standard" | "detailed" | "all";
+
 /** Check if an event passes the current filters. */
-function passesFilters(event: TimelineEvent, filters: TimelineFilters, visibility: LaneVisibility): boolean {
+function passesFilters(
+  event: TimelineEvent,
+  filters: TimelineFilters,
+  visibility: LaneVisibility,
+  scope: ScopeLevel,
+): boolean {
+  // Scope/importance filter (applied first — most events get filtered here)
+  const allowed = SCOPE_THRESHOLDS[scope];
+  if (!allowed.has(event.importance)) return false;
   // Lane visibility (solo/hide)
   if (visibility.soloedLaneIds.size > 0) {
     if (event.laneId && !visibility.soloedLaneIds.has(event.laneId)) return false;
@@ -105,6 +125,8 @@ type TimelineStore = {
   viewMode: ViewMode;
   selectedEventId: string | null;
   hoveredLaneId: string | null;
+  /** Event scope/detail level (controls importance threshold) */
+  scope: ScopeLevel;
 
   // ── Filters ─────────────────────────────────────────────────
   filters: TimelineFilters;
@@ -121,6 +143,7 @@ type TimelineStore = {
   setViewMode: (mode: ViewMode) => void;
   setSelectedEventId: (id: string | null) => void;
   setHoveredLaneId: (id: string | null) => void;
+  setScope: (scope: ScopeLevel) => void;
 
   // Filter actions
   setLaneFilter: (laneIds: string[]) => void;
@@ -163,9 +186,9 @@ const DEFAULT_VISIBILITY: LaneVisibility = {
 export const useTimelineStore = create<TimelineStore>((set, get) => {
   /** Re-derive filtered events from raw data + current filters. */
   function refilter() {
-    const { rawEvents, filters, visibility } = get();
+    const { rawEvents, filters, visibility, scope } = get();
     const enriched = rawEvents.map(enrichEvent);
-    const filtered = enriched.filter((e) => passesFilters(e, filters, visibility));
+    const filtered = enriched.filter((e) => passesFilters(e, filters, visibility, scope));
 
     // Extract WIP nodes (running operations grouped by lane)
     const runningByLane = new Map<string, OperationRecord[]>();
@@ -210,6 +233,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
     viewMode: "graph",
     selectedEventId: null,
     hoveredLaneId: null,
+    scope: "standard",
     filters: { ...DEFAULT_FILTERS },
     visibility: { ...DEFAULT_VISIBILITY },
     columns: [...DEFAULT_COLUMNS],
@@ -220,6 +244,10 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
     setViewMode: (mode) => set({ viewMode: mode }),
     setSelectedEventId: (id) => set({ selectedEventId: id }),
     setHoveredLaneId: (id) => set({ hoveredLaneId: id }),
+    setScope: (scope) => {
+      set({ scope });
+      refilter();
+    },
 
     // ── Filter actions ──────────────────────────────────────
     setLaneFilter: (laneIds) => {
@@ -243,7 +271,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
       refilter();
     },
     clearFilters: () => {
-      set({ filters: { ...DEFAULT_FILTERS }, visibility: { ...DEFAULT_VISIBILITY } });
+      set({ filters: { ...DEFAULT_FILTERS }, visibility: { ...DEFAULT_VISIBILITY }, scope: "standard" });
       refilter();
     },
 

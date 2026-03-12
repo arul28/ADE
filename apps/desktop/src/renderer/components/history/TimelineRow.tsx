@@ -31,35 +31,36 @@ export function TimelineRow({
       onMouseLeave={onMouseLeave}
       className={cn(
         "flex items-center w-full text-left transition-all group",
-        "h-10 px-2 gap-2",
-        "border-b border-border/5",
-        selected && "bg-accent/8 border-l-2 border-l-accent/40",
-        !selected && "hover:bg-card/40",
-        dimmed && "opacity-40",
+        "h-11 px-2 gap-2",
+        "border-b border-[var(--color-border)]/5",
+        selected && "bg-[var(--color-accent)]/8 border-l-[3px] border-l-[var(--color-accent)]",
+        !selected && "hover:bg-[var(--color-card)]/50",
+        dimmed && "opacity-30",
       )}
     >
-      {/* Lane color indicator */}
+      {/* Lane color indicator — bold bar */}
       <div
-        className="w-[3px] h-5 shrink-0"
+        className="w-[4px] h-6 shrink-0"
         style={{ backgroundColor: laneColor }}
       />
 
       {/* Timestamp */}
-      <span className="font-mono text-[10px] text-muted-fg w-[60px] shrink-0 tabular-nums">
+      <span className="font-mono text-[10px] text-[var(--color-muted-fg)] w-[60px] shrink-0 tabular-nums">
         {relativeWhen(event.startedAt)}
       </span>
 
       {/* Event icon + label */}
-      <div className="flex items-center gap-1.5 min-w-0 flex-1">
+      <div className="flex items-center gap-2 min-w-0 flex-1">
+        {/* Bold category color dot */}
         <div
-          className="w-[6px] h-[6px] shrink-0"
+          className="w-[8px] h-[8px] shrink-0"
           style={{ backgroundColor: event.color, borderRadius: event.shape === "circle" ? "50%" : "0" }}
         />
-        <span className="font-mono text-[11px] text-fg truncate">
+        <span className="font-mono text-[11px] text-[var(--color-fg)] truncate font-medium">
           {event.label}
         </span>
         {event.kind !== event.label && (
-          <span className="font-mono text-[9px] text-muted-fg/50 truncate hidden group-hover:inline">
+          <span className="font-mono text-[9px] text-[var(--color-muted-fg)]/40 truncate hidden group-hover:inline">
             {event.kind}
           </span>
         )}
@@ -67,7 +68,10 @@ export function TimelineRow({
 
       {/* Lane name */}
       {event.laneName && (
-        <span className="font-mono text-[9px] text-muted-fg truncate max-w-[80px] shrink-0">
+        <span
+          className="font-mono text-[9px] truncate max-w-[80px] shrink-0 font-bold"
+          style={{ color: `${laneColor}CC` }}
+        >
           {event.laneName}
         </span>
       )}
@@ -82,7 +86,7 @@ export function TimelineRow({
 
       {/* Duration */}
       {event.durationMs != null && (
-        <span className="font-mono text-[9px] text-muted-fg/60 w-[48px] shrink-0 text-right tabular-nums">
+        <span className="font-mono text-[9px] text-[var(--color-muted-fg)]/60 w-[48px] shrink-0 text-right tabular-nums">
           {formatDurationMs(event.durationMs)}
         </span>
       )}
