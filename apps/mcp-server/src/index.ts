@@ -10,20 +10,39 @@ import { createStdioTransport } from "./transport";
 
 process.env.ADE_STDIO_TRANSPORT ??= "1";
 
-function resolveProjectRoot(): string {
-  const fromEnv = process.env.ADE_PROJECT_ROOT?.trim();
-  if (fromEnv) return path.resolve(fromEnv);
+type RuntimeRoots = {
+  projectRoot: string;
+  workspaceRoot: string;
+};
 
+function resolveCliArg(flag: string): string | null {
   const args = process.argv.slice(2);
   for (let i = 0; i < args.length; i += 1) {
     const value = args[i];
-    if (value === "--project-root") {
-      const next = args[i + 1];
-      if (next?.trim()) return path.resolve(next.trim());
-    }
+    if (value !== flag) continue;
+    const next = args[i + 1];
+    if (next?.trim()) return path.resolve(next.trim());
   }
+  return null;
+}
 
-  return process.cwd();
+function resolveRuntimeRoots(): RuntimeRoots {
+  const projectRoot = (() => {
+    const fromEnv = process.env.ADE_PROJECT_ROOT?.trim();
+    if (fromEnv) return path.resolve(fromEnv);
+    return resolveCliArg("--project-root") ?? process.cwd();
+  })();
+
+  const workspaceRoot = (() => {
+    const fromEnv = process.env.ADE_WORKSPACE_ROOT?.trim();
+    if (fromEnv) return path.resolve(fromEnv);
+    return resolveCliArg("--workspace-root") ?? projectRoot;
+  })();
+
+  return {
+    projectRoot,
+    workspaceRoot,
+  };
 }
 
 type ProxyIdentity = {
@@ -203,9 +222,9 @@ function relayProxyInputWithIdentity(socket: net.Socket): void {
   });
 }
 
-async function startHeadless(projectRoot: string): Promise<void> {
+async function startHeadless(roots: RuntimeRoots): Promise<void> {
   process.stderr.write("[ade-mcp] Starting in headless mode\n");
-  const runtime = await createAdeMcpRuntime(projectRoot);
+  const runtime = await createAdeMcpRuntime(roots);
   const version = "0.1.0";
   const handler = createMcpRequestHandler({ runtime, serverVersion: version });
   const transport = createStdioTransport();
@@ -222,8 +241,8 @@ async function startHeadless(projectRoot: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const projectRoot = resolveProjectRoot();
-  const socketPath = resolveAdeLayout(projectRoot).socketPath;
+  const roots = resolveRuntimeRoots();
+  const socketPath = resolveAdeLayout(roots.projectRoot).socketPath;
 
   if (fs.existsSync(socketPath)) {
     // Desktop is running — proxy mode: relay stdio <-> socket
@@ -239,7 +258,7 @@ async function main(): Promise<void> {
       }
       // Socket file exists but desktop isn't listening — fall back to headless
       process.stderr.write(`[ade-mcp] Socket connect failed, falling back to headless: ${err.message}\n`);
-      void startHeadless(projectRoot);
+      void startHeadless(roots);
     });
 
     socket.on("connect", () => {
@@ -252,7 +271,7 @@ async function main(): Promise<void> {
     });
   } else {
     // No desktop running — headless mode
-    await startHeadless(projectRoot);
+    await startHeadless(roots);
   }
 }
 

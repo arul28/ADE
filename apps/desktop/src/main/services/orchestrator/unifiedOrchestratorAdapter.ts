@@ -53,6 +53,7 @@ function resolveWorkerOwnerId(metadata: Record<string, unknown> | null | undefin
 }
 
 export function resolveAdeMcpServerLaunch(args: {
+  projectRoot?: string;
   workspaceRoot: string;
   runtimeRoot: string;
   missionId?: string;
@@ -66,6 +67,10 @@ export function resolveAdeMcpServerLaunch(args: {
   cmdArgs: string[];
   env: Record<string, string>;
 } {
+  const canonicalProjectRoot = typeof args.projectRoot === "string" && args.projectRoot.trim().length > 0
+    ? path.resolve(args.projectRoot)
+    : path.resolve(args.workspaceRoot);
+  const workspaceRoot = path.resolve(args.workspaceRoot);
   const mcpServerDir = path.resolve(args.runtimeRoot, "apps", "mcp-server");
   const builtEntry = path.join(mcpServerDir, "dist", "index.cjs");
   const srcEntry = path.join(mcpServerDir, "src", "index.ts");
@@ -75,17 +80,18 @@ export function resolveAdeMcpServerLaunch(args: {
 
   if (fs.existsSync(builtEntry)) {
     command = "node";
-    cmdArgs = [builtEntry, "--project-root", args.workspaceRoot];
+    cmdArgs = [builtEntry, "--project-root", canonicalProjectRoot, "--workspace-root", workspaceRoot];
   } else {
     command = "npx";
-    cmdArgs = ["tsx", srcEntry, "--project-root", args.workspaceRoot];
+    cmdArgs = ["tsx", srcEntry, "--project-root", canonicalProjectRoot, "--workspace-root", workspaceRoot];
   }
 
   return {
     command,
     cmdArgs,
     env: {
-      ADE_PROJECT_ROOT: args.workspaceRoot,
+      ADE_PROJECT_ROOT: canonicalProjectRoot,
+      ADE_WORKSPACE_ROOT: workspaceRoot,
       ADE_MISSION_ID: args.missionId ?? "",
       ADE_RUN_ID: args.runId ?? "",
       ADE_STEP_ID: args.stepId ?? "",
@@ -112,6 +118,7 @@ export function getUnifiedUnsupportedModelReason(modelRef: string): string | nul
  * The config tells Claude CLI to connect to the ADE MCP server via stdio.
  */
 function writeMcpConfigFile(args: {
+  projectRoot: string;
   workspaceRoot: string;
   runtimeRoot: string;
   runId: string;
@@ -120,12 +127,13 @@ function writeMcpConfigFile(args: {
   stepId: string;
   ownerId?: string | null;
 }): string {
-  const configDir = resolveAdeLayout(args.workspaceRoot).mcpConfigsDir;
+  const configDir = resolveAdeLayout(args.projectRoot).mcpConfigsDir;
   fs.mkdirSync(configDir, { recursive: true });
 
   const configPath = path.join(configDir, `worker-${args.attemptId}.json`);
 
   const launch = resolveAdeMcpServerLaunch({
+    projectRoot: args.projectRoot,
     workspaceRoot: args.workspaceRoot,
     runtimeRoot: args.runtimeRoot,
     missionId: args.missionId,
@@ -243,6 +251,7 @@ export function resolveUnifiedRuntimeRoot(): string {
  * `-c key=value` flag overrides individual dotted TOML paths.
  */
 export function buildCodexMcpConfigFlags(args: {
+  projectRoot?: string;
   workspaceRoot: string;
   runtimeRoot: string;
   missionId: string;
@@ -252,6 +261,7 @@ export function buildCodexMcpConfigFlags(args: {
   ownerId?: string | null;
 }): string[] {
   const launch = resolveAdeMcpServerLaunch({
+    projectRoot: args.projectRoot,
     workspaceRoot: args.workspaceRoot,
     runtimeRoot: args.runtimeRoot,
     missionId: args.missionId,
@@ -268,6 +278,7 @@ export function buildCodexMcpConfigFlags(args: {
     "-c", shellEscapeArg(`mcp_servers.ade.command="${launch.command}"`),
     "-c", shellEscapeArg(`mcp_servers.ade.args=${argsToml}`),
     "-c", shellEscapeArg(`mcp_servers.ade.env.ADE_PROJECT_ROOT="${launch.env.ADE_PROJECT_ROOT}"`),
+    "-c", shellEscapeArg(`mcp_servers.ade.env.ADE_WORKSPACE_ROOT="${launch.env.ADE_WORKSPACE_ROOT}"`),
     "-c", shellEscapeArg(`mcp_servers.ade.env.ADE_MISSION_ID="${launch.env.ADE_MISSION_ID}"`),
     "-c", shellEscapeArg(`mcp_servers.ade.env.ADE_RUN_ID="${launch.env.ADE_RUN_ID}"`),
     "-c", shellEscapeArg(`mcp_servers.ade.env.ADE_STEP_ID="${launch.env.ADE_STEP_ID}"`),
@@ -408,6 +419,7 @@ export function forceReadOnlyPermissionConfig(
  * For API-key models, it constructs a direct SDK invocation command.
  */
 export function createUnifiedOrchestratorAdapter(options?: {
+  projectRoot?: string;
   workspaceRoot?: string;
   runtimeRoot?: string;
   agentChatService?: ReturnType<typeof createAgentChatService> | null;
@@ -418,13 +430,17 @@ export function createUnifiedOrchestratorAdapter(options?: {
   const runtimeRoot = typeof options?.runtimeRoot === "string" && options.runtimeRoot.trim().length
     ? options.runtimeRoot.trim()
     : resolveUnifiedRuntimeRoot();
+  const projectRoot = typeof options?.projectRoot === "string" && options.projectRoot.trim().length
+    ? options.projectRoot.trim()
+    : undefined;
   const workspaceRoot = typeof options?.workspaceRoot === "string" && options.workspaceRoot.trim().length
     ? options.workspaceRoot.trim()
-    : runtimeRoot;
+    : (projectRoot ?? runtimeRoot);
+  const canonicalProjectRoot = projectRoot ?? workspaceRoot;
   const externalMcpService = options?.externalMcpService ?? null;
 
   // Clean up stale MCP config files from previous runs
-  cleanupStaleMcpConfigFiles(workspaceRoot);
+  cleanupStaleMcpConfigFiles(canonicalProjectRoot);
 
   const shellAdapter = createBaseOrchestratorAdapter({
     executorKind: "unified",
@@ -450,8 +466,12 @@ export function createUnifiedOrchestratorAdapter(options?: {
         ownerId: resolveWorkerOwnerId(run.metadata),
       });
       const workerOwnerId = resolveWorkerOwnerId(run.metadata);
+      const laneWorkspaceRoot = typeof step.metadata?.laneWorktreePath === "string" && step.metadata.laneWorktreePath.trim().length > 0
+        ? step.metadata.laneWorktreePath.trim()
+        : workspaceRoot;
       const mcpIdentity = {
-        workspaceRoot,
+        projectRoot: canonicalProjectRoot,
+        workspaceRoot: laneWorkspaceRoot,
         runtimeRoot,
         missionId: run.missionId,
         runId: run.id,
@@ -500,7 +520,7 @@ export function createUnifiedOrchestratorAdapter(options?: {
         const mcpConfigPath = writeMcpConfigFile(mcpIdentity);
         const localMcpConfigName = workerLocalMcpConfigFileName(attempt.id);
         const promptFilePath = writeWorkerPromptFile({
-          projectRoot: workspaceRoot,
+          projectRoot: canonicalProjectRoot,
           attemptId: attempt.id,
           prompt,
         });
@@ -552,7 +572,7 @@ export function createUnifiedOrchestratorAdapter(options?: {
         const envParts = [...workerEnv];
         const cmd = parts.join(" ");
         const promptFilePath = writeWorkerPromptFile({
-          projectRoot: workspaceRoot,
+          projectRoot: canonicalProjectRoot,
           attemptId: attempt.id,
           prompt,
         });

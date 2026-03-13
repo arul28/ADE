@@ -2,7 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { createCoordinatorToolSet, type CoordinatorWorkerDeliveryStatus } from "./coordinatorTools";
+import {
+  classifyPlannerLaunchFailure,
+  createCoordinatorToolSet,
+  type CoordinatorWorkerDeliveryStatus,
+} from "./coordinatorTools";
 
 function createTestDeps(args: {
   graph: any;
@@ -138,6 +142,48 @@ describe("coordinator memory tools", () => {
     expect(result.ok).toBe(true);
     expect(result.saved).toBe(true);
     expect(result.id).toBe("memory-2");
+  });
+});
+
+describe("classifyPlannerLaunchFailure", () => {
+  it("classifies run-context failures as unrecoverable run context bugs", () => {
+    expect(classifyPlannerLaunchFailure("Run not found: run-123")).toEqual({
+      category: "run_context_bug",
+      interventionType: "unrecoverable_error",
+      reasonCode: "planner_launch_run_context_bug",
+      retryable: false,
+      recoveryOptions: ["cancel_run"],
+    });
+  });
+
+  it("classifies provider outages as retryable provider failures with fallback option", () => {
+    expect(classifyPlannerLaunchFailure("Model provider timeout while launching planner")).toEqual({
+      category: "provider_unreachable",
+      interventionType: "provider_unreachable",
+      reasonCode: "planner_launch_provider_unreachable",
+      retryable: true,
+      recoveryOptions: ["retry", "switch_to_fallback_model", "cancel_run"],
+    });
+  });
+
+  it("classifies permission denials as policy blocks", () => {
+    expect(classifyPlannerLaunchFailure("This command requires approval")).toEqual({
+      category: "permission_denied",
+      interventionType: "policy_block",
+      reasonCode: "planner_launch_permission_denied",
+      retryable: false,
+      recoveryOptions: ["retry", "cancel_run"],
+    });
+  });
+
+  it("classifies schema and validation issues without retrying", () => {
+    expect(classifyPlannerLaunchFailure("InputValidationError: unexpected command parameter")).toEqual({
+      category: "tool_schema_error",
+      interventionType: "failed_step",
+      reasonCode: "planner_launch_tool_schema_error",
+      retryable: false,
+      recoveryOptions: ["retry", "cancel_run"],
+    });
   });
 });
 

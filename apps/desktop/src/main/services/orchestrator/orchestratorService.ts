@@ -828,7 +828,12 @@ export function createOrchestratorService({
 }) {
   const adapters = new Map<OrchestratorExecutorKind, OrchestratorExecutorAdapter>();
   // Register the unified adapter that handles all model providers
-  adapters.set("unified", createUnifiedOrchestratorAdapter({ workspaceRoot: projectRoot, agentChatService, externalMcpService }));
+  adapters.set("unified", createUnifiedOrchestratorAdapter({
+    projectRoot,
+    workspaceRoot: projectRoot,
+    agentChatService,
+    externalMcpService,
+  }));
   const autopilotRunLocks = new Set<string>();
   const recoveryLoopStates = new Map<string, RecoveryLoopState>();
   const toOptionalNonEmptyString = (value: unknown): string | null => {
