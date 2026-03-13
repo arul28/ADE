@@ -2280,6 +2280,18 @@ export function createOrchestratorService({
     const now = nowIso();
 
     for (const step of steps) {
+      const stepMeta = asRecord(step.metadata);
+      const isDisplayOnlyStep = stepMeta?.displayOnlyTask === true || stepMeta?.plannerLaunchTracker === true;
+      if (isDisplayOnlyStep) {
+        statusesById.set(step.id, "pending");
+        if (step.status !== "pending") {
+          db.run(
+            `update orchestrator_steps set status = ?, updated_at = ? where id = ? and run_id = ? and project_id = ?`,
+            ["pending", now, step.id, runId, projectId],
+          );
+        }
+        continue;
+      }
       if (step.status === "running" || TERMINAL_STEP_STATUSES.has(step.status)) continue;
       const gate = evaluateDependencyGate(step, stepsById);
       const phaseGate = evaluateConfiguredPhaseGate({

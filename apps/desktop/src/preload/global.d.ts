@@ -781,6 +781,8 @@ declare global {
         listContextPacks: (args?: import("../shared/types").ContextPackListArgs) => Promise<import("../shared/types").ContextPackOption[]>;
         fetchContextPack: (args: import("../shared/types").ContextPackFetchArgs) => Promise<import("../shared/types").ContextPackFetchResult>;
         changePermissionMode: (args: import("../shared/types").AgentChatChangePermissionModeArgs) => Promise<void>;
+        slashCommands: (args: import("../shared/types").AgentChatSlashCommandsArgs) => Promise<import("../shared/types").AgentChatSlashCommand[]>;
+        fileSearch: (args: import("../shared/types").AgentChatFileSearchArgs) => Promise<import("../shared/types").AgentChatFileSearchResult[]>;
       };
       computerUse: {
         getSettings: () => Promise<ComputerUseSettingsSnapshot>;

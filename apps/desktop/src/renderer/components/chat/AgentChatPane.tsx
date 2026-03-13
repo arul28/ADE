@@ -10,6 +10,7 @@ import {
   type AgentChatFileRef,
   type AgentChatPermissionMode,
   type ChatSurfaceChip,
+  type ChatSurfaceProfile,
   type ChatSurfacePresentation,
   type AgentChatSessionSummary,
   type ComputerUseOwnerSnapshot,
@@ -30,6 +31,7 @@ import { chatChipToneClass } from "./chatSurfaceTheme";
 import { useChatMcpSummary } from "./useChatMcpSummary";
 import { openExternalMcpSettings } from "./chatNavigation";
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
+import { normalizePermissionModeForProfile } from "../shared/permissionOptions";
 
 type PendingApproval = {
   itemId: string;
@@ -79,31 +81,6 @@ function getExecutionModeOptions(model: ModelDescriptor | null | undefined): Exe
       },
     ];
   }
-  if (model.family === "anthropic") {
-    return [
-      {
-        value: "focused",
-        label: "Focused",
-        summary: "Single thread",
-        helper: "Stay in one Claude Code thread unless specialization would materially help.",
-        accent: "#A78BFA",
-      },
-      {
-        value: "subagents",
-        label: "Subagents",
-        summary: "Use Claude subagents",
-        helper: "Favor subagents for specialized or parallel investigation when the task naturally decomposes.",
-        accent: "#D946EF",
-      },
-      {
-        value: "teams",
-        label: "Teams",
-        summary: "Agent teams",
-        helper: "Prefer configured Claude project, local, or user agent teams when they are available in Claude settings.",
-        accent: "#F97316",
-      },
-    ];
-  }
   return [];
 }
 
@@ -113,13 +90,21 @@ function readRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function extractAskUserQuestion(approval: PendingApproval | null): string | null {
+function extractAskUserQuestion(approval: PendingApproval | null): { question: string; options?: Array<{ label: string; value: string }> } | null {
   if (!approval || approval.kind !== "tool_call") return null;
   const detail = readRecord(approval.detail);
   const tool = typeof detail?.tool === "string" ? detail.tool.trim() : "";
   const question = typeof detail?.question === "string" ? detail.question.trim() : "";
   if (tool !== "askUser" || !question.length) return null;
-  return question;
+  let options: Array<{ label: string; value: string }> | undefined;
+  if (Array.isArray(detail?.options)) {
+    const parsed = (detail.options as unknown[]).filter(
+      (opt): opt is { label: string; value: string } =>
+        opt !== null && typeof opt === "object" && typeof (opt as Record<string, unknown>).label === "string" && typeof (opt as Record<string, unknown>).value === "string",
+    );
+    if (parsed.length > 0) options = parsed;
+  }
+  return { question, options };
 }
 
 function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
@@ -377,6 +362,8 @@ export function AgentChatPane({
   const lockedSingleSessionMode = Boolean(lockSessionId && hideSessionTabs && initialSessionSummary);
   const forceDraft = forceDraftMode || forceNewSession;
   const preferDraftStart = !lockSessionId && !initialSessionId && !forceNewSession;
+  const surfaceProfile: ChatSurfaceProfile = presentation?.profile ?? "standard";
+  const isPersistentIdentitySurface = surfaceProfile === "persistent_identity";
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(lockSessionId ?? initialSessionId ?? null);
   const [eventsBySession, setEventsBySession] = useState<Record<string, AgentChatEventEnvelope[]>>({});
@@ -386,10 +373,13 @@ export function AgentChatPane({
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [executionMode, setExecutionMode] = useState<AgentChatExecutionMode>("focused");
   const [availableModelIds, setAvailableModelIds] = useState<string[]>([]);
-  const [permissionMode, setPermissionMode] = useState<AgentChatPermissionMode>("plan");
+  const [permissionMode, setPermissionMode] = useState<AgentChatPermissionMode>(
+    surfaceProfile === "persistent_identity" ? "full-auto" : "plan",
+  );
   const [computerUsePolicy, setComputerUsePolicy] = useState<ComputerUsePolicy>(createDefaultComputerUsePolicy());
   const [attachments, setAttachments] = useState<AgentChatFileRef[]>([]);
   const [selectedContextPacks, setSelectedContextPacks] = useState<ContextPackOption[]>([]);
+  const [sdkSlashCommands, setSdkSlashCommands] = useState<import("../../../shared/types").AgentChatSlashCommand[]>([]);
   const [sendOnEnter, setSendOnEnter] = useState(true);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -434,20 +424,6 @@ export function AgentChatPane({
   const reasoningTiers = selectedModelDesc?.reasoningTiers ?? [];
   const surfaceMode = presentation?.mode ?? "standard";
 
-  const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
-    if (!session) return;
-    const nextModelId = session.modelId ?? resolveRegistryModelId(session.model);
-    if (nextModelId) {
-      setModelId(nextModelId);
-    }
-    setReasoningEffort(session.reasoningEffort ?? null);
-    setExecutionMode(session.executionMode ?? "focused");
-    if (session.permissionMode) {
-      setPermissionMode(session.permissionMode);
-    }
-    setComputerUsePolicy(session.computerUse ?? createDefaultComputerUsePolicy());
-  }, []);
-
   const modelSelectionDiffersFromSession = Boolean(selectedSession && selectedSessionModelId && selectedSessionModelId !== modelId);
 
   const sessionProvider = useMemo(() => {
@@ -466,6 +442,37 @@ export function AgentChatPane({
     }
     return selectedModelDesc?.isCliWrapped ?? false;
   }, [selectedSessionModelId, modelSelectionDiffersFromSession, selectedModelDesc]);
+  const permissionFamily = useMemo(
+    () => selectedModelDesc?.family
+      ?? (sessionProvider === "claude" ? "anthropic" : sessionProvider === "codex" ? "openai" : "unified"),
+    [selectedModelDesc?.family, sessionProvider],
+  );
+  const permissionIsCliWrapped = useMemo(
+    () => selectedModelDesc?.isCliWrapped ?? sessionIsCliWrapped ?? false,
+    [selectedModelDesc?.isCliWrapped, sessionIsCliWrapped],
+  );
+  const coercePermissionMode = useCallback(
+    (mode?: AgentChatPermissionMode | null): AgentChatPermissionMode =>
+      normalizePermissionModeForProfile({
+        profile: surfaceProfile,
+        family: permissionFamily,
+        isCliWrapped: permissionIsCliWrapped,
+        mode: mode ?? (surfaceProfile === "persistent_identity" ? "full-auto" : "plan"),
+      }),
+    [permissionFamily, permissionIsCliWrapped, surfaceProfile],
+  );
+
+  const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
+    if (!session) return;
+    const nextModelId = session.modelId ?? resolveRegistryModelId(session.model);
+    if (nextModelId) {
+      setModelId(nextModelId);
+    }
+    setReasoningEffort(session.reasoningEffort ?? null);
+    setExecutionMode(session.executionMode ?? "focused");
+    setPermissionMode(coercePermissionMode(session.permissionMode));
+    setComputerUsePolicy(session.computerUse ?? createDefaultComputerUsePolicy());
+  }, [coercePermissionMode]);
   const executionModeOptions = useMemo(
     () => getExecutionModeOptions(selectedModelDesc),
     [selectedModelDesc],
@@ -509,8 +516,9 @@ export function AgentChatPane({
     if (selectedSessionModelId && !ids.includes(selectedSessionModelId)) {
       ids = [selectedSessionModelId, ...ids];
     }
-    // Lock to same family when session has messages
-    if (selectedSessionModelId && selectedEvents.length > 0) {
+    // Generic chat sessions stay within one family after launch. Persistent
+    // identity surfaces keep the same "person" and can swap the active model.
+    if (surfaceProfile !== "persistent_identity" && selectedSessionModelId && selectedEvents.length > 0) {
       const sessionDesc = getModelById(selectedSessionModelId);
       if (sessionDesc) {
         ids = ids.filter((id) => {
@@ -520,7 +528,7 @@ export function AgentChatPane({
       }
     }
     return ids;
-  }, [availableModelIds, availableModelIdsOverride, selectedSessionModelId, selectedEvents.length]);
+  }, [availableModelIds, availableModelIdsOverride, selectedSessionModelId, selectedEvents.length, surfaceProfile]);
 
   const refreshAvailableModels = useCallback(async () => {
     try {
@@ -787,6 +795,15 @@ export function AgentChatPane({
   }, [executionMode, executionModeOptions]);
 
   useEffect(() => {
+    const nextMode = selectedSession
+      ? coercePermissionMode(selectedSession.permissionMode)
+      : coercePermissionMode(undefined);
+    if (nextMode !== permissionMode) {
+      setPermissionMode(nextMode);
+    }
+  }, [coercePermissionMode, permissionMode, selectedSession]);
+
+  useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;
   }, [selectedSessionId]);
 
@@ -815,6 +832,16 @@ export function AgentChatPane({
 
   useEffect(() => {
     setAttachments([]);
+  }, [selectedSessionId]);
+
+  // Fetch SDK slash commands when session changes
+  useEffect(() => {
+    if (!selectedSessionId) { setSdkSlashCommands([]); return; }
+    let cancelled = false;
+    window.ade.agentChat.slashCommands({ sessionId: selectedSessionId })
+      .then((cmds) => { if (!cancelled) setSdkSlashCommands(cmds); })
+      .catch(() => { if (!cancelled) setSdkSlashCommands([]); });
+    return () => { cancelled = true; };
   }, [selectedSessionId]);
 
   const flushQueuedEvents = useCallback(() => {
@@ -882,6 +909,12 @@ export function AgentChatPane({
 
       if (envelope.event.type === "done") {
         scheduleSessionsRefresh();
+        // Refresh slash commands — SDK may have reported them during this turn's init
+        if (envelope.sessionId) {
+          window.ade.agentChat.slashCommands({ sessionId: envelope.sessionId })
+            .then(setSdkSlashCommands)
+            .catch(() => {});
+        }
       }
     });
     return unsubscribe;
@@ -926,6 +959,22 @@ export function AgentChatPane({
     if (!laneId) return [];
     const trimmed = query.trim();
     if (!trimmed.length) return [];
+
+    // Try Codex fuzzy file search if we have an active Codex session
+    if (selectedSessionId && sessionProvider === "codex") {
+      try {
+        const codexHits = await window.ade.agentChat.fileSearch({ sessionId: selectedSessionId, query: trimmed });
+        if (codexHits.length > 0) {
+          return codexHits.map((hit) => ({
+            path: hit.path,
+            type: inferAttachmentType(hit.path),
+          }));
+        }
+      } catch {
+        // Fall through to default search
+      }
+    }
+
     const hits = await window.ade.files.quickOpen({
       workspaceId: laneId,
       query: trimmed,
@@ -935,7 +984,7 @@ export function AgentChatPane({
       path: hit.path,
       type: inferAttachmentType(hit.path)
     }));
-  }, [laneId]);
+  }, [laneId, selectedSessionId, sessionProvider]);
 
   const addAttachment = useCallback((attachment: AgentChatFileRef) => {
     setAttachments((prev) => {
@@ -987,6 +1036,49 @@ export function AgentChatPane({
       }
     }
   }, [computerUsePolicy, laneId, lockSessionId, modelId, onSessionCreated, permissionMode, reasoningEffort, refreshSessions, selectedSessionId]);
+
+  // ── Eager session creation ──
+  // Create a lightweight session as soon as we have a model + lane, so slash
+  // commands, MCP status, and other pre-chat metadata are available immediately.
+  // Skip when the pane is locked to an existing session or in forced-draft mode.
+  const eagerCreateFiredRef = useRef(false);
+  useEffect(() => {
+    if (eagerCreateFiredRef.current) return;
+    if (!preferencesReady || !laneId || !modelId) return;
+    if (selectedSessionId || lockSessionId || initialSessionId) return;
+    if (forceDraft) return;
+    eagerCreateFiredRef.current = true;
+    void createSession();
+  }, [preferencesReady, laneId, modelId, selectedSessionId, lockSessionId, initialSessionId, forceDraft, createSession]);
+
+  // ── Model-switch on empty session ──
+  // When the user changes the model before sending any messages, update the
+  // existing (empty) session in place. If the provider changed (e.g. Claude →
+  // Codex), dispose the stale session and create a fresh one for the new model.
+  // The `userChangedModelRef` flag ensures this only fires on explicit user
+  // model-picker interactions, NOT during boot when the saved model is loaded.
+  const userChangedModelRef = useRef(false);
+  useEffect(() => {
+    if (!userChangedModelRef.current) return;
+    userChangedModelRef.current = false;
+    if (!selectedSessionId || selectedEvents.length > 0 || turnActive) return;
+    void (async () => {
+      try {
+        await window.ade.agentChat.updateSession({ sessionId: selectedSessionId, modelId });
+        await refreshSessions();
+        window.ade.agentChat.slashCommands({ sessionId: selectedSessionId })
+          .then(setSdkSlashCommands)
+          .catch(() => {});
+      } catch {
+        // Provider-incompatible switch — dispose old empty session and create fresh
+        try {
+          await window.ade.agentChat.dispose({ sessionId: selectedSessionId });
+        } catch { /* ignore */ }
+        setSelectedSessionId(null);
+        eagerCreateFiredRef.current = false; // allow eager effect to re-fire
+      }
+    })();
+  }, [modelId, selectedSessionId, selectedEvents.length, turnActive, refreshSessions]);
 
   const submit = useCallback(async () => {
     if (submitInFlightRef.current || busy) return;
@@ -1127,18 +1219,19 @@ export function AgentChatPane({
   }, [approvalsBySession, selectedSessionId]);
 
   const handlePermissionModeChange = useCallback(async (mode: AgentChatPermissionMode) => {
-    setPermissionMode(mode);
+    const nextMode = coercePermissionMode(mode);
+    setPermissionMode(nextMode);
     if (selectedSessionId) {
       try {
         await window.ade.agentChat.changePermissionMode({
           sessionId: selectedSessionId,
-          permissionMode: mode
+          permissionMode: nextMode
         });
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
     }
-  }, [selectedSessionId]);
+  }, [coercePermissionMode, selectedSessionId]);
 
   const handleComputerUsePolicyChange = useCallback(async (nextPolicy: ComputerUsePolicy) => {
     setComputerUsePolicy(nextPolicy);
@@ -1204,12 +1297,14 @@ export function AgentChatPane({
               {mcpChip.label}
             </button>
           ) : null}
-          <span
-            className="inline-flex items-center rounded-[var(--chat-radius-pill)] border px-2.5 py-1 font-mono text-[9px] font-bold uppercase tracking-[0.16em]"
-            style={{ borderColor: "rgba(125, 211, 252, 0.18)", color: "rgba(186, 230, 253, 0.88)", background: "rgba(14, 165, 233, 0.08)" }}
-          >
-            CU {computerUsePolicy.mode}
-          </span>
+          {!isPersistentIdentitySurface ? (
+            <span
+              className="inline-flex items-center rounded-[var(--chat-radius-pill)] border px-2.5 py-1 font-mono text-[9px] font-bold uppercase tracking-[0.16em]"
+              style={{ borderColor: "rgba(125, 211, 252, 0.18)", color: "rgba(186, 230, 253, 0.88)", background: "rgba(14, 165, 233, 0.08)" }}
+            >
+              CU {computerUsePolicy.mode}
+            </span>
+          ) : null}
         </div>
       </div>
 
@@ -1276,6 +1371,8 @@ export function AgentChatPane({
         footer={
           <AgentChatComposer
             surfaceMode={surfaceMode}
+            surfaceProfile={surfaceProfile}
+            sdkSlashCommands={sdkSlashCommands}
             modelId={modelId}
             availableModelIds={effectiveAvailableModelIds}
             reasoningEffort={reasoningEffort}
@@ -1302,6 +1399,7 @@ export function AgentChatPane({
               if (selectedSessionModelId && effectiveAvailableModelIds.length && !effectiveAvailableModelIds.includes(nextModelId)) {
                 return;
               }
+              userChangedModelRef.current = true;
               setModelId(nextModelId);
               const nextDesc = getModelById(nextModelId);
               const tiers = nextDesc?.reasoningTiers ?? [];
@@ -1352,20 +1450,23 @@ export function AgentChatPane({
             </div>
           ) : selectedSessionId ? (
             <div className="flex h-full min-h-0 flex-col overflow-hidden">
-              <div className="border-b border-white/[0.04] p-3">
-                <ChatComputerUsePanel
-                  laneId={laneId}
-                  sessionId={selectedSessionId}
-                  policy={computerUsePolicy}
-                  snapshot={computerUseSnapshot}
-                  onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
-                />
-              </div>
+              {!isPersistentIdentitySurface ? (
+                <div className="border-b border-white/[0.04] p-3">
+                  <ChatComputerUsePanel
+                    laneId={laneId}
+                    sessionId={selectedSessionId}
+                    policy={computerUsePolicy}
+                    snapshot={computerUseSnapshot}
+                    onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
+                  />
+                </div>
+              ) : null}
               <AgentChatMessageList
                 events={selectedEvents}
                 showStreamingIndicator={turnActive}
                 className="min-h-0 border-0"
                 surfaceMode={surfaceMode}
+                surfaceProfile={surfaceProfile}
                 onApproval={(itemId, decision, responseText) => {
                   if (!selectedSessionId) return;
                   window.ade.agentChat.approve({ sessionId: selectedSessionId, itemId, decision, responseText }).then(() => {
@@ -1415,7 +1516,8 @@ export function AgentChatPane({
       </ChatSurfaceShell>
       {pendingQuestion && selectedSessionId ? (
         <AgentQuestionModal
-          question={pendingQuestion}
+          question={pendingQuestion.question}
+          options={pendingQuestion.options}
           onClose={() => {
             void approve("cancel");
           }}

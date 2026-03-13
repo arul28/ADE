@@ -5,6 +5,7 @@
 import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
 import type { ComputerUsePolicy } from "./computerUseArtifacts";
+import type { DelegationContract } from "./orchestrator";
 
 export type AgentChatProvider = "codex" | "claude" | "unified" | (string & {});
 
@@ -12,6 +13,7 @@ export type AgentChatSessionStatus = "active" | "idle" | "ended";
 export type AgentChatSessionProfile = "light" | "workflow";
 
 export type ChatSurfaceMode = "standard" | "resolver" | "mission-thread" | "mission-feed";
+export type ChatSurfaceProfile = "standard" | "persistent_identity";
 
 export type ChatSurfaceChipTone = "accent" | "success" | "warning" | "danger" | "info" | "muted";
 
@@ -22,6 +24,7 @@ export type ChatSurfaceChip = {
 
 export type ChatSurfacePresentation = {
   mode: ChatSurfaceMode;
+  profile?: ChatSurfaceProfile;
   title?: string | null;
   subtitle?: string | null;
   accentColor?: string | null;
@@ -144,6 +147,12 @@ export type AgentChatEvent =
       message?: string;
     }
   | {
+      type: "delegation_state";
+      contract: DelegationContract;
+      message?: string;
+      turnId?: string;
+    }
+  | {
       type: "error";
       message: string;
       turnId?: string;
@@ -163,7 +172,10 @@ export type AgentChatEvent =
       usage?: {
         inputTokens?: number | null;
         outputTokens?: number | null;
+        cacheReadTokens?: number | null;
+        cacheCreationTokens?: number | null;
       };
+      costUsd?: number | null;
     }
   | {
       type: "activity";
@@ -174,6 +186,59 @@ export type AgentChatEvent =
   | {
       type: "step_boundary";
       stepNumber: number;
+      turnId?: string;
+    }
+  | {
+      type: "todo_update";
+      items: Array<{
+        id: string;
+        description: string;
+        status: "pending" | "in_progress" | "completed";
+      }>;
+      turnId?: string;
+    }
+  | {
+      type: "subagent_started";
+      taskId: string;
+      description: string;
+      turnId?: string;
+    }
+  | {
+      type: "subagent_result";
+      taskId: string;
+      status: "completed" | "failed" | "stopped";
+      summary: string;
+      usage?: {
+        totalTokens?: number;
+        toolUses?: number;
+        durationMs?: number;
+      };
+      turnId?: string;
+    }
+  | {
+      type: "structured_question";
+      question: string;
+      options?: Array<{ label: string; value: string }>;
+      itemId: string;
+      turnId?: string;
+    }
+  | {
+      type: "tool_use_summary";
+      summary: string;
+      toolUseIds: string[];
+      turnId?: string;
+    }
+  | {
+      type: "context_compact";
+      trigger: "manual" | "auto";
+      preTokens?: number;
+      turnId?: string;
+    }
+  | {
+      type: "system_notice";
+      noticeKind: "auth" | "rate_limit" | "hook" | "file_persist" | "info";
+      message: string;
+      detail?: string;
       turnId?: string;
     };
 
@@ -350,4 +415,25 @@ export type ContextPackFetchResult = {
 
 export type ContextPackListArgs = {
   laneId?: string;
+};
+
+export type AgentChatSlashCommand = {
+  name: string;
+  description: string;
+  argumentHint?: string;
+  source: "sdk" | "local";
+};
+
+export type AgentChatSlashCommandsArgs = {
+  sessionId: string;
+};
+
+export type AgentChatFileSearchArgs = {
+  sessionId: string;
+  query: string;
+};
+
+export type AgentChatFileSearchResult = {
+  path: string;
+  score?: number;
 };

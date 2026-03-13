@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { SessionDeltaSummary } from "../../../shared/types";
 
-const deltaCache = new Map<string, SessionDeltaSummary>();
+const deltaCache = new Map<string, SessionDeltaSummary | null>();
 
 export function useSessionDelta(sessionId: string | null, enabled: boolean) {
   const [delta, setDelta] = useState<SessionDeltaSummary | null>(
@@ -14,9 +14,8 @@ export function useSessionDelta(sessionId: string | null, enabled: boolean) {
       return;
     }
 
-    const cached = deltaCache.get(sessionId);
-    if (cached) {
-      setDelta(cached);
+    if (deltaCache.has(sessionId)) {
+      setDelta(deltaCache.get(sessionId) ?? null);
       return;
     }
 
@@ -25,13 +24,12 @@ export function useSessionDelta(sessionId: string | null, enabled: boolean) {
       .getDelta(sessionId)
       .then((result) => {
         if (cancelled) return;
-        if (result) {
-          deltaCache.set(sessionId, result);
-        }
+        deltaCache.set(sessionId, result);
         setDelta(result);
       })
       .catch(() => {
-        // ignore - delta not available
+        // Cache the miss so we don't re-fetch on every render
+        if (!cancelled) deltaCache.set(sessionId, null);
       });
 
     return () => {

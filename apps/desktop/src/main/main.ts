@@ -847,6 +847,7 @@ app.whenReady().then(async () => {
     let aiOrchestratorServiceRef: ReturnType<typeof createAiOrchestratorService> | null = null;
     let openclawBridgeServiceRef: ReturnType<typeof createOpenclawBridgeService> | null = null;
     let linearSyncServiceRef: ReturnType<typeof createLinearSyncService> | null = null;
+    let agentChatServiceRef: ReturnType<typeof createAgentChatService> | null = null;
     const queueLandingService = createQueueLandingService({
       db,
       logger,
@@ -1071,7 +1072,9 @@ app.whenReady().then(async () => {
       projectId,
     });
 
-    const workerAdapterRuntimeService = createWorkerAdapterRuntimeService();
+    const workerAdapterRuntimeService = createWorkerAdapterRuntimeService({
+      getAgentChatService: () => agentChatServiceRef,
+    });
 
     const workerBudgetService = createWorkerBudgetService({
       db,
@@ -1161,6 +1164,7 @@ app.whenReady().then(async () => {
       },
       onSessionEnded: onTrackedSessionEnded
     });
+    agentChatServiceRef = agentChatService;
 
     // Wire agentChatService into prService for integration resolution
     prService.setAgentChatService(agentChatService);
@@ -1492,6 +1496,8 @@ app.whenReady().then(async () => {
       outboundService: linearOutboundService,
       missionService,
       orchestratorService,
+      prService,
+      computerUseArtifactBrokerService,
     });
     logger.info("project.init_stage", { projectRoot, stage: "linear_dispatcher_init" });
     const linearDispatcherService = createLinearDispatcherService({
@@ -1506,6 +1512,7 @@ app.whenReady().then(async () => {
       laneService,
       templateService: linearTemplateService,
       closeoutService: linearCloseoutService,
+      outboundService: linearOutboundService,
       workerTaskSessionService,
       prService,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.ctoLinearWorkflowEvent, event),

@@ -11,6 +11,7 @@ import type {
   LinearWorkflowWorkerSelector,
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { createDefaultLinearWorkflowConfig, createWorkflowPreset } from "../../../shared/linearWorkflowPresets";
 import { isRecord } from "../shared/utils";
 
 const WORKFLOW_VERSION = 1 as const;
@@ -200,91 +201,81 @@ function normalizeWorkflow(input: unknown, fallbackId: string): LinearWorkflowDe
   };
 }
 
-function buildStarterWorkflow(args: {
-  id: string;
-  name: string;
-  description: string;
-  target: LinearWorkflowDefinition["target"];
-  labels?: string[];
-}): LinearWorkflowDefinition {
-  const reviewRequired = args.target.type === "review_gate";
-  return {
-    id: args.id,
-    name: args.name,
-    enabled: true,
-    priority: 100,
-    description: args.description,
-    source: "generated",
-    triggers: {
-      assignees: ["CTO"],
-      ...(args.labels?.length ? { labels: args.labels } : {}),
-    },
-    target: args.target,
-    steps: [
-      { id: "launch", type: "launch_target", name: "Launch target" },
-      ...(reviewRequired
-        ? [{ id: "review", type: "request_human_review", name: "Request human review" } as const]
-        : [{ id: "wait", type: "wait_for_target_status", name: "Wait for completion", targetStatus: "completed" } as const]),
-      { id: "complete", type: "complete_issue", name: "Complete issue" },
-    ],
-    closeout: {
-      successState: "done",
-      failureState: "blocked",
-      applyLabels: ["ade"],
-      resolveOnSuccess: true,
-      reopenOnFailure: true,
-      artifactMode: "links",
-    },
-    humanReview: reviewRequired ? { required: true } : undefined,
-    retry: { maxAttempts: 3, baseDelaySec: 30 },
-    concurrency: { maxActiveRuns: 5, perIssue: 1 },
-    observability: { emitNotifications: true, captureIssueSnapshot: true, persistTimeline: true },
-  };
-}
-
 function migrateLegacyConfig(legacy: LinearSyncConfig | null | undefined): LinearWorkflowConfig {
-  const baseWorkflow = buildStarterWorkflow({
+  const baseWorkflow = createWorkflowPreset("mission", {
     id: "cto-mission-autopilot",
     name: "CTO -> Mission autopilot",
     description: "Default migrated mission-backed workflow.",
-    target: { type: "mission", runMode: "autopilot", missionTemplate: "default" },
   });
+  baseWorkflow.target = { ...baseWorkflow.target, type: "mission", runMode: "autopilot", missionTemplate: "default" };
 
   if (!legacy) {
+    const base = createDefaultLinearWorkflowConfig();
     return {
-      version: WORKFLOW_VERSION,
-      source: "generated",
-      settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
+      ...base,
       workflows: [
         baseWorkflow,
-        buildStarterWorkflow({
-          id: "cto-direct-employee-session",
-          name: "CTO -> Direct employee session",
-          description: "Opens a direct tracked employee session.",
-          target: { type: "employee_session", runMode: "assisted" },
-          labels: ["employee-session"],
-        }),
-        buildStarterWorkflow({
-          id: "cto-pr-fast-lane",
-          name: "CTO -> PR-only fast lane",
-          description: "Routes directly to a PR-oriented worker run.",
-          target: { type: "pr_resolution", runMode: "autopilot" },
-          labels: ["fast-lane"],
-        }),
-        buildStarterWorkflow({
-          id: "cto-human-review-gate",
-          name: "CTO -> Human review gate",
-          description: "Creates a tracked run that blocks for approval.",
-          target: { type: "review_gate", runMode: "manual" },
-          labels: ["needs-triage"],
-        }),
+        {
+          ...createWorkflowPreset("employee_session", {
+            id: "cto-direct-employee-session",
+            name: "CTO -> Direct employee session",
+            description: "Opens a direct tracked employee session.",
+            triggerLabels: ["employee-session"],
+          }),
+          target: {
+            ...createWorkflowPreset("employee_session").target,
+            type: "employee_session",
+            runMode: "assisted",
+            sessionTemplate: "default",
+            laneSelection: "fresh_issue_lane",
+            sessionReuse: "fresh_session",
+            prTiming: "none",
+          },
+        },
+        {
+          ...createWorkflowPreset("worker_run", {
+            id: "cto-worker-run-autopilot",
+            name: "CTO -> Worker run autopilot",
+            description: "Launches a worker run that waits for explicit ADE completion.",
+            triggerLabels: ["worker-run"],
+          }),
+          target: {
+            ...createWorkflowPreset("worker_run").target,
+            type: "worker_run",
+            runMode: "autopilot",
+          },
+        },
+        {
+          ...createWorkflowPreset("pr_resolution", {
+            id: "cto-pr-fast-lane",
+            name: "CTO -> PR-only fast lane",
+            description: "Routes directly to a PR-oriented worker run.",
+            triggerLabels: ["fast-lane"],
+          }),
+          target: {
+            ...createWorkflowPreset("pr_resolution").target,
+            type: "pr_resolution",
+            runMode: "autopilot",
+          },
+        },
+        {
+          ...createWorkflowPreset("review_gate", {
+            id: "cto-human-review-gate",
+            name: "CTO -> Human review gate",
+            description: "Creates a tracked run that blocks for approval.",
+            triggerLabels: ["needs-triage"],
+          }),
+          target: {
+            ...createWorkflowPreset("review_gate").target,
+            type: "review_gate",
+            runMode: "manual",
+          },
+        },
       ],
-      files: [],
       migration: {
         hasLegacyConfig: false,
         needsSave: true,
       },
-      legacyConfig: null,
     };
   }
 

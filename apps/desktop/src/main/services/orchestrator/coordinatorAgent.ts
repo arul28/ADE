@@ -6,6 +6,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { streamText, stepCountIs, type ModelMessage } from "ai";
 import {
   buildCoordinatorMcpAllowedTools,
@@ -32,6 +33,8 @@ import { resolveModelDescriptor } from "../../../shared/modelRegistry";
 import type { createOrchestratorService } from "./orchestratorService";
 import type {
   AgentChatEvent,
+  DelegationContract,
+  DelegationFailureCategory,
   DagMutationEvent,
   MissionBudgetSnapshot,
   MissionInterventionType,
@@ -46,6 +49,16 @@ import type { Tool } from "ai";
 import type { createMissionService } from "../missions/missionService";
 import type { createMemoryService } from "../memory/memoryService";
 import type { ResolveModelOpts } from "../ai/providerResolver";
+import {
+  checkCoordinatorToolPermission,
+  createDelegationContract,
+  createDelegationScope,
+  derivePlanningStartupStateFromContract,
+  extractDelegationContract,
+  extractActiveDelegationContracts,
+  normalizeCoordinatorToolName,
+  updateDelegationContract,
+} from "./delegationContracts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -129,13 +142,7 @@ export type PlanningStartupState =
   | "failed";
 
 export type CoordinatorPlanningStartupFailure = {
-  category:
-    | "run_context_bug"
-    | "provider_unreachable"
-    | "permission_denied"
-    | "tool_schema_error"
-    | "unknown"
-    | "native_tool_violation";
+  category: DelegationFailureCategory;
   reasonCode: string;
   interventionType: MissionInterventionType;
   retryable: boolean;
@@ -183,17 +190,6 @@ const TERMINAL_PLANNING_TRACKER_STATUSES = new Set<OrchestratorStepStatus>([
   "superseded",
   "canceled",
 ]);
-const PLANNING_STARTUP_ALLOWED_TOOL_NAMES = new Set([
-  "get_project_context",
-  "spawn_worker",
-  "get_mission",
-  "get_run_graph",
-  "get_step_output",
-  "get_worker_states",
-  "get_timeline",
-  "stream_events",
-]);
-
 export function shouldUseSdkTools(modelId: string): boolean {
   const descriptor = resolveModelDescriptor(modelId);
   if (!descriptor?.isCliWrapped) return true;
@@ -334,6 +330,7 @@ export class CoordinatorAgent {
   private planningStartupState: PlanningStartupState = "inactive";
   private planningStartupRetryCount = 0;
   private plannerLaunchTrackerStepId: string | null = null;
+  private pendingPlannerDelegationContract: DelegationContract | null = null;
 
   constructor(deps: CoordinatorAgentDeps) {
     // ── VAL-PLAN-005 / Mandatory planning enforcement ──
@@ -398,7 +395,30 @@ export class CoordinatorAgent {
     });
     this.wrapDagMutationToolsWithCheckpoint();
     this.systemPrompt = this.buildSystemPrompt();
-    this.planningStartupState = this.isPlanningFirstPhaseRun() ? "awaiting_project_context" : "inactive";
+    if (this.isPlanningFirstPhaseRun()) {
+      this.pendingPlannerDelegationContract = createDelegationContract({
+        contractId: randomUUID(),
+        runId: deps.runId,
+        workerIntent: "planner",
+        mode: "exclusive",
+        scope: createDelegationScope({
+          kind: "phase",
+          key: "phase:planning",
+          label: "planning",
+        }),
+        phaseKey: "planning",
+        status: "launching",
+        launchState: "awaiting_context",
+        launchPolicy: {
+          maxLaunchAttempts: PLANNING_STARTUP_RETRY_LIMIT + 1,
+        },
+        failurePolicy: {
+          retryLimit: PLANNING_STARTUP_RETRY_LIMIT,
+          escalation: "intervention",
+        },
+      });
+    }
+    this.syncPlanningStartupStateFromContracts();
     this.ensurePlannerLaunchTrackerStep();
 
     // Initialize compaction monitor if enabled
@@ -628,15 +648,6 @@ export class CoordinatorAgent {
     });
   }
 
-  private normalizeCoordinatorToolName(toolName: string): string {
-    const trimmed = toolName.trim();
-    if (trimmed.startsWith("mcp__")) {
-      const parts = trimmed.split("__");
-      return (parts[2] ?? trimmed).trim();
-    }
-    return trimmed;
-  }
-
   private isPlanningExecutionStep(step: OrchestratorStep | null | undefined): boolean {
     if (!step) return false;
     const metadata = asRecord(step.metadata);
@@ -774,40 +785,76 @@ export class CoordinatorAgent {
   }
 
   private refreshPlanningStartupState(): void {
-    if (!this.isPlanningFirstPhaseRun()) {
-      this.planningStartupState = "inactive";
-      return;
-    }
-    if (this.planningStartupState === "inactive" || this.planningStartupState === "failed") return;
+    this.syncPlanningStartupStateFromContracts();
+  }
+
+  private isPlanningStartupGuardActive(): boolean {
+    this.syncPlanningStartupStateFromContracts();
+    return this.planningStartupState !== "inactive" && this.planningStartupState !== "failed";
+  }
+
+  private listActiveDelegationContracts(): DelegationContract[] {
+    let graphContracts: DelegationContract[] = [];
     try {
       const graph = this.deps.orchestratorService.getRunGraph({
         runId: this.deps.runId,
         timelineLimit: 0,
       });
+      graphContracts = extractActiveDelegationContracts(graph);
       const planningSteps = filterExecutionSteps(graph.steps).filter((step) => this.isPlanningExecutionStep(step));
       if (planningSteps.some((step) => step.status === "succeeded")) {
-        this.planningStartupState = "inactive";
-        this.updatePlannerLaunchTrackerStep({
-          status: "succeeded",
-          reason: "planner_ready",
-        });
-        return;
-      }
-      if (planningSteps.some((step) => step.status === "failed" || step.status === "blocked" || step.status === "canceled")) {
-        this.planningStartupState = "failed";
-        return;
-      }
-      if (planningSteps.some((step) => step.status === "ready" || step.status === "running")) {
-        this.planningStartupState = "waiting_on_planner";
+        this.pendingPlannerDelegationContract = null;
+      } else if (planningSteps.some((step) => step.status === "failed" || step.status === "blocked" || step.status === "canceled")) {
+        const pendingContract = this.pendingPlannerDelegationContract;
+        if (pendingContract) {
+          this.pendingPlannerDelegationContract = updateDelegationContract(pendingContract, {
+            status: "blocked",
+            launchState: "blocked",
+            completedAt: new Date().toISOString(),
+          });
+        }
       }
     } catch {
-      // Best-effort state refresh only.
+      // Best-effort graph inspection only.
     }
+    const allContracts = [...graphContracts];
+    if (this.pendingPlannerDelegationContract) {
+      const hasMatchingPlannerContract = graphContracts.some((contract) =>
+        contract.workerIntent === "planner" && contract.scope.key === this.pendingPlannerDelegationContract?.scope.key,
+      );
+      if (!hasMatchingPlannerContract) {
+        allContracts.push(this.pendingPlannerDelegationContract);
+      }
+    }
+    return allContracts;
   }
 
-  private isPlanningStartupGuardActive(): boolean {
-    this.refreshPlanningStartupState();
-    return this.planningStartupState !== "inactive" && this.planningStartupState !== "failed";
+  private emitDelegationState(contract: DelegationContract, message?: string): void {
+    this.deps.onCoordinatorEvent?.({
+      type: "delegation_state",
+      contract,
+      message,
+    });
+  }
+
+  private syncPlanningStartupStateFromContracts(): void {
+    if (!this.isPlanningFirstPhaseRun()) {
+      this.planningStartupState = "inactive";
+      this.pendingPlannerDelegationContract = null;
+      return;
+    }
+    const plannerContract =
+      this.listActiveDelegationContracts().find((contract) => contract.workerIntent === "planner" && contract.mode === "exclusive")
+      ?? this.pendingPlannerDelegationContract;
+    const derived = derivePlanningStartupStateFromContract(plannerContract ?? null);
+    this.planningStartupState = derived.state;
+    this.pendingPlannerDelegationContract = derived.contract;
+    if (derived.state === "inactive") {
+      this.updatePlannerLaunchTrackerStep({
+        status: "succeeded",
+        reason: "planner_ready",
+      });
+    }
   }
 
   private queueInternalMessage(message: string): void {
@@ -868,6 +915,26 @@ export class CoordinatorAgent {
 
   private schedulePlanningStartupRetry(failure: CoordinatorPlanningStartupFailure): void {
     this.planningStartupRetryCount += 1;
+    if (this.pendingPlannerDelegationContract) {
+      this.pendingPlannerDelegationContract = updateDelegationContract(this.pendingPlannerDelegationContract, {
+        status: "launching",
+        launchState: "awaiting_worker_launch",
+        failure: {
+          category: failure.category,
+          reasonCode: failure.reasonCode,
+          retryable: failure.retryable,
+          recoveryOptions: failure.recoveryOptions,
+          message: failure.message,
+          toolName: failure.toolName ?? null,
+          retryCount: this.planningStartupRetryCount,
+          occurredAt: new Date().toISOString(),
+        },
+      });
+      this.emitDelegationState(
+        this.pendingPlannerDelegationContract,
+        "The planner hit a launch issue, so I’m retrying once.",
+      );
+    }
     this.planningStartupState = "awaiting_planner_launch";
     this.updatePlannerLaunchTrackerStep({
       status: "pending",
@@ -890,6 +957,31 @@ export class CoordinatorAgent {
   }
 
   private handlePlanningStartupFailure(failure: CoordinatorPlanningStartupFailure): void {
+    if (this.pendingPlannerDelegationContract) {
+      this.pendingPlannerDelegationContract = updateDelegationContract(this.pendingPlannerDelegationContract, {
+        status: failure.category === "permission_denied" || failure.category === "native_tool_violation" ? "blocked" : "launch_failed",
+        launchState: "blocked",
+        failure: {
+          category: failure.category,
+          reasonCode: failure.reasonCode,
+          retryable: failure.retryable,
+          recoveryOptions: failure.recoveryOptions,
+          message: failure.message,
+          toolName: failure.toolName ?? null,
+          retryCount: failure.retryCount,
+          occurredAt: new Date().toISOString(),
+        },
+        completedAt: new Date().toISOString(),
+      });
+      this.emitDelegationState(
+        this.pendingPlannerDelegationContract,
+        failure.category === "permission_denied"
+          ? "The planner was blocked by a permission issue, so I paused the run."
+          : failure.category === "provider_unreachable"
+            ? "The planner hit a launch issue, so I paused the run and opened recovery options."
+            : "The planner hit a launch issue, so I paused the run.",
+      );
+    }
     this.planningStartupState = "failed";
     this.updatePlannerLaunchTrackerStep({
       status: failure.category === "permission_denied" || failure.category === "native_tool_violation" ? "blocked" : "failed",
@@ -916,33 +1008,50 @@ export class CoordinatorAgent {
 
   private handlePlanningStartupToolCall(toolName: string): void {
     if (!this.isPlanningStartupGuardActive()) return;
-    const normalizedToolName = this.normalizeCoordinatorToolName(toolName);
-    const isObservationOnlyTool = normalizedToolName !== "get_project_context" && normalizedToolName !== "spawn_worker";
-    const allowedInCurrentState =
-      this.planningStartupState === "waiting_on_planner"
-        ? isObservationOnlyTool && PLANNING_STARTUP_ALLOWED_TOOL_NAMES.has(normalizedToolName)
-        : PLANNING_STARTUP_ALLOWED_TOOL_NAMES.has(normalizedToolName);
-    if (allowedInCurrentState) {
-      if (normalizedToolName === "get_project_context" && this.planningStartupState === "awaiting_project_context") {
-        this.planningStartupState = "awaiting_planner_launch";
-        this.updatePlannerLaunchTrackerStep({
-          status: "running",
-          reason: "fetching_project_context",
-        });
-      }
-      if (normalizedToolName === "spawn_worker" && this.planningStartupState !== "waiting_on_planner") {
-        this.planningStartupState = "awaiting_planner_launch";
-        this.updatePlannerLaunchTrackerStep({
-          status: "running",
-          reason: "launching_planner",
-        });
-      }
-      return;
+    const contracts = this.listActiveDelegationContracts();
+    const permission = checkCoordinatorToolPermission({
+      toolName,
+      contracts,
+    });
+    if (!permission.allowed) {
+      const failure = this.buildNativeToolPlanningFailure(toolName);
+      this.handlePlanningStartupFailure(failure);
+      throw new CoordinatorFatalError(
+        permission.reason?.trim().length ? permission.reason : failure.message,
+      );
     }
 
-    const failure = this.buildNativeToolPlanningFailure(toolName);
-    this.handlePlanningStartupFailure(failure);
-    throw new CoordinatorFatalError(failure.message);
+    const normalizedToolName = normalizeCoordinatorToolName(toolName);
+    if (normalizedToolName === "get_project_context" && this.pendingPlannerDelegationContract) {
+      this.pendingPlannerDelegationContract = updateDelegationContract(this.pendingPlannerDelegationContract, {
+        launchState: "fetching_context",
+      });
+      this.emitDelegationState(
+        this.pendingPlannerDelegationContract,
+        "I’m pulling project context so the planner starts with the right picture.",
+      );
+      this.planningStartupState = "awaiting_planner_launch";
+      this.updatePlannerLaunchTrackerStep({
+        status: "running",
+        reason: "fetching_project_context",
+      });
+    }
+    if (normalizedToolName === "spawn_worker" && this.pendingPlannerDelegationContract) {
+      this.pendingPlannerDelegationContract = updateDelegationContract(this.pendingPlannerDelegationContract, {
+        launchState: "launching_worker",
+      });
+      this.emitDelegationState(
+        this.pendingPlannerDelegationContract,
+        "I’m starting the planning agent now.",
+      );
+      if (this.planningStartupState !== "waiting_on_planner") {
+        this.planningStartupState = "awaiting_planner_launch";
+      }
+      this.updatePlannerLaunchTrackerStep({
+        status: "running",
+        reason: "launching_planner",
+      });
+    }
   }
 
   private isPlanningFirstPhaseRun(): boolean {
@@ -1190,7 +1299,7 @@ export class CoordinatorAgent {
         }
         if (part.type === "tool-result") {
           const toolName = String(part.toolName ?? "tool");
-          const normalizedToolName = this.normalizeCoordinatorToolName(toolName);
+          const normalizedToolName = normalizeCoordinatorToolName(toolName);
           const toolOutput = asRecord(part.output);
           this.deps.onCoordinatorEvent?.({
             type: "tool_result",
@@ -1209,7 +1318,28 @@ export class CoordinatorAgent {
           }
           if (normalizedToolName === "spawn_worker" && this.planningStartupState !== "inactive") {
             if (toolOutput?.ok === true) {
+              const delegatedContract = extractDelegationContract(toolOutput?.delegationContract ?? null);
+              if (delegatedContract && delegatedContract.workerIntent === "planner") {
+                this.pendingPlannerDelegationContract = delegatedContract;
+              } else if (this.pendingPlannerDelegationContract) {
+                this.pendingPlannerDelegationContract = updateDelegationContract(this.pendingPlannerDelegationContract, {
+                  status: "active",
+                  launchState: "waiting_on_worker",
+                  activeWorkerIds:
+                    typeof toolOutput?.workerId === "string" && toolOutput.workerId.trim().length > 0
+                      ? [toolOutput.workerId.trim()]
+                      : this.pendingPlannerDelegationContract.activeWorkerIds,
+                });
+              }
               this.planningStartupState = "waiting_on_planner";
+              if (this.pendingPlannerDelegationContract) {
+                this.emitDelegationState(
+                  this.pendingPlannerDelegationContract,
+                  toolOutput?.launched === false
+                    ? "The planning agent is queued. I’m waiting for it to start."
+                    : "The planning agent is running. I’m waiting for its result.",
+                );
+              }
               this.updatePlannerLaunchTrackerStep({
                 status: "running",
                 reason: toolOutput?.launched === false ? "planner_queued" : "planner_launched",
@@ -1247,7 +1377,7 @@ export class CoordinatorAgent {
         }
         if (part.type === "tool-error") {
           const toolName = String(part.toolName ?? "tool");
-          const normalizedToolName = this.normalizeCoordinatorToolName(toolName);
+          const normalizedToolName = normalizeCoordinatorToolName(toolName);
           if (normalizedToolName === "spawn_worker" && this.planningStartupState !== "inactive") {
             const failure = this.buildPlannerLaunchFailure(formatStreamError(part.error), toolName);
             planningStartupFailure = failure;
@@ -1777,11 +1907,25 @@ Your initial plan is a hypothesis. Adjust it as you learn:
 - When using revise_plan, always provide explicit dependencyPatches — the runtime will NOT auto-rewire dependencies
 
 ### 6.5 Persist Mission Memory
-- Use memory_search when prior missions or earlier discoveries may contain reusable patterns, gotchas, or decisions
-- Use memory_add when you discover durable project knowledge future missions should remember
-- Use update_mission_state after significant coordinator decisions so run-local rationale survives context compaction
-- Use read_mission_state before major plan changes or mission completion to refresh this run's durable state
-- Keep mission-state summaries concise: short outcomes, short decisions, actionable issue descriptions
+Quality bar: "Would a developer joining this project find this useful on their first day?" If not, do not save it.
+
+ALWAYS save (memory_add) when you:
+- Discover a convention that is NOT documented anywhere in the codebase or docs
+- Make or observe a decision with non-obvious reasoning (e.g., "chose X over Y because Z")
+- Hit a pitfall that other developers or future missions would hit too
+- Find a pattern that contradicts what the code structure would suggest
+
+DO NOT save:
+- File paths, doc paths, or directory listings — discoverable with search tools
+- Session metadata, task status, or mission progress — that is what update_mission_state is for
+- Raw error messages or stack traces without a distilled lesson
+- Things derivable from code, git log, or git blame
+- Obvious patterns already visible in the codebase (e.g., "this project uses TypeScript")
+
+Use memory_search at mission start and before writing worker briefs on unfamiliar subsystems to surface past gotchas.
+Use update_mission_state after significant coordinator decisions so run-local rationale survives context compaction.
+Use read_mission_state before major plan changes or mission completion to refresh this run's durable state.
+Keep mission-state summaries concise: short outcomes, short decisions, actionable issue descriptions.
 
 ### 6.6 Reflection Protocol Discipline
 - Require workers to log high-signal reflections with \`reflection_add\` when they hit friction, find repeatable patterns, or identify improvements.

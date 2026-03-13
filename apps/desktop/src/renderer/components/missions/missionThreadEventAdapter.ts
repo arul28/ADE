@@ -46,6 +46,15 @@ function normalizeToolStatus(value: string | null): Extract<AgentChatEvent, { ty
   }
 }
 
+function readDelegationContract(
+  value: unknown,
+): Extract<AgentChatEvent, { type: "delegation_state" }>["contract"] | null {
+  const record = readRecord(value);
+  const contractId = readString(record?.contractId);
+  if (!record || !contractId) return null;
+  return record as Extract<AgentChatEvent, { type: "delegation_state" }>["contract"];
+}
+
 function normalizeApprovalKind(value: string | null): "command" | "file_change" | "tool_call" {
   switch (value) {
     case "command":
@@ -395,6 +404,21 @@ function toStructuredEvents(message: OrchestratorChatMessage): AgentChatEventEnv
           message: readString(structuredStream.message) ?? undefined,
         },
       }];
+    case "delegation_state": {
+      const contract = readDelegationContract(structuredStream.contract);
+      if (!contract) return null;
+      return [{
+        sessionId,
+        timestamp: message.timestamp,
+        provenance,
+        event: {
+          type: "delegation_state",
+          contract,
+          turnId,
+          message: readString(structuredStream.message) ?? undefined,
+        },
+      }];
+    }
     case "done":
       return [{
         sessionId,

@@ -45,6 +45,7 @@ import type {
   DagMutationEvent,
   AgentChatEvent,
   AgentChatEventEnvelope,
+  DelegationContract,
   TeamManifest,
   ExecutionPlanPreview,
   ExecutionPlanPhase,
@@ -823,7 +824,11 @@ export function createAiOrchestratorService(args: {
   // ── V2 Coordinator Agents (tool-based, replaces specialist calls) ──
   const coordinatorAgents = new Map<string, CoordinatorAgent>();
   const coordinatorRecoveryAttempts = new Map<string, number>();
-  const coordinatorLifecycleStates = new Map<string, { state: CoordinatorLifecycleState; message: string }>();
+  const coordinatorLifecycleStates = new Map<string, {
+    state: CoordinatorLifecycleState;
+    message: string;
+    delegationSignature?: string | null;
+  }>();
   const coordinatorWriteBarrierRuns = new Set<string>();
 
   // Team runtime state tracking
@@ -1017,6 +1022,7 @@ export function createAiOrchestratorService(args: {
     runId: string;
     state: CoordinatorLifecycleState;
     message: string;
+    delegation?: DelegationContract | null;
   }): void => {
     const detailByState: Record<CoordinatorLifecycleState, { available: boolean; mode: MissionCoordinatorAvailability["mode"] }> = {
       booting: { available: true, mode: "continuation_required" },
@@ -1033,6 +1039,18 @@ export function createAiOrchestratorService(args: {
         mode: detailByState[args.state].mode,
         summary: args.message,
         detail: null,
+        delegation: args.delegation
+          ? {
+              contractId: args.delegation.contractId,
+              workerIntent: args.delegation.workerIntent,
+              mode: args.delegation.mode,
+              status: args.delegation.status,
+              scopeKey: args.delegation.scope.key,
+              scopeLabel: args.delegation.scope.label ?? null,
+              activeWorkerIds: args.delegation.activeWorkerIds,
+              updatedAt: args.delegation.updatedAt,
+            }
+          : null,
         updatedAt: nowIso(),
       },
       pendingInterventions: pendingInterventionsForMission(args.missionId),
@@ -1045,16 +1063,32 @@ export function createAiOrchestratorService(args: {
     state: CoordinatorLifecycleState;
     message: string;
     force?: boolean;
+    delegation?: DelegationContract | null;
   }): void => {
     if (!args.force && shouldSuppressCoordinatorWrites(args.runId)) return;
     const previous = coordinatorLifecycleStates.get(args.runId);
-    if (!args.force && previous?.state === args.state && previous.message === args.message) return;
-    coordinatorLifecycleStates.set(args.runId, { state: args.state, message: args.message });
+    const delegationSignature = args.delegation
+      ? `${args.delegation.contractId}:${args.delegation.status}:${args.delegation.updatedAt}`
+      : null;
+    if (
+      !args.force
+      && previous?.state === args.state
+      && previous.message === args.message
+      && (previous.delegationSignature ?? null) === delegationSignature
+    ) {
+      return;
+    }
+    coordinatorLifecycleStates.set(args.runId, {
+      state: args.state,
+      message: args.message,
+      delegationSignature,
+    });
     updateRunMetadata(args.runId, (metadata) => {
       metadata.coordinator = {
         ...(isRecord(metadata.coordinator) ? metadata.coordinator : {}),
         lifecycleState: args.state,
         lifecycleMessage: args.message,
+        delegation: args.delegation ?? null,
         lifecycleUpdatedAt: nowIso(),
       };
     });
@@ -1075,6 +1109,7 @@ export function createAiOrchestratorService(args: {
         source: "coordinator_lifecycle",
         state: args.state,
         message: args.message,
+        delegation: args.delegation ?? null,
       },
     });
     orchestratorService.appendTimelineEvent({
@@ -1084,6 +1119,7 @@ export function createAiOrchestratorService(args: {
       detail: {
         state: args.state,
         message: args.message,
+        delegation: args.delegation ?? null,
       },
     });
     emitOrchestratorMessage(args.missionId, args.message, null, {
@@ -1091,6 +1127,7 @@ export function createAiOrchestratorService(args: {
       runId: args.runId,
       source: "coordinator_lifecycle",
       lifecycleState: args.state,
+      delegation: args.delegation ?? null,
     });
     updateCoordinatorMissionState(args);
   };
@@ -1184,6 +1221,8 @@ export function createAiOrchestratorService(args: {
         return `${scopeKey}:approval:${event.turnId ?? "turn"}:${event.itemId}`;
       case "activity":
         return `${scopeKey}:activity:${event.turnId ?? "turn"}:${event.activity}:${event.detail ?? ""}`;
+      case "delegation_state":
+        return `${scopeKey}:delegation:${event.contract.contractId}:${event.contract.status}:${event.contract.updatedAt}`;
       default:
         return null;
     }
@@ -1203,6 +1242,10 @@ export function createAiOrchestratorService(args: {
         return event.description;
       case "status":
         return event.message?.trim().length ? event.message.trim() : `Turn ${event.turnStatus}.`;
+      case "delegation_state":
+        return event.message?.trim().length
+          ? event.message.trim()
+          : `Delegation ${event.contract.workerIntent} is ${event.contract.status}.`;
       case "done":
         return `Turn ${event.status}.`;
       case "error":
@@ -1282,6 +1325,19 @@ export function createAiOrchestratorService(args: {
           sessionId,
           turnId: event.turnId ?? null,
           status: event.turnStatus,
+          message: event.message ?? null,
+        },
+      };
+    }
+    if (event.type === "delegation_state") {
+      return {
+        source: "agent_chat_event",
+        missionChatMode: "thread_only",
+        structuredStream: {
+          kind: "delegation_state",
+          sessionId,
+          turnId: event.turnId ?? null,
+          contract: event.contract,
           message: event.message ?? null,
         },
       };
@@ -1751,6 +1807,41 @@ export function createAiOrchestratorService(args: {
     return trimmed;
   };
 
+  const derivePlannerLifecycleFromDelegation = (contract: DelegationContract): {
+    state: CoordinatorLifecycleState;
+    message: string;
+  } | null => {
+    if (contract.workerIntent !== "planner") return null;
+    if (contract.launchState === "fetching_context") {
+      return {
+        state: "fetching_project_context",
+        message: "I’m pulling project context so the planner starts with the right picture.",
+      };
+    }
+    if (contract.status === "launching" || contract.launchState === "awaiting_worker_launch" || contract.launchState === "launching_worker") {
+      return {
+        state: "launching_planner",
+        message: "I’m starting the planning agent now.",
+      };
+    }
+    if (contract.status === "active" && contract.launchState === "waiting_on_worker") {
+      const launched = contract.metadata && isRecord(contract.metadata) ? contract.metadata.launched !== false : true;
+      return {
+        state: "waiting_on_planner",
+        message: launched
+          ? "The planning agent is running. I’m waiting for its result."
+          : "The planning agent is queued. I’m waiting for it to start.",
+      };
+    }
+    if (contract.status === "launch_failed" || contract.status === "blocked" || contract.status === "failed") {
+      return {
+        state: "planner_launch_failed",
+        message: "The planner hit a launch issue, so I paused the run.",
+      };
+    }
+    return null;
+  };
+
   const syncCoordinatorLifecycleFromEvent = (args: {
     missionId: string;
     runId: string;
@@ -1758,6 +1849,18 @@ export function createAiOrchestratorService(args: {
     event: AgentChatEvent;
   }): void => {
     if (!args.planningIsFirstPhase) return;
+    if (args.event.type === "delegation_state") {
+      const nextLifecycle = derivePlannerLifecycleFromDelegation(args.event.contract);
+      if (!nextLifecycle) return;
+      emitCoordinatorLifecycle({
+        missionId: args.missionId,
+        runId: args.runId,
+        state: nextLifecycle.state,
+        message: args.event.message?.trim().length ? args.event.message.trim() : nextLifecycle.message,
+        delegation: args.event.contract,
+      });
+      return;
+    }
     if (args.event.type === "tool_call") {
       const toolName = normalizeCoordinatorToolEventName(args.event.tool);
       if (toolName === "get_project_context") {
@@ -4634,28 +4737,9 @@ Check all worker statuses and continue managing the mission from here. Read work
     return row?.project_id ? String(row.project_id).trim() : "";
   };
 
-  const persistDiscoveredDocPathsToMemory = (args: { missionId: string; docPaths: string[]; sourceRunId?: string | null }): void => {
-    const missionProjectId = resolveMissionProjectId(args.missionId);
-    if (!missionProjectId.length || args.docPaths.length === 0) return;
-    const compactPaths = [...new Set(args.docPaths.map((entry) => String(entry ?? "").trim()).filter(Boolean))].slice(0, 40);
-    if (compactPaths.length === 0) return;
-    const content = `Project documentation paths: ${compactPaths.join(", ")}`;
-    try {
-      plannerMemoryService.addMemory({
-        projectId: missionProjectId,
-        scope: "project",
-        category: "fact",
-        content,
-        importance: "medium",
-        sourceRunId: args.sourceRunId ?? undefined
-      });
-    } catch (error) {
-      logger.debug("ai_orchestrator.doc_inventory_memory_write_failed", {
-        missionId: args.missionId,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  };
+  // persistDiscoveredDocPathsToMemory removed — doc paths are available via
+  // the context system and writing them as facts created near-duplicate entries
+  // on every mission run.
 
   const buildProjectMemoryHighlights = (missionId: string): string[] => {
     const missionProjectId = resolveMissionProjectId(missionId);
@@ -7526,14 +7610,8 @@ Check all worker statuses and continue managing the mission from here. Read work
       return hints;
     })();
 
-    // Discover project docs
+    // Discover project docs (paths used for context only, not persisted to memory)
     const projectDocsContext = discoverProjectDocs();
-    if (projectDocsContext.paths.length > 0) {
-      persistDiscoveredDocPathsToMemory({
-        missionId,
-        docPaths: projectDocsContext.paths
-      });
-    }
     const projectMemoryHighlights = [...plannerSummaryHints, ...buildProjectMemoryHighlights(missionId)].slice(0, 12);
 
     // Build a shallow file tree for coordinator context

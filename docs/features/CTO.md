@@ -16,7 +16,6 @@ The CTO combines several responsibilities:
 
 - persistent project-facing chat
 - worker/team management
-- shared memory and knowledge browsing
 - Linear workflow sync and dispatch
 - optional OpenClaw bridge configuration
 - budget and runtime visibility for the CTO org
@@ -174,12 +173,12 @@ The CTO still owns persistent identity and long-lived project knowledge. The imp
 
 Current system behavior separates:
 
-- CTO identity and core memory
-- shared project knowledge
+- CTO identity and core memory (CtoCoreMemory), managed in CTO Settings
+- shared project knowledge (unified memory with project/agent/mission scopes)
 - worker-specific core memory
 - recent subordinate activity and session logs
 
-The UI can browse and edit that state without forcing the chat surface to rehydrate every other subsystem.
+Memory browsing and management are consolidated in Settings > Memory tab. The CTO tab no longer has its own Memory surface. CTO core memory (identity, persona, project context) is edited in CTO Settings; all other memory scopes are managed through the unified Settings > Memory tab.
 
 ---
 

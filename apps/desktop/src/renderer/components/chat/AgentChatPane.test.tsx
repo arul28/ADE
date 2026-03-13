@@ -139,7 +139,7 @@ function setupWindowAde(overrides: {
   availableModelIds?: string[];
   computerUseSnapshot?: ComputerUseOwnerSnapshot | null;
 } = {}) {
-  const sessions = overrides.sessions ?? [];
+  const sessionRows = [...(overrides.sessions ?? [])];
   const codexAvailable = overrides.codexAvailable ?? true;
   const claudeAvailable = overrides.claudeAvailable ?? true;
   const availableModelIds = overrides.availableModelIds ?? [
@@ -178,35 +178,79 @@ function setupWindowAde(overrides: {
           ? [{ id: "sonnet", displayName: "Sonnet", isDefault: true }]
           : [];
       }),
-      list: vi.fn(async () => sessions),
-      create: vi.fn(async ({ provider, model, modelId }: any) => ({
-        id: "new-session-1",
-        laneId: "lane-1",
-        provider,
-        model,
-        modelId,
-        status: "idle",
-        createdAt: new Date().toISOString(),
-        lastActivityAt: new Date().toISOString()
-      })),
+      list: vi.fn(async () => [...sessionRows]),
+      create: vi.fn(async ({ provider, model, modelId }: any) => {
+        const sessionId = "new-session-1";
+        const createdSummary = {
+          sessionId: "new-session-1",
+          laneId: "lane-1",
+          provider,
+          model,
+          modelId,
+          status: "idle",
+          startedAt: new Date().toISOString(),
+          endedAt: null,
+          lastActivityAt: new Date().toISOString(),
+          lastOutputPreview: null,
+          summary: null,
+          title: "New chat",
+        } satisfies AgentChatSessionSummary;
+        sessionRows.unshift(createdSummary);
+        return {
+          id: sessionId,
+          laneId: createdSummary.laneId,
+          provider: createdSummary.provider,
+          model: createdSummary.model,
+          modelId: createdSummary.modelId,
+          status: createdSummary.status,
+          createdAt: createdSummary.startedAt,
+          lastActivityAt: createdSummary.lastActivityAt,
+        };
+      }),
       send: vi.fn(async () => {}),
       steer: vi.fn(async () => {}),
       interrupt: vi.fn(async () => {}),
       approve: vi.fn(async () => {}),
       changePermissionMode: vi.fn(async () => {}),
-      updateSession: vi.fn(async ({ sessionId, modelId, reasoningEffort, permissionMode }: any) => ({
-        id: sessionId,
-        laneId: "lane-1",
-        provider: modelId === "anthropic/claude-sonnet-4-6" ? "claude" : "codex",
-        model: modelId === "anthropic/claude-sonnet-4-6" ? "sonnet" : "gpt-5.3-codex",
-        modelId,
-        reasoningEffort: reasoningEffort ?? "medium",
-        permissionMode,
-        computerUse: createDefaultComputerUsePolicy(),
-        status: "idle",
-        createdAt: new Date().toISOString(),
-        lastActivityAt: new Date().toISOString()
-      })),
+      updateSession: vi.fn(async ({ sessionId, modelId, reasoningEffort, permissionMode }: any) => {
+        const updated = {
+          sessionId,
+          laneId: "lane-1",
+          provider: modelId === "anthropic/claude-sonnet-4-6" ? "claude" : "codex",
+          model: modelId === "anthropic/claude-sonnet-4-6" ? "sonnet" : "gpt-5.3-codex",
+          modelId,
+          reasoningEffort: reasoningEffort ?? "medium",
+          permissionMode,
+          computerUse: createDefaultComputerUsePolicy(),
+          status: "idle",
+          startedAt: new Date().toISOString(),
+          endedAt: null,
+          lastActivityAt: new Date().toISOString(),
+          lastOutputPreview: null,
+          summary: null,
+          title: "Initial chat",
+        } satisfies AgentChatSessionSummary;
+        const existingIndex = sessionRows.findIndex((entry) => entry.sessionId === sessionId);
+        if (existingIndex >= 0) {
+          sessionRows[existingIndex] = updated;
+        }
+        return {
+          id: updated.sessionId,
+          laneId: updated.laneId,
+          provider: updated.provider,
+          model: updated.model,
+          modelId: updated.modelId,
+          reasoningEffort: updated.reasoningEffort ?? "medium",
+          permissionMode: updated.permissionMode,
+          computerUse: updated.computerUse,
+          status: updated.status,
+          createdAt: updated.startedAt,
+          lastActivityAt: updated.lastActivityAt,
+        };
+      }),
+      slashCommands: vi.fn(async () => []),
+      fileSearch: vi.fn(async () => []),
+      dispose: vi.fn(async () => {}),
       onEvent: vi.fn((cb: (envelope: AgentChatEventEnvelope) => void) => {
         eventCallback = cb;
         return () => { eventCallback = null; };
@@ -299,7 +343,7 @@ describe("AgentChatPane", () => {
       expect(ade.agentChat.list).toHaveBeenCalledWith({ laneId: "lane-1" });
     });
 
-    expect(screen.getByText("Start typing below")).toBeTruthy();
+    expect(screen.getByPlaceholderText("Message the agent...")).toBeTruthy();
     expect(screen.getByRole("button", { name: /Initial chat/i })).toBeTruthy();
   });
 
@@ -329,6 +373,132 @@ describe("AgentChatPane", () => {
       expect(ade.agentChat.create).toHaveBeenCalledWith(
         expect.objectContaining({ modelId: expect.any(String), sessionProfile: "light" })
       );
+    });
+  });
+
+  it("uses the persistent identity permission profile for CTO-style surfaces", async () => {
+    setupWindowAde();
+    render(
+      <AgentChatPane
+        laneId="lane-1"
+        initialSessionId="latest-session"
+        presentation={{ mode: "standard", profile: "persistent_identity", title: "CTO" }}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: "Default" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Full Access" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Plan" })).toBeNull();
+    expect(screen.queryByLabelText("Reasoning effort")).toBeNull();
+  });
+
+  it("hides generic computer-use chrome on persistent identity surfaces", async () => {
+    setupWindowAde();
+    render(
+      <AgentChatPane
+        laneId="lane-1"
+        initialSessionId="latest-session"
+        presentation={{ mode: "standard", profile: "persistent_identity", title: "CTO" }}
+      />
+    );
+
+    await waitFor(() => {
+      expect((window as any).ade.agentChat.list).toHaveBeenCalledWith({ laneId: "lane-1" });
+    });
+
+    expect(screen.queryByText(/Computer use/i)).toBeNull();
+  });
+
+  it("creates persistent identity sessions in full access by default", async () => {
+    setupWindowAde();
+    render(
+      <AgentChatPane
+        laneId="lane-1"
+        initialSessionId="latest-session"
+        presentation={{ mode: "standard", profile: "persistent_identity", title: "CTO" }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTitle("New chat")).toBeTruthy();
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("New chat"));
+    });
+
+    await act(async () => {
+      fireEvent.change(screen.getByPlaceholderText("Message the agent..."), {
+        target: { value: "hello" },
+      });
+      fireEvent.click(screen.getByTitle("Send"));
+    });
+
+    await waitFor(() => {
+      expect((window as any).ade.agentChat.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          permissionMode: "full-auto",
+        }),
+      );
+    });
+  });
+
+  it("keeps cross-family model switching available after messages on persistent identity surfaces", async () => {
+    const session = mockSession({
+      sessionId: "existing-session",
+      provider: "codex",
+      model: "gpt-5.3-codex",
+      modelId: "openai/gpt-5.3-codex",
+    });
+    setupWindowAde({ sessions: [session], codexAvailable: true, claudeAvailable: true });
+
+    render(
+      <AgentChatPane
+        laneId="lane-1"
+        initialSessionId="existing-session"
+        presentation={{ mode: "standard", profile: "persistent_identity", title: "CTO" }}
+      />
+    );
+
+    await waitFor(() => {
+      expect((window as any).ade.agentChat.list).toHaveBeenCalledWith({ laneId: "lane-1" });
+    });
+
+    await act(async () => {
+      eventCallback?.({
+        sessionId: "existing-session",
+        timestamp: new Date().toISOString(),
+        event: { type: "text", text: "Already active.", turnId: "turn-1" },
+      });
+    });
+
+    const modelButton = await screen.findByLabelText("Select model");
+    await act(async () => {
+      fireEvent.click(modelButton);
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("listbox")).toBeTruthy();
+    });
+    await act(async () => {
+      clickEnabledModelOption(/Claude Sonnet 4\.6/i);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Select model").textContent).toContain("Claude Sonnet 4.6");
+    });
+
+    await act(async () => {
+      fireEvent.change(screen.getByPlaceholderText("Message the agent..."), {
+        target: { value: "Switch brains but keep the same CTO." },
+      });
+      fireEvent.click(screen.getByTitle("Send"));
+    });
+
+    await waitFor(() => {
+      expect((window as any).ade.agentChat.updateSession).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "existing-session",
+        modelId: "anthropic/claude-sonnet-4-6",
+      }));
     });
   });
 
@@ -386,7 +556,7 @@ describe("AgentChatPane", () => {
         }),
     );
 
-    render(<AgentChatPane laneId="lane-1" onSessionCreated={onSessionCreated} />);
+    render(<AgentChatPane laneId="lane-1" onSessionCreated={onSessionCreated} forceDraftMode />);
 
     const textarea = await screen.findByPlaceholderText("Message the agent...");
 
@@ -834,7 +1004,7 @@ describe("AgentChatPane", () => {
       clickEnabledModelOption(/Claude Sonnet 4\.6/i);
     });
     await waitFor(() => {
-      expect(modelButton.textContent).toContain("Claude Sonnet 4.6");
+      expect(screen.getByLabelText("Select model").textContent).toContain("Claude Sonnet 4.6");
     });
 
     const textarea = screen.getByPlaceholderText("Message the agent...");
@@ -859,7 +1029,7 @@ describe("AgentChatPane", () => {
     });
   });
 
-  it("re-syncs the composer model when the user re-selects the active session tab", async () => {
+  it("keeps the composer aligned with the active session after re-selecting its tab", async () => {
     const session = mockSession({
       sessionId: "existing-session",
       title: "Claude debugging chat",
@@ -884,15 +1054,15 @@ describe("AgentChatPane", () => {
     });
 
     await waitFor(() => {
-      expect(modelButton.textContent).toContain("Claude Sonnet 4.6");
+      expect(screen.getByLabelText("Select model").textContent).toContain("Claude Sonnet 4.6");
     });
 
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /Claude debugging chat/i }));
+      fireEvent.click(screen.getByRole("button", { name: /Initial chat/i }));
     });
 
     await waitFor(() => {
-      expect(modelButton.textContent).toContain("GPT-5.3 Codex");
+      expect(screen.getByLabelText("Select model").textContent).toContain("Claude Sonnet 4.6");
     });
   });
 

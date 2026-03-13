@@ -744,11 +744,122 @@ export type MissionFinalizationState = {
   completedAt: string | null;
 };
 
+export type DelegationMode = "exclusive" | "bounded_parallel" | "recovery";
+
+export type DelegationIntent =
+  | "planner"
+  | "implementation"
+  | "validation"
+  | "specialist"
+  | "subagent"
+  | "parallel_subtasks"
+  | "recovery";
+
+export type DelegationScope = {
+  kind: "phase" | "step" | "worker" | "batch";
+  key: string;
+  label?: string | null;
+};
+
+export type DelegationContractStatus =
+  | "launching"
+  | "active"
+  | "completed"
+  | "failed"
+  | "launch_failed"
+  | "recovering"
+  | "blocked"
+  | "canceled";
+
+export type DelegationLaunchState =
+  | "awaiting_context"
+  | "fetching_context"
+  | "awaiting_worker_launch"
+  | "launching_worker"
+  | "waiting_on_worker"
+  | "recovering"
+  | "completed"
+  | "blocked";
+
+export type CoordinatorCapability =
+  | "observe"
+  | "fetch_project_context"
+  | "spawn_top_level_worker"
+  | "spawn_nested_worker"
+  | "spawn_parallel_workers"
+  | "read_repo"
+  | "message_workers"
+  | "ask_user"
+  | "run_control"
+  | "update_mission_state";
+
+export type DelegationFailureCategory =
+  | "run_context_bug"
+  | "provider_unreachable"
+  | "permission_denied"
+  | "tool_schema_error"
+  | "native_tool_violation"
+  | "unknown";
+
+export type DelegationRecoveryAction =
+  | "retry"
+  | "switch_to_fallback_model"
+  | "cancel_run";
+
+export type DelegationContract = {
+  schemaVersion: 1;
+  contractId: string;
+  runId: string;
+  ownerKind: "coordinator";
+  workerIntent: DelegationIntent;
+  mode: DelegationMode;
+  scope: DelegationScope;
+  phaseKey: string | null;
+  status: DelegationContractStatus;
+  launchState: DelegationLaunchState | null;
+  activeWorkerIds: string[];
+  coordinatorCapabilities: CoordinatorCapability[];
+  launchPolicy: {
+    maxLaunchAttempts: number;
+  };
+  failurePolicy: {
+    retryLimit: number;
+    escalation: "intervention" | "retry" | "stop";
+  };
+  batchId?: string | null;
+  parentContractId?: string | null;
+  failure?: {
+    category: DelegationFailureCategory;
+    reasonCode: string;
+    retryable: boolean;
+    recoveryOptions: DelegationRecoveryAction[];
+    message: string;
+    toolName?: string | null;
+    retryCount: number;
+    occurredAt: string;
+  } | null;
+  metadata?: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+};
+
 export type MissionCoordinatorAvailability = {
   available: boolean;
   mode: "offline" | "consult_only" | "continuation_required";
   summary: string;
   detail: string | null;
+  delegation?: {
+    contractId: string | null;
+    workerIntent: DelegationIntent | null;
+    mode: DelegationMode | null;
+    status: DelegationContractStatus | null;
+    scopeKey: string | null;
+    scopeLabel?: string | null;
+    activeWorkerIds: string[];
+    updatedAt: string;
+  } | null;
   updatedAt: string;
 };
 

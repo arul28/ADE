@@ -119,6 +119,14 @@ export type LinearWorkflowStepType =
   | "reopen_issue"
   | "emit_app_notification";
 
+export type LinearWorkflowTargetStatus =
+  | "completed"
+  | "explicit_completion"
+  | "runtime_completed"
+  | "failed"
+  | "cancelled"
+  | "any_terminal";
+
 export type LinearWorkflowStep = {
   id: string;
   type: LinearWorkflowStepType;
@@ -136,7 +144,7 @@ export type LinearWorkflowStep = {
   reason?: string;
   required?: boolean;
   mode?: "links" | "attachments";
-  targetStatus?: "completed" | "failed" | "cancelled" | "any_terminal";
+  targetStatus?: LinearWorkflowTargetStatus;
   notifyOn?: "delegated" | "pr_linked" | "review_ready" | "completed" | "failed";
   reviewerIdentityKey?: AgentChatIdentityKey;
   rejectAction?: LinearWorkflowReviewRejectionAction;
@@ -317,6 +325,7 @@ export type LinearWorkflowRunStep = {
   workflowStepId: string;
   type: LinearWorkflowStepType;
   name?: string;
+  targetStatus?: LinearWorkflowTargetStatus;
   status: "pending" | "running" | "waiting" | "completed" | "failed" | "skipped";
   startedAt: string | null;
   completedAt: string | null;
@@ -566,7 +575,7 @@ export type CtoSaveLinearWorkflowDefinitionsArgs = {
 
 export type CtoResolveLinearWorkflowRunArgs = {
   runId: string;
-  action: "approve" | "reject" | "retry";
+  action: "approve" | "reject" | "retry" | "complete";
   note?: string;
 };
 
@@ -639,7 +648,7 @@ export type CtoGetLinearWorkflowRunDetailArgs = {
 
 export type CtoResolveLinearSyncQueueItemArgs = {
   queueItemId: string;
-  action: "approve" | "reject" | "retry";
+  action: "approve" | "reject" | "retry" | "complete";
   note?: string;
 };
 

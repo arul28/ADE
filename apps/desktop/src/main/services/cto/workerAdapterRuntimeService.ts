@@ -1,9 +1,16 @@
 import { spawn } from "node:child_process";
-import type { AgentIdentity, AdapterType } from "../../../shared/types";
+import type {
+  AgentIdentity,
+  AdapterType,
+  WorkerContinuationHandle,
+  WorkerRuntimeSurface,
+} from "../../../shared/types";
+import type { createAgentChatService } from "../chat/agentChatService";
 
 type WorkerAdapterRuntimeServiceArgs = {
   fetchImpl?: typeof fetch;
   spawnImpl?: typeof spawn;
+  getAgentChatService?: () => Pick<ReturnType<typeof createAgentChatService>, "ensureIdentitySession" | "runSessionTurn"> | null;
 };
 
 export type WorkerAdapterRunArgs = {
@@ -11,14 +18,22 @@ export type WorkerAdapterRunArgs = {
   prompt: string;
   context?: Record<string, unknown>;
   timeoutMs?: number;
+  laneId?: string | null;
+  continuation?: WorkerContinuationHandle | null;
 };
 
 export type WorkerAdapterRunResult = {
   adapterType: AdapterType;
+  effectiveSurface: WorkerRuntimeSurface;
   ok: boolean;
   statusCode?: number | null;
   outputText: string;
   raw: unknown;
+  provider?: string | null;
+  model?: string | null;
+  modelId?: string | null;
+  sessionId?: string | null;
+  continuation?: WorkerContinuationHandle | null;
   usage?: {
     inputTokens?: number | null;
     outputTokens?: number | null;
@@ -56,6 +71,17 @@ function toPositiveTimeout(preferred: unknown, fallback = 60_000): number {
   const candidate = Number(preferred);
   if (Number.isFinite(candidate) && candidate > 0) return Math.floor(candidate);
   return fallback;
+}
+
+function toOptionalString(value: unknown): string | null {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text.length ? text : null;
+}
+
+function chatSurfaceForProvider(provider: string): WorkerRuntimeSurface {
+  if (provider === "claude") return "claude_sdk";
+  if (provider === "codex") return "codex_app_server";
+  return "unified_chat";
 }
 
 function guardCommand(command: string): void {
@@ -138,6 +164,78 @@ export function createWorkerAdapterRuntimeService(args: WorkerAdapterRuntimeServ
     }
     const adapterType = input.agent.adapterType;
     const config = resolveEnvRefsDeep(input.agent.adapterConfig ?? {}) as Record<string, unknown>;
+    const requestedModelId = toOptionalString(config.modelId);
+    const requestedModel = toOptionalString(config.model);
+    const laneId = input.laneId ?? toOptionalString(input.context?.laneId);
+    const agentChatService = args.getAgentChatService?.() ?? null;
+    const canUseSessionSurface = Boolean(
+      agentChatService
+      && (laneId || input.continuation?.sessionId)
+      && (adapterType === "claude-local"
+        || adapterType === "codex-local"
+        || requestedModelId
+        || requestedModel
+        || input.continuation?.sessionId),
+    );
+
+    if (canUseSessionSurface) {
+      const continuationSessionId = toOptionalString(input.continuation?.sessionId);
+      const sessionId = continuationSessionId
+        ?? (
+          await agentChatService!.ensureIdentitySession({
+            identityKey: `agent:${input.agent.id}`,
+            laneId: laneId ?? (() => {
+              throw new Error("A laneId is required to launch a resumable worker session.");
+            })(),
+            ...(requestedModelId ? { modelId: requestedModelId } : {}),
+            ...(toOptionalString(config.reasoningEffort) ? { reasoningEffort: toOptionalString(config.reasoningEffort) } : {}),
+            reuseExisting: true,
+          })
+        ).id;
+      const timeoutMs = toPositiveTimeout(input.timeoutMs ?? config.timeoutMs, 300_000);
+      const instructions = typeof config.instructions === "string" && config.instructions.trim().length
+        ? `${config.instructions.trim()}\n\n`
+        : "";
+      const sessionResult = await agentChatService!.runSessionTurn({
+        sessionId,
+        text: `${instructions}${prompt}`,
+        ...(toOptionalString(config.reasoningEffort) ? { reasoningEffort: toOptionalString(config.reasoningEffort) } : {}),
+        timeoutMs,
+      });
+      const effectiveSurface = chatSurfaceForProvider(sessionResult.provider);
+      return {
+        adapterType,
+        effectiveSurface,
+        ok: true,
+        statusCode: 0,
+        outputText: sessionResult.outputText,
+        raw: sessionResult,
+        provider: sessionResult.provider,
+        model: sessionResult.model,
+        modelId: sessionResult.modelId ?? requestedModelId,
+        sessionId: sessionResult.sessionId,
+        continuation: {
+          surface: effectiveSurface,
+          provider: sessionResult.provider,
+          model: sessionResult.model,
+          modelId: sessionResult.modelId ?? requestedModelId,
+          sessionId: sessionResult.sessionId,
+          threadId: sessionResult.threadId ?? null,
+          sdkSessionId: sessionResult.sdkSessionId ?? null,
+          reasoningEffort: toOptionalString(config.reasoningEffort),
+        },
+        ...(sessionResult.usage
+          ? {
+              usage: {
+                inputTokens: sessionResult.usage.inputTokens ?? null,
+                outputTokens: sessionResult.usage.outputTokens ?? null,
+                costCents: null,
+                estimated: true,
+              },
+            }
+          : {}),
+      };
+    }
 
     if (adapterType === "openclaw-webhook") {
       const url = String(config.url ?? "").trim();
@@ -188,10 +286,21 @@ export function createWorkerAdapterRuntimeService(args: WorkerAdapterRuntimeServ
             : text;
         return {
           adapterType,
+          effectiveSurface: "openclaw_webhook",
           ok: response.ok,
           statusCode: response.status,
           outputText: outputText.trim(),
           raw: parsed,
+          provider: null,
+          model: requestedModel,
+          modelId: requestedModelId,
+          continuation: {
+            surface: "openclaw_webhook",
+            provider: null,
+            model: requestedModel,
+            modelId: requestedModelId,
+            reasoningEffort: toOptionalString(config.reasoningEffort),
+          },
         };
       } finally {
         clearTimeout(timeout);
@@ -218,10 +327,21 @@ export function createWorkerAdapterRuntimeService(args: WorkerAdapterRuntimeServ
       });
       return {
         adapterType,
+        effectiveSurface: "process",
         ok: result.ok,
         statusCode: result.ok ? 0 : 1,
         outputText: result.outputText,
         raw: result.raw,
+        provider: null,
+        model: requestedModel,
+        modelId: requestedModelId,
+        continuation: {
+          surface: "process",
+          provider: null,
+          model: requestedModel,
+          modelId: requestedModelId,
+          reasoningEffort: toOptionalString(config.reasoningEffort),
+        },
       };
     }
 
@@ -250,10 +370,21 @@ export function createWorkerAdapterRuntimeService(args: WorkerAdapterRuntimeServ
       });
       return {
         adapterType,
+        effectiveSurface: "process",
         ok: result.ok,
         statusCode: result.ok ? 0 : 1,
         outputText: result.outputText,
         raw: result.raw,
+        provider: adapterType === "claude-local" ? "claude" : "codex",
+        model,
+        modelId: requestedModelId,
+        continuation: {
+          surface: "process",
+          provider: adapterType === "claude-local" ? "claude" : "codex",
+          model,
+          modelId: requestedModelId,
+          reasoningEffort: toOptionalString(config.reasoningEffort),
+        },
       };
     }
 

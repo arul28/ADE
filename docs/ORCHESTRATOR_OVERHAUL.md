@@ -80,6 +80,7 @@ These notes reflect the current Missions/orchestrator UX and runtime behavior be
 - Planning is a built-in phase and should hand off quickly to a read-only planning worker; the coordinator should not spend long doing its own repo exploration first.
 - Configured phase transitions remain explicit coordinator actions; runtime sync can summarize phase progress, but it should not silently advance `currentPhaseKey` across configured boundaries.
 - After delegation, coordinator wake-ups should be driven by actionable runtime events, steering input, or worker escalation rather than constant idle reasoning.
+- Coordinator-owned worker launches should flow through explicit delegation contracts so the runtime, not prompt wording, owns delegated-scope boundaries, launch recovery, and lifecycle projection.
 - Missions chat is split by purpose: Global is the high-signal summary/broadcast thread, while worker and orchestrator channels are the detailed inspection surface.
 - Worker/orchestrator thread panes now reuse the shared agent chat renderer, so tool/thinking/status UI should converge with the normal chat experience instead of maintaining a separate Missions-only renderer.
 - Permission architecture is split: CLI-backed models rely primarily on provider-native permission modes for native behavior, while ADE separately scopes coordinator/MCP tool exposure; API-key and local models use ADE planning/coding tool profiles.

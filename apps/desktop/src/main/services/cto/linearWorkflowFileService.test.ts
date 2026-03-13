@@ -22,15 +22,40 @@ describe("linearWorkflowFileService", () => {
     expect(loaded.workflows.map((workflow) => workflow.id)).toEqual([
       "cto-mission-autopilot",
       "cto-direct-employee-session",
+      "cto-worker-run-autopilot",
       "cto-pr-fast-lane",
       "cto-human-review-gate",
     ]);
+    expect(loaded.workflows.find((workflow) => workflow.id === "cto-direct-employee-session")?.steps.map((step) => step.type)).toEqual([
+      "set_linear_state",
+      "launch_target",
+      "wait_for_target_status",
+      "emit_app_notification",
+      "complete_issue",
+    ]);
+    expect(loaded.workflows.find((workflow) => workflow.id === "cto-worker-run-autopilot")?.steps.map((step) => step.type)).toEqual([
+      "set_linear_state",
+      "launch_target",
+      "wait_for_target_status",
+      "emit_app_notification",
+      "complete_issue",
+    ]);
+    expect(loaded.workflows.find((workflow) => workflow.id === "cto-pr-fast-lane")?.steps.map((step) => step.type)).toEqual([
+      "set_linear_state",
+      "launch_target",
+      "wait_for_pr",
+      "emit_app_notification",
+      "complete_issue",
+    ]);
+    expect(loaded.workflows.find((workflow) => workflow.id === "cto-direct-employee-session")?.target.laneSelection).toBe("fresh_issue_lane");
+    expect(loaded.workflows.find((workflow) => workflow.id === "cto-direct-employee-session")?.target.sessionReuse).toBe("fresh_session");
+    expect(loaded.workflows.find((workflow) => workflow.id === "cto-worker-run-autopilot")?.target.laneSelection).toBe("fresh_issue_lane");
 
     const saved = service.save(loaded);
 
     expect(saved.source).toBe("repo");
     expect(saved.files.some((file) => file.kind === "settings")).toBe(true);
-    expect(saved.files.filter((file) => file.kind === "workflow")).toHaveLength(4);
+    expect(saved.files.filter((file) => file.kind === "workflow")).toHaveLength(5);
     expect(fs.existsSync(path.join(root, ".ade", "workflows", "linear", "_settings.yaml"))).toBe(true);
   });
 

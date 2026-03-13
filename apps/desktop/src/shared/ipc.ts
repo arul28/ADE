@@ -106,6 +106,8 @@ export const IPC = {
   agentChatFetchContextPack: "ade.agentChat.fetchContextPack",
   agentChatChangePermissionMode: "ade.agentChat.changePermissionMode",
   agentChatUpdateSession: "ade.agentChat.updateSession",
+  agentChatSlashCommands: "ade.agentChat.slashCommands",
+  agentChatFileSearch: "ade.agentChat.fileSearch",
   computerUseGetSettings: "ade.computerUse.getSettings",
   computerUseListArtifacts: "ade.computerUse.listArtifacts",
   computerUseGetOwnerSnapshot: "ade.computerUse.getOwnerSnapshot",

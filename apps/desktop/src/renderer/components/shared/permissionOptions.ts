@@ -3,7 +3,7 @@
 // mission dialog to keep per-provider permission UIs in sync.
 // ---------------------------------------------------------------------------
 
-import type { AgentChatPermissionMode } from "../../../shared/types";
+import type { AgentChatPermissionMode, ChatSurfaceProfile } from "../../../shared/types";
 
 export type SafetyLevel = "safe" | "semi-auto" | "full-auto" | "danger" | "custom";
 
@@ -19,6 +19,35 @@ export type PermissionOption = {
   safety: SafetyLevel;
 };
 
+function normalizePermissionFamily(family: string): string {
+  if (family === "claude") return "anthropic";
+  if (family === "codex") return "openai";
+  return family;
+}
+
+export function resolvePersistentIdentityGuardedPermissionMode(opts: {
+  family: string;
+  isCliWrapped: boolean;
+}): AgentChatPermissionMode {
+  const family = normalizePermissionFamily(opts.family);
+  return opts.isCliWrapped && family === "anthropic" ? "default" : "edit";
+}
+
+export function normalizePermissionModeForProfile(opts: {
+  profile?: ChatSurfaceProfile;
+  family: string;
+  isCliWrapped: boolean;
+  mode?: AgentChatPermissionMode;
+}): AgentChatPermissionMode {
+  if (opts.profile !== "persistent_identity") {
+    return opts.mode ?? "plan";
+  }
+  if (opts.mode === "full-auto") {
+    return "full-auto";
+  }
+  return resolvePersistentIdentityGuardedPermissionMode(opts);
+}
+
 /**
  * Return the list of permission options appropriate for a given model family.
  *
@@ -28,7 +57,32 @@ export type PermissionOption = {
 export function getPermissionOptions(opts: {
   family: string;
   isCliWrapped: boolean;
+  profile?: ChatSurfaceProfile;
 }): PermissionOption[] {
+  if (opts.profile === "persistent_identity") {
+    const guardedMode = resolvePersistentIdentityGuardedPermissionMode(opts);
+    return [
+      {
+        value: guardedMode,
+        label: "Default",
+        shortDesc: "Persistent session with the backend's default guardrails",
+        detail: "Run this long-lived identity with the active backend's default operating mode. The agent keeps its memory and session continuity, but sensitive actions still respect the provider's normal safety checks.",
+        allows: ["Persistent memory and session continuity", "Normal model/tool access for this identity"],
+        gates: ["Sensitive writes or commands according to the active backend"],
+        safety: "semi-auto",
+      },
+      {
+        value: "full-auto",
+        label: "Full Access",
+        shortDesc: "Persistent session with full tool access",
+        detail: "Run this long-lived identity with full access. This is the OpenClaw-style operating mode for a trusted project operator that can work continuously without per-action permission prompts.",
+        allows: ["All configured tools for this session", "Cross-provider model swaps while keeping the same identity"],
+        warning: "Use this when you want the agent to operate as a trusted persistent teammate.",
+        safety: "danger",
+      },
+    ];
+  }
+
   // Claude CLI models (anthropic)
   if (opts.isCliWrapped && opts.family === "anthropic") {
     return [

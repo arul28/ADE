@@ -17,8 +17,18 @@ import type {
 } from "../../../shared/types";
 
 vi.mock("../chat/AgentChatPane", () => ({
-  AgentChatPane: ({ laneId, lockSessionId }: { laneId: string | null; lockSessionId?: string | null }) => (
-    <div data-testid="chat-pane-props">{`${laneId ?? "none"}::${lockSessionId ?? "none"}`}</div>
+  AgentChatPane: ({
+    laneId,
+    lockSessionId,
+    presentation,
+  }: {
+    laneId: string | null;
+    lockSessionId?: string | null;
+    presentation?: { profile?: string; title?: string | null };
+  }) => (
+    <div data-testid="chat-pane-props">
+      {`${laneId ?? "none"}::${lockSessionId ?? "none"}::${presentation?.profile ?? "none"}::${presentation?.title ?? "none"}`}
+    </div>
   ),
 }));
 
@@ -348,11 +358,14 @@ describe("CtoPage", () => {
     expect(screen.getByText("Department")).toBeTruthy();
 
     await waitFor(() => {
-      expect((window as any).ade.cto.ensureSession).toHaveBeenCalledWith({ laneId: "lane-1" });
+      expect((window as any).ade.cto.ensureSession).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        permissionMode: "full-auto",
+      });
     });
 
     await waitFor(() => {
-      expect(screen.getByTestId("chat-pane-props").textContent).toBe("lane-1::cto-session-1");
+      expect(screen.getByTestId("chat-pane-props").textContent).toBe("lane-1::cto-session-1::persistent_identity::CTO");
     });
 
     await waitFor(() => {
@@ -366,7 +379,7 @@ describe("CtoPage", () => {
     render(<CtoPage />);
 
     await waitFor(() => {
-      expect(screen.getByText("Configure Your CTO")).toBeTruthy();
+      expect(screen.getByText(/Configure Your CTO/i)).toBeTruthy();
     });
     expect(screen.getByTestId("cto-onboarding-prompt-preview")).toBeTruthy();
     expect((window as any).ade.cto.ensureSession).not.toHaveBeenCalled();
@@ -380,13 +393,13 @@ describe("CtoPage", () => {
     render(<CtoPage />);
 
     await waitFor(() => {
-      expect(screen.getByText("Configure Your CTO")).toBeTruthy();
+      expect(screen.getByText(/Configure Your CTO/i)).toBeTruthy();
     });
 
     fireEvent.click(screen.getByText("Skip for now"));
 
     await waitFor(() => {
-      expect(screen.queryByText("Configure Your CTO")).toBeNull();
+      expect(screen.queryByText(/Configure Your CTO/i)).toBeNull();
     });
     expect((window as any).ade.cto.dismissOnboarding).toHaveBeenCalledTimes(1);
   });
@@ -397,7 +410,7 @@ describe("CtoPage", () => {
     render(<CtoPage />);
 
     await waitFor(() => {
-      expect(screen.getByText("Configure Your CTO")).toBeTruthy();
+      expect(screen.getByText(/Configure Your CTO/i)).toBeTruthy();
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Save & Continue" }));
@@ -413,7 +426,7 @@ describe("CtoPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Finish Without Linear" }));
 
     await waitFor(() => {
-      expect(screen.queryByText("Configure Your CTO")).toBeNull();
+      expect(screen.queryByText(/Configure Your CTO/i)).toBeNull();
     });
     expect((window as any).ade.cto.completeOnboardingStep).toHaveBeenCalledWith({ stepId: "integrations" });
   });
@@ -427,7 +440,7 @@ describe("CtoPage", () => {
     render(<CtoPage />);
 
     await waitFor(() => {
-      expect(screen.getByText("Your CTO setup is incomplete.")).toBeTruthy();
+      expect(screen.getByText(/Finish your persistent CTO setup/i)).toBeTruthy();
     });
   });
 
@@ -441,9 +454,9 @@ describe("CtoPage", () => {
       expect(screen.getByTestId("core-memory-view")).toBeTruthy();
     });
 
-    expect(screen.getByText("Test project summary")).toBeTruthy();
-    expect(screen.getByText(/no force push/)).toBeTruthy();
-    expect(screen.getByText(/stability/)).toBeTruthy();
+    expect(screen.getAllByText("Test project summary").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/no force push/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/stability/).length).toBeGreaterThan(0);
   });
 
   it("enters edit mode and saves core memory patch", async () => {
@@ -510,7 +523,7 @@ describe("CtoPage", () => {
 
     render(<CtoPage />);
 
-    expect(screen.getByText("Create a lane to start CTO chat.")).toBeTruthy();
+    expect(screen.getByText(/Create a lane to start the persistent CTO session/i)).toBeTruthy();
     expect((window as any).ade.cto.ensureSession).not.toHaveBeenCalled();
   });
 
@@ -665,6 +678,7 @@ describe("CtoPage", () => {
       expect((window as any).ade.cto.ensureAgentSession).toHaveBeenCalledWith({
         agentId: "agent-1",
         laneId: "lane-1",
+        permissionMode: "full-auto",
       });
     });
   });
@@ -761,7 +775,7 @@ describe("CtoPage", () => {
 
     await waitFor(() => {
       expect((window as any).ade.cto.resetOnboarding).toHaveBeenCalledTimes(1);
-      expect(screen.getByText("Configure Your CTO")).toBeTruthy();
+      expect(screen.getByText(/Configure Your CTO/i)).toBeTruthy();
     });
   });
 

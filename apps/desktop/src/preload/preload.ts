@@ -1095,6 +1095,10 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.agentChatFetchContextPack, args),
     changePermissionMode: async (args: import("../shared/types").AgentChatChangePermissionModeArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.agentChatChangePermissionMode, args),
+    slashCommands: async (args: import("../shared/types").AgentChatSlashCommandsArgs): Promise<import("../shared/types").AgentChatSlashCommand[]> =>
+      ipcRenderer.invoke(IPC.agentChatSlashCommands, args),
+    fileSearch: async (args: import("../shared/types").AgentChatFileSearchArgs): Promise<import("../shared/types").AgentChatFileSearchResult[]> =>
+      ipcRenderer.invoke(IPC.agentChatFileSearch, args),
   },
   computerUse: {
     getSettings: async (): Promise<ComputerUseSettingsSnapshot> =>

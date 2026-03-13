@@ -35,9 +35,15 @@ async function main() {
   const passes = [];
 
   try {
-    passes.push(await checkImport("@openai/codex-sdk", (mod) => typeof mod.Codex === "function", "codex sdk import ok"));
+    passes.push(
+      await checkImport(
+        "@anthropic-ai/claude-agent-sdk",
+        (mod) => typeof mod.query === "function",
+        "claude agent sdk import ok"
+      )
+    );
   } catch (error) {
-    failures.push(`codex sdk import failed: ${error instanceof Error ? error.message : String(error)}`);
+    failures.push(`claude agent sdk import failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   try {

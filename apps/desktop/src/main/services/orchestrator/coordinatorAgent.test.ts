@@ -29,12 +29,13 @@ function makeFullStream(parts: any[]): AsyncIterable<any> {
   };
 }
 
-function createStreamResult(parts: any[]) {
+function createStreamResult(parts: any[]): ReturnType<typeof streamText> {
   return {
     fullStream: makeFullStream(parts),
+    textStream: makeFullStream([]),
     response: Promise.resolve({ messages: [] }),
-    usage: Promise.resolve({ inputTokens: 1, outputTokens: 1 }),
-  };
+    usage: Promise.resolve({ inputTokens: 1, outputTokens: 1, totalTokens: 2 }),
+  } as unknown as ReturnType<typeof streamText>;
 }
 
 function createPlanningPhases() {

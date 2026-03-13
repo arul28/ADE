@@ -125,10 +125,11 @@ The current default dev-enabled background set includes:
 - head watcher
 - skill registry
 
-Two details matter for stability:
+Three details matter for stability:
 
 - **Linear ingress** only auto-starts when its realtime relay/local webhook configuration is actually present.
 - **Embedding worker** starts on a long delay and is no longer part of the first usable paint.
+- **Memory UI** is consolidated in **Settings > Memory** only. The embedding health poll runs at 10s intervals (not the earlier 1.5s) to avoid unnecessary renderer churn. There are no other memory surfaces in the renderer.
 
 ---
 

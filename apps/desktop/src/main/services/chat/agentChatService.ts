@@ -13,7 +13,8 @@ import {
   type ModelMessage,
   type UserContent,
 } from "ai";
-import { createClaudeCode } from "ai-sdk-provider-claude-code";
+import { query as claudeQuery } from "@anthropic-ai/claude-agent-sdk";
+import type { Query as ClaudeSDKQuery, SDKMessage, Options as ClaudeSDKOptions, PermissionResult as ClaudePermissionResult } from "@anthropic-ai/claude-agent-sdk";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createSessionService } from "../sessions/sessionService";
@@ -63,6 +64,7 @@ import { createUniversalToolSet, type PermissionMode } from "../ai/tools/univers
 import { buildCodingAgentSystemPrompt, composeSystemPrompt } from "../ai/tools/systemPrompt";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import type { createMemoryService } from "../memory/memoryService";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { createWorkerAgentService } from "../cto/workerAgentService";
@@ -107,6 +109,7 @@ type PersistedChatState = {
   capabilityMode?: CtoCapabilityMode;
   computerUse?: ComputerUsePolicy;
   threadId?: string;
+  sdkSessionId?: string;
   messages?: PersistedClaudeMessage[];
   updatedAt: string;
 };
@@ -142,13 +145,17 @@ type CodexRuntime = {
   notify: (method: string, params?: unknown) => void;
   sendResponse: (id: string | number, result: unknown) => void;
   sendError: (id: string | number, message: string) => void;
+  slashCommands: Array<{ name: string; description: string; argumentHint?: string }>;
+  rateLimits: { remaining: number | null; limit: number | null; resetAt: string | null } | null;
 };
 
 type ClaudeRuntime = {
   kind: "claude";
-  messages: PersistedClaudeMessage[];
+  sdkSessionId: string | null;
+  activeQuery: import("@anthropic-ai/claude-agent-sdk").Query | null;
+  activeSubagents: Map<string, { taskId: string; description: string }>;
+  slashCommands: Array<{ name: string; description: string; argumentHint?: string }>;
   busy: boolean;
-  abortController: AbortController | null;
   activeTurnId: string | null;
   pendingSteers: string[];
   approvals: Map<string, PendingClaudeApproval>;
@@ -205,6 +212,40 @@ type ManagedChatSession = {
     turnId?: string;
     itemId?: string;
   } | null;
+  recentConversationEntries: Array<{
+    role: "user" | "assistant";
+    text: string;
+    turnId?: string;
+  }>;
+};
+
+type SessionTurnCollector = {
+  resolve: (value: {
+    sessionId: string;
+    provider: AgentChatProvider;
+    model: string;
+    modelId?: string;
+    outputText: string;
+    usage?: {
+      inputTokens?: number | null;
+      outputTokens?: number | null;
+      cacheReadTokens?: number | null;
+      cacheCreationTokens?: number | null;
+    };
+    turnId?: string;
+    threadId?: string;
+    sdkSessionId?: string | null;
+  }) => void;
+  reject: (error: Error) => void;
+  outputText: string;
+  usage?: {
+    inputTokens?: number | null;
+    outputTokens?: number | null;
+    cacheReadTokens?: number | null;
+    cacheCreationTokens?: number | null;
+  };
+  lastError: string | null;
+  timeout: NodeJS.Timeout;
 };
 
 const ATTACHMENT_MEDIA_TYPES: Record<string, string> = {
@@ -696,22 +737,6 @@ function buildExecutionModeDirective(
     ].join("\n");
   }
 
-  if (provider === "claude" && mode === "subagents") {
-    return [
-      "[ADE launch directive]",
-      "Use Claude Code subagents when specialized or parallel investigation would help.",
-      "Delegate bounded tasks to suitable subagents, summarize their findings, and only stay focused when delegation would add overhead.",
-    ].join("\n");
-  }
-
-  if (provider === "claude" && mode === "teams") {
-    return [
-      "[ADE launch directive]",
-      "If Claude project, local, or user agents are configured in Claude settings, prefer coordinating through them for specialized work.",
-      "Use those agents selectively, summarize delegated results clearly, and fall back to focused execution only when no useful agent is available.",
-    ].join("\n");
-  }
-
   return null;
 }
 
@@ -856,6 +881,17 @@ function inferCapabilityMode(provider: AgentChatProvider): CtoCapabilityMode {
   return provider === "codex" || provider === "claude" ? "full_mcp" : "fallback";
 }
 
+function guardedIdentityPermissionModeForProvider(provider: AgentChatProvider): AgentChatSession["permissionMode"] {
+  return provider === "claude" ? "default" : "edit";
+}
+
+function normalizeIdentityPermissionMode(
+  mode: AgentChatSession["permissionMode"] | undefined,
+  provider: AgentChatProvider,
+): AgentChatSession["permissionMode"] {
+  return mode === "full-auto" ? "full-auto" : guardedIdentityPermissionModeForProvider(provider);
+}
+
 function isLightweightSession(session: Pick<AgentChatSession, "sessionProfile">): boolean {
   return session.sessionProfile === "light";
 }
@@ -924,8 +960,8 @@ export function createAgentChatService(args: {
   fs.mkdirSync(transcriptsDir, { recursive: true });
   fs.mkdirSync(chatTranscriptsDir, { recursive: true });
 
-  const claudeProvider = createClaudeCode();
   const managedSessions = new Map<string, ManagedChatSession>();
+  const sessionTurnCollectors = new Map<string, SessionTurnCollector>();
 
   const buildAdeMcpServers = (
     provider: "claude" | "codex",
@@ -947,22 +983,88 @@ export function createAgentChatService(args: {
     }) ?? {};
   };
 
-  const refreshReconstructionContext = (managed: ManagedChatSession): void => {
+  const readTranscriptConversationEntries = (managed: ManagedChatSession): string[] => {
+    try {
+      const raw = fs.readFileSync(managed.transcriptPath, "utf8");
+      return parseAgentChatTranscript(raw)
+        .filter((entry) => entry.sessionId === managed.session.id)
+        .flatMap((entry) => {
+          if (entry.event.type === "user_message") {
+            const text = entry.event.text.trim();
+            return text.length ? [`User: ${text}`] : [];
+          }
+          if (entry.event.type === "text") {
+            const text = entry.event.text.trim();
+            return text.length ? [`Assistant: ${text}`] : [];
+          }
+          return [];
+        });
+    } catch {
+      return [];
+    }
+  };
+
+  const buildRecentConversationContext = (managed: ManagedChatSession, limit = 6): string => {
+    const liveEntries = managed.recentConversationEntries.map((entry) =>
+      `${entry.role === "user" ? "User" : "Assistant"}: ${entry.text}`,
+    );
+    const combined: string[] = [];
+    for (const entry of [...readTranscriptConversationEntries(managed), ...liveEntries]) {
+      if (!entry.trim().length) continue;
+      if (combined[combined.length - 1] === entry) continue;
+      combined.push(entry);
+    }
+    return combined.slice(-limit).join("\n");
+  };
+
+  const appendRecentConversationEntry = (managed: ManagedChatSession, event: AgentChatEvent): void => {
+    if (event.type !== "user_message" && event.type !== "text") return;
+    const text = event.text.trim();
+    if (!text.length) return;
+
+    const role = event.type === "user_message" ? "user" : "assistant";
+    const turnId = "turnId" in event ? event.turnId : undefined;
+    const lastEntry = managed.recentConversationEntries[managed.recentConversationEntries.length - 1];
+    if (role === "assistant" && lastEntry?.role === "assistant" && lastEntry.turnId === turnId) {
+      lastEntry.text = `${lastEntry.text}${text}`.trim();
+      return;
+    }
+
+    managed.recentConversationEntries.push({ role, text, turnId });
+    if (managed.recentConversationEntries.length > 12) {
+      managed.recentConversationEntries.splice(0, managed.recentConversationEntries.length - 12);
+    }
+  };
+
+  const refreshReconstructionContext = (
+    managed: ManagedChatSession,
+    options?: { includeConversationTail?: boolean },
+  ): void => {
+    const sections: string[] = [];
+
     if (managed.session.identityKey === "cto" && ctoStateService) {
-      managed.pendingReconstructionContext = ctoStateService.buildReconstructionContext(8);
-      return;
+      sections.push(ctoStateService.buildReconstructionContext(8));
+    } else {
+      const workerAgentId = resolveWorkerIdentityAgentId(managed.session.identityKey);
+      if (workerAgentId && workerAgentService) {
+        sections.push(workerAgentService.buildReconstructionContext(workerAgentId, 8));
+      }
     }
-    const workerAgentId = resolveWorkerIdentityAgentId(managed.session.identityKey);
-    if (workerAgentId && workerAgentService) {
-      managed.pendingReconstructionContext = workerAgentService.buildReconstructionContext(workerAgentId, 8);
-      return;
+
+    if (options?.includeConversationTail) {
+      const recentConversation = buildRecentConversationContext(managed);
+      if (recentConversation.length) {
+        sections.push(["Recent Conversation Tail", recentConversation].join("\n"));
+      }
     }
-    managed.pendingReconstructionContext = null;
+
+    const nextContext = sections.map((section) => section.trim()).filter((section) => section.length > 0).join("\n\n");
+    managed.pendingReconstructionContext = nextContext.length ? nextContext : null;
   };
 
   const applyReconstructionContextToStreamingRuntime = (
     managed: ManagedChatSession,
-    runtime: ClaudeRuntime | UnifiedRuntime
+    runtime: UnifiedRuntime
   ): void => {
     const context = managed.pendingReconstructionContext?.trim() ?? "";
     if (!context.length) return;
@@ -999,6 +1101,15 @@ export function createAgentChatService(args: {
     if (currentTitle?.trim() === title) return title;
 
     sessionService.updateMeta({ sessionId: managed.session.id, title });
+
+    // Sync title to Codex thread if applicable
+    if (managed.session.provider === "codex" && managed.session.threadId && managed.runtime?.kind === "codex") {
+      managed.runtime.request("thread/name/set", {
+        threadId: managed.session.threadId,
+        name: title,
+      }).catch(() => { /* thread/name/set not supported — ignore */ });
+    }
+
     return title;
   };
 
@@ -1238,7 +1349,7 @@ export function createAgentChatService(args: {
       ...(managed.session.capabilityMode ? { capabilityMode: managed.session.capabilityMode } : {}),
       ...(managed.session.computerUse ? { computerUse: managed.session.computerUse } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
-      ...(managed.runtime?.kind === "claude" ? { messages: managed.runtime.messages } : {}),
+      ...(managed.runtime?.kind === "claude" ? { sdkSessionId: managed.runtime.sdkSessionId ?? undefined } : {}),
       ...(managed.runtime?.kind === "unified"
         ? { messages: managed.runtime.messages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })) }
         : {}),
@@ -1288,6 +1399,7 @@ export function createAgentChatService(args: {
               return (role === "user" || role === "assistant") && typeof content === "string";
             })
         : undefined;
+      const sdkSessionId = typeof record.sdkSessionId === "string" && record.sdkSessionId.trim().length ? record.sdkSessionId.trim() : undefined;
       return {
         version: 1,
         sessionId,
@@ -1305,6 +1417,7 @@ export function createAgentChatService(args: {
         ...(typeof record.threadId === "string" && record.threadId.trim().length
           ? { threadId: record.threadId.trim() }
           : {}),
+        ...(sdkSessionId ? { sdkSessionId } : {}),
         ...(messages?.length ? { messages } : {}),
         updatedAt: typeof record.updatedAt === "string" && record.updatedAt.trim().length ? record.updatedAt : nowIso()
       };
@@ -1422,6 +1535,7 @@ export function createAgentChatService(args: {
 
   const commitChatEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
     managed.session.lastActivityAt = nowIso();
+    appendRecentConversationEntry(managed, event);
 
     if (event.type === "text") {
       updatePreviewFromText(managed, event);
@@ -1447,6 +1561,41 @@ export function createAgentChatService(args: {
 
     writeTranscript(managed, envelope);
     onEvent?.(envelope);
+
+    const collector = sessionTurnCollectors.get(managed.session.id);
+    if (!collector) return;
+
+    if (event.type === "text") {
+      collector.outputText += event.text;
+      return;
+    }
+
+    if (event.type === "error") {
+      collector.lastError = event.message;
+      return;
+    }
+
+    if (event.type === "status" && event.turnStatus === "failed" && event.message) {
+      collector.lastError = event.message;
+      return;
+    }
+
+    if (event.type !== "done") return;
+
+    collector.usage = event.usage;
+    clearTimeout(collector.timeout);
+    sessionTurnCollectors.delete(managed.session.id);
+    collector.resolve({
+      sessionId: managed.session.id,
+      provider: managed.session.provider,
+      model: managed.session.model,
+      ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+      outputText: collector.outputText.trim() || managed.preview?.trim() || "",
+      ...(collector.usage ? { usage: collector.usage } : {}),
+      ...(event.turnId ? { turnId: event.turnId } : {}),
+      ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
+      ...(managed.runtime?.kind === "claude" ? { sdkSessionId: managed.runtime.sdkSessionId ?? null } : {}),
+    });
   };
 
   const flushBufferedReasoning = (managed: ManagedChatSession): void => {
@@ -1515,7 +1664,9 @@ export function createAgentChatService(args: {
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "claude") {
-      managed.runtime.abortController?.abort();
+      managed.runtime.activeQuery?.close();
+      managed.runtime.activeQuery = null;
+      managed.runtime.activeSubagents.clear();
       for (const pending of managed.runtime.approvals.values()) {
         pending.resolve("cancel");
       }
@@ -1761,6 +1912,7 @@ export function createAgentChatService(args: {
       lastActivitySignature: null,
       bufferedReasoning: null,
       previewTextBuffer: null,
+      recentConversationEntries: [],
     };
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
     refreshReconstructionContext(managed);
@@ -1786,8 +1938,23 @@ export function createAgentChatService(args: {
     if (managed.runtime.activeTurnId) {
       throw new Error("A turn is already active. Use steer or interrupt.");
     }
+    const runtime = managed.runtime;
     const attachments = args.attachments ?? [];
     const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
+
+    // Intercept /review command — route to review/start RPC instead of turn/start
+    if (args.promptText.trim().startsWith("/review")) {
+      emitChatEvent(managed, { type: "user_message", text: displayText, attachments });
+      const reviewResult = await runtime.request<{ turn?: { id?: string } }>("review/start", {
+        threadId: managed.session.threadId,
+        target: "uncommittedChanges",
+      });
+      const reviewTurnId = typeof reviewResult.turn?.id === "string" ? reviewResult.turn.id : null;
+      if (reviewTurnId) {
+        runtime.activeTurnId = reviewTurnId;
+      }
+      return;
+    }
 
     const input: Array<Record<string, unknown>> = [
       {
@@ -1926,7 +2093,639 @@ export function createAgentChatService(args: {
     };
   };
 
-  // ── Shared streaming turn for both Claude and Unified runtimes ──
+  // ── Claude SDK streaming turn ──
+
+  const runClaudeTurn = async (
+    managed: ManagedChatSession,
+    args: {
+      promptText: string;
+      displayText?: string;
+      attachments?: AgentChatFileRef[];
+    },
+  ): Promise<void> => {
+    const runtime = managed.runtime;
+    if (runtime?.kind !== "claude") {
+      throw new Error(`Claude runtime is not available for session '${managed.session.id}'.`);
+    }
+    if (runtime.busy) {
+      throw new Error("A turn is already active. Use steer or interrupt.");
+    }
+
+    const turnId = randomUUID();
+    runtime.busy = true;
+    runtime.activeTurnId = turnId;
+    runtime.interrupted = false;
+    managed.session.status = "active";
+
+    const attachments = args.attachments ?? [];
+    const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
+
+    const attachmentHint = attachments.length
+      ? `\n\nAttached context:\n${attachments.map((file) => `- ${file.type}: ${file.path}`).join("\n")}`
+      : "";
+    const reconstructionContext = managed.pendingReconstructionContext?.trim() ?? "";
+    const promptText = [
+      reconstructionContext.length
+        ? [
+            "System context (identity reconstruction, do not echo verbatim):",
+            reconstructionContext,
+          ].join("\n")
+        : null,
+      `${args.promptText}${attachmentHint}`,
+    ].filter((section): section is string => Boolean(section)).join("\n\n");
+    if (reconstructionContext.length) {
+      managed.pendingReconstructionContext = null;
+      persistChatState(managed);
+    }
+
+    emitChatEvent(managed, { type: "user_message", text: displayText, attachments, turnId });
+    emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+
+    let assistantText = "";
+    let usage: { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheCreationTokens?: number | null } | undefined;
+    let costUsd: number | null = null;
+
+    try {
+      const chatConfig = resolveChatConfig();
+      const claudePermissionMode = managed.session.permissionMode
+        ? mapPermissionToClaude(managed.session.permissionMode)
+        : chatConfig.claudePermissionMode;
+
+      const lightweight = isLightweightSession(managed.session);
+
+      // Build canUseTool handler
+      const canUseTool = async (
+        toolName: string,
+        toolInput: Record<string, unknown>,
+        opts: { signal: AbortSignal; suggestions?: Array<unknown>; toolUseID: string },
+      ): Promise<ClaudePermissionResult> => {
+        if (isPlanningApprovalGuarded(managed)) {
+          return {
+            behavior: "deny",
+            message: buildPlanningApprovalViolation(toolName),
+          };
+        }
+        const itemId = randomUUID();
+
+        // Special handling for AskUserQuestion / TodoWrite
+        if (toolName === "AskUserQuestion" || toolName === "askUser") {
+          const question = typeof toolInput.question === "string" ? toolInput.question : String(toolInput.question ?? "");
+          const options = Array.isArray(toolInput.options) ? toolInput.options : undefined;
+          emitChatEvent(managed, {
+            type: "structured_question",
+            question,
+            options: options?.map((o: unknown) => {
+              if (o && typeof o === "object" && "label" in o && "value" in o) {
+                return { label: String((o as any).label), value: String((o as any).value) };
+              }
+              return { label: String(o), value: String(o) };
+            }),
+            itemId,
+            turnId,
+          });
+        }
+
+        if (toolName === "TodoWrite" || toolName === "TaskCreate" || toolName === "TaskUpdate") {
+          const todos = Array.isArray(toolInput.todos) ? toolInput.todos : Array.isArray(toolInput.items) ? toolInput.items : null;
+          if (todos) {
+            emitChatEvent(managed, {
+              type: "todo_update",
+              items: todos.map((t: any, idx: number) => ({
+                id: String(t.id ?? `todo-${idx}`),
+                description: String(t.content ?? t.description ?? t.text ?? ""),
+                status: t.status === "completed" ? "completed" : t.status === "in_progress" ? "in_progress" : "pending",
+              })),
+              turnId,
+            });
+          }
+          // Allow TodoWrite to proceed without approval
+          return { behavior: "allow" };
+        }
+
+        emitChatEvent(managed, {
+          type: "approval_request",
+          itemId,
+          kind: "tool_call",
+          description: `Tool '${toolName}' requests approval`,
+          detail: toolInput,
+          turnId,
+        });
+
+        const decision = await new Promise<AgentChatApprovalDecision>((resolve) => {
+          runtime.approvals.set(itemId, { resolve });
+        });
+        runtime.approvals.delete(itemId);
+
+        if (decision === "accept" || decision === "accept_for_session") {
+          const result: ClaudePermissionResult = { behavior: "allow" };
+          if (decision === "accept_for_session" && opts.suggestions) {
+            (result as any).updatedPermissions = opts.suggestions;
+          }
+          return result;
+        }
+
+        return {
+          behavior: "deny",
+          message: `Tool '${toolName}' blocked by user decision.`,
+        };
+      };
+
+      // Build SDK options
+      const sdkOpts: ClaudeSDKOptions = {
+        cwd: managed.laneWorktreePath,
+        permissionMode: claudePermissionMode as any,
+        includePartialMessages: true,
+        maxBudgetUsd: chatConfig.sessionBudgetUsd ?? undefined,
+      };
+
+      if (runtime.sdkSessionId) {
+        sdkOpts.resume = runtime.sdkSessionId;
+      }
+
+      if (!lightweight) {
+        sdkOpts.systemPrompt = { type: "preset", preset: "claude_code" };
+        sdkOpts.settingSources = ["user", "project", "local"];
+        sdkOpts.mcpServers = buildAdeMcpServers(
+          "claude",
+          managed.session.identityKey === "cto" ? "cto" : "agent",
+          resolveWorkerIdentityAgentId(managed.session.identityKey),
+        ) as any;
+        sdkOpts.canUseTool = canUseTool as any;
+      }
+
+      const claudeDescriptor = resolveSessionModelDescriptor(managed.session);
+      const claudeSupportsReasoning = claudeDescriptor?.capabilities.reasoning ?? true;
+      if (claudeSupportsReasoning && managed.session.reasoningEffort) {
+        const effort = managed.session.reasoningEffort;
+        if (effort === "low" || effort === "medium" || effort === "high") {
+          sdkOpts.effort = effort;
+        }
+        const tokens = CLAUDE_EFFORT_TO_TOKENS[effort];
+        if (tokens) {
+          sdkOpts.thinking = { type: "enabled", budgetTokens: tokens };
+        }
+      }
+
+      sdkOpts.model = resolveClaudeCliModel(managed.session.model);
+
+      // Launch SDK query
+      const q = claudeQuery({ prompt: promptText, options: sdkOpts });
+      runtime.activeQuery = q;
+
+      emitChatEvent(managed, {
+        type: "activity",
+        activity: claudeSupportsReasoning ? "thinking" : "working",
+        detail: claudeSupportsReasoning ? REASONING_ACTIVITY_DETAIL : WORKING_ACTIVITY_DETAIL,
+        turnId,
+      });
+
+      // Iterate SDK messages
+      for await (const msg of q) {
+        if (runtime.interrupted) break;
+
+        // system:init — capture session_id and slash commands
+        if (msg.type === "system" && (msg as any).subtype === "init") {
+          const initMsg = msg as any;
+          runtime.sdkSessionId = initMsg.session_id ?? null;
+          // Capture slash commands reported by the SDK
+          if (Array.isArray(initMsg.slash_commands)) {
+            runtime.slashCommands = initMsg.slash_commands
+              .filter((cmd: unknown) => typeof cmd === "string" && cmd.length > 0)
+              .map((cmd: string) => ({ name: cmd.startsWith("/") ? cmd : `/${cmd}`, description: "" }));
+          }
+          // Also try supportedCommands() for richer metadata
+          if (runtime.activeQuery && typeof runtime.activeQuery.supportedCommands === "function") {
+            runtime.activeQuery.supportedCommands().then((cmds) => {
+              if (Array.isArray(cmds) && cmds.length > 0) {
+                runtime.slashCommands = cmds.map((c: any) => ({
+                  name: typeof c.name === "string" ? (c.name.startsWith("/") ? c.name : `/${c.name}`) : String(c),
+                  description: typeof c.description === "string" ? c.description : "",
+                  argumentHint: typeof c.argumentHint === "string" ? c.argumentHint : undefined,
+                }));
+              }
+            }).catch(() => { /* supportedCommands not available — keep init list */ });
+          }
+          emitChatEvent(managed, {
+            type: "activity",
+            activity: "working",
+            detail: "Session initialized",
+            turnId,
+          });
+          continue;
+        }
+
+        // system:status — permission mode changes
+        if (msg.type === "system" && (msg as any).subtype === "status") {
+          const statusMsg = msg as any;
+          if (statusMsg.status === "compacting") {
+            emitChatEvent(managed, {
+              type: "system_notice",
+              noticeKind: "info",
+              message: "Compacting conversation context...",
+              turnId,
+            });
+          }
+          continue;
+        }
+
+        // system:compact_boundary — context window compaction
+        if (msg.type === "system" && (msg as any).subtype === "compact_boundary") {
+          const compactMsg = msg as any;
+          emitChatEvent(managed, {
+            type: "context_compact",
+            trigger: compactMsg.compact_metadata?.trigger === "manual" ? "manual" : "auto",
+            preTokens: typeof compactMsg.compact_metadata?.pre_tokens === "number" ? compactMsg.compact_metadata.pre_tokens : undefined,
+            turnId,
+          });
+          continue;
+        }
+
+        // system:hook_started / hook_progress / hook_response — hook execution lifecycle
+        if (msg.type === "system" && ((msg as any).subtype === "hook_started" || (msg as any).subtype === "hook_progress" || (msg as any).subtype === "hook_response")) {
+          const hookMsg = msg as any;
+          if (hookMsg.subtype === "hook_started") {
+            emitChatEvent(managed, {
+              type: "system_notice",
+              noticeKind: "hook",
+              message: `Hook: ${hookMsg.hook_name ?? hookMsg.hook_event ?? "hook"} started`,
+              turnId,
+            });
+          } else if (hookMsg.subtype === "hook_response") {
+            const outcome = hookMsg.outcome ?? (hookMsg.exit_code === 0 ? "passed" : "failed");
+            if (outcome !== "passed" && outcome !== "success") {
+              emitChatEvent(managed, {
+                type: "system_notice",
+                noticeKind: "hook",
+                message: `Hook: ${hookMsg.hook_name ?? "hook"} ${outcome}`,
+                detail: hookMsg.stderr || hookMsg.stdout || undefined,
+                turnId,
+              });
+            }
+          }
+          // hook_progress is too noisy — skip
+          continue;
+        }
+
+        // system:files_persisted
+        if (msg.type === "system" && (msg as any).subtype === "files_persisted") {
+          const fpMsg = msg as any;
+          const fileCount = Array.isArray(fpMsg.files) ? fpMsg.files.length : 0;
+          const failCount = Array.isArray(fpMsg.failed) ? fpMsg.failed.length : 0;
+          if (failCount > 0) {
+            emitChatEvent(managed, {
+              type: "system_notice",
+              noticeKind: "file_persist",
+              message: `File persistence: ${fileCount} saved, ${failCount} failed`,
+              detail: fpMsg.failed.map((f: any) => `${f.filename}: ${f.error}`).join("; "),
+              turnId,
+            });
+          }
+          continue;
+        }
+
+        // auth_status — authentication events
+        if (msg.type === "auth_status") {
+          const authMsg = msg as any;
+          if (authMsg.error) {
+            emitChatEvent(managed, {
+              type: "system_notice",
+              noticeKind: "auth",
+              message: `Authentication error: ${authMsg.error}`,
+              turnId,
+            });
+          } else if (authMsg.isAuthenticating) {
+            emitChatEvent(managed, {
+              type: "system_notice",
+              noticeKind: "auth",
+              message: "Authenticating...",
+              turnId,
+            });
+          }
+          continue;
+        }
+
+        // system:task_started — subagent spawn
+        if (msg.type === "system" && (msg as any).subtype === "task_started") {
+          const taskMsg = msg as any;
+          const taskId = String(taskMsg.task_id ?? randomUUID());
+          runtime.activeSubagents.set(taskId, { taskId, description: String(taskMsg.description ?? "") });
+          emitChatEvent(managed, {
+            type: "subagent_started",
+            taskId,
+            description: String(taskMsg.description ?? ""),
+            turnId,
+          });
+          continue;
+        }
+
+        // system:task_notification — subagent completed
+        if (msg.type === "system" && (msg as any).subtype === "task_notification") {
+          const taskMsg = msg as any;
+          const taskId = String(taskMsg.task_id ?? "");
+          runtime.activeSubagents.delete(taskId);
+          emitChatEvent(managed, {
+            type: "subagent_result",
+            taskId,
+            status: taskMsg.status === "completed" ? "completed" : taskMsg.status === "stopped" ? "stopped" : "failed",
+            summary: String(taskMsg.summary ?? ""),
+            usage: taskMsg.usage ? {
+              totalTokens: typeof taskMsg.usage.total_tokens === "number" ? taskMsg.usage.total_tokens : undefined,
+              toolUses: typeof taskMsg.usage.tool_uses === "number" ? taskMsg.usage.tool_uses : undefined,
+              durationMs: typeof taskMsg.usage.duration_ms === "number" ? taskMsg.usage.duration_ms : undefined,
+            } : undefined,
+            turnId,
+          });
+          continue;
+        }
+
+        // assistant message — process content blocks
+        if (msg.type === "assistant") {
+          const assistantMsg = msg as any;
+          const betaMessage = assistantMsg.message;
+          if (betaMessage?.content && Array.isArray(betaMessage.content)) {
+            for (const block of betaMessage.content) {
+              if (block.type === "text") {
+                assistantText += block.text ?? "";
+                emitChatEvent(managed, {
+                  type: "text",
+                  text: block.text ?? "",
+                  turnId,
+                });
+              } else if (block.type === "thinking") {
+                emitChatEvent(managed, {
+                  type: "activity",
+                  activity: "thinking",
+                  detail: REASONING_ACTIVITY_DETAIL,
+                  turnId,
+                });
+                emitChatEvent(managed, {
+                  type: "reasoning",
+                  text: block.thinking ?? "",
+                  turnId,
+                });
+              } else if (block.type === "tool_use") {
+                const toolName = String(block.name ?? "tool");
+                const nextActivity = activityForToolName(toolName);
+                emitChatEvent(managed, {
+                  type: "activity",
+                  activity: nextActivity.activity,
+                  detail: nextActivity.detail,
+                  turnId,
+                });
+                emitChatEvent(managed, {
+                  type: "tool_call",
+                  tool: toolName,
+                  args: block.input ?? {},
+                  itemId: String(block.id ?? randomUUID()),
+                  turnId,
+                });
+              }
+            }
+          }
+          // Extract usage from assistant message stop
+          if (betaMessage?.usage) {
+            usage = {
+              inputTokens: betaMessage.usage.input_tokens ?? null,
+              outputTokens: betaMessage.usage.output_tokens ?? null,
+            };
+          }
+          continue;
+        }
+
+        // stream_event — partial streaming deltas
+        if (msg.type === "stream_event") {
+          const streamMsg = msg as any;
+          const event = streamMsg.event;
+          if (!event) continue;
+
+          if (event.type === "content_block_delta") {
+            const delta = event.delta;
+            if (delta?.type === "text_delta") {
+              const text = delta.text ?? "";
+              if (text.length) {
+                assistantText += text;
+                emitChatEvent(managed, { type: "text", text, turnId });
+              }
+            } else if (delta?.type === "thinking_delta") {
+              const text = delta.thinking ?? "";
+              if (text.length) {
+                emitChatEvent(managed, {
+                  type: "activity",
+                  activity: "thinking",
+                  detail: REASONING_ACTIVITY_DETAIL,
+                  turnId,
+                });
+                emitChatEvent(managed, { type: "reasoning", text, turnId });
+              }
+            } else if (delta?.type === "input_json_delta") {
+              // Tool input streaming — just emit activity
+              emitChatEvent(managed, {
+                type: "activity",
+                activity: "tool_calling",
+                detail: "Processing tool input",
+                turnId,
+              });
+            }
+          } else if (event.type === "content_block_start") {
+            const block = event.content_block;
+            if (block?.type === "thinking") {
+              emitChatEvent(managed, {
+                type: "activity",
+                activity: "thinking",
+                detail: REASONING_ACTIVITY_DETAIL,
+                turnId,
+              });
+            } else if (block?.type === "tool_use") {
+              const toolName = String(block.name ?? "tool");
+              const nextActivity = activityForToolName(toolName);
+              emitChatEvent(managed, {
+                type: "activity",
+                activity: nextActivity.activity,
+                detail: nextActivity.detail,
+                turnId,
+              });
+            }
+          } else if (event.type === "message_start") {
+            const msgUsage = event.message?.usage;
+            if (msgUsage) {
+              usage = {
+                inputTokens: msgUsage.input_tokens ?? null,
+                outputTokens: msgUsage.output_tokens ?? null,
+              };
+            }
+          } else if (event.type === "message_delta") {
+            const deltaUsage = event.usage;
+            if (deltaUsage) {
+              usage = {
+                inputTokens: usage?.inputTokens ?? null,
+                outputTokens: deltaUsage.output_tokens ?? usage?.outputTokens ?? null,
+              };
+            }
+          }
+          continue;
+        }
+
+        // tool_progress
+        if (msg.type === "tool_progress") {
+          const progressMsg = msg as any;
+          emitChatEvent(managed, {
+            type: "activity",
+            activity: "tool_calling",
+            detail: `Tool '${progressMsg.tool_name ?? "tool"}' running (${Math.round(progressMsg.elapsed_time_seconds ?? 0)}s)`,
+            turnId,
+          });
+          continue;
+        }
+
+        // result — turn complete
+        if (msg.type === "result") {
+          const resultMsg = msg as any;
+          if (resultMsg.usage) {
+            usage = {
+              inputTokens: resultMsg.usage.input_tokens ?? null,
+              outputTokens: resultMsg.usage.output_tokens ?? null,
+              cacheReadTokens: resultMsg.usage.cache_read_input_tokens ?? null,
+              cacheCreationTokens: resultMsg.usage.cache_creation_input_tokens ?? null,
+            };
+          }
+          if (typeof resultMsg.total_cost_usd === "number") {
+            costUsd = resultMsg.total_cost_usd;
+          }
+          if (resultMsg.is_error && resultMsg.errors?.length) {
+            for (const err of resultMsg.errors) {
+              emitChatEvent(managed, {
+                type: "error",
+                message: String(err),
+                turnId,
+              });
+            }
+          }
+          continue;
+        }
+
+        // tool_use_summary — summarizes groups of tool calls
+        if ((msg as any).type === "tool_use_summary") {
+          const summaryMsg = msg as any;
+          emitChatEvent(managed, {
+            type: "tool_use_summary",
+            summary: String(summaryMsg.summary ?? ""),
+            toolUseIds: Array.isArray(summaryMsg.preceding_tool_use_ids) ? summaryMsg.preceding_tool_use_ids.map(String) : [],
+            turnId,
+          });
+          continue;
+        }
+
+        // rate_limit — API rate limiting
+        if ((msg as any).type === "rate_limit" || (msg as any).subtype === "rate_limit") {
+          const rlMsg = msg as any;
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "rate_limit",
+            message: `Rate limited${rlMsg.retry_after ? `. Retrying in ${rlMsg.retry_after}s...` : ". Retrying..."}`,
+            turnId,
+          });
+          continue;
+        }
+
+        // prompt_suggestion — follow-up suggestions (consume silently for now)
+        if ((msg as any).type === "prompt_suggestion") {
+          continue;
+        }
+      }
+
+      // ── Turn completion ──
+      runtime.activeQuery = null;
+      runtime.busy = false;
+      runtime.activeTurnId = null;
+      managed.session.status = "idle";
+
+      const finalStatus = runtime.interrupted ? "interrupted" : "completed";
+      emitChatEvent(managed, { type: "status", turnStatus: finalStatus, turnId });
+      emitChatEvent(managed, {
+        type: "done",
+        turnId,
+        status: finalStatus,
+        model: managed.session.model,
+        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        ...(usage ? { usage } : {}),
+        ...(costUsd != null ? { costUsd } : {}),
+      });
+
+      if (assistantText.trim().length > 0) {
+        appendWorkerActivityToCto(managed, {
+          activityType: "chat_turn",
+          summary: assistantText,
+        });
+      }
+
+      const endSha = await computeHeadShaBestEffort(managed.session.laneId).catch(() => null);
+      if (endSha) {
+        sessionService.setHeadShaEnd(managed.session.id, endSha);
+      }
+
+      persistChatState(managed);
+
+      // Process queued steers
+      if (runtime.pendingSteers.length) {
+        const steerText = runtime.pendingSteers.shift() ?? "";
+        if (steerText.trim().length) {
+          await runClaudeTurn(managed, { promptText: steerText, displayText: steerText, attachments: [] });
+        }
+      }
+    } catch (error) {
+      runtime.activeQuery = null;
+      runtime.busy = false;
+      runtime.activeTurnId = null;
+
+      if (runtime.interrupted) {
+        managed.session.status = "idle";
+        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
+        emitChatEvent(managed, {
+          type: "done",
+          turnId,
+          status: "interrupted",
+          model: managed.session.model,
+          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        });
+      } else {
+        managed.session.status = "idle";
+        emitChatEvent(managed, {
+          type: "error",
+          message: error instanceof Error ? error.message : String(error),
+          turnId,
+        });
+        emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
+        emitChatEvent(managed, {
+          type: "done",
+          turnId,
+          status: "failed",
+          model: managed.session.model,
+          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        });
+
+        appendWorkerActivityToCto(managed, {
+          activityType: "chat_turn",
+          summary: error instanceof Error
+            ? `Turn failed: ${error.message}`
+            : `Turn failed: ${String(error)}`,
+        });
+
+        // If resume failed, clear sessionId and the caller can retry fresh
+        if (runtime.sdkSessionId && String(error).includes("session")) {
+          logger.warn("agent_chat.claude_sdk_session_error", {
+            sessionId: managed.session.id,
+            sdkSessionId: runtime.sdkSessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          runtime.sdkSessionId = null;
+        }
+      }
+
+      persistChatState(managed);
+    }
+  };
+
+  // ── Streaming turn for Unified runtime ──
 
   const runTurn = async (
     managed: ManagedChatSession,
@@ -1937,16 +2736,17 @@ export function createAgentChatService(args: {
     },
   ): Promise<void> => {
     const runtimeKind = managed.runtime?.kind;
-    if (runtimeKind !== "claude" && runtimeKind !== "unified") {
+    if (runtimeKind === "claude") {
+      return runClaudeTurn(managed, args);
+    }
+    if (runtimeKind !== "unified") {
       throw new Error(`Streaming runtime is not available for session '${managed.session.id}'.`);
     }
 
-    const runtime = managed.runtime as ClaudeRuntime | UnifiedRuntime;
+    const runtime = managed.runtime as UnifiedRuntime;
     if (runtime.busy) {
       throw new Error("A turn is already active. Use steer or interrupt.");
     }
-
-    const isUnified = runtimeKind === "unified";
     const turnId = randomUUID();
     runtime.busy = true;
     runtime.activeTurnId = turnId;
@@ -1983,8 +2783,8 @@ export function createAgentChatService(args: {
         content: buildStreamingUserContent({
           baseText: args.promptText,
           attachments,
-          runtimeKind,
-          ...(runtimeKind === "unified" ? { modelDescriptor: (runtime as UnifiedRuntime).modelDescriptor } : {}),
+          runtimeKind: "unified",
+          modelDescriptor: runtime.modelDescriptor,
         }),
       };
     });
@@ -1994,217 +2794,131 @@ export function createAgentChatService(args: {
     let streamedStepCount = 0;
 
     try {
-      // Provider-specific stream creation
-      let stream: ReturnType<typeof streamText>;
-
-      if (isUnified) {
-        const unifiedRt = runtime as UnifiedRuntime;
-        const lightweight = isLightweightSession(managed.session);
-        const tools = lightweight
-          ? {}
-          : createUniversalToolSet(managed.laneWorktreePath, {
-              permissionMode: unifiedRt.permissionMode,
-              ...(memoryService && projectId ? { memoryService, projectId } : {}),
-              agentScopeOwnerId: managed.session.identityKey ?? managed.session.id,
-              ...(() => {
-                if (managed.session.identityKey === "cto" && ctoStateService) {
-                  return {
-                    onMemoryUpdateCore: (patch: any) => {
-                      const snapshot = ctoStateService.updateCoreMemory(patch);
-                      return {
-                        version: snapshot.coreMemory.version,
-                        updatedAt: snapshot.coreMemory.updatedAt
-                      };
-                    }
-                  };
-                }
-                const workerAgentId = resolveWorkerIdentityAgentId(managed.session.identityKey);
-                if (workerAgentId && workerAgentService) {
-                  return {
-                    onMemoryUpdateCore: (patch: any) => {
-                      const snapshot = workerAgentService.updateCoreMemory(workerAgentId, patch);
-                      return {
-                        version: snapshot.version,
-                        updatedAt: snapshot.updatedAt
-                      };
-                    }
-                  };
-                }
-                return {};
-              })(),
-              onApprovalRequest: async ({ category, description, detail }) => {
-                if (unifiedRt.approvalOverrides.has(category)) {
-                  return {
-                    approved: true,
-                    decision: "accept_for_session",
-                    reason: "Already approved for this session.",
-                  };
-                }
-
-                const approvalItemId = randomUUID();
-                emitChatEvent(managed, {
-                  type: "approval_request",
-                  itemId: approvalItemId,
-                  kind: category === "bash" ? "command" : "file_change",
-                  description,
-                  detail,
-                  turnId,
-                });
-
-                const response = await new Promise<{ decision: AgentChatApprovalDecision; responseText?: string | null }>((resolve) => {
-                  unifiedRt.pendingApprovals.set(approvalItemId, { category, resolve });
-                });
-                unifiedRt.pendingApprovals.delete(approvalItemId);
-
-                if (response.decision === "accept_for_session") {
-                  unifiedRt.approvalOverrides.add(category);
-                }
-
-                const approved = response.decision === "accept" || response.decision === "accept_for_session";
-                const trimmedReason = typeof response.responseText === "string" ? response.responseText.trim() : "";
+      const lightweight = isLightweightSession(managed.session);
+      const tools = lightweight
+        ? {}
+        : createUniversalToolSet(managed.laneWorktreePath, {
+            permissionMode: runtime.permissionMode,
+            ...(memoryService && projectId ? { memoryService, projectId } : {}),
+            agentScopeOwnerId: managed.session.identityKey ?? managed.session.id,
+            ...(() => {
+              if (managed.session.identityKey === "cto" && ctoStateService) {
                 return {
-                  approved,
-                  decision: response.decision,
-                  reason: trimmedReason.length
-                    ? trimmedReason
-                    : approved
-                      ? "User approved the action."
-                      : "User denied the action.",
+                  onMemoryUpdateCore: (patch: any) => {
+                    const snapshot = ctoStateService.updateCoreMemory(patch);
+                    return {
+                      version: snapshot.coreMemory.version,
+                      updatedAt: snapshot.coreMemory.updatedAt
+                    };
+                  }
                 };
-              },
-              onAskUser: async (question) => {
-                const askItemId = randomUUID();
-                emitChatEvent(managed, {
-                  type: "approval_request",
-                  itemId: askItemId,
-                  kind: "tool_call",
-                  description: question,
-                  detail: { tool: "askUser", question, inputType: "text" },
-                  turnId,
-                });
+              }
+              const workerAgentId = resolveWorkerIdentityAgentId(managed.session.identityKey);
+              if (workerAgentId && workerAgentService) {
+                return {
+                  onMemoryUpdateCore: (patch: any) => {
+                    const snapshot = workerAgentService.updateCoreMemory(workerAgentId, patch);
+                    return {
+                      version: snapshot.version,
+                      updatedAt: snapshot.updatedAt
+                    };
+                  }
+                };
+              }
+              return {};
+            })(),
+            onApprovalRequest: async ({ category, description, detail }) => {
+              if (runtime.approvalOverrides.has(category)) {
+                return {
+                  approved: true,
+                  decision: "accept_for_session",
+                  reason: "Already approved for this session.",
+                };
+              }
 
-                const response = await new Promise<{ decision: AgentChatApprovalDecision; responseText?: string | null }>((resolve) => {
-                  unifiedRt.pendingApprovals.set(askItemId, { category: "askUser", resolve });
-                });
-                unifiedRt.pendingApprovals.delete(askItemId);
-                const trimmedResponse = typeof response.responseText === "string" ? response.responseText.trim() : "";
-                if (trimmedResponse.length) return trimmedResponse;
-                if (response.decision === "accept") return "yes";
-                if (response.decision === "decline") return "no";
-                return String(response.decision);
-              },
-            });
+              const approvalItemId = randomUUID();
+              emitChatEvent(managed, {
+                type: "approval_request",
+                itemId: approvalItemId,
+                kind: category === "bash" ? "command" : "file_change",
+                description,
+                detail,
+                turnId,
+              });
 
-        const thinkingLevel = mapReasoningEffortToThinking(managed.session.reasoningEffort);
-        const providerOptions = providerResolver.buildProviderOptions(unifiedRt.modelDescriptor, thinkingLevel);
-        const harnessPrompt = lightweight
-          ? undefined
-          : buildCodingAgentSystemPrompt({
-              cwd: managed.laneWorktreePath,
-              mode: "chat",
-              permissionMode: unifiedRt.permissionMode,
-              toolNames: Object.keys(tools),
-            });
+              const response = await new Promise<{ decision: AgentChatApprovalDecision; responseText?: string | null }>((resolve) => {
+                runtime.pendingApprovals.set(approvalItemId, { category, resolve });
+              });
+              runtime.pendingApprovals.delete(approvalItemId);
 
-        stream = streamText({
-          model: unifiedRt.resolvedModel,
-          ...(harnessPrompt ? { system: harnessPrompt } : {}),
-          messages: streamMessages,
-          ...(Object.keys(tools).length ? { tools } : {}),
-          providerOptions: providerOptions as any,
-          ...(!lightweight ? { stopWhen: stepCountIs(20) } : {}),
-          abortSignal: abortController.signal,
-          onError({ error }) {
-            logger.warn("agent_chat.unified_stream_error", {
-              sessionId: managed.session.id,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          },
-        });
-      } else {
-        const claudeRt = runtime as ClaudeRuntime;
-        const claudeDescriptor = resolveSessionModelDescriptor(managed.session);
-        const claudeSupportsReasoning = claudeDescriptor?.capabilities.reasoning ?? true;
-        const chatConfig = resolveChatConfig();
-        const claudePermissionMode = managed.session.permissionMode
-          ? mapPermissionToClaude(managed.session.permissionMode)
-          : chatConfig.claudePermissionMode;
+              if (response.decision === "accept_for_session") {
+                runtime.approvalOverrides.add(category);
+              }
 
-        const canUseTool = async (toolName: string, toolInput: unknown): Promise<ClaudeToolPermissionResult> => {
-          if (isPlanningApprovalGuarded(managed)) {
-            return {
-              behavior: "deny",
-              message: buildPlanningApprovalViolation(toolName),
-              interrupt: false,
-            };
-          }
-          const itemId = randomUUID();
-          emitChatEvent(managed, {
-            type: "approval_request",
-            itemId,
-            kind: "tool_call",
-            description: `Tool '${toolName}' requests approval`,
-            detail: toolInput,
-            turnId
+              const approved = response.decision === "accept" || response.decision === "accept_for_session";
+              const trimmedReason = typeof response.responseText === "string" ? response.responseText.trim() : "";
+              return {
+                approved,
+                decision: response.decision,
+                reason: trimmedReason.length
+                  ? trimmedReason
+                  : approved
+                    ? "User approved the action."
+                    : "User denied the action.",
+              };
+            },
+            onAskUser: async (question) => {
+              const askItemId = randomUUID();
+              emitChatEvent(managed, {
+                type: "approval_request",
+                itemId: askItemId,
+                kind: "tool_call",
+                description: question,
+                detail: { tool: "askUser", question, inputType: "text" },
+                turnId,
+              });
+
+              const response = await new Promise<{ decision: AgentChatApprovalDecision; responseText?: string | null }>((resolve) => {
+                runtime.pendingApprovals.set(askItemId, { category: "askUser", resolve });
+              });
+              runtime.pendingApprovals.delete(askItemId);
+              const trimmedResponse = typeof response.responseText === "string" ? response.responseText.trim() : "";
+              if (trimmedResponse.length) return trimmedResponse;
+              if (response.decision === "accept") return "yes";
+              if (response.decision === "decline") return "no";
+              return String(response.decision);
+            },
           });
 
-          const decision = await new Promise<AgentChatApprovalDecision>((resolve) => {
-            claudeRt.approvals.set(itemId, { resolve });
+      const thinkingLevel = mapReasoningEffortToThinking(managed.session.reasoningEffort);
+      const providerOptions = providerResolver.buildProviderOptions(runtime.modelDescriptor, thinkingLevel);
+      const harnessPrompt = lightweight
+        ? undefined
+        : buildCodingAgentSystemPrompt({
+            cwd: managed.laneWorktreePath,
+            mode: "chat",
+            permissionMode: runtime.permissionMode,
+            toolNames: Object.keys(tools),
           });
-          claudeRt.approvals.delete(itemId);
 
-          if (decision === "accept" || decision === "accept_for_session") {
-            return { behavior: "allow" };
-          }
+      const stream = streamText({
+        model: runtime.resolvedModel,
+        ...(harnessPrompt ? { system: harnessPrompt } : {}),
+        messages: streamMessages,
+        ...(Object.keys(tools).length ? { tools } : {}),
+        providerOptions: providerOptions as any,
+        ...(!lightweight ? { stopWhen: stepCountIs(20) } : {}),
+        abortSignal: abortController.signal,
+        onError({ error }) {
+          logger.warn("agent_chat.unified_stream_error", {
+            sessionId: managed.session.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        },
+      });
 
-          return {
-            behavior: "deny",
-            message: `Tool '${toolName}' blocked by user decision.`,
-            interrupt: false
-          };
-        };
-
-        const lightweight = isLightweightSession(managed.session);
-        const claudeOpts: Record<string, unknown> = {
-          cwd: managed.laneWorktreePath,
-          permissionMode: claudePermissionMode,
-          streamingInput: "always",
-          maxBudgetUsd: chatConfig.sessionBudgetUsd ?? undefined,
-        };
-        if (!lightweight) {
-          claudeOpts.systemPrompt = { type: "preset", preset: "claude_code" };
-          claudeOpts.settingSources = ["user", "project", "local"];
-          claudeOpts.mcpServers = buildAdeMcpServers(
-            "claude",
-            managed.session.identityKey === "cto" ? "cto" : "agent",
-            resolveWorkerIdentityAgentId(managed.session.identityKey)
-          );
-          claudeOpts.canUseTool = canUseTool;
-        }
-        if (claudeSupportsReasoning && managed.session.reasoningEffort) {
-          const tokens = CLAUDE_EFFORT_TO_TOKENS[managed.session.reasoningEffort];
-          if (tokens) {
-            claudeOpts.maxThinkingTokens = tokens;
-          }
-        }
-
-        stream = streamText({
-          model: claudeProvider(resolveClaudeCliModel(managed.session.model), claudeOpts as any),
-          messages: streamMessages,
-          abortSignal: abortController.signal,
-          onError({ error }) {
-            logger.warn("agent_chat.claude_stream_error", {
-              sessionId: managed.session.id,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          },
-        });
-      }
-
-      // ── Shared stream processing loop ──
-      const streamSupportsReasoning = runtime.kind === "unified"
-        ? runtime.modelDescriptor.capabilities.reasoning
-        : sessionSupportsReasoning(managed.session);
+      // ── Stream processing loop ──
+      const streamSupportsReasoning = runtime.modelDescriptor.capabilities.reasoning;
       for await (const part of stream.fullStream as AsyncIterable<any>) {
         if (!part || typeof part !== "object") continue;
 
@@ -2425,28 +3139,18 @@ export function createAgentChatService(args: {
       } else {
         managed.session.status = "idle";
 
-        // Unified runtime provides classified error messages; Claude uses raw error text
-        if (isUnified) {
-          const unifiedRt = runtime as UnifiedRuntime;
-          const { message: errorMessage, errorInfo } = classifyUnifiedError(
-            error,
-            unifiedRt.modelDescriptor.family,
-            unifiedRt.modelDescriptor.displayName,
-          );
+        const { message: errorMessage, errorInfo } = classifyUnifiedError(
+          error,
+          runtime.modelDescriptor.family,
+          runtime.modelDescriptor.displayName,
+        );
 
-          emitChatEvent(managed, {
-            type: "error",
-            message: errorMessage,
-            turnId,
-            errorInfo,
-          });
-        } else {
-          emitChatEvent(managed, {
-            type: "error",
-            message: error instanceof Error ? error.message : String(error),
-            turnId
-          });
-        }
+        emitChatEvent(managed, {
+          type: "error",
+          message: errorMessage,
+          turnId,
+          errorInfo,
+        });
 
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
         emitChatEvent(managed, {
@@ -2638,7 +3342,49 @@ export function createAgentChatService(args: {
           status: status === "failed" ? "failed" : "completed"
         });
       }
+      return;
     }
+
+    // Delegation items → subagent events
+    if (itemType === "delegation") {
+      if (eventKind === "started") {
+        emitChatEvent(managed, {
+          type: "subagent_started",
+          taskId: itemId,
+          description: String(item.description ?? item.title ?? "Delegated task"),
+          turnId,
+        });
+      }
+      if (eventKind === "completed") {
+        emitChatEvent(managed, {
+          type: "subagent_result",
+          taskId: itemId,
+          status: String(item.status ?? "completed") === "failed" ? "failed" : "completed",
+          summary: String(item.summary ?? item.result ?? ""),
+          turnId,
+        });
+      }
+      return;
+    }
+
+    // Planning items → todo_update
+    if (itemType === "planningItem" || itemType === "planning") {
+      const steps = Array.isArray(item.steps) ? item.steps : Array.isArray(item.plan) ? item.plan : [];
+      if (steps.length) {
+        emitChatEvent(managed, {
+          type: "todo_update",
+          items: steps.map((s: any, idx: number) => ({
+            id: String(s.id ?? `step-${idx}`),
+            description: String(s.step ?? s.text ?? s.description ?? ""),
+            status: s.status === "completed" ? "completed" : s.status === "in_progress" || s.status === "inProgress" ? "in_progress" : "pending",
+          })),
+          turnId,
+        });
+      }
+      return;
+    }
+
+    logger.debug("agent_chat.codex_unhandled_item", { sessionId: managed.session.id, itemType, itemId });
   };
 
   const handleCodexNotification = async (managed: ManagedChatSession, runtime: CodexRuntime, payload: JsonRpcEnvelope): Promise<void> => {
@@ -2856,6 +3602,54 @@ export function createAgentChatService(args: {
         turnId: typeof params.turnId === "string" ? params.turnId : undefined,
         errorInfo: formatCodexErrorInfo(error?.codexErrorInfo)
       });
+      return;
+    }
+
+    if (method === "account/rateLimits/updated") {
+      const rateLimits = params.rateLimits as { remaining?: number; limit?: number; resetAt?: string } | undefined;
+      if (rateLimits) {
+        runtime.rateLimits = {
+          remaining: typeof rateLimits.remaining === "number" ? rateLimits.remaining : null,
+          limit: typeof rateLimits.limit === "number" ? rateLimits.limit : null,
+          resetAt: typeof rateLimits.resetAt === "string" ? rateLimits.resetAt : null,
+        };
+        const pct = rateLimits.limit && rateLimits.remaining != null
+          ? Math.round((rateLimits.remaining / rateLimits.limit) * 100)
+          : null;
+        if (pct !== null && pct <= 15) {
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "rate_limit",
+            message: `Codex rate limit: ${rateLimits.remaining}/${rateLimits.limit} remaining${rateLimits.resetAt ? ` (resets ${rateLimits.resetAt})` : ""}`,
+            turnId: typeof params.turnId === "string" ? params.turnId : undefined,
+          });
+        }
+      }
+      return;
+    }
+
+    if (method === "account/updated") {
+      // Account info changed — log but no UI action needed
+      logger.info("agent_chat.codex_account_updated", { sessionId: managed.session.id });
+      return;
+    }
+
+    if (method === "account/login/completed") {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "auth",
+        message: "Codex authentication completed.",
+      });
+      return;
+    }
+
+    // Log unhandled notification methods for debugging
+    if (method) {
+      logger.warn("agent_chat.codex_unhandled_notification", {
+        sessionId: managed.session.id,
+        method,
+        paramKeys: Object.keys(params),
+      });
     }
   };
 
@@ -2881,6 +3675,8 @@ export function createAgentChatService(args: {
       commandOutputByItemId: new Map<string, string>(),
       fileDeltaByItemId: new Map<string, string>(),
       fileChangesByItemId: new Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>(),
+      slashCommands: [],
+      rateLimits: null,
       request: async <T = unknown>(method: string, params?: unknown): Promise<T> => {
         const id = runtime.nextRequestId;
         runtime.nextRequestId += 1;
@@ -3057,23 +3853,49 @@ export function createAgentChatService(args: {
     }
     runtime.threadResumed = true;
     persistChatState(managed);
+
+    // Fetch available skills and populate slash commands
+    runtime.request<{ skills?: Array<{ name?: string; description?: string }> }>("skills/list", {})
+      .then((res) => {
+        if (Array.isArray(res?.skills)) {
+          runtime.slashCommands = res.skills
+            .filter((s): s is { name: string; description?: string } => typeof s?.name === "string" && s.name.length > 0)
+            .map((s) => ({ name: s.name.startsWith("/") ? s.name : `/${s.name}`, description: s.description ?? "" }));
+        }
+      })
+      .catch(() => { /* skills/list not supported — ignore */ });
+
+    // Fetch initial rate limits
+    runtime.request<{ rateLimits?: { remaining?: number; limit?: number; resetAt?: string } }>("account/rateLimits/read", {})
+      .then((res) => {
+        if (res?.rateLimits) {
+          runtime.rateLimits = {
+            remaining: typeof res.rateLimits.remaining === "number" ? res.rateLimits.remaining : null,
+            limit: typeof res.rateLimits.limit === "number" ? res.rateLimits.limit : null,
+            resetAt: typeof res.rateLimits.resetAt === "string" ? res.rateLimits.resetAt : null,
+          };
+        }
+      })
+      .catch(() => { /* account/rateLimits/read not supported — ignore */ });
   };
 
   const ensureClaudeSessionRuntime = (managed: ManagedChatSession): ClaudeRuntime => {
     if (managed.runtime?.kind === "claude") return managed.runtime;
-
     const persisted = readPersistedState(managed.session.id);
+    // Old persisted state may have `messages` but no `sdkSessionId` — start fresh
+    const sdkSessionId = persisted?.sdkSessionId ?? null;
     const runtime: ClaudeRuntime = {
       kind: "claude",
-      messages: persisted?.messages ?? [],
+      sdkSessionId,
+      activeQuery: null,
+      activeSubagents: new Map(),
+      slashCommands: [],
       busy: false,
-      abortController: null,
       activeTurnId: null,
       pendingSteers: [],
       approvals: new Map<string, PendingClaudeApproval>(),
-      interrupted: false
+      interrupted: false,
     };
-
     managed.runtime = runtime;
     return runtime;
   };
@@ -3107,6 +3929,7 @@ export function createAgentChatService(args: {
       autoTitleStage: "none",
       autoTitleInFlight: false,
       previewTextBuffer: null,
+      recentConversationEntries: [],
     };
 
     let runtime: CodexRuntime | null = null;
@@ -3295,6 +4118,9 @@ export function createAgentChatService(args: {
       : validateReasoningEffort(effectiveProvider === "claude" ? "claude" : "codex", rawEffort);
     const capabilityMode = inferCapabilityMode(effectiveProvider);
     const computerUsePolicy = normalizeComputerUsePolicy(computerUse, createDefaultComputerUsePolicy());
+    const effectivePermissionMode = identityKey
+      ? normalizeIdentityPermissionMode(requestedPermMode, effectiveProvider)
+      : requestedPermMode;
 
     sessionService.create({
       sessionId,
@@ -3317,7 +4143,7 @@ export function createAgentChatService(args: {
         ...(resolvedModelId ? { modelId: resolvedModelId } : {}),
         sessionProfile: sessionProfile ?? "workflow",
         ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
-        ...(requestedPermMode ? { permissionMode: requestedPermMode } : {}),
+        ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}),
         ...(identityKey ? { identityKey } : {}),
         capabilityMode,
         computerUse: computerUsePolicy,
@@ -3342,6 +4168,7 @@ export function createAgentChatService(args: {
       lastActivitySignature: null,
       bufferedReasoning: null,
       previewTextBuffer: null,
+      recentConversationEntries: [],
     };
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
     refreshReconstructionContext(managed);
@@ -3457,6 +4284,29 @@ export function createAgentChatService(args: {
             });
             managed.session.threadId = threadIdToResume;
             runtime.threadResumed = true;
+            // Fetch skills after resume if not already fetched
+            if (runtime.slashCommands.length === 0) {
+              runtime.request<{ skills?: Array<{ name?: string; description?: string }> }>("skills/list", {})
+                .then((res) => {
+                  if (Array.isArray(res?.skills)) {
+                    runtime.slashCommands = res.skills
+                      .filter((s): s is { name: string; description?: string } => typeof s?.name === "string" && s.name.length > 0)
+                      .map((s) => ({ name: s.name.startsWith("/") ? s.name : `/${s.name}`, description: s.description ?? "" }));
+                  }
+                })
+                .catch(() => { /* skills/list not supported — ignore */ });
+              runtime.request<{ rateLimits?: { remaining?: number; limit?: number; resetAt?: string } }>("account/rateLimits/read", {})
+                .then((res) => {
+                  if (res?.rateLimits) {
+                    runtime.rateLimits = {
+                      remaining: typeof res.rateLimits.remaining === "number" ? res.rateLimits.remaining : null,
+                      limit: typeof res.rateLimits.limit === "number" ? res.rateLimits.limit : null,
+                      resetAt: typeof res.rateLimits.resetAt === "string" ? res.rateLimits.resetAt : null,
+                    };
+                  }
+                })
+                .catch(() => { /* account/rateLimits/read not supported — ignore */ });
+            }
           } catch (resumeError) {
             logger.warn("agent_chat.thread_resume_failed", {
               sessionId,
@@ -3480,7 +4330,7 @@ export function createAgentChatService(args: {
     }
 
     ensureClaudeSessionRuntime(managed);
-    await runTurn(managed, { promptText, displayText: visibleText, attachments });
+    await runClaudeTurn(managed, { promptText, displayText: visibleText, attachments });
   };
 
   const steer = async ({ sessionId, text }: AgentChatSteerArgs): Promise<void> => {
@@ -3544,7 +4394,7 @@ export function createAgentChatService(args: {
       return;
     }
 
-    await runTurn(managed, { promptText: trimmed, displayText: trimmed, attachments: [] });
+    await runClaudeTurn(managed, { promptText: trimmed, displayText: trimmed, attachments: [] });
   };
 
   const interrupt = async ({ sessionId }: AgentChatInterruptArgs): Promise<void> => {
@@ -3569,7 +4419,7 @@ export function createAgentChatService(args: {
 
     const runtime = ensureClaudeSessionRuntime(managed);
     runtime.interrupted = true;
-    runtime.abortController?.abort();
+    runtime.activeQuery?.interrupt().catch(() => {});
   };
 
   const resumeSession = async ({ sessionId }: { sessionId: string }): Promise<AgentChatSession> => {
@@ -3600,6 +4450,29 @@ export function createAgentChatService(args: {
           managed.session.threadId = threadId;
           runtime.threadResumed = true;
           sessionService.setResumeCommand(sessionId, `chat:codex:${threadId}`);
+          // Fetch skills after resume if not already fetched
+          if (runtime.slashCommands.length === 0) {
+            runtime.request<{ skills?: Array<{ name?: string; description?: string }> }>("skills/list", {})
+              .then((res) => {
+                if (Array.isArray(res?.skills)) {
+                  runtime.slashCommands = res.skills
+                    .filter((s): s is { name: string; description?: string } => typeof s?.name === "string" && s.name.length > 0)
+                    .map((s) => ({ name: s.name.startsWith("/") ? s.name : `/${s.name}`, description: s.description ?? "" }));
+                }
+              })
+              .catch(() => { /* skills/list not supported — ignore */ });
+            runtime.request<{ rateLimits?: { remaining?: number; limit?: number; resetAt?: string } }>("account/rateLimits/read", {})
+              .then((res) => {
+                if (res?.rateLimits) {
+                  runtime.rateLimits = {
+                    remaining: typeof res.rateLimits.remaining === "number" ? res.rateLimits.remaining : null,
+                    limit: typeof res.rateLimits.limit === "number" ? res.rateLimits.limit : null,
+                    resetAt: typeof res.rateLimits.resetAt === "string" ? res.rateLimits.resetAt : null,
+                  };
+                }
+              })
+              .catch(() => { /* account/rateLimits/read not supported — ignore */ });
+          }
         } catch (resumeError) {
           logger.warn("agent_chat.resume_session_thread_failed", {
             sessionId,
@@ -3628,14 +4501,13 @@ export function createAgentChatService(args: {
         if (managed.session.provider === "unified") {
           throw new Error(`Unable to resume unified runtime for model '${managed.session.model}'.`);
         }
-        // Fallthrough to Claude
-        const runtime = ensureClaudeSessionRuntime(managed);
-        runtime.messages = persisted?.messages ?? runtime.messages;
+        // Fallthrough to Claude — SDK manages history via sdkSessionId
+        ensureClaudeSessionRuntime(managed);
         sessionService.setResumeCommand(sessionId, `chat:claude:${sessionId}`);
       }
     } else {
-      const runtime = ensureClaudeSessionRuntime(managed);
-      runtime.messages = persisted?.messages ?? runtime.messages;
+      // Claude — SDK manages history via sdkSessionId
+      ensureClaudeSessionRuntime(managed);
       sessionService.setResumeCommand(sessionId, `chat:claude:${sessionId}`);
     }
 
@@ -3713,9 +4585,10 @@ export function createAgentChatService(args: {
       if (args.reasoningEffort) {
         managed.session.reasoningEffort = normalizeReasoningEffort(args.reasoningEffort);
       }
-      if (args.permissionMode) {
-        managed.session.permissionMode = args.permissionMode;
-      }
+      managed.session.permissionMode = normalizeIdentityPermissionMode(
+        args.permissionMode ?? managed.session.permissionMode,
+        managed.session.provider,
+      );
       refreshReconstructionContext(managed);
       persistChatState(managed);
 
@@ -3775,7 +4648,7 @@ export function createAgentChatService(args: {
       model: preferredModel,
       ...(resolvedModelId ? { modelId: resolvedModelId } : {}),
       reasoningEffort: args.reasoningEffort ?? pref?.reasoningEffort ?? null,
-      permissionMode: args.permissionMode,
+      permissionMode: args.permissionMode ?? "full-auto",
       identityKey: args.identityKey
     });
 
@@ -3891,6 +4764,17 @@ export function createAgentChatService(args: {
       } catch {
         // ignore interrupt failures while disposing
       }
+
+      // Archive the Codex thread on the server
+      if (managed.session.threadId) {
+        try {
+          await managed.runtime.request("thread/archive", {
+            threadId: managed.session.threadId,
+          });
+        } catch {
+          // thread/archive not supported or already archived — ignore
+        }
+      }
     }
 
     // Mark streaming runtimes as interrupted so the catch block handles gracefully
@@ -3921,6 +4805,7 @@ export function createAgentChatService(args: {
     computerUse,
   }: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
     const managed = ensureManagedSession(sessionId);
+    const isIdentitySession = Boolean(managed.session.identityKey);
 
     if (modelId !== undefined) {
       const nextModelId = String(modelId ?? "").trim();
@@ -3940,6 +4825,12 @@ export function createAgentChatService(args: {
         return managed.session.provider;
       })();
       const nextModel = descriptor.isCliWrapped ? descriptor.shortId : descriptor.id;
+      const previousProvider = managed.session.provider;
+      if (managed.runtime && isIdentitySession) {
+        teardownRuntime(managed);
+        refreshReconstructionContext(managed, { includeConversationTail: true });
+      }
+
       let compatible = true;
       if (managed.runtime != null) {
         if (managed.session.provider === "codex") {
@@ -3956,11 +4847,13 @@ export function createAgentChatService(args: {
       }
 
       const currentTitle = sessionService.get(sessionId)?.title ?? null;
-      const previousProvider = managed.session.provider;
       managed.session.provider = nextProvider;
       managed.session.modelId = descriptor.id;
       managed.session.model = nextModel;
       managed.session.capabilityMode = inferCapabilityMode(nextProvider);
+      if (previousProvider !== nextProvider || previousProvider === "codex") {
+        delete managed.session.threadId;
+      }
       sessionService.updateMeta({
         sessionId,
         ...(hasCustomChatSessionTitle(currentTitle, previousProvider)
@@ -3969,6 +4862,13 @@ export function createAgentChatService(args: {
         toolType: toolTypeFromProvider(nextProvider),
         resumeCommand: resumeCommandForProvider(nextProvider, sessionId)
       });
+
+      if (isIdentitySession) {
+        managed.session.permissionMode = normalizeIdentityPermissionMode(
+          managed.session.permissionMode,
+          nextProvider,
+        );
+      }
     }
 
     if (reasoningEffort !== undefined) {
@@ -3976,9 +4876,11 @@ export function createAgentChatService(args: {
     }
 
     if (permissionMode !== undefined) {
-      managed.session.permissionMode = permissionMode;
+      managed.session.permissionMode = isIdentitySession
+        ? normalizeIdentityPermissionMode(permissionMode, managed.session.provider)
+        : permissionMode;
       if (managed.runtime?.kind === "unified") {
-        managed.runtime.permissionMode = mapToUnifiedPermissionMode(permissionMode) ?? "edit";
+        managed.runtime.permissionMode = mapToUnifiedPermissionMode(managed.session.permissionMode) ?? "edit";
       }
     }
 
@@ -4064,23 +4966,148 @@ export function createAgentChatService(args: {
 
   const changePermissionMode = ({ sessionId, permissionMode }: import("../../../shared/types").AgentChatChangePermissionModeArgs): void => {
     const managed = ensureManagedSession(sessionId);
+    const nextMode = managed.session.identityKey
+      ? normalizeIdentityPermissionMode(permissionMode, managed.session.provider)
+      : permissionMode;
 
     if (managed.runtime?.kind === "unified") {
-      managed.runtime.permissionMode = mapToUnifiedPermissionMode(permissionMode) ?? "edit";
+      managed.runtime.permissionMode = mapToUnifiedPermissionMode(nextMode) ?? "edit";
     }
 
-    managed.session.permissionMode = permissionMode;
+    managed.session.permissionMode = nextMode;
     persistChatState(managed);
 
     logger.info("agent_chat.permission_mode_changed", {
       sessionId,
-      permissionMode,
+      permissionMode: nextMode,
+    });
+  };
+
+  const getSlashCommands = ({ sessionId }: import("../../../shared/types").AgentChatSlashCommandsArgs): import("../../../shared/types").AgentChatSlashCommand[] => {
+    const managed = managedSessions.get(sessionId);
+    if (!managed) return [];
+    const provider = managed.session.provider;
+
+    // Local commands available to all providers
+    const localCommands: import("../../../shared/types").AgentChatSlashCommand[] = [
+      { name: "/clear", description: "Clear chat history", source: "local" },
+    ];
+
+    // Claude SDK commands
+    if (provider === "claude" && managed.runtime?.kind === "claude") {
+      const rt = managed.runtime;
+      const sdkCmds: import("../../../shared/types").AgentChatSlashCommand[] = rt.slashCommands.map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+        name: cmd.name,
+        description: cmd.description,
+        argumentHint: cmd.argumentHint,
+        source: "sdk" as const,
+      }));
+      // Merge: SDK commands first, then local commands that don't conflict
+      const sdkNames = new Set(sdkCmds.map((c: import("../../../shared/types").AgentChatSlashCommand) => c.name));
+      return [...sdkCmds, ...localCommands.filter((c) => !sdkNames.has(c.name))];
+    }
+
+    // Codex SDK commands
+    if (provider === "codex" && managed.runtime?.kind === "codex") {
+      const rt = managed.runtime;
+      const sdkCmds: import("../../../shared/types").AgentChatSlashCommand[] = rt.slashCommands.map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+        name: cmd.name,
+        description: cmd.description,
+        argumentHint: cmd.argumentHint,
+        source: "sdk" as const,
+      }));
+      // Add /review as a built-in Codex command if not already in skills
+      if (!sdkCmds.some((c) => c.name === "/review")) {
+        sdkCmds.push({ name: "/review", description: "Review uncommitted changes", source: "sdk" as const });
+      }
+      const sdkNames = new Set(sdkCmds.map((c: import("../../../shared/types").AgentChatSlashCommand) => c.name));
+      return [...sdkCmds, ...localCommands.filter((c) => !sdkNames.has(c.name))];
+    }
+
+    // Unified — only local commands
+    return localCommands;
+  };
+
+  const codexFuzzyFileSearch = async ({ sessionId, query }: { sessionId: string; query: string }): Promise<Array<{ path: string; score?: number }>> => {
+    const managed = managedSessions.get(sessionId);
+    if (!managed || managed.runtime?.kind !== "codex") return [];
+    try {
+      const result = await managed.runtime.request<{ files?: Array<{ path?: string; score?: number }> }>("fuzzyFileSearch", {
+        query,
+        rootDirs: [managed.laneWorktreePath],
+        limit: 60,
+      });
+      if (!Array.isArray(result?.files)) return [];
+      return result.files
+        .filter((f): f is { path: string; score?: number } => typeof f?.path === "string")
+        .map((f) => ({ path: f.path, score: f.score }));
+    } catch {
+      return []; // fuzzyFileSearch not supported
+    }
+  };
+
+  const runSessionTurn = async ({
+    sessionId,
+    text,
+    displayText,
+    attachments = [],
+    reasoningEffort,
+    executionMode,
+    timeoutMs = 300_000,
+  }: AgentChatSendArgs & { timeoutMs?: number }): Promise<{
+    sessionId: string;
+    provider: AgentChatProvider;
+    model: string;
+    modelId?: string;
+    outputText: string;
+    usage?: {
+      inputTokens?: number | null;
+      outputTokens?: number | null;
+      cacheReadTokens?: number | null;
+      cacheCreationTokens?: number | null;
+    };
+    turnId?: string;
+    threadId?: string;
+    sdkSessionId?: string | null;
+  }> => {
+    if (sessionTurnCollectors.has(sessionId)) {
+      throw new Error(`Session '${sessionId}' already has an active background turn.`);
+    }
+
+    const safeTimeoutMs = Math.max(15_000, Math.floor(timeoutMs));
+    return await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        sessionTurnCollectors.delete(sessionId);
+        reject(new Error(`Timed out waiting for session '${sessionId}' to finish the current turn.`));
+      }, safeTimeoutMs);
+
+      sessionTurnCollectors.set(sessionId, {
+        resolve,
+        reject,
+        outputText: "",
+        lastError: null,
+        timeout,
+      });
+
+      void sendMessage({
+        sessionId,
+        text,
+        displayText,
+        attachments,
+        reasoningEffort,
+        executionMode,
+      }).catch((error) => {
+        clearTimeout(timeout);
+        sessionTurnCollectors.delete(sessionId);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      });
     });
   };
 
   return {
     createSession,
     sendMessage,
+    runSessionTurn,
     steer,
     interrupt,
     resumeSession,
@@ -4088,6 +5115,8 @@ export function createAgentChatService(args: {
     ensureIdentitySession,
     approveToolUse,
     getAvailableModels,
+    getSlashCommands,
+    codexFuzzyFileSearch,
     dispose,
     disposeAll,
     updateSession,

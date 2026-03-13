@@ -132,6 +132,91 @@ describe("AgentChatMessageList", () => {
     expect(screen.getByText("Working through plan")).toBeTruthy();
   });
 
+  it("hides internal planner and tool chatter for persistent identity surfaces", () => {
+    render(
+      <AgentChatMessageList
+        surfaceProfile="persistent_identity"
+        events={[
+          envelope({ type: "reasoning", text: "Thinking through the reply", turnId: "turn-1", itemId: "reason-1" }),
+          envelope({
+            type: "plan",
+            steps: [{ text: "Collect context", status: "in_progress" }],
+            explanation: "Internal planning",
+          }, 1),
+          envelope({
+            type: "tool_call",
+            tool: "functions.exec_command",
+            args: { cmd: "pwd" },
+            itemId: "tool-1",
+            turnId: "turn-1",
+          }, 2),
+          envelope({
+            type: "tool_result",
+            tool: "functions.exec_command",
+            result: { stdout: "/tmp" },
+            itemId: "tool-1",
+            turnId: "turn-1",
+            status: "completed",
+          }, 3),
+          envelope({
+            type: "tool_call",
+            tool: "functions.read_thread_terminal",
+            args: {},
+            itemId: "tool-2",
+            turnId: "turn-1",
+          }, 4),
+          envelope({
+            type: "tool_result",
+            tool: "functions.read_thread_terminal",
+            result: { output: "" },
+            itemId: "tool-2",
+            turnId: "turn-1",
+            status: "completed",
+          }, 5),
+          envelope({
+            type: "tool_use_summary",
+            summary: "Used shell once",
+            toolUseIds: ["tool-1"],
+            turnId: "turn-1",
+          }, 6),
+          envelope({ type: "context_compact", trigger: "auto", preTokens: 1024, turnId: "turn-1" }, 7),
+          envelope({ type: "text", text: "Hello there." }, 8),
+        ]}
+      />
+    );
+
+    expect(screen.getByText("Hello there.")).toBeTruthy();
+    expect(screen.queryByText("Reasoning")).toBeNull();
+    expect(screen.queryByText("Plan")).toBeNull();
+    expect(screen.queryByText("Tool Summary")).toBeNull();
+    expect(screen.queryByText(/Context compacted/i)).toBeNull();
+    expect(screen.queryByText(/tool calls/i)).toBeNull();
+    expect(screen.queryByText(/exec_command/i)).toBeNull();
+  });
+
+  it("hides completed usage footers for persistent identity surfaces", () => {
+    render(
+      <AgentChatMessageList
+        surfaceProfile="persistent_identity"
+        events={[
+          envelope({
+            type: "done",
+            status: "completed",
+            turnStatus: "completed",
+            usage: {
+              inputTokens: 12,
+              outputTokens: 34,
+            },
+            model: "claude-haiku-4-5",
+            modelId: "anthropic/claude-haiku-4-5",
+          }),
+        ]}
+      />
+    );
+
+    expect(screen.queryByText("Usage")).toBeNull();
+  });
+
   it("renders approval request with action buttons", () => {
     const onApproval = vi.fn();
     render(

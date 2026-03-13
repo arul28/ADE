@@ -17,12 +17,16 @@ import {
   User,
   Robot,
   Note,
+  ChatCircleText,
+  Info,
+  Lightning,
 } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
   AgentChatEvent,
   AgentChatEventEnvelope,
   ChatSurfaceChipTone,
+  ChatSurfaceProfile,
   ChatSurfaceMode,
 } from "../../../shared/types";
 import { getModelById, resolveModelDescriptor } from "../../../shared/modelRegistry";
@@ -192,6 +196,18 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
     }
   }
 
+  if (event.type === "delegation_state") {
+    const normalizedMessage = summarizeInlineText(event.message ?? "", 140);
+    const keepDelegation =
+      normalizedMessage.length > 0
+      || event.contract.status === "blocked"
+      || event.contract.status === "launch_failed"
+      || event.contract.status === "failed";
+    if (!keepDelegation) {
+      return;
+    }
+  }
+
   const prev = out[out.length - 1];
 
   if (event.type === "reasoning") {
@@ -286,6 +302,59 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
       };
       return;
     }
+  }
+
+  // todo_update: replace previous todo_update with same turnId (latest state wins)
+  if (event.type === "todo_update") {
+    const nextTurn = event.turnId ?? null;
+    if (nextTurn !== null) {
+      const matchIndex = [...out]
+        .reverse()
+        .findIndex((candidate) =>
+          candidate.event.type === "todo_update"
+          && (candidate.event.turnId ?? null) === nextTurn,
+        );
+      if (matchIndex >= 0) {
+        const actualIndex = out.length - 1 - matchIndex;
+        out[actualIndex] = {
+          ...out[actualIndex]!,
+          timestamp: envelope.timestamp,
+          event,
+        };
+        return;
+      }
+    }
+    out.push({
+      key: `${envelope.sessionId}:${sequence}:${envelope.timestamp}`,
+      timestamp: envelope.timestamp,
+      event,
+    });
+    return;
+  }
+
+  // subagent_started and subagent_result: push normally, no collapsing
+  if (event.type === "subagent_started" || event.type === "subagent_result") {
+    out.push({
+      key: `${envelope.sessionId}:${sequence}:${envelope.timestamp}`,
+      timestamp: envelope.timestamp,
+      event,
+    });
+    return;
+  }
+
+  // structured_question, tool_use_summary, context_compact, system_notice: push normally
+  if (
+    event.type === "structured_question"
+    || event.type === "tool_use_summary"
+    || event.type === "context_compact"
+    || event.type === "system_notice"
+  ) {
+    out.push({
+      key: `${envelope.sessionId}:${sequence}:${envelope.timestamp}`,
+      timestamp: envelope.timestamp,
+      event,
+    });
+    return;
   }
 
   if (event.type === "tool_call") {
@@ -672,10 +741,13 @@ function renderEvent(
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
     turnModel?: { label: string; modelId?: string; model?: string } | null;
     surfaceMode?: ChatSurfaceMode;
+    surfaceProfile?: ChatSurfaceProfile;
   }
 ) {
   const event = envelope.event;
   const isResolverMode = options?.surfaceMode === "resolver";
+  const hideInternalExecution = options?.surfaceProfile === "persistent_identity";
+  const hideReasoning = hideInternalExecution;
 
   /* ── User message ── */
   if (event.type === "user_message") {
@@ -822,6 +894,9 @@ function renderEvent(
 
   /* ── Plan ── */
   if (event.type === "plan") {
+    if (hideInternalExecution) {
+      return null;
+    }
     return (
       <div className={cn(GLASS_CARD_CLASS, "p-4")} style={surfaceInlineCardStyle()}>
         <div className="mb-3 flex items-center gap-2">
@@ -856,8 +931,254 @@ function renderEvent(
     );
   }
 
+  /* ── TODO Update ── */
+  if (event.type === "todo_update") {
+    const completedCount = event.items.filter((item) => item.status === "completed").length;
+    const totalCount = event.items.length;
+    const progressPct = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+    return (
+      <div className={cn(GLASS_CARD_CLASS, "p-4")} style={surfaceInlineCardStyle()}>
+        <div className="mb-3 flex items-center gap-2">
+          <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-cyan-400/18 bg-cyan-500/[0.1]">
+            <ListChecks size={13} weight="bold" className="text-cyan-300/80" />
+          </span>
+          <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-cyan-300/80">TODO</span>
+          <span className="ml-auto font-mono text-[10px] text-muted-fg/40">{completedCount}/{totalCount}</span>
+        </div>
+        <div className="space-y-1">
+          {event.items.length ? (
+            event.items.map((item) => (
+              <div key={item.id} className="flex items-start gap-2.5 px-2 py-1.5 transition-colors hover:bg-cyan-500/[0.03]">
+                <div className="mt-0.5 flex-shrink-0">
+                  {item.status === "completed" ? (
+                    <Checks size={13} weight="bold" className="text-emerald-400" />
+                  ) : item.status === "in_progress" ? (
+                    <SpinnerGap size={13} weight="bold" className="animate-spin text-sky-400" />
+                  ) : (
+                    <Circle size={11} weight="regular" className="text-amber-400/60" />
+                  )}
+                </div>
+                <div className={cn(
+                  "flex-1 text-[12px]",
+                  item.status === "completed" ? "text-fg/45 line-through decoration-fg/15" : "text-fg/80"
+                )}>
+                  {item.description}
+                </div>
+                <span className={cn(
+                  "inline-flex shrink-0 items-center border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.16em]",
+                  item.status === "completed"
+                    ? "border-emerald-400/18 bg-emerald-500/[0.08] text-emerald-300/80"
+                    : item.status === "in_progress"
+                      ? "border-sky-400/18 bg-sky-500/[0.08] text-sky-300/80"
+                      : "border-amber-400/18 bg-amber-500/[0.08] text-amber-300/80",
+                )}>
+                  {item.status.replace("_", " ")}
+                </span>
+              </div>
+            ))
+          ) : (
+            <div className="font-mono text-[11px] text-muted-fg/40">No items yet.</div>
+          )}
+        </div>
+        {totalCount > 0 ? (
+          <div className="mt-3 border-t border-cyan-500/8 pt-2.5">
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-cyan-500/[0.08]">
+              <div
+                className="h-full rounded-full bg-cyan-400/50 transition-all duration-300"
+                style={{ width: `${progressPct}%` }}
+              />
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  /* ── Subagent Started ── */
+  if (event.type === "subagent_started") {
+    return (
+      <div className="inline-flex items-center gap-2 rounded-[var(--chat-radius-pill)] border border-violet-400/18 bg-violet-500/[0.08] px-3 py-1.5">
+        <SpinnerGap size={13} weight="bold" className="animate-spin text-violet-300/80" />
+        <span className="font-mono text-[11px] font-bold text-violet-300/80">
+          Subagent: {event.description}
+        </span>
+      </div>
+    );
+  }
+
+  /* ── Subagent Result ── */
+  if (event.type === "subagent_result") {
+    const isSuccess = event.status === "completed";
+    const defaultOpen = !isSuccess;
+    const summaryTruncated = summarizeInlineText(event.summary, 120);
+    return (
+      <CollapsibleCard
+        defaultOpen={defaultOpen}
+        summary={
+          <div className="flex items-center gap-2 font-mono text-[11px]">
+            {isSuccess ? (
+              <CheckCircle size={13} weight="bold" className="text-emerald-400" />
+            ) : (
+              <XCircle size={13} weight="bold" className="text-red-400" />
+            )}
+            <span className="inline-flex items-center border border-violet-400/18 bg-violet-500/[0.08] px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-violet-300/80">
+              Subagent {event.status}
+            </span>
+            {summaryTruncated ? <span className="flex-1 truncate text-[10px] text-fg/45">{summaryTruncated}</span> : null}
+          </div>
+        }
+        className="border-violet-500/12"
+      >
+        <div className="space-y-3">
+          <div className="text-[12px] leading-relaxed text-fg/70">{event.summary}</div>
+          {event.usage ? (
+            <div className="flex flex-wrap gap-3 border-t border-violet-500/8 pt-2.5 font-mono text-[10px] text-muted-fg/45">
+              {event.usage.totalTokens != null ? (
+                <span>{formatTokenCount(event.usage.totalTokens)} tokens</span>
+              ) : null}
+              {event.usage.toolUses != null ? (
+                <span>{event.usage.toolUses} tool use{event.usage.toolUses === 1 ? "" : "s"}</span>
+              ) : null}
+              {event.usage.durationMs != null ? (
+                <span>{(event.usage.durationMs / 1000).toFixed(1)}s</span>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      </CollapsibleCard>
+    );
+  }
+
+  /* ── Structured Question ── */
+  if (event.type === "structured_question") {
+    return (
+      <div className={cn(GLASS_CARD_CLASS, "p-4")} style={messageCardStyle(0.14)}>
+        <div className="mb-2 flex items-center gap-2">
+          <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-[var(--chat-accent-faint)] bg-[var(--chat-accent-faint)]">
+            <ChatCircleText size={13} weight="bold" className="text-[var(--chat-accent)]" />
+          </span>
+          <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-[var(--chat-accent)]">Agent Question</span>
+          <span className="ml-auto font-mono text-[9px] text-muted-fg/25">{formatTime(envelope.timestamp)}</span>
+        </div>
+        <div className="rounded-[calc(var(--chat-radius-card)-6px)] border border-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_8%,transparent)] px-4 py-3 text-[12.5px] leading-[1.65] text-fg/85">
+          {event.question}
+        </div>
+        {event.options?.length ? (
+          <div className="mt-3 flex flex-wrap items-center gap-1.5">
+            {event.options.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                className="border border-accent/40 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/70 transition-colors hover:bg-accent/15"
+                onClick={() => options?.onApproval?.(event.itemId, "accept", option.value)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <div className="mt-2 font-mono text-[9px] text-muted-fg/35">or type a custom answer</div>
+      </div>
+    );
+  }
+
+  /* ── Tool Use Summary ── */
+  if (event.type === "tool_use_summary") {
+    if (hideInternalExecution) {
+      return null;
+    }
+    const summaryText = event.summary;
+    const toolCount = event.toolUseIds.length;
+    const isLong = summaryText.length > 120;
+    return (
+      <CollapsibleCard
+        defaultOpen={!isLong}
+        summary={
+          <div className="flex items-center gap-2 font-mono text-[11px]">
+            <Info size={12} weight="bold" className="text-muted-fg/45" />
+            <span className="inline-flex items-center border border-border/15 bg-surface-recessed/90 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em] text-muted-fg/55">
+              Tool Summary
+            </span>
+            <span className="flex-1 truncate text-[10px] text-fg/45">{summarizeInlineText(summaryText, 100)}</span>
+            <span className="text-[9px] text-muted-fg/35">{toolCount} tool{toolCount === 1 ? "" : "s"}</span>
+          </div>
+        }
+        className="border-transparent"
+      >
+        <div className="text-[12px] leading-relaxed text-fg/65">{summaryText}</div>
+      </CollapsibleCard>
+    );
+  }
+
+  /* ── Context Compact ── */
+  if (event.type === "context_compact") {
+    if (hideInternalExecution) {
+      return null;
+    }
+    const suffix = event.trigger === "auto" ? "(auto)" : "(manual)";
+    const freedLabel = event.preTokens != null ? ` · ~${formatTokenCount(event.preTokens)} tokens freed` : "";
+    return (
+      <div className="flex items-center gap-3 py-0.5">
+        <div className="h-px flex-1 border-t border-dashed border-white/8" />
+        <span className="inline-flex items-center gap-1.5 rounded-[var(--chat-radius-pill)] border border-dashed border-white/8 bg-white/[0.02] px-2.5 py-1 font-mono text-[9px] text-muted-fg/40">
+          <Lightning size={10} weight="bold" className="text-muted-fg/35" />
+          Context compacted {suffix}{freedLabel}
+        </span>
+        <div className="h-px flex-1 border-t border-dashed border-white/8" />
+      </div>
+    );
+  }
+
+  /* ── System Notice ── */
+  if (event.type === "system_notice") {
+    const kindStyles: Record<string, { border: string; bg: string; text: string; icon: typeof Warning }> = {
+      auth: { border: "border-amber-500/18", bg: "bg-amber-500/[0.06]", text: "text-amber-300", icon: Warning },
+      rate_limit: { border: "border-red-500/18", bg: "bg-red-500/[0.06]", text: "text-red-300", icon: Warning },
+      hook: { border: "border-violet-500/18", bg: "bg-violet-500/[0.06]", text: "text-violet-300", icon: Note },
+      file_persist: { border: "border-emerald-500/18", bg: "bg-emerald-500/[0.06]", text: "text-emerald-300", icon: Note },
+      info: { border: "border-border/14", bg: "bg-surface-recessed/70", text: "text-muted-fg/55", icon: Note },
+    };
+    const style = kindStyles[event.noticeKind] ?? kindStyles.info!;
+    const NoticeIcon = style.icon;
+    const hasDetail = event.detail != null && event.detail.length > 0;
+
+    if (hasDetail) {
+      return (
+        <CollapsibleCard
+          defaultOpen={false}
+          summary={
+            <div className="flex items-center gap-2 font-mono text-[11px]">
+              <NoticeIcon size={12} weight="bold" className={style.text} />
+              <span className={cn("inline-flex items-center border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em]", style.border, style.bg, style.text)}>
+                {event.noticeKind.replace("_", " ")}
+              </span>
+              <span className="flex-1 truncate text-[10px] text-fg/55">{event.message}</span>
+            </div>
+          }
+          className={style.border}
+        >
+          <div className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-fg/60">{event.detail}</div>
+        </CollapsibleCard>
+      );
+    }
+
+    return (
+      <div className={cn(
+        "inline-flex items-center gap-2 rounded-[var(--chat-radius-pill)] border px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em]",
+        style.border, style.bg, style.text,
+      )}>
+        <NoticeIcon size={11} weight="bold" />
+        <span className="text-[9px] font-bold">{event.noticeKind.replace("_", " ")}</span>
+        <span className="normal-case tracking-normal text-fg/55">{event.message}</span>
+      </div>
+    );
+  }
+
   /* ── Reasoning ── */
   if (event.type === "reasoning") {
+    if (hideReasoning) {
+      return null;
+    }
     const reasoningText = event.text.trim();
     const displayReasoning = reasoningText.length > 0 ? event.text : "Thinking...";
     return (
@@ -887,6 +1208,9 @@ function renderEvent(
 
   /* ── Tool call ── */
   if (event.type === "tool_invocation") {
+    if (hideInternalExecution) {
+      return null;
+    }
     const meta = getToolMeta(event.tool);
     const ToolIcon = meta.icon;
     const toolDisplay = describeToolIdentifier(event.tool);
@@ -956,6 +1280,9 @@ function renderEvent(
   }
 
   if (event.type === "tool_call") {
+    if (hideInternalExecution) {
+      return null;
+    }
     const meta = getToolMeta(event.tool);
     const ToolIcon = meta.icon;
     const toolDisplay = describeToolIdentifier(event.tool);
@@ -1162,11 +1489,47 @@ function renderEvent(
     );
   }
 
+  /* ── Delegation ── */
+  if (event.type === "delegation_state") {
+    const isFailure =
+      event.contract.status === "blocked"
+      || event.contract.status === "launch_failed"
+      || event.contract.status === "failed";
+    const label = `${event.contract.workerIntent} ${event.contract.status}`.replace(/_/g, " ");
+    const detail = (event.message ?? "").trim();
+    return (
+      <div
+        className={cn(
+          "flex items-center gap-2 rounded-[var(--chat-radius-pill)] border px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em]",
+          isFailure
+            ? "border-red-500/14 bg-red-500/[0.05] text-red-300"
+            : "border-border/14 bg-surface-recessed/70 text-muted-fg/55"
+        )}
+      >
+        <Warning size={11} weight="bold" />
+        <span>{label}</span>
+        {detail ? (
+          <span className="truncate text-[9px] normal-case tracking-normal text-fg/55">
+            {detail}
+          </span>
+        ) : null}
+      </div>
+    );
+  }
+
   /* ── Done ── */
   if (event.type === "done") {
+    if (options?.surfaceProfile === "persistent_identity" && event.status === "completed") {
+      return null;
+    }
     const { label: modelLabel } = resolveModelMeta(event.modelId, event.model);
     const inputTokens = formatTokenCount(event.usage?.inputTokens);
     const outputTokens = formatTokenCount(event.usage?.outputTokens);
+    const cacheRead = formatTokenCount(event.usage?.cacheReadTokens);
+    const cacheCreation = formatTokenCount(event.usage?.cacheCreationTokens);
+    const costLabel = typeof event.costUsd === "number" && event.costUsd > 0
+      ? `$${event.costUsd < 0.01 ? event.costUsd.toFixed(4) : event.costUsd.toFixed(2)}`
+      : null;
     if (event.status === "completed" && !inputTokens && !outputTokens) {
       return null;
     }
@@ -1189,6 +1552,9 @@ function renderEvent(
         ) : null}
         {inputTokens ? <span className="text-[9px] text-fg/40">In {inputTokens}</span> : null}
         {outputTokens ? <span className="text-[9px] text-fg/40">Out {outputTokens}</span> : null}
+        {cacheRead ? <span className="text-[9px] text-emerald-400/40">Cache {cacheRead}</span> : null}
+        {cacheCreation ? <span className="text-[9px] text-violet-400/40">New cache {cacheCreation}</span> : null}
+        {costLabel ? <span className="text-[9px] text-fg/35">{costLabel}</span> : null}
         {event.status !== "completed" ? (
           <span className="ml-auto text-[8px] text-current">{event.status}</span>
         ) : null}
@@ -1304,6 +1670,7 @@ type EventRowProps = {
   turnModel: { label: string; modelId?: string; model?: string } | null;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
   surfaceMode?: ChatSurfaceMode;
+  surfaceProfile?: ChatSurfaceProfile;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -1313,6 +1680,7 @@ const EventRow = React.memo(function EventRow({
   turnModel,
   onApproval,
   surfaceMode = "standard",
+  surfaceProfile = "standard",
 }: EventRowProps) {
   return (
     <div className="space-y-3">
@@ -1325,7 +1693,7 @@ const EventRow = React.memo(function EventRow({
           <div className="h-px flex-1 bg-[color:color-mix(in_srgb,var(--chat-accent)_20%,transparent)]" />
         </div>
       ) : null}
-      {renderEvent(envelope, { onApproval, turnModel, surfaceMode })}
+      {renderEvent(envelope, { onApproval, turnModel, surfaceMode, surfaceProfile })}
     </div>
   );
 });
@@ -1373,18 +1741,21 @@ export function AgentChatMessageList({
   className,
   onApproval,
   surfaceMode = "standard",
+  surfaceProfile = "standard",
 }: {
   events: AgentChatEventEnvelope[];
   showStreamingIndicator?: boolean;
   className?: string;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
   surfaceMode?: ChatSurfaceMode;
+  surfaceProfile?: ChatSurfaceProfile;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const collapseCacheRef = useRef<{ events: AgentChatEventEnvelope[]; rows: RenderEnvelope[] }>({
     events: [],
     rows: [],
   });
+  const hideInternalExecution = surfaceProfile === "persistent_identity";
   const [stickToBottom, setStickToBottom] = useState(true);
   const stickToBottomRef = useRef(true);
   const onApprovalRef = useRef(onApproval);
@@ -1585,6 +1956,7 @@ export function AgentChatMessageList({
           turnModel={turnModel}
           onApproval={handleApproval}
           surfaceMode={surfaceMode}
+          surfaceProfile={surfaceProfile}
         />
       );
     }
@@ -1598,9 +1970,10 @@ export function AgentChatMessageList({
         turnModel={turnModel}
         onApproval={handleApproval}
         surfaceMode={surfaceMode}
+        surfaceProfile={surfaceProfile}
       />
     );
-  }, [surfaceMode, rows, turnModelMap, handleApproval, handleMeasure]);
+  }, [surfaceMode, surfaceProfile, rows, turnModelMap, handleApproval, handleMeasure]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -1654,6 +2027,9 @@ export function AgentChatMessageList({
           <div className="space-y-3">
             {groupedRows.slice(startIndex, Math.min(endIndex, groupedRows.length)).map((envelope, i) => {
               if (envelope.event.type === "tool_group") {
+                if (hideInternalExecution) {
+                  return null;
+                }
                 return <ToolGroupCard key={envelope.key} group={envelope.event} />;
               }
               return renderRow(envelope as RenderEnvelope, startIndex + i, true);
@@ -1668,6 +2044,9 @@ export function AgentChatMessageList({
         <div className="space-y-3">
           {groupedRows.map((envelope, index) => {
             if (envelope.event.type === "tool_group") {
+              if (hideInternalExecution) {
+                return null;
+              }
               return <ToolGroupCard key={envelope.key} group={envelope.event} />;
             }
             return renderRow(envelope as RenderEnvelope, index, false);

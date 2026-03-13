@@ -16,9 +16,19 @@ import type {
   LinearWorkflowConfig,
   LinearWorkflowDefinition,
   LinearWorkflowReviewRejectionAction,
-  LinearWorkflowStep,
   LinearWorkflowTargetType,
 } from "../../../shared/types";
+import {
+  completionContractUsesPrGate,
+  createDefaultLinearWorkflowConfig,
+  createWorkflowPreset,
+  defaultCompletionContract,
+  deriveVisualPlan,
+  rebuildWorkflowSteps,
+  type LinearWorkflowCompletionContract as CompletionContract,
+  type LinearWorkflowSupervisorMode as SupervisorMode,
+  type LinearWorkflowVisualPlan as VisualPlan,
+} from "../../../shared/linearWorkflowPresets";
 import { LinearConnectionPanel } from "./LinearConnectionPanel";
 import { TimelineEntry } from "./shared/TimelineEntry";
 import { Button } from "../ui/Button";
@@ -39,8 +49,6 @@ type SetupChecklistItem = {
   done: boolean;
 };
 
-type SupervisorMode = "none" | "after_work" | "before_pr" | "after_pr";
-
 type SimulationDraft = {
   identifier: string;
   title: string;
@@ -52,19 +60,6 @@ type SimulationDraft = {
   priorityLabel: LinearPriorityLabel;
 };
 
-type VisualPlan = {
-  startState: string;
-  waitForCompletion: boolean;
-  waitForPr: boolean;
-  prTiming: "none" | "after_start" | "after_target_complete";
-  reviewReadyWhen: "work_complete" | "pr_created" | "pr_ready";
-  supervisorMode: SupervisorMode;
-  supervisorIdentityKey: string;
-  rejectAction: LinearWorkflowReviewRejectionAction;
-  notificationEnabled: boolean;
-  notificationMilestone: NonNullable<LinearWorkflowStep["notifyOn"]>;
-};
-
 const issueStateOptions: WorkflowStateOption[] = [
   { value: "todo", label: "Todo" },
   { value: "in_progress", label: "In Progress" },
@@ -73,16 +68,6 @@ const issueStateOptions: WorkflowStateOption[] = [
   { value: "blocked", label: "Blocked" },
   { value: "canceled", label: "Canceled" },
 ];
-
-const visualManagedStepTypes = new Set<LinearWorkflowStep["type"]>([
-  "set_linear_state",
-  "launch_target",
-  "wait_for_target_status",
-  "wait_for_pr",
-  "request_human_review",
-  "emit_app_notification",
-  "complete_issue",
-]);
 
 function joinList(values: string[] | null | undefined): string {
   return (values ?? []).join(", ");
@@ -115,277 +100,39 @@ function workerSelectorValue(selector: LinearWorkflowDefinition["target"]["worke
   return selector && "value" in selector ? selector.value : "";
 }
 
-function defaultWorkflowName(targetType: LinearWorkflowTargetType): string {
-  if (targetType === "employee_session") return "Assigned employee -> review handoff";
-  if (targetType === "mission") return "Mission autopilot";
-  if (targetType === "worker_run") return "Worker run";
-  if (targetType === "pr_resolution") return "PR resolution";
-  return "Human review gate";
-}
-
-function defaultLaunchStep(targetType: LinearWorkflowTargetType): LinearWorkflowStep {
-  return {
-    id: "launch",
-    type: "launch_target",
-    name:
-      targetType === "employee_session"
-        ? "Launch delegated employee chat"
-        : targetType === "review_gate"
-          ? "Create review gate"
-          : targetType === "pr_resolution"
-            ? "Launch PR workflow"
-            : targetType === "worker_run"
-              ? "Launch worker run"
-              : "Launch mission",
-  };
-}
-
-function defaultReviewStep(): LinearWorkflowStep {
-  return {
-    id: "review",
-    type: "request_human_review",
-    name: "Supervisor review",
-    reviewerIdentityKey: "cto",
-    rejectAction: "loop_back",
-  };
-}
-
-function defaultNotificationStep(targetType: LinearWorkflowTargetType): LinearWorkflowStep {
-  return {
-    id: "notify",
-    type: "emit_app_notification",
-    name: "Notify in app",
-    notificationTitle: targetType === "review_gate" ? "Workflow needs review" : "Workflow reached review-ready",
-    message:
-      targetType === "review_gate"
-        ? "A Linear workflow is waiting on a human decision."
-        : "The Linear workflow is ready for your review in ADE.",
-    notifyOn: targetType === "review_gate" ? "delegated" : "review_ready",
-  };
-}
-
-function buildWorkflow(targetType: LinearWorkflowTargetType): LinearWorkflowDefinition {
-  const notificationStep = defaultNotificationStep(targetType);
-  const target: LinearWorkflowDefinition["target"] =
-    targetType === "employee_session"
-      ? {
-          type: targetType,
-          runMode: "assisted",
-          sessionTemplate: "default",
-          laneSelection: "primary",
-          sessionReuse: "reuse_existing",
-          prTiming: "after_target_complete",
-        }
-      : targetType === "review_gate"
-        ? {
-            type: targetType,
-            runMode: "manual",
-          }
-        : targetType === "pr_resolution"
-          ? {
-              type: targetType,
-              runMode: "autopilot",
-              prStrategy: { kind: "per-lane", draft: true },
-              laneSelection: "primary",
-              prTiming: "after_target_complete",
-            }
-          : {
-              type: targetType,
-              runMode: "autopilot",
-              workerSelector: targetType === "mission" ? { mode: "none" } : { mode: "none" },
-              ...(targetType === "worker_run" ? { laneSelection: "primary", prTiming: "after_target_complete" as const } : {}),
-              ...(targetType === "mission" ? { missionTemplate: "default" } : {}),
-            };
-
-  const steps: LinearWorkflowStep[] = [
-    { id: "set-in-progress", type: "set_linear_state", name: "Move issue to In Progress", state: "in_progress" },
-    defaultLaunchStep(targetType),
-  ];
-  if (targetType === "review_gate") {
-    steps.push(defaultReviewStep());
-  } else {
-    steps.push({ id: "wait", type: "wait_for_target_status", name: "Wait for delegated work", targetStatus: "completed" });
-  }
-  if (targetType === "pr_resolution") {
-    steps.push({ id: "wait-pr", type: "wait_for_pr", name: "Wait for PR" });
-  }
-  steps.push(notificationStep);
-  steps.push({ id: "complete", type: "complete_issue", name: "Mark workflow complete" });
+function applyTargetTypeDefaults(
+  workflow: LinearWorkflowDefinition,
+  targetType: LinearWorkflowTargetType,
+): LinearWorkflowDefinition {
+  const preset = createWorkflowPreset(targetType, {
+    id: workflow.id,
+    name: workflow.name,
+    description: workflow.description,
+    source: workflow.source,
+    triggerAssignees: workflow.triggers.assignees,
+    triggerLabels: workflow.triggers.labels,
+  });
 
   return {
-    id: `workflow-${targetType}-${Date.now()}`,
-    name: defaultWorkflowName(targetType),
-    enabled: true,
-    priority: 100,
-    description: "Starts only when the assigned employee and workflow label both match.",
-    source: "generated",
+    ...preset,
+    enabled: workflow.enabled,
+    priority: workflow.priority,
+    description: workflow.description,
+    routing: workflow.routing,
     triggers: {
-      assignees: ["CTO"],
-      labels: ["workflow:default"],
+      ...preset.triggers,
+      ...workflow.triggers,
+      assignees: workflow.triggers.assignees,
+      labels: workflow.triggers.labels,
     },
-    target,
-    steps,
+    retry: workflow.retry ?? preset.retry,
+    concurrency: workflow.concurrency ?? preset.concurrency,
+    observability: workflow.observability ?? preset.observability,
     closeout: {
-      successState: "in_review",
-      failureState: "blocked",
-      applyLabels: ["ade"],
-      resolveOnSuccess: true,
-      reopenOnFailure: true,
-      artifactMode: "links",
-      reviewReadyWhen: targetType === "pr_resolution" ? "pr_created" : "work_complete",
-    },
-    retry: { maxAttempts: 3, baseDelaySec: 30 },
-    concurrency: { maxActiveRuns: 5, perIssue: 1 },
-    observability: { emitNotifications: true, captureIssueSnapshot: true, persistTimeline: true },
-  };
-}
-
-function createDefaultPolicy(): LinearWorkflowConfig {
-  return {
-    version: 1,
-    source: "generated",
-    settings: {
-      ctoLinearAssigneeName: "CTO",
-      ctoLinearAssigneeAliases: ["cto"],
-    },
-    workflows: [buildWorkflow("employee_session")],
-    files: [],
-    migration: { hasLegacyConfig: false, needsSave: true },
-    legacyConfig: null,
-  };
-}
-
-function createPreset(targetType: LinearWorkflowTargetType): LinearWorkflowDefinition {
-  const workflow = buildWorkflow(targetType);
-  return {
-    ...workflow,
-    id:
-      targetType === "employee_session"
-        ? "assigned-employee-session"
-        : targetType === "mission"
-          ? "assigned-mission-run"
-          : targetType === "worker_run"
-            ? "assigned-worker-run"
-            : targetType === "pr_resolution"
-              ? "assigned-pr-resolution"
-              : "assigned-review-gate",
-  };
-}
-
-function getStep(workflow: LinearWorkflowDefinition, type: LinearWorkflowStep["type"]): LinearWorkflowStep | undefined {
-  return workflow.steps.find((step) => step.type === type);
-}
-
-function reviewStepPosition(workflow: LinearWorkflowDefinition): SupervisorMode {
-  const reviewIndex = workflow.steps.findIndex((step) => step.type === "request_human_review");
-  if (reviewIndex < 0) return "none";
-  const waitPrIndex = workflow.steps.findIndex((step) => step.type === "wait_for_pr");
-  if (waitPrIndex >= 0) {
-    return reviewIndex > waitPrIndex ? "after_pr" : "before_pr";
-  }
-  return "after_work";
-}
-
-function deriveVisualPlan(workflow: LinearWorkflowDefinition): VisualPlan {
-  const notificationStep = getStep(workflow, "emit_app_notification");
-  const reviewStep = getStep(workflow, "request_human_review");
-  return {
-    startState: getStep(workflow, "set_linear_state")?.state ?? "",
-    waitForCompletion: Boolean(getStep(workflow, "wait_for_target_status")),
-    waitForPr: Boolean(getStep(workflow, "wait_for_pr")),
-    prTiming: workflow.target.prStrategy ? workflow.target.prTiming ?? "after_target_complete" : "none",
-    reviewReadyWhen: workflow.closeout?.reviewReadyWhen ?? (getStep(workflow, "wait_for_pr") ? "pr_created" : "work_complete"),
-    supervisorMode: reviewStepPosition(workflow),
-    supervisorIdentityKey: reviewStep?.reviewerIdentityKey ?? workflow.humanReview?.reviewers?.[0] ?? "cto",
-    rejectAction: reviewStep?.rejectAction ?? (workflow.closeout?.reopenOnFailure ? "reopen_issue" : "cancel"),
-    notificationEnabled: Boolean(notificationStep),
-    notificationMilestone: notificationStep?.notifyOn ?? (getStep(workflow, "wait_for_pr") ? "review_ready" : "completed"),
-  };
-}
-
-function rebuildWorkflowSteps(workflow: LinearWorkflowDefinition, planPatch: Partial<VisualPlan>): LinearWorkflowDefinition {
-  const currentPlan = deriveVisualPlan(workflow);
-  const nextPlan = { ...currentPlan, ...planPatch };
-  const customSteps = workflow.steps.filter((step) => !visualManagedStepTypes.has(step.type));
-  const steps: LinearWorkflowStep[] = [];
-  const reviewStep = {
-    ...(getStep(workflow, "request_human_review") ?? defaultReviewStep()),
-    reviewerIdentityKey: (nextPlan.supervisorIdentityKey || "cto") as LinearWorkflowStep["reviewerIdentityKey"],
-    rejectAction: nextPlan.rejectAction,
-    loopToStepId: getStep(workflow, "launch_target")?.id ?? "launch",
-  } satisfies LinearWorkflowStep;
-
-  if (nextPlan.startState.trim()) {
-    steps.push({
-      ...(getStep(workflow, "set_linear_state") ?? { id: "set-in-progress", type: "set_linear_state", name: "Move issue" }),
-      state: nextPlan.startState,
-      name: nextPlan.startState === "in_progress" ? "Move issue to In Progress" : getStep(workflow, "set_linear_state")?.name ?? "Set Linear state",
-    });
-  }
-
-  steps.push(getStep(workflow, "launch_target") ?? defaultLaunchStep(workflow.target.type));
-
-  if (workflow.target.type === "review_gate") {
-    steps.push(reviewStep);
-  } else if (nextPlan.waitForCompletion) {
-    steps.push(
-      getStep(workflow, "wait_for_target_status") ?? {
-        id: "wait",
-        type: "wait_for_target_status",
-        name: "Wait for delegated work",
-        targetStatus: "completed",
-      }
-    );
-  }
-
-  if (nextPlan.supervisorMode !== "none" && nextPlan.supervisorMode !== "after_pr") {
-    steps.push(reviewStep);
-  }
-
-  if (nextPlan.waitForPr) {
-    steps.push(getStep(workflow, "wait_for_pr") ?? { id: "wait-pr", type: "wait_for_pr", name: "Wait for PR" });
-  }
-
-  if (nextPlan.supervisorMode === "after_pr") {
-    steps.push(reviewStep);
-  }
-
-  steps.push(...customSteps);
-
-  if (nextPlan.notificationEnabled) {
-    steps.push({
-      ...(getStep(workflow, "emit_app_notification") ?? defaultNotificationStep(workflow.target.type)),
-      notifyOn: nextPlan.notificationMilestone,
-    });
-  }
-
-  steps.push(getStep(workflow, "complete_issue") ?? { id: "complete", type: "complete_issue", name: "Mark workflow complete" });
-
-  return {
-    ...workflow,
-    target: {
-      ...workflow.target,
-      prTiming: workflow.target.prStrategy ? nextPlan.prTiming : "none",
-    },
-    steps,
-    closeout: {
+      ...(preset.closeout ?? {}),
       ...(workflow.closeout ?? {}),
-      reviewReadyWhen: nextPlan.waitForPr ? nextPlan.reviewReadyWhen : "work_complete",
+      reviewReadyWhen: preset.closeout?.reviewReadyWhen ?? workflow.closeout?.reviewReadyWhen,
     },
-    humanReview:
-      nextPlan.supervisorMode === "none"
-        ? workflow.humanReview
-          ? {
-              ...workflow.humanReview,
-              required: false,
-              reviewers: nextPlan.supervisorIdentityKey ? [nextPlan.supervisorIdentityKey] : workflow.humanReview.reviewers,
-            }
-          : undefined
-        : {
-            ...(workflow.humanReview ?? {}),
-            required: true,
-            reviewers: [nextPlan.supervisorIdentityKey || "cto"],
-          },
   };
 }
 
@@ -534,15 +281,15 @@ function buildRunTimeline(detail: LinearWorkflowRunDetail): Array<{
 export function LinearSyncPanel() {
   const [connection, setConnection] = useState<LinearConnectionStatus | null>(null);
   const [dashboard, setDashboard] = useState<LinearSyncDashboard | null>(null);
-  const [policy, setPolicy] = useState<LinearWorkflowConfig>(createDefaultPolicy());
-  const [loadedPolicy, setLoadedPolicy] = useState<LinearWorkflowConfig>(createDefaultPolicy());
-  const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(createDefaultPolicy().workflows[0]?.id ?? null);
+  const [policy, setPolicy] = useState<LinearWorkflowConfig>(createDefaultLinearWorkflowConfig());
+  const [loadedPolicy, setLoadedPolicy] = useState<LinearWorkflowConfig>(createDefaultLinearWorkflowConfig());
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(createDefaultLinearWorkflowConfig().workflows[0]?.id ?? null);
   const [queue, setQueue] = useState<LinearSyncQueueItem[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedRunDetail, setSelectedRunDetail] = useState<LinearWorkflowRunDetail | null>(null);
   const [runDetailLoading, setRunDetailLoading] = useState(false);
   const [reviewNote, setReviewNote] = useState("");
-  const [queueActionLoading, setQueueActionLoading] = useState<"approve" | "reject" | "retry" | null>(null);
+  const [queueActionLoading, setQueueActionLoading] = useState<"approve" | "reject" | "retry" | "complete" | null>(null);
   const [revisions, setRevisions] = useState<CtoFlowPolicyRevision[]>([]);
   const [catalog, setCatalog] = useState<LinearWorkflowCatalog>({ users: [], labels: [], states: [] });
   const [agents, setAgents] = useState<AgentIdentity[]>([]);
@@ -763,7 +510,7 @@ export function LinearSyncPanel() {
   );
 
   const actOnRun = useCallback(
-    async (action: "approve" | "reject" | "retry") => {
+    async (action: "approve" | "reject" | "retry" | "complete") => {
       if (!window.ade?.cto || !selectedRunId) return;
       setQueueActionLoading(action);
       setError(null);
@@ -780,7 +527,9 @@ export function LinearSyncPanel() {
             ? "Supervisor approval recorded."
             : action === "reject"
               ? "Supervisor decision recorded."
-              : "Workflow queued to retry."
+              : action === "complete"
+                ? "Delegated work marked complete."
+                : "Workflow queued to retry."
         );
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to update the workflow run.");
@@ -868,7 +617,7 @@ export function LinearSyncPanel() {
   }, [simulationDraft]);
 
   const addPreset = useCallback((targetType: LinearWorkflowTargetType) => {
-    const workflow = createPreset(targetType);
+    const workflow = createWorkflowPreset(targetType);
     setPolicy((current) => ({ ...current, workflows: [...current.workflows, workflow] }));
     setSelectedWorkflowId(workflow.id);
   }, []);
@@ -950,6 +699,16 @@ export function LinearSyncPanel() {
   const selectedRunQueueItem = useMemo(
     () => queue.find((item) => item.id === selectedRunId) ?? null,
     [queue, selectedRunId]
+  );
+  const selectedRunCurrentStep = useMemo(
+    () => selectedRunDetail?.steps.find((step) => step.workflowStepId === selectedRunDetail.run.currentStepId) ?? null,
+    [selectedRunDetail]
+  );
+  const canMarkRunComplete = Boolean(
+    selectedRunDetail
+    && selectedRunDetail.run.status === "waiting_for_target"
+    && selectedRunCurrentStep?.type === "wait_for_target_status"
+    && selectedRunCurrentStep.targetStatus === "explicit_completion",
   );
   const selectedRunTimeline = useMemo(
     () => (selectedRunDetail ? buildRunTimeline(selectedRunDetail) : []),
@@ -1312,22 +1071,7 @@ export function LinearSyncPanel() {
                       data-testid="linear-target-type-select"
                       onChange={(e) =>
                         updateSelectedWorkflow((workflow) =>
-                          rebuildWorkflowSteps(
-                            {
-                              ...workflow,
-                              target: {
-                                ...workflow.target,
-                                type: e.target.value as LinearWorkflowTargetType,
-                                runMode:
-                                  e.target.value === "employee_session"
-                                    ? "assisted"
-                                    : e.target.value === "review_gate"
-                                      ? "manual"
-                                      : "autopilot",
-                              },
-                            },
-                            {}
-                          )
+                          applyTargetTypeDefaults(workflow, e.target.value as LinearWorkflowTargetType)
                         )
                       }
                     >
@@ -1537,16 +1281,25 @@ export function LinearSyncPanel() {
                     </select>
                   </div>
                   <div>
-                    <label className={labelCls}>Wait for delegated work</label>
+                    <label className={labelCls}>Completion contract</label>
                     <select
                       className={selectCls}
-                      value={visualPlan?.waitForCompletion ? "yes" : "no"}
+                      value={visualPlan?.completionContract ?? defaultCompletionContract(selectedWorkflow.target.type)}
                       data-testid="linear-wait-target-select"
-                      onChange={(e) => patchVisualPlan({ waitForCompletion: e.target.value === "yes" })}
+                      onChange={(e) => patchVisualPlan({ completionContract: e.target.value as CompletionContract })}
                       disabled={selectedWorkflow.target.type === "review_gate"}
                     >
-                      <option value="yes">Yes, pause until work completes</option>
-                      <option value="no">No, continue immediately</option>
+                      <option value="complete_on_launch">Complete immediately after launch</option>
+                      {selectedWorkflow.target.type !== "mission" ? (
+                        <option value="wait_for_explicit_completion">Wait for explicit ADE completion</option>
+                      ) : null}
+                      {selectedWorkflow.target.type === "mission" || selectedWorkflow.target.type === "worker_run" ? (
+                        <option value="wait_for_runtime_success">
+                          {selectedWorkflow.target.type === "mission" ? "Wait for mission completion" : "Wait for runtime success"}
+                        </option>
+                      ) : null}
+                      <option value="wait_for_pr_created">Wait for a PR to exist</option>
+                      <option value="wait_for_review_ready">Wait for a PR to be review-ready</option>
                     </select>
                   </div>
                   <div>
@@ -1558,7 +1311,12 @@ export function LinearSyncPanel() {
                       onChange={(e) =>
                         updateSelectedWorkflow((workflow) => ({
                           ...rebuildWorkflowSteps(workflow, e.target.value === "none"
-                            ? { waitForPr: false, reviewReadyWhen: "work_complete", prTiming: "none" }
+                            ? {
+                                completionContract: completionContractUsesPrGate(deriveVisualPlan(workflow).completionContract)
+                                  ? defaultCompletionContract(workflow.target.type)
+                                  : deriveVisualPlan(workflow).completionContract,
+                                prTiming: "none",
+                              }
                             : { prTiming: deriveVisualPlan(workflow).prTiming === "none" ? "after_target_complete" : deriveVisualPlan(workflow).prTiming }),
                           target: {
                             ...workflow.target,
@@ -1605,7 +1363,16 @@ export function LinearSyncPanel() {
                       className={selectCls}
                       value={visualPlan?.reviewReadyWhen ?? "work_complete"}
                       data-testid="linear-review-ready-select"
-                      onChange={(e) => patchVisualPlan({ reviewReadyWhen: e.target.value as VisualPlan["reviewReadyWhen"], waitForPr: e.target.value !== "work_complete" })}
+                      onChange={(e) => patchVisualPlan({
+                        completionContract:
+                          e.target.value === "pr_ready"
+                            ? "wait_for_review_ready"
+                            : e.target.value === "pr_created"
+                              ? "wait_for_pr_created"
+                              : selectedWorkflow.target.type === "mission"
+                                ? "wait_for_runtime_success"
+                                : "wait_for_explicit_completion",
+                      })}
                     >
                       <option value="work_complete">Delegated work completes</option>
                       <option value="pr_created">A PR exists</option>
@@ -1625,10 +1392,10 @@ export function LinearSyncPanel() {
                           nextMode === "before_pr" || nextMode === "after_pr"
                             ? {
                                 supervisorMode: nextMode,
-                                waitForPr: true,
-                                reviewReadyWhen: (visualPlan?.reviewReadyWhen ?? "work_complete") === "work_complete"
-                                  ? "pr_created"
-                                  : (visualPlan?.reviewReadyWhen ?? "pr_created"),
+                                completionContract:
+                                  visualPlan?.completionContract === "wait_for_review_ready"
+                                    ? "wait_for_review_ready"
+                                    : "wait_for_pr_created",
                               }
                             : { supervisorMode: nextMode }
                         );
@@ -2067,6 +1834,30 @@ export function LinearSyncPanel() {
                             : selectedRunDetail.reviewContext.rejectAction === "reopen_issue"
                               ? "Reject + reopen"
                               : "Reject"}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {canMarkRunComplete ? (
+                    <div className="rounded-lg border border-accent/25 bg-accent/[0.06] p-4">
+                      <div className="font-sans text-sm font-semibold text-fg">Explicit completion required</div>
+                      <div className="mt-1.5 font-mono text-xs text-muted-fg/60">
+                        This workflow is waiting for ADE to confirm the delegated work met its configured completion contract.
+                      </div>
+                      <div className="mt-3">
+                        <label className={labelCls}>Completion Note</label>
+                        <textarea
+                          className={textareaCls}
+                          rows={3}
+                          value={reviewNote}
+                          onChange={(e) => setReviewNote(e.target.value)}
+                          placeholder="Record the proof or summary that makes this delegated work complete."
+                        />
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <Button variant="primary" size="sm" onClick={() => void actOnRun("complete")} disabled={queueActionLoading !== null}>
+                          Mark complete
                         </Button>
                       </div>
                     </div>

@@ -151,6 +151,8 @@ Mission context remains task-centric rather than identity-centric:
 - project memory is shared background knowledge
 - worker context is assembled per run/attempt from the current frontier
 
+Mission-scoped memory exists in the backend: workers write discoveries to the `mission` scope via `memoryAdd` during execution. On mission success, high-value mission memories are promoted to the `project` scope. The mission detail view does not have its own memory browsing surface — all memory browsing is consolidated in Settings > Memory tab.
+
 ---
 
 ## Current product contract

@@ -45,10 +45,19 @@ describe("workerTaskSessionService", () => {
     });
     expect(keyA).toBe(keyB);
     expect(keyA.startsWith("task:")).toBe(true);
+
+    const scopedKey = fixture.service.deriveTaskKey({
+      agentId: "a1",
+      laneId: "lane-x",
+      workflowRunId: "linear-run-1",
+      linearIssueId: "issue-1",
+      summary: "fix checkout bug",
+    });
+    expect(scopedKey).not.toBe(keyA);
     fixture.db.close();
   });
 
-  it("persists and resumes task sessions by (agentId, adapterType, taskKey)", async () => {
+  it("persists and merges task session continuity by (agentId, adapterType, taskKey)", async () => {
     const fixture = await createFixture();
     const taskKey = fixture.service.deriveTaskKey({
       agentId: "worker-1",
@@ -59,21 +68,64 @@ describe("workerTaskSessionService", () => {
       agentId: "worker-1",
       adapterType: "codex-local",
       taskKey,
-      payload: { sessionId: "chat-123", threadId: "thread-1" },
+      payload: {
+        continuity: {
+          handle: {
+            surface: "codex_app_server",
+            sessionId: "chat-123",
+            threadId: "thread-1",
+          },
+        },
+      },
     });
     expect(created.taskKey).toBe(taskKey);
 
     const resumed = fixture.service.getTaskSession("worker-1", "codex-local", taskKey);
-    expect(resumed?.payload).toEqual({ sessionId: "chat-123", threadId: "thread-1" });
+    expect(resumed?.payload).toEqual({
+      continuity: {
+        handle: {
+          surface: "codex_app_server",
+          sessionId: "chat-123",
+          threadId: "thread-1",
+        },
+      },
+    });
 
     fixture.service.ensureTaskSession({
       agentId: "worker-1",
       adapterType: "codex-local",
       taskKey,
-      payload: { sessionId: "chat-123", threadId: "thread-2" },
+      payload: {
+        continuity: {
+          handle: {
+            surface: "codex_app_server",
+            threadId: "thread-2",
+          },
+          scope: {
+            runId: "linear-run-2",
+          },
+        },
+        wake: {
+          lastRunId: "wake-2",
+        },
+      },
     });
     const updated = fixture.service.getTaskSession("worker-1", "codex-local", taskKey);
-    expect(updated?.payload).toEqual({ sessionId: "chat-123", threadId: "thread-2" });
+    expect(updated?.payload).toEqual({
+      continuity: {
+        handle: {
+          surface: "codex_app_server",
+          sessionId: "chat-123",
+          threadId: "thread-2",
+        },
+        scope: {
+          runId: "linear-run-2",
+        },
+      },
+      wake: {
+        lastRunId: "wake-2",
+      },
+    });
 
     fixture.db.close();
   });
@@ -113,4 +165,3 @@ describe("workerTaskSessionService", () => {
     fixture.db.close();
   });
 });
-

@@ -71,8 +71,13 @@ Agent runtime context is assembled from the modern `.ade` state layout:
 - context docs: `.ade/context/PRD.ade.md`, `.ade/context/ARCHITECTURE.ade.md`
 - packs: `.ade/artifacts/packs/*`
 - mission/automation runtime records in ADE local state
+- unified memory briefings injected at worker activation
 
 This keeps agent execution aligned with the same deterministic context system used by missions, packs, conflicts, and PR tooling.
+
+### Worker memory model
+
+Workers use the unified memory tools (`memorySearch`, `memoryAdd`) wired through the standard agent tool surface. At activation time, workers receive a memory briefing assembled from relevant entries across the project, mission, and agent scopes. Workers do not have persistent identity like the CTO — they do not own core memory. Instead, they read from and write to the shared unified memory system, and their discoveries are scoped to the mission they are executing. High-value mission-scoped memories are promoted to project scope on mission success.
 
 ---
 

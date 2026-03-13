@@ -42,6 +42,12 @@ vi.mock("../ai/authDetector", () => ({
   detectAllAuth: vi.fn(async () => [])
 }));
 
+const claudeQueryMock = vi.fn();
+
+vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
+  query: vi.fn((...args: unknown[]) => claudeQueryMock(...args)),
+}));
+
 import { generateText, streamText } from "ai";
 import { spawn } from "node:child_process";
 import { runGit } from "../git/git";
@@ -122,6 +128,19 @@ type CreatedFixture = {
   ended: Array<{ laneId: string; sessionId: string; exitCode: number | null }>;
   service: ReturnType<typeof createAgentChatService>;
 };
+
+function makeClaudeQuery(messages: unknown[]) {
+  return {
+    async *[Symbol.asyncIterator]() {
+      for (const message of messages) {
+        yield message;
+      }
+    },
+    close: vi.fn(),
+    interrupt: vi.fn(async () => {}),
+    supportedCommands: vi.fn(async () => []),
+  };
+}
 
 type SentMessage = {
   jsonrpc?: string;
@@ -526,6 +545,33 @@ describe("agentChatService", () => {
     detectAllAuthMock.mockResolvedValue([]);
     generateTextMock.mockResolvedValue({ text: "" } as any);
     streamTextMock.mockReset();
+    claudeQueryMock.mockReset();
+    claudeQueryMock.mockImplementation(() =>
+      makeClaudeQuery([
+        {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-1",
+          slash_commands: [],
+        },
+        {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "Claude reply" }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        },
+        {
+          type: "result",
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
+        },
+      ]),
+    );
   });
 
   afterEach(() => {
@@ -1977,6 +2023,58 @@ describe("agentChatService", () => {
       expect(listed.find((entry) => entry.sessionId === first.id)?.identityKey).toBe("cto");
     });
 
+    it("defaults identity sessions to full access when no permission mode is specified", async () => {
+      const fixture = createFixture("claude");
+
+      const session = await fixture.service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-1",
+      });
+
+      expect(session.permissionMode).toBe("full-auto");
+
+      const metadataPath = path.join(resolveAdeLayout(fixture.projectRoot).chatSessionsDir, `${session.id}.json`);
+      const persisted = JSON.parse(fs.readFileSync(metadataPath, "utf8")) as {
+        permissionMode?: string;
+      };
+      expect(persisted.permissionMode).toBe("full-auto");
+
+      const reused = await fixture.service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-1",
+      });
+      expect(reused.permissionMode).toBe("full-auto");
+    });
+
+    it("normalizes legacy planner permission modes on persistent identity sessions", async () => {
+      const fixture = createFixture("claude");
+
+      const ctoSession = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+        permissionMode: "plan",
+      });
+      expect(ctoSession.permissionMode).toBe("default");
+
+      const workerSession = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "openai/gpt-5.4",
+        modelId: "openai/gpt-5.4",
+        identityKey: "agent:worker-1",
+        permissionMode: "plan",
+      });
+      expect(workerSession.permissionMode).toBe("edit");
+
+      const reused = await fixture.service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-1",
+      });
+      expect(reused.permissionMode).toBe("default");
+    });
+
     it("creates stable worker identity sessions keyed by agent id", async () => {
       const fixture = createFixture("claude");
 
@@ -1994,11 +2092,92 @@ describe("agentChatService", () => {
       expect(fixture.workerAgentService.getAgent).toHaveBeenCalledWith("worker-1", { includeDeleted: true });
     });
 
+    it("allows active identity sessions to swap model families and carries recent conversation context forward", async () => {
+      const fixture = createFixture("claude");
+      const resolveModelSpy = vi.spyOn(providerResolver, "resolveModel").mockResolvedValue({ id: "mock-model" } as any);
+
+      claudeQueryMock.mockImplementationOnce(() =>
+        makeClaudeQuery([
+          {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-1",
+            slash_commands: [],
+          },
+          {
+            type: "assistant",
+            message: {
+              content: [{ type: "text", text: "Hello back" }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          },
+          {
+            type: "result",
+            usage: {
+              input_tokens: 1,
+              output_tokens: 1,
+              cache_read_input_tokens: 0,
+              cache_creation_input_tokens: 0,
+            },
+          },
+        ]),
+      );
+      streamTextMock.mockImplementationOnce(() => ({
+        fullStream: makeFullStream([
+          { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } },
+        ]),
+      }) as any);
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+
+      await fixture.service.sendMessage({ sessionId: session.id, text: "hello there" });
+
+      const updated = await fixture.service.updateSession({
+        sessionId: session.id,
+        modelId: "openai/gpt-5.4",
+      });
+
+      expect(updated.provider).toBe("unified");
+      expect(updated.modelId).toBe("openai/gpt-5.4");
+
+      await fixture.service.sendMessage({ sessionId: session.id, text: "keep going" });
+
+      expect(streamTextMock).toHaveBeenCalledTimes(1);
+      const unifiedInput = streamTextMock.mock.calls[0]?.[0] as { messages?: Array<{ content?: unknown }> } | undefined;
+      const reconstructionMessage = String(unifiedInput?.messages?.[0]?.content ?? "");
+      expect(reconstructionMessage).toContain("Recent Conversation Tail");
+      expect(reconstructionMessage).toContain("User: hello there");
+      expect(reconstructionMessage).toContain("Assistant: Hello back");
+
+      resolveModelSpy.mockRestore();
+    });
+
     it("injects reconstruction context on resumed CTO session startup", async () => {
       const fixture = createFixture("claude");
-      streamTextMock.mockImplementationOnce(() => ({
-        fullStream: makeFullStream([{ type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } }])
-      }) as any);
+      claudeQueryMock.mockImplementationOnce(() =>
+        makeClaudeQuery([
+          {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-2",
+            slash_commands: [],
+          },
+          {
+            type: "result",
+            usage: {
+              input_tokens: 1,
+              output_tokens: 1,
+              cache_read_input_tokens: 0,
+              cache_creation_input_tokens: 0,
+            },
+          },
+        ]),
+      );
 
       const session = await fixture.service.createSession({
         laneId: "lane-1",
@@ -2013,15 +2192,31 @@ describe("agentChatService", () => {
       await fixture.service.sendMessage({ sessionId: session.id, text: "status check" });
 
       expect(fixture.ctoStateService.buildReconstructionContext).toHaveBeenCalled();
-      const streamInput = streamTextMock.mock.calls[0]?.[0] as any;
-      expect(streamInput.messages[0]?.content).toContain("System context (identity reconstruction");
+      const queryInput = claudeQueryMock.mock.calls[0]?.[0] as { prompt?: string } | undefined;
+      expect(queryInput?.prompt).toContain("System context (identity reconstruction");
     });
 
     it("injects reconstruction context on resumed worker identity session startup", async () => {
       const fixture = createFixture("claude");
-      streamTextMock.mockImplementationOnce(() => ({
-        fullStream: makeFullStream([{ type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } }])
-      }) as any);
+      claudeQueryMock.mockImplementationOnce(() =>
+        makeClaudeQuery([
+          {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-3",
+            slash_commands: [],
+          },
+          {
+            type: "result",
+            usage: {
+              input_tokens: 1,
+              output_tokens: 1,
+              cache_read_input_tokens: 0,
+              cache_creation_input_tokens: 0,
+            },
+          },
+        ]),
+      );
 
       const session = await fixture.service.createSession({
         laneId: "lane-1",
@@ -2036,19 +2231,39 @@ describe("agentChatService", () => {
       await fixture.service.sendMessage({ sessionId: session.id, text: "worker status check" });
 
       expect(fixture.workerAgentService.buildReconstructionContext).toHaveBeenCalledWith("worker-2", 8);
-      const streamInput = streamTextMock.mock.calls[0]?.[0] as any;
-      expect(streamInput.messages[0]?.content).toContain("System context (identity reconstruction");
-      expect(streamInput.messages[0]?.content).toContain("worker test");
+      const queryInput = claudeQueryMock.mock.calls[0]?.[0] as { prompt?: string } | undefined;
+      expect(queryInput?.prompt).toContain("System context (identity reconstruction");
+      expect(queryInput?.prompt).toContain("worker test");
     });
 
     it("propagates direct worker chat completions into CTO subordinate activity", async () => {
       const fixture = createFixture("claude");
-      streamTextMock.mockImplementationOnce(() => ({
-        fullStream: makeFullStream([
-          { type: "text-delta", text: "I reviewed the mobile bug and the fix should land in the navigation stack." },
-          { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } }
-        ])
-      }) as any);
+      claudeQueryMock.mockImplementationOnce(() =>
+        makeClaudeQuery([
+          {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-4",
+            slash_commands: [],
+          },
+          {
+            type: "assistant",
+            message: {
+              content: [{ type: "text", text: "I reviewed the mobile bug and the fix should land in the navigation stack." }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          },
+          {
+            type: "result",
+            usage: {
+              input_tokens: 1,
+              output_tokens: 1,
+              cache_read_input_tokens: 0,
+              cache_creation_input_tokens: 0,
+            },
+          },
+        ]),
+      );
 
       const session = await fixture.service.createSession({
         laneId: "lane-1",

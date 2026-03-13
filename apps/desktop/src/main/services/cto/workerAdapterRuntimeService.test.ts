@@ -63,6 +63,19 @@ function createSpawnStub(output = "ok"): {
   return { spawn, capture };
 }
 
+function createSession(id: string, provider: "claude" | "codex" | "unified", model: string, modelId: string) {
+  return {
+    id,
+    laneId: "lane-1",
+    provider,
+    model,
+    modelId,
+    status: "idle" as const,
+    createdAt: "2026-03-05T00:00:00.000Z",
+    lastActivityAt: "2026-03-05T00:00:00.000Z",
+  };
+}
+
 describe("workerAdapterRuntimeService", () => {
   it("runs claude-local through CLI spawn path", async () => {
     const { spawn, capture } = createSpawnStub("claude-output");
@@ -79,6 +92,7 @@ describe("workerAdapterRuntimeService", () => {
     expect(capture.args).toEqual(["--model", "sonnet", "--json"]);
     expect(capture.stdinWritten).toContain("hello");
     expect(result.ok).toBe(true);
+    expect(result.effectiveSurface).toBe("process");
     expect(result.outputText).toContain("claude-output");
   });
 
@@ -96,7 +110,121 @@ describe("workerAdapterRuntimeService", () => {
     expect(capture.command).toBe("codex");
     expect(capture.args).toEqual(["--model", "gpt-5.3-codex", "--json"]);
     expect(result.ok).toBe(true);
+    expect(result.effectiveSurface).toBe("process");
     expect(result.outputText).toContain("codex-output");
+  });
+
+  it("reuses Claude SDK session handles through the shared chat surface", async () => {
+    const ensureIdentitySession = vi.fn(async () =>
+      createSession("session-claude-1", "claude", "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6")
+    );
+    const runSessionTurn = vi.fn(async () => ({
+      sessionId: "session-claude-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+      outputText: "claude session output",
+      sdkSessionId: "sdk-session-1",
+    }));
+    const service = createWorkerAdapterRuntimeService({
+      getAgentChatService: () => ({ ensureIdentitySession, runSessionTurn }),
+    });
+
+    const result = await service.run({
+      agent: makeAgent({
+        adapterType: "claude-local",
+        adapterConfig: { modelId: "anthropic/claude-sonnet-4-6" },
+      }),
+      laneId: "lane-1",
+      prompt: "resume the delegated issue",
+    });
+
+    expect(ensureIdentitySession).toHaveBeenCalledWith({
+      identityKey: "agent:agent-1",
+      laneId: "lane-1",
+      modelId: "anthropic/claude-sonnet-4-6",
+      reuseExisting: true,
+    });
+    expect(result.effectiveSurface).toBe("claude_sdk");
+    expect(result.continuation).toMatchObject({
+      surface: "claude_sdk",
+      sessionId: "session-claude-1",
+      sdkSessionId: "sdk-session-1",
+    });
+  });
+
+  it("reuses Codex app-server thread handles through the shared chat surface", async () => {
+    const ensureIdentitySession = vi.fn(async () =>
+      createSession("session-codex-1", "codex", "gpt-5.3-codex", "openai/gpt-5.3-codex")
+    );
+    const runSessionTurn = vi.fn(async () => ({
+      sessionId: "session-codex-1",
+      provider: "codex",
+      model: "gpt-5.3-codex",
+      modelId: "openai/gpt-5.3-codex",
+      outputText: "codex session output",
+      threadId: "thread-77",
+    }));
+    const service = createWorkerAdapterRuntimeService({
+      getAgentChatService: () => ({ ensureIdentitySession, runSessionTurn }),
+    });
+
+    const result = await service.run({
+      agent: makeAgent({
+        adapterType: "codex-local",
+        adapterConfig: { modelId: "openai/gpt-5.3-codex" },
+      }),
+      laneId: "lane-1",
+      prompt: "resume the delegated issue",
+    });
+
+    expect(result.effectiveSurface).toBe("codex_app_server");
+    expect(result.continuation).toMatchObject({
+      surface: "codex_app_server",
+      sessionId: "session-codex-1",
+      threadId: "thread-77",
+    });
+  });
+
+  it("reuses unified chat sessions for API-key or local-model workers", async () => {
+    const ensureIdentitySession = vi.fn(async () =>
+      createSession("session-unified-1", "unified", "gpt-5.4-mini", "openai/gpt-5.4-mini")
+    );
+    const runSessionTurn = vi.fn(async () => ({
+      sessionId: "session-unified-1",
+      provider: "unified",
+      model: "gpt-5.4-mini",
+      modelId: "openai/gpt-5.4-mini",
+      outputText: "unified chat output",
+    }));
+    const service = createWorkerAdapterRuntimeService({
+      getAgentChatService: () => ({ ensureIdentitySession, runSessionTurn }),
+    });
+
+    const result = await service.run({
+      agent: makeAgent({
+        adapterType: "process",
+        adapterConfig: { modelId: "openai/gpt-5.4-mini" },
+      }),
+      continuation: {
+        surface: "unified_chat",
+        sessionId: "session-unified-1",
+      },
+      prompt: "continue the same worker context",
+    });
+
+    expect(ensureIdentitySession).not.toHaveBeenCalled();
+    expect(runSessionTurn).toHaveBeenCalledWith({
+      sessionId: "session-unified-1",
+      text: "continue the same worker context",
+      timeoutMs: 300000,
+    });
+    expect(result.effectiveSurface).toBe("unified_chat");
+    expect(result.continuation).toMatchObject({
+      surface: "unified_chat",
+      sessionId: "session-unified-1",
+      modelId: "openai/gpt-5.4-mini",
+    });
   });
 
   it("sends openclaw-webhook request with resolved env header", async () => {
@@ -153,4 +281,3 @@ describe("workerAdapterRuntimeService", () => {
     ).rejects.toThrow(/unsafe/i);
   });
 });
-

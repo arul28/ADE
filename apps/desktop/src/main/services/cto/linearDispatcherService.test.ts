@@ -5,6 +5,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { LinearWorkflowConfig, LinearWorkflowMatchResult, NormalizedLinearIssue } from "../../../shared/types";
 import { openKvDb } from "../state/kvDb";
 import { createLinearDispatcherService } from "./linearDispatcherService";
+import { createLinearOutboundService } from "./linearOutboundService";
+import { createLinearCloseoutService } from "./linearCloseoutService";
 
 const issueFixture: NormalizedLinearIssue = {
   id: "issue-1",
@@ -51,7 +53,7 @@ function buildPolicy(targetType: "mission" | "review_gate" | "worker_run"): Line
           { id: "launch", type: "launch_target", name: "Launch target" },
           ...(targetType === "review_gate"
             ? [{ id: "review", type: "request_human_review", name: "Review gate" } as const]
-            : [{ id: "wait", type: "wait_for_target_status", name: "Wait" } as const]),
+            : [{ id: "wait", type: "wait_for_target_status", name: "Wait", targetStatus: targetType === "mission" ? "completed" : "runtime_completed" } as const]),
           { id: "complete", type: "complete_issue", name: "Complete issue" },
         ],
         closeout: { successState: "done", failureState: "blocked", applyLabels: ["ade"], resolveOnSuccess: true, reopenOnFailure: true, artifactMode: "links" },
@@ -146,7 +148,7 @@ function buildSupervisedWorkerPolicy(): LinearWorkflowConfig {
         },
         steps: [
           { id: "launch", type: "launch_target", name: "Launch worker run" },
-          { id: "wait", type: "wait_for_target_status", name: "Wait", targetStatus: "completed" },
+          { id: "wait", type: "wait_for_target_status", name: "Wait", targetStatus: "runtime_completed" },
           {
             id: "review",
             type: "request_human_review",
@@ -155,6 +157,38 @@ function buildSupervisedWorkerPolicy(): LinearWorkflowConfig {
             rejectAction: "loop_back",
             loopToStepId: "launch",
           },
+          { id: "complete", type: "complete_issue", name: "Complete issue" },
+        ],
+        closeout: { successState: "in_review", failureState: "blocked", applyLabels: ["ade"], resolveOnSuccess: true, reopenOnFailure: true, artifactMode: "links" },
+      },
+    ],
+    files: [],
+    migration: { hasLegacyConfig: false, needsSave: false },
+    legacyConfig: null,
+  };
+}
+
+function buildWorkerExplicitCompletionPolicy(): LinearWorkflowConfig {
+  return {
+    version: 1,
+    source: "repo",
+    settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
+    workflows: [
+      {
+        id: "worker-explicit",
+        name: "Worker explicit completion",
+        enabled: true,
+        priority: 120,
+        triggers: { assignees: ["CTO"], labels: ["workflow:explicit-complete"] },
+        target: {
+          type: "worker_run",
+          runMode: "autopilot",
+          workerSelector: { mode: "slug", value: "backend-dev" },
+          laneSelection: "primary",
+        },
+        steps: [
+          { id: "launch", type: "launch_target", name: "Launch worker run" },
+          { id: "wait", type: "wait_for_target_status", name: "Wait", targetStatus: "explicit_completion" },
           { id: "complete", type: "complete_issue", name: "Complete issue" },
         ],
         closeout: { successState: "in_review", failureState: "blocked", applyLabels: ["ade"], resolveOnSuccess: true, reopenOnFailure: true, artifactMode: "links" },
@@ -240,6 +274,18 @@ function buildMatch(policy: LinearWorkflowConfig): LinearWorkflowMatchResult {
   };
 }
 
+function createOutboundServiceMocks() {
+  return {
+    ensureWorkpad: vi.fn(async () => ({ commentId: "comment-1" })),
+    updateWorkpad: vi.fn(async () => ({ commentId: "comment-1" })),
+    publishMissionStart: vi.fn(async () => {}),
+    publishMissionProgress: vi.fn(async () => {}),
+    publishWorkflowStatus: vi.fn(async () => {}),
+    publishWorkflowCloseout: vi.fn(async () => {}),
+    publishMissionCloseout: vi.fn(async () => {}),
+  } as any;
+}
+
 describe("linearDispatcherService", () => {
   it("launches a mission target and records the mission id", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-"));
@@ -264,6 +310,7 @@ describe("linearDispatcherService", () => {
       laneService: { listLanes: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Fix it." })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
+      outboundService: createOutboundServiceMocks(),
       workerTaskSessionService: {
         deriveTaskKey: vi.fn(() => "task-1"),
         ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
@@ -303,6 +350,7 @@ describe("linearDispatcherService", () => {
       laneService: { listLanes: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "noop" })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
+      outboundService: createOutboundServiceMocks(),
       workerTaskSessionService: {
         deriveTaskKey: vi.fn(() => "task-1"),
         ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
@@ -350,6 +398,7 @@ describe("linearDispatcherService", () => {
       laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Please implement the issue." })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
+      outboundService: createOutboundServiceMocks(),
       workerTaskSessionService: {
         deriveTaskKey: vi.fn(() => "task-key-1"),
         ensureTaskSession,
@@ -399,6 +448,7 @@ describe("linearDispatcherService", () => {
       laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Please own this issue." })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
+      outboundService: createOutboundServiceMocks(),
       workerTaskSessionService: {
         deriveTaskKey: vi.fn(() => "task-key-1"),
         ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
@@ -417,6 +467,84 @@ describe("linearDispatcherService", () => {
       laneId: "lane-1",
     }));
     expect(dispatcher.listQueue()[0]?.sessionId).toBe("session-cto-1");
+    db.close();
+  });
+
+  it("keeps employee-session workflows waiting when a chat runtime ends and relinks to the active identity session", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-session-relink-"));
+    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const policy = buildDirectCtoSessionPolicy();
+    let sessions = [
+      {
+        sessionId: "session-cto-1",
+        laneId: "lane-1",
+        identityKey: "cto",
+        status: "idle",
+        lastActivityAt: "2026-03-05T00:00:00.000Z",
+      },
+    ];
+
+    const dispatcher = createLinearDispatcherService({
+      db,
+      projectId: "project-1",
+      issueTracker: {
+        fetchWorkflowStates: vi.fn(async () => []),
+        updateIssueState: vi.fn(async () => {}),
+        addLabel: vi.fn(async () => {}),
+        createComment: vi.fn(async () => ({ commentId: "comment-1" })),
+      } as any,
+      workerAgentService: { listAgents: vi.fn(() => []) } as any,
+      workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
+      missionService: { create: vi.fn(), get: vi.fn() } as any,
+      aiOrchestratorService: { startMissionRun: vi.fn() } as any,
+      agentChatService: {
+        ensureIdentitySession: vi.fn(async () => ({ id: "session-cto-1" })),
+        sendMessage: vi.fn(async () => ({ id: "message-1" })),
+        listSessions: vi.fn(async () => sessions),
+      } as any,
+      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      templateService: { renderTemplate: vi.fn(() => ({ prompt: "Please own this issue." })) } as any,
+      closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
+      outboundService: createOutboundServiceMocks(),
+      workerTaskSessionService: {
+        deriveTaskKey: vi.fn(() => "task-key-1"),
+        ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
+      } as any,
+      prService: {
+        getForLane: vi.fn(() => null),
+        createFromLane: vi.fn(async () => ({ id: "pr-1", githubPrNumber: 101 })),
+      } as any,
+    });
+
+    const run = dispatcher.createRun({ ...issueFixture, labels: ["workflow:backend"], assigneeName: "CTO" }, buildMatch(policy));
+    await dispatcher.advanceRun(run.id, policy);
+
+    sessions = [
+      {
+        sessionId: "session-cto-1",
+        laneId: "lane-1",
+        identityKey: "cto",
+        status: "ended",
+        lastActivityAt: "2026-03-05T00:05:00.000Z",
+      },
+    ];
+    const waiting = await dispatcher.advanceRun(run.id, policy);
+    expect(waiting?.status).toBe("waiting_for_target");
+
+    sessions = [
+      {
+        sessionId: "session-cto-2",
+        laneId: "lane-1",
+        identityKey: "cto",
+        status: "idle",
+        lastActivityAt: "2026-03-05T00:06:00.000Z",
+      },
+    ];
+    const relinked = await dispatcher.advanceRun(run.id, policy);
+    expect(relinked?.status).toBe("waiting_for_target");
+    expect(dispatcher.listQueue()[0]?.sessionId).toBe("session-cto-2");
+    const detail = await dispatcher.getRunDetail(run.id, policy);
+    expect(detail?.steps.find((step) => step.workflowStepId === "wait")?.targetStatus).toBe("explicit_completion");
     db.close();
   });
 
@@ -455,6 +583,7 @@ describe("linearDispatcherService", () => {
       } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Please own this issue." })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
+      outboundService: createOutboundServiceMocks(),
       workerTaskSessionService: {
         deriveTaskKey: vi.fn(() => "task-key-1"),
         ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
@@ -475,6 +604,212 @@ describe("linearDispatcherService", () => {
       reuseExisting: false,
     }));
     expect(dispatcher.listQueue()[0]?.laneId).toBe("lane-2");
+    db.close();
+  });
+
+  it("requires an explicit ADE completion signal for worker runs when configured", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-worker-explicit-"));
+    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const policy = buildWorkerExplicitCompletionPolicy();
+    const closeout = vi.fn(async () => {});
+
+    const dispatcher = createLinearDispatcherService({
+      db,
+      projectId: "project-1",
+      issueTracker: {
+        fetchWorkflowStates: vi.fn(async () => []),
+        updateIssueState: vi.fn(async () => {}),
+        addLabel: vi.fn(async () => {}),
+        createComment: vi.fn(async () => ({ commentId: "comment-1" })),
+      } as any,
+      workerAgentService: {
+        listAgents: vi.fn(() => [{ id: "agent-1", slug: "backend-dev", adapterType: "claude-local", capabilities: [] }]),
+      } as any,
+      workerHeartbeatService: {
+        triggerWakeup: vi.fn(async () => ({ runId: "worker-run-1" })),
+        listRuns: vi.fn(() => [{ id: "worker-run-1", status: "completed" }]),
+      } as any,
+      missionService: { create: vi.fn(), get: vi.fn() } as any,
+      aiOrchestratorService: { startMissionRun: vi.fn() } as any,
+      agentChatService: { ensureIdentitySession: vi.fn(), listSessions: vi.fn(async () => []) } as any,
+      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      templateService: { renderTemplate: vi.fn(() => ({ prompt: "Implement the issue." })) } as any,
+      closeoutService: { applyOutcome: closeout } as any,
+      outboundService: createOutboundServiceMocks(),
+      workerTaskSessionService: {
+        deriveTaskKey: vi.fn(() => "task-key-1"),
+        ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
+      } as any,
+      prService: {
+        getForLane: vi.fn(() => null),
+        createFromLane: vi.fn(async () => ({ id: "pr-1", githubPrNumber: 101 })),
+      } as any,
+    });
+
+    const run = dispatcher.createRun({ ...issueFixture, labels: ["workflow:explicit-complete"] }, buildMatch(policy));
+    await dispatcher.advanceRun(run.id, policy);
+    const waiting = await dispatcher.advanceRun(run.id, policy);
+    expect(waiting?.status).toBe("waiting_for_target");
+
+    const detailBefore = await dispatcher.getRunDetail(run.id, policy);
+    expect(detailBefore?.steps.find((step) => step.workflowStepId === "wait")?.targetStatus).toBe("explicit_completion");
+
+    await dispatcher.resolveRunAction(run.id, "complete", "Validated via ADE closeout.", policy);
+    const completed = await dispatcher.advanceRun(run.id, policy);
+    expect(completed?.status).toBe("completed");
+    expect(closeout).toHaveBeenCalledTimes(1);
+    db.close();
+  });
+
+  it("still completes delegated workflows that are configured to complete on launch", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-complete-on-launch-"));
+    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const policy = buildDirectCtoSessionPolicy();
+    policy.workflows[0]!.steps = [
+      { id: "launch", type: "launch_target", name: "Launch chat" },
+      { id: "complete", type: "complete_issue", name: "Complete issue" },
+    ];
+    const closeout = vi.fn(async () => {});
+
+    const dispatcher = createLinearDispatcherService({
+      db,
+      projectId: "project-1",
+      issueTracker: {
+        fetchWorkflowStates: vi.fn(async () => []),
+        updateIssueState: vi.fn(async () => {}),
+        addLabel: vi.fn(async () => {}),
+        createComment: vi.fn(async () => ({ commentId: "comment-1" })),
+      } as any,
+      workerAgentService: { listAgents: vi.fn(() => []) } as any,
+      workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
+      missionService: { create: vi.fn(), get: vi.fn() } as any,
+      aiOrchestratorService: { startMissionRun: vi.fn() } as any,
+      agentChatService: {
+        ensureIdentitySession: vi.fn(async () => ({ id: "session-cto-1" })),
+        sendMessage: vi.fn(async () => ({ id: "message-1" })),
+        listSessions: vi.fn(async () => [{ sessionId: "session-cto-1", laneId: "lane-1", status: "idle" }]),
+      } as any,
+      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      templateService: { renderTemplate: vi.fn(() => ({ prompt: "Please own this issue." })) } as any,
+      closeoutService: { applyOutcome: closeout } as any,
+      outboundService: createOutboundServiceMocks(),
+      workerTaskSessionService: {
+        deriveTaskKey: vi.fn(() => "task-key-1"),
+        ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
+      } as any,
+      prService: {
+        getForLane: vi.fn(() => null),
+        createFromLane: vi.fn(async () => ({ id: "pr-1", githubPrNumber: 101 })),
+      } as any,
+    });
+
+    const run = dispatcher.createRun({ ...issueFixture, labels: ["workflow:backend"], assigneeName: "CTO" }, buildMatch(policy));
+    const completed = await dispatcher.advanceRun(run.id, policy);
+
+    expect(completed?.status).toBe("completed");
+    expect(closeout).toHaveBeenCalledTimes(1);
+    db.close();
+  });
+
+  it("keeps a single Linear workpad comment live through delegated worker execution, PR linking, and closeout", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-workpad-integration-"));
+    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const artifactPath = path.join(root, "proof.txt");
+    fs.writeFileSync(artifactPath, "proof", "utf8");
+
+    const policy = buildWorkerExplicitCompletionPolicy();
+    const workflow = policy.workflows[0]!;
+    workflow.target.laneSelection = "fresh_issue_lane";
+    workflow.target.prStrategy = { kind: "per-lane", draft: true };
+    workflow.target.prTiming = "after_start";
+
+    const createComment = vi.fn(async () => ({ commentId: "comment-1" }));
+    const updateBodies: string[] = [];
+    const updateComment = vi.fn(async (_commentId: string, body: string) => {
+      updateBodies.push(body);
+    });
+    const issueTracker = {
+      fetchWorkflowStates: vi.fn(async () => [{ id: "state-review", name: "In Review", type: "started", teamId: "team-1", teamKey: "ACME" }]),
+      updateIssueState: vi.fn(async () => {}),
+      addLabel: vi.fn(async () => {}),
+      createComment,
+      updateComment,
+      uploadAttachment: vi.fn(),
+    } as any;
+    const prService = {
+      getForLane: vi.fn(() => null),
+      getStatus: vi.fn(async () => ({
+        prId: "pr-55",
+        state: "open",
+        checksStatus: "passing",
+        reviewStatus: "requested",
+        isMergeable: true,
+        mergeConflicts: false,
+        behindBaseBy: 0,
+      })),
+      createFromLane: vi.fn(async () => ({ id: "pr-55", githubPrNumber: 55 })),
+      listAll: vi.fn(() => [{ id: "pr-55", githubUrl: "https://github.com/acme/repo/pull/55" }]),
+    } as any;
+    const outboundService = createLinearOutboundService({
+      db,
+      projectId: "project-1",
+      projectRoot: root,
+      issueTracker,
+      logger: { debug() {}, info() {}, warn() {}, error() {} } as any,
+    });
+    const closeoutService = createLinearCloseoutService({
+      issueTracker,
+      outboundService,
+      missionService: { get: vi.fn(() => null) } as any,
+      orchestratorService: { getArtifactsForMission: vi.fn(() => []) } as any,
+      prService,
+      computerUseArtifactBrokerService: {
+        listArtifacts: vi.fn(() => [{ uri: artifactPath }]),
+      } as any,
+    });
+
+    const dispatcher = createLinearDispatcherService({
+      db,
+      projectId: "project-1",
+      issueTracker,
+      workerAgentService: {
+        listAgents: vi.fn(() => [{ id: "agent-1", slug: "backend-dev", adapterType: "codex-local", capabilities: [] }]),
+      } as any,
+      workerHeartbeatService: {
+        triggerWakeup: vi.fn(async () => ({ runId: "worker-run-1" })),
+        listRuns: vi.fn(() => [{ id: "worker-run-1", status: "completed" }]),
+      } as any,
+      missionService: { create: vi.fn(), get: vi.fn() } as any,
+      aiOrchestratorService: { startMissionRun: vi.fn() } as any,
+      agentChatService: { ensureIdentitySession: vi.fn(), listSessions: vi.fn(async () => []) } as any,
+      laneService: {
+        list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]),
+        create: vi.fn(async () => ({ id: "lane-2", name: "ABC-42 fresh lane" })),
+      } as any,
+      templateService: { renderTemplate: vi.fn(() => ({ prompt: "Implement the issue." })) } as any,
+      closeoutService,
+      outboundService,
+      workerTaskSessionService: {
+        deriveTaskKey: vi.fn(() => "task-key-1"),
+        ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
+      } as any,
+      prService,
+    });
+
+    const run = dispatcher.createRun({ ...issueFixture, labels: ["workflow:explicit-complete"] }, buildMatch(policy));
+    await dispatcher.advanceRun(run.id, policy);
+    await dispatcher.resolveRunAction(run.id, "complete", "Validated with proof and PR.", policy);
+    const completed = await dispatcher.advanceRun(run.id, policy);
+
+    expect(completed?.status).toBe("completed");
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(updateBodies.length).toBeGreaterThanOrEqual(2);
+    expect(updateBodies[0]).toContain("- Lane: lane-2");
+    expect(updateBodies[0]).toContain("- Worker run: worker-run-1");
+    expect(updateBodies[0]).toContain("- PR: pr-55");
+    expect(updateBodies[updateBodies.length - 1]).toContain("### Closeout Summary");
+    expect(updateBodies[updateBodies.length - 1]).toContain("https://github.com/acme/repo/pull/55");
+    expect(updateBodies[updateBodies.length - 1]).toContain(`file://${artifactPath}`);
     db.close();
   });
 
@@ -510,6 +845,7 @@ describe("linearDispatcherService", () => {
       } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Implement the issue." })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
+      outboundService: createOutboundServiceMocks(),
       workerTaskSessionService: {
         deriveTaskKey: vi.fn(() => "task-key-1"),
         ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
@@ -563,6 +899,7 @@ describe("linearDispatcherService", () => {
       } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Implement the issue." })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
+      outboundService: createOutboundServiceMocks(),
       workerTaskSessionService: {
         deriveTaskKey: vi.fn(() => "task-key-1"),
         ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
@@ -613,6 +950,7 @@ describe("linearDispatcherService", () => {
       laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Open a PR." })) } as any,
       closeoutService: { applyOutcome: closeout } as any,
+      outboundService: createOutboundServiceMocks(),
       workerTaskSessionService: {
         deriveTaskKey: vi.fn(() => "task-key-1"),
         ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
@@ -700,6 +1038,7 @@ describe("linearDispatcherService", () => {
       laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Open a review-ready PR." })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
+      outboundService: createOutboundServiceMocks(),
       workerTaskSessionService: {
         deriveTaskKey: vi.fn(() => "task-key-1"),
         ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),

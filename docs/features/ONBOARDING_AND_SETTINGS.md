@@ -71,14 +71,16 @@ The setup flow now favors completion over forced integration ceremony.
 
 ## Settings responsibilities
 
-Settings owns durable configuration and infrastructure concerns, including:
+Settings owns durable configuration and infrastructure concerns, organized into tabs:
 
-- AI mode and task routing
-- provider-specific permission policy
-- config reload and local/shared config boundaries
-- automation defaults and integration credentials
-- context and memory health tools
-- GitHub, Linear, and related connectivity state
+- **General** — AI mode, task routing, provider-specific permission policy, config reload, local/shared config boundaries
+- **Context & Docs** — context doc management, skill files, deterministic context health
+- **Memory** — consolidated memory management with two sub-tabs:
+  - *Overview* — memory health, scope summaries, and promotion status
+  - *Browse All* — full memory browser across all scopes (project, agent, mission) and tiers (Tier 1 Pinned, Tier 2 Active, Tier 3 Fading)
+- **Integrations** — GitHub, Linear, and related connectivity state; automation defaults and credentials
+
+Memory is no longer scattered across multiple surfaces (CTO tab, mission detail, etc.). All memory browsing and management is consolidated in the Settings > Memory tab.
 
 Settings is not the primary authoring surface for automations, missions, or worker structure. It provides defaults and infrastructure for those features.
 

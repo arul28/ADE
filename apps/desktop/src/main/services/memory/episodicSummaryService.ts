@@ -204,11 +204,11 @@ export function createEpisodicSummaryService(args: {
     const summary = String(input.summary ?? "").trim();
     const duration = durationSeconds(input.startedAt, input.endedAt);
     const isTrivialSummary =
-      duration <= 90
+      duration < 60
       && decisions.length === 0
       && gotchas.length === 0
       && toolsUsed.length === 0
-      && /^(session closed|chat completed|cto session ended|worker session ended)\.?$/iu.test(summary);
+      && /^(session closed|chat completed|cto session ended|worker session ended|session ended|no action taken|completed|done)\.?$/iu.test(summary);
 
     if (!enabled || isTrivialSummary) {
       return;

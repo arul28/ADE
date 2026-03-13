@@ -4,6 +4,7 @@ import { Button } from "../ui/Button";
 
 type AgentQuestionModalProps = {
   question: string;
+  options?: Array<{ label: string; value: string }>;
   onClose: () => void;
   onSubmit: (answer: string) => void;
   onDecline: () => void;
@@ -11,6 +12,7 @@ type AgentQuestionModalProps = {
 
 export function AgentQuestionModal({
   question,
+  options,
   onClose,
   onSubmit,
   onDecline,
@@ -64,6 +66,26 @@ export function AgentQuestionModal({
               {question}
             </div>
           </div>
+
+          {options && options.length > 0 ? (
+            <div className="space-y-2">
+              <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-fg/45">
+                Options
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {options.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    className="rounded-sm border border-accent/20 bg-transparent px-3 py-1.5 font-mono text-[12px] text-fg/80 transition-colors hover:border-accent/45 hover:bg-accent/[0.08]"
+                    onClick={() => onSubmit(option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           <div className="space-y-2">
             <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-fg/45">

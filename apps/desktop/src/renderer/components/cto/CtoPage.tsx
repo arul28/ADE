@@ -1,8 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Brain,
   ChatCircle,
-  Database,
   Gear,
   GitBranch,
   UsersThree,
@@ -21,6 +19,7 @@ import type {
   CtoSubordinateActivityEntry,
   AgentStatus,
   AgentChatSessionSummary,
+  ChatSurfacePresentation,
   HeartbeatPolicy,
   OpenclawBridgeStatus,
   WorkerAgentRun,
@@ -38,18 +37,16 @@ import { CtoSettingsPanel } from "./CtoSettingsPanel";
 import { OnboardingWizard } from "./OnboardingWizard";
 import { OnboardingBanner } from "./OnboardingBanner";
 import { WorkerCreationWizard } from "./WorkerCreationWizard";
-import { CtoMemoryBrowser } from "./CtoMemoryBrowser";
 import { TimelineEntry } from "./shared/TimelineEntry";
 import { cardCls, shellBodyCls, shellTabBarCls } from "./shared/designTokens";
 
 /* ── Tab types ── */
 
-type TabId = "chat" | "team" | "memory" | "linear" | "settings";
+type TabId = "chat" | "team" | "linear" | "settings";
 
 const TABS: { id: TabId; label: string; icon: React.ElementType }[] = [
   { id: "chat", label: "Chat", icon: ChatCircle },
   { id: "team", label: "Team", icon: UsersThree },
-  { id: "memory", label: "Memory", icon: Database },
   { id: "linear", label: "Linear", icon: GitBranch },
   { id: "settings", label: "Settings", icon: Gear },
 ];
@@ -59,6 +56,18 @@ function splitTrimmed(value: string): string[] {
     .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean);
+}
+
+function summarizeList(values: string[] | null | undefined, emptyFallback: string): string {
+  const entries = (values ?? []).map((value) => value.trim()).filter(Boolean);
+  if (!entries.length) return emptyFallback;
+  return entries.slice(0, 3).join(" · ");
+}
+
+function summarizeText(value: string | null | undefined, fallback: string): string {
+  const normalized = value?.trim();
+  if (!normalized) return fallback;
+  return normalized.length > 180 ? `${normalized.slice(0, 177).trimEnd()}...` : normalized;
 }
 
 /* ── Main Page ── */
@@ -295,8 +304,8 @@ export function CtoPage() {
     let cancelled = false;
     setLoading(true); setError(null);
     const promise = selectedAgentId
-      ? window.ade.cto.ensureAgentSession({ agentId: selectedAgentId, laneId })
-      : window.ade.cto.ensureSession({ laneId });
+      ? window.ade.cto.ensureAgentSession({ agentId: selectedAgentId, laneId, permissionMode: "full-auto" })
+      : window.ade.cto.ensureSession({ laneId, permissionMode: "full-auto" });
     void promise
       .then((next) => { if (!cancelled) setSession(next); })
       .catch((err) => { if (!cancelled) { setError(err instanceof Error ? err.message : String(err)); setSession(null); } })
@@ -548,6 +557,31 @@ export function CtoPage() {
     return counts;
   }, [agents]);
 
+  const persistentIdentityPresentation = useMemo<ChatSurfacePresentation>(() => ({
+    mode: "standard",
+    profile: "persistent_identity",
+    title: selectedWorker ? selectedWorker.name : (ctoIdentity?.name?.trim() || "CTO"),
+    subtitle: selectedWorker
+      ? "Persistent employee session with durable memory and smooth model switching."
+      : summarizeText(
+          coreMemory?.projectSummary,
+          "Always-on project operator with durable memory. You can swap models without changing who this agent is.",
+        ),
+    accentColor: selectedWorker ? "#60A5FA" : "#22D3EE",
+    chips: selectedWorker
+      ? [
+        { label: "persistent memory", tone: "accent" },
+        { label: "employee", tone: "info" },
+        { label: session?.permissionMode === "full-auto" ? "full access" : "default permissions", tone: session?.permissionMode === "full-auto" ? "success" : "warning" },
+      ]
+      : [
+        { label: "persistent memory", tone: "accent" },
+        { label: "project operator", tone: "success" },
+        { label: session?.permissionMode === "full-auto" ? "full access" : "default permissions", tone: session?.permissionMode === "full-auto" ? "success" : "warning" },
+      ],
+    showMcpStatus: false,
+  }), [coreMemory?.projectSummary, ctoIdentity?.name, selectedWorker, session?.permissionMode]);
+
   const sidebarCtoModelInfo = useMemo(
     () => (
       ctoIdentity
@@ -569,6 +603,51 @@ export function CtoPage() {
     setSelectedAgentId(null);
     setActiveTab("chat");
   }, []);
+
+  const bridgeSummary = useMemo(() => {
+    if (!openclawStatus) return "Local ADE runtime";
+    if (openclawStatus.state === "connected") return "Bridge connected";
+    if (openclawStatus.state === "connecting" || openclawStatus.state === "reconnecting") return "Bridge warming up";
+    return "Bridge offline";
+  }, [openclawStatus]);
+
+  const identitySummaryCards = useMemo(() => {
+    const currentBrain = session
+      ? [session.provider, session.model].filter(Boolean).join(" / ")
+      : selectedWorker
+        ? [selectedWorker.adapterType, String((selectedWorker.adapterConfig as { model?: string } | null)?.model ?? "adaptive")].join(" / ")
+        : [ctoIdentity?.modelPreferences.provider, ctoIdentity?.modelPreferences.model].filter(Boolean).join(" / ");
+
+    return [
+      {
+        label: "Current brain",
+        value: currentBrain || "Adaptive runtime",
+        detail: selectedWorker ? "You can swap models without resetting this employee's memory." : "Choose a new model anytime; the CTO identity stays intact.",
+      },
+      {
+        label: "Access",
+        value: session?.permissionMode === "full-auto" ? "Full access" : "Default permissions",
+        detail: session ? `${capabilityLabel(session.capabilityMode)} runtime · ${bridgeSummary}` : bridgeSummary,
+      },
+      {
+        label: selectedWorker ? "Worker focus" : "Memory focus",
+        value: selectedWorker
+          ? summarizeList(selectedWorker.capabilities, "Generalist execution")
+          : summarizeList(coreMemory?.activeFocus, "Keeps durable project memory warm across sessions"),
+        detail: selectedWorker
+          ? summarizeText(selectedWorker.title || selectedWorker.role, "Persistent employee identity")
+          : summarizeList(coreMemory?.criticalConventions, "Project conventions will accumulate here over time"),
+      },
+    ];
+  }, [
+    bridgeSummary,
+    coreMemory?.activeFocus,
+    coreMemory?.criticalConventions,
+    ctoIdentity?.modelPreferences.model,
+    ctoIdentity?.modelPreferences.provider,
+    selectedWorker,
+    session,
+  ]);
 
   return (
     <div className={shellBodyCls}>
@@ -603,18 +682,75 @@ export function CtoPage() {
           />
         )}
 
+        <div className="border-b border-white/[0.06] px-4 py-4">
+          <div
+            className="overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.03] shadow-float"
+            style={{
+              backgroundImage: "radial-gradient(circle at top left, rgba(34, 211, 238, 0.16), transparent 42%), radial-gradient(circle at bottom right, rgba(59, 130, 246, 0.12), transparent 44%)",
+            }}
+          >
+            <div className="flex flex-col gap-5 px-5 py-5">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0 max-w-4xl">
+                  <div className="font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-cyan-300/80">
+                    {selectedWorker ? "Persistent employee" : "Persistent CTO"}
+                  </div>
+                  <div className="mt-2 font-sans text-[26px] font-semibold tracking-[-0.02em] text-fg">
+                    {selectedWorker ? selectedWorker.name : (ctoIdentity?.name?.trim() || "CTO")}
+                  </div>
+                  <div className="mt-2 max-w-3xl text-sm leading-6 text-fg/70">
+                    {selectedWorker
+                      ? summarizeText(
+                          selectedWorker.title || selectedWorker.role,
+                          "Long-running employee identity with durable memory, warm runtime continuity, and smooth model swaps.",
+                        )
+                      : summarizeText(
+                          coreMemory?.projectSummary,
+                          "Always-on project operator with durable memory, cross-model continuity, and a single long-lived session for the workspace.",
+                        )}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <Chip className="border-cyan-400/25 bg-cyan-500/10 text-[10px] text-cyan-100">Always on</Chip>
+                  <Chip className="border-emerald-400/20 bg-emerald-500/10 text-[10px] text-emerald-100">
+                    {session?.permissionMode === "full-auto" ? "Default: full access" : "Default permissions"}
+                  </Chip>
+                  <Chip className="border-white/10 bg-black/15 text-[10px] text-fg/70">{bridgeSummary}</Chip>
+                  {laneId ? (
+                    <Chip className="border-white/10 bg-black/15 text-[10px] text-fg/70">{`Lane ${laneId}`}</Chip>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="grid gap-3 lg:grid-cols-3">
+                {identitySummaryCards.map((card) => (
+                  <div
+                    key={card.label}
+                    className="rounded-xl border border-white/[0.08] bg-black/20 px-4 py-3 backdrop-blur"
+                  >
+                    <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-fg/45">{card.label}</div>
+                    <div className="mt-2 text-sm font-semibold text-fg">{card.value}</div>
+                    <div className="mt-1 text-xs leading-5 text-muted-fg/65">{card.detail}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
         {/* Tab bar */}
-        <div className={shellTabBarCls} style={{ minHeight: 40 }}>
+        <div className={cn(shellTabBarCls, "px-4 py-3")} style={{ minHeight: 56 }}>
           {TABS.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               type="button"
               onClick={() => setActiveTab(id)}
               className={cn(
-                "flex items-center gap-2 px-4 py-2.5 font-mono text-xs font-semibold uppercase tracking-wide transition-all duration-150 border-b-2",
+                "flex items-center gap-2 rounded-full border px-3.5 py-2 font-mono text-[10px] font-semibold uppercase tracking-[0.18em] transition-all duration-150",
                 activeTab === id
-                  ? "border-b-accent text-accent"
-                  : "border-b-transparent text-muted-fg/60 hover:text-fg",
+                  ? "border-cyan-400/25 bg-cyan-500/10 text-cyan-100"
+                  : "border-transparent text-muted-fg/60 hover:border-white/10 hover:bg-white/[0.03] hover:text-fg",
               )}
             >
               <Icon size={14} weight={activeTab === id ? "bold" : "regular"} />
@@ -639,46 +775,22 @@ export function CtoPage() {
         <div className="flex-1 min-h-0 overflow-hidden">
           {/* Chat tab */}
           {activeTab === "chat" && (
-            <div className="flex flex-col h-full min-h-0">
-              {/* Chat header */}
-              <div className="shrink-0 px-4 py-3 border-b border-white/[0.06] bg-white/[0.02] backdrop-blur-xl">
-                <div className="flex items-center gap-2">
-                  <Brain size={14} className="text-accent" />
-                  <span className="font-sans text-sm font-semibold text-fg">
-                    {selectedWorker ? selectedWorker.name : "CTO"} Chat
-                  </span>
+            <div className="flex h-full min-h-0 flex-col p-4 pt-0">
+              {loading && <div className="px-1 py-2 font-mono text-[10px] text-muted-fg/55" data-testid="cto-loading">Connecting persistent session...</div>}
+              {error && <div className="px-1 py-2 font-mono text-[10px] text-error" data-testid="cto-error">{error}</div>}
+              {!laneId && (
+                <div className="px-1 py-2 font-mono text-[10px] text-muted-fg/55" data-testid="cto-no-lane">
+                  Create a lane to start the persistent CTO session.
                 </div>
-                <div className="font-mono text-xs text-muted-fg/50 mt-1">
-                  {laneId
-                    ? (selectedWorker ? `Direct chat with ${selectedWorker.name}` : "Persistent CTO session is locked to this project context.")
-                    : "Create a lane to start CTO chat."}
-                </div>
-                {openclawStatus && (
-                  <div className="mt-1.5 font-mono text-xs text-muted-fg/60">
-                    OpenClaw:{" "}
-                    <span className={cn(
-                      openclawStatus.state === "connected"
-                        ? "text-success"
-                        : openclawStatus.state === "connecting" || openclawStatus.state === "reconnecting"
-                          ? "text-warning"
-                          : "text-muted-fg/60",
-                    )}>
-                      {openclawStatus.state}
-                    </span>
-                    {openclawStatus.lastMessageAt ? ` · last bridge activity ${new Date(openclawStatus.lastMessageAt).toLocaleTimeString()}` : ""}
-                  </div>
-                )}
-                {loading && <div className="font-mono text-xs text-muted-fg mt-1" data-testid="cto-loading">Connecting session...</div>}
-                {error && <div className="font-mono text-xs text-error mt-1" data-testid="cto-error">{error}</div>}
-              </div>
+              )}
 
-              {/* Chat pane */}
-              <div className="flex-1 min-h-0">
+              <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-white/[0.06] bg-black/10">
                 <AgentChatPane
                   laneId={laneId}
                   lockSessionId={session?.id ?? null}
                   initialSessionSummary={lockedSessionSummary}
                   hideSessionTabs
+                  presentation={persistentIdentityPresentation}
                 />
               </div>
             </div>
@@ -801,9 +913,6 @@ export function CtoPage() {
               )}
             </div>
           )}
-
-          {/* Memory tab */}
-          {activeTab === "memory" && <CtoMemoryBrowser />}
 
           {/* Linear tab */}
           {activeTab === "linear" && <LinearSyncPanel />}

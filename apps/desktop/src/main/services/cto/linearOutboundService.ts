@@ -150,6 +150,49 @@ export function createLinearOutboundService(args: {
     await updateWorkpad({ issueId: params.issue.id, body });
   };
 
+  const publishWorkflowStatus = async (params: {
+    issue: NormalizedLinearIssue;
+    workflowName: string;
+    runId: string;
+    targetType: string;
+    state: string;
+    currentStep?: string | null;
+    delegatedOwner?: string | null;
+    laneId?: string | null;
+    missionId?: string | null;
+    sessionId?: string | null;
+    workerRunId?: string | null;
+    prId?: string | null;
+    reviewState?: string | null;
+    reviewReadyReason?: string | null;
+    waitingFor?: string | null;
+    note?: string | null;
+  }): Promise<void> => {
+    const body = [
+      buildHeader(params.issue),
+      "### Workflow",
+      `- Workflow: ${params.workflowName}`,
+      `- Run: ${params.runId}`,
+      `- Target: ${params.targetType.replace(/_/g, " ")}`,
+      `- State: ${params.state.replace(/_/g, " ")}`,
+      ...(params.currentStep ? [`- Current step: ${params.currentStep}`] : []),
+      ...(params.delegatedOwner ? [`- Delegated owner: ${params.delegatedOwner}`] : []),
+      ...(params.laneId ? [`- Lane: ${params.laneId}`] : []),
+      ...(params.missionId ? [`- Mission: ${params.missionId}`] : []),
+      ...(params.sessionId ? [`- Session: ${params.sessionId}`] : []),
+      ...(params.workerRunId ? [`- Worker run: ${params.workerRunId}`] : []),
+      ...(params.prId ? [`- PR: ${params.prId}`] : []),
+      ...(params.reviewState ? [`- Review state: ${params.reviewState}`] : []),
+      ...(params.reviewReadyReason ? [`- Review-ready reason: ${params.reviewReadyReason}`] : []),
+      ...(params.waitingFor ? [`- Waiting for: ${params.waitingFor}`] : []),
+      "",
+      "### Latest update",
+      params.note?.trim() || "Workflow run updated.",
+    ].join("\n");
+
+    await updateWorkpad({ issueId: params.issue.id, body });
+  };
+
   const uploadArtifacts = async (params: {
     issueId: string;
     artifactPaths: string[];
@@ -214,6 +257,29 @@ export function createLinearOutboundService(args: {
     artifactPaths?: string[];
     artifactMode: LinearArtifactMode;
   }): Promise<void> => {
+    await publishWorkflowCloseout({
+      issue: params.issue,
+      status: params.status,
+      summary: params.summary,
+      targetLabel: "Mission",
+      targetId: params.missionId,
+      prLinks: params.prLinks,
+      artifactPaths: params.artifactPaths,
+      artifactMode: params.artifactMode,
+    });
+  };
+
+  const publishWorkflowCloseout = async (params: {
+    issue: NormalizedLinearIssue;
+    status: "completed" | "failed" | "canceled";
+    summary: string;
+    targetLabel: string;
+    targetId?: string | null;
+    contextLines?: string[];
+    prLinks?: string[];
+    artifactPaths?: string[];
+    artifactMode: LinearArtifactMode;
+  }): Promise<void> => {
     const prLinks = uniqueStrings((params.prLinks ?? []).filter((entry) => entry.trim().length > 0));
     const uploadedArtifacts = await uploadArtifacts({
       issueId: params.issue.id,
@@ -225,7 +291,10 @@ export function createLinearOutboundService(args: {
       buildHeader(params.issue),
       "### Status",
       `- Final state: ${params.status}`,
-      `- Mission: ${params.missionId}`,
+      params.targetId?.trim().length
+        ? `- ${params.targetLabel}: ${params.targetId}`
+        : `- Target: ${params.targetLabel}`,
+      ...uniqueStrings(params.contextLines ?? []).map((line) => `- ${line}`),
       "",
       "### Closeout Summary",
       params.summary.trim() || "No summary provided.",
@@ -245,6 +314,8 @@ export function createLinearOutboundService(args: {
     updateWorkpad,
     publishMissionStart,
     publishMissionProgress,
+    publishWorkflowStatus,
+    publishWorkflowCloseout,
     publishMissionCloseout,
   };
 }

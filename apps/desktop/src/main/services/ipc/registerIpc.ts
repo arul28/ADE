@@ -162,6 +162,10 @@ import type {
   AgentChatSessionSummary,
   AgentChatSteerArgs,
   AgentChatUpdateSessionArgs,
+  AgentChatSlashCommand,
+  AgentChatSlashCommandsArgs,
+  AgentChatFileSearchArgs,
+  AgentChatFileSearchResult,
   ContextPackListArgs,
   ContextPackOption,
   ContextPackFetchArgs,
@@ -3493,6 +3497,26 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatChangePermissionMode, async (_event, arg: AgentChatChangePermissionModeArgs): Promise<void> => {
     const ctx = getCtx();
     ctx.agentChatService.changePermissionMode(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatSlashCommands, async (_event, arg: AgentChatSlashCommandsArgs): Promise<AgentChatSlashCommand[]> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.getSlashCommands(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatFileSearch, async (_event, arg: AgentChatFileSearchArgs): Promise<AgentChatFileSearchResult[]> => {
+    const ctx = getCtx();
+    const session = (await ctx.agentChatService.listSessions()).find((entry) => entry.sessionId === arg.sessionId);
+    if (!session?.laneId) return [];
+    const matches = await ctx.fileService.quickOpen({
+      workspaceId: session.laneId,
+      query: arg.query,
+      limit: 20,
+    });
+    return matches.map((match) => ({
+      path: match.path,
+      score: match.score,
+    }));
   });
 
   ipcMain.handle(IPC.computerUseGetSettings, async (): Promise<ComputerUseSettingsSnapshot> => {

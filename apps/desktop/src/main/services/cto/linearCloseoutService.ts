@@ -1,4 +1,5 @@
 import type {
+  ComputerUseArtifactOwner,
   LinearWorkflowDefinition,
   LinearWorkflowRun,
   NormalizedLinearIssue,
@@ -8,6 +9,8 @@ import type { createLinearOutboundService } from "./linearOutboundService";
 import type { IssueTracker } from "./issueTracker";
 import type { createMissionService } from "../missions/missionService";
 import type { createOrchestratorService } from "../orchestrator/orchestratorService";
+import type { createPrService } from "../prs/prService";
+import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 
 function resolveStateId(states: Array<{ id: string; name: string; type: string }>, stateKey: string | undefined): string | null {
   if (!stateKey) return null;
@@ -38,6 +41,8 @@ export function createLinearCloseoutService(args: {
   outboundService: ReturnType<typeof createLinearOutboundService>;
   missionService: ReturnType<typeof createMissionService>;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
+  prService: ReturnType<typeof createPrService>;
+  computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService>;
 }) {
   const isNonEmptyString = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
 
@@ -52,6 +57,89 @@ export function createLinearCloseoutService(args: {
       out.push(normalized);
     }
     return out;
+  };
+
+  const collectBrokerArtifactUris = (owners: ComputerUseArtifactOwner[]): string[] => uniqueStrings(
+    owners.flatMap((owner) =>
+      args.computerUseArtifactBrokerService
+        .listArtifacts({ owner, limit: 100 })
+        .map((artifact) => artifact.uri)
+        .filter(isNonEmptyString)
+    ),
+  );
+
+  const collectCloseoutArtifacts = (input: {
+    run: LinearWorkflowRun;
+    workflow: LinearWorkflowDefinition;
+    issue: NormalizedLinearIssue;
+  }): { prLinks: string[]; artifactPaths: string[]; contextLines: string[] } => {
+    const prSummaries = args.prService.listAll();
+    const linkedPr = input.run.linkedPrId
+      ? prSummaries.find((entry) => entry.id === input.run.linkedPrId) ?? null
+      : null;
+    const lanePr = !linkedPr && input.run.executionLaneId
+      ? args.prService.getForLane(input.run.executionLaneId)
+      : null;
+    const prLinks = uniqueStrings([
+      linkedPr?.githubUrl,
+      lanePr?.githubUrl,
+    ]);
+    const contextLines = uniqueStrings([
+      `Workflow target: ${input.workflow.target.type}`,
+      input.run.executionLaneId ? `Lane: ${input.run.executionLaneId}` : null,
+      input.run.linkedSessionId ? `Session: ${input.run.linkedSessionId}` : null,
+      input.run.linkedWorkerRunId ? `Worker run: ${input.run.linkedWorkerRunId}` : null,
+      input.run.linkedPrId ? `Linked PR record: ${input.run.linkedPrId}` : null,
+    ]);
+
+    if (input.workflow.target.type === "mission" && input.run.linkedMissionId) {
+      const mission = args.missionService.get(input.run.linkedMissionId);
+      const missionArtifactUris = mission?.artifacts
+        .map((artifact) => artifact.uri)
+        .filter(isNonEmptyString) ?? [];
+      const missionPrLinks = mission?.artifacts
+        .filter((artifact) => artifact.artifactType === "pr")
+        .map((artifact) => artifact.uri)
+        .filter(isNonEmptyString) ?? [];
+      const orchestratorArtifacts = args.orchestratorService.getArtifactsForMission(input.run.linkedMissionId);
+      const orchestratorUris = orchestratorArtifacts
+        .map((artifact) => resolveOrchestratorArtifactUri({
+          kind: artifact.kind,
+          value: artifact.value,
+          metadata: artifact.metadata,
+        }))
+        .filter(isNonEmptyString);
+      const orchestratorPrLinks = orchestratorArtifacts
+        .filter((artifact) => artifact.kind === "pr")
+        .map((artifact) => resolveOrchestratorArtifactUri({
+          kind: artifact.kind,
+          value: artifact.value,
+          metadata: artifact.metadata,
+        }))
+        .filter(isNonEmptyString);
+      return {
+        prLinks: uniqueStrings([...prLinks, ...missionPrLinks, ...orchestratorPrLinks]),
+        artifactPaths: uniqueStrings([...missionArtifactUris, ...orchestratorUris]),
+        contextLines,
+      };
+    }
+
+    const owners: ComputerUseArtifactOwner[] = [];
+    if (input.run.linkedSessionId) {
+      owners.push({ kind: "chat_session", id: input.run.linkedSessionId });
+    }
+    if (input.run.executionLaneId) {
+      owners.push({ kind: "lane", id: input.run.executionLaneId });
+    }
+    owners.push({ kind: "linear_issue", id: input.issue.id });
+    if (input.run.linkedPrId) {
+      owners.push({ kind: "github_pr", id: input.run.linkedPrId });
+    }
+    return {
+      prLinks,
+      artifactPaths: collectBrokerArtifactUris(owners),
+      contextLines,
+    };
   };
 
   const applyOutcome = async (input: {
@@ -80,41 +168,36 @@ export function createLinearCloseoutService(args: {
       await args.issueTracker.createComment(input.issue.id, comment.trim());
     }
 
+    const closeoutArtifacts = collectCloseoutArtifacts(input);
     if (input.workflow.target.type === "mission" && input.run.linkedMissionId) {
-      const mission = args.missionService.get(input.run.linkedMissionId);
-      const missionArtifactUris = mission?.artifacts
-        .map((artifact) => artifact.uri)
-        .filter(isNonEmptyString) ?? [];
-      const missionPrLinks = mission?.artifacts
-        .filter((artifact) => artifact.artifactType === "pr")
-        .map((artifact) => artifact.uri)
-        .filter(isNonEmptyString) ?? [];
-      const orchestratorArtifacts = args.orchestratorService.getArtifactsForMission(input.run.linkedMissionId);
-      const orchestratorUris = orchestratorArtifacts
-        .map((artifact) => resolveOrchestratorArtifactUri({
-          kind: artifact.kind,
-          value: artifact.value,
-          metadata: artifact.metadata,
-        }))
-        .filter(isNonEmptyString);
-      const orchestratorPrLinks = orchestratorArtifacts
-        .filter((artifact) => artifact.kind === "pr")
-        .map((artifact) => resolveOrchestratorArtifactUri({
-          kind: artifact.kind,
-          value: artifact.value,
-          metadata: artifact.metadata,
-        }))
-        .filter(isNonEmptyString);
       await args.outboundService.publishMissionCloseout({
         issue: input.issue,
         missionId: input.run.linkedMissionId,
         status: input.outcome === "cancelled" ? "canceled" : input.outcome,
         summary: input.summary,
-        prLinks: uniqueStrings([...missionPrLinks, ...orchestratorPrLinks]),
-        artifactPaths: uniqueStrings([...missionArtifactUris, ...orchestratorUris]),
+        prLinks: closeoutArtifacts.prLinks,
+        artifactPaths: closeoutArtifacts.artifactPaths,
         artifactMode: closeout?.artifactMode ?? "links",
       });
+      return;
     }
+
+    await args.outboundService.publishWorkflowCloseout({
+      issue: input.issue,
+      status: input.outcome === "cancelled" ? "canceled" : input.outcome,
+      summary: input.summary,
+      targetLabel: input.workflow.target.type.replace(/_/g, " "),
+      targetId:
+        input.run.linkedSessionId
+        ?? input.run.linkedWorkerRunId
+        ?? input.run.linkedPrId
+        ?? input.run.executionLaneId
+        ?? null,
+      contextLines: closeoutArtifacts.contextLines,
+      prLinks: closeoutArtifacts.prLinks,
+      artifactPaths: closeoutArtifacts.artifactPaths,
+      artifactMode: closeout?.artifactMode ?? "links",
+    });
   };
 
   return {

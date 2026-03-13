@@ -117,17 +117,34 @@ async function createFixture(options: {
   const runtimeRun = options.runtimeRun ?? vi.fn(async () => ({
     ok: true,
     adapterType: "codex-local",
+    effectiveSurface: "process",
     statusCode: 200,
     outputText: "HEARTBEAT_OK",
+    provider: "codex",
+    modelId: "openai/gpt-5.3-codex",
+    continuation: null,
     usage: null,
   }));
+  const runtimeAdapter = {
+    run: vi.fn(async (...runtimeArgs: any[]) => {
+      const result = await runtimeRun(...runtimeArgs) as Record<string, unknown>;
+      return {
+        effectiveSurface: "process",
+        provider: null,
+        modelId: null,
+        sessionId: null,
+        continuation: null,
+        ...result,
+      };
+    }),
+  };
   const recordCostEvent = vi.fn();
   const heartbeat = createWorkerHeartbeatService({
     db,
     projectId,
     workerAgentService,
     workerTaskSessionService,
-    workerAdapterRuntimeService: { run: runtimeRun } as any,
+    workerAdapterRuntimeService: runtimeAdapter as any,
     workerBudgetService: { recordCostEvent } as any,
     memoryService: options.memoryService as any,
     ctoStateService: options.ctoStateService as any,
@@ -170,6 +187,7 @@ async function createFixture(options: {
     db,
     projectId,
     workerAgentService,
+    workerTaskSessionService,
     heartbeat,
     runtimeRun,
     recordCostEvent,
@@ -691,6 +709,100 @@ describe("workerHeartbeatService", () => {
     const staleRun = fixture.heartbeat.listRuns({ agentId: workerA.id, limit: 10 }).find((run) => run.id === "stale-running-run");
     expect(staleRun?.status).toBe("failed");
     expect(staleRun?.errorMessage).toContain("adopted");
+    fixture.dispose();
+  });
+
+  it("reuses persisted worker continuation handles across repeated wakeups on the same delegated task", async () => {
+    const runtimeRun = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        adapterType: "codex-local",
+        effectiveSurface: "codex_app_server",
+        statusCode: 200,
+        outputText: "completed first wake",
+        provider: "codex",
+        modelId: "openai/gpt-5.3-codex",
+        sessionId: "session-1",
+        continuation: {
+          surface: "codex_app_server",
+          provider: "codex",
+          modelId: "openai/gpt-5.3-codex",
+          sessionId: "session-1",
+          threadId: "thread-1",
+        },
+        usage: null,
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        adapterType: "codex-local",
+        effectiveSurface: "codex_app_server",
+        statusCode: 200,
+        outputText: "completed second wake",
+        provider: "codex",
+        modelId: "openai/gpt-5.3-codex",
+        sessionId: "session-1",
+        continuation: {
+          surface: "codex_app_server",
+          provider: "codex",
+          modelId: "openai/gpt-5.3-codex",
+          sessionId: "session-1",
+          threadId: "thread-1",
+        },
+        usage: null,
+      });
+    const fixture = await createFixture({ runtimeRun });
+    const worker = fixture.createWorker({ name: "Continuation Worker" });
+    const taskKey = fixture.workerTaskSessionService.deriveTaskKey({
+      agentId: worker.id,
+      workflowRunId: "linear-run-1",
+      laneId: "lane-123",
+      linearIssueId: "issue-123",
+      summary: "Resume delegated work",
+    });
+
+    await fixture.heartbeat.triggerWakeup({
+      agentId: worker.id,
+      reason: "assignment",
+      taskKey,
+      issueKey: "ABC-123",
+      prompt: "first wake",
+      context: {
+        runId: "linear-run-1",
+        laneId: "lane-123",
+        issueId: "issue-123",
+        issueTitle: "Resume delegated work",
+      },
+    });
+
+    const persisted = fixture.workerTaskSessionService.getTaskSession(worker.id, worker.adapterType, taskKey);
+    expect((persisted?.payload as Record<string, any>)?.continuity?.handle).toMatchObject({
+      sessionId: "session-1",
+      threadId: "thread-1",
+    });
+
+    await fixture.heartbeat.triggerWakeup({
+      agentId: worker.id,
+      reason: "assignment",
+      taskKey,
+      issueKey: "ABC-123",
+      prompt: "second wake",
+      context: {
+        runId: "linear-run-1",
+        laneId: "lane-123",
+        issueId: "issue-123",
+        issueTitle: "Resume delegated work",
+      },
+    });
+
+    expect(runtimeRun).toHaveBeenCalledTimes(2);
+    const secondCall = (runtimeRun.mock.calls as Array<any[]>)[1]?.[0] as Record<string, any>;
+    expect(secondCall.laneId).toBe("lane-123");
+    expect(secondCall.continuation).toMatchObject({
+      sessionId: "session-1",
+      threadId: "thread-1",
+      surface: "codex_app_server",
+    });
+
     fixture.dispose();
   });
 });

@@ -3,41 +3,23 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, cleanup } from "@testing-library/react";
 import type { LinearWorkflowConfig, LinearWorkflowRunDetail, LinearSyncQueueItem } from "../../../shared/types";
+import { createWorkflowPreset } from "../../../shared/linearWorkflowPresets";
 import { LinearSyncPanel } from "./LinearSyncPanel";
 
 function buildBasePolicy(): LinearWorkflowConfig {
+  const workflow = createWorkflowPreset("employee_session", {
+    id: "flow-1",
+    name: "Assigned employee -> review handoff",
+    description: "Visual workflow test",
+    source: "repo",
+    triggerAssignees: [],
+    triggerLabels: [],
+  });
   return {
     version: 1,
     source: "repo",
     settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
-    workflows: [
-      {
-        id: "flow-1",
-        name: "Assigned employee -> review handoff",
-        enabled: true,
-        priority: 100,
-        description: "Visual workflow test",
-        source: "repo",
-        triggers: { assignees: [], labels: [] },
-        target: { type: "employee_session", runMode: "assisted", sessionTemplate: "default" },
-        steps: [
-          { id: "launch", type: "launch_target", name: "Launch delegated employee chat" },
-          { id: "complete", type: "complete_issue", name: "Mark workflow complete" },
-        ],
-        closeout: {
-          successState: "in_review",
-          failureState: "blocked",
-          applyLabels: ["ade"],
-          resolveOnSuccess: true,
-          reopenOnFailure: true,
-          artifactMode: "links",
-          reviewReadyWhen: "work_complete",
-        },
-        retry: { maxAttempts: 3, baseDelaySec: 30 },
-        concurrency: { maxActiveRuns: 5, perIssue: 1 },
-        observability: { emitNotifications: true, captureIssueSnapshot: true, persistTimeline: true },
-      },
-    ],
+    workflows: [workflow],
     files: [],
     migration: { hasLegacyConfig: false, needsSave: false },
     legacyConfig: null,
@@ -247,10 +229,9 @@ describe("LinearSyncPanel", () => {
     fireEvent.click(screen.getByTestId("linear-trigger-label-add"));
 
     fireEvent.change(screen.getByTestId("linear-start-state-select"), { target: { value: "in_progress" } });
-    fireEvent.change(screen.getByTestId("linear-wait-target-select"), { target: { value: "yes" } });
+    fireEvent.change(screen.getByTestId("linear-wait-target-select"), { target: { value: "wait_for_explicit_completion" } });
     fireEvent.change(screen.getByTestId("linear-pr-behavior-select"), { target: { value: "per-lane" } });
     fireEvent.change(screen.getByTestId("linear-review-ready-select"), { target: { value: "pr_created" } });
-    fireEvent.click(screen.getByTestId("linear-notify-toggle"));
     fireEvent.click(screen.getByTestId("linear-save-policy-btn"));
 
     await waitFor(() => expect(bridge.cto.saveFlowPolicy).toHaveBeenCalledTimes(1));
@@ -269,6 +250,24 @@ describe("LinearSyncPanel", () => {
       "emit_app_notification",
       "complete_issue",
     ]);
+    expect(workflow?.steps.find((step) => step.type === "wait_for_target_status")?.targetStatus).toBe("explicit_completion");
+  });
+
+  it("resets target-type defaults to the shared delegated workflow path", async () => {
+    const bridge = buildBridge();
+    (window as any).ade = bridge;
+
+    render(<LinearSyncPanel />);
+
+    await waitFor(() => expect(screen.getByTestId("linear-target-type-select")).toBeTruthy());
+
+    fireEvent.change(screen.getByTestId("linear-target-type-select"), { target: { value: "worker_run" } });
+
+    await waitFor(() => {
+      expect((screen.getByTestId("linear-lane-selection-select") as HTMLSelectElement).value).toBe("fresh_issue_lane");
+      expect((screen.getByTestId("linear-start-state-select") as HTMLSelectElement).value).toBe("in_progress");
+      expect((screen.getByTestId("linear-wait-target-select") as HTMLSelectElement).value).toBe("wait_for_explicit_completion");
+    });
   });
 
   it("authors a supervised fresh-lane workflow without YAML", async () => {
@@ -280,7 +279,7 @@ describe("LinearSyncPanel", () => {
     await waitFor(() => expect(screen.getByTestId("linear-target-type-select")).toBeTruthy());
 
     fireEvent.change(screen.getByTestId("linear-target-type-select"), { target: { value: "worker_run" } });
-    fireEvent.change(screen.getByTestId("linear-wait-target-select"), { target: { value: "yes" } });
+    fireEvent.change(screen.getByTestId("linear-wait-target-select"), { target: { value: "wait_for_runtime_success" } });
     fireEvent.change(screen.getByTestId("linear-lane-selection-select"), { target: { value: "fresh_issue_lane" } });
     fireEvent.change(screen.getByTestId("linear-pr-behavior-select"), { target: { value: "per-lane" } });
     fireEvent.change(screen.getByTestId("linear-pr-timing-select"), { target: { value: "after_start" } });
@@ -299,10 +298,11 @@ describe("LinearSyncPanel", () => {
     expect(workflow?.target.prTiming).toBe("after_start");
     expect(workflow?.closeout?.reviewReadyWhen).toBe("pr_ready");
     expect(workflow?.steps.map((step) => step.type)).toEqual([
+      "set_linear_state",
       "launch_target",
-      "wait_for_target_status",
       "wait_for_pr",
       "request_human_review",
+      "emit_app_notification",
       "complete_issue",
     ]);
     expect(workflow?.steps.find((step) => step.type === "request_human_review")?.rejectAction).toBe("loop_back");
@@ -381,7 +381,7 @@ describe("LinearSyncPanel", () => {
       },
       steps: [
         { id: "step-1", runId: "run-1", workflowStepId: "launch", type: "launch_target", name: "Launch worker run", status: "completed", startedAt: "2026-03-05T00:00:10.000Z", completedAt: "2026-03-05T00:00:20.000Z", payload: { laneId: "lane-42" } },
-        { id: "step-2", runId: "run-1", workflowStepId: "wait", type: "wait_for_target_status", name: "Wait", status: "completed", startedAt: "2026-03-05T00:01:00.000Z", completedAt: "2026-03-05T00:04:00.000Z", payload: { targetState: "completed" } },
+        { id: "step-2", runId: "run-1", workflowStepId: "wait", type: "wait_for_target_status", name: "Wait", targetStatus: "runtime_completed", status: "completed", startedAt: "2026-03-05T00:01:00.000Z", completedAt: "2026-03-05T00:04:00.000Z", payload: { targetState: "completed" } },
         { id: "step-3", runId: "run-1", workflowStepId: "review", type: "request_human_review", name: "Supervisor review", status: "waiting", startedAt: "2026-03-05T00:05:00.000Z", completedAt: null, payload: { reviewerIdentityKey: "cto" } },
       ],
       events: [
@@ -426,6 +426,102 @@ describe("LinearSyncPanel", () => {
     await waitFor(() => expect(bridge.cto.resolveLinearSyncQueueItem).toHaveBeenCalledWith({
       queueItemId: "run-1",
       action: "approve",
+      note: undefined,
+    }));
+  });
+
+  it("shows the explicit completion control only for explicit-completion waits", async () => {
+    const queue: LinearSyncQueueItem[] = [
+      {
+        id: "run-2",
+        runId: "run-2",
+        issueId: "issue-2",
+        identifier: "MY-2",
+        title: "Finish delegated session",
+        status: "dispatched",
+        workflowId: "flow-1",
+        workflowName: "Assigned employee -> review handoff",
+        targetType: "employee_session",
+        laneId: "lane-43",
+        workerId: null,
+        workerSlug: null,
+        missionId: null,
+        sessionId: "session-7",
+        workerRunId: null,
+        prId: null,
+        prState: null,
+        prChecksStatus: null,
+        prReviewStatus: null,
+        currentStepId: "wait",
+        currentStepLabel: "Wait for delegated work",
+        reviewState: null,
+        supervisorIdentityKey: null,
+        reviewReadyReason: null,
+        latestReviewNote: null,
+        attemptCount: 0,
+        nextAttemptAt: null,
+        lastError: null,
+        createdAt: "2026-03-05T00:00:00.000Z",
+        updatedAt: "2026-03-05T00:05:00.000Z",
+      },
+    ];
+
+    const runDetail: LinearWorkflowRunDetail = {
+      run: {
+        id: "run-2",
+        issueId: "issue-2",
+        identifier: "MY-2",
+        title: "Finish delegated session",
+        workflowId: "flow-1",
+        workflowName: "Assigned employee -> review handoff",
+        workflowVersion: "2026-03-05T00:00:00.000Z",
+        source: "repo",
+        targetType: "employee_session",
+        status: "waiting_for_target",
+        currentStepIndex: 1,
+        currentStepId: "wait",
+        executionLaneId: "lane-43",
+        linkedMissionId: null,
+        linkedSessionId: "session-7",
+        linkedWorkerRunId: null,
+        linkedPrId: null,
+        reviewState: null,
+        supervisorIdentityKey: null,
+        reviewReadyReason: null,
+        prState: null,
+        prChecksStatus: null,
+        prReviewStatus: null,
+        latestReviewNote: null,
+        retryCount: 0,
+        retryAfter: null,
+        closeoutState: "pending",
+        terminalOutcome: null,
+        lastError: null,
+        sourceIssueSnapshot: {},
+        createdAt: "2026-03-05T00:00:00.000Z",
+        updatedAt: "2026-03-05T00:05:00.000Z",
+      },
+      steps: [
+        { id: "step-1", runId: "run-2", workflowStepId: "launch", type: "launch_target", name: "Launch delegated employee chat", status: "completed", startedAt: "2026-03-05T00:00:10.000Z", completedAt: "2026-03-05T00:00:20.000Z", payload: { laneId: "lane-43" } },
+        { id: "step-2", runId: "run-2", workflowStepId: "wait", type: "wait_for_target_status", name: "Wait for delegated work", targetStatus: "explicit_completion", status: "waiting", startedAt: "2026-03-05T00:01:00.000Z", completedAt: null, payload: { waitingFor: "explicit_completion" } },
+      ],
+      events: [],
+      ingressEvents: [],
+      issue: null,
+      reviewContext: null,
+    };
+
+    const bridge = buildBridge(buildBasePolicy(), { queue, runDetail });
+    (window as any).ade = bridge;
+
+    render(<LinearSyncPanel />);
+
+    await waitFor(() => expect(screen.getByText("Explicit completion required")).toBeTruthy());
+    fireEvent.click(screen.getByText("Mark complete"));
+
+    await waitFor(() => expect(bridge.cto.resolveLinearSyncQueueItem).toHaveBeenCalledWith({
+      queueItemId: "run-2",
+      action: "complete",
       note: undefined,
     }));
   });

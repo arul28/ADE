@@ -165,6 +165,18 @@ describe("AgentChatComposer", () => {
     expect(options).not.toContain("max");
   });
 
+  it("simplifies persistent identity surfaces to default/full access controls without reasoning chrome", () => {
+    renderComposer({
+      surfaceProfile: "persistent_identity",
+      modelId: "anthropic/claude-sonnet-4-6",
+      permissionMode: "full-auto",
+    });
+
+    expect(screen.getByRole("button", { name: "Default" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Full Access" })).toBeTruthy();
+    expect(screen.queryByLabelText("Reasoning effort")).toBeNull();
+  });
+
   it("opens slash picker when / is typed at start of empty draft", async () => {
     renderComposer({ draft: "" });
 

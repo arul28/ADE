@@ -1,6 +1,6 @@
 # ADE (Agentic Development Environment) - Product Requirements Document
 
-Last updated: 2026-03-12
+Last updated: 2026-03-13
 
 Roadmap source of truth: `docs/final-plan/README.md` (this PRD captures product scope and core behavior; future sequencing lives in Final Plan).
 
@@ -30,7 +30,7 @@ Roadmap source of truth: `docs/final-plan/README.md` (this PRD captures product 
 8. [Feature Documentation](#8-feature-documentation)
 9. [Architecture Documentation](#9-architecture-documentation)
 10. [Cross-Cutting Concerns](#10-cross-cutting-concerns)
-    - 10.1 [Unified Memory (Context and History System)](#101-unified-memory-context-and-history-system)
+    - 10.1 [Packs (Context and History System)](#101-packs-context-and-history-system)
     - 10.2 [Mission Workers](#102-mission-workers)
     - 10.3 [Workspace Graph](#103-workspace-graph)
     - 10.4 [Job Engine](#104-job-engine)
@@ -159,7 +159,7 @@ An automatic process that prevents context overflow in long-running worker sessi
 
 ### Memory Scopes
 
-A scoped memory architecture organizes mission context into `runtime-thread`, `run`, `project`, `identity`, and `daily-log` namespaces. Context entries are promoted by policy and confidence, with provenance retained for auditability. Memory is further organized into three retrieval tiers -- Core (always in context), Hot (vector-retrieved on demand), and Cold (archival) -- and four ownership scopes: identity (CTO-owned), project (shared), mission (per-run), and session (ephemeral). See Section 10.5 for the full memory architecture.
+A scoped memory architecture organizes context into three scopes: `project` (shared across all agents and missions), `agent` (specific to individual AI agents like the CTO), and `mission` (per-mission-run, promoted to project on success, archived on failure). Context entries are promoted by policy and confidence, with provenance retained for auditability. Memory is further organized into three numeric retrieval tiers -- Tier 1/Pinned (always in context), Tier 2/Active (retrieved on demand), and Tier 3/Fading (aging out, candidates for archival). See Section 10.5 for the full memory architecture.
 
 ### Per-Task-Type Model Routing
 
@@ -359,7 +359,7 @@ See: [features/HISTORY.md](features/HISTORY.md)
 
 ### 7.10 CTO
 
-The CTO tab is ADE's persistent project-aware agent surface. It remains the strategic entry point for project-level questions, mission creation, worker management, and external routing, but the runtime now favors a lighter chat-first entry path instead of hydrating every management surface immediately. Team/settings-specific work is loaded lazily, the sidebar and session boot path are cheaper, and first-run setup focuses on identity, project context, and optional Linear connection. Linear itself now follows an API-key-first, polling-baseline model with optional realtime ingress instead of assuming OAuth and realtime must be configured up front.
+The CTO tab is ADE's persistent project-aware agent surface. It remains the strategic entry point for project-level questions, mission creation, worker management, and external routing, but the runtime now favors a lighter chat-first entry path instead of hydrating every management surface immediately. The CTO tab has four sub-tabs: **Chat**, **Team**, **Linear**, and **Settings**. Team/settings-specific work is loaded lazily, the sidebar and session boot path are cheaper, and first-run setup focuses on identity, project context, and optional Linear connection. Linear itself now follows an API-key-first, polling-baseline model with optional realtime ingress instead of assuming OAuth and realtime must be configured up front. Memory management is not part of the CTO tab; it lives in the consolidated Memory tab under Settings (see Section 7.12).
 
 See: [features/CTO.md](features/CTO.md)
 
@@ -487,6 +487,10 @@ See: [features/MISSIONS.md](features/MISSIONS.md)
 
 The Settings tab provides application preferences including AI provider configuration (guest mode plus CLI/API/OpenRouter/local provider setup), per-task-type model routing (which model/provider handles planning, implementation, review, conflict resolution, narratives, and PR descriptions), per-feature AI toggles (enable/disable individual AI capabilities: narratives, conflict proposals, PR descriptions, terminal summaries, mission planning, orchestrator), AI usage dashboard (per-feature usage bars, provider status with rate limits where available, budget controls with daily limits, usage history trends), detected provider/CLI health, process/test configuration export/import, keyboard shortcuts reference, theme selection (Clean Paper light or Bloomberg Terminal dark), mission phase profile management, and a first-class `Computer Use` readiness surface. Budget controls defined here support both subscription (informational) and API key (hard cap) modes, with per-phase budget configuration available in phase profiles.
 
+**Memory**: Settings hosts the consolidated **Memory** tab -- the single UI surface for all memory management across scopes (project, agent, mission). Users can review, edit, confirm, promote, and archive memory entries here. This replaces the previous split across CTO and Settings surfaces. The CTO's core memory (identity, project context) coexists as a separate system optimized for always-in-context pinned knowledge, but user-facing memory triage and browsing happen exclusively in Settings > Memory.
+
+**Context & Docs**: Settings includes a **Context & Docs** tab that surfaces Skill Files (`.ade/skills/`, `.claude/skills/`, `.claude/commands/`, `CLAUDE.md`, `agents.md`) alongside project context documents. This gives users a single place to manage both generated context artifacts and manually authored skill/command files.
+
 **Computer Use Settings**: `Settings > Computer Use` is the user-facing readiness surface for ADE's external-first computer-use model. It shows supported backend types, Ghost OS connection state, agent-browser installation state, which proof kinds are currently satisfiable, and whether ADE local fallback is available. The screen makes ADE's role explicit: external backends perform the automation, while ADE manages artifact ingestion, proof normalization, review, routing, and publication.
 
 **Phase Profile Management**: Settings includes a dedicated section for managing mission phase profiles. Users can create, edit, and delete named phase profiles that define default phase configurations for different mission types. Each profile specifies which phases are included, their ordering, model selection, budget caps, validation gates, and custom instructions. Phase profiles configured here serve as the global defaults that can be overridden per-mission at launch time.
@@ -516,6 +520,9 @@ Each feature area is specified in detail in the following documents. These are t
 | 11 | Automations | [features/AUTOMATIONS.md](features/AUTOMATIONS.md) | First-class background execution surface. Covers trigger families (local + GitHub/webhook), executor routing (automation bots, employees, CTO-route, Night Shift), templates, tool palettes, automation-scoped memory, simulation, history, and overnight review. |
 | 12 | Onboarding and Settings | [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md) | Repository initialization and user preferences. Covers onboarding flow (repo selection, `.ade/` setup, CLI tool detection), trust surfaces, operation previews, escape hatches, AI provider and per-task-type routing configuration, automation defaults/integration setup, and theme/keybinding settings. |
 | 13 | CTO | [features/CTO.md](features/CTO.md) | Always-on project-aware agent. Covers the CTO's persistent chat interface, three-tier memory model with project-scoped core memory, MCP tool access for mission creation and lane management, external request routing, and relationship to the mission orchestrator. Persistent employees can own and execute automations created in the Automations tab. |
+| 14 | Memory | [features/MEMORY.md](features/MEMORY.md) | Unified memory system. Covers the 3-scope model (project/agent/mission), consolidated Settings > Memory UI surface, quality controls on writes, agent prompt guidance, garbage-source filtering, CTO core memory coexistence, and the memory consolidation lifecycle. |
+| 15 | Chat | [features/CHAT.md](features/CHAT.md) | Agent chat integration. Covers provider-agnostic chat service, multi-turn sessions, agent question/answer flows, mission thread rendering, and chat composer interactions. |
+| 16 | Linear | [features/LINEAR.md](features/LINEAR.md) | Bidirectional Linear sync. Covers API-key-first configuration, polling-baseline sync, issue dispatch, workflow presets, closeout flows, and the Linear sync panel UI. |
 
 ---
 
@@ -535,6 +542,7 @@ Each architecture area is specified in detail in the following documents. These 
 | 8 | Security and Privacy | [architecture/SECURITY_AND_PRIVACY.md](architecture/SECURITY_AND_PRIVACY.md) | Default security posture. Covers the trust boundary model, terminal transcript privacy, process/test command trust confirmation, and the safety contract for proposals (diff review before apply, undo points). |
 | 9 | UI Framework | [architecture/UI_FRAMEWORK.md](architecture/UI_FRAMEWORK.md) | Locked UI technology decisions, visual direction (Clean Paper light and Bloomberg Terminal dark themes), app shell layout, typography system (serif headers, monospace data), and high-density console design principles. |
 | 10 | Computer Use Artifact Broker | [architecture/COMPUTER_USE_ARTIFACT_BROKER.md](architecture/COMPUTER_USE_ARTIFACT_BROKER.md) | External-first computer-use boundary. Covers backend readiness, canonical artifact storage, ownership links, review/routing semantics, and how Missions and normal Chat sessions share the same proof model. |
+| 11 | Memory | [architecture/MEMORY.md](architecture/MEMORY.md) | Memory system architecture. Covers the 3-scope storage model, vector search with local embeddings, tiered retrieval (pinned/active/fading), composite scoring, consolidation operations (PASS/REPLACE/APPEND/DELETE), temporal decay, pre-compaction flush, and the boundary between unified memory and CTO core memory. |
 
 ---
 
@@ -627,26 +635,23 @@ The AI Integration Layer provides narrative augmentation, conflict resolution pr
 
 **Context Compaction Engine**: Long-running worker sessions accumulate context that can exceed model window limits. The compaction engine monitors context usage and triggers at a configurable threshold (default 70%). Before compaction, a writeback phase persists critical state (decisions, partial results, key findings) to the memory layer. The compacted context retains a summary of prior work plus the most recent detailed context. Sessions can resume from compacted state, enabling arbitrarily long missions without context overflow.
 
-**Scoped Memory Architecture**: Mission context flows through explicit namespaces:
-- **`runtime-thread`**: Current runtime context window. Volatile, managed by compaction.
-- **`run`**: Shared mission/run context across workers in the same run.
-- **`project`**: Long-term cross-mission knowledge.
-- **`identity`**: CTO-owned durable memory (workers use mission-scoped memory instead).
-- **`daily-log`**: Bounded operational continuity snapshots for briefing/resume.
+**Scoped Memory Architecture**: Memory is organized into three scopes:
+- **`project`**: Shared across all agents and missions on this project. Long-term cross-mission knowledge, architectural rules, coding conventions, and team preferences.
+- **`agent`**: Specific to individual AI agents (e.g., the CTO). Captures agent-specific learned preferences, accumulated expertise, and durable memory that persists across missions.
+- **`mission`**: Per-mission-run memory capturing decisions, intermediate findings, and coordination state. Promoted to project scope on mission success; archived on failure.
 
 Candidate entries are promoted by relevance/confidence and policy. The Context Budget Panel in the mission UI shows real-time memory retrieval and promotion status.
 
-**Three-Tier Memory Model**: Memory is organized into three tiers based on access frequency and context cost. The CTO uses all three tiers with a large core allocation; mission workers primarily use core and hot memory scoped to their task.
+**Three-Tier Memory Model**: Memory is organized into three numeric tiers based on access frequency and context cost. The CTO uses all three tiers with a large Tier 1 allocation; mission workers primarily use Tier 1 and Tier 2 memory scoped to their task.
 
-- **Core Memory** (~2-4K tokens): Always present in the context window. For the CTO, this contains project identity, architecture overview, active mission states, and accumulated project knowledge. For workers, this contains task description, phase instructions, and critical constraints. This tier is never evicted -- it defines the baseline context that every invocation starts with.
-- **Hot Memory** (retrieved on demand): Stored in a local vector database and retrieved via semantic search when relevant to the current task. Includes recent mission outcomes, learned patterns, project conventions, and frequently-referenced architectural decisions. Retrieved entries are scored and injected into context only when their relevance exceeds a configurable threshold.
-- **Cold Memory** (archival): Rarely accessed historical data including old mission transcripts, superseded decisions, and low-confidence observations. Cold memory is queryable but never automatically injected. It serves as a long-term knowledge base that can be surfaced on explicit request.
+- **Tier 1 (Pinned)** (~2-4K tokens): Always present in the context window, never evicted. For the CTO, this contains project identity, architecture overview, active mission states, and accumulated project knowledge. For workers, this contains task description, phase instructions, and critical constraints. Defines the baseline context that every invocation starts with.
+- **Tier 2 (Active)** (retrieved on demand): Stored in the local SQLite database and retrieved via semantic search when relevant to the current task. Includes recent mission outcomes, learned patterns, project conventions, and frequently-referenced architectural decisions. Retrieved entries are scored and injected into context only when their relevance exceeds a configurable threshold.
+- **Tier 3 (Fading)** (low-access, aging out): Rarely accessed historical data including old mission transcripts, superseded decisions, and low-confidence observations. Candidates for archival. Queryable but never automatically injected. Serves as a long-term knowledge base that can be surfaced on explicit request.
 
-**Memory Scopes (Extended)**: Beyond the runtime namespaces above, memory is also scoped by ownership:
-- **Identity scope**: CTO-owned memory that persists across all missions and sessions. Captures the CTO's learned preferences, project understanding, and accumulated expertise. Stored in `.ade/cto/memory/`.
-- **Project scope**: Shared across the CTO and all workers on the same project. Captures architectural rules, coding conventions, known pitfalls, and team preferences. Stored in `.ade/memory/project/`.
-- **Mission scope**: Per-mission-run memory that captures decisions, intermediate findings, and coordination state for workers within a single mission. Discarded or archived when the mission completes.
-- **Session scope**: Ephemeral conversational memory that exists only for the duration of a single worker invocation. Used for short-term reasoning and working memory. Not persisted.
+**Memory Scopes (Extended)**: The three scopes map directly to storage and lifecycle:
+- **Project scope**: Shared across the CTO and all workers on the same project. Captures architectural rules, coding conventions, known pitfalls, and team preferences. Persists indefinitely in the SQLite memory database.
+- **Agent scope**: Agent-specific memory that persists across all missions. For the CTO, this captures learned preferences, project understanding, and accumulated expertise. Each agent has its own isolated scope.
+- **Mission scope**: Per-mission-run memory that captures decisions, intermediate findings, and coordination state for workers within a single mission. Promoted to project scope on success; archived on failure.
 
 **Memory Innovations**:
 - **Pre-compaction flush**: Before the compaction engine summarizes context, all in-flight memories are explicitly saved to their appropriate durable tier. This prevents knowledge loss at compaction boundaries -- the most common failure mode in long-running sessions.
@@ -654,7 +659,7 @@ Candidate entries are promoted by relevance/confidence and policy. The Context B
 - **Temporal decay**: Memory entries have a half-life (default 30 days). Relevance scores decay over time unless entries are reinforced by repeated access or explicit user confirmation. This ensures that stale knowledge gradually fades while actively-useful knowledge remains prominent.
 - **Composite scoring for retrieval**: Hot memory retrieval uses a composite score combining semantic similarity, recency, access frequency, confidence level, and explicit importance tags. This multi-signal approach produces better retrieval quality than pure vector similarity.
 
-**Vector Search**: Memory retrieval is powered by `sqlite-vec`, an embedded SQLite extension for vector similarity search. This keeps all memory infrastructure local -- no external vector databases or cloud services required. Embeddings are generated locally using lightweight models and stored alongside memory entries in the SQLite database.
+**Vector Search**: Memory retrieval is powered by `@huggingface/transformers` using the `Xenova/all-MiniLM-L6-v2` embedding model. Embeddings are generated locally and stored alongside memory entries in a regular SQLite table. This keeps all memory infrastructure local -- no external vector databases or cloud services required.
 
 **Episodic Memory**: Structured summaries of completed sessions and missions. Each episodic entry captures what happened (actions taken), why (decisions and rationale), what was learned (new knowledge or corrections), and the outcome (success, failure, or partial). Episodic memories enable the CTO and future workers to learn from past experience across missions.
 
@@ -717,7 +722,7 @@ Learning packs are auto-curated project knowledge that accumulates from worker a
 
 Knowledge entries have categories (mistake-pattern, preference, flaky-test, tool-usage, architecture-rule), scopes (global, directory, file-pattern), and confidence scores that increase with repeated observations. High-confidence entries are injected into worker and CTO context alongside project packs.
 
-Users can review, edit, confirm, or delete entries in Settings > Memory and CTO > Memory. Confirmed procedural memories can be exported as skill files to `.ade/skills/`. The skill registry also ingests existing `.ade/skills/`, `.claude/skills/`, `.claude/commands/`, `CLAUDE.md`, and `agents.md` files for interoperability. Learning packs are local-only and never transmitted.
+Users can review, edit, confirm, or delete entries in the consolidated **Settings > Memory** tab (the single surface for all memory management). Confirmed procedural memories can be exported as skill files to `.ade/skills/`. The skill registry also ingests existing `.ade/skills/`, `.claude/skills/`, `.claude/commands/`, `CLAUDE.md`, and `agents.md` files for interoperability. Learning packs are local-only and never transmitted.
 
 ### 10.10 Development Modes
 
@@ -858,9 +863,9 @@ ADE configuration lives in the `.ade/` folder at the project root. The current r
 | `.ade/ade.yaml` | Shared baseline config (processes, stack buttons, test suites, lane profiles, overlay policies, AI task-type routing defaults, phase profiles, automation definitions) | Yes |
 | `.ade/local.yaml` | Machine-specific overrides (including local AI provider preferences and CLI tool paths) | No |
 | `.ade/local.secret.yaml` | Machine-local secret config for external MCP and secret-backed integrations | No |
-| `.ade/cto/` | CTO identity, memory, and configuration | Yes |
-| `.ade/agents/` | Worker identity, memory, and configuration | Yes |
-| `.ade/memory/` | Project-scope file-backed memory artifacts | Yes |
+| `.ade/cto/` | CTO identity and configuration | Yes |
+| `.ade/agents/` | Worker identity and configuration | Yes |
+| `.ade/memory.db` | SQLite database for all scoped memory (project, agent, mission) | No |
 | `.ade/artifacts/packs/` | Pack versions and materialized views | No |
 | `.ade/history/` | Mission records and tracked JSONL history | Yes |
 | `.ade/artifacts/` | Screenshots, videos, test results attached to missions/lanes | No in current design |

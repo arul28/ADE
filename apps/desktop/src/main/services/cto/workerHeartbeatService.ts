@@ -5,6 +5,7 @@ import type {
   AgentCoreMemory,
   CtoTriggerAgentWakeupArgs,
   CtoTriggerAgentWakeupResult,
+  WorkerTaskSessionPayload,
   WorkerAgentRun,
   WorkerAgentRunStatus,
   WorkerAgentWakeupReason,
@@ -516,25 +517,50 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
     args.workerAgentService.setAgentStatus(agent.id, "running");
     args.workerAgentService.setAgentHeartbeatAt(agent.id, startedAt);
     const executionRunId = randomUUID();
+    const runtimeContext = safeJsonParse<Record<string, unknown>>(run.context_json, {});
 
     let taskKey = run.task_key;
     if (!taskKey) {
       taskKey = args.workerTaskSessionService.deriveTaskKey({
         agentId: agent.id,
-        linearIssueId: run.issue_key,
-        summary: `${run.wakeup_reason}:${agent.name}`,
+        laneId: typeof runtimeContext.laneId === "string" ? runtimeContext.laneId : null,
+        workflowRunId: typeof runtimeContext.runId === "string" ? runtimeContext.runId : null,
+        linearIssueId: typeof runtimeContext.issueId === "string" ? runtimeContext.issueId : run.issue_key,
+        summary:
+          typeof runtimeContext.issueTitle === "string" && runtimeContext.issueTitle.trim().length
+            ? runtimeContext.issueTitle
+            : `${run.wakeup_reason}:${agent.name}`,
       });
       updateRunFields(run.id, { task_key: taskKey });
     }
 
+    const existingTaskSession = args.workerTaskSessionService.getTaskSession(agent.id, agent.adapterType, taskKey);
+    const existingPayload = (existingTaskSession?.payload ?? {}) as WorkerTaskSessionPayload;
+    const continuityScope = {
+      ...(existingPayload.continuity?.scope ?? {}),
+      ...(typeof runtimeContext.runId === "string" ? { runId: runtimeContext.runId } : {}),
+      ...(typeof runtimeContext.laneId === "string" ? { laneId: runtimeContext.laneId } : {}),
+      ...(typeof runtimeContext.issueId === "string" ? { issueId: runtimeContext.issueId } : {}),
+      ...(run.issue_key ? { issueIdentifier: run.issue_key } : {}),
+    };
     const taskSession = args.workerTaskSessionService.ensureTaskSession({
       agentId: agent.id,
       adapterType: agent.adapterType,
       taskKey,
       payload: {
-        runId: run.id,
-        reason: run.wakeup_reason,
-        issueKey: run.issue_key,
+        continuity: {
+          scope: continuityScope,
+        },
+        wake: {
+          lastRunId: run.id,
+          lastWakeReason: run.wakeup_reason as WorkerAgentWakeupReason,
+          lastIssueKey: run.issue_key,
+          lastWakeAt: startedAt,
+        },
+        runId: typeof runtimeContext.runId === "string" ? runtimeContext.runId : existingPayload.runId ?? run.id,
+        issueId: typeof runtimeContext.issueId === "string" ? runtimeContext.issueId : existingPayload.issueId,
+        issueIdentifier: run.issue_key ?? existingPayload.issueIdentifier,
+        laneId: typeof runtimeContext.laneId === "string" ? runtimeContext.laneId : existingPayload.laneId,
       },
     });
 
@@ -563,15 +589,38 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
     const runtimeResult = await args.workerAdapterRuntimeService.run({
       agent,
       prompt,
-      context: safeJsonParse(run.context_json, {}),
+      context: runtimeContext,
+      laneId: typeof continuityScope.laneId === "string" ? continuityScope.laneId : null,
+      continuation: taskSession.payload && typeof taskSession.payload === "object"
+        ? (((taskSession.payload as WorkerTaskSessionPayload).continuity?.handle ?? null))
+        : null,
     });
 
     const heartbeatOk = runtimeResult.outputText.trim().toUpperCase() === "HEARTBEAT_OK";
     const finishedAt = nowIso();
-    const adapterModelId = typeof (agent.adapterConfig as Record<string, unknown>).modelId === "string"
-      ? String((agent.adapterConfig as Record<string, unknown>).modelId)
-      : null;
+    const adapterModelId = runtimeResult.modelId
+      ?? (typeof (agent.adapterConfig as Record<string, unknown>).modelId === "string"
+        ? String((agent.adapterConfig as Record<string, unknown>).modelId)
+        : null);
     const runStatus: WorkerAgentRunStatus = runtimeResult.ok ? "completed" : "failed";
+    args.workerTaskSessionService.ensureTaskSession({
+      agentId: agent.id,
+      adapterType: agent.adapterType,
+      taskKey,
+      payload: {
+        continuity: {
+          scope: continuityScope,
+          providerSurface: runtimeResult.effectiveSurface,
+          handle: runtimeResult.continuation ?? null,
+        },
+        wake: {
+          lastRunId: run.id,
+          lastWakeReason: run.wakeup_reason as WorkerAgentWakeupReason,
+          lastIssueKey: run.issue_key,
+          lastWakeAt: finishedAt,
+        },
+      },
+    });
     updateRunFields(run.id, {
       status: runStatus,
       finished_at: finishedAt,
@@ -579,10 +628,13 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
       result_json: JSON.stringify({
         escalated: true,
         adapterType: runtimeResult.adapterType,
+        effectiveSurface: runtimeResult.effectiveSurface,
         ok: runtimeResult.ok,
         statusCode: runtimeResult.statusCode ?? null,
         heartbeatOk,
         outputPreview: outputPreview(runtimeResult.outputText),
+        provider: runtimeResult.provider ?? null,
+        sessionId: runtimeResult.sessionId ?? null,
       }),
     });
 
@@ -594,6 +646,9 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
           run.task_key ? `Task: ${run.task_key}.` : "",
           run.issue_key ? `Issue: ${run.issue_key}.` : "",
           runtimeResult.ok ? "Adapter run completed." : "Adapter run failed.",
+          runtimeResult.effectiveSurface !== "process" && runtimeResult.effectiveSurface !== "openclaw_webhook"
+            ? `Resumed via ${runtimeResult.effectiveSurface}.`
+            : "",
           heartbeatOk ? "No action required." : outputPreview(runtimeResult.outputText) || "No output.",
         ]
           .filter((entry) => entry.length > 0)
@@ -602,9 +657,12 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
       ),
       startedAt,
       endedAt: finishedAt,
-      provider: agent.adapterType,
+      provider: runtimeResult.provider ?? agent.adapterType,
       modelId: adapterModelId,
-      capabilityMode: "fallback",
+      capabilityMode:
+        runtimeResult.effectiveSurface === "process" || runtimeResult.effectiveSurface === "openclaw_webhook"
+          ? "fallback"
+          : "full_mcp",
     });
     args.ctoStateService?.appendSubordinateActivity({
       agentId: agent.id,
@@ -626,7 +684,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
       args.workerBudgetService.recordCostEvent({
         agentId: agent.id,
         runId: run.id,
-        provider: agent.adapterType,
+        provider: runtimeResult.provider ?? agent.adapterType,
         modelId: adapterModelId,
         inputTokens: runtimeResult.usage.inputTokens ?? null,
         outputTokens: runtimeResult.usage.outputTokens ?? null,

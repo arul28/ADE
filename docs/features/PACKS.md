@@ -10,6 +10,8 @@
 
 Persisted pack files are no longer ADE's canonical runtime context source. W6 uses live local context exports plus unified memory for runtime retrieval/injection.
 
+Packs are deterministic context snapshots — they capture project state at a point in time. They are not part of the unified memory system. Unified memory (project/agent/mission scopes, Tier 1-3 lifecycle) is a separate subsystem managed through Settings > Memory.
+
 Pack files and pack version history still exist as compatibility artifacts for:
 
 - export/resource compatibility (`read_context`, `ade://pack/...`),

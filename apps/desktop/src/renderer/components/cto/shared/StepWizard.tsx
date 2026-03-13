@@ -6,6 +6,7 @@ import { cn } from "../../ui/cn";
 export type WizardStep = {
   id: string;
   label: string;
+  description?: string;
   icon: React.ElementType;
   completed?: boolean;
 };
@@ -42,6 +43,7 @@ export function StepWizard({
   const activeIndex = steps.findIndex((s) => s.id === activeStep);
   const isLast = activeIndex === steps.length - 1;
   const isFirst = activeIndex === 0;
+  const progressPercent = steps.length > 1 ? ((Math.max(activeIndex, 0) + 1) / steps.length) * 100 : 100;
 
   const handleNext = async () => {
     if (onNext) {
@@ -68,67 +70,106 @@ export function StepWizard({
       {/* Left rail — step indicators */}
       <div
         className="shrink-0 flex flex-col border-r border-border/20 py-6 px-4"
-        style={{ width: 200, background: "var(--color-surface-recessed)" }}
+        style={{ width: 236, background: "linear-gradient(180deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%)" }}
       >
-        <div className="font-mono text-[10px] font-bold uppercase tracking-[1px] text-muted-fg/40 mb-6">
-          Setup
+        <div className="mb-6">
+          <div className="font-mono text-[10px] font-bold uppercase tracking-[1px] text-muted-fg/40">
+            Setup
+          </div>
+          <div className="mt-2 text-sm font-semibold text-fg">
+            Step {Math.max(activeIndex, 0) + 1} of {steps.length}
+          </div>
+          <div className="mt-3 h-1 overflow-hidden rounded-full bg-white/[0.05]">
+            <div
+              className="h-full rounded-full bg-[color:color-mix(in_srgb,var(--color-accent)_75%,white_25%)] transition-all duration-300"
+              style={{ width: `${progressPercent}%` }}
+            />
+          </div>
         </div>
 
-        <div className="flex flex-col gap-0.5">
+        <div className="flex flex-col gap-2">
           {steps.map((step, i) => {
             const isActive = step.id === activeStep;
             const isDone = step.completed || i < activeIndex;
             const Icon = step.icon;
 
             return (
-              <div key={step.id} className="flex items-start gap-3">
-                {/* Vertical line + circle */}
+              <button
+                key={step.id}
+                type="button"
+                disabled={!onStepChange}
+                onClick={() => onStepChange?.(step.id)}
+                className={cn(
+                  "group flex items-start gap-3 rounded-2xl border px-3 py-3 text-left transition-all",
+                  isActive
+                    ? "border-accent/30 bg-accent/8 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]"
+                    : isDone
+                      ? "border-white/[0.08] bg-white/[0.03]"
+                      : "border-transparent bg-transparent hover:border-white/[0.06] hover:bg-white/[0.02]",
+                )}
+              >
                 <div className="flex flex-col items-center">
-                  <button
-                    type="button"
-                    disabled={!onStepChange}
-                    onClick={() => onStepChange?.(step.id)}
+                  <div
                     className={cn(
-                      "flex items-center justify-center w-6 h-6 shrink-0 border transition-all",
+                      "flex h-7 w-7 items-center justify-center rounded-full border transition-all",
                       isDone
-                        ? "bg-accent/20 border-accent/40 text-accent"
+                        ? "border-accent/40 bg-accent/18 text-accent"
                         : isActive
-                          ? "bg-accent/10 border-accent/30 text-accent"
-                          : "bg-surface-recessed border-border/20 text-muted-fg/30",
+                          ? "border-accent/30 bg-accent/10 text-accent"
+                          : "border-border/20 bg-white/[0.02] text-muted-fg/35",
                     )}
                   >
                     {isDone ? (
                       <Check size={10} weight="bold" />
                     ) : (
-                      <Icon size={10} weight={isActive ? "bold" : "regular"} />
+                      <Icon size={11} weight={isActive ? "bold" : "regular"} />
                     )}
-                  </button>
-                  {i < steps.length - 1 && (
-                    <div
-                      className={cn(
-                        "w-px h-6",
-                        isDone ? "bg-accent/30" : "bg-border/20",
-                      )}
-                    />
-                  )}
+                  </div>
+                  {i < steps.length - 1 ? (
+                    <div className={cn("mt-2 h-6 w-px", isDone ? "bg-accent/30" : "bg-border/20")} />
+                  ) : null}
                 </div>
 
-                {/* Label */}
-                <span
-                  className={cn(
-                    "font-mono text-[10px] mt-1.5 transition-colors",
-                    isActive
-                      ? "text-fg font-bold"
-                      : isDone
-                        ? "text-muted-fg"
-                        : "text-muted-fg/40",
-                  )}
-                >
-                  {step.label}
-                </span>
-              </div>
+                <div className="min-w-0">
+                  <div
+                    className={cn(
+                      "font-mono text-[10px] uppercase tracking-[0.18em] transition-colors",
+                      isActive
+                        ? "font-bold text-fg"
+                        : isDone
+                          ? "text-fg/78"
+                          : "text-muted-fg/48",
+                    )}
+                  >
+                    {step.label}
+                  </div>
+                  {step.description ? (
+                    <div
+                      className={cn(
+                        "mt-1 text-xs leading-5 transition-colors",
+                        isActive
+                          ? "text-fg/70"
+                          : isDone
+                            ? "text-muted-fg/62"
+                            : "text-muted-fg/40",
+                      )}
+                    >
+                      {step.description}
+                    </div>
+                  ) : null}
+                </div>
+              </button>
             );
           })}
+        </div>
+
+        <div className="mt-auto rounded-2xl border border-white/[0.05] bg-black/15 p-3">
+          <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-fg/45">
+            Workflow
+          </div>
+          <div className="mt-2 text-xs leading-5 text-fg/68">
+            Move step by step, go back when needed, and use the rail to revisit any section before you finish.
+          </div>
         </div>
       </div>
 

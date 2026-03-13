@@ -51,7 +51,7 @@ The main process owns:
 - conflict prediction and rebase helpers
 - PR/GitHub services
 - mission and orchestrator services
-- unified memory, digests, and embedding services
+- consolidated unified memory system (SQLite-backed with local embeddings), digests, and embedding services
 - CTO state, Linear sync/dispatch/ingress, and OpenClaw bridge
 
 Background startup is routed through one helper in `main.ts`, which gives every task an explicit label, delay, env gate, and timing log.
@@ -66,7 +66,16 @@ ADE remains provider-flexible:
 
 The orchestrator, agent chat, and CTO all use those provider paths through ADE's runtime contracts rather than a hosted ADE backend.
 
-### 4. Orchestrator and coordinator
+### 4. Memory architecture
+
+Two memory systems coexist, managed from **Settings > Memory**:
+
+- **Unified memory** (`unifiedMemoryService.ts`): The primary AI knowledge backbone. A SQLite-backed store in `.ade/ade.db` with three scopes (`project`, `agent`, `mission`), three tiers (Tier 1 pinned, Tier 2 active, Tier 3 aging), hybrid retrieval (FTS4 BM25 + cosine similarity via local Xenova/all-MiniLM-L6-v2 embeddings + MMR re-ranking), lifecycle sweeps, batch consolidation, and pre-compaction flush with quality criteria. All agent runtimes read from and write to this store.
+- **CTO core memory files** (`.ade/cto/`): File-backed identity and project context for the CTO agent. Managed separately from unified memory tables but both surfaces are accessible from the Settings Memory tab.
+
+Memory UI is consolidated in **Settings > Memory** (Health tab for entry counts, embedding progress, sweep/consolidation stats, and manual actions). There are no other memory surfaces in the renderer.
+
+### 5. Orchestrator and coordinator
 
 The orchestrator now emits structured lifecycle status updates at each coordinator stage (booting, analyzing prompt, fetching project context, launching planner, waiting, failure, stopped). A planning-startup guard prevents tool drift during the prep phase. Planner launch failures are categorized (transient vs. permanent) with automatic retry on transient errors.
 
@@ -189,6 +198,10 @@ The PR system still supports local simulation, stacked workflows, and integratio
 ### Workspace Graph
 
 The graph still provides topology, risk, PR, and activity overlays, but it now stages those layers instead of mounting everything at once.
+
+### Memory
+
+The memory system has been consolidated into a unified SQLite-backed store with three scopes and three tiers, replacing the earlier multi-surface approach. All agent types receive improved memory instructions with concrete examples and quality criteria. The pre-compaction flush prompt now includes explicit SAVE/DO-NOT-SAVE guidance so agents produce fewer, higher-quality memories. CTO core memory files coexist as a separate persistence layer. The only memory UI surface is Settings > Memory.
 
 ---
 

@@ -1,16 +1,13 @@
 import { useState } from "react";
 import { LanePrPanel } from "../prs/LanePrPanel";
 import { LaneConflictsPanel } from "./LaneConflictsPanel";
-import { LaneOverlayConfigPanel } from "./LaneOverlayConfigPanel";
-import { MemoryInspectorPanel } from "../settings/MemoryInspector";
 import { COLORS, MONO_FONT } from "./laneDesignTokens";
 
-type InspectorTab = "context" | "pr" | "conflicts";
+type InspectorTab = "pr" | "conflicts";
 
 const TAB_DEFS: Array<{ id: InspectorTab; num: string; label: string }> = [
-  { id: "context", num: "01", label: "MEMORY" },
-  { id: "pr", num: "02", label: "PR" },
-  { id: "conflicts", num: "03", label: "CONFLICTS" },
+  { id: "pr", num: "01", label: "PR" },
+  { id: "conflicts", num: "02", label: "CONFLICTS" },
 ];
 
 export function LaneInspectorPane({
@@ -20,7 +17,7 @@ export function LaneInspectorPane({
   laneId: string | null;
   defaultTab?: InspectorTab;
 }) {
-  const [tab, setTab] = useState<InspectorTab>(defaultTab ?? "context");
+  const [tab, setTab] = useState<InspectorTab>(defaultTab ?? "pr");
 
   return (
     <div className="flex h-full flex-col" style={{ background: COLORS.pageBg }}>
@@ -74,12 +71,6 @@ export function LaneInspectorPane({
         })}
       </div>
       <div className="flex-1 min-h-0" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
-        {tab === "context" && (
-          <div className="h-full overflow-auto">
-            <MemoryInspectorPanel laneId={laneId} compact />
-            {laneId && <LaneOverlayConfigPanel laneId={laneId} />}
-          </div>
-        )}
         {tab === "pr" && (
           <div className="h-full overflow-auto">
             <LanePrPanel laneId={laneId} />

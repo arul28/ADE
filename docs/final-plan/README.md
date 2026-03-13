@@ -25,7 +25,7 @@ The following phase files are superseded by the new roadmap and should be consid
 
 ---
 
-Last updated: 2026-03-12
+Last updated: 2026-03-13
 Owner: ADE
 Status: Active
 
@@ -106,6 +106,7 @@ Baseline derived from code in `apps/desktop`.
   - Activity narrative: Run Narrative section in Activity tab
   - UI bug fixes: removed `ExecutionPlanPreview`, fixed duplicate progress bar, fixed DAG SVG spinning animation, tab renames (usage->details, channels->chat)
 - **Codebase Refactoring & Modularization (shipped 2026-03-02):** AI orchestrator decomposed (`aiOrchestratorService.ts` 13.2K -> 7.7K lines + 9 extracted modules). Pack service decomposed (`packService.ts` 5.7K -> 3.2K lines + 4 builder modules). Type system modernized (monolithic `types.ts` replaced by `src/shared/types/` with 17 domain modules). Frontend decomposed (`MissionsPage.tsx` 60% reduction, `WorkspaceGraphPage.tsx` 11 extracted files). Shared backend/frontend utilities consolidated. Net -14,370 lines, 0 TypeScript errors.
+- **Memory Consolidation Overhaul (shipped 2026-03-13):** Unified memory system fully operational. Single UI surface (Settings > Memory) replaces the previous split across CTO and Settings tabs. Improved agent prompt guidance for memory writes. Quality controls on write sources (garbage-source filtering). 3-scope model (project/agent/mission) with CTO core memory coexisting as a separate always-in-context system. Feature docs (`features/MEMORY.md`, `features/CHAT.md`, `features/LINEAR.md`) and architecture doc (`architecture/MEMORY.md`) added to PRD.
 
 ### 2.3 Architectural leverage and constraints
 

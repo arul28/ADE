@@ -261,6 +261,14 @@ export function buildMissionThreadEventMergeKey(envelope: AgentChatEventEnvelope
       return [...baseParts, turnId ?? "turn", itemId ?? "item"].join("::");
     case "status":
       return [...baseParts, turnId ?? "turn", event.turnStatus, normalizeInlineText(event.message ?? "")].join("::");
+    case "delegation_state":
+      return [
+        ...baseParts,
+        turnId ?? "turn",
+        event.contract.contractId,
+        event.contract.status,
+        normalizeInlineText(event.message ?? ""),
+      ].join("::");
     case "activity":
       return [...baseParts, turnId ?? "turn", event.activity, normalizeInlineText(event.detail ?? "")].join("::");
     case "error":

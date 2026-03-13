@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { AgentTaskSession, AdapterType } from "../../../shared/types";
+import type { AgentTaskSession, AdapterType, WorkerTaskSessionPayload } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
 import { safeJsonParse, nowIso } from "../shared/utils";
 
@@ -12,13 +12,15 @@ type EnsureTaskSessionArgs = {
   agentId: string;
   adapterType: AdapterType;
   taskKey: string;
-  payload: Record<string, unknown>;
+  payload: WorkerTaskSessionPayload;
+  mode?: "merge" | "replace";
 };
 
 type DeriveTaskKeyArgs = {
   agentId: string;
   laneId?: string | null;
   missionId?: string | null;
+  workflowRunId?: string | null;
   linearIssueId?: string | null;
   chatSessionId?: string | null;
   summary?: string | null;
@@ -35,6 +37,25 @@ function digestTaskSeed(input: string): string {
 
 function stringifyPayload(payload: Record<string, unknown>): string {
   return JSON.stringify(payload ?? {});
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function mergePayloadRecords(
+  current: Record<string, unknown>,
+  next: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...current };
+  for (const [key, value] of Object.entries(next)) {
+    if (isPlainRecord(value) && isPlainRecord(merged[key])) {
+      merged[key] = mergePayloadRecords(merged[key] as Record<string, unknown>, value);
+      continue;
+    }
+    merged[key] = value;
+  }
+  return merged;
 }
 
 export function createWorkerTaskSessionService(args: WorkerTaskSessionServiceArgs) {
@@ -55,6 +76,7 @@ export function createWorkerTaskSessionService(args: WorkerTaskSessionServiceArg
     const contextParts = [
       `agent:${input.agentId.trim()}`,
       input.missionId ? `mission:${input.missionId.trim()}` : "",
+      input.workflowRunId ? `workflowRun:${input.workflowRunId.trim()}` : "",
       input.linearIssueId ? `linear:${input.linearIssueId.trim()}` : "",
       input.chatSessionId ? `chat:${input.chatSessionId.trim()}` : "",
       input.laneId ? `lane:${input.laneId.trim()}` : "",
@@ -76,6 +98,12 @@ export function createWorkerTaskSessionService(args: WorkerTaskSessionServiceArg
       [args.projectId, input.agentId, input.adapterType, taskKey]
     );
     const timestamp = nowIso();
+    const nextPayload = current?.payload_json && input.mode !== "replace"
+      ? mergePayloadRecords(
+          safeJsonParse<Record<string, unknown>>(String(current.payload_json ?? "{}"), {}),
+          input.payload,
+        )
+      : input.payload;
     if (current?.id) {
       args.db.run(
         `
@@ -83,7 +111,7 @@ export function createWorkerTaskSessionService(args: WorkerTaskSessionServiceArg
           set payload_json = ?, cleared_at = null, updated_at = ?
           where id = ?
         `,
-        [stringifyPayload(input.payload), timestamp, String(current.id)]
+        [stringifyPayload(nextPayload), timestamp, String(current.id)]
       );
       const refreshed = args.db.get<Record<string, unknown>>(
         `select id, agent_id, adapter_type, task_key, payload_json, cleared_at, created_at, updated_at from worker_agent_task_sessions where id = ? limit 1`,
@@ -107,7 +135,7 @@ export function createWorkerTaskSessionService(args: WorkerTaskSessionServiceArg
       agentId: input.agentId,
       adapterType: input.adapterType,
       taskKey,
-      payload: input.payload,
+      payload: nextPayload,
       clearedAt: null,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -217,4 +245,3 @@ export function createWorkerTaskSessionService(args: WorkerTaskSessionServiceArg
 }
 
 export type WorkerTaskSessionService = ReturnType<typeof createWorkerTaskSessionService>;
-

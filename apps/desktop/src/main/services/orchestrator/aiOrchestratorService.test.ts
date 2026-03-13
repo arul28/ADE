@@ -7,6 +7,7 @@ import { openKvDb } from "../state/kvDb";
 import { createMissionService } from "../missions/missionService";
 import { createOrchestratorService } from "./orchestratorService";
 import { CoordinatorAgent } from "./coordinatorAgent";
+import { filterExecutionSteps } from "./orchestratorContext";
 import {
   buildCoordinatorEvaluationActionHints,
   createAiOrchestratorService,
@@ -4767,11 +4768,7 @@ describe("aiOrchestratorService", () => {
       // The run starts with empty user steps — the coordinator may create
       // system-managed tracking steps (e.g. planner-launch-tracker), so filter those out.
       const graph = fixture.orchestratorService.getRunGraph({ runId: runs[0]!.id });
-      const userSteps = graph.steps.filter((step) => {
-        const meta = step.metadata && typeof step.metadata === "object" && !Array.isArray(step.metadata) ? step.metadata as Record<string, unknown> : {};
-        return !meta.systemManaged;
-      });
-      expect(userSteps).toHaveLength(0);
+      expect(filterExecutionSteps(graph.steps)).toHaveLength(0);
 
       const refreshedMission = fixture.missionService.get(mission.id);
       expect(refreshedMission?.status).toBe("in_progress");

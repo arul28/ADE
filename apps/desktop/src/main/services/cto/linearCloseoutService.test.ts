@@ -49,6 +49,13 @@ const workflowFixture: LinearWorkflowDefinition = {
   },
 };
 
+const sessionWorkflowFixture: LinearWorkflowDefinition = {
+  ...workflowFixture,
+  id: "flow-session",
+  name: "Session closeout",
+  target: { type: "employee_session" },
+};
+
 const runFixture: LinearWorkflowRun = {
   id: "run-1",
   issueId: issueFixture.id,
@@ -133,6 +140,13 @@ describe("linearCloseoutService", () => {
           },
         ]),
       } as any,
+      prService: {
+        listAll: vi.fn(() => []),
+        getForLane: vi.fn(() => null),
+      } as any,
+      computerUseArtifactBrokerService: {
+        listArtifacts: vi.fn(() => []),
+      } as any,
     });
 
     await service.applyOutcome({
@@ -161,6 +175,82 @@ describe("linearCloseoutService", () => {
         ".ade/artifacts/computer-use/shot.png",
         "https://github.com/acme/repo/pull/43",
         "https://example.com/browser-trace.zip",
+      ],
+      artifactMode: "links",
+    });
+  });
+
+  it("publishes non-mission PR links and broker artifacts to the generic Linear closeout", async () => {
+    const publishWorkflowCloseout = vi.fn(async () => {});
+    const service = createLinearCloseoutService({
+      issueTracker: {
+        fetchWorkflowStates: vi.fn(async () => []),
+        updateIssueState: vi.fn(async () => {}),
+        addLabel: vi.fn(async () => {}),
+        createComment: vi.fn(async () => ({ commentId: "comment-1" })),
+      } as any,
+      outboundService: {
+        publishMissionCloseout: vi.fn(async () => {}),
+        publishWorkflowCloseout,
+      } as any,
+      missionService: {
+        get: vi.fn(() => null),
+      } as any,
+      orchestratorService: {
+        getArtifactsForMission: vi.fn(() => []),
+      } as any,
+      prService: {
+        listAll: vi.fn(() => [{ id: "pr-99", githubUrl: "https://github.com/acme/repo/pull/99" }]),
+        getForLane: vi.fn(() => null),
+      } as any,
+      computerUseArtifactBrokerService: {
+        listArtifacts: vi.fn(({ owner }: { owner: { kind: string; id: string } }) => {
+          if (owner.kind === "chat_session") {
+            return [{ id: "artifact-1", kind: "browser_trace", uri: ".ade/artifacts/chat-trace.zip" }];
+          }
+          if (owner.kind === "lane") {
+            return [{ id: "artifact-2", kind: "screenshot", uri: "https://example.com/lane-proof.png" }];
+          }
+          if (owner.kind === "github_pr") {
+            return [{ id: "artifact-3", kind: "browser_verification", uri: "https://example.com/pr-proof.json" }];
+          }
+          return [];
+        }),
+      } as any,
+    });
+
+    await service.applyOutcome({
+      run: {
+        ...runFixture,
+        targetType: "employee_session",
+        linkedMissionId: null,
+        linkedSessionId: "session-1",
+        linkedPrId: "pr-99",
+        executionLaneId: "lane-1",
+      },
+      workflow: sessionWorkflowFixture,
+      issue: issueFixture,
+      outcome: "completed",
+      summary: "Worker handoff wrapped with linked proof.",
+    });
+
+    expect(publishWorkflowCloseout).toHaveBeenCalledWith({
+      issue: issueFixture,
+      status: "completed",
+      summary: "Worker handoff wrapped with linked proof.",
+      targetLabel: "employee session",
+      targetId: "session-1",
+      contextLines: [
+        "Workflow target: employee_session",
+        "Lane: lane-1",
+        "Session: session-1",
+        "Linked PR record: pr-99",
+      ],
+      prLinks: ["https://github.com/acme/repo/pull/99"],
+      artifactPaths: [
+        ".ade/artifacts/chat-trace.zip",
+        "https://example.com/lane-proof.png",
+        "https://example.com/pr-proof.json",
       ],
       artifactMode: "links",
     });

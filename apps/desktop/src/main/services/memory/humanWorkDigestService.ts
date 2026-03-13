@@ -89,7 +89,7 @@ export function createHumanWorkDigestService(args: {
       content: headSha,
       importance: "low",
       confidence: 1,
-      status: "promoted",
+      status: "archived",
       sourceType: "system",
       sourceId: CURSOR_SOURCE_ID,
     });

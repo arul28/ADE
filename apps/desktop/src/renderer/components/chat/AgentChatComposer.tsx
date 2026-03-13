@@ -6,6 +6,8 @@ import {
   type AgentChatExecutionMode,
   type AgentChatFileRef,
   type AgentChatPermissionMode,
+  type AgentChatSlashCommand,
+  type ChatSurfaceProfile,
   type ChatSurfaceMode,
   type ComputerUsePolicy,
   type ContextPackOption,
@@ -30,14 +32,77 @@ type ExecutionModeOption = {
   accent: string;
 };
 
-const SLASH_COMMANDS = [
-  { command: "/plan", label: "Plan", description: "Create a development plan", category: "Generate" },
-  { command: "/review", label: "Review", description: "Review code changes", category: "Generate" },
-  { command: "/help", label: "Help", description: "Show available commands", category: "Info" },
-  { command: "/clear", label: "Clear", description: "Clear chat history", category: "Action" },
-  { command: "/model", label: "Model", description: "Change the model", category: "Settings" },
-  { command: "/effort", label: "Effort", description: "Change reasoning effort", category: "Settings" }
+type SlashCommandEntry = {
+  command: string;
+  label: string;
+  description: string;
+  argumentHint?: string;
+  source: "sdk" | "local";
+};
+
+/** Local-only commands that are always available regardless of provider. */
+const LOCAL_SLASH_COMMANDS: SlashCommandEntry[] = [
+  { command: "/clear", label: "Clear", description: "Clear chat history", source: "local" },
 ];
+
+/** Well-known defaults shown before the SDK session is initialized. */
+const CLAUDE_DEFAULT_COMMANDS: SlashCommandEntry[] = [
+  { command: "/compact", label: "Compact", description: "Compact conversation context", source: "sdk" },
+  { command: "/review", label: "Review", description: "Review code changes", source: "sdk" },
+  { command: "/help", label: "Help", description: "Show available commands", source: "sdk" },
+  { command: "/model", label: "Model", description: "Switch model", source: "sdk" },
+  { command: "/permissions", label: "Permissions", description: "View or manage permissions", source: "sdk" },
+  { command: "/cost", label: "Cost", description: "Show token usage and cost", source: "sdk" },
+  { command: "/memory", label: "Memory", description: "Edit CLAUDE.md files", source: "sdk" },
+  { command: "/status", label: "Status", description: "Show session status", source: "sdk" },
+];
+
+const CODEX_DEFAULT_COMMANDS: SlashCommandEntry[] = [
+  { command: "/review", label: "Review", description: "Review uncommitted changes", source: "sdk" },
+  { command: "/help", label: "Help", description: "Show available commands", source: "sdk" },
+];
+
+/** Build the effective slash command list by merging SDK-provided commands with local ones. */
+function buildSlashCommands(sdkCommands: AgentChatSlashCommand[], modelFamily?: string): SlashCommandEntry[] {
+  const result: SlashCommandEntry[] = [];
+  const seen = new Set<string>();
+
+  // SDK commands first — they take priority
+  for (const cmd of sdkCommands) {
+    const name = cmd.name.startsWith("/") ? cmd.name : `/${cmd.name}`;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    result.push({
+      command: name,
+      label: name.slice(1).charAt(0).toUpperCase() + name.slice(2),
+      description: cmd.description || `Run ${name}`,
+      argumentHint: cmd.argumentHint,
+      source: cmd.source,
+    });
+  }
+
+  // If no SDK commands loaded yet, show well-known defaults for the provider
+  if (sdkCommands.length === 0) {
+    const defaults = modelFamily === "anthropic" ? CLAUDE_DEFAULT_COMMANDS
+      : modelFamily === "openai" ? CODEX_DEFAULT_COMMANDS
+      : [];
+    for (const cmd of defaults) {
+      if (!seen.has(cmd.command)) {
+        seen.add(cmd.command);
+        result.push(cmd);
+      }
+    }
+  }
+
+  // Local commands that aren't already provided by SDK
+  for (const cmd of LOCAL_SLASH_COMMANDS) {
+    if (!seen.has(cmd.command)) {
+      result.push(cmd);
+    }
+  }
+
+  return result;
+}
 
 /* ── Permission hover pane ── */
 function PermissionHoverPane({ opt }: { opt: PermissionOption }) {
@@ -119,6 +184,8 @@ function normalizeFileList(files: FileList | null | undefined): AgentChatFileRef
 
 export function AgentChatComposer({
   surfaceMode = "standard",
+  surfaceProfile = "standard",
+  sdkSlashCommands = [],
   modelId,
   availableModelIds,
   reasoningEffort,
@@ -154,6 +221,8 @@ export function AgentChatComposer({
   onClearEvents
 }: {
   surfaceMode?: ChatSurfaceMode;
+  surfaceProfile?: ChatSurfaceProfile;
+  sdkSlashCommands?: AgentChatSlashCommand[];
   modelId: string;
   availableModelIds?: string[];
   reasoningEffort: string | null;
@@ -192,6 +261,7 @@ export function AgentChatComposer({
   onComputerUsePolicyChange: (policy: ComputerUsePolicy) => void;
   onClearEvents?: () => void;
 }) {
+  const isPersistentIdentitySurface = surfaceProfile === "persistent_identity";
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
   const [attachmentQuery, setAttachmentQuery] = useState("");
   const [attachmentBusy, setAttachmentBusy] = useState(false);
@@ -217,16 +287,21 @@ export function AgentChatComposer({
   const attachedPaths = useMemo(() => new Set(attachments.map((a) => a.path)), [attachments]);
   const selectedModel = useMemo(() => getModelById(modelId), [modelId]);
 
+  const effectiveSlashCommands = useMemo(
+    () => buildSlashCommands(sdkSlashCommands, selectedModel?.family),
+    [sdkSlashCommands, selectedModel?.family],
+  );
+
   const filteredSlashCommands = useMemo(() => {
-    if (!slashQuery.length) return SLASH_COMMANDS;
+    if (!slashQuery.length) return effectiveSlashCommands;
     const q = slashQuery.toLowerCase();
-    return SLASH_COMMANDS.filter(
+    return effectiveSlashCommands.filter(
       (cmd) =>
         cmd.command.toLowerCase().includes(q) ||
         cmd.label.toLowerCase().includes(q) ||
         cmd.description.toLowerCase().includes(q)
     );
-  }, [slashQuery]);
+  }, [slashQuery, effectiveSlashCommands]);
 
   /* ── Attachment picker effects ── */
   useEffect(() => {
@@ -289,12 +364,14 @@ export function AgentChatComposer({
     }
   };
 
-  const handleSlashSelect = (cmd: (typeof SLASH_COMMANDS)[number]) => {
+  const handleSlashSelect = (cmd: SlashCommandEntry) => {
     setSlashPickerOpen(false);
     setSlashQuery("");
+    // Local-only commands handled client-side
     if (cmd.command === "/clear" && onClearEvents) { onClearEvents(); onDraftChange(""); return; }
-    if (cmd.command === "/plan" || cmd.command === "/review") { onDraftChange(`${cmd.command} ${draft}`); return; }
-    onDraftChange(`${cmd.command} `);
+    // SDK and all other commands: set as draft text to be sent to the agent
+    const hint = cmd.argumentHint ? ` ` : " ";
+    onDraftChange(`${cmd.command}${hint}`);
   };
 
   const packMatches = (a: ContextPackOption, b: ContextPackOption) =>
@@ -316,6 +393,7 @@ export function AgentChatComposer({
   const permissionOptions = getPermissionOptions({
     family: selectedModel?.family ?? sessionProvider ?? "unified",
     isCliWrapped: sessionIsCliWrapped ?? false,
+    profile: surfaceProfile,
   });
 
   /* ── Keyboard handler for textarea ── */
@@ -344,11 +422,13 @@ export function AgentChatComposer({
       }
     }
 
-    /* Trigger pickers */
+    /* Trigger pickers — let "/" be typed so onChange can filter */
     if (event.key === "/" && draft.length === 0 && !commandModified && !event.altKey) {
-      event.preventDefault();
-      window.setTimeout(() => { setSlashPickerOpen(true); setSlashQuery(""); setSlashCursor(0); }, 0);
-      return;
+      setSlashPickerOpen(true);
+      setSlashQuery("");
+      setSlashCursor(0);
+      // Don't preventDefault — the "/" will appear in the textarea and onChange will
+      // see val.startsWith("/"), keeping the picker open and enabling type-to-filter.
     }
     if (event.key === "#" && !commandModified && !event.altKey) {
       event.preventDefault();
@@ -469,7 +549,7 @@ export function AgentChatComposer({
             }}
           />
           {slashPickerOpen && filteredSlashCommands.length > 0 ? (
-            <div className="absolute bottom-full left-3 z-10 mb-3 w-72 rounded-[var(--chat-radius-card)] border border-white/[0.06] bg-card/95 shadow-[var(--chat-composer-shadow)] backdrop-blur-xl">
+            <div className="absolute bottom-full left-3 z-10 mb-3 w-80 rounded-[var(--chat-radius-card)] border border-white/[0.06] bg-card/95 shadow-[var(--chat-composer-shadow)] backdrop-blur-xl">
               <div className="border-b border-white/[0.04] px-3 py-2 font-mono text-[9px] font-bold uppercase tracking-widest text-muted-fg/35">
                 Commands
               </div>
@@ -485,8 +565,11 @@ export function AgentChatComposer({
                     onMouseEnter={() => setSlashCursor(index)}
                     onClick={() => handleSlashSelect(cmd)}
                   >
-                    <span className="w-14 text-accent/70">{cmd.command}</span>
-                    <span className="flex-1 text-fg/45">{cmd.description}</span>
+                    <span className="w-16 shrink-0 text-accent/70">{cmd.command}</span>
+                    <span className="flex-1 truncate text-fg/45">{cmd.description}</span>
+                    {cmd.source === "sdk" ? (
+                      <span className="shrink-0 rounded-sm bg-violet-500/10 px-1 py-px text-[8px] text-violet-300/60">sdk</span>
+                    ) : null}
                   </button>
                 ))}
               </div>
@@ -595,12 +678,12 @@ export function AgentChatComposer({
             onChange={onModelChange}
             availableModelIds={availableModelIds}
             disabled={modelSelectionLocked}
-            showReasoning
+            showReasoning={!isPersistentIdentitySurface}
             reasoningEffort={reasoningEffort}
             onReasoningEffortChange={onReasoningEffortChange}
           />
 
-          {executionModeOptions.length > 0 && onExecutionModeChange ? (
+          {!isPersistentIdentitySurface && executionModeOptions.length > 0 && onExecutionModeChange ? (
             <div className="flex items-center gap-1">
               {executionModeOptions.map((option) => {
                 const isActive = executionMode === option.value;
@@ -723,7 +806,7 @@ export function AgentChatComposer({
             <button
               type="button"
               className="rounded-[var(--chat-radius-pill)] px-2 py-1 font-mono text-[8px] text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
-              onClick={() => { setSlashPickerOpen(true); setSlashQuery(""); setSlashCursor(0); }}
+              onClick={() => { onDraftChange("/"); setSlashPickerOpen(true); setSlashQuery(""); setSlashCursor(0); textareaRef.current?.focus(); }}
               title="Commands (/)"
             >/</button>
 

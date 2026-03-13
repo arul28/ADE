@@ -87,7 +87,79 @@ describe("linearOutboundService", () => {
     db.close();
   });
 
-  it("filters artifact links outside project root while preserving remote links", async () => {
+  it("reuses the same workpad comment across workflow launch, progress, and final closeout", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-workpad-lifecycle-"));
+    const db = await openKvDb(path.join(root, "ade.db"), createLogger());
+    const createComment = vi.fn(async () => ({ commentId: "comment-workpad-1" }));
+    const updateBodies: string[] = [];
+    const updateComment = vi.fn(async (_commentId: string, body: string) => {
+      updateBodies.push(body);
+    });
+    const service = createLinearOutboundService({
+      db,
+      projectId: "project-1",
+      projectRoot: root,
+      issueTracker: {
+        createComment,
+        updateComment,
+        uploadAttachment: vi.fn(),
+      } as any,
+      logger: createLogger(),
+    });
+
+    await service.publishWorkflowStatus({
+      issue: issueFixture,
+      workflowName: "Assigned worker run",
+      runId: "run-1",
+      targetType: "worker_run",
+      state: "waiting_for_target",
+      currentStep: "Launch worker run",
+      delegatedOwner: "backend-dev",
+      laneId: "lane-22",
+      workerRunId: "worker-run-22",
+      note: "Delegated the issue into a dedicated worker lane.",
+    });
+    await service.publishWorkflowStatus({
+      issue: issueFixture,
+      workflowName: "Assigned worker run",
+      runId: "run-1",
+      targetType: "worker_run",
+      state: "waiting_for_pr",
+      currentStep: "Wait for PR",
+      delegatedOwner: "backend-dev",
+      laneId: "lane-22",
+      workerRunId: "worker-run-22",
+      prId: "pr-22",
+      waitingFor: "review-ready PR",
+      note: "PR linked and awaiting review-ready state.",
+    });
+    await service.publishWorkflowCloseout({
+      issue: issueFixture,
+      status: "completed",
+      summary: "Validated proof and closed out the delegated workflow.",
+      targetLabel: "worker run",
+      targetId: "worker-run-22",
+      contextLines: ["Lane: lane-22", "Linked PR record: pr-22"],
+      prLinks: ["https://github.com/acme/repo/pull/22"],
+      artifactMode: "links",
+    });
+
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(updateComment).toHaveBeenCalledTimes(2);
+    expect(updateBodies[0]).toContain("- Lane: lane-22");
+    expect(updateBodies[0]).toContain("- Worker run: worker-run-22");
+    expect(updateBodies[1]).toContain("### Closeout Summary");
+    expect(updateBodies[1]).toContain("https://github.com/acme/repo/pull/22");
+
+    const stored = db.get<{ comment_id: string }>(
+      `select comment_id from linear_workpads where project_id = ? and issue_id = ? limit 1`,
+      ["project-1", issueFixture.id]
+    );
+    expect(stored?.comment_id).toBe("comment-workpad-1");
+    db.close();
+  });
+
+  it("filters artifact links outside project root while preserving remote links for generic workflow closeout", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-artifacts-"));
     const db = await openKvDb(path.join(root, "ade.db"), createLogger());
     const insideArtifact = path.join(root, "build.log");
@@ -118,11 +190,13 @@ describe("linearOutboundService", () => {
       routeReason: "Matched bug",
     });
 
-    await service.publishMissionCloseout({
+    await service.publishWorkflowCloseout({
       issue: issueFixture,
-      missionId: "mission-1",
       status: "completed",
       summary: "Shipped",
+      targetLabel: "employee session",
+      targetId: "session-1",
+      contextLines: ["Workflow target: employee_session"],
       artifactMode: "links",
       artifactPaths: [insideArtifact, outsideArtifact, "https://example.com/artifact.txt"],
     });
@@ -131,6 +205,46 @@ describe("linearOutboundService", () => {
     expect(latest).toContain(`file://${insideArtifact}`);
     expect(latest).toContain("https://example.com/artifact.txt");
     expect(latest).not.toContain(`file://${outsideArtifact}`);
+    db.close();
+  });
+
+  it("keeps the mission closeout wrapper body shape stable", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-mission-closeout-"));
+    const db = await openKvDb(path.join(root, "ade.db"), createLogger());
+    const updateBodies: string[] = [];
+    const service = createLinearOutboundService({
+      db,
+      projectId: "project-1",
+      projectRoot: root,
+      issueTracker: {
+        createComment: vi.fn(async () => ({ commentId: "comment-1" })),
+        updateComment: vi.fn(async (_commentId: string, body: string) => {
+          updateBodies.push(body);
+        }),
+        uploadAttachment: vi.fn(),
+      } as any,
+      logger: createLogger(),
+    });
+
+    await service.publishMissionStart({
+      issue: issueFixture,
+      missionId: "mission-1",
+      missionTitle: "Auth mission",
+      templateId: "bug-fix",
+      routeReason: "Matched bug",
+    });
+
+    await service.publishMissionCloseout({
+      issue: issueFixture,
+      missionId: "mission-1",
+      status: "completed",
+      summary: "Shipped",
+      artifactMode: "links",
+    });
+
+    const latest = updateBodies[updateBodies.length - 1] ?? "";
+    expect(latest).toContain("- Mission: mission-1");
+    expect(latest).not.toContain("- Target:");
     db.close();
   });
 });

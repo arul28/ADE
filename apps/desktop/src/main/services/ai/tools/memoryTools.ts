@@ -17,7 +17,7 @@ export function createMemoryTools(
   };
 
   const memorySearch = tool({
-    description: "Search project memory for relevant context, patterns, decisions, gotchas, or stable preferences from previous sessions.",
+    description: "Search project memory BEFORE starting work that might repeat past mistakes. Use at session start for orientation, before architectural decisions, and when you hit unexpected behavior that might be a known gotcha. Do NOT search for things you can find with grep, git log, or by reading code directly.",
     inputSchema: z.object({
       query: z.string().describe("Search query for finding relevant memories"),
       scope: z.enum(["project", "agent", "mission"]).optional().describe("Scope to search within"),
@@ -51,7 +51,22 @@ export function createMemoryTools(
   });
 
   const memoryAdd = tool({
-    description: "Save durable project knowledge for future sessions. Use this only for important decisions, conventions, repeatable patterns, stable preferences, or gotchas. Do not store ephemeral task chatter.",
+    description: `Save a durable insight that would help a developer who has never seen this project before.
+
+GOOD memories (save these):
+- "Convention: always use snake_case for database columns — the ORM breaks with camelCase"
+- "Decision: chose PostgreSQL over MongoDB because we need ACID transactions for payment processing"
+- "Pitfall: the CI pipeline silently skips tests if the test file doesn't match *.test.ts pattern"
+- "Pattern: all API routes must call validateSession() before accessing req.user — middleware doesn't cover /internal/* paths"
+
+BAD memories (never save these):
+- File paths or doc paths (derivable from the project with search)
+- Raw error messages without a lesson learned
+- Task progress or status updates
+- Things findable via git log or git blame
+- Obvious patterns already visible in the codebase
+
+Format: Lead with the concrete rule or fact, then brief context for WHY it matters. One actionable insight per memory, not a paragraph of narrative.`,
     inputSchema: z.object({
       content: z.string().describe("The information to remember"),
       category: z.enum(["fact", "convention", "pattern", "decision", "gotcha", "preference"]).describe("Category of the memory"),

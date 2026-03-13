@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-12
+> Last updated: 2026-03-13
 
 The AI integration layer replaces the previous hosted agent with a local-first, provider-flexible approach. Instead of a cloud backend with remote job queues, ADE routes work to configured runtimes (CLI subscriptions, API-key/OpenRouter providers, and local endpoints such as LM Studio/Ollama/vLLM), coordinates tooling through MCP, and manages multi-step workflows via an AI orchestrator.
 
@@ -78,6 +78,8 @@ From Phase 4 onward, ADE treats agent runtimes as the mandatory substrate for al
 All of those paths are normalized into a runtime record (`agentDefinitionId` + run/step/session lineage + memory policy + guardrails), even when the UX appears "one-shot".
 
 Interactive lane development (`Terminals`, `Work` chat) remains direct user sessions and is not forced through mission runtime semantics.
+
+Persistent identities (for example CTO-style or worker identity chat sessions) are resumable runtime surfaces, not business-completion signals. A session ending, being replaced, or resuming later does not by itself mean a workflow target completed successfully. Workflow completion must come from an explicit workflow gate such as launch completion, PR/review-ready milestones, mission completion, or an ADE-managed explicit completion action.
 
 ### Key Contract
 
@@ -632,6 +634,38 @@ The orchestrator manages workers through several coordination patterns:
 - `get_worker_output` remains the detailed artifact path; parent rollups intentionally stay concise.
 - Native (Claude-side) teammates are auto-registered as `source: "claude-native"` when they report from a valid run/worker context, and are bounded by parent allocation caps.
 
+### Coordinator-owned delegation contracts
+
+Coordinator-spawned workers now run under an explicit runtime delegation contract. This preserves the coordinator's strategic autonomy while making delegated-scope ownership deterministic. The coordinator still decides when to delegate, how to decompose work, whether to retry, and how to replan. The runtime owns the contract that says what the coordinator may or may not do while a delegated scope is active.
+
+This keeps three layers separate:
+
+1. **Strategic autonomy**: the coordinator chooses plans, worker types, decomposition, recovery paths, and replanning.
+2. **Delegated-scope ownership**: once a scope is delegated, the coordinator must not silently do that same scoped work itself.
+3. **Runtime enforcement**: deterministic code enforces permissions, launch failure handling, terminal-state behavior, and auditability independent of prompt wording or UI copy.
+
+Universal delegation invariants:
+
+- Every coordinator-spawned worker gets a `DelegationContract` before launch.
+- Active delegated scopes are explicitly owned; there is no silent "unowned" delegated period.
+- Launch failures are classified and routed through recovery policy rather than letting the coordinator drift into the delegated job.
+- Cancellation supersedes delegation and activates late-write suppression.
+- Lifecycle/UI should derive from structured delegation state (`delegation_state` events and persisted coordinator availability), not only from coordinator prose.
+
+Delegation modes:
+
+- `exclusive`: one worker owns the delegated scope. Use for planner startup and similar "do not overlap reasoning" windows. Coordinator may observe, fetch approved startup context, launch the delegated worker, wait, message the worker, and handle run control; it may not continue the delegated repo exploration or planning itself.
+- `bounded_parallel`: the coordinator may launch multiple independent workers up to a runtime cap, but scopes must stay non-overlapping and explicitly owned. Coordinator may still decompose, observe, aggregate, and schedule next-wave work.
+- `recovery`: a failed or blocked delegated scope is handed to an explicit recovery contract rather than silently resuming the failed scope directly. Coordinator may classify, intervene, or launch authorized recovery work, but must not quietly "become" the failed worker.
+
+Planner startup gating is now modeled as the strictest `exclusive` delegation case rather than a permanent one-off rule. Other worker types can use looser modes without weakening the core invariant that the coordinator must not silently cross delegated scope boundaries.
+
+Primary enforcement points:
+
+- `coordinatorTools.ts` creates delegation contracts, enforces phase-specific launch policy, and persists worker-linked contract metadata.
+- `coordinatorAgent.ts` applies active-contract tool-permission checks so the coordinator cannot drift into delegated work mid-turn.
+- `aiOrchestratorService.ts` projects structured delegation state into lifecycle/status UI while keeping cancellation and late-write suppression outside prompt logic.
+
 #### File Conflict Prevention
 
 The orchestrator prevents file conflicts between parallel workers through:
@@ -918,23 +952,25 @@ Memory tools follow the same MCP permission model as other agent tools. Read ope
 
 **Compaction Hints**: A compaction hints section is added to agent prompts, providing the agent with guidance on what information to prioritize preserving if context compaction is triggered.
 
+**Agent Memory Instructions**: All agent types (coordinator, worker, CTO, chat) now receive improved memory instructions in their system prompts with concrete examples and quality criteria. The standard quality bar is: "Would a developer joining this project find this useful on their first day?" Instructions include explicit SAVE guidance (non-obvious conventions, decisions with reasoning, pitfalls, patterns that contradict expectations) and DO-NOT-SAVE guidance (file paths, session progress, task status, code already committed, raw error messages without lessons, anything discoverable via search or git log).
+
 ### Memory Architecture
 
 > **Full spec**: `docs/final-plan/phase-4.md` W6 (Unified Memory System) contains the comprehensive implementation plan including schema, write gate, scoring formula, lifecycle algorithms, and pack removal strategy.
 
-The memory system provides agents with durable, searchable long-term memory that persists across sessions and runs. Phase 4 W6, W6½, W7a, and W7b are complete: `unifiedMemoryService.ts` is the canonical durable memory backend (project/agent/mission scopes with pinned/hot/cold tiers) with hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking), lifecycle sweeps, batch consolidation, pre-compaction flush, and orchestrator mission-memory wiring. Persisted `.ade/artifacts/packs/...` artifacts are no longer required for runtime context assembly. Deterministic context exports (`packService`) and CTO identity state (`ctoStateService`) remain as explicit compatibility and audit surfaces.
+The memory system provides agents with durable, searchable long-term memory that persists across sessions and runs. Phase 4 W6, W6½, W7a, and W7b are complete: `unifiedMemoryService.ts` is the canonical durable memory backend with 3 scopes (`project`, `agent`, `mission`) and 3 tiers (Tier 1 pinned, Tier 2 active, Tier 3 aging), plus hybrid retrieval (FTS4 BM25 + cosine similarity via local Xenova/all-MiniLM-L6-v2 + MMR re-ranking), lifecycle sweeps, batch consolidation, pre-compaction flush with quality criteria, and orchestrator mission-memory wiring. Persisted `.ade/artifacts/packs/...` artifacts are no longer required for runtime context assembly. Deterministic context exports (`packService`) and CTO identity state (`ctoStateService`) remain as explicit compatibility and audit surfaces.
 
 #### Storage Layer
 
-- **Primary store**: SQLite/sql.js with `unified_memories` as the active memory table and `unified_memory_embeddings` storing 384-dim vectors from local all-MiniLM-L6-v2
-- **Embedding model**: `@huggingface/transformers` running all-MiniLM-L6-v2 locally — no API calls, fully offline
+- **Primary store**: SQLite/sql.js with `unified_memories` as the active memory table and `unified_memory_embeddings` storing 384-dim vectors from local Xenova/all-MiniLM-L6-v2
+- **Embedding model**: `@huggingface/transformers` running `Xenova/all-MiniLM-L6-v2` locally — no API calls, fully offline
 - **Background embedding**: `embeddingWorkerService.ts` processes new entries asynchronously and backfills existing ones without blocking
 - **Active retrieval path**: Hybrid FTS4 BM25 (30%) + cosine similarity (70%) + MMR re-ranking (λ=0.7), with graceful fallback to lexical/composite scoring when embeddings are unavailable
 
 #### Retrieval Pipeline
 
 ```
-Query → Embed query via all-MiniLM-L6-v2 → FTS4 BM25 keyword scoring + cosine similarity →
+Query → Embed query via Xenova/all-MiniLM-L6-v2 → FTS4 BM25 keyword scoring + cosine similarity →
   Hybrid score (0.30 BM25 + 0.70 cosine) → Composite scoring (hybrid + recency + importance + confidence + access) →
   MMR re-ranking (λ=0.7, reduces redundancy) → Budget filter (lite: 3, standard: 8, deep: 20) → Return
 ```
@@ -964,10 +1000,10 @@ Memory writes are persisted directly in the local project database (`.ade/ade.db
 
 #### Memory Lifecycle (W6½)
 
-- **Pre-compaction flush**: Before context compaction, a silent agentic turn is injected so the agent can persist in-context discoveries via `memoryAdd`. Flush counter prevents double-flush; configurable `reserveTokensFloor` (default: 40K tokens).
+- **Pre-compaction flush**: Before context compaction, a silent agentic turn is injected so the agent can persist in-context discoveries via `memoryAdd`. The flush prompt now includes explicit quality criteria and SAVE/DO-NOT-SAVE guidance (e.g., save non-obvious conventions and pitfalls; do not save file paths, session progress, or raw error messages). Flush counter prevents double-flush; configurable `reserveTokensFloor` (default: 40K tokens).
 - **Lifecycle sweeps**: Run on configurable interval (default: daily at 3am or on startup if >24h since last sweep). Operations in order: temporal decay (30-day half-life, Tier 1 and evergreen categories exempt), tier demotion (Tier 2→3 at 90 days, Tier 3→archived at 180 days), candidate promotion (confidence ≥ 0.7 + observationCount ≥ 2), hard limit enforcement (project: 2K, agent: 500, mission: 200), orphan cleanup (mission-scoped entries for deleted missions).
 - **Batch consolidation**: Weekly (or when scope exceeds 80% of hard limit). Clusters entries by Jaccard trigram similarity > 0.7 within (scope, category) groups, then merges clusters of 3+ via LLM. Tier 1 (pinned) entries are never consolidated. Original entries archived, not deleted.
-- **Memory Health dashboard**: Settings > Memory > Health shows entry counts by scope/tier, last sweep and consolidation timestamps and stats, embedding progress, hard limit usage bars, and manual "Run Sweep Now" / "Run Consolidation Now" buttons.
+- **Memory Health dashboard**: The only memory UI surface is **Settings > Memory** (Health tab). It shows entry counts by scope/tier, last sweep and consolidation timestamps and stats, embedding progress (polled at 10s intervals), hard limit usage bars, and manual "Run Sweep Now" / "Run Consolidation Now" buttons. There are no other memory surfaces in the renderer.
 
 #### Context Assembly Per Runtime
 
@@ -975,14 +1011,14 @@ Every agent runtime assembles its context window from a layered budget:
 
 ```
 System prompt + tools definition                    (~5-10K tokens)
-+ Tier 1 core memory (persona + working context)    (~2-4K tokens)
-+ Tier 2 retrieved memories (budget-dependent)       (~1-3K tokens)
++ Tier 1 pinned memory (persona + working context)   (~2-4K tokens)
++ Tier 2/3 retrieved memories (budget-dependent)     (~1-3K tokens)
 + Mission shared team knowledge (derived from mission memory) (~0.5-1K tokens)
 + Conversation history                               (remaining budget)
 + Response reserve                                   (~4K tokens)
 ```
 
-The live memory scopes are:
+The 3 live memory scopes (matching `MemoryScope` in `src/shared/types/memory.ts`) are:
 - `project`: Persistent project-level knowledge
 - `mission`: Shared across a mission run
 - `agent`: Agent-specific durable memory
@@ -993,7 +1029,7 @@ The live memory scopes are:
 
 The memory architecture is informed by production systems and academic research across the agent memory landscape:
 
-- **MemGPT / Letta**: Pioneered the tiered memory model treating LLM context as "main memory" with agent-managed read/write to "disk" storage. ADE's Tier 1/2/3 maps to MemGPT's core memory blocks / recall memory / archival memory. Letta's benchmarks (74% accuracy with simple file operations vs. Mem0's 68.5%) validated our choice of file-backed portable storage over database-only approaches.
+- **MemGPT / Letta**: Pioneered the tiered memory model treating LLM context as "main memory" with agent-managed read/write to "disk" storage. ADE's Tier 1 (pinned) / Tier 2 (active) / Tier 3 (aging) maps to MemGPT's core memory blocks / recall memory / archival memory. Letta's benchmarks (74% accuracy with simple file operations vs. Mem0's 68.5%) validated our choice of file-backed portable storage over database-only approaches.
 
 - **Mem0**: Source of the PASS/REPLACE/APPEND/DELETE consolidation model. Mem0 performs real-time deduplication on every write using cosine similarity to detect overlap, then delegates merge decisions to an LLM. ADE adopts this with a conservative 0.85 similarity threshold and adds scope-aware matching (only compare within the same memory scope to prevent false merges across agent boundaries).
 
@@ -1102,7 +1138,7 @@ External MCP Request           User (CTO Tab)
 - The CTO can proactively create missions, spin up lanes, and orchestrate work based on project context without explicit user direction
 - It maintains awareness of all active missions, lane states, and recent agent outputs
 
-**CTO State**: The CTO maintains its state in `.ade/cto/`, separate from unified memory tables in `.ade/ade.db`. This includes persistent project context, learned routing patterns, decision history, and user corrections. Over time, the CTO becomes more effective at anticipating project needs and dispatching work autonomously.
+**CTO State**: The CTO maintains its state in `.ade/cto/` (core memory files), separate from unified memory tables in `.ade/ade.db`. This includes persistent project context, learned routing patterns, decision history, and user corrections. Both systems are visible in **Settings > Memory**. Over time, the CTO becomes more effective at anticipating project needs and dispatching work autonomously.
 
 **Approval gate interaction** (M4/M5): When a mission phase has `requiresApproval: true`, the CTO is notified of pending `phase_approval` interventions through the same mission event stream it uses for general mission awareness. The CTO can surface these approval requests to the user in the CTO chat interface, providing context about the planning output and recommending whether to approve or request revisions. The CTO does not resolve approval gates autonomously — it always routes them to the human user for final decision.
 
@@ -1137,7 +1173,7 @@ ADE now ships a canonical `.ade` contract. The tracked/shareable subset lives al
 - legacy runtime folders are moved into `artifacts/`, `transcripts/`, `cache/`, and `secrets/`
 - tracked JSONL files under `history/`, `cto/`, and `agents/` are normalized and hash-chained with `prevHash`
 
-**Embedding behavior**: Embeddings are generated locally by `@huggingface/transformers` (all-MiniLM-L6-v2, 384-dim) and stored in `unified_memory_embeddings` within `.ade/ade.db`. Hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking) is the active search path. The background embedding worker backfills missing embeddings automatically from the DB-backed memory store.
+**Embedding behavior**: Embeddings are generated locally by `@huggingface/transformers` (`Xenova/all-MiniLM-L6-v2`, 384-dim) and stored in `unified_memory_embeddings` within `.ade/ade.db`. Hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking) is the active search path. The background embedding worker backfills missing embeddings automatically from the DB-backed memory store.
 
 **No cloud dependency**: ADE's local filesystem contract is git-friendly, but real-time multi-device sync is still Phase 6 work. The Phase 8 relay is for real-time remote control of a running ADE instance, not for state synchronization.
 
@@ -1177,9 +1213,9 @@ Phases 1, 1.5, 2, 3, 4, and 5 are complete. The sections below summarize the maj
 - Middleware layer (`middleware.ts`: logging, retry, cost guard, reasoning extraction)
 
 **Memory and knowledge**:
-- Unified memory system (W6): scoped namespaces, candidate/promoted/archived lifecycle, auto-promotion, context budget panel
-- Memory engine hardening (W6-half): lifecycle sweeps, batch consolidation, pre-compaction flush, Memory Health dashboard
-- Embeddings pipeline (W7a): local all-MiniLM-L6-v2, FTS4 BM25 + cosine similarity + MMR re-ranking
+- Unified memory system (W6): 3 scopes (project/agent/mission), 3 tiers (Tier 1 pinned / Tier 2 active / Tier 3 aging), candidate/promoted/archived lifecycle, auto-promotion, Settings > Memory tab
+- Memory engine hardening (W6-half): lifecycle sweeps, batch consolidation, pre-compaction flush with quality criteria, Memory Health dashboard
+- Embeddings pipeline (W7a): local Xenova/all-MiniLM-L6-v2, FTS4 BM25 + cosine similarity + MMR re-ranking
 - Orchestrator memory wiring (W7b): mission-memory SSoT, exact employee L2 injection
 - Skills and learning pipeline (W7c): episodic-to-procedural extraction, `.ade/skills/SKILL.md` materialization, skill ingestion from legacy sources, knowledge capture from failures/interventions/repeated errors/PR feedback, CTO memory review surfaces with provenance, confidence history, and re-index actions
 - Memory tool wiring into agent coding tool set
@@ -1756,7 +1792,7 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Computer use MCP tools | Partially implemented | Capability detection exists (`localComputerUse.ts`); mission validation models evidence requirements; full MCP tool loop (`screenshot_environment`, `interact_gui`, `record_environment`, `launch_app`, `get_environment_info`) and automatic PR proof embedding are not shipped end-to-end |
 | Unified Memory System (W6) | Complete | Unified memory retrieval and renderer cutover are active |
 | Memory Engine Hardening (W6½) — lifecycle sweeps, batch consolidation, pre-compaction flush | Complete | Temporal decay, tier demotion, hard limits, orphan cleanup, Jaccard+LLM consolidation, pre-compaction flush, Memory Health dashboard |
-| Embeddings Pipeline (W7a) — local embedding + hybrid retrieval | Complete | Local all-MiniLM-L6-v2 via @huggingface/transformers, FTS4 BM25 + cosine similarity + MMR re-ranking, graceful lexical fallback |
+| Embeddings Pipeline (W7a) — local embedding + hybrid retrieval | Complete | Local Xenova/all-MiniLM-L6-v2 via @huggingface/transformers, FTS4 BM25 + cosine similarity + MMR re-ranking, graceful lexical fallback |
 | Orchestrator Memory Wiring (W7b) — mission-memory SSoT + exact employee L2 injection | Complete | Retired `orchestrator_shared_facts`, compaction writes back to mission memory, worker briefings derive shared team knowledge from mission memory, exact `employeeAgentId` launch metadata controls agent-memory injection |
 | Skills + Learning Pipeline (W7) — procedural extraction + skill materialization | Complete | Phase 4 — episodic-to-procedural extraction, `.ade/skills/SKILL.md` materialization, skill ingestion from legacy sources, and knowledge capture from failures/interventions/repeated errors/PR feedback are shipped (`knowledgeCaptureService.ts`, `proceduralLearningService.ts`, `skillRegistryService.ts`) |
 | CTO Agent — core identity, persistent chat, core memory (W1) | Complete | Phase 4 -- `ctoStateService.ts`, dual-canonical persistence (DB + file), session reconstruction, CtoPage with chat |

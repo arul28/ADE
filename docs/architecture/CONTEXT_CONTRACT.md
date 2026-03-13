@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-05
+> Last updated: 2026-03-13
 
 This document is the contract for the **remaining pack/export compatibility artifacts** still used by:
 
@@ -43,7 +43,7 @@ Context is consumed entirely on the local machine:
 - The AI integration service passes exports to CLI tools spawned by Vercel AI SDK.
 - No network transmission of context is required — all processing is local.
 - Exports are still structured, token-budgeted, and redacted for safety.
-- Current memory retrieval is lexical/composite over unified memory; embedding/vector retrieval is not active in this branch.
+- Memory retrieval uses hybrid scoring (FTS4 BM25 + cosine similarity via local Xenova/all-MiniLM-L6-v2 embeddings + MMR re-ranking), with graceful fallback to lexical/composite scoring when embeddings are unavailable.
 
 This is intentionally deterministic and observable:
 
@@ -521,17 +521,19 @@ All types referenced by `OrchestratorContext` are imported from the shared types
 
 ## Scoped Memory and Runtime Context Assembly
 
+> **Important distinction**: Packs and context exports (described above) are **deterministic snapshots** of project/lane/conflict state, bounded by token budget and export level. Memory (described below) is **persistent learned knowledge** that agents accumulate over time. These are separate systems: packs provide situational context for a specific task; memory provides durable knowledge that persists across sessions and runs.
+
 ### Scoped Memory Namespaces
 
-ADE replaces the old layer labels with explicit scopes:
+The unified memory store (`unifiedMemoryService.ts`) uses 3 DB scopes matching `MemoryScope` in `src/shared/types/memory.ts`: `project`, `agent`, and `mission`. These map to the following conceptual context assembly namespaces:
 
-| Namespace | Scope | Persistence | Primary source |
-|-----------|-------|-------------|----------------|
-| `runtime-thread` | Current runtime session | Ephemeral (compacted) | Active transcript/session state |
-| `run` | Current mission/run | Run-scoped | `orchestrator_shared_facts`, run metadata |
-| `project` | Project-wide reusable knowledge | Durable | `memories` (`status = promoted`) |
-| `identity` | Agent-definition owned memory | Durable | `memories` + `agent_identities` mapping |
-| `daily-log` | Time-window operational continuity | Bounded durable | Briefings/checkpoint summaries |
+| Namespace | DB Scope | Persistence | Primary source |
+|-----------|----------|-------------|----------------|
+| `runtime-thread` | (ephemeral) | Ephemeral (compacted) | Active transcript/session state |
+| `run` / shared team knowledge | `mission` | Run-scoped | `unified_memories` (mission scope), derived shared facts |
+| `project` | `project` | Durable | `unified_memories` (`status = promoted`) |
+| `agent` | `agent` | Durable | `unified_memories` + agent identity mapping |
+| `daily-log` | (derived) | Bounded durable | Briefings/checkpoint summaries |
 
 ### Runtime Context Assembly Contract
 
@@ -539,17 +541,16 @@ ADE replaces the old layer labels with explicit scopes:
 
 1. System instructions + step/task policy
 2. Bounded pack export (`lite`/`standard`/`deep`)
-3. Retrieved scoped memories (`project` + `identity` + optional `daily-log`)
-4. Shared run facts (`run` namespace)
-5. Runtime profile files (`IDENTITY`, `TOOLS`, `USER_PREFS`, `HEARTBEAT`, `MEMORY_SUMMARY`)
-6. Active conversation (`runtime-thread`, subject to compaction)
+3. Retrieved scoped memories (`project` + `agent` + optional mission-derived shared team knowledge)
+4. Runtime profile files (`IDENTITY`, `TOOLS`, `USER_PREFS`, `HEARTBEAT`, `MEMORY_SUMMARY`)
+5. Active conversation (subject to compaction with pre-compaction flush)
 
 ### Writeback and Compaction Contract
 
 When context pressure reaches threshold:
 
-1. Extract durable facts/decisions with provenance and write to `run`/`project`/`identity` targets by policy.
-2. Produce compaction summary for the runtime-thread.
+1. Inject a pre-compaction flush turn with quality criteria, giving the agent an opportunity to persist durable discoveries via `memoryAdd` to `project`/`agent`/`mission` scopes.
+2. Produce compaction summary for the runtime thread.
 3. Replace high-volume transcript content with summary while retaining current task anchors.
 4. Persist transcript + compaction metadata to `attempt_transcripts`.
 

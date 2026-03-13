@@ -292,6 +292,42 @@ function normalizeCoordinatorAvailability(value: unknown): MissionCoordinatorAva
     mode,
     summary,
     detail: nullableString(raw.detail),
+    delegation: isRecord(raw.delegation)
+      ? {
+          contractId: nullableString(raw.delegation.contractId),
+          workerIntent:
+            raw.delegation.workerIntent === "planner"
+            || raw.delegation.workerIntent === "implementation"
+            || raw.delegation.workerIntent === "validation"
+            || raw.delegation.workerIntent === "specialist"
+            || raw.delegation.workerIntent === "subagent"
+            || raw.delegation.workerIntent === "parallel_subtasks"
+            || raw.delegation.workerIntent === "recovery"
+              ? raw.delegation.workerIntent
+              : null,
+          mode:
+            raw.delegation.mode === "exclusive"
+            || raw.delegation.mode === "bounded_parallel"
+            || raw.delegation.mode === "recovery"
+              ? raw.delegation.mode
+              : null,
+          status:
+            raw.delegation.status === "launching"
+            || raw.delegation.status === "active"
+            || raw.delegation.status === "completed"
+            || raw.delegation.status === "failed"
+            || raw.delegation.status === "launch_failed"
+            || raw.delegation.status === "recovering"
+            || raw.delegation.status === "blocked"
+            || raw.delegation.status === "canceled"
+              ? raw.delegation.status
+              : null,
+          scopeKey: nullableString(raw.delegation.scopeKey),
+          scopeLabel: nullableString(raw.delegation.scopeLabel),
+          activeWorkerIds: normalizeStringArray(raw.delegation.activeWorkerIds, 40),
+          updatedAt: stringOr(raw.delegation.updatedAt).trim() || nowIso(),
+        }
+      : null,
     updatedAt: stringOr(raw.updatedAt).trim() || nowIso(),
   };
 }

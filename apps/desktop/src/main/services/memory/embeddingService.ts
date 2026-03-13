@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { app } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import type { Logger } from "../logging/logger";
@@ -70,8 +71,8 @@ export class EmbeddingUnavailableError extends Error {
 }
 
 function resolveCacheDir(cacheDir?: string): string {
-  const fallback = path.join(process.cwd(), ".cache", "ade-embeddings");
-  return path.resolve(cacheDir ?? fallback);
+  if (cacheDir) return path.resolve(cacheDir);
+  return path.resolve(path.join(app.getPath("userData"), "transformers-cache"));
 }
 
 function cloneVector(vector: Float32Array): Float32Array {

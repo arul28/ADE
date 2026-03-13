@@ -1,5 +1,5 @@
 import type { ModelId } from "./core";
-import type { AgentChatPermissionMode } from "./chat";
+import type { AgentChatPermissionMode, AgentChatProvider } from "./chat";
 import type { ExternalMcpAccessPolicy } from "./externalMcp";
 
 export type AgentRole =
@@ -203,6 +203,57 @@ export type AgentTaskSession = {
   clearedAt?: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type WorkerRuntimeSurface =
+  | "claude_sdk"
+  | "codex_app_server"
+  | "unified_chat"
+  | "process"
+  | "openclaw_webhook";
+
+export type WorkerContinuationHandle = {
+  surface: WorkerRuntimeSurface;
+  provider?: AgentChatProvider | null;
+  model?: string | null;
+  modelId?: ModelId | string | null;
+  sessionId?: string | null;
+  threadId?: string | null;
+  sdkSessionId?: string | null;
+  reasoningEffort?: string | null;
+};
+
+export type WorkerTaskSessionScope = {
+  runId?: string | null;
+  laneId?: string | null;
+  issueId?: string | null;
+  issueIdentifier?: string | null;
+};
+
+export type WorkerTaskSessionWakeState = {
+  lastRunId?: string | null;
+  lastWakeReason?: WorkerAgentWakeupReason | null;
+  lastIssueKey?: string | null;
+  lastWakeAt?: string | null;
+};
+
+export type WorkerTaskSessionPayload = {
+  source?: string;
+  workflowId?: string;
+  workflowName?: string;
+  issueId?: string;
+  issueIdentifier?: string;
+  issueTitle?: string;
+  issueUrl?: string;
+  laneId?: string;
+  runId?: string;
+  continuity?: {
+    scope?: WorkerTaskSessionScope;
+    providerSurface?: WorkerRuntimeSurface | null;
+    handle?: WorkerContinuationHandle | null;
+  };
+  wake?: WorkerTaskSessionWakeState;
+  [key: string]: unknown;
 };
 
 export type WorkerAgentWakeupReason =

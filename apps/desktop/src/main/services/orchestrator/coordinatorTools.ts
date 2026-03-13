@@ -11,6 +11,9 @@ import fs from "node:fs";
 import path from "node:path";
 import type { createOrchestratorService } from "./orchestratorService";
 import type {
+  DelegationContract,
+  DelegationIntent,
+  DelegationMode,
   MissionBudgetSnapshot,
   MissionBudgetHardCapStatus,
   MissionStateDecision,
@@ -49,6 +52,14 @@ import {
   classifyWorkerExecutionPath,
   resolveModelDescriptor,
 } from "../../../shared/modelRegistry";
+import {
+  checkCoordinatorToolPermission,
+  createDelegationContract,
+  createDelegationScope,
+  extractActiveDelegationContracts,
+  hasConflictingDelegationContract,
+  updateDelegationContract,
+} from "./delegationContracts";
 
 const VALIDATION_CONTRACT_SCHEMA = z
   .object({
@@ -985,6 +996,7 @@ export function createCoordinatorToolSet(deps: {
     specialistRequest?: { requestedBy?: string | null; reason?: string | null } | null;
     replacementForWorkerId?: string | null;
     replacementReason?: string | null;
+    delegationContract?: DelegationContract | null;
   }): {
     workerId: string;
     step: OrchestratorStep | null;
@@ -1108,6 +1120,7 @@ export function createCoordinatorToolSet(deps: {
           mcpServerAllowlist: teamRuntime?.mcpServerAllowlist ?? [],
           isTask: false,
           convertedFromTaskShell: true,
+          ...(args.delegationContract ? { delegationContract: args.delegationContract } : {}),
           ...(args.validationContract ? { validationContract: args.validationContract } : {}),
         }
       });
@@ -1159,6 +1172,7 @@ export function createCoordinatorToolSet(deps: {
             roleCapabilities: roleDef?.capabilities ?? [],
             toolProfile: toolProfile ?? null,
             mcpServerAllowlist: teamRuntime?.mcpServerAllowlist ?? [],
+            ...(args.delegationContract ? { delegationContract: args.delegationContract } : {}),
             ...(args.validationContract ? { validationContract: args.validationContract } : {}),
             ...(replacementSourceStep
               ? {
@@ -1326,6 +1340,169 @@ export function createCoordinatorToolSet(deps: {
       currentPhase,
       phaseRuntime,
     };
+  }
+
+  function validateDelegationPromptForCurrentPhase(args: {
+    currentPhaseKey: string;
+    workerName: string;
+    roleName: string | null;
+    prompt: string;
+    validationContract: ValidationContract | null;
+    validationHeuristics?: "strict" | "prompt_only";
+  }): { ok: true } | { ok: false; error: string } {
+    if (args.currentPhaseKey === "planning" && promptContainsImplementationDirectives(args.prompt)) {
+      return {
+        ok: false,
+        error:
+          'Current phase is "planning". Planning workers must stay read-only and produce research/plan output only. ' +
+          'This prompt contains implementation or commit instructions. Use a research prompt now, then call set_current_phase with phaseKey "development" before implementation work.'
+      };
+    }
+    const validationHeuristics = args.validationHeuristics ?? "strict";
+    if (
+      args.currentPhaseKey !== "validation"
+      && looksLikeValidationWorkerRequest({
+        name: args.workerName,
+        roleName: validationHeuristics === "strict" ? args.roleName : null,
+        prompt: args.prompt,
+        validationContract: args.validationContract,
+        includeNameHeuristics: validationHeuristics === "strict",
+      })
+    ) {
+      return {
+        ok: false,
+        error:
+          'Validation workers can only be spawned during the "validation" phase. ' +
+          'Finish the active work, call set_current_phase with phaseKey "validation", and depend on the worker you are validating.'
+      };
+    }
+    return { ok: true };
+  }
+
+  function buildDelegationFailurePolicy(args: {
+    mode: DelegationMode;
+    intent: DelegationIntent;
+  }): DelegationContract["failurePolicy"] {
+    if (args.intent === "planner") {
+      return {
+        retryLimit: 1,
+        escalation: "intervention",
+      };
+    }
+    if (args.mode === "recovery") {
+      return {
+        retryLimit: 0,
+        escalation: "intervention",
+      };
+    }
+    return {
+      retryLimit: 0,
+      escalation: "retry",
+    };
+  }
+
+  function buildCoordinatorDelegationContract(args: {
+    graph: OrchestratorRunGraph;
+    workerId: string;
+    phaseKey: string;
+    workerName: string;
+    intent: DelegationIntent;
+    mode: DelegationMode;
+    scopeKind: "phase" | "step" | "worker" | "batch";
+    scopeKey: string;
+    scopeLabel?: string | null;
+    batchId?: string | null;
+    parentContractId?: string | null;
+    launchState?: DelegationContract["launchState"];
+    metadata?: Record<string, unknown> | null;
+  }): DelegationContract {
+    const currentPhaseLabel =
+      args.phaseKey.trim().length > 0
+        ? args.phaseKey.trim()
+        : resolveCurrentPhase(args.graph);
+    return createDelegationContract({
+      contractId: randomUUID(),
+      runId,
+      workerIntent: args.intent,
+      mode: args.mode,
+      scope: createDelegationScope({
+        kind: args.scopeKind,
+        key: args.scopeKey,
+        label: args.scopeLabel ?? currentPhaseLabel,
+      }),
+      phaseKey: currentPhaseLabel,
+      status: args.intent === "planner" && args.mode === "exclusive" ? "launching" : "active",
+      launchState: args.launchState ?? (args.intent === "planner" ? "awaiting_worker_launch" : "waiting_on_worker"),
+      activeWorkerIds: [args.workerId],
+      launchPolicy: {
+        maxLaunchAttempts: args.intent === "planner" ? 2 : 1,
+      },
+      failurePolicy: buildDelegationFailurePolicy({
+        mode: args.mode,
+        intent: args.intent,
+      }),
+      batchId: args.batchId ?? null,
+      parentContractId: args.parentContractId ?? null,
+      metadata: {
+        workerName: args.workerName,
+        ...(args.metadata ?? {}),
+      },
+    });
+  }
+
+  function persistDelegationContract(args: {
+    contract: DelegationContract;
+    stepId: string | null;
+    reason: string;
+    action: "created" | "updated";
+  }): void {
+    const detail = {
+      source: "coordinator_delegation",
+      action: args.action,
+      contract: args.contract,
+    };
+    orchestratorService.appendRuntimeEvent({
+      runId,
+      stepId: args.stepId,
+      eventType: "progress",
+      eventKey: `coordinator_delegation:${args.contract.contractId}:${args.action}:${args.contract.status}:${args.contract.updatedAt}`,
+      occurredAt: args.contract.updatedAt,
+      payload: detail,
+    });
+    orchestratorService.appendTimelineEvent({
+      runId,
+      stepId: args.stepId,
+      eventType: "delegation_contract",
+      reason: args.reason,
+      detail,
+    });
+    orchestratorService.emitRuntimeUpdate({
+      runId,
+      stepId: args.stepId,
+      reason: args.reason,
+    });
+  }
+
+  function applyDelegationContractToStep(args: {
+    stepId: string | null;
+    contract: DelegationContract;
+    additionalMetadata?: Record<string, unknown> | null;
+    allowTerminal?: boolean;
+  }): void {
+    if (!args.stepId) return;
+    orchestratorService.updateStepMetadata({
+      runId,
+      stepId: args.stepId,
+      metadata: {
+        delegationContract: args.contract,
+        delegationOwnerKind: "coordinator",
+        delegationIntent: args.contract.workerIntent,
+        delegationMode: args.contract.mode,
+        delegationScopeKey: args.contract.scope.key,
+        ...(args.additionalMetadata ?? {}),
+      },
+      allowTerminal: args.allowTerminal,
+    });
   }
 
   function resolvePhaseStepType(phaseKey: string): string {
@@ -1544,12 +1721,21 @@ export function createCoordinatorToolSet(deps: {
   }
 
   function getPlanningRepoReadBlockReason(g: OrchestratorRunGraph): string | null {
+    const permission = checkCoordinatorToolPermission({
+      toolName: "read_file",
+      contracts: extractActiveDelegationContracts(g),
+    });
+    if (!permission.allowed) {
+      return permission.reason;
+    }
     const phases = resolveMissionPhases(g);
     const current = resolveCurrentPhaseCard(g, phases);
     const currentKey = current?.phaseKey.trim().toLowerCase() ?? "";
     const currentName = current?.name.trim().toLowerCase() ?? "";
-    if (currentKey !== "planning" && currentName !== "planning") return null;
-    return "Coordinator-side repo inspection is disabled during Planning. Use get_project_context to brief the planner, wait for the planning worker output, then transition phases before doing coordinator-side file reads.";
+    if (currentKey === "planning" || currentName === "planning") {
+      return "Coordinator-side repo inspection is disabled during Planning. Use get_project_context to brief the planner, wait for the planning worker output, then transition phases before doing coordinator-side file reads.";
+    }
+    return null;
   }
 
   function promptContainsImplementationDirectives(prompt: string): boolean {
@@ -1584,17 +1770,19 @@ export function createCoordinatorToolSet(deps: {
     roleName: string | null;
     prompt: string;
     validationContract: ValidationContract | null;
+    includeNameHeuristics?: boolean;
   }): boolean {
     if (args.validationContract?.level === "step" || args.validationContract?.level === "milestone" || args.validationContract?.level === "mission") {
       return true;
     }
+    const includeNameHeuristics = args.includeNameHeuristics ?? true;
     const name = args.name.trim().toLowerCase();
     const roleName = args.roleName?.trim().toLowerCase() ?? "";
     const prompt = args.prompt.trim().toLowerCase();
     const validationPattern = /\b(validat(?:e|ion|or))\b/;
     return (
-      validationPattern.test(name)
-      || validationPattern.test(roleName)
+      (includeNameHeuristics && validationPattern.test(name))
+      || (includeNameHeuristics && validationPattern.test(roleName))
       || prompt.includes("report_validation")
       || prompt.includes("validation checklist")
       || prompt.includes("verdict: \"pass\"")
@@ -1879,29 +2067,16 @@ export function createCoordinatorToolSet(deps: {
             : [];
         const normalizedDependsOn =
           requestedDependsOn.length > 0 ? requestedDependsOn : inferredDependsOn;
-        if (currentPhaseKey === "planning" && promptContainsImplementationDirectives(normalizedPrompt)) {
-          return {
-            ok: false,
-            error:
-              'Current phase is "planning". Planning workers must stay read-only and produce research/plan output only. ' +
-              'This prompt contains implementation or commit instructions. Use a research prompt now, then call set_current_phase with phaseKey "development" before implementation work.'
-          };
-        }
-        if (
-          currentPhaseKey !== "validation"
-          && looksLikeValidationWorkerRequest({
-            name: normalizedName,
-            roleName: normalizedRole.length > 0 ? normalizedRole : null,
-            prompt: normalizedPrompt,
-            validationContract: parsedContract,
-          })
-        ) {
-          return {
-            ok: false,
-            error:
-              'Validation workers can only be spawned during the "validation" phase. ' +
-              'Finish the active work, call set_current_phase with phaseKey "validation", and depend on the worker you are validating.'
-          };
+        const phaseValidation = validateDelegationPromptForCurrentPhase({
+          currentPhaseKey,
+          workerName: normalizedName,
+          roleName: normalizedRole.length > 0 ? normalizedRole : null,
+          prompt: normalizedPrompt,
+          validationContract: parsedContract,
+          validationHeuristics: "strict",
+        });
+        if (!phaseValidation.ok) {
+          return { ok: false, error: phaseValidation.error };
         }
         const spawnPolicy = authorizeWorkerSpawnPolicy({
           g,
@@ -2070,7 +2245,61 @@ export function createCoordinatorToolSet(deps: {
           }
         }
 
+        const delegationIntent: DelegationIntent =
+          replacementSourceWorkerId.length > 0
+            ? "recovery"
+            : currentPhaseKey === "planning"
+              ? "planner"
+              : currentPhaseKey === "validation" || parsedContract?.required
+                ? "validation"
+                : "implementation";
+        const delegationMode: DelegationMode =
+          delegationIntent === "planner"
+            ? "exclusive"
+            : delegationIntent === "recovery"
+              ? "recovery"
+              : "bounded_parallel";
+        const provisionalWorkerId = replacementSourceWorkerId.length > 0
+          ? `replacement_${replacementSourceWorkerId}_${Date.now()}`
+          : `worker_${normalizedName.replace(/[^a-zA-Z0-9_-]/g, "_")}_${Date.now()}`;
+        const delegationScopeKey =
+          delegationIntent === "planner"
+            ? "phase:planning"
+            : replacementSourceWorkerId.length > 0
+              ? `worker:${replacementSourceWorkerId}`
+              : currentPhaseKey.length > 0
+                ? `phase:${currentPhaseKey}`
+                : `phase:${resolveCurrentPhase(g).trim().toLowerCase() || "unknown"}`;
+        const delegationContract = buildCoordinatorDelegationContract({
+          graph: g,
+          workerId: provisionalWorkerId,
+          phaseKey: currentPhaseKey,
+          workerName: normalizedName,
+          intent: delegationIntent,
+          mode: delegationMode,
+          scopeKind: delegationIntent === "planner" ? "phase" : replacementSourceWorkerId.length > 0 ? "worker" : "phase",
+          scopeKey: delegationScopeKey,
+          scopeLabel: currentPhase?.name ?? currentPhase?.phaseKey ?? null,
+          metadata: {
+            role: normalizedRole.length > 0 ? normalizedRole : null,
+            replacementForWorkerId: replacementSourceWorkerId || null,
+          },
+        });
+        const conflictingContract = hasConflictingDelegationContract({
+          graph: g,
+          contract: delegationContract,
+        });
+        if (conflictingContract) {
+          return {
+            ok: false,
+            error:
+              `Delegation scope '${delegationContract.scope.key}' is already owned by active ${conflictingContract.mode} delegation ` +
+              `(${conflictingContract.workerIntent}). Wait for it to finish or recover explicitly before spawning more work in the same scope.`,
+          };
+        }
+
         const { workerId, step: newStep, roleName, modelId: spawnedModelId, toolProfile, reusedExistingStep } = spawnWorkerStep({
+          stepKey: provisionalWorkerId,
           name: normalizedName,
           modelId: resolvedModelId,
           prompt: normalizedPrompt,
@@ -2081,7 +2310,10 @@ export function createCoordinatorToolSet(deps: {
           laneId: typeof laneId === "string" && laneId.trim().length > 0 ? laneId.trim() : null,
           replacementForWorkerId: replacementSourceWorkerId || null,
           replacementReason: replacementReason?.trim() || null,
-          validationContract: parsedContract
+          validationContract: parsedContract,
+          delegationContract: updateDelegationContract(delegationContract, {
+            activeWorkerIds: [provisionalWorkerId],
+          }),
         });
         if (newStep && !reusedExistingStep) {
           onDagMutation({
@@ -2136,6 +2368,40 @@ export function createCoordinatorToolSet(deps: {
           source: "ade-worker",
         });
 
+        const finalizedDelegationContract = updateDelegationContract(delegationContract, {
+          activeWorkerIds: [workerId],
+          status:
+            delegationIntent === "planner"
+              ? "active"
+              : launched || delegationMode !== "exclusive"
+                ? "active"
+                : "launching",
+          launchState:
+            delegationIntent === "planner"
+              ? "waiting_on_worker"
+              : launched
+                ? "waiting_on_worker"
+                : "awaiting_worker_launch",
+          startedAt: launched ? nowIso() : null,
+          metadata: {
+            ...(delegationContract.metadata ?? {}),
+            launchNote: launchNote ?? null,
+            launched,
+          },
+        });
+        if (newStep?.id) {
+          applyDelegationContractToStep({
+            stepId: newStep.id,
+            contract: finalizedDelegationContract,
+          });
+          persistDelegationContract({
+            contract: finalizedDelegationContract,
+            stepId: newStep.id,
+            reason: "delegation_contract_created",
+            action: "created",
+          });
+        }
+
         logger.info("coordinator.spawn_worker", {
           name: normalizedName,
           workerId,
@@ -2143,6 +2409,8 @@ export function createCoordinatorToolSet(deps: {
           role: roleName,
           launched,
           launchNote,
+          delegationIntent,
+          delegationMode,
         });
         return {
           ok: true,
@@ -2157,6 +2425,7 @@ export function createCoordinatorToolSet(deps: {
           role: roleName,
           toolProfile,
           replacementForWorkerId: replacementSourceWorkerId || null,
+          delegationContract: finalizedDelegationContract,
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -2345,6 +2614,14 @@ export function createCoordinatorToolSet(deps: {
     }) => {
       try {
         const g = graph();
+        const planningInputBlockReason = getPlanningInputBlockReason(g);
+        if (planningInputBlockReason) {
+          return { ok: false, error: planningInputBlockReason };
+        }
+        const planningQuestionPolicyBlockReason = getPlanningQuestionPolicyBlockReason(g);
+        if (planningQuestionPolicyBlockReason) {
+          return { ok: false, error: planningQuestionPolicyBlockReason };
+        }
         const teamRuntime = resolveTeamRuntimeConfig(g);
         const normalizedRole = normalizeText(role);
         const roleDef = resolveRoleDefinition(teamRuntime, normalizedRole);
@@ -2386,13 +2663,62 @@ export function createCoordinatorToolSet(deps: {
           };
         }
 
+        const missionPhases = resolveMissionPhases(g);
+        const phaseContext = resolveConfiguredPhaseContext(g, missionPhases);
+        if (!phaseContext.ok) {
+          return { ok: false, error: phaseContext.error };
+        }
+        const currentPhase = phaseContext.currentPhase;
+        const currentPhaseKey = currentPhase?.phaseKey.trim().toLowerCase() ?? "";
+        const phaseValidation = validateDelegationPromptForCurrentPhase({
+          currentPhaseKey,
+          workerName,
+          roleName: null,
+          prompt: normalizedObjective,
+          validationContract: null,
+          validationHeuristics: "prompt_only",
+        });
+        if (!phaseValidation.ok) {
+          return { ok: false, error: phaseValidation.error };
+        }
+
         const spawnPolicy = authorizeWorkerSpawnPolicy({ g });
         if (!spawnPolicy.ok) {
           return { ok: false, error: spawnPolicy.error };
         }
         const specialistModelId = spawnPolicy.resolvedModelId;
+        const delegationIntent: DelegationIntent = replacementSourceWorkerId ? "recovery" : "specialist";
+        const delegationMode: DelegationMode = replacementSourceWorkerId ? "recovery" : "bounded_parallel";
+        const delegationContract = buildCoordinatorDelegationContract({
+          graph: g,
+          workerId: `worker_${workerName.replace(/[^a-zA-Z0-9_-]/g, "_")}_${Date.now()}`,
+          phaseKey: currentPhaseKey,
+          workerName,
+          intent: delegationIntent,
+          mode: delegationMode,
+          scopeKind: replacementSourceWorkerId ? "worker" : "phase",
+          scopeKey: replacementSourceWorkerId ? `worker:${replacementSourceWorkerId}` : `phase:${currentPhaseKey || "unknown"}`,
+          scopeLabel: currentPhase?.name ?? roleDef.name,
+          metadata: {
+            requestedByWorkerId: requestedByWorkerId?.trim() || null,
+            role: roleDef.name,
+          },
+        });
+        const conflictingContract = hasConflictingDelegationContract({
+          graph: g,
+          contract: delegationContract,
+        });
+        if (conflictingContract) {
+          return {
+            ok: false,
+            error:
+              `Delegation scope '${delegationContract.scope.key}' is already owned by active ${conflictingContract.mode} delegation ` +
+              `(${conflictingContract.workerIntent}). Wait for it to finish or recover explicitly before spawning more work in the same scope.`,
+          };
+        }
 
         const { workerId, step, roleName, modelId: spawnedModelId, toolProfile } = spawnWorkerStep({
+          stepKey: delegationContract.activeWorkerIds[0],
           name: workerName,
           modelId: specialistModelId,
           prompt: normalizedObjective,
@@ -2404,7 +2730,8 @@ export function createCoordinatorToolSet(deps: {
           specialistRequest: {
             requestedBy: requestedByWorkerId?.trim() || null,
             reason: normalizedReason
-          }
+          },
+          delegationContract,
         });
 
         const specialistDescriptor = resolveModelDescriptor(spawnedModelId);
@@ -2423,6 +2750,25 @@ export function createCoordinatorToolSet(deps: {
         });
 
         if (step) {
+          const finalizedDelegationContract = updateDelegationContract(delegationContract, {
+            activeWorkerIds: [workerId],
+            status: "active",
+            launchState: "waiting_on_worker",
+            metadata: {
+              ...(delegationContract.metadata ?? {}),
+              requestedByWorkerId: requestedByWorkerId?.trim() || null,
+            },
+          });
+          applyDelegationContractToStep({
+            stepId: step.id,
+            contract: finalizedDelegationContract,
+          });
+          persistDelegationContract({
+            contract: finalizedDelegationContract,
+            stepId: step.id,
+            reason: "delegation_contract_created",
+            action: "created",
+          });
           onDagMutation({
             runId,
             mutation: { type: "step_added", step },
@@ -2462,7 +2808,12 @@ export function createCoordinatorToolSet(deps: {
           role: roleName,
           stepId: step?.id ?? null,
           toolProfile,
-          replacementForWorkerId: replacementSourceWorkerId
+          replacementForWorkerId: replacementSourceWorkerId,
+          delegationContract: updateDelegationContract(delegationContract, {
+            activeWorkerIds: [workerId],
+            status: "active",
+            launchState: "waiting_on_worker",
+          }),
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -3705,7 +4056,7 @@ export function createCoordinatorToolSet(deps: {
 
   const memory_search = tool({
     description:
-      "Search project memory for relevant patterns, prior decisions, gotchas, or mission knowledge from earlier work.",
+      "Search project memory BEFORE starting work that might repeat past mistakes. Use at mission start for orientation, before architectural decisions, before writing worker briefs on unfamiliar subsystems, and when you hit unexpected behavior that might be a known gotcha. Do NOT search for things discoverable via get_project_context, read_file, search_files, or git history.",
     inputSchema: z.object({
       query: z.string().describe("Search query for relevant memory"),
       scope: z.enum(["project", "agent", "mission"]).optional().describe("Optional scope filter"),
@@ -3759,10 +4110,24 @@ export function createCoordinatorToolSet(deps: {
   });
 
   const memory_add = tool({
-    description:
-      "Persist a durable discovery to project memory so future missions, coordinators, and workers can reuse it.",
+    description: `Persist a durable insight to project memory. Quality bar: "Would a developer joining this project find this useful on their first day?" If not, do not save it.
+
+GOOD memories (save these):
+- "Convention: always use snake_case for database columns — the ORM breaks with camelCase"
+- "Decision: chose PostgreSQL over MongoDB because we need ACID transactions for payment processing"
+- "Pitfall: the CI pipeline silently skips tests if the test file doesn't match *.test.ts pattern"
+- "Pattern: all API routes must call validateSession() before accessing req.user — middleware doesn't cover /internal/* paths"
+
+BAD memories (never save these):
+- File paths, doc paths, or directory listings (derivable from the project)
+- Raw error messages or stack traces without a lesson learned
+- Task/mission progress, status updates, or session metadata
+- Things findable via git log, git blame, or reading existing code
+- Obvious patterns already visible in the codebase
+
+Format: Lead with the concrete rule or fact, then brief context for WHY. One actionable insight per memory.`,
     inputSchema: z.object({
-      content: z.string().describe("The discovery, decision, pattern, or gotcha to remember"),
+      content: z.string().describe("A single actionable insight — lead with the rule/fact, then brief WHY"),
       category: z.enum(["fact", "convention", "pattern", "decision", "gotcha", "preference"]).describe("Memory category"),
       scope: z.enum(["project", "agent", "mission"]).optional().default("project").describe("Where to store the memory"),
       scopeOwnerId: z.string().optional().describe("Optional explicit owner id for agent/mission scope"),
@@ -5868,6 +6233,10 @@ export function createCoordinatorToolSet(deps: {
         if (planningInputBlockReason) {
           return { ok: false, error: planningInputBlockReason };
         }
+        const planningQuestionPolicyBlockReason = getPlanningQuestionPolicyBlockReason(g);
+        if (planningQuestionPolicyBlockReason) {
+          return { ok: false, error: planningQuestionPolicyBlockReason };
+        }
         const teamRuntime = resolveTeamRuntimeConfig(g);
 
         // Hard constraint: allowSubAgents must be enabled
@@ -5916,6 +6285,24 @@ export function createCoordinatorToolSet(deps: {
         if (normalizedRole.length > 0 && !resolveRoleDefinition(teamRuntime, normalizedRole)) {
           return { ok: false, error: `Unknown role '${normalizedRole}' in active team template.` };
         }
+        const missionPhases = resolveMissionPhases(g);
+        const phaseContext = resolveConfiguredPhaseContext(g, missionPhases);
+        if (!phaseContext.ok) {
+          return { ok: false, error: phaseContext.error };
+        }
+        const currentPhase = phaseContext.currentPhase;
+        const currentPhaseKey = currentPhase?.phaseKey.trim().toLowerCase() ?? "";
+        const phaseValidation = validateDelegationPromptForCurrentPhase({
+          currentPhaseKey,
+          workerName: name,
+          roleName: null,
+          prompt,
+          validationContract: null,
+          validationHeuristics: "prompt_only",
+        });
+        if (!phaseValidation.ok) {
+          return { ok: false, error: phaseValidation.error };
+        }
 
         // Budget hard cap check
         const budgetCheck = await checkBudgetHardCaps({
@@ -5932,18 +6319,52 @@ export function createCoordinatorToolSet(deps: {
           };
         }
 
+        const delegationContract = buildCoordinatorDelegationContract({
+          graph: g,
+          workerId: `worker_${name.replace(/[^a-zA-Z0-9_-]/g, "_")}_${Date.now()}`,
+          phaseKey: currentPhaseKey,
+          workerName: name,
+          intent: "subagent",
+          mode: "bounded_parallel",
+          scopeKind: "worker",
+          scopeKey: `worker:${parentWorkerId}:child:${name.trim().toLowerCase() || "child"}`,
+          scopeLabel: currentPhase?.name ?? parentWorkerId,
+          metadata: {
+            parentWorkerId,
+          },
+        });
+        const conflictingContract = hasConflictingDelegationContract({
+          graph: g,
+          contract: delegationContract,
+        });
+        if (conflictingContract) {
+          return {
+            ok: false,
+            error:
+              `Delegation scope '${delegationContract.scope.key}' is already owned by active ${conflictingContract.mode} delegation ` +
+              `(${conflictingContract.workerIntent}). Wait for it to finish before launching an overlapping child task.`,
+          };
+        }
+
         // Create child step via spawnWorkerStep with parent linkage
         const { workerId, step: newStep, roleName, modelId: spawnedModelId, toolProfile } = spawnWorkerStep({
+          stepKey: delegationContract.activeWorkerIds[0],
           name,
           modelId: resolvedModelId,
           prompt,
           dependsOn: [parentWorkerId],
           roleName: normalizedRole.length > 0 ? normalizedRole : null,
           laneId: parentStep.laneId ?? null,
+          delegationContract,
         });
 
         // Attach parent linkage metadata to the new step
         if (newStep) {
+          const finalizedDelegationContract = updateDelegationContract(delegationContract, {
+            activeWorkerIds: [workerId],
+            status: "active",
+            launchState: "waiting_on_worker",
+          });
           orchestratorService.updateStepMetadata({
             runId,
             stepId: newStep.id,
@@ -5951,7 +6372,14 @@ export function createCoordinatorToolSet(deps: {
               parentWorkerId,
               parentStepId: parentStep.id,
               isSubAgent: true,
+              delegationContract: finalizedDelegationContract,
             },
+          });
+          persistDelegationContract({
+            contract: finalizedDelegationContract,
+            stepId: newStep.id,
+            reason: "delegation_contract_created",
+            action: "created",
           });
 
           onDagMutation({
@@ -6027,6 +6455,11 @@ export function createCoordinatorToolSet(deps: {
           provider: resolvedProvider,
           role: roleName,
           toolProfile,
+          delegationContract: updateDelegationContract(delegationContract, {
+            activeWorkerIds: [workerId],
+            status: "active",
+            launchState: "waiting_on_worker",
+          }),
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -6056,6 +6489,10 @@ export function createCoordinatorToolSet(deps: {
         const planningInputBlockReason = getPlanningInputBlockReason(g);
         if (planningInputBlockReason) {
           return { ok: false, error: planningInputBlockReason };
+        }
+        const planningQuestionPolicyBlockReason = getPlanningQuestionPolicyBlockReason(g);
+        if (planningQuestionPolicyBlockReason) {
+          return { ok: false, error: planningQuestionPolicyBlockReason };
         }
         const teamRuntime = resolveTeamRuntimeConfig(g);
 
@@ -6095,6 +6532,15 @@ export function createCoordinatorToolSet(deps: {
           };
         }
 
+        const missionPhases = resolveMissionPhases(g);
+        const phaseContext = resolveConfiguredPhaseContext(g, missionPhases);
+        if (!phaseContext.ok) {
+          return { ok: false, error: phaseContext.error };
+        }
+        const currentPhase = phaseContext.currentPhase;
+        const currentPhaseKey = currentPhase?.phaseKey.trim().toLowerCase() ?? "";
+        const batchId = `delegation_batch_${Date.now()}`;
+
         const validatedTasks: Array<{
           name: string;
           prompt: string;
@@ -6103,6 +6549,7 @@ export function createCoordinatorToolSet(deps: {
           resolvedModelId: string;
           provider: string;
           toolProfile: Record<string, unknown> | null;
+          delegationContract: DelegationContract;
         }> = [];
 
         for (let i = 0; i < tasks.length; i += 1) {
@@ -6114,6 +6561,17 @@ export function createCoordinatorToolSet(deps: {
           }
           if (!taskPrompt.length) {
             return { ok: false, error: `tasks[${i}].prompt is required.` };
+          }
+          const phaseValidation = validateDelegationPromptForCurrentPhase({
+            currentPhaseKey,
+            workerName: taskName,
+            roleName: null,
+            prompt: taskPrompt,
+            validationContract: null,
+            validationHeuristics: "prompt_only",
+          });
+          if (!phaseValidation.ok) {
+            return { ok: false, error: phaseValidation.error };
           }
           const normalizedRole = typeof rawTask.role === "string" && rawTask.role.trim().length > 0
             ? rawTask.role.trim()
@@ -6142,6 +6600,35 @@ export function createCoordinatorToolSet(deps: {
             };
           }
 
+          const delegationContract = buildCoordinatorDelegationContract({
+            graph: g,
+            workerId: `worker_${taskName.replace(/[^a-zA-Z0-9_-]/g, "_")}_${Date.now()}_${i + 1}`,
+            phaseKey: currentPhaseKey,
+            workerName: taskName,
+            intent: "parallel_subtasks",
+            mode: "bounded_parallel",
+            scopeKind: "batch",
+            scopeKey: `worker:${parentWorkerId}:batch:${batchId}:task:${taskName.trim().toLowerCase() || i + 1}`,
+            scopeLabel: currentPhase?.name ?? parentWorkerId,
+            batchId,
+            metadata: {
+              parentWorkerId,
+              taskIndex: i,
+            },
+          });
+          const conflictingContract = hasConflictingDelegationContract({
+            graph: g,
+            contract: delegationContract,
+          });
+          if (conflictingContract) {
+            return {
+              ok: false,
+              error:
+                `Delegation scope '${delegationContract.scope.key}' is already owned by active ${conflictingContract.mode} delegation ` +
+                `(${conflictingContract.workerIntent}). Wait for it to finish before launching an overlapping child task.`,
+            };
+          }
+
           validatedTasks.push({
             name: taskName,
             prompt: taskPrompt,
@@ -6150,6 +6637,7 @@ export function createCoordinatorToolSet(deps: {
             resolvedModelId: spawnPolicy.resolvedModelId,
             provider,
             toolProfile: normalizedRole ? resolveRoleToolProfile(teamRuntime, normalizedRole) : null,
+            delegationContract,
           });
         }
 
@@ -6162,19 +6650,27 @@ export function createCoordinatorToolSet(deps: {
           provider: string;
           role: string | null;
           toolProfile: Record<string, unknown> | null;
+          delegationContract: DelegationContract;
         }> = [];
 
         for (const task of validatedTasks) {
           const { workerId, step: childStep, roleName, modelId: spawnedModelId, toolProfile } = spawnWorkerStep({
+            stepKey: task.delegationContract.activeWorkerIds[0],
             name: task.name,
             modelId: task.resolvedModelId,
             prompt: task.prompt,
             dependsOn: [parentWorkerId],
             roleName: task.normalizedRole,
             laneId: parentStep.laneId ?? null,
+            delegationContract: task.delegationContract,
           });
 
           if (childStep) {
+            const finalizedDelegationContract = updateDelegationContract(task.delegationContract, {
+              activeWorkerIds: [workerId],
+              status: "active",
+              launchState: "waiting_on_worker",
+            });
             orchestratorService.updateStepMetadata({
               runId,
               stepId: childStep.id,
@@ -6182,7 +6678,14 @@ export function createCoordinatorToolSet(deps: {
                 parentWorkerId,
                 parentStepId: parentStep.id,
                 isSubAgent: true,
+                delegationContract: finalizedDelegationContract,
               },
+            });
+            persistDelegationContract({
+              contract: finalizedDelegationContract,
+              stepId: childStep.id,
+              reason: "delegation_contract_created",
+              action: "created",
             });
 
             onDagMutation({
@@ -6212,6 +6715,11 @@ export function createCoordinatorToolSet(deps: {
             provider: task.provider,
             role: roleName,
             toolProfile: toolProfile ?? task.toolProfile,
+            delegationContract: updateDelegationContract(task.delegationContract, {
+              activeWorkerIds: [workerId],
+              status: "active",
+              launchState: "waiting_on_worker",
+            }),
           });
         }
 
@@ -6241,7 +6749,6 @@ export function createCoordinatorToolSet(deps: {
           return count + (hasRunningAttempt ? 1 : 0);
         }, 0);
 
-        const batchId = `delegation_batch_${Date.now()}`;
         logger.info("coordinator.delegate_parallel", {
           batchId,
           parentWorkerId,
@@ -6259,6 +6766,7 @@ export function createCoordinatorToolSet(deps: {
           pendingCount: Math.max(0, createdChildren.length - launchedCount),
           ...(launchNote ? { launchNote } : {}),
           children: createdChildren,
+          delegationContracts: createdChildren.map((child) => child.delegationContract),
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
