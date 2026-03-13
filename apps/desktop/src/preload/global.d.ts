@@ -163,10 +163,12 @@ import type {
   LinearRouteDecision,
   LinearSyncDashboard,
   LinearSyncQueueItem,
+  LinearWorkflowRunDetail,
   LinearIngressEventRecord,
   LinearIngressStatus,
   LinearWorkflowCatalog,
   LinearWorkflowEventPayload,
+  CtoGetLinearWorkflowRunDetailArgs,
   CtoResolveLinearSyncQueueItemArgs,
   CtoEnsureLinearWebhookArgs,
   CtoListLinearIngressEventsArgs,
@@ -1098,6 +1100,7 @@ declare global {
         getLinearSyncDashboard: () => Promise<LinearSyncDashboard>;
         runLinearSyncNow: () => Promise<LinearSyncDashboard>;
         listLinearSyncQueue: () => Promise<LinearSyncQueueItem[]>;
+        getLinearWorkflowRunDetail: (args: CtoGetLinearWorkflowRunDetailArgs) => Promise<LinearWorkflowRunDetail | null>;
         resolveLinearSyncQueueItem: (args: CtoResolveLinearSyncQueueItemArgs) => Promise<LinearSyncQueueItem | null>;
         getLinearWorkflowCatalog: () => Promise<LinearWorkflowCatalog>;
         getLinearIngressStatus: () => Promise<LinearIngressStatus>;

@@ -3692,15 +3692,18 @@ export function createAgentChatService(args: {
     modelId?: string | null;
     reasoningEffort?: string | null;
     permissionMode?: AgentChatSession["permissionMode"];
+    reuseExisting?: boolean;
   }): Promise<AgentChatSession> => {
     const laneId = args.laneId.trim();
     if (!laneId.length) {
       throw new Error("laneId is required to ensure an identity-bound chat session.");
     }
 
-    const existing = (await listSessions())
-      .filter((entry) => entry.identityKey === args.identityKey)
-      .sort((a, b) => Date.parse(b.lastActivityAt) - Date.parse(a.lastActivityAt));
+    const existing = args.reuseExisting === false
+      ? []
+      : (await listSessions())
+          .filter((entry) => entry.identityKey === args.identityKey)
+          .sort((a, b) => Date.parse(b.lastActivityAt) - Date.parse(a.lastActivityAt));
 
     const preferred = existing.find((entry) => entry.laneId === laneId) ?? existing[0] ?? null;
     if (preferred) {

@@ -54,6 +54,13 @@ const TABS: { id: TabId; label: string; icon: React.ElementType }[] = [
   { id: "settings", label: "Settings", icon: Gear },
 ];
 
+function splitTrimmed(value: string): string[] {
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
 /* ── Main Page ── */
 
 export function CtoPage() {
@@ -297,11 +304,19 @@ export function CtoPage() {
     return () => { cancelled = true; };
   }, [activeTab, laneId, needsOnboarding, onboardingState, selectedAgentId, showOnboarding]);
 
-  // Deep link to linear-sync
+  // Deep links for guided setup flows
   useEffect(() => {
-    if (window.location.hash.toLowerCase().includes("linear-sync")) {
-      setActiveTab("linear");
-    }
+    const syncHash = () => {
+      const hash = window.location.hash.toLowerCase();
+      if (hash.includes("linear-sync")) {
+        setActiveTab("linear");
+      } else if (hash.includes("team-setup")) {
+        setActiveTab("team");
+      }
+    };
+    syncHash();
+    window.addEventListener("hashchange", syncHash);
+    return () => window.removeEventListener("hashchange", syncHash);
   }, []);
 
   useEffect(() => {
@@ -367,6 +382,19 @@ export function CtoPage() {
             heartbeat,
             maxConcurrentRuns: Math.max(1, Math.min(10, Math.floor(workerDraft.maxConcurrentRuns || 1))),
           },
+          ...(
+            splitTrimmed(workerDraft.linearUserIds).length
+            || splitTrimmed(workerDraft.linearDisplayNames).length
+            || splitTrimmed(workerDraft.linearAliases).length
+              ? {
+                  linearIdentity: {
+                    userIds: splitTrimmed(workerDraft.linearUserIds),
+                    displayNames: splitTrimmed(workerDraft.linearDisplayNames),
+                    aliases: splitTrimmed(workerDraft.linearAliases),
+                  },
+                }
+              : {}
+          ),
           externalMcpAccess: {
             allowAll: workerDraft.externalMcpAllowAll,
             allowedServers: workerDraft.externalMcpAllowedServers,
@@ -689,7 +717,7 @@ export function CtoPage() {
                   <UsersThree size={48} weight="thin" className="text-muted-fg/20 mb-4" />
                   <div className="font-sans text-sm font-bold text-fg">Your Team</div>
                   <div className="font-mono text-[10px] text-muted-fg/50 mt-1 text-center max-w-[40ch]">
-                    Hire workers to handle tasks autonomously. Start from a template or configure from scratch.
+                    Hire workers to handle tasks autonomously. Start from a template or configure from scratch, then map their Linear identities so assignee-based workflows can route issues to them.
                   </div>
                   <Button variant="primary" className="mt-4" onClick={handleHireWorker}>
                     Hire Worker
@@ -703,7 +731,7 @@ export function CtoPage() {
                         <div>
                           <div className="font-sans text-sm font-bold text-fg">Department Overview</div>
                           <div className="mt-1 font-mono text-[10px] text-muted-fg/60">
-                            Pick a worker from the sidebar to inspect details, or hire a new teammate.
+                            Pick a worker from the sidebar to inspect details, hire a new teammate, or edit Linear identity mappings so CTO &gt; Linear can route assignee-based workflows correctly.
                           </div>
                         </div>
                         <Button variant="outline" size="sm" onClick={handleHireWorker}>

@@ -38,14 +38,6 @@ function formatDate(iso: string): string {
   }
 }
 
-function splitTrimmed(val: string): string[] {
-  return val.split(",").map((s) => s.trim()).filter(Boolean);
-}
-
-function dollars(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
-}
-
 /* ── Worker Editor Draft ── */
 
 export type WorkerEditorDraft = {
@@ -55,6 +47,9 @@ export type WorkerEditorDraft = {
   title: string;
   reportsTo: string;
   capabilities: string;
+  linearUserIds: string;
+  linearDisplayNames: string;
+  linearAliases: string;
   adapterType: AdapterType;
   model: string;
   webhookUrl: string;
@@ -86,6 +81,9 @@ export function workerDraftFromAgent(agent?: AgentIdentity | null): WorkerEditor
     title: agent?.title ?? "",
     reportsTo: agent?.reportsTo ?? "",
     capabilities: (agent?.capabilities ?? []).join(", "),
+    linearUserIds: (agent?.linearIdentity?.userIds ?? []).join(", "),
+    linearDisplayNames: (agent?.linearIdentity?.displayNames ?? []).join(", "),
+    linearAliases: (agent?.linearIdentity?.aliases ?? []).join(", "),
     adapterType: agent?.adapterType ?? "claude-local",
     model: typeof adapterConfig.model === "string" ? adapterConfig.model : "",
     webhookUrl: typeof adapterConfig.url === "string" ? adapterConfig.url : "",
@@ -179,6 +177,44 @@ export function WorkerEditorPanel({
         <div className={labelCls}>Capabilities</div>
         <input className={inputCls} placeholder="api, db, react-native (comma-separated)" value={draft.capabilities} onChange={(e) => setDraft((d) => ({ ...d, capabilities: e.target.value }))} />
       </label>
+
+      <div className="border border-border/10 bg-card/60 p-3 space-y-3">
+        <div>
+          <div className={labelCls}>Linear Identity Matching</div>
+          <div className="mt-1 font-mono text-[10px] text-muted-fg/60">
+            These values let CTO &gt; Linear match real Linear assignees back to this ADE employee. Use the Linear user id, display name, or any aliases you expect in webhook payloads.
+          </div>
+        </div>
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          <label className="space-y-1">
+            <div className={labelCls}>Linear User IDs</div>
+            <input
+              className={inputCls}
+              placeholder="user-123, user-456"
+              value={draft.linearUserIds}
+              onChange={(e) => setDraft((d) => ({ ...d, linearUserIds: e.target.value }))}
+            />
+          </label>
+          <label className="space-y-1">
+            <div className={labelCls}>Display Names</div>
+            <input
+              className={inputCls}
+              placeholder="Alex Johnson, A. Johnson"
+              value={draft.linearDisplayNames}
+              onChange={(e) => setDraft((d) => ({ ...d, linearDisplayNames: e.target.value }))}
+            />
+          </label>
+          <label className="space-y-1">
+            <div className={labelCls}>Aliases</div>
+            <input
+              className={inputCls}
+              placeholder="alex, backend-oncall"
+              value={draft.linearAliases}
+              onChange={(e) => setDraft((d) => ({ ...d, linearAliases: e.target.value }))}
+            />
+          </label>
+        </div>
+      </div>
 
       <div className="grid grid-cols-2 gap-3">
         <label className="space-y-1">

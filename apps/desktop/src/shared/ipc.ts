@@ -481,6 +481,7 @@ export const IPC = {
   ctoGetLinearSyncDashboard: "ade.cto.getLinearSyncDashboard",
   ctoRunLinearSyncNow: "ade.cto.runLinearSyncNow",
   ctoListLinearSyncQueue: "ade.cto.listLinearSyncQueue",
+  ctoGetLinearWorkflowRunDetail: "ade.cto.getLinearWorkflowRunDetail",
   ctoResolveLinearSyncQueueItem: "ade.cto.resolveLinearSyncQueueItem",
   ctoGetLinearIngressStatus: "ade.cto.getLinearIngressStatus",
   ctoListLinearIngressEvents: "ade.cto.listLinearIngressEvents",

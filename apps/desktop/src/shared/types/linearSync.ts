@@ -1,5 +1,5 @@
 import type { AgentChatIdentityKey } from "./chat";
-import type { PrStrategy } from "./prs";
+import type { PrChecksStatus, PrReviewStatus, PrState, PrStrategy } from "./prs";
 
 export type LinearIssueStateKey = "todo" | "in_progress" | "in_review" | "done" | "canceled" | "blocked";
 
@@ -20,6 +20,14 @@ export type LinearWorkflowTargetType =
   | "pr_resolution"
   | "review_gate";
 
+export type LinearWorkflowLaneSelection = "primary" | "fresh_issue_lane";
+
+export type LinearWorkflowSessionReuse = "reuse_existing" | "fresh_session";
+
+export type LinearWorkflowPrTiming = "none" | "after_start" | "after_target_complete";
+
+export type LinearWorkflowReviewRejectionAction = "cancel" | "reopen_issue" | "loop_back";
+
 export type LinearWorkflowTarget = {
   type: LinearWorkflowTargetType;
   workerSelector?: LinearWorkflowWorkerSelector;
@@ -30,6 +38,10 @@ export type LinearWorkflowTarget = {
   runMode?: "autopilot" | "assisted" | "manual" | (string & {});
   phaseProfile?: string | null;
   prStrategy?: PrStrategy | null;
+  prTiming?: LinearWorkflowPrTiming;
+  laneSelection?: LinearWorkflowLaneSelection;
+  sessionReuse?: LinearWorkflowSessionReuse;
+  freshLaneName?: string | null;
   downstreamTarget?: Omit<LinearWorkflowTarget, "downstreamTarget"> | null;
 };
 
@@ -126,6 +138,9 @@ export type LinearWorkflowStep = {
   mode?: "links" | "attachments";
   targetStatus?: "completed" | "failed" | "cancelled" | "any_terminal";
   notifyOn?: "delegated" | "pr_linked" | "review_ready" | "completed" | "failed";
+  reviewerIdentityKey?: AgentChatIdentityKey;
+  rejectAction?: LinearWorkflowReviewRejectionAction;
+  loopToStepId?: string | null;
 };
 
 export type LinearWorkflowDefinition = {
@@ -274,11 +289,18 @@ export type LinearWorkflowRun = {
   status: LinearWorkflowRunStatus;
   currentStepIndex: number;
   currentStepId: string | null;
+  executionLaneId: string | null;
   linkedMissionId: string | null;
   linkedSessionId: string | null;
   linkedWorkerRunId: string | null;
   linkedPrId: string | null;
-  reviewState: "pending" | "approved" | "rejected" | null;
+  reviewState: "pending" | "approved" | "rejected" | "changes_requested" | null;
+  supervisorIdentityKey: AgentChatIdentityKey | null;
+  reviewReadyReason: NonNullable<LinearWorkflowCloseoutPolicy["reviewReadyWhen"]> | "supervisor_approved" | null;
+  prState: PrState | null;
+  prChecksStatus: PrChecksStatus | null;
+  prReviewStatus: PrReviewStatus | null;
+  latestReviewNote: string | null;
   retryCount: number;
   retryAfter: string | null;
   closeoutState: "pending" | "applied" | "failed";
@@ -294,6 +316,7 @@ export type LinearWorkflowRunStep = {
   runId: string;
   workflowStepId: string;
   type: LinearWorkflowStepType;
+  name?: string;
   status: "pending" | "running" | "waiting" | "completed" | "failed" | "skipped";
   startedAt: string | null;
   completedAt: string | null;
@@ -331,7 +354,7 @@ export type LinearWorkflowEventPayload =
       workflowId: string;
       workflowName: string;
       status: LinearWorkflowRunStatus;
-      milestone: "matched" | "delegated" | "pr_linked" | "review_ready" | "completed" | "failed";
+      milestone: "matched" | "delegated" | "supervisor_handoff" | "pr_linked" | "review_ready" | "completed" | "failed";
       message: string;
       linkedPrId?: string | null;
       linkedSessionId?: string | null;
@@ -573,20 +596,45 @@ export type LinearSyncQueueItem = {
   workflowId: string;
   workflowName: string;
   targetType: LinearWorkflowTargetType;
+  laneId: string | null;
   workerId: string | null;
   workerSlug: string | null;
   missionId: string | null;
   sessionId: string | null;
   workerRunId: string | null;
   prId: string | null;
+  prState: PrState | null;
+  prChecksStatus: PrChecksStatus | null;
+  prReviewStatus: PrReviewStatus | null;
   currentStepId: string | null;
   currentStepLabel: string | null;
   reviewState: LinearWorkflowRun["reviewState"];
+  supervisorIdentityKey: AgentChatIdentityKey | null;
+  reviewReadyReason: LinearWorkflowRun["reviewReadyReason"];
+  latestReviewNote: string | null;
   attemptCount: number;
   nextAttemptAt: string | null;
   lastError: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type LinearWorkflowRunDetail = {
+  run: LinearWorkflowRun;
+  steps: LinearWorkflowRunStep[];
+  events: LinearWorkflowRunEvent[];
+  ingressEvents: LinearIngressEventRecord[];
+  issue: NormalizedLinearIssue | null;
+  reviewContext: {
+    reviewerIdentityKey: AgentChatIdentityKey | null;
+    rejectAction: LinearWorkflowReviewRejectionAction | null;
+    loopToStepId: string | null;
+    instructions: string | null;
+  } | null;
+};
+
+export type CtoGetLinearWorkflowRunDetailArgs = {
+  runId: string;
 };
 
 export type CtoResolveLinearSyncQueueItemArgs = {

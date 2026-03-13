@@ -1,8 +1,10 @@
 import type {
+  CtoGetLinearWorkflowRunDetailArgs,
   CtoResolveLinearSyncQueueItemArgs,
   LinearSyncDashboard,
   LinearSyncQueueItem,
   LinearWorkflowConfig,
+  LinearWorkflowRunDetail,
   NormalizedLinearIssue,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
@@ -314,9 +316,18 @@ export function createLinearSyncService(args: {
   };
 
   const resolveQueueItem = async (input: CtoResolveLinearSyncQueueItemArgs): Promise<LinearSyncQueueItem | null> => {
-    const run = await args.dispatcherService.resolveRunAction(input.queueItemId, input.action, input.note);
+    const policy = args.flowPolicyService.getPolicy();
+    const run = await args.dispatcherService.resolveRunAction(input.queueItemId, input.action, input.note, policy);
     if (!run) return null;
+    if (run.status !== "completed" && run.status !== "failed" && run.status !== "cancelled") {
+      await args.dispatcherService.advanceRun(run.id, policy);
+    }
     return args.dispatcherService.listQueue().find((entry) => entry.id === run.id) ?? null;
+  };
+
+  const getRunDetail = async (input: CtoGetLinearWorkflowRunDetailArgs): Promise<LinearWorkflowRunDetail | null> => {
+    const policy = args.flowPolicyService.getPolicy();
+    return args.dispatcherService.getRunDetail(input.runId, policy);
   };
 
   const dispose = () => {
@@ -349,6 +360,7 @@ export function createLinearSyncService(args: {
     getDashboard,
     listQueue,
     resolveQueueItem,
+    getRunDetail,
     dispose,
   };
 }

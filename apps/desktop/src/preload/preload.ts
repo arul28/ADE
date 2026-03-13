@@ -92,7 +92,9 @@ import type {
   LinearWorkflowCatalog,
   LinearSyncDashboard,
   LinearSyncQueueItem,
+  LinearWorkflowRunDetail,
   LinearWorkflowEventPayload,
+  CtoGetLinearWorkflowRunDetailArgs,
   CtoResolveLinearSyncQueueItemArgs,
   CtoEnsureLinearWebhookArgs,
   CtoListLinearIngressEventsArgs,
@@ -1611,6 +1613,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.ctoRunLinearSyncNow),
     listLinearSyncQueue: async (): Promise<LinearSyncQueueItem[]> =>
       ipcRenderer.invoke(IPC.ctoListLinearSyncQueue),
+    getLinearWorkflowRunDetail: async (args: CtoGetLinearWorkflowRunDetailArgs): Promise<LinearWorkflowRunDetail | null> =>
+      ipcRenderer.invoke(IPC.ctoGetLinearWorkflowRunDetail, args),
     resolveLinearSyncQueueItem: async (args: CtoResolveLinearSyncQueueItemArgs): Promise<LinearSyncQueueItem | null> =>
       ipcRenderer.invoke(IPC.ctoResolveLinearSyncQueueItem, args),
     getLinearIngressStatus: async (): Promise<LinearIngressStatus> =>

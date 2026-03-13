@@ -2231,11 +2231,18 @@ function migrate(db: Database) {
       status text not null,
       current_step_index integer not null default 0,
       current_step_id text,
+      execution_lane_id text,
       linked_mission_id text,
       linked_session_id text,
       linked_worker_run_id text,
       linked_pr_id text,
       review_state text,
+      supervisor_identity_key text,
+      review_ready_reason text,
+      pr_state text,
+      pr_checks_status text,
+      pr_review_status text,
+      latest_review_note text,
       retry_count integer not null default 0,
       retry_after text,
       closeout_state text not null default 'pending',
@@ -2246,6 +2253,13 @@ function migrate(db: Database) {
       updated_at text not null
     )
   `);
+  try { db.run("alter table linear_workflow_runs add column execution_lane_id text"); } catch {}
+  try { db.run("alter table linear_workflow_runs add column supervisor_identity_key text"); } catch {}
+  try { db.run("alter table linear_workflow_runs add column review_ready_reason text"); } catch {}
+  try { db.run("alter table linear_workflow_runs add column pr_state text"); } catch {}
+  try { db.run("alter table linear_workflow_runs add column pr_checks_status text"); } catch {}
+  try { db.run("alter table linear_workflow_runs add column pr_review_status text"); } catch {}
+  try { db.run("alter table linear_workflow_runs add column latest_review_note text"); } catch {}
   db.run("create index if not exists idx_linear_workflow_runs_project_status on linear_workflow_runs(project_id, status, updated_at)");
   db.run("create index if not exists idx_linear_workflow_runs_issue on linear_workflow_runs(project_id, issue_id, updated_at)");
 
