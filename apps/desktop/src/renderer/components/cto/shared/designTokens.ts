@@ -3,21 +3,21 @@ import type { AgentRole, AgentStatus, WorkerTemplate } from "../../../../shared/
 /* ── Shared form class patterns ── */
 
 export const inputCls =
-  "h-8 w-full rounded-md border border-white/[0.08] bg-white/[0.03] px-3 text-xs font-mono text-fg placeholder:text-muted-fg/50 focus:border-[#A78BFA]/40 focus:outline-none transition-colors";
+  "h-8 w-full rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 text-xs font-mono text-fg placeholder:text-muted-fg/40 hover:border-white/[0.12] focus:border-accent/40 focus:outline-none transition-colors";
 
 export const selectCls = `${inputCls} appearance-none`;
 
 export const labelCls =
-  "text-[10px] font-mono font-bold uppercase tracking-[1px] text-muted-fg/60";
+  "text-xs font-mono font-semibold uppercase tracking-[0.5px] text-muted-fg/70 mb-1.5";
 
 export const textareaCls =
-  "w-full rounded-md border border-white/[0.08] bg-white/[0.03] p-3 text-xs font-mono text-fg placeholder:text-muted-fg/50 focus:border-[#A78BFA]/40 focus:outline-none resize-vertical transition-colors";
+  "w-full rounded-lg border border-white/[0.08] bg-white/[0.03] p-3 text-xs font-mono text-fg placeholder:text-muted-fg/40 hover:border-white/[0.12] focus:border-accent/40 focus:outline-none resize-vertical transition-colors";
 
 export const cardCls =
-  "rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl";
+  "rounded-xl border border-white/[0.06] bg-white/[0.03] p-4 backdrop-blur-xl";
 
 export const surfaceCardCls =
-  "rounded-xl border border-white/[0.06] bg-white/[0.02] backdrop-blur-xl";
+  "rounded-xl border border-white/[0.06] bg-white/[0.02] p-4 backdrop-blur-xl";
 
 export const recessedPanelCls =
   "rounded-xl border border-white/[0.04] bg-white/[0.01] backdrop-blur-xl";

@@ -32,11 +32,11 @@ const AgentRow = React.memo(function AgentRow({
       onClick={() => onSelectAgent(agent.id)}
       data-testid={`worker-row-${agent.id}`}
       className={cn(
-        "group w-full text-left px-3 py-2 transition-all duration-100",
+        "group w-full text-left px-3 py-2.5 transition-all duration-150",
         "border-l-2",
         isSelected
-          ? "border-l-accent bg-accent/8"
-          : "border-l-transparent hover:bg-muted/40",
+          ? "border-l-accent bg-accent/12 backdrop-blur-sm"
+          : "border-l-transparent hover:bg-white/[0.04]",
       )}
       style={{ paddingLeft: `${12 + depth * 16}px` }}
     >
@@ -51,21 +51,21 @@ const AgentRow = React.memo(function AgentRow({
               {agent.name}
             </span>
             {budgetBreached && (
-              <span className="text-[9px] text-warning font-mono">$</span>
+              <span className="text-[10px] text-warning font-mono font-bold">$</span>
             )}
           </div>
           <div className="flex items-center gap-1.5 mt-0.5">
-            <span className="font-mono text-[9px] text-muted-fg">
+            <span className="font-mono text-[10px] text-muted-fg">
               {agent.role}
             </span>
-            <span className="text-border">·</span>
-            <span className="font-mono text-[9px] text-muted-fg/60">
+            <span className="text-white/[0.1]">·</span>
+            <span className="font-mono text-[10px] text-muted-fg/60">
               {agent.adapterType.replace("-local", "").replace("-webhook", "")}
             </span>
             {budgetInfo && (
               <>
-                <span className="text-border">·</span>
-                <span className="font-mono text-[9px] text-muted-fg/60">
+                <span className="text-white/[0.1]">·</span>
+                <span className="font-mono text-[10px] text-muted-fg/60">
                   {dollars(budgetInfo.spentMonthlyCents)}
                 </span>
               </>
@@ -91,9 +91,9 @@ const AgentSidebarBudgetFooter = React.memo(function AgentSidebarBudgetFooter({
   budgetSnapshot: AgentBudgetSnapshot | null;
 }) {
   return (
-    <div className="shrink-0 border-t border-border/40 px-3 py-2" data-testid="budget-company-row">
+    <div className="shrink-0 border-t border-white/[0.06] px-3 py-2.5" data-testid="budget-company-row">
       <div className="flex items-center justify-between">
-        <span className="font-mono text-[9px] text-muted-fg/50 uppercase">Budget</span>
+        <span className="font-mono text-[10px] text-muted-fg/60 uppercase tracking-wide">Budget</span>
         <span className="font-mono text-[10px] text-muted-fg">
           {dollars(budgetSnapshot?.companySpentMonthlyCents ?? 0)}
           {(budgetSnapshot?.companyBudgetMonthlyCents ?? 0) > 0
@@ -162,8 +162,8 @@ export const AgentSidebar = React.memo(function AgentSidebar({
       style={{ width: 240, minWidth: 240, background: "var(--gradient-surface)" }}
     >
       {/* Header */}
-      <div className="shrink-0 px-3 pt-3 pb-2">
-        <div className="font-mono text-[10px] font-bold uppercase tracking-[1px] text-muted-fg/60 mb-2">
+      <div className="shrink-0 px-3 pt-3 pb-1.5">
+        <div className="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-fg/50">
           Department
         </div>
       </div>
@@ -173,21 +173,21 @@ export const AgentSidebar = React.memo(function AgentSidebar({
         type="button"
         onClick={onSelectCto}
         className={cn(
-          "w-full text-left px-3 py-2.5 transition-all duration-100",
+          "w-full text-left px-3 py-2.5 transition-all duration-150",
           "border-l-2",
           isCtoSelected
-            ? "border-l-accent bg-accent/8"
-            : "border-l-transparent hover:bg-muted/40",
+            ? "border-l-accent bg-accent/12 backdrop-blur-sm"
+            : "border-l-transparent hover:bg-white/[0.04]",
         )}
       >
         <div className="flex items-center gap-2.5">
-          <div className="flex items-center justify-center w-7 h-7 bg-accent/12 border border-accent/20">
+          <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-accent/12 border border-accent/20">
             <Brain size={14} weight="duotone" className="text-accent" />
           </div>
           <div className="min-w-0 flex-1">
             <div className="font-sans text-xs font-bold text-fg">CTO</div>
             {ctoModelInfo && (
-              <div className="font-mono text-[9px] text-muted-fg/60 mt-0.5 truncate">
+              <div className="font-mono text-[10px] text-muted-fg/60 mt-0.5 truncate">
                 {ctoModelInfo.provider}/{ctoModelInfo.model}
               </div>
             )}
@@ -196,11 +196,11 @@ export const AgentSidebar = React.memo(function AgentSidebar({
       </button>
 
       {/* Separator */}
-      <div className="mx-3 my-1.5 border-t border-border/40" />
+      <div className="mx-3 my-1.5 border-t border-white/[0.06]" />
 
       {/* Workers header */}
-      <div className="flex items-center justify-between px-3 py-1">
-        <span className="font-mono text-[10px] font-bold uppercase tracking-[1px] text-muted-fg/60">
+      <div className="flex items-center justify-between px-3 py-1.5">
+        <span className="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-fg/50">
           Workers
         </span>
         <Button
@@ -217,13 +217,13 @@ export const AgentSidebar = React.memo(function AgentSidebar({
       {/* Worker tree */}
       <div className="flex-1 overflow-y-auto min-h-0" data-testid="worker-tree">
         {workerTree.length === 0 ? (
-          <div className="px-3 py-6 text-center">
-            <Robot size={24} className="mx-auto text-muted-fg/30 mb-2" />
-            <div className="font-mono text-[10px] text-muted-fg/50">No workers yet</div>
+          <div className="px-3 py-8 text-center">
+            <Robot size={28} className="mx-auto text-muted-fg/20 mb-3" />
+            <div className="font-sans text-xs text-muted-fg/50">No workers yet</div>
             <button
               type="button"
               onClick={onHireWorker}
-              className="mt-2 font-mono text-[10px] text-accent hover:text-accent/80 transition-colors"
+              className="mt-2 font-mono text-xs text-accent hover:text-accent/80 transition-colors"
             >
               Hire your first worker
             </button>

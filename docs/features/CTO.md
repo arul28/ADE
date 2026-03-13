@@ -83,17 +83,57 @@ The sidebar is now treated like a stable renderer leaf:
 
 ADE now treats Linear as two related but distinct capabilities:
 
-1. **sync and dispatch**
-2. **optional realtime ingress**
+1. **sync and dispatch** — the core workflow engine
+2. **optional realtime ingress** — lower-latency webhook delivery
 
 ### Connection model
 
 The connection panel supports:
 
-- personal API key connection
+- personal API key connection (recommended first path)
 - OAuth connection when `.ade/secrets/linear-oauth.v1.json` is configured
 
-The current product recommendation is API key first, OAuth second.
+### Workflow engine
+
+The Linear workflow engine is now a full-featured dispatch and execution system. Workflows are defined visually or as YAML and fire when **both** an assignee match AND a workflow label match occur on a Linear issue.
+
+Supported workflow targets:
+
+- **employee_session** — direct CTO or mapped employee chat with issue context
+- **worker_run** — delegated isolated worker in a fresh lane
+- **mission** — broader multi-step ADE mission
+- **pr_resolution** — PR-focused automation
+- **review_gate** — manual approval-only gate
+
+Each workflow supports:
+
+- configurable trigger conditions (assignee + label, project slugs, team keys)
+- execution plan steps (state transitions, launch, wait, PR linking, notification)
+- supervisor review paths (after work, before PR, after PR)
+- reject behaviors (loop back, reopen issue, cancel)
+- closeout with configurable success/failure Linear states
+- simulation for testing before going live
+
+### Employee and team routing
+
+Workflows can route to any configured ADE employee, not just the CTO. The Team panel maps ADE workers to Linear identities (user IDs, display names, aliases) so assignee-based workflows can match the right person. This enables:
+
+- direct CTO sessions for CTO-assigned issues
+- fresh-lane supervised worker runs for delegated implementation
+- arbitrary employee routing based on Linear assignee matching
+
+### Supervisor review
+
+The supervisor path is a first-class workflow behavior. A workflow can insert a `request_human_review` step after work, before PR, or after PR. The run pauses in `awaiting_human_review` and exposes approve/reject actions. Reject can loop back to rework, reopen the Linear issue, or cancel the workflow. The renderer surfaces review context and action buttons in the Run Timeline panel.
+
+### Run observability
+
+Each workflow run is observable through:
+
+- the "Watch It Live" monitor (4-stage story)
+- per-run timeline with ingress events, step execution, and review decisions
+- queue dashboard with status counts
+- run detail with lane/session/PR/supervisor state
 
 ### Sync loop
 

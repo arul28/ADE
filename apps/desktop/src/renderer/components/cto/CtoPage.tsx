@@ -604,32 +604,32 @@ export function CtoPage() {
         )}
 
         {/* Tab bar */}
-        <div className={shellTabBarCls} style={{ minHeight: 36 }}>
+        <div className={shellTabBarCls} style={{ minHeight: 40 }}>
           {TABS.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               type="button"
               onClick={() => setActiveTab(id)}
               className={cn(
-                "flex items-center gap-1.5 px-4 py-2 font-mono text-[10px] font-bold uppercase tracking-[1px] transition-all duration-100 border-b-2",
+                "flex items-center gap-2 px-4 py-2.5 font-mono text-xs font-semibold uppercase tracking-wide transition-all duration-150 border-b-2",
                 activeTab === id
                   ? "border-b-accent text-accent"
-                  : "border-b-transparent text-muted-fg hover:text-fg",
+                  : "border-b-transparent text-muted-fg/60 hover:text-fg",
               )}
             >
-              <Icon size={12} weight={activeTab === id ? "bold" : "regular"} />
+              <Icon size={14} weight={activeTab === id ? "bold" : "regular"} />
               {label}
             </button>
           ))}
 
           {/* Right side: agent context */}
-          <div className="ml-auto flex items-center gap-2 pr-4">
+          <div className="ml-auto flex items-center gap-2.5 pr-4">
             {session && (
-              <Chip className={cn("text-[9px]", session.capabilityMode === "full_mcp" ? "text-success" : "text-warning")} data-testid="cto-capability-badge">
+              <Chip className={cn("text-[10px]", session.capabilityMode === "full_mcp" ? "text-success" : "text-warning")} data-testid="cto-capability-badge">
                 {capabilityLabel(session.capabilityMode)}
               </Chip>
             )}
-            <span className="font-mono text-[10px] text-muted-fg/50">
+            <span className="font-mono text-xs text-muted-fg/50">
               {selectedWorker ? selectedWorker.name : "CTO"}
             </span>
           </div>
@@ -641,20 +641,20 @@ export function CtoPage() {
           {activeTab === "chat" && (
             <div className="flex flex-col h-full min-h-0">
               {/* Chat header */}
-              <div className="shrink-0 px-4 py-2.5 border-b border-white/[0.06] bg-white/[0.03] backdrop-blur-xl">
+              <div className="shrink-0 px-4 py-3 border-b border-white/[0.06] bg-white/[0.02] backdrop-blur-xl">
                 <div className="flex items-center gap-2">
                   <Brain size={14} className="text-accent" />
-                  <span className="font-sans text-xs font-bold text-fg">
+                  <span className="font-sans text-sm font-semibold text-fg">
                     {selectedWorker ? selectedWorker.name : "CTO"} Chat
                   </span>
                 </div>
-                <div className="font-mono text-[10px] text-muted-fg/50 mt-0.5">
+                <div className="font-mono text-xs text-muted-fg/50 mt-1">
                   {laneId
                     ? (selectedWorker ? `Direct chat with ${selectedWorker.name}` : "Persistent CTO session is locked to this project context.")
                     : "Create a lane to start CTO chat."}
                 </div>
                 {openclawStatus && (
-                  <div className="mt-1 font-mono text-[10px] text-muted-fg/60">
+                  <div className="mt-1.5 font-mono text-xs text-muted-fg/60">
                     OpenClaw:{" "}
                     <span className={cn(
                       openclawStatus.state === "connected"
@@ -668,8 +668,8 @@ export function CtoPage() {
                     {openclawStatus.lastMessageAt ? ` · last bridge activity ${new Date(openclawStatus.lastMessageAt).toLocaleTimeString()}` : ""}
                   </div>
                 )}
-                {loading && <div className="font-mono text-[10px] text-muted-fg mt-1" data-testid="cto-loading">Connecting session...</div>}
-                {error && <div className="font-mono text-[10px] text-error mt-1" data-testid="cto-error">{error}</div>}
+                {loading && <div className="font-mono text-xs text-muted-fg mt-1" data-testid="cto-loading">Connecting session...</div>}
+                {error && <div className="font-mono text-xs text-error mt-1" data-testid="cto-error">{error}</div>}
               </div>
 
               {/* Chat pane */}
@@ -714,9 +714,9 @@ export function CtoPage() {
                 </div>
               ) : agents.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full p-8">
-                  <UsersThree size={48} weight="thin" className="text-muted-fg/20 mb-4" />
-                  <div className="font-sans text-sm font-bold text-fg">Your Team</div>
-                  <div className="font-mono text-[10px] text-muted-fg/50 mt-1 text-center max-w-[40ch]">
+                  <UsersThree size={48} weight="thin" className="text-muted-fg/15 mb-4" />
+                  <div className="font-sans text-base font-bold text-fg">Your Team</div>
+                  <div className="font-mono text-xs text-muted-fg/50 mt-2 text-center max-w-[44ch] leading-relaxed">
                     Hire workers to handle tasks autonomously. Start from a template or configure from scratch, then map their Linear identities so assignee-based workflows can route issues to them.
                   </div>
                   <Button variant="primary" className="mt-4" onClick={handleHireWorker}>
@@ -730,7 +730,7 @@ export function CtoPage() {
                       <div className="flex items-center justify-between">
                         <div>
                           <div className="font-sans text-sm font-bold text-fg">Department Overview</div>
-                          <div className="mt-1 font-mono text-[10px] text-muted-fg/60">
+                          <div className="mt-1 font-mono text-xs text-muted-fg/50">
                             Pick a worker from the sidebar to inspect details, hire a new teammate, or edit Linear identity mappings so CTO &gt; Linear can route assignee-based workflows correctly.
                           </div>
                         </div>
@@ -746,8 +746,8 @@ export function CtoPage() {
                           { label: "Running", value: String(teamStats.running) },
                           { label: "Paused", value: String(teamStats.paused) },
                         ].map((item) => (
-                          <div key={item.label} className={cn(cardCls, "p-3")}>
-                            <div className="font-mono text-[9px] uppercase tracking-[1px] text-muted-fg/50">{item.label}</div>
+                          <div key={item.label} className={cn(cardCls, "p-4")}>
+                            <div className="font-mono text-[10px] uppercase tracking-wide text-muted-fg/50">{item.label}</div>
                             <div className="mt-2 font-sans text-2xl font-bold text-fg">{item.value}</div>
                           </div>
                         ))}
@@ -757,14 +757,14 @@ export function CtoPage() {
                         <div className="mb-3 flex items-center justify-between">
                           <div>
                             <div className="font-sans text-sm font-bold text-fg">Recent Department Activity</div>
-                            <div className="mt-1 font-mono text-[10px] text-muted-fg/55">
+                            <div className="mt-1 font-mono text-xs text-muted-fg/50">
                               Existing worker runs and direct worker chat activity flowing up to the CTO.
                             </div>
                           </div>
                         </div>
                         <div className="space-y-1">
                           {subordinateActivity.length === 0 ? (
-                            <div className="py-4 font-mono text-[10px] text-muted-fg/50">No department activity recorded yet.</div>
+                            <div className="py-4 font-mono text-xs text-muted-fg/40">No department activity recorded yet.</div>
                           ) : subordinateActivity.map((entry) => (
                             <TimelineEntry
                               key={entry.id}
