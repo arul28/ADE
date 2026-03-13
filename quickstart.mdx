@@ -1,0 +1,305 @@
+---
+title: "Quickstart"
+description: "Install ADE, open your first project, create a Lane, and run your first AI agent in under 10 minutes."
+icon: "rocket"
+---
+
+<Info>**📸 Screenshot needed:** ADE first-launch welcome screen — show the "Open Repository" prompt with a clean, empty state and the ADE logo. Should feel welcoming and minimal.</Info>
+
+## System Requirements
+
+Before installing ADE, make sure your machine meets these requirements:
+
+<CardGroup cols={3}>
+  <Card title="macOS" icon="apple">
+    macOS 13 Ventura or later. Apple Silicon (M1/M2/M3) and Intel are both supported.
+  </Card>
+  <Card title="Node.js" icon="node-js">
+    Node.js 20 or later. Required for the MCP server and agent tooling. Check with `node --version`.
+  </Card>
+  <Card title="Git" icon="git-alt">
+    Git 2.38 or later (for `git worktree` support). Check with `git --version`.
+  </Card>
+</CardGroup>
+
+<Note>
+ADE also works with **Claude CLI** and **Codex CLI** if you want to use those as agent backends. Neither is required to get started — you can use ADE's built-in in-process AI with just an API key.
+</Note>
+
+---
+
+## Step 1: Download and Install
+
+<Steps>
+  <Step title="Download the DMG">
+    Go to [ade.dev/download](https://ade.dev/download) and download the latest `.dmg` for your architecture (`arm64` for Apple Silicon, `x64` for Intel).
+  </Step>
+  <Step title="Install the app">
+    Open the `.dmg`, drag **ADE.app** to your `/Applications` folder, and launch it. On first run, macOS may ask you to confirm you want to open an app from the internet — click **Open**.
+  </Step>
+  <Step title="Grant permissions">
+    ADE will request **Accessibility** and **Automation** permissions if you plan to use Computer Use features. You can grant these later from System Settings → Privacy & Security.
+  </Step>
+</Steps>
+
+---
+
+## Step 2: Add Your AI Provider API Key
+
+Before ADE can run agents, it needs at least one AI provider configured.
+
+<Steps>
+  <Step title="Open Settings">
+    Press `Cmd+,` or click the **Settings** icon (gear) at the bottom of the left sidebar.
+  </Step>
+  <Step title="Navigate to AI Providers">
+    Select **AI Providers** from the Settings navigation. ADE supports Anthropic (Claude), OpenAI (GPT-4o, o1, o3), and any OpenAI-compatible endpoint.
+  </Step>
+  <Step title="Enter your API key">
+    Paste your Anthropic API key (or OpenAI key) into the appropriate field and click **Save**. ADE verifies the key is valid by making a lightweight test call.
+
+    <Warning>
+    API keys are stored encrypted in ADE's local database and in macOS Keychain. They are never sent to ADE servers — all AI calls go directly from your machine to the provider.
+    </Warning>
+  </Step>
+</Steps>
+
+<Info>**📸 Screenshot needed:** Settings → AI Providers page showing the Anthropic API key field (with key obscured), the "Verify" button, and a green "Connected" badge next to the provider name.</Info>
+
+---
+
+## Step 3: Open Your First Project
+
+ADE works with any git repository. If you do not have one handy, create one with `git init` in a new directory.
+
+<Steps>
+  <Step title="Click 'Open Repository'">
+    On the welcome screen, click **Open Repository** (or press `Cmd+O`). Select the root directory of your git repository in the file picker.
+  </Step>
+  <Step title="ADE initializes the project">
+    ADE creates a `.ade/` directory at the root of your repository. This directory holds worktrees, packs, artifacts, and metadata. It should be added to your `.gitignore`.
+
+    ```bash
+    # ADE adds this automatically, but verify:
+    echo ".ade/" >> .gitignore
+    ```
+  </Step>
+  <Step title="Onboarding flow begins">
+    The first time you open a repository, ADE runs a brief onboarding sequence (described below). This takes about 30 seconds.
+  </Step>
+</Steps>
+
+### The Onboarding Flow
+
+When you open a repository for the first time, ADE runs five quick setup steps automatically:
+
+<AccordionGroup>
+  <Accordion title="1. Detect defaults" icon="magnifying-glass">
+    ADE reads your `git config` (user name, email, default branch), detects your remote URL, and scans for common project patterns (monorepo, Node.js, Python, etc.). No configuration needed from you.
+  </Accordion>
+  <Accordion title="2. Config review" icon="file-lines">
+    ADE shows you a preview of the `ade.yaml` it will create at the root of the repository. This file holds project-level settings: base branch, agent defaults, budget limits, and automation rules. You can accept the defaults or edit before proceeding.
+
+    ```yaml
+    # ade.yaml (preview)
+    project:
+      name: my-app
+      baseRef: main
+    agents:
+      defaultModel: claude-sonnet-4-5
+      budgetLimitUsd: 10.00
+    ```
+  </Accordion>
+  <Accordion title="3. Branch import" icon="code-branch">
+    ADE scans your existing git branches and offers to import them as **Lanes**. You can select which branches to import. Imported branches become **Attached Lanes** — they are tracked by ADE but not managed as worktrees until you choose to adopt them.
+  </Accordion>
+  <Accordion title="4. Context baseline" icon="brain">
+    ADE generates an initial **Project Pack** — a durable context bundle that captures your project's architecture, file structure, key conventions, and risk signals. This pack is injected into every agent's system prompt so agents start with project awareness. Generation typically takes 10-30 seconds depending on project size.
+  </Accordion>
+  <Accordion title="5. Doc generation" icon="book">
+    ADE optionally creates an initial `PROJECT.md` at the root of your `.ade/` directory — a living document that the CTO agent keeps updated as the project evolves. You can skip this step.
+  </Accordion>
+</AccordionGroup>
+
+<Info>**📸 Screenshot needed:** The onboarding flow modal, showing step 3 (Branch Import) with a list of branches and checkboxes, and an "Import as Lanes" button. One or two branches should be pre-checked.</Info>
+
+---
+
+## Step 4: Create Your First Lane
+
+Lanes are isolated git worktrees where agents work. Every feature, bug fix, or experiment should have its own lane.
+
+<Steps>
+  <Step title="Open the Lanes view">
+    Click the **Lanes** icon in the left sidebar (or press `Cmd+1`). You will see your **Primary Lane** — the main repository directory, always present.
+  </Step>
+  <Step title="Create a new lane">
+    Click **+ New Lane** in the top-right of the Lanes panel. A dialog appears asking for:
+    - **Name**: A short label for this lane (e.g., `feature/user-auth`)
+    - **Base branch**: The branch to fork from (defaults to your `baseRef`)
+    - **Template**: Optionally select a lane template that pre-configures environment variables and startup commands
+  </Step>
+  <Step title="Lane is created">
+    ADE runs `git worktree add .ade/worktrees/feature-user-auth feature/user-auth` and registers the lane in its database. The new lane appears in the Lanes panel with a green "Ready" indicator.
+  </Step>
+</Steps>
+
+<Tip>
+Lane names become branch names. Use the `feature/`, `fix/`, or `chore/` prefixes if your project follows a branch naming convention — ADE will preserve them.
+</Tip>
+
+---
+
+## Step 5: Run Your First Agent
+
+With a lane ready, you can launch an AI agent inside it.
+
+<Tabs>
+  <Tab title="Agent Chat">
+    <Steps>
+      <Step title="Open the lane's chat">
+        Click on your lane in the Lanes panel, then click the **Chat** tab in the lane's detail view. Alternatively, click the chat bubble icon that appears when hovering a lane row.
+      </Step>
+      <Step title="Type a task">
+        Type your instruction in the composer, for example:
+        ```
+        Add a simple health-check endpoint at /health that returns { "status": "ok" }
+        ```
+      </Step>
+      <Step title="Send and observe">
+        Press `Enter` (or `Cmd+Enter` for multiline). The agent begins working. You will see its tool calls, file edits, and terminal output stream in real time in the chat panel.
+      </Step>
+      <Step title="Review the changes">
+        When the agent completes, switch to the **Files** view to see a diff of the changes it made. You can commit them directly from the Files view.
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="Mission">
+    <Steps>
+      <Step title="Open Missions">
+        Click the **Missions** icon in the sidebar (or press `Cmd+9`).
+      </Step>
+      <Step title="Create a new Mission">
+        Click **+ New Mission**. Enter a goal prompt and select the lane you just created as the target lane.
+      </Step>
+      <Step title="Run preflight checks">
+        ADE automatically runs a preflight checklist — verifying model availability, permissions, budget, and worktree health. A green "Ready to Launch" badge means everything is configured correctly.
+      </Step>
+      <Step title="Launch">
+        Click **Launch Mission**. ADE enters the Planning phase: the planner agent reads your goal, generates a structured execution plan with steps, and presents it for your review before execution begins.
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+<Info>**📸 Screenshot needed:** The Agent Chat composer with a task typed in, and the first few streamed tool-call lines appearing above it showing the agent calling `read_file` and `write_file`. Should show the real-time streaming feel.</Info>
+
+---
+
+## Step 6: Understand the Workspace Layout
+
+ADE's main window has three horizontal zones:
+
+```
+┌──────────┬──────────────────────────────┬────────────────┐
+│  Left    │        Main Panel            │   Inspector    │
+│ Sidebar  │  (View-specific content)     │   Panel        │
+│          │                              │                │
+│ 12 icons │  Lanes list / Graph /        │  Lane detail / │
+│          │  Missions / Chat / etc.      │  File preview  │
+└──────────┴──────────────────────────────┴────────────────┘
+```
+
+- **Left Sidebar**: 12 view icons. Click to switch the Main Panel's content. The active view is highlighted.
+- **Main Panel**: Changes based on your selected view. In Lanes view, this is the lane list. In Graph view, it is the infinite canvas.
+- **Inspector Panel**: Context-sensitive detail pane. When a lane is selected, it shows the lane's branches, status, open PRs, and recent sessions. When a file is selected in Files view, it shows the diff.
+
+<Tip>
+You can resize all three panels by dragging the dividers. ADE saves your layout per-project.
+</Tip>
+
+<Info>**📸 Screenshot needed:** Annotated screenshot of the three-panel layout with callout arrows labeling the Left Sidebar, Main Panel (showing Lanes list), and Inspector Panel (showing lane detail). Use a project with 2-3 visible lanes.</Info>
+
+---
+
+## Step 7: Create a Simple Mission
+
+Missions are the formal execution unit for multi-step AI work. Here is a minimal example to try immediately:
+
+<Steps>
+  <Step title="Navigate to Missions">
+    Click **Missions** in the sidebar.
+  </Step>
+  <Step title="Click + New Mission">
+    Fill in the form:
+    - **Title**: `Add health check endpoint`
+    - **Goal**: `Add a GET /health endpoint that returns { "status": "ok", "version": "1.0" }. Add a corresponding test.`
+    - **Lane**: Select your lane from Step 4
+    - **Priority**: Normal
+  </Step>
+  <Step title="Review the preflight">
+    ADE checks model availability and budget. You should see all green.
+  </Step>
+  <Step title="Launch in Autopilot mode">
+    Click **Launch → Autopilot**. The mission will plan, execute, and validate without requiring further input from you (unless it hits a blocker and needs to ask a clarifying question).
+  </Step>
+  <Step title="Watch the run">
+    Switch to the **Run** tab inside the mission. You will see the phase progress bar, active worker summary, and a live progress log. When complete, the mission moves to `completed` status and links its artifacts.
+  </Step>
+</Steps>
+
+<Info>**📸 Screenshot needed:** Mission Run panel mid-execution — show the phase progress bar (Planning done, Execution in progress), one active worker with a spinning indicator, and 2-3 lines in the progress log. Include the cost estimate in the top-right corner.</Info>
+
+---
+
+## Quick Tips for Power Users
+
+<AccordionGroup>
+  <Accordion title="Keyboard shortcuts" icon="keyboard">
+    | Shortcut | Action |
+    |---|---|
+    | `Cmd+1` through `Cmd+9` | Switch to the nth sidebar view |
+    | `Cmd+K` | Quick switcher — jump to any lane, mission, or file |
+    | `Cmd+Shift+C` | Open a new terminal in the selected lane |
+    | `Cmd+Shift+G` | Jump to Workspace Graph |
+    | `Cmd+,` | Open Settings |
+    | `Escape` | Close inspector panel / cancel current dialog |
+  </Accordion>
+  <Accordion title="Using the CTO agent" icon="robot">
+    The CTO agent (accessible from the **CTO** view) is always on and project-aware. You can tell it high-level things like "I want to add OAuth login this week" and it will break the work into missions, assign them to lanes, and track progress — without you needing to manually configure each mission. See the [CTO docs](/cto/overview) for details.
+  </Accordion>
+  <Accordion title="Night Shift: queuing overnight work" icon="moon">
+    In the **Automations** view, enable **Night Shift** to queue up missions that run while you sleep. ADE will drain the queue overnight and present you with a summary in the morning. Budget limits apply per-run.
+  </Accordion>
+  <Accordion title="Attaching an external worktree" icon="link">
+    If you have an existing git worktree on disk (created manually or by another tool), you can import it into ADE as an **Attached Lane** without disturbing its files. Go to Lanes → **Attach Existing Worktree** and select the directory.
+  </Accordion>
+  <Accordion title="Stacked PRs with Stacks" icon="layer-group">
+    ADE supports stacked PR workflows out of the box. Create a child lane from an existing lane (Lanes → **New Child Lane**) and ADE will configure it to target the parent lane's branch as its base. The Workspace Graph visualizes the stack topology clearly.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Key Concepts" icon="book" href="/key-concepts">
+    Understand every core concept in ADE: Lanes, Packs, Missions, the CTO, Automations, and more.
+  </Card>
+  <Card title="Lanes" icon="code-branch" href="/lanes/overview">
+    Deep dive into lane types, templates, environment isolation, port allocation, and proxy routing.
+  </Card>
+  <Card title="Missions" icon="bullseye" href="/missions/overview">
+    Learn how to configure phase profiles, set budget limits, handle interventions, and export audit bundles.
+  </Card>
+  <Card title="CTO Agent" icon="robot" href="/cto/overview">
+    Set up the always-on CTO agent with Linear sync, project memory, and worker agent delegation.
+  </Card>
+  <Card title="Automations" icon="bolt" href="/automations/overview">
+    Create trigger-driven automation rules that fire agents in response to git events, Linear updates, and schedules.
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration/overview">
+    Configure AI providers, MCP servers, permissions, and the full `ade.yaml` schema.
+  </Card>
+</CardGroup>

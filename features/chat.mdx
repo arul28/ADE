@@ -1,0 +1,394 @@
+---
+title: "Agent Chat"
+description: "Conversational AI with real project access — read files, run commands, create PRs, spawn missions, and control computer use, all from a single chat interface."
+icon: "comments"
+---
+
+<Info>**📸 Screenshot needed:** Agent Chat pane in a Lane view — show the chat composer at the bottom, a conversation with tool call blocks (expanded and collapsed), the context meter in the header, and the MCP tool indicator.</Info>
+
+## What is Agent Chat?
+
+**Agent Chat** is ADE's conversational interface for working with AI agents in the context of your actual project. Unlike a generic AI chat, Agent Chat is wired directly into your development environment: the agent can read and write real files, run terminal commands, create branches and PRs, query your project's context pack, and spawn a Mission when the task grows beyond what a single conversation can handle.
+
+Every chat session is recorded with a full transcript, tool call log, and timing data. Sessions are resumable and their artifacts can be promoted into the lane's persistent context.
+
+<CardGroup cols={2}>
+  <Card title="What Chat is for" icon="message">
+    Exploratory work, targeted edits, quick Q&A about your codebase, PR creation, test runs, and anything that resolves in a single focused session.
+  </Card>
+  <Card title="When to escalate to a Mission" icon="target">
+    Tasks spanning multiple files or agents, work requiring a formal audit trail, or anything you expect to run for more than 15–20 minutes.
+  </Card>
+</CardGroup>
+
+---
+
+## Chat Scoping
+
+Chat in ADE is always scoped — it operates within a defined context boundary that determines what the agent can access and what its tool calls affect.
+
+<Tabs>
+  <Tab title="Lane Chat">
+    **Lane chat** is the most common mode. It is opened from within a specific Lane view and anchors the agent to that lane's context:
+
+    - File reads and writes are scoped to the lane's git worktree
+    - Terminal commands run in the lane's terminal session
+    - Git operations affect the lane's branch
+    - Context is seeded from the lane's pack (recent activity, file map, open PRs)
+
+    Lane chat is how you do day-to-day development work with an agent.
+  </Tab>
+  <Tab title="CTO Chat">
+    The **CTO chat** operates at project scope. The CTO agent has access to:
+
+    - Project-wide context (all lanes, all branches, all pack snapshots)
+    - Linear sync — it can read and write issues
+    - Delegation — it can spawn worker agents or new missions
+    - Architecture decisions recorded in the project pack
+
+    Use CTO chat for cross-cutting questions, planning, and delegation rather than hands-on coding.
+  </Tab>
+  <Tab title="Mission Chat">
+    **Mission chat** is embedded inside a Mission's detail view. It is a direct channel to the mission's orchestrator while the mission is running. Use it to:
+
+    - Ask the orchestrator for a status summary
+    - Provide additional context mid-mission
+    - Redirect a worker that has gone off course
+
+    Mission chat does not start new work — it communicates with the orchestrator of an already-running mission.
+  </Tab>
+</Tabs>
+
+---
+
+## Starting a Chat
+
+<Steps>
+  <Step title="Open a Lane">
+    Navigate to the lane you want to work in from the left sidebar or the Workspace Graph.
+  </Step>
+  <Step title="Open the Chat pane">
+    Click the **Chat** button in the lane toolbar, or press `Cmd+K`. A new chat session opens with automatic context injection from the lane's pack.
+  </Step>
+  <Step title="Choose a model (optional)">
+    The model selector in the chat header defaults to your configured preferred model. Click it to switch models for this session. ADE remembers your last-used model per lane.
+  </Step>
+  <Step title="Set execution mode (optional)">
+    For CLI-wrapped models (Claude, Codex), an **execution mode** selector appears in the header:
+
+    - **Focused** — single-threaded; the agent works through the task in one thread
+    - **Parallel** — the agent can spawn parallel sub-agents for independent parts of the task
+
+    Use Parallel mode for tasks the model can naturally decompose (e.g., "add tests for all these functions").
+  </Step>
+  <Step title="Type your first message">
+    The agent receives your message along with the injected context. Tool calls begin immediately if the task requires them.
+  </Step>
+</Steps>
+
+<Tip>
+  Start a new session from an existing session's history by opening the History tab and clicking **Resume**. The previous transcript is loaded as context so the agent picks up where you left off.
+</Tip>
+
+---
+
+## Computer Use Policy
+
+<Info>**📸 Screenshot needed:** Chat header close-up — show the computer-use policy chip (e.g., "CU Auto"), the MCP tool count badge, the model selector, and the context meter all in the same header row.</Info>
+
+The chat header displays the current **computer-use policy** for the session. This controls whether and how the agent can invoke computer-use capabilities (browser automation, screenshot capture, desktop interaction).
+
+Click the policy chip to change it for the current session.
+
+<AccordionGroup>
+  <Accordion title="CU Off — computer use disabled">
+    The agent cannot invoke any computer-use tools. Use this for sessions focused purely on code changes where you do not want any visual verification steps.
+  </Accordion>
+  <Accordion title="CU Auto — ADE decides">
+    ADE enables computer use when the agent's task naturally calls for it — e.g., verifying a UI change, testing a web flow, or checking a rendered output. The agent will not use computer use for tasks that can be completed via file and terminal tools alone.
+  </Accordion>
+  <Accordion title="CU On — always available">
+    Computer use tools are always in the agent's tool palette. The agent may invoke them freely. Use this when you are explicitly working on UI-heavy tasks.
+  </Accordion>
+  <Accordion title="Fallback — try without, then use if needed">
+    The agent first attempts to complete the task without computer use. If it cannot (e.g., a required verification only works via a browser), it falls back to computer use automatically.
+  </Accordion>
+  <Accordion title="Proof — require proof artifacts">
+    Computer use is available, but every action must produce a proof artifact (a screenshot or browser trace). All proof artifacts are collected and can be attached to a PR or Linear issue. Recommended when the session will feed into a code review.
+  </Accordion>
+</AccordionGroup>
+
+When computer use is active, a **monitoring panel** expands below the chat. It shows:
+
+- Recent screenshots captured during the session
+- Browser action log (clickable to expand each action)
+- A proof summary for the current session
+
+---
+
+## What the Agent Can Do
+
+The chat agent has access to a broad tool palette. The exact tools available depend on the lane's permission config and the session's settings.
+
+<CardGroup cols={2}>
+  <Card title="File operations" icon="file-code">
+    Read, write, and search files within the lane's worktree. The agent sees your full directory structure and can reference any file by path.
+  </Card>
+  <Card title="Terminal commands" icon="terminal">
+    Run shell commands in the lane's terminal session — build scripts, test runners, linters, package managers, or any CLI tool installed in your environment.
+  </Card>
+  <Card title="Git operations" icon="code-branch">
+    Create and switch branches, stage and commit changes, view diffs, check status, and push to remote. The agent stays within the lane's worktree.
+  </Card>
+  <Card title="Pull requests" icon="git-pull-request">
+    Create PRs with auto-generated descriptions, update PR bodies, request reviewers, and apply labels — if GitHub integration is configured.
+  </Card>
+  <Card title="Linear integration" icon="layers">
+    Create and update Linear issues, link issues to branches, and attach artifacts to issues.
+  </Card>
+  <Card title="Mission spawning" icon="target">
+    Escalate the current task into a new Mission, carrying over conversation context as the planner's seed.
+  </Card>
+  <Card title="Context pack queries" icon="database">
+    Query the lane's pack for architectural context, file maps, open PRs, recent activity, and human work digests.
+  </Card>
+  <Card title="External MCP tools" icon="plug">
+    If external MCP servers are configured and permitted for the session, the agent can call their tools. Toggle MCP tool groups in the chat header.
+  </Card>
+</CardGroup>
+
+<Note>
+  Provider-native tools (built into the model's API, like Claude's native file tool) are tracked separately from ADE-owned tools (served via MCP). The chat header MCP badge shows the count of ADE/external MCP tools; provider-native tools are always available based on the model.
+</Note>
+
+---
+
+## Creating a PR from Chat
+
+<Info>**📸 Screenshot needed:** PR creation flow in chat — show the agent's message proposing a PR, the pre-filled PR form with auto-generated title and description, and the "Create PR" confirm button.</Info>
+
+The most common workflow is: make changes in chat → have the agent create a PR.
+
+<Steps>
+  <Step title="Make your changes">
+    Work with the agent to implement the feature, fix the bug, or refactor the code. Changes are committed to the lane's branch as you go.
+  </Step>
+  <Step title="Ask the agent to create a PR">
+    Say "create a PR" or "open a pull request." The agent will:
+
+    - Read the current branch name and recent commits
+    - Query the lane pack for architectural context
+    - Generate a PR title and description based on the changes
+    - Pre-fill reviewer suggestions if you have GitHub team integration enabled
+    - Apply relevant labels based on the branch name and changed files
+  </Step>
+  <Step title="Review and confirm">
+    The agent surfaces the PR form as an interactive block in the chat. Edit the title, description, or reviewer list, then click **Create PR**. The PR is opened in GitHub and a link is attached as an artifact in the chat session.
+  </Step>
+</Steps>
+
+<Tip>
+  If your project has a PR description template, put it in the lane's context pack. The agent will use it automatically when generating PR descriptions.
+</Tip>
+
+---
+
+## Spawning a Mission from Chat
+
+When a task is too large for a single chat session, escalate it to a Mission without losing context.
+
+<Steps>
+  <Step title="Recognize the scope">
+    Signs that a task should become a Mission: it requires changes across more than 3–4 unrelated files, it needs parallel workers, it has an explicit validation phase, or you want a formal audit trail.
+  </Step>
+  <Step title="Say 'start a mission'">
+    Type "start a mission for this" or "this should be a mission." ADE opens the Mission creation dialog, pre-filled with:
+
+    - A title derived from the current conversation
+    - A description assembled from your messages in the session
+    - The current lane pre-selected
+  </Step>
+  <Step title="Review and launch">
+    Adjust the mission config as needed (add lanes, set budget cap, configure permissions), then click **Start Mission**. The mission opens in the Mission detail view. The chat session remains in History for reference.
+  </Step>
+</Steps>
+
+---
+
+## Managing Context
+
+<Info>**📸 Screenshot needed:** Context meter in the chat header — show it at ~65% capacity with the "Compact now" suggestion tooltip visible.</Info>
+
+Every chat session has a **context window** — the amount of conversation history and injected context the model can hold at once. ADE shows the context fill level as a meter in the chat header.
+
+<Tabs>
+  <Tab title="Automatic compaction">
+    When the context meter reaches **70%**, ADE suggests compaction. If auto-compaction is enabled (configured in **Settings → Chat → Auto-compact threshold**), ADE compacts automatically without prompting.
+
+    Compaction summarizes older messages while preserving:
+    - Key decisions made in the session
+    - File paths and code blocks from recent turns
+    - Current task state and open questions
+    - Tool call results from the last few turns
+  </Tab>
+  <Tab title="Manual compaction">
+    Click the context meter in the header and select **Compact now** to trigger compaction immediately. A compact summary is injected as a synthetic message before the conversation continues.
+  </Tab>
+  <Tab title="Starting a fresh session">
+    If you prefer a clean context window, click **New session** in the chat header. The new session will receive a fresh context injection from the lane pack but will not carry over the previous conversation. The old session is saved in History.
+  </Tab>
+</Tabs>
+
+<Warning>
+  Compaction is lossy by design — exact wording of older messages is not preserved. If there is something in the conversation you want the agent to remember verbatim (e.g., a specific constraint), call it out explicitly before compacting: "Remember: the API must remain backwards compatible with v1 clients."
+</Warning>
+
+---
+
+## MCP Tool Visibility and Control
+
+The chat header shows a badge indicating how many MCP tools are active for the current session. Click it to open the **MCP tool panel**:
+
+- View all configured MCP servers and their available tools
+- Toggle individual tool groups on or off for this session
+- See which tools have been called in the current session and their call counts
+
+Disabling a tool group mid-session takes effect immediately — the agent will not invoke those tools in subsequent turns, though any in-flight tool calls complete normally.
+
+<Note>
+  MCP tool changes are session-scoped. They do not affect the lane's default configuration. To change defaults, go to **Settings → MCP Servers**.
+</Note>
+
+---
+
+## Working with Artifacts
+
+At the end of a session (or mid-session when the agent produces notable outputs), artifacts are surfaced for your review.
+
+### Artifact types produced in chat
+
+| Artifact | When it appears |
+|---|---|
+| File changes | After any file write tool call |
+| Screenshots | After any computer-use visual capture |
+| Browser traces | After browser automation sequences |
+| PR links | After a PR is created |
+| Test reports | After test runner tool calls |
+| Notes | When the agent explicitly attaches a note |
+
+### What you can do with artifacts
+
+<Steps>
+  <Step title="Keep — attach to lane pack">
+    Promotes the artifact into the lane's persistent context. Future chat sessions and missions will have access to it via context injection.
+  </Step>
+  <Step title="Attach to Mission / PR / Linear issue">
+    Links the artifact to an existing Mission, opens it for attachment to a PR description, or creates a Linear issue attachment.
+  </Step>
+  <Step title="Download">
+    Saves the artifact to your local filesystem (useful for screenshots and browser traces).
+  </Step>
+  <Step title="Dismiss">
+    Removes the artifact from the session's artifact list. It remains accessible in the session's History entry but is not promoted.
+  </Step>
+</Steps>
+
+---
+
+## Chat History and Sessions
+
+Every chat session is stored with its full transcript, tool call log, timing data, and attached artifacts.
+
+Access sessions from the **History tab** within a Lane view. Each entry shows:
+- Session start time and duration
+- Message count and token total
+- Model used
+- Number of tool calls
+- Artifacts produced
+
+Click any session to open its transcript in read-only view. Click **Resume** to open a new chat session seeded with the previous session's summary.
+
+---
+
+## Long-Running Tool Calls
+
+Tool calls that take more than a few seconds are displayed as **expandable blocks** in the chat message list:
+
+- A spinner and elapsed timer indicate the call is in progress
+- Click the block to expand it and see partial output as it streams
+- Click the block again to collapse it once it completes
+
+If a tool call is taking unexpectedly long (e.g., a test run has hung), press **Escape** to interrupt it. The agent receives an interruption signal and will report the partial results before asking for guidance.
+
+<Tip>
+  If a tool call fails, the agent automatically explains the error and offers alternatives — you do not need to re-phrase your request. You can either accept the agent's proposed workaround or provide explicit instructions.
+</Tip>
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="The agent is not seeing my recent file changes">
+    The agent's file access is always live — it reads from the filesystem at the time of the tool call. If your changes are not reflected, check:
+
+    1. Are the changes saved? The agent reads saved files, not editor buffers.
+    2. Is the agent working in the correct lane? Confirm the lane selector in the chat header.
+    3. Ask the agent explicitly: "Re-read `src/foo.ts` and tell me what you see."
+  </Accordion>
+  <Accordion title="Context meter is full and compaction isn't helping">
+    If the session context is very large (deeply nested tool call results, very long files), compaction may not free enough space. Options:
+
+    - Start a **new session** — previous context is preserved in History
+    - Ask the agent to summarize key decisions and start fresh with that summary
+    - Switch to a model with a larger context window in the model selector
+  </Accordion>
+  <Accordion title="Computer use panel is not appearing">
+    The computer-use monitoring panel only appears when a computer-use tool is actively being invoked. If the panel is not showing:
+
+    - Confirm the session's computer-use policy is not `CU Off`
+    - Check **Settings → Computer Use** to confirm a backend (Ghost OS, agent-browser) is connected
+    - Verify the agent's task actually requires visual interaction — the agent will not invoke computer use for purely code-based tasks even in `CU On` mode unless a visual task is present
+  </Accordion>
+  <Accordion title="MCP tool calls are failing">
+    If an external MCP tool call fails consistently:
+
+    1. Open the MCP tool panel from the chat header and check the server's status indicator.
+    2. Go to **Settings → MCP Servers** and click **Test connection** for the failing server.
+    3. Check the server's logs — ADE surfaces MCP server stderr in the settings panel.
+    4. Disable the failing tool group for the session to unblock the agent while you investigate.
+  </Accordion>
+  <Accordion title="The agent created a PR on the wrong branch">
+    PR creation uses the lane's current branch. If the agent created a PR on the wrong branch:
+
+    1. Close or update the PR in GitHub directly.
+    2. In the chat, tell the agent: "You created the PR on the wrong branch. The correct branch is `feature/xyz`. Please update or re-create the PR."
+    3. To prevent this in future sessions, use an explicit branch name when asking for a PR: "create a PR from `feature/xyz` to `main`."
+  </Accordion>
+  <Accordion title="The agent keeps calling the same tool in a loop">
+    This usually indicates the agent is not seeing the tool's output correctly, or the task goal is ambiguous. Try:
+
+    1. Press **Escape** to interrupt the current turn.
+    2. Clarify the goal: "Stop. The issue is X. I need you to Y instead."
+    3. If the loop continues after clarification, start a new session with a more explicit initial prompt.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Missions" icon="target" href="/missions/overview">
+    Escalate a chat to a formal Mission when the task needs parallel workers or a full audit trail.
+  </Card>
+  <Card title="Lanes" icon="code-branch" href="/lanes/overview">
+    Chat is scoped to a lane. Learn how lanes isolate work across parallel agents.
+  </Card>
+  <Card title="Computer Use" icon="desktop" href="/computer-use/overview">
+    Deep dive into computer-use backends, proof artifacts, and policy configuration.
+  </Card>
+  <Card title="Context Packs" icon="database" href="/context-packs/overview">
+    Understand how context is injected at session start and how to promote artifacts to the pack.
+  </Card>
+</CardGroup>

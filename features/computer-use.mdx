@@ -1,0 +1,375 @@
+---
+title: "Computer Use"
+description: "ADE is the control plane for computer use — it discovers backends, injects guidance, ingests proof artifacts, and links them to missions, chats, PRs, and Linear issues."
+icon: "desktop"
+---
+
+<Info>**📸 Screenshot needed:** The Computer Use section in Settings showing three backend cards (Ghost OS, agent-browser, ADE Local) — Ghost OS with a green "Connected" badge, agent-browser as "Ready", and ADE Local as "Fallback". Below the cards, the capability matrix table is visible.</Info>
+
+## Overview
+
+ADE does not perform computer use directly. Instead, it acts as the **control plane** — the orchestration layer between your AI agents and external automation backends. This architecture means:
+
+- ADE works with any computer-use backend, not just one vendor.
+- Agents can request browser or desktop actions through a unified API regardless of which backend is active.
+- All proof artifacts (screenshots, traces, recordings) are normalized, stored, and linked to the relevant mission, chat, PR, or Linear issue.
+- Backend health, capability coverage, and proof requirements are visible at a glance in Settings.
+
+<CardGroup cols={2}>
+  <Card title="Backend Agnostic" icon="plug">
+    Connect Ghost OS, agent-browser, or use the built-in ADE Local fallback. Switch backends without changing automation code.
+  </Card>
+  <Card title="Proof Collection" icon="camera">
+    Every computer-use action can be required to produce proof — screenshots, video recordings, browser traces, or DOM verifications.
+  </Card>
+  <Card title="Artifact Ownership" icon="link">
+    Artifacts are linked to lanes, missions, chat sessions, PRs, and Linear issues. Review and publish them from a single panel.
+  </Card>
+  <Card title="Policy Control" icon="sliders">
+    Per-session policies control when computer use is active: Off, Auto, On, Fallback, or Proof-required mode.
+  </Card>
+</CardGroup>
+
+---
+
+## Supported Backends
+
+<Tabs>
+  <Tab title="Ghost OS (Recommended)">
+    Ghost OS is an external MCP server for full macOS desktop automation. It provides complete control over the desktop environment — browsers, native apps, file dialogs, and system UI.
+
+    **Capabilities:**
+    - Full desktop automation (not just browser)
+    - Native macOS accessibility API integration
+    - Multi-display support
+    - App-level isolation per mission
+
+    **Connection:** HTTP transport via `.ade/local.secret.yaml`
+
+    ```yaml
+    externalMcp:
+      - name: ghost-os
+        transport: http
+        url: https://ghost-os.local/mcp
+        autoStart: true
+    ```
+
+    <Tip>
+    Ghost OS is the recommended backend for mission-critical automation where high reliability and proof coverage are required. Its structured trace format integrates most deeply with ADE's artifact system.
+    </Tip>
+  </Tab>
+
+  <Tab title="agent-browser">
+    `agent-browser` is a CLI-native browser automation tool. ADE launches it as a subprocess via stdio transport. It is limited to web automation but requires no external server setup.
+
+    **Capabilities:**
+    - Chromium-based browser automation
+    - DOM interaction, form filling, navigation
+    - Network request interception
+    - Console log capture
+
+    **Connection:** stdio subprocess via `.ade/local.secret.yaml`
+
+    ```yaml
+    externalMcp:
+      - name: agent-browser
+        transport: stdio
+        command: npx
+        args: ["-y", "@agent-browser/cli"]
+        autoStart: true
+    ```
+
+    <Note>
+    `agent-browser` requires Node.js 18+ and a Chromium installation. ADE will attempt to use the system Chromium or download a compatible version on first launch.
+    </Note>
+  </Tab>
+
+  <Tab title="ADE Local (Fallback)">
+    ADE Local is the built-in fallback backend. It provides limited computer-use capabilities when neither Ghost OS nor agent-browser is available. It is not recommended for production automation workflows.
+
+    **Capabilities:**
+    - Basic screenshot capture
+    - System clipboard read/write
+    - URL open in default browser
+
+    **Configuration:** No configuration required. ADE Local activates automatically when no other backend is connected.
+
+    <Warning>
+    ADE Local does not support browser traces, DOM verification, or video recording. It is intended as a minimal compatibility shim, not a primary backend. For any serious automation, configure Ghost OS or agent-browser.
+    </Warning>
+  </Tab>
+</Tabs>
+
+### Backend Capability Matrix
+
+| Capability | Ghost OS | agent-browser | ADE Local |
+|---|---|---|---|
+| Browser automation | Yes | Yes | No |
+| Desktop automation | Yes | No | No |
+| Screenshot capture | Yes | Yes | Yes |
+| Video recording | Yes | Yes | No |
+| Browser trace | Yes | Yes | No |
+| DOM verification | Yes | Yes | No |
+| Console log capture | Yes | Yes | No |
+| Multi-display | Yes | No | No |
+| Native app control | Yes | No | No |
+
+---
+
+## Connecting a Backend
+
+### Ghost OS Setup
+
+<Steps>
+  <Step title="Install Ghost OS">
+    Download and install the Ghost OS MCP server for macOS from [ghostos.dev](https://ghostos.dev). Start the server — it listens on `https://ghost-os.local/mcp` by default.
+  </Step>
+  <Step title="Add to ADE configuration">
+    Open `.ade/local.secret.yaml` in your project root (create it if it does not exist) and add the Ghost OS entry:
+
+    ```yaml
+    externalMcp:
+      - name: ghost-os
+        transport: http
+        url: https://ghost-os.local/mcp
+        autoStart: true
+    ```
+  </Step>
+  <Step title="Verify connection">
+    Open **Settings → Computer Use**. The Ghost OS card should show a green **Connected** badge with the capability matrix populated. If it shows an error, confirm the Ghost OS server is running and the URL is reachable.
+  </Step>
+  <Step title="Set as preferred backend">
+    In **Settings → Computer Use → Preferred Backend**, select **Ghost OS**. ADE will use Ghost OS for all computer-use requests until you change this setting.
+  </Step>
+</Steps>
+
+### agent-browser Setup
+
+<Steps>
+  <Step title="Ensure Node.js 18+ is installed">
+    Run `node --version` to confirm. If needed, install via [nodejs.org](https://nodejs.org) or `brew install node`.
+  </Step>
+  <Step title="Add to ADE configuration">
+    ```yaml
+    externalMcp:
+      - name: agent-browser
+        transport: stdio
+        command: npx
+        args: ["-y", "@agent-browser/cli"]
+        autoStart: true
+    ```
+  </Step>
+  <Step title="Verify connection">
+    Open **Settings → Computer Use**. The agent-browser card should show **Ready**. On first use, ADE will download the `@agent-browser/cli` package automatically.
+  </Step>
+</Steps>
+
+---
+
+## Computer Use Policies
+
+Each chat session and mission has a computer-use policy header that controls when the agent is allowed to invoke computer-use tools. Set the policy at session start or change it mid-session from the chat header bar.
+
+| Policy | Behavior |
+|---|---|
+| `CU Off` | Computer use tools are never available in this session. Agents cannot invoke them even if they try. |
+| `CU Auto` | ADE decides when computer use is appropriate based on the task. The agent does not choose directly. |
+| `CU On` | Computer use tools are always available. The agent decides when to invoke them. |
+| `Fallback` | The agent attempts the task without computer use. If it cannot complete the task, it falls back to CU. |
+| `Proof` | Computer use is available, but every action must produce a proof artifact. The session blocks if proof is missing. |
+
+<Tip>
+Use `Proof` mode for any automation that will be shared with stakeholders or linked to a Linear issue. The collected artifacts provide an auditable record of exactly what the agent did.
+</Tip>
+
+---
+
+## Proof Kinds (Artifact Types)
+
+When a computer-use backend performs an action, ADE can require it to produce one or more proof artifacts. The required proof kinds are configured per mission or per automation.
+
+<AccordionGroup>
+  <Accordion title="screenshot — Static Image Capture" icon="camera">
+    A static PNG/JPEG capture of the screen or browser viewport at a specific moment in the automation.
+
+    **Use when:** You need a visual record of the UI state at key steps. Lightweight, low storage cost.
+
+    **Produced by:** Ghost OS, agent-browser, ADE Local
+  </Accordion>
+
+  <Accordion title="video_recording — Full Session Recording" icon="video">
+    A video recording of the entire automation sequence or a time-bounded segment.
+
+    **Use when:** You need to review the full interaction flow, not just snapshots. Best for debugging unexpected behavior.
+
+    **Produced by:** Ghost OS, agent-browser
+  </Accordion>
+
+  <Accordion title="browser_trace — Structured Interaction Log" icon="list-tree">
+    A machine-readable trace of all browser interactions: DOM events, navigation events, form submissions, network calls, and timing data.
+
+    **Use when:** You need structured, queryable proof rather than visual media. Browser traces can be diffed, replayed, and analyzed by downstream agents.
+
+    **Produced by:** Ghost OS, agent-browser
+  </Accordion>
+
+  <Accordion title="browser_verification — Assertion Result" icon="circle-check">
+    An assertion result — did the expected DOM element exist? Did the page contain the expected text? Returns a boolean with the element snapshot if found.
+
+    **Use when:** You need machine-verifiable confirmation of a UI state (e.g., "confirm the success toast appeared", "confirm the form was submitted").
+
+    **Produced by:** Ghost OS, agent-browser
+  </Accordion>
+
+  <Accordion title="console_logs — Browser Console Output" icon="rectangle-terminal">
+    Browser and application console output captured during the automation session. Includes errors, warnings, and application log statements.
+
+    **Use when:** Debugging automation failures, verifying no JavaScript errors occurred, capturing application-specific log output.
+
+    **Produced by:** Ghost OS, agent-browser
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Computer Use in Missions
+
+Missions with computer use proceed through three stages:
+
+### 1. Launch and Preflight
+
+When creating a mission that requires computer use, ADE shows a **readiness check** before the mission starts:
+
+- Is the preferred backend connected?
+- Are the required proof kinds available from the active backend?
+- Are file-system and permission guardrails satisfied?
+
+If the preflight fails, ADE shows which checks failed and why. You can proceed with a degraded backend or cancel and fix the configuration.
+
+<Info>**📸 Screenshot needed:** The Mission creation dialog's "Computer Use Preflight" step — showing a checklist of backend checks, proof kind availability, and permission checks. Two items should be green (passed) and one should show an amber warning about video recording not being available on the current backend.</Info>
+
+### 2. Mission Run Monitoring
+
+During execution, the **Mission's Artifacts tab** shows a live view:
+
+- Current backend name and status
+- Live thumbnail feed of recent screenshots
+- Running count of each proof kind collected
+- Proof coverage percentage (how many planned steps have associated artifacts)
+
+### 3. Artifact Review and Closeout
+
+After execution (or at any point mid-mission), you review collected artifacts and mark each one:
+
+| Status | Meaning |
+|---|---|
+| `accepted` | Artifact is valid and meets the proof requirement |
+| `needs_more` | The artifact is insufficient — more evidence is required |
+| `dismissed` | Artifact is not relevant and should be excluded |
+| `published` | Artifact is accepted and has been routed to its configured owners |
+
+---
+
+## Computer Use in Chat
+
+When a chat session has a `CU On`, `CU Auto`, or `Proof` policy active, the **Computer Use monitoring panel** appears below the chat message input.
+
+The panel shows:
+- Current active backend and its connection status
+- A thumbnail grid of the most recent screenshots from this session
+- Total action count for the session
+- A live feed indicator when the agent is actively running computer use
+
+<Info>**📸 Screenshot needed:** The Agent Chat pane with the Computer Use monitoring panel visible below the composer. The panel shows a 4-column thumbnail grid of recent screenshots, a "Backend: Ghost OS" badge, and an "8 actions" counter. One thumbnail should be highlighted as the "most recent".</Info>
+
+You can click any thumbnail to expand it full-screen and inspect the screenshot, or click **View All Artifacts** to open the full artifact manager for the session.
+
+---
+
+## Artifact Ownership Model
+
+Every artifact collected by ADE has a canonical record in the local SQLite database. Artifacts can be **owned by multiple entities simultaneously**.
+
+**Ownership types:**
+- Lane (the lane where the computer use occurred)
+- Mission (if the action occurred during a mission execution)
+- Chat Session (if the action occurred in a chat)
+- Pull Request (if the artifact is linked to an open PR)
+- Linear Issue (if the artifact is published to a Linear issue as an attachment)
+
+**Publishing an artifact** routes it to selected owners. For example, a screenshot proving that a UI bug is fixed can be published to both the PR and the Linear issue in one action.
+
+**Artifact lifecycle:**
+
+```
+pending  →  accepted  →  published
+         →  needs_more (agent continues collecting)
+         →  dismissed
+```
+
+---
+
+## Proof Requirements Configuration
+
+Configure which proof kinds are required for different task types in **Settings → Computer Use → Proof Requirements**.
+
+```yaml
+# Example proof requirement configuration
+proofRequirements:
+  default:
+    - screenshot
+  uiValidation:
+    - screenshot
+    - browser_verification
+  bugFix:
+    - screenshot
+    - browser_trace
+  fullAudit:
+    - screenshot
+    - video_recording
+    - browser_trace
+    - browser_verification
+    - console_logs
+```
+
+Missions and automations reference these named profiles by key (e.g., `proofProfile: uiValidation`).
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Backend shows 'Disconnected' in Settings" icon="circle-question">
+    1. Confirm the backend process is running. For Ghost OS: check the menu bar icon. For agent-browser: ADE should have launched it automatically.
+    2. Verify the `url` or `command` in `.ade/local.secret.yaml` is correct.
+    3. Check for firewall or security software blocking the connection (Ghost OS uses HTTP locally).
+    4. Restart ADE — the `autoStart: true` flag will attempt to reconnect on startup.
+    5. Open **Settings → Computer Use** and click **Reconnect** to force a reconnection attempt.
+  </Accordion>
+
+  <Accordion title="Video recording not available" icon="video-slash">
+    Video recording requires either Ghost OS or agent-browser. ADE Local does not support it. If your mission requires video proof:
+
+    1. Connect Ghost OS or agent-browser (see setup instructions above).
+    2. Set the preferred backend to a capable one in Settings.
+    3. If you must proceed without video, change the mission's proof profile to one that does not require `video_recording`.
+  </Accordion>
+
+  <Accordion title="Proof coverage is low — mission blocked" icon="triangle-exclamation">
+    A `Proof` policy session requires every action to produce an artifact. If coverage is below the required threshold, the session may block.
+
+    1. Review the artifacts already collected in the Artifacts tab — some steps may have artifacts that need to be manually marked `accepted`.
+    2. Re-run specific steps from the mission's execution log to collect missing artifacts.
+    3. If the backend is failing to produce artifacts silently, check the backend's own logs (Ghost OS logs are available from its menu bar icon; agent-browser logs are in **ADE → View → Developer Tools → Console**).
+  </Accordion>
+
+  <Accordion title="Screenshots are blank or corrupted" icon="image">
+    This typically indicates a permissions issue with the macOS Screen Recording permission.
+
+    1. Open **System Settings → Privacy & Security → Screen Recording**.
+    2. Ensure ADE (and Ghost OS if applicable) are listed and enabled.
+    3. Restart ADE after granting permissions — macOS requires a restart of the process for permission changes to take effect.
+  </Accordion>
+</AccordionGroup>
+
+<Info>**📸 Screenshot needed:** The Artifact Manager panel showing a mixed list of artifacts from a single mission — some screenshots marked "accepted" in green, one marked "needs_more" in amber, and a video recording entry marked "published" with a chain-link icon showing it is linked to a PR and a Linear issue.</Info>

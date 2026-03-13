@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   IdentificationCard,
   FolderOpen,
@@ -18,7 +18,6 @@ import { inputCls, labelCls, textareaCls } from "./shared/designTokens";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { LinearConnectionPanel } from "./LinearConnectionPanel";
-import { OpenclawConnectionPanel } from "./OpenclawConnectionPanel";
 
 const STEPS: WizardStep[] = [
   { id: "identity", label: "Identity", icon: IdentificationCard },
@@ -114,6 +113,7 @@ export function OnboardingWizard({
   const [linearStatus, setLinearStatus] = useState<LinearConnectionStatus | null>(null);
   const [integrationSkipped, setIntegrationSkipped] = useState(false);
   const [promptPreview, setPromptPreview] = useState<CtoSystemPromptPreview | null>(null);
+  const promptPreviewRequestSeqRef = useRef(0);
 
   const steps: WizardStep[] = useMemo(
     () => STEPS.map((step) => ({ ...step, completed: completedSteps.includes(step.id) })),
@@ -193,12 +193,10 @@ export function OnboardingWizard({
     void (async () => {
       if (!window.ade?.cto) return;
       try {
-        const [snapshot, detectionResult, status] = await Promise.all([
+        const [snapshot, detectionResult] = await Promise.all([
           window.ade.cto.getState({}),
           window.ade.onboarding.detectDefaults().catch(() => null),
-          window.ade.cto.getLinearConnectionStatus().catch(() => null),
         ]);
-        setLinearStatus(status);
         setDetection(detectionResult);
         if (snapshot.coreMemory.projectSummary) {
           setProject({
@@ -217,9 +215,13 @@ export function OnboardingWizard({
   }, []);
 
   useEffect(() => {
-    void (async () => {
-      if (!window.ade?.cto) return;
-      const preview = await window.ade.cto.previewSystemPrompt({
+    if (activeStep !== "identity" || !window.ade?.cto) return;
+    const ctoBridge = window.ade.cto;
+    const requestSeq = promptPreviewRequestSeqRef.current + 1;
+    promptPreviewRequestSeqRef.current = requestSeq;
+    let cancelled = false;
+    const timeoutId = window.setTimeout(() => {
+      void ctoBridge.previewSystemPrompt({
         identityOverride: {
           name: identity.name,
           persona: identity.persona,
@@ -229,10 +231,35 @@ export function OnboardingWizard({
             model: identity.model,
           },
         },
-      }).catch(() => null);
-      setPromptPreview(preview);
-    })();
-  }, [identity]);
+      }).then((preview) => {
+        if (!cancelled && promptPreviewRequestSeqRef.current === requestSeq) {
+          setPromptPreview(preview);
+        }
+      }).catch(() => {
+        if (!cancelled && promptPreviewRequestSeqRef.current === requestSeq) {
+          setPromptPreview(null);
+        }
+      });
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [
+    activeStep,
+    identity.model,
+    identity.name,
+    identity.persona,
+    identity.personality,
+    identity.provider,
+  ]);
+
+  const handleLinearStatusChange = useCallback((status: LinearConnectionStatus | null) => {
+    setLinearStatus(status);
+    if (status?.connected) {
+      setIntegrationSkipped(false);
+    }
+  }, []);
 
   return (
     <div
@@ -251,7 +278,7 @@ export function OnboardingWizard({
           <div>
             <div className="font-sans text-sm font-bold text-fg">Configure Your CTO</div>
             <div className="mt-0.5 font-mono text-[10px] text-muted-fg/50">
-              Set the CTO identity, bootstrap project context, and connect Linear.
+              Set the CTO identity, bootstrap project context, and optionally connect Linear.
             </div>
           </div>
         </div>
@@ -435,24 +462,24 @@ export function OnboardingWizard({
                 <div className="space-y-1">
                   <div className="font-sans text-xs font-bold text-fg">Integrations</div>
                   <div className="font-mono text-[10px] text-muted-fg/60">
-                    Connect Linear for issue intake and OpenClaw for external agent routing, or finish setup and wire them later from the CTO tab.
+                    Keep setup simple. Linear is optional here, and the fastest path is a personal API key. You can wire up OAuth or any other integration later from the CTO tab.
                   </div>
                 </div>
 
-                <div className="grid gap-4 lg:grid-cols-2">
-                  <div className="border border-border/10 bg-card/60 p-4">
-                    <LinearConnectionPanel
-                      compact
-                      onStatusChange={(status) => {
-                        setLinearStatus(status);
-                        if (status?.connected) setIntegrationSkipped(false);
-                      }}
-                    />
+                <div className="border border-border/10 bg-surface-recessed px-3 py-2">
+                  <div className="font-mono text-[10px] text-fg/80">
+                    You do not need Linear to complete setup.
                   </div>
+                  <div className="mt-1 font-mono text-[9px] text-muted-fg/50">
+                    If Linear is disconnected, the primary button will still finish onboarding and you can configure it later from CTO settings.
+                  </div>
+                </div>
 
-                  <div className="border border-border/10 bg-card/60 p-4">
-                    <OpenclawConnectionPanel compact />
-                  </div>
+                <div className="border border-border/10 bg-card/60 p-4">
+                  <LinearConnectionPanel
+                    compact
+                    onStatusChange={handleLinearStatusChange}
+                  />
                 </div>
 
                 {!linearStatus?.connected && (
@@ -469,6 +496,15 @@ export function OnboardingWizard({
                     </Button>
                   </div>
                 )}
+
+                <div className="border border-border/10 bg-surface-recessed px-3 py-2">
+                  <div className="font-mono text-[10px] text-fg/75">
+                    OpenClaw stays out of first-run setup.
+                  </div>
+                  <div className="mt-1 font-mono text-[9px] text-muted-fg/50">
+                    Configure external agent routing later from CTO settings if you actually need it.
+                  </div>
+                </div>
 
                 <div className="font-mono text-[9px] text-muted-fg/45">
                   {linearStatus?.connected

@@ -1,0 +1,407 @@
+---
+title: "Settings"
+description: "Complete reference for every setting in ADE — from AI provider management and budget caps to notifications, permissions, and developer tooling."
+icon: "sliders"
+---
+
+<Info>**📸 Screenshot needed:** The Settings page with the left navigation sidebar visible, showing all section categories listed (General, AI Routing, Budget & Usage, AI Providers, Integrations, Computer Use, CTO, Automations, Permissions, Notifications, Developer). The "General" section is active and its content is shown on the right.</Info>
+
+## Opening Settings
+
+Access Settings from anywhere in ADE:
+
+- **Keyboard shortcut**: `Cmd+,` (macOS) / `Ctrl+,` (Windows/Linux)
+- **Sidebar**: Click the gear icon (⚙) at the bottom of the left sidebar
+- **Menu bar**: ADE → Preferences
+
+Settings are organized into eleven sections in the left navigation panel. Changes in most sections take effect immediately — no restart required. Exceptions are noted in the relevant section below.
+
+---
+
+## General
+
+Basic project identity and application-level preferences.
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Project name | Display name shown in ADE's title bar | Derived from repository folder name |
+| Project description | Short description shown on Project Home | Empty |
+| Default working directory | Root directory for terminal sessions | Repository root |
+| Theme | UI color scheme | Default Dark |
+| Auto-update | Whether ADE checks for and installs updates automatically | On |
+| Beta channel | Opt in to receive pre-release builds | Off |
+| Telemetry | Anonymous usage metrics (no PII, no source code) | Opt-in prompt on first launch |
+
+### Themes
+
+ADE ships with six themes selectable without restart:
+
+<CardGroup cols={2}>
+  <Card title="Default Dark" icon="moon">
+    ADE's standard dark theme — dark greys with green accent colors.
+  </Card>
+  <Card title="Default Light" icon="sun">
+    Light mode with the same green accent palette.
+  </Card>
+  <Card title="Monokai" icon="paintbrush">
+    High-contrast dark theme with the classic Monokai color palette.
+  </Card>
+  <Card title="Solarized Dark" icon="moon">
+    Warm dark tones from the Solarized palette.
+  </Card>
+  <Card title="Solarized Light" icon="sun">
+    Warm light tones from the Solarized palette.
+  </Card>
+  <Card title="One Dark" icon="circle-half-stroke">
+    Atom-inspired dark theme with cool grey tones.
+  </Card>
+</CardGroup>
+
+---
+
+## AI Routing
+
+Control which model each agent role uses, and how ADE manages context windows.
+
+### Per-Role Model Overrides
+
+ADE's default model applies to all agents unless you set role-specific overrides. Role overrides let you optimize cost and quality by matching model capability to task complexity.
+
+| Role | Description | Recommended Model |
+|------|-------------|-----------------|
+| Orchestrator | Mission planning and worker coordination | `claude-opus-4-6` |
+| Worker | Mission execution tasks | `claude-sonnet-4-6` |
+| Validator | Mission validation and review | `claude-sonnet-4-6` |
+| Automation | Event-driven automation runs | `claude-haiku-4-5` |
+| Chat | Interactive chat sessions | `claude-sonnet-4-6` |
+| CTO | Project-level memory and delegation | `claude-opus-4-6` |
+
+<Tip>
+Routing automation runs to `claude-haiku-4-5` while keeping `claude-opus-4-6` for mission planning is the single most impactful cost optimization for users running frequent automations. Most PR-review and routine triage tasks do not require Opus-level reasoning.
+</Tip>
+
+### Context Management
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Auto-compaction threshold | Percentage of context window used before compaction triggers | 70% |
+| Compaction strategy | `summarize` (quality-preserving) or `truncate` (fastest) | summarize |
+| Preserve system prompt | Always keep the system prompt in full during compaction | On |
+| Context warning threshold | Show a usage indicator in the chat header above this percentage | 60% |
+
+### Response Streaming
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Stream responses | Show tokens as they arrive (vs. waiting for full response) | On |
+| Streaming buffer delay | Milliseconds between UI render updates during streaming | 16ms |
+
+---
+
+## Budget & Usage
+
+Track and control AI spending across all agents and providers.
+
+<Info>**📸 Screenshot needed:** The Budget & Usage settings panel showing: a "Current Month" spending summary card ($34.20 of $100.00 monthly cap), a stacked bar chart breaking down spend by provider (Anthropic, OpenAI), and below it a table showing spend by lane for the last 7 days.</Info>
+
+### Budget Caps
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Per-session cap | Maximum USD per chat session | $1.00 |
+| Per-mission cap | Maximum USD across all workers in a single mission | $10.00 |
+| Per-automation cap | Maximum USD per automation trigger | $0.50 |
+| Monthly total cap | Hard ceiling across all providers, agents, and sessions | $100.00 |
+
+<Warning>
+The monthly cap is a hard stop. Once reached, all agent activity (chat, missions, automations, CTO heartbeats) pauses until either the cap is raised in Settings → Budget or the calendar month rolls over. ADE sends a notification when you reach 80% and again at 100% of the monthly cap.
+</Warning>
+
+### Alert Thresholds
+
+Configure when ADE notifies you of approaching budget limits:
+
+- **Session warning**: Alert at 80% of per-session cap (default on)
+- **Mission warning**: Alert at 80% of per-mission cap (default on)
+- **Monthly warning**: Alert at 80% and 95% of monthly cap (default on)
+
+### Usage Graphs
+
+The usage panel shows three graph views, each switchable between bar and line charts:
+
+- **Daily**: Per-day spend for the last 30 days, broken down by provider
+- **Weekly**: Per-week totals for the last 12 weeks, broken down by agent role
+- **Monthly**: Per-month totals for the last 12 months, broken down by lane
+
+Click any bar segment to drill into the individual sessions or missions that contributed to that spend.
+
+---
+
+## AI Providers
+
+Manage API keys for all configured providers. This section is a GUI layer over `local.secret.yaml`. Changes saved here write directly to that file.
+
+For full provider setup instructions, see [AI Providers](/configuration/ai-providers).
+
+| Action | How |
+|--------|-----|
+| Add API key | Click **Add Key** next to the provider, enter the key value |
+| Rotate key | Click **Rotate** — enter the new key. ADE swaps the key in memory immediately. |
+| Revoke key | Click **Revoke** — ADE removes the key from `local.secret.yaml` and memory. Agents using that provider will fail until a new key is added. |
+| Test connection | Click **Test Connection** — ADE sends a minimal request and reports success or the error message |
+| Set default model | Dropdown per provider — writes to `ade.yaml` (requires SHA re-approval if other fields changed) |
+
+---
+
+## Integrations
+
+### GitHub
+
+ADE uses GitHub OAuth for PR management. This is distinct from the GitHub MCP server (which uses a token).
+
+| Setting | Description |
+|---------|-------------|
+| OAuth connection | Connect or disconnect your GitHub account |
+| Organization access | Manage which GitHub orgs ADE can access |
+| Default branch | Branch ADE opens PRs against (default: `main`) |
+| PR auto-link | Automatically link PRs to ADE missions and lanes when the PR branch matches a lane |
+| Draft PRs by default | Create PRs as drafts until explicitly marked ready |
+
+### Linear
+
+ADE connects to Linear for bidirectional issue sync. Configure in Settings → Integrations → Linear.
+
+| Setting | Description |
+|---------|-------------|
+| API key | Linear API key (stored in `local.secret.yaml`) |
+| Sync direction | `bidirectional`, `read-only` (ADE reads Linear), `disabled` |
+| Default team | Linear team for issue creation |
+| Label mappings | Map ADE mission states to Linear issue labels |
+| Issue → Lane auto-create | Automatically create a lane when a Linear issue is assigned to you |
+
+### External MCP
+
+Shortcut to the External MCP server management panel. For full documentation, see [MCP Servers](/configuration/mcp-servers).
+
+---
+
+## Computer Use
+
+Configure which computer-use backend ADE uses for agent-driven browser and desktop automation.
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Backend | `ghost-os`, `agent-browser`, or `ade-local` | `ade-local` |
+| Connection URL | URL for Ghost OS or remote backends | — |
+| Auto-connect on launch | Connect to the backend when ADE starts | On |
+| Default proof requirements | Which action types require screenshot proof | Screenshots for all write actions |
+| Proof storage location | Where captured screenshots and traces are saved | `.ade/artifacts/computer-use/` |
+
+The capability matrix at the bottom of this section shows which features each backend supports (screenshots, video recording, DOM access, file download interception, etc.).
+
+For full computer use documentation, see [Computer Use](/computer-use/overview).
+
+---
+
+## CTO
+
+Settings for the always-on CTO agent that monitors your project and manages workers.
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| CTO enabled | Enable or disable the CTO agent entirely | On |
+| Heartbeat interval | How often the CTO runs its check-in loop | 15 minutes |
+| Default worker budget | USD budget allocated to each worker the CTO spawns | $2.00 |
+| Memory retention | How long to retain project memory entries before summarizing | 30 days |
+| Linear sync | `bidirectional`, `read-only`, or `disabled` | bidirectional |
+| Auto-delegation | Allow CTO to spawn workers without asking for approval | Off |
+| Auto-delegation threshold | Only auto-delegate tasks with estimated cost below this value | $1.00 |
+
+<Note>
+The heartbeat interval controls how frequently the CTO agent wakes up to review open issues, pending missions, and project health. A shorter interval (e.g., 1 minute) gives more responsive CTO behavior but increases AI spend. For most projects, 15 minutes is the right balance.
+</Note>
+
+---
+
+## Automations
+
+Global controls for the automation system and Night Shift.
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Automations enabled | Master switch for all automation rules | On |
+| View all automations | Link to the Automations tab | — |
+
+### Night Shift
+
+Night Shift lets ADE run queued automations and missions during idle hours.
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Idle threshold | Minutes of user inactivity before Night Shift activates | 15 minutes |
+| Run window start | Earliest time Night Shift activates (24h format) | 23:00 |
+| Run window end | Latest time Night Shift continues running | 06:00 |
+| Night Shift budget | Separate daily budget cap for Night Shift runs | $20.00 |
+
+<Tip>
+Set the Night Shift budget separately from your daytime budget. Night Shift often runs long-horizon missions (large refactors, comprehensive test-suite builds) that need more budget than interactive sessions.
+</Tip>
+
+---
+
+## Permissions
+
+High-level controls for what agents are allowed to do. For the full security model, see [Permissions](/configuration/permissions).
+
+### File Path Restrictions
+
+Configure which filesystem paths agents can read and write:
+
+- **Allowed paths**: Glob patterns. Agents can only access files matching these patterns. Empty = all paths accessible (within the worktree).
+- **Blocked paths**: Agents can never access files matching these patterns, regardless of `allowedPaths`.
+
+### Terminal Command Policy
+
+| Setting | Description |
+|---------|-------------|
+| Command allow list | Agents may only run commands matching these patterns. Empty = all commands allowed. |
+| Command block list | Agents may never run commands matching these patterns. Takes precedence over allow list. |
+| Ask-first mode | Agents must request approval before running commands not on the allow list |
+
+### Git Restrictions
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Protected branches | Regex patterns for branches agents cannot push to | `main`, `master`, `production` |
+| Allow force push | Whether agents can run `git push --force` | Off (always) |
+| Require commit message template | Validate agent commits against a message format | Off |
+
+### Network Access
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Network policy | `allow-all`, `allow-list`, or `block-list` | allow-all |
+| Allowed domains | Domains agents can reach (allow-list mode only) | — |
+| Blocked domains | Domains agents can never reach (block-list mode only) | — |
+
+---
+
+## Notifications
+
+Control how and when ADE notifies you of important events.
+
+| Event | macOS notification | In-app banner | Email |
+|-------|-------------------|---------------|-------|
+| Mission complete | Configurable | Always | Optional |
+| Mission failed | Configurable | Always | Optional |
+| Budget warning (80%) | Configurable | Always | Optional |
+| Budget cap reached | Always on | Always | Optional |
+| Conflict detected | Configurable | Configurable | Off |
+| PR status change | Configurable | Configurable | Off |
+| Automation triggered | Off | Configurable | Off |
+| Automation completed | Configurable | Off | Off |
+| CTO delegation request | Always on | Always on | Optional |
+
+<Note>
+Email notifications require an email address configured in Settings → Notifications → Email. ADE sends notification emails directly — no third-party service. Email delivery requires an outbound SMTP connection from your machine.
+</Note>
+
+---
+
+## Developer
+
+Settings for debugging, diagnostics, and low-level access.
+
+<Info>**📸 Screenshot needed:** The Developer settings panel showing: a "Log Level" dropdown set to "info", a "Log file location" path field with a folder-open button, an "Open DevTools" button, a "MCP Debug Mode" toggle (off), and a "Database Inspector" button that opens a read-only SQLite browser.</Info>
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Log level | `error`, `warn`, `info`, `debug`, `verbose` | `info` |
+| Log file location | Where ADE writes its log files | `~/Library/Logs/ADE/` |
+| Open DevTools | Opens Electron DevTools for the renderer process | — |
+| MCP debug mode | Enables verbose JSON-RPC logging for all MCP calls | Off |
+| Database inspector | Opens a read-only browser of ADE's SQLite database | — |
+| Reset to defaults | Resets all settings to factory defaults (does not affect `local.secret.yaml`) | — |
+
+<Warning>
+`verbose` log level logs every MCP tool call including parameters. Do not use verbose logging in production environments — it may produce large log files and can expose non-secret parameters in plaintext. API keys are always redacted regardless of log level.
+</Warning>
+
+---
+
+## Recommended Settings by Use Case
+
+<Tabs>
+  <Tab title="Solo Developer">
+    Prioritize speed and cost efficiency:
+
+    - **Default model**: `claude-sonnet-4-6`
+    - **Orchestrator model**: `claude-opus-4-6`
+    - **Automation model**: `claude-haiku-4-5`
+    - **Per-session budget**: $2.00
+    - **Monthly cap**: $50.00
+    - **CTO heartbeat**: 15 minutes
+    - **Night Shift**: On, 23:00–06:00
+    - **Notifications**: Mission complete + Budget warning, macOS only
+  </Tab>
+  <Tab title="Small Team">
+    Emphasize observability and shared standards:
+
+    - Commit `ade.yaml` with agreed model defaults and budget caps
+    - Each developer maintains their own `local.yaml` with personal model preferences
+    - Set conservative `blockedTools` on external MCP servers (block destructive operations)
+    - Enable **PR auto-link** in GitHub integration
+    - Enable bidirectional Linear sync
+    - Turn on **Ask-first mode** for terminal commands in Permissions
+    - Set CTO auto-delegation to Off (manual approval for worker spawns)
+  </Tab>
+  <Tab title="Power User">
+    Maximize throughput with fine-grained control:
+
+    - Configure per-role model routing (Opus for planning, Sonnet for execution, Haiku for automation)
+    - Set a high monthly cap and use per-mission caps to control individual runs
+    - Enable multiple external MCP servers (GitHub, filesystem, Ghost OS)
+    - Set compaction threshold to 60% for earlier and more frequent compaction
+    - Enable verbose MCP debug logging only when diagnosing specific issues
+    - Night Shift with a generous budget for overnight mission runs
+    - `autoStart: true` on all frequently-used MCP servers
+  </Tab>
+</Tabs>
+
+---
+
+## Settings That Should Be Team-Shared vs. Personal
+
+| Setting | Shared in `ade.yaml` | Personal in `local.yaml` |
+|---------|---------------------|-------------------------|
+| Default AI model | Yes | Override per-machine |
+| Budget caps | Yes (defaults) | Override per-machine |
+| Lane profiles | Yes | No |
+| Automation definitions | Yes | No |
+| Process definitions | Yes | No |
+| Test suite config | Yes | No |
+| Theme | No | Yes |
+| Editor font size | No | Yes |
+| Terminal shell | No | Yes |
+| Notification preferences | No | Yes |
+| Night Shift schedule | No | Yes |
+| API keys | Never | In `local.secret.yaml` |
+
+---
+
+## What's Next
+
+<CardGroup cols={2}>
+  <Card title="AI Providers" icon="robot" href="/configuration/ai-providers">
+    Deep dive into configuring Anthropic, OpenAI, OpenRouter, and local models.
+  </Card>
+  <Card title="MCP Servers" icon="server" href="/configuration/mcp-servers">
+    Connect and manage external MCP servers for GitHub, Slack, filesystem, and more.
+  </Card>
+  <Card title="Permissions" icon="shield-check" href="/configuration/permissions">
+    Understand the full trust boundary model and configure per-agent access rules.
+  </Card>
+  <Card title="Configuration Overview" icon="gear" href="/configuration/overview">
+    Review the .ade/ directory structure and the three config file layers.
+  </Card>
+</CardGroup>

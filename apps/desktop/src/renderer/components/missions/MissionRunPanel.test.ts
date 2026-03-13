@@ -211,4 +211,101 @@ describe("MissionRunPanel intervention selection", () => {
     fireEvent.click(screen.getByRole("button", { name: "OPEN" }));
     expect(onOpenIntervention).toHaveBeenCalledWith("latest-open");
   });
+
+  it("renders mission computer-use monitoring when proof state is available", () => {
+    render(
+      createElement(MissionRunPanel, {
+        runView: {
+          lifecycle: {
+            displayStatus: "active",
+            summary: "Collecting proof",
+            startedAt: "2026-03-01T10:00:00Z",
+          },
+          active: {
+            stepTitle: "Verification",
+            phaseName: "Ship",
+            featureLabel: "settings",
+          },
+          coordinator: {
+            available: true,
+            mode: "online",
+            summary: "Watching proof artifacts",
+          },
+          haltReason: null,
+          workers: [],
+          progressLog: [],
+          latestIntervention: null,
+          computerUse: {
+            owner: { kind: "mission", id: "mission-1" },
+            policy: {
+              mode: "enabled",
+              allowLocalFallback: false,
+              retainArtifacts: true,
+              preferredBackend: "Ghost OS",
+            },
+            backendStatus: {
+              backends: [],
+              localFallback: {
+                available: false,
+                detail: "Fallback unavailable",
+                supportedKinds: [],
+              },
+            },
+            summary: "Ghost OS is capturing screenshots for this mission.",
+            activeBackend: {
+              name: "Ghost OS",
+              style: "external_mcp",
+              detail: "Ghost OS produced the latest proof.",
+              source: "artifact",
+            },
+            artifacts: [],
+            recentArtifacts: [
+              {
+                id: "artifact-1",
+                kind: "screenshot",
+                backendStyle: "external_mcp",
+                backendName: "Ghost OS",
+                sourceToolName: "ghost_screenshot",
+                originalType: "ghost_screenshot",
+                title: "settings screenshot",
+                description: null,
+                uri: "/tmp/settings.png",
+                storageKind: "file",
+                mimeType: "image/png",
+                metadata: {},
+                createdAt: "2026-03-01T10:05:00Z",
+                links: [],
+                reviewState: "pending",
+                workflowState: "evidence_only",
+                reviewNote: null,
+              },
+            ],
+            activity: [
+              {
+                id: "activity-1",
+                at: "2026-03-01T10:05:00Z",
+                kind: "artifact_ingested",
+                title: "screenshot captured",
+                detail: "Ghost OS produced the latest screenshot.",
+                artifactId: "artifact-1",
+                backendName: "Ghost OS",
+                severity: "success",
+              },
+            ],
+            proofCoverage: {
+              requiredKinds: ["screenshot"],
+              presentKinds: ["screenshot"],
+              missingKinds: [],
+            },
+            usingLocalFallback: false,
+          },
+        } as any,
+      }),
+    );
+
+    expect(screen.getByText("Computer Use")).toBeTruthy();
+    expect(screen.getByText("Ghost OS is capturing screenshots for this mission.")).toBeTruthy();
+    expect(screen.getByText("Proof satisfied: screenshot")).toBeTruthy();
+    expect(screen.getByText("screenshot captured")).toBeTruthy();
+  });
 });

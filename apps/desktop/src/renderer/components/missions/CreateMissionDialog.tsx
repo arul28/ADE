@@ -12,6 +12,7 @@ import {
 } from "@phosphor-icons/react";
 import { motion } from "motion/react";
 import type {
+  ComputerUsePolicy,
   MissionAgentRuntimeConfig,
   MissionModelConfig,
   PhaseCard,
@@ -27,6 +28,7 @@ import type {
   CreateMissionArgs,
   MissionPreflightResult,
 } from "../../../shared/types";
+import { createDefaultComputerUsePolicy } from "../../../shared/types";
 import { BUILT_IN_PROFILES } from "../../../shared/modelProfiles";
 import { getDefaultModelDescriptor, MODEL_REGISTRY, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton } from "../lanes/laneDesignTokens";
@@ -57,6 +59,7 @@ export type CreateDraft = {
   agentRuntime: MissionAgentRuntimeConfig;
   teamRuntime?: TeamRuntimeConfig;
   permissionConfig: MissionPermissionConfig;
+  computerUse: ComputerUsePolicy;
 };
 
 export type CreateMissionDefaults = {
@@ -98,6 +101,65 @@ const createMissionDialogCache: {
 
 function hasFreshCreateDialogCache(cachedAt: number): boolean {
   return cachedAt > 0 && Date.now() - cachedAt < CREATE_DIALOG_CACHE_TTL_MS;
+}
+
+export async function prewarmCreateMissionDialogCache(): Promise<void> {
+  const shouldRefreshProfiles = !hasFreshPhaseProfiles();
+  const shouldRefreshItems = !hasFreshPhaseItems();
+  const shouldRefreshAiStatus = !hasFreshCreateDialogCache(createMissionDialogCache.aiStatusCachedAt);
+
+  const tasks: Promise<void>[] = [];
+
+  if (shouldRefreshProfiles) {
+    tasks.push(
+      window.ade.missions.listPhaseProfiles({}).then((profiles) => {
+        if (profiles.length > 0) {
+          setCachedPhaseProfiles(profiles);
+        }
+      }).catch(() => {})
+    );
+  }
+
+  if (shouldRefreshItems) {
+    tasks.push(
+      window.ade.missions.listPhaseItems({}).then((items) => {
+        setCachedPhaseItems(items);
+      }).catch(() => {})
+    );
+  }
+
+  if (shouldRefreshAiStatus) {
+    tasks.push(
+      window.ade.ai.getStatus().then((status) => {
+        const ids: string[] = [];
+        const auth = status.detectedAuth ?? [];
+        for (const entry of auth) {
+          if (!entry.authenticated) continue;
+          if (entry.type === "cli-subscription" && entry.cli) {
+            const familyMap: Record<string, string> = { claude: "anthropic", codex: "openai" };
+            const family = familyMap[entry.cli];
+            if (family) {
+              for (const model of MODEL_REGISTRY) {
+                if (model.family === family && !model.deprecated) ids.push(model.id);
+              }
+            }
+          }
+          if (entry.type === "api-key" && entry.provider) {
+            for (const model of MODEL_REGISTRY) {
+              if (model.family === entry.provider && !model.deprecated) ids.push(model.id);
+            }
+          }
+        }
+        createMissionDialogCache.aiStatus = {
+          detectedAuth: auth,
+          availableModelIds: ids.length > 0 ? [...new Set(ids)] : undefined,
+        };
+        createMissionDialogCache.aiStatusCachedAt = Date.now();
+      }).catch(() => {})
+    );
+  }
+
+  await Promise.all(tasks);
 }
 
 function getDefaultPhaseProfile(profiles: PhaseProfile[]): PhaseProfile | null {
@@ -171,6 +233,7 @@ export function buildCreateMissionDraft(
     phaseOverride: [],
     agentRuntime: { ...DEFAULT_AGENT_RUNTIME },
     permissionConfig: createDefaultPermissionConfig(defaults),
+    computerUse: createDefaultComputerUsePolicy(),
   };
 }
 
@@ -201,6 +264,7 @@ export function buildMissionLaunchRequest(args: {
     phaseProfileId: args.draft.phaseProfileId,
     phaseOverride: args.activePhases,
     permissionConfig: args.draft.permissionConfig,
+    computerUse: args.draft.computerUse,
     autostart: true,
     launchMode: "autopilot",
   };
@@ -557,7 +621,8 @@ function CreateMissionDialogInner({
   }, [activePhases, draft.modelConfig.orchestratorModel?.modelId]);
 
   useEffect(() => {
-    if (!open || !nonCriticalReady) {
+    const smartBudgetEnabled = draft.modelConfig.smartBudget?.enabled === true;
+    if (!open || !nonCriticalReady || !smartBudgetEnabled) {
       setBudgetTelemetry(null);
       setCurrentUsage(null);
       setWeeklyUsage(null);
@@ -598,6 +663,7 @@ function CreateMissionDialogInner({
       cancelled = true;
     };
   }, [
+    draft.modelConfig.smartBudget?.enabled,
     open,
     nonCriticalReady,
     selectedBudgetFamilies.hasApiModels,
@@ -701,6 +767,7 @@ function CreateMissionDialogInner({
   const teamBudgetGuardrailTeammateCount = draft.teamRuntime?.enabled
     ? Math.max(1, draft.teamRuntime.teammateCount ?? 2)
     : 0;
+  const showAdvancedLaunchControls = nonCriticalReady;
   const teamBudgetGuardrailActive = teamBudgetGuardrailTeammateCount >= HIGH_TEAMMATE_COUNT_GUARDRAIL_THRESHOLD
     && draft.modelConfig.smartBudget?.enabled !== true;
   const teamBudgetGuardrailEnabled = draft.teamRuntime?.enabled === true;
@@ -1512,172 +1579,296 @@ function CreateMissionDialogInner({
                   ) : null}
                 </div>
 
-                {/* e. Smart Token Budget */}
-                <SmartBudgetPanel
-                  value={draft.modelConfig.smartBudget ?? { enabled: false, fiveHourThresholdUsd: 10, weeklyThresholdUsd: 50 }}
-                  onChange={(config) => setDraft((p) => ({
-                    ...p,
-                    modelConfig: { ...p.modelConfig, smartBudget: config }
-                  }))}
-                  currentSpend={selectedBudgetFamilies.hasApiModels && currentUsage ? {
-                    fiveHourUsd: currentUsage.summary.totalCostEstimateUsd,
-                    weeklyUsd: weeklyUsage?.summary.totalCostEstimateUsd ?? currentUsage.summary.totalCostEstimateUsd,
-                  } : null}
-                  modelUsage={selectedBudgetFamilies.hasApiModels && currentUsage?.byModel?.length ? Object.fromEntries(
-                    currentUsage.byModel.map((m) => [m.model, {
-                      inputTokens: m.inputTokens,
-                      outputTokens: m.outputTokens,
-                      costUsd: m.costEstimateUsd,
-                      sessions: m.sessions,
-                    }])
-                  ) : undefined}
-                  billingContext={billingContext}
-                  perProvider={launcherPerProviderUsage}
-                />
-
-                <div className="space-y-1.5">
-                  <span style={dlgLabelStyle}>AGENT RUNTIME CAPABILITIES</span>
-                  <label className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                    <input
-                      type="checkbox"
-                      checked={draft.agentRuntime.allowParallelAgents}
-                      onChange={(e) => {
-                        const checked = e.target.checked;
-                        setDraft((p) => ({
-                          ...p,
-                          agentRuntime: { ...p.agentRuntime, allowParallelAgents: checked },
-                          ...(p.teamRuntime
-                            ? { teamRuntime: { ...p.teamRuntime, allowParallelAgents: checked } }
-                            : {})
-                        }));
-                      }}
-                    />
-                    ALLOW PARALLEL AGENTS / WORKERS
-                  </label>
-                  <label className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                    <input
-                      type="checkbox"
-                      checked={draft.agentRuntime.allowSubAgents}
-                      onChange={(e) => {
-                        const checked = e.target.checked;
-                        setDraft((p) => ({
-                          ...p,
-                          agentRuntime: { ...p.agentRuntime, allowSubAgents: checked },
-                          ...(p.teamRuntime
-                            ? { teamRuntime: { ...p.teamRuntime, allowSubAgents: checked } }
-                            : {})
-                        }));
-                      }}
-                    />
-                    ALLOW SUB-AGENTS (NESTED DELEGATION)
-                  </label>
-                  <label className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                    <input
-                      type="checkbox"
-                      checked={draft.agentRuntime.allowClaudeAgentTeams}
-                      onChange={(e) => {
-                        const checked = e.target.checked;
-                        setDraft((p) => ({
-                          ...p,
-                          agentRuntime: { ...p.agentRuntime, allowClaudeAgentTeams: checked },
-                          ...(p.teamRuntime
-                            ? { teamRuntime: { ...p.teamRuntime, allowClaudeAgentTeams: checked } }
-                            : {})
-                        }));
-                      }}
-                    />
-                    ALLOW CLAUDE CODE AGENT TEAMS
-                  </label>
-                  <div style={{ fontSize: 9, color: COLORS.textDim, fontFamily: MONO_FONT, marginTop: 2 }}>
-                    These controls are passed to orchestrator strategy prompts and runtime metadata.
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <label className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                    <input
-                      type="checkbox"
-                      checked={draft.teamRuntime?.enabled ?? false}
-                      title="Enable teammate worker orchestration for this mission."
-                      onChange={(e) => setDraft((p) => ({
+                {showAdvancedLaunchControls ? (
+                  <>
+                    {/* e. Smart Token Budget */}
+                    <SmartBudgetPanel
+                      value={draft.modelConfig.smartBudget ?? { enabled: false, fiveHourThresholdUsd: 10, weeklyThresholdUsd: 50 }}
+                      onChange={(config) => setDraft((p) => ({
                         ...p,
-                        teamRuntime: {
-                          enabled: e.target.checked,
-                          targetProvider: p.teamRuntime?.targetProvider ?? "auto",
-                          teammateCount: p.teamRuntime?.teammateCount ?? 2,
-                          allowParallelAgents: p.agentRuntime.allowParallelAgents,
-                          allowSubAgents: p.agentRuntime.allowSubAgents,
-                          allowClaudeAgentTeams: p.agentRuntime.allowClaudeAgentTeams,
-                        }
+                        modelConfig: { ...p.modelConfig, smartBudget: config }
                       }))}
+                      currentSpend={selectedBudgetFamilies.hasApiModels && currentUsage ? {
+                        fiveHourUsd: currentUsage.summary.totalCostEstimateUsd,
+                        weeklyUsd: weeklyUsage?.summary.totalCostEstimateUsd ?? currentUsage.summary.totalCostEstimateUsd,
+                      } : null}
+                      modelUsage={selectedBudgetFamilies.hasApiModels && currentUsage?.byModel?.length ? Object.fromEntries(
+                        currentUsage.byModel.map((m) => [m.model, {
+                          inputTokens: m.inputTokens,
+                          outputTokens: m.outputTokens,
+                          costUsd: m.costEstimateUsd,
+                          sessions: m.sessions,
+                        }])
+                      ) : undefined}
+                      billingContext={billingContext}
+                      perProvider={launcherPerProviderUsage}
                     />
-                    ENABLE TEAM RUNTIME
-                  </label>
-                  <div className="pl-5 text-[9px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
-                    Team runtime lets the orchestrator coordinate additional teammate workers for parallel execution.
-                  </div>
-                  {draft.teamRuntime?.enabled && (
-                    <div className="flex items-center gap-3 pl-5">
-                      <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                        <span>TEAMMATES</span>
-                        <input
-                          type="number"
-                          min={1}
-                          max={8}
-                          value={draft.teamRuntime?.teammateCount ?? 2}
-                          title="Number of teammate workers available to the orchestrator."
-                          onChange={(e) => setDraft((p) => ({
-                            ...p,
-                            teamRuntime: {
-                              ...p.teamRuntime!,
-                              teammateCount: Math.max(1, Math.min(8, Number(e.target.value) || 2)),
-                            }
-                          }))}
-                          className="h-6 w-12 px-1 text-xs text-center outline-none"
-                          style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, color: COLORS.textPrimary, fontFamily: MONO_FONT, borderRadius: 0 }}
-                        />
-                      </label>
-                      <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                        <span>PROVIDER</span>
-                        <select
-                          value={draft.teamRuntime?.targetProvider ?? "auto"}
-                          title="Preferred provider family for teammate workers."
-                          onChange={(e) => setDraft((p) => ({
-                            ...p,
-                            teamRuntime: {
-                              ...p.teamRuntime!,
-                              targetProvider: e.target.value as "claude" | "codex" | "auto",
-                            }
-                          }))}
-                          className="h-6 px-1 text-xs outline-none"
-                          style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, color: COLORS.textPrimary, fontFamily: MONO_FONT, borderRadius: 0 }}
-                        >
-                          <option value="auto">Auto</option>
-                          <option value="claude">Claude</option>
-                          <option value="codex">Codex</option>
-                        </select>
-                      </label>
-                    </div>
-                  )}
-                  {teamBudgetGuardrailActive ? (
-                    <div
-                      className="ml-5 flex items-center gap-1"
-                      style={{ fontSize: 10, color: "#F59E0B", fontFamily: MONO_FONT }}
-                    >
-                      <Warning size={12} weight="bold" />
-                      {`${teamBudgetGuardrailTeammateCount} teammates with Smart Budget disabled. Launch requires explicit confirmation.`}
-                    </div>
-                  ) : null}
-                </div>
 
-                {/* Worker Permissions — per-model-family (placed last so all model selections are finalized) */}
-                <WorkerPermissionsSection
-                  draft={draft}
-                  activePhases={activePhases}
-                  setDraft={setDraft}
-                  dlgLabelStyle={dlgLabelStyle}
-                  dlgInputStyle={dlgInputStyle}
-                />
+                    <div className="space-y-1.5">
+                      <span style={dlgLabelStyle}>AGENT RUNTIME CAPABILITIES</span>
+                      <label className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                        <input
+                          type="checkbox"
+                          checked={draft.agentRuntime.allowParallelAgents}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setDraft((p) => ({
+                              ...p,
+                              agentRuntime: { ...p.agentRuntime, allowParallelAgents: checked },
+                              ...(p.teamRuntime
+                                ? { teamRuntime: { ...p.teamRuntime, allowParallelAgents: checked } }
+                                : {})
+                            }));
+                          }}
+                        />
+                        ALLOW PARALLEL AGENTS / WORKERS
+                      </label>
+                      <label className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                        <input
+                          type="checkbox"
+                          checked={draft.agentRuntime.allowSubAgents}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setDraft((p) => ({
+                              ...p,
+                              agentRuntime: { ...p.agentRuntime, allowSubAgents: checked },
+                              ...(p.teamRuntime
+                                ? { teamRuntime: { ...p.teamRuntime, allowSubAgents: checked } }
+                                : {})
+                            }));
+                          }}
+                        />
+                        ALLOW SUB-AGENTS (NESTED DELEGATION)
+                      </label>
+                      <label className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                        <input
+                          type="checkbox"
+                          checked={draft.agentRuntime.allowClaudeAgentTeams}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setDraft((p) => ({
+                              ...p,
+                              agentRuntime: { ...p.agentRuntime, allowClaudeAgentTeams: checked },
+                              ...(p.teamRuntime
+                                ? { teamRuntime: { ...p.teamRuntime, allowClaudeAgentTeams: checked } }
+                                : {})
+                            }));
+                          }}
+                        />
+                        ALLOW CLAUDE CODE AGENT TEAMS
+                      </label>
+                      <div style={{ fontSize: 9, color: COLORS.textDim, fontFamily: MONO_FONT, marginTop: 2 }}>
+                        These controls are passed to orchestrator strategy prompts and runtime metadata.
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                        <input
+                          type="checkbox"
+                          checked={draft.teamRuntime?.enabled ?? false}
+                          title="Enable teammate worker orchestration for this mission."
+                          onChange={(e) => setDraft((p) => ({
+                            ...p,
+                            teamRuntime: {
+                              enabled: e.target.checked,
+                              targetProvider: p.teamRuntime?.targetProvider ?? "auto",
+                              teammateCount: p.teamRuntime?.teammateCount ?? 2,
+                              allowParallelAgents: p.agentRuntime.allowParallelAgents,
+                              allowSubAgents: p.agentRuntime.allowSubAgents,
+                              allowClaudeAgentTeams: p.agentRuntime.allowClaudeAgentTeams,
+                            }
+                          }))}
+                        />
+                        ENABLE TEAM RUNTIME
+                      </label>
+                      <div className="pl-5 text-[9px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
+                        Team runtime lets the orchestrator coordinate additional teammate workers for parallel execution.
+                      </div>
+                      {draft.teamRuntime?.enabled && (
+                        <div className="flex items-center gap-3 pl-5">
+                          <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                            <span>TEAMMATES</span>
+                            <input
+                              type="number"
+                              min={1}
+                              max={8}
+                              value={draft.teamRuntime?.teammateCount ?? 2}
+                              title="Number of teammate workers available to the orchestrator."
+                              onChange={(e) => setDraft((p) => ({
+                                ...p,
+                                teamRuntime: {
+                                  ...p.teamRuntime!,
+                                  teammateCount: Math.max(1, Math.min(8, Number(e.target.value) || 2)),
+                                }
+                              }))}
+                              className="h-6 w-12 px-1 text-xs text-center outline-none"
+                              style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, color: COLORS.textPrimary, fontFamily: MONO_FONT, borderRadius: 0 }}
+                            />
+                          </label>
+                          <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                            <span>PROVIDER</span>
+                            <select
+                              value={draft.teamRuntime?.targetProvider ?? "auto"}
+                              title="Preferred provider family for teammate workers."
+                              onChange={(e) => setDraft((p) => ({
+                                ...p,
+                                teamRuntime: {
+                                  ...p.teamRuntime!,
+                                  targetProvider: e.target.value as "claude" | "codex" | "auto",
+                                }
+                              }))}
+                              className="h-6 px-1 text-xs outline-none"
+                              style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, color: COLORS.textPrimary, fontFamily: MONO_FONT, borderRadius: 0 }}
+                            >
+                              <option value="auto">Auto</option>
+                              <option value="claude">Claude</option>
+                              <option value="codex">Codex</option>
+                            </select>
+                          </label>
+                        </div>
+                      )}
+                      {teamBudgetGuardrailActive ? (
+                        <div
+                          className="ml-5 flex items-center gap-1"
+                          style={{ fontSize: 10, color: "#F59E0B", fontFamily: MONO_FONT }}
+                        >
+                          <Warning size={12} weight="bold" />
+                          {`${teamBudgetGuardrailTeammateCount} teammates with Smart Budget disabled. Launch requires explicit confirmation.`}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    {/* Worker Permissions — per-model-family (placed last so all model selections are finalized) */}
+                    <WorkerPermissionsSection
+                      draft={draft}
+                      activePhases={activePhases}
+                      setDraft={setDraft}
+                      dlgLabelStyle={dlgLabelStyle}
+                      dlgInputStyle={dlgInputStyle}
+                    />
+
+                    <div className="space-y-2 p-3" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                            Computer Use & Proof
+                          </div>
+                          <div className="mt-1 text-[11px]" style={{ color: COLORS.textSecondary }}>
+                            External tools perform computer use. ADE discovers backends, checks proof readiness, and ingests resulting evidence for this mission.
+                          </div>
+                        </div>
+                        <div className="px-2 py-1 text-[9px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.info, border: `1px solid ${COLORS.info}35`, background: `${COLORS.info}12`, fontFamily: MONO_FONT }}>
+                          {draft.computerUse.mode}
+                        </div>
+                      </div>
+
+                      <div className="grid gap-3 md:grid-cols-3">
+                        <label className="space-y-1">
+                          <span style={dlgLabelStyle}>MISSION POLICY</span>
+                          <select
+                            value={draft.computerUse.mode}
+                            onChange={(e) => setDraft((prev) => ({
+                              ...prev,
+                              computerUse: {
+                                ...prev.computerUse,
+                                mode: e.target.value as ComputerUsePolicy["mode"],
+                              },
+                            }))}
+                            className="h-8 w-full px-2 text-[11px] outline-none"
+                            style={DLG_INPUT_STYLE}
+                          >
+                            <option value="off">Off</option>
+                            <option value="auto">Auto</option>
+                            <option value="enabled">Enabled</option>
+                          </select>
+                        </label>
+                        <label className="space-y-1">
+                          <span style={dlgLabelStyle}>PREFERRED BACKEND</span>
+                          <select
+                            value={draft.computerUse.preferredBackend ?? ""}
+                            onChange={(e) => setDraft((prev) => ({
+                              ...prev,
+                              computerUse: {
+                                ...prev.computerUse,
+                                preferredBackend: e.target.value.trim() || null,
+                              },
+                            }))}
+                            className="h-8 w-full px-2 text-[11px] outline-none"
+                            style={DLG_INPUT_STYLE}
+                          >
+                            <option value="">Auto select</option>
+                            <option value="Ghost OS">Ghost OS</option>
+                            <option value="agent-browser">agent-browser</option>
+                          </select>
+                        </label>
+                        <div className="space-y-1">
+                          <span style={dlgLabelStyle}>READINESS</span>
+                          <div className="h-8 flex items-center px-2 text-[10px]" style={{ ...DLG_INPUT_STYLE, color: preflightCurrent?.computerUse?.blocked ? COLORS.warning : COLORS.textPrimary }}>
+                            {preflightCurrent?.computerUse
+                              ? preflightCurrent.computerUse.summary
+                              : "Run launch review to verify backend readiness."}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap gap-4 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                        <label className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={draft.computerUse.allowLocalFallback}
+                            onChange={(e) => setDraft((prev) => ({
+                              ...prev,
+                              computerUse: {
+                                ...prev.computerUse,
+                                allowLocalFallback: e.target.checked,
+                              },
+                            }))}
+                          />
+                          ALLOW ADE LOCAL FALLBACK
+                        </label>
+                        <label className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={draft.computerUse.retainArtifacts}
+                            onChange={(e) => setDraft((prev) => ({
+                              ...prev,
+                              computerUse: {
+                                ...prev.computerUse,
+                                retainArtifacts: e.target.checked,
+                              },
+                            }))}
+                          />
+                          RETAIN PROOF ARTIFACTS
+                        </label>
+                      </div>
+
+                      {preflightCurrent?.computerUse ? (
+                        <div className="grid gap-2 md:grid-cols-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                          <div>
+                            Required proof: {preflightCurrent.computerUse.requiredKinds.length > 0 ? preflightCurrent.computerUse.requiredKinds.join(", ") : "none"}
+                          </div>
+                          <div>
+                            External backends: {preflightCurrent.computerUse.availableExternalBackends.length > 0 ? preflightCurrent.computerUse.availableExternalBackends.join(", ") : "none detected"}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  </>
+                ) : (
+                  <div className="space-y-1.5 p-3" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+                    <div
+                      className="text-[10px] font-bold uppercase tracking-[1px]"
+                      style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}
+                    >
+                      Loading advanced launch controls...
+                    </div>
+                    <div className="text-[11px]" style={{ color: COLORS.textSecondary }}>
+                      Budget guardrails, teammate runtime, worker permissions, and computer-use options will load after the dialog settles.
+                    </div>
+                  </div>
+                )}
+
                 {(preflightCurrent || preflightError) ? (
                   <div
                     className="space-y-2 p-3"
@@ -1716,6 +1907,7 @@ function CreateMissionDialogInner({
                         </div>
                         <div className="space-y-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                           <div>Phases: {preflightCurrent.approvalSummary.phaseLabels.join(" -> ")}</div>
+                          <div>Computer use: {preflightCurrent.computerUse?.summary ?? "not evaluated"}</div>
                           <div>Warnings: {preflightCurrent.warnings}</div>
                           <div>Failures: {preflightCurrent.hardFailures}</div>
                         </div>

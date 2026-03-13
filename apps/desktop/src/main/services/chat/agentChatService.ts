@@ -22,6 +22,10 @@ import type { createPackService } from "../packs/packService";
 import { runGit } from "../git/git";
 import { nowIso, fileSizeOrZero } from "../shared/utils";
 import type { EpisodicSummaryService } from "../memory/episodicSummaryService";
+import {
+  createDefaultComputerUsePolicy,
+  normalizeComputerUsePolicy,
+} from "../../../shared/types";
 import type {
   AgentChatApprovalDecision,
   AgentChatCreateArgs,
@@ -39,9 +43,10 @@ import type {
   AgentChatSteerArgs,
   AgentChatSendArgs,
   AgentChatUpdateSessionArgs,
+  ComputerUsePolicy,
   TerminalSessionStatus,
   TerminalToolType,
-  CtoCapabilityMode
+  CtoCapabilityMode,
 } from "../../../shared/types";
 import {
   getDefaultModelDescriptor,
@@ -100,6 +105,7 @@ type PersistedChatState = {
   permissionMode?: AgentChatSession["permissionMode"];
   identityKey?: AgentChatIdentityKey;
   capabilityMode?: CtoCapabilityMode;
+  computerUse?: ComputerUsePolicy;
   threadId?: string;
   messages?: PersistedClaudeMessage[];
   updatedAt: string;
@@ -709,9 +715,42 @@ function buildExecutionModeDirective(
   return null;
 }
 
-function composeLaunchPrompt(baseText: string, directive: string | null): string {
-  if (!directive) return baseText;
-  return `${directive}\n\nUser request:\n${baseText}`;
+function composeLaunchDirectives(baseText: string, directives: Array<string | null | undefined>): string {
+  const filtered = directives
+    .map((directive) => (typeof directive === "string" ? directive.trim() : ""))
+    .filter((directive) => directive.length > 0);
+  if (filtered.length === 0) return baseText;
+  return `${filtered.join("\n\n")}\n\nUser request:\n${baseText}`;
+}
+
+function buildComputerUseDirective(policy: ComputerUsePolicy | null | undefined): string | null {
+  const effective = createDefaultComputerUsePolicy(policy ?? undefined);
+  if (effective.mode === "off") {
+    return [
+      "[ADE computer-use policy]",
+      "Computer use is OFF for this chat session.",
+      "Do not call ADE or external computer-use tools, do not request screenshots/videos/traces, and do not capture new computer-use proof in this session.",
+    ].join("\n");
+  }
+
+  const lines = [
+    "[ADE computer-use policy]",
+    effective.mode === "enabled"
+      ? "Computer use is explicitly ENABLED for this chat session."
+      : "Computer use is available in AUTO mode for this chat session.",
+    "External tools perform computer use. ADE should ingest and manage the resulting proof artifacts.",
+    "Prefer approved external backends first and use ADE-local computer-use only as fallback compatibility support when explicitly allowed.",
+    effective.retainArtifacts
+      ? "If computer use produces screenshots, videos, traces, verification output, or logs, ingest and retain those artifacts in ADE."
+      : "If computer use is used, keep retained proof to the minimum necessary for the task.",
+  ];
+  if (!effective.allowLocalFallback) {
+    lines.push("Do not use ADE-local fallback computer-use tools in this chat.");
+  }
+  if (effective.preferredBackend) {
+    lines.push(`Preferred backend: ${effective.preferredBackend}.`);
+  }
+  return lines.join("\n");
 }
 
 function activityForToolName(
@@ -778,6 +817,10 @@ function normalizePersistedExecutionMode(value: unknown): AgentChatExecutionMode
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return VALID_EXECUTION_MODES.has(trimmed) ? trimmed as AgentChatExecutionMode : undefined;
+}
+
+function normalizePersistedComputerUse(value: unknown): ComputerUsePolicy {
+  return normalizeComputerUsePolicy(value, createDefaultComputerUsePolicy());
 }
 
 function normalizeIdentityKey(value: unknown): AgentChatIdentityKey | undefined {
@@ -1193,6 +1236,7 @@ export function createAgentChatService(args: {
       ...(managed.session.permissionMode ? { permissionMode: managed.session.permissionMode } : {}),
       ...(managed.session.identityKey ? { identityKey: managed.session.identityKey } : {}),
       ...(managed.session.capabilityMode ? { capabilityMode: managed.session.capabilityMode } : {}),
+      ...(managed.session.computerUse ? { computerUse: managed.session.computerUse } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
       ...(managed.runtime?.kind === "claude" ? { messages: managed.runtime.messages } : {}),
       ...(managed.runtime?.kind === "unified"
@@ -1233,6 +1277,7 @@ export function createAgentChatService(args: {
       const permissionMode = normalizePersistedPermissionMode(record.permissionMode);
       const identityKey = normalizeIdentityKey(record.identityKey);
       const capabilityMode = normalizeCapabilityMode(record.capabilityMode);
+      const computerUse = normalizePersistedComputerUse(record.computerUse);
       if (!laneId || !model) return null;
       const messages = Array.isArray(record.messages)
         ? record.messages
@@ -1256,6 +1301,7 @@ export function createAgentChatService(args: {
         ...(permissionMode ? { permissionMode } : {}),
         ...(identityKey ? { identityKey } : {}),
         ...(capabilityMode ? { capabilityMode } : {}),
+        ...(computerUse ? { computerUse } : {}),
         ...(typeof record.threadId === "string" && record.threadId.trim().length
           ? { threadId: record.threadId.trim() }
           : {}),
@@ -1692,6 +1738,7 @@ export function createAgentChatService(args: {
         ...(persisted?.permissionMode ? { permissionMode: persisted.permissionMode } : {}),
         ...(persisted?.identityKey ? { identityKey: persisted.identityKey } : {}),
         capabilityMode: persisted?.capabilityMode ?? inferCapabilityMode(provider),
+        computerUse: normalizePersistedComputerUse(persisted?.computerUse),
         status: mapTerminalStatusToChatStatus(row.status),
         ...(persisted?.threadId ? { threadId: persisted.threadId } : {}),
         createdAt: row.startedAt,
@@ -3187,7 +3234,8 @@ export function createAgentChatService(args: {
     sessionProfile,
     reasoningEffort,
     permissionMode: requestedPermMode,
-    identityKey
+    identityKey,
+    computerUse,
   }: AgentChatCreateArgs): Promise<AgentChatSession> => {
     const lane = laneService.getLaneBaseAndBranch(laneId);
     const sessionId = randomUUID();
@@ -3246,6 +3294,7 @@ export function createAgentChatService(args: {
       ? rawEffort
       : validateReasoningEffort(effectiveProvider === "claude" ? "claude" : "codex", rawEffort);
     const capabilityMode = inferCapabilityMode(effectiveProvider);
+    const computerUsePolicy = normalizeComputerUsePolicy(computerUse, createDefaultComputerUsePolicy());
 
     sessionService.create({
       sessionId,
@@ -3271,6 +3320,7 @@ export function createAgentChatService(args: {
         ...(requestedPermMode ? { permissionMode: requestedPermMode } : {}),
         ...(identityKey ? { identityKey } : {}),
         capabilityMode,
+        computerUse: computerUsePolicy,
         status: "idle",
         createdAt: startedAt,
         lastActivityAt: startedAt
@@ -3355,10 +3405,10 @@ export function createAgentChatService(args: {
         latestUserText: visibleText,
       });
     }
-    const promptText = composeLaunchPrompt(
-      trimmed,
+    const promptText = composeLaunchDirectives(trimmed, [
       buildExecutionModeDirective(executionMode, managed.session.provider),
-    );
+      buildComputerUseDirective(managed.session.computerUse),
+    ]);
     if (executionMode) {
       managed.session.executionMode = executionMode;
     } else if (managed.session.executionMode == null) {
@@ -3624,6 +3674,7 @@ export function createAgentChatService(args: {
         ...(persisted?.permissionMode ? { permissionMode: persisted.permissionMode } : {}),
         ...(persisted?.identityKey ? { identityKey: persisted.identityKey } : {}),
         capabilityMode: persisted?.capabilityMode ?? inferCapabilityMode(provider),
+        computerUse: normalizePersistedComputerUse(persisted?.computerUse),
         status: row.status === "running" ? "idle" : "ended",
         startedAt: row.startedAt,
         endedAt: row.endedAt,
@@ -3864,6 +3915,7 @@ export function createAgentChatService(args: {
     modelId,
     reasoningEffort,
     permissionMode,
+    computerUse,
   }: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
     const managed = ensureManagedSession(sessionId);
 
@@ -3925,6 +3977,10 @@ export function createAgentChatService(args: {
       if (managed.runtime?.kind === "unified") {
         managed.runtime.permissionMode = mapToUnifiedPermissionMode(permissionMode) ?? "edit";
       }
+    }
+
+    if (computerUse !== undefined) {
+      managed.session.computerUse = normalizeComputerUsePolicy(computerUse, createDefaultComputerUsePolicy());
     }
 
     persistChatState(managed);

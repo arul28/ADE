@@ -495,6 +495,14 @@ import type {
   RunHealthCheckArgs,
   ActivateFallbackArgs,
   DeactivateFallbackArgs,
+  ComputerUseArtifactListArgs,
+  ComputerUseArtifactReviewArgs,
+  ComputerUseArtifactRouteArgs,
+  ComputerUseArtifactView,
+  ComputerUseEventPayload,
+  ComputerUseOwnerSnapshot,
+  ComputerUseOwnerSnapshotArgs,
+  ComputerUseSettingsSnapshot,
 } from "../shared/types";
 
 export {};
@@ -772,6 +780,14 @@ declare global {
         fetchContextPack: (args: import("../shared/types").ContextPackFetchArgs) => Promise<import("../shared/types").ContextPackFetchResult>;
         changePermissionMode: (args: import("../shared/types").AgentChatChangePermissionModeArgs) => Promise<void>;
       };
+      computerUse: {
+        getSettings: () => Promise<ComputerUseSettingsSnapshot>;
+        listArtifacts: (args?: ComputerUseArtifactListArgs) => Promise<ComputerUseArtifactView[]>;
+        getOwnerSnapshot: (args: ComputerUseOwnerSnapshotArgs) => Promise<ComputerUseOwnerSnapshot>;
+        routeArtifact: (args: ComputerUseArtifactRouteArgs) => Promise<ComputerUseArtifactView>;
+        updateArtifactReview: (args: ComputerUseArtifactReviewArgs) => Promise<ComputerUseArtifactView>;
+        onEvent: (cb: (ev: ComputerUseEventPayload) => void) => () => void;
+      };
       pty: {
         create: (args: PtyCreateArgs) => Promise<PtyCreateResult>;
         write: (args: { ptyId: string; data: string }) => Promise<void>;
@@ -912,7 +928,7 @@ declare global {
         getConflictAnalysis: (prId: string) => Promise<import("../shared/types").PrConflictAnalysis>;
         getMergeContext: (prId: string) => Promise<PrMergeContext>;
         listWithConflicts: () => Promise<import("../shared/types").PrWithConflicts[]>;
-        getGitHubSnapshot: () => Promise<import("../shared/types").GitHubPrSnapshot>;
+        getGitHubSnapshot: (args?: { force?: boolean }) => Promise<import("../shared/types").GitHubPrSnapshot>;
         listIntegrationWorkflows: (args?: import("../shared/types").ListIntegrationWorkflowsArgs) => Promise<IntegrationProposal[]>;
         onEvent: (cb: (ev: PrEventPayload) => void) => () => void;
         getDetail: (prId: string) => Promise<PrDetail>;

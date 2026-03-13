@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
-import { motion } from "motion/react";
 import {
   PlayCircle,
   GitBranch,
@@ -19,7 +18,6 @@ import {
 import { cn } from "../ui/cn";
 import { useAppStore } from "../../state/appStore";
 import { revealLabel } from "../../lib/platform";
-import { layoutTransition } from "../../lib/motion";
 
 const mainItems = [
   { to: "/project", label: "Run", icon: PlayCircle },
@@ -97,10 +95,8 @@ export function TabNav() {
       >
         {/* Active indicator bar */}
         {isActive && (
-          <motion.div
-            layoutId="tab-indicator"
+          <div
             className="absolute inset-0 rounded-lg bg-white/[0.06]"
-            transition={layoutTransition}
           />
         )}
 

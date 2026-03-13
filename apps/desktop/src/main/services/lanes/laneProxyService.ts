@@ -42,6 +42,7 @@ export function createLaneProxyService({
   const interceptors: ProxyRequestInterceptor[] = [];
   let server: http.Server | null = null;
   let startedAt: string | undefined;
+  let startPromise: Promise<ProxyStatus> | null = null;
 
   // --- helpers ---------------------------------------------------------------
 
@@ -206,37 +207,88 @@ export function createLaneProxyService({
         return buildStatus();
       }
 
-      const listenPort = port ?? cfg.proxyPort;
-      cfg.proxyPort = listenPort;
+      if (startPromise) {
+        logger.debug("lane_proxy.start_inflight");
+        return startPromise;
+      }
 
-      return new Promise((resolve, reject) => {
-        const srv = http.createServer(handleRequest);
+      const requestedPort = port ?? cfg.proxyPort;
 
-        srv.on("error", (err) => {
-          logger.error("lane_proxy.server_error", { error: err.message });
-          const status: ProxyStatus = {
-            ...buildStatus(),
-            running: false,
-            error: err.message,
+      const finalizeStartFailure = (error: NodeJS.ErrnoException): never => {
+        logger.error("lane_proxy.server_error", {
+          error: error.message,
+          code: error.code,
+          port: requestedPort,
+        });
+        const status: ProxyStatus = {
+          ...buildStatus(),
+          running: false,
+          error: error.message,
+        };
+        broadcastEvent({ type: "proxy-stopped", status, error: error.message });
+        throw error;
+      };
+
+      const listenOnce = (listenPort: number): Promise<ProxyStatus> =>
+        new Promise((resolve, reject) => {
+          const srv = http.createServer(handleRequest);
+          let settled = false;
+
+          const rejectStart = (error: NodeJS.ErrnoException) => {
+            if (settled) return;
+            settled = true;
+            srv.removeAllListeners();
+            try {
+              srv.close();
+            } catch {
+              // no-op: server may not have started listening yet
+            }
+            reject(error);
           };
-          broadcastEvent({ type: "proxy-stopped", status, error: err.message });
-          reject(err);
+
+          srv.once("error", (error: NodeJS.ErrnoException) => {
+            rejectStart(error);
+          });
+
+          srv.listen(listenPort, "127.0.0.1", () => {
+            if (settled) return;
+            settled = true;
+            server = srv;
+            const addr = srv.address();
+            if (typeof addr === "object" && addr) {
+              cfg.proxyPort = addr.port;
+            } else {
+              cfg.proxyPort = listenPort;
+            }
+            startedAt = new Date().toISOString();
+            const status = buildStatus();
+            broadcastEvent({ type: "proxy-started", status });
+            logger.info("lane_proxy.started", { port: cfg.proxyPort, requestedPort: listenPort });
+            resolve(status);
+          });
         });
 
-        srv.listen(listenPort, "127.0.0.1", () => {
-          server = srv;
-          // Capture actual port (important when listenPort is 0)
-          const addr = srv.address();
-          if (typeof addr === "object" && addr) {
-            cfg.proxyPort = addr.port;
+      startPromise = (async () => {
+        try {
+          try {
+            return await listenOnce(requestedPort);
+          } catch (error) {
+            const err = error as NodeJS.ErrnoException;
+            if (err.code === "EADDRINUSE" && requestedPort !== 0) {
+              logger.warn("lane_proxy.port_in_use_fallback", {
+                requestedPort,
+                fallback: "ephemeral",
+              });
+              return await listenOnce(0);
+            }
+            return finalizeStartFailure(err);
           }
-          startedAt = new Date().toISOString();
-          const status = buildStatus();
-          broadcastEvent({ type: "proxy-started", status });
-          logger.info("lane_proxy.started", { port: cfg.proxyPort });
-          resolve(status);
-        });
-      });
+        } finally {
+          startPromise = null;
+        }
+      })();
+
+      return startPromise;
     },
 
     /**
@@ -249,6 +301,7 @@ export function createLaneProxyService({
         server!.close(() => {
           server = null;
           startedAt = undefined;
+          startPromise = null;
           const status = buildStatus();
           broadcastEvent({ type: "proxy-stopped", status });
           logger.info("lane_proxy.stopped");
@@ -393,6 +446,7 @@ export function createLaneProxyService({
         await new Promise<void>((resolve) => server!.close(() => resolve()));
         server = null;
       }
+      startPromise = null;
       routes.clear();
       interceptors.length = 0;
       startedAt = undefined;

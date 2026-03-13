@@ -329,6 +329,7 @@ function describeLabel(value: string, catalog: LinearWorkflowCatalog): string {
 }
 
 function formatEndpoint(status: LinearIngressStatus["relay"] | LinearIngressStatus["localWebhook"]): string {
+  if (!status?.status) return "not configured";
   if (!status.configured && status.status === "disabled") return "disabled";
   const base = status.status.replace(/_/g, " ");
   const delivery = status.lastDeliveryAt ? ` · last event ${new Date(status.lastDeliveryAt).toLocaleTimeString()}` : "";
@@ -649,10 +650,10 @@ export function LinearSyncPanel() {
       },
       {
         id: "webhook",
-        title: "Turn on real-time ingress",
+        title: "Optional: turn on real-time ingress",
         description: webhookReady
           ? "Webhook ingress is healthy. Linear updates should start the workflow immediately."
-          : "Click 'Ensure webhook' so ADE can receive Linear changes in real time.",
+          : "Polling already works. Click 'Ensure webhook' only if you want faster real-time intake.",
         done: webhookReady,
       },
       {
@@ -1439,11 +1440,14 @@ export function LinearSyncPanel() {
 
             <div className={cardCls}>
               <div className="mb-2 flex items-center justify-between gap-2">
-                <div className="font-sans text-sm font-semibold text-fg">Real-Time Ingress</div>
+                <div className="font-sans text-sm font-semibold text-fg">Optional Real-Time Ingress</div>
                 <Button variant="outline" size="sm" onClick={() => void ensureWebhook()} data-testid="linear-ensure-webhook-btn">
                   <Lightning size={10} />
                   Ensure webhook
                 </Button>
+              </div>
+              <div className="mb-3 font-mono text-[10px] text-muted-fg">
+                Sync polling is enough for the normal Linear workflow. Turn this on only when you want lower-latency webhook delivery.
               </div>
               <div className="space-y-2 font-mono text-[10px] text-muted-fg">
                 <div>Relay: {ingressStatus ? formatEndpoint(ingressStatus.relay) : "loading"}</div>

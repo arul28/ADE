@@ -40,11 +40,26 @@ export function createLinearSyncService(args: {
   dispatcherService: LinearDispatcherService;
   reconciliationIntervalSec?: number;
   autoStart?: boolean;
+  hasCredentials?: () => boolean;
 }) {
   let disposed = false;
   let timer: NodeJS.Timeout | null = null;
   let inFlight = false;
+  let lastSkipReason: string | null = null;
   const reconciliationIntervalSec = Math.max(15, Math.floor(args.reconciliationIntervalSec ?? 30));
+
+  const logSkip = (reason: "no_enabled_workflows" | "no_credentials", meta: Record<string, unknown>) => {
+    if (lastSkipReason === reason) return;
+    lastSkipReason = reason;
+    args.logger?.info("linear_workflow.sync_cycle_skipped", {
+      reason,
+      ...meta,
+    });
+  };
+
+  const clearSkipReason = () => {
+    lastSkipReason = null;
+  };
 
   const setSyncState = (patch: {
     enabled?: boolean;
@@ -146,21 +161,49 @@ export function createLinearSyncService(args: {
     if (disposed || inFlight) return;
     inFlight = true;
     const policy = args.flowPolicyService.getPolicy();
+    const workflowsEnabled = workflowEnabled(policy);
+    const hasActiveRuns = args.dispatcherService.hasActiveRuns();
+    const hasCredentials = args.hasCredentials?.() ?? true;
     setSyncState({
-      enabled: workflowEnabled(policy),
+      enabled: workflowsEnabled,
       running: true,
       lastPollAt: nowIso(),
       lastError: null,
     });
     try {
+      if (!workflowsEnabled && !hasActiveRuns) {
+        logSkip("no_enabled_workflows", {
+          activeRuns: 0,
+        });
+        setSyncState({
+          running: false,
+          lastSuccessAt: nowIso(),
+        });
+        return;
+      }
+      if (!hasCredentials && !hasActiveRuns) {
+        logSkip("no_credentials", {
+          activeRuns: 0,
+          workflowsEnabled,
+        });
+        setSyncState({
+          running: false,
+          lastSuccessAt: nowIso(),
+        });
+        return;
+      }
+      clearSkipReason();
       releaseDueRetries();
-      await dispatchNewRuns(policy);
+      if (workflowsEnabled && hasCredentials) {
+        await dispatchNewRuns(policy);
+      }
       await advanceRuns(policy);
       setSyncState({
         running: false,
         lastSuccessAt: nowIso(),
       });
     } catch (error) {
+      clearSkipReason();
       const message = getErrorMessage(error);
       args.logger?.warn("linear_workflow.sync_cycle_failed", {
         error: message,
@@ -176,18 +219,28 @@ export function createLinearSyncService(args: {
 
   const processIssueUpdate = async (issueId: string): Promise<void> => {
     if (disposed) return;
+    if (!(args.hasCredentials?.() ?? true) && !args.dispatcherService.hasActiveRuns()) {
+      args.logger?.info("linear_workflow.issue_update_skipped", {
+        reason: "no_credentials",
+        issueId,
+      });
+      return;
+    }
     const issue = await args.issueTracker.fetchIssueById(issueId);
     if (!issue) return;
     const policy = args.flowPolicyService.getPolicy();
+    const workflowsEnabled = workflowEnabled(policy);
     setSyncState({
-      enabled: workflowEnabled(policy),
+      enabled: workflowsEnabled,
       running: true,
       lastPollAt: nowIso(),
       lastError: null,
     });
     try {
       releaseDueRetries();
-      await processIssueSnapshot(issue, policy);
+      if (workflowsEnabled) {
+        await processIssueSnapshot(issue, policy);
+      }
       await advanceRuns(policy);
       setSyncState({
         running: false,
@@ -274,14 +327,22 @@ export function createLinearSyncService(args: {
     }
   };
 
+  const start = async (): Promise<void> => {
+    if (disposed) return;
+    if (!timer) {
+      timer = setInterval(() => {
+        void runCycle();
+      }, reconciliationIntervalSec * 1000);
+    }
+    await runCycle();
+  };
+
   if (args.autoStart !== false) {
-    timer = setInterval(() => {
-      void runCycle();
-    }, reconciliationIntervalSec * 1000);
-    void runCycle();
+    void start();
   }
 
   return {
+    start,
     runSyncNow,
     processIssueUpdate,
     processActiveRunsNow,

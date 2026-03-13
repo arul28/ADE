@@ -113,13 +113,35 @@ type AppState = {
   refreshKeybindings: () => Promise<void>;
 
   refreshProject: () => Promise<void>;
-  refreshLanes: () => Promise<void>;
+  refreshLanes: (options?: { includeStatus?: boolean }) => Promise<void>;
   openRepo: () => Promise<ProjectInfo | null>;
   switchProjectToPath: (rootPath: string) => Promise<void>;
   closeProject: () => Promise<void>;
 };
 
 export type LaneInspectorTab = "terminals" | "context" | "stack" | "merge";
+
+let warmLaneStatusTimer: number | null = null;
+let warmProviderModeTimer: number | null = null;
+
+function scheduleProjectHydration(get: () => AppState) {
+  if (warmLaneStatusTimer != null) {
+    window.clearTimeout(warmLaneStatusTimer);
+  }
+  if (warmProviderModeTimer != null) {
+    window.clearTimeout(warmProviderModeTimer);
+  }
+
+  warmLaneStatusTimer = window.setTimeout(() => {
+    warmLaneStatusTimer = null;
+    void get().refreshLanes({ includeStatus: true });
+  }, 1_200);
+
+  warmProviderModeTimer = window.setTimeout(() => {
+    warmProviderModeTimer = null;
+    void get().refreshProviderMode();
+  }, 1_800);
+}
 
 export const useAppStore = create<AppState>((set, get) => ({
   project: null,
@@ -185,8 +207,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ project });
   },
 
-  refreshLanes: async () => {
-    const lanes = await window.ade.lanes.list({ includeArchived: false });
+  refreshLanes: async (options) => {
+    const lanes = await window.ade.lanes.list({
+      includeArchived: false,
+      includeStatus: options?.includeStatus ?? true,
+    });
     const selected = get().selectedLaneId;
     const runLane = get().runLaneId;
     const nextSelected = selected && lanes.some((l) => l.id === selected) ? selected : lanes[0]?.id ?? null;
@@ -236,10 +261,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       terminalAttention: EMPTY_TERMINAL_ATTENTION
     });
     void Promise.allSettled([
-      get().refreshLanes(),
-      get().refreshProviderMode(),
+      get().refreshLanes({ includeStatus: false }),
       get().refreshKeybindings()
     ]);
+    scheduleProjectHydration(get);
     return project;
   },
 
@@ -257,10 +282,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       terminalAttention: EMPTY_TERMINAL_ATTENTION
     });
     void Promise.allSettled([
-      get().refreshLanes(),
-      get().refreshProviderMode(),
+      get().refreshLanes({ includeStatus: false }),
       get().refreshKeybindings()
     ]);
+    scheduleProjectHydration(get);
   },
 
   closeProject: async () => {

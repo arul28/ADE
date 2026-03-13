@@ -1,0 +1,344 @@
+---
+title: "AI Providers"
+description: "Configure Anthropic, OpenAI, OpenRouter, and local models in ADE. Manage API keys, set budget caps, and control which model each agent uses."
+icon: "microchip"
+---
+
+<Info>**📸 Screenshot needed:** Settings → AI Providers panel showing four provider cards (Anthropic, OpenAI, OpenRouter, Local Models), each with a connection status indicator, a masked API key field, and a "Test Connection" button. Anthropic should show "Connected" in green.</Info>
+
+## Supported Providers
+
+ADE supports four AI provider categories. You can configure any combination — agents can use different providers depending on the task.
+
+<CardGroup cols={2}>
+  <Card title="Anthropic (Claude)" icon="robot">
+    Default and recommended. Models: `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5`. Best for complex reasoning, long-context tasks, and code review.
+  </Card>
+  <Card title="OpenAI" icon="circle">
+    Supported via the OpenAI API. Models: `gpt-4o`, `gpt-4o-mini`, `o1`, `o3`. Best for structured output, code completion, and tool use.
+  </Card>
+  <Card title="OpenRouter" icon="shuffle">
+    Route to hundreds of models through a single API key. Useful for cost optimization, model comparison, and accessing open-source models (Llama, Mistral, Gemini).
+  </Card>
+  <Card title="Local Models" icon="computer">
+    Via Ollama or LM Studio. Point ADE to a local OpenAI-compatible endpoint — no API key required. Best for offline use or privacy-sensitive codebases.
+  </Card>
+</CardGroup>
+
+---
+
+## Provider Comparison
+
+| Provider | Best For | Context Window | Requires API Key |
+|----------|----------|----------------|-----------------|
+| Anthropic Claude | Complex reasoning, long-context, code review | Up to 200K tokens | Yes |
+| OpenAI GPT | Structured output, code completion, tool use | Up to 128K tokens | Yes |
+| OpenRouter | Cost optimization, model comparison | Varies by model | Yes |
+| Ollama / LM Studio | Offline, privacy-sensitive work | Varies by model | No |
+
+---
+
+## Where to Configure Providers
+
+Provider configuration lives in two places:
+
+1. **`local.secret.yaml`** — API keys and endpoint URLs. Never committed to git.
+2. **`ade.yaml`** — Default model and budget defaults. Committed to git and shared with your team.
+3. **Settings → AI Providers** — GUI for adding/rotating keys, testing connections, and setting per-provider defaults. Writes to `local.secret.yaml` on save.
+
+---
+
+## Setting Up Anthropic (Claude)
+
+Anthropic is the default provider. Claude models are the recommended choice for most ADE workflows due to their strong code understanding and large context windows.
+
+<Steps>
+  <Step title="Get an API key">
+    Go to [console.anthropic.com](https://console.anthropic.com) and create an API key. Keys start with `sk-ant-`.
+  </Step>
+  <Step title="Add the key to local.secret.yaml">
+    ```yaml
+    # .ade/local.secret.yaml
+    anthropic:
+      apiKey: "sk-ant-..."
+    ```
+    Or use Settings → AI Providers → Anthropic → Add API Key.
+  </Step>
+  <Step title="Set the default model in ade.yaml">
+    ```yaml
+    # .ade/ade.yaml
+    ai:
+      defaultModel: "claude-opus-4-6"
+    ```
+    Available models: `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5`.
+  </Step>
+  <Step title="Test the connection">
+    In Settings → AI Providers → Anthropic, click **Test Connection**. ADE sends a minimal request to the API and reports success or an error with the HTTP status code.
+  </Step>
+</Steps>
+
+---
+
+## Setting Up OpenAI
+
+<Steps>
+  <Step title="Get an API key">
+    Go to [platform.openai.com](https://platform.openai.com) and create an API key. Keys start with `sk-`.
+  </Step>
+  <Step title="Add the key to local.secret.yaml">
+    ```yaml
+    # .ade/local.secret.yaml
+    openai:
+      apiKey: "sk-..."
+    ```
+  </Step>
+  <Step title="Optionally set OpenAI as default">
+    ```yaml
+    # .ade/ade.yaml
+    ai:
+      defaultModel: "gpt-4o"
+    ```
+    Available models: `gpt-4o`, `gpt-4o-mini`, `o1`, `o3`.
+  </Step>
+</Steps>
+
+---
+
+## Setting Up OpenRouter
+
+OpenRouter provides a single API key that routes to hundreds of upstream models. This is useful for comparing models, accessing open-source models, or optimizing cost by routing different agent types to cheaper models.
+
+```yaml
+# .ade/local.secret.yaml
+openrouter:
+  apiKey: "sk-or-..."
+  defaultModel: "anthropic/claude-opus-4-6"   # OpenRouter model identifier
+```
+
+<Tabs>
+  <Tab title="Anthropic via OpenRouter">
+    ```yaml
+    openrouter:
+      apiKey: "sk-or-..."
+      defaultModel: "anthropic/claude-opus-4-6"
+    ```
+  </Tab>
+  <Tab title="OpenAI via OpenRouter">
+    ```yaml
+    openrouter:
+      apiKey: "sk-or-..."
+      defaultModel: "openai/gpt-4o"
+    ```
+  </Tab>
+  <Tab title="Open-Source via OpenRouter">
+    ```yaml
+    openrouter:
+      apiKey: "sk-or-..."
+      defaultModel: "meta-llama/llama-3.1-70b-instruct"
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+OpenRouter model identifiers use the format `<provider>/<model-name>`. Find the full list at [openrouter.ai/models](https://openrouter.ai/models). When using OpenRouter, the model string you set in `ade.yaml` should use the OpenRouter format, prefixed with `openrouter:` — for example: `openrouter:anthropic/claude-opus-4-6`.
+</Note>
+
+---
+
+## Setting Up Local Models (Ollama)
+
+Local models run entirely on your machine. No API key is needed. ADE communicates with locally-running Ollama or LM Studio through their OpenAI-compatible API endpoints.
+
+<Steps>
+  <Step title="Install and start Ollama">
+    Install [Ollama](https://ollama.ai) and pull a model:
+    ```bash
+    brew install ollama
+    ollama pull codellama:13b
+    ollama serve
+    ```
+    Ollama listens on `http://localhost:11434` by default.
+  </Step>
+  <Step title="Configure the local endpoint in local.secret.yaml">
+    ```yaml
+    # .ade/local.secret.yaml
+    localModels:
+      baseUrl: "http://localhost:11434/v1"
+      # No apiKey needed for local Ollama
+    ```
+    For LM Studio, use `http://localhost:1234/v1` (or your configured port).
+  </Step>
+  <Step title="Set a local model as default in ade.yaml">
+    ```yaml
+    # .ade/ade.yaml
+    ai:
+      defaultModel: "local:codellama:13b"
+      # The "local:" prefix tells ADE to use the localModels endpoint
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+Local models have significantly smaller context windows than cloud models (typically 4K–32K tokens versus 128K–200K). ADE's context compaction will trigger more frequently. For complex missions or large codebases, cloud models are strongly recommended.
+</Warning>
+
+---
+
+## Model Reference
+
+<Info>**📸 Screenshot needed:** The model selection dropdown in the Mission creation dialog, showing models grouped by provider (Anthropic, OpenAI, OpenRouter, Local) with context window sizes and cost-per-token indicators beside each model name.</Info>
+
+### Anthropic (Claude)
+
+| Model | Context Window | Best For |
+|-------|---------------|---------|
+| `claude-opus-4-6` | 200K tokens | Complex reasoning, architecture review, long-context analysis |
+| `claude-sonnet-4-6` | 200K tokens | General coding tasks, balanced speed and quality |
+| `claude-haiku-4-5` | 200K tokens | Fast, lightweight tasks; automation runs; high-volume tool calls |
+
+### OpenAI
+
+| Model | Context Window | Best For |
+|-------|---------------|---------|
+| `gpt-4o` | 128K tokens | Structured output, JSON generation, tool use |
+| `gpt-4o-mini` | 128K tokens | Cost-efficient tasks, simple completions |
+| `o1` | 128K tokens | Deep reasoning, math, multi-step logic |
+| `o3` | 128K tokens | Advanced reasoning with extended compute |
+
+---
+
+## Model Selection by Context
+
+ADE lets you assign different models to different agent roles. This is the recommended approach for cost efficiency: use Opus for planning and architecture, Sonnet for execution, and Haiku for automation runs.
+
+```yaml
+# .ade/ade.yaml
+ai:
+  defaultModel: "claude-sonnet-4-6"      # Fallback for all agents
+  routingRules:
+    - role: "orchestrator"               # Mission planning agent
+      model: "claude-opus-4-6"
+    - role: "worker"                     # Mission execution agents
+      model: "claude-sonnet-4-6"
+    - role: "automation"                 # Automation runs (cost-sensitive)
+      model: "claude-haiku-4-5"
+    - role: "validator"                  # Mission validation agent
+      model: "claude-sonnet-4-6"
+```
+
+<Tip>
+For solo developers running many automations, routing automation runs to `claude-haiku-4-5` and reserving `claude-opus-4-6` for mission planning can reduce monthly spend by 60–80% with minimal quality impact on routine tasks.
+</Tip>
+
+---
+
+## Budget Configuration
+
+Budget caps prevent runaway spend from long-running agents or automation loops. Caps are enforced in the main process — when a session reaches its cap, the agent receives a stop signal and the session ends gracefully.
+
+```yaml
+# .ade/ade.yaml
+ai:
+  defaultBudgetPerSession: 1.00         # USD per chat session
+  defaultBudgetPerMission: 10.00        # USD per mission (all workers combined)
+  defaultBudgetPerAutomation: 0.50      # USD per automation trigger
+  monthlyBudgetCap: 100.00              # Hard monthly ceiling across all agents
+```
+
+<AccordionGroup>
+  <Accordion title="Per-session budget" icon="message">
+    Applied to chat sessions in the Agent Chat pane. When the session's cumulative cost reaches this value, the agent receives a stop signal. You can raise the cap for the current session in the chat header without editing config.
+  </Accordion>
+  <Accordion title="Per-mission budget" icon="bullseye">
+    Applied to the entire mission run, summing across all workers. If the combined worker spend reaches the cap during execution, the orchestrator suspends remaining tasks and surfaces an intervention request asking whether to extend the budget or abandon the mission.
+  </Accordion>
+  <Accordion title="Per-automation budget" icon="bolt">
+    Applied per automation trigger event. Each time an automation fires, it gets a fresh budget for that run. Useful for keeping PR review automations economical.
+  </Accordion>
+  <Accordion title="Monthly cap" icon="calendar">
+    A hard ceiling across all providers, all agents, all sessions. Once reached, all agent activity pauses. ADE shows a banner and sends a notification. The cap resets on the first day of each calendar month. You can raise or reset it in Settings → Budget.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Context Compaction
+
+ADE monitors context usage for every active agent session. When usage reaches the configured threshold (default 70%), ADE automatically compacts the context to free space.
+
+**How compaction works:**
+1. ADE identifies the oldest message segments in the context window
+2. A compaction request is sent to summarize those segments into a compact narrative
+3. The summary replaces the original messages in the context
+4. Key details (function signatures, file paths, error messages, agent decisions) are preserved verbatim in the summary
+
+```yaml
+# .ade/ade.yaml — or override in local.yaml
+ai:
+  contextCompaction:
+    threshold: 0.70          # Trigger at 70% usage (0.0–1.0)
+    strategy: "summarize"    # "summarize" | "truncate" | "manual"
+    preserveSystemPrompt: true
+```
+
+<Note>
+Some providers handle large contexts better than others. If you notice quality degradation at high context usage with a specific provider, lower the compaction threshold for that provider. Per-provider thresholds can be set in Settings → AI → Context Management.
+</Note>
+
+---
+
+## API Key Security
+
+<Info>**📸 Screenshot needed:** The API key field in Settings → AI Providers showing a masked key ("sk-ant-••••••••••••1234") with a "Rotate" button and a "Revoke" button, alongside a small info badge reading "Stored in local.secret.yaml — never committed to git."</Info>
+
+API keys are handled according to ADE's trust boundary model:
+
+- **Storage**: Keys live only in `local.secret.yaml` on disk. ADE reads them into main process memory at startup.
+- **In-memory handling**: Once loaded, keys are held in the main process (Electron main) only. They are never passed to the renderer process.
+- **SQLite**: Keys are never written to ADE's SQLite database. The database stores session metadata, costs, and audit records — not credentials.
+- **Log redaction**: Any key value that appears in log output (e.g., from a misconfigured MCP tool) is automatically redacted and replaced with `***`.
+- **IPC bridge**: The preload bridge does not expose any IPC channel that returns raw API key values to the renderer.
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Authentication error (401)" icon="lock">
+    Your API key is invalid or has been revoked. Verify the key value in `local.secret.yaml` — ensure there are no leading or trailing spaces, and that the key is for the correct provider. Anthropic keys start with `sk-ant-`; OpenAI keys start with `sk-`.
+  </Accordion>
+  <Accordion title="Rate limit exceeded (429)" icon="gauge">
+    You are hitting the provider's rate limit. ADE automatically retries with exponential backoff (up to 3 retries). If rate limits are consistently hit, consider: (1) switching to a less popular model tier, (2) upgrading your API plan, or (3) routing some agents through OpenRouter which aggregates capacity.
+  </Accordion>
+  <Accordion title="Monthly quota exceeded" icon="calendar-xmark">
+    Your provider account has exhausted its monthly quota. This is separate from ADE's budget cap — it is a limit set by the provider. Log in to your provider's billing dashboard to review and increase your quota. ADE will resume automatically once the provider accepts requests again.
+  </Accordion>
+  <Accordion title="Model not found (404)" icon="circle-question">
+    The model string in `ade.yaml` does not match a valid model ID for the configured provider. Check the exact model IDs in the Model Reference table above. Model IDs are case-sensitive.
+  </Accordion>
+  <Accordion title="Local model not responding" icon="computer">
+    If using Ollama, confirm that `ollama serve` is running and that the model is pulled (`ollama list`). Verify the `baseUrl` in `local.secret.yaml` matches the port Ollama is listening on (default `11434`). Use **Test Connection** in Settings → AI Providers → Local to get the exact error.
+  </Accordion>
+  <Accordion title="Context window exceeded" icon="align-left">
+    The agent's conversation has exceeded the model's context limit even after compaction. Options: (1) lower the compaction threshold so compaction fires earlier, (2) start a new session (the Lane Pack will provide continuity), (3) switch to a model with a larger context window.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## What's Next
+
+<CardGroup cols={2}>
+  <Card title="MCP Servers" icon="server" href="/configuration/mcp-servers">
+    Connect external MCP servers to give agents tools beyond ADE's built-ins.
+  </Card>
+  <Card title="Settings" icon="gear" href="/configuration/settings">
+    Configure usage graphs, notification thresholds, and per-agent model overrides.
+  </Card>
+  <Card title="Missions" icon="bullseye" href="/missions/overview">
+    Learn how model routing rules apply during mission planning and execution phases.
+  </Card>
+  <Card title="Permissions" icon="shield-check" href="/configuration/permissions">
+    Understand how API keys are protected by ADE's trust boundary architecture.
+  </Card>
+</CardGroup>

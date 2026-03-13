@@ -117,6 +117,11 @@ import type { createConflictService } from "../conflicts/conflictService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createQueueRehearsalService } from "../prs/queueRehearsalService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
+import {
+  buildComputerUseOwnerSnapshot,
+  collectRequiredComputerUseKindsFromPhases,
+  getComputerUseArtifactKinds,
+} from "../computerUse/controlPlane";
 import { createMemoryService } from "../memory/memoryService";
 import { CoordinatorAgent } from "./coordinatorAgent";
 import { routeEventToCoordinator } from "./runtimeEventRouter";
@@ -815,6 +820,8 @@ export function createAiOrchestratorService(args: {
 
   // Call type config cache
   const callTypeConfigCache = new Map<string, { config: ResolvedCallTypeConfig; expiresAt: number }>();
+  const STARTUP_RUNTIME_EVENT_HYDRATION_LIMIT = 750;
+  const STARTUP_OPEN_QUESTION_REPLAY_LIMIT = 750;
 
   // Scalar mutable state wrapped for ctx
   const disposedRef = { current: false };
@@ -895,6 +902,31 @@ export function createAiOrchestratorService(args: {
       if (key.startsWith(`${runId}:`)) {
         subagentCompletionRollupSent.delete(key);
       }
+    }
+  };
+
+  const hasRecoverableRuntimeWork = (): boolean => {
+    try {
+      const activeRun = db.get<{ found: number }>(
+        `
+          select 1 as found
+          from orchestrator_runs
+          where status in ('active', 'bootstrapping', 'queued', 'paused')
+          limit 1
+        `
+      );
+      if (activeRun?.found === 1) return true;
+      const persistedRuntime = db.get<{ found: number }>(
+        `
+          select 1 as found
+          from orchestrator_attempt_runtime
+          limit 1
+        `
+      );
+      return persistedRuntime?.found === 1;
+    } catch {
+      // Fail open so recovery still happens if the quick preflight query itself fails.
+      return true;
     }
   };
 
@@ -2170,10 +2202,17 @@ Check all worker statuses and continue managing the mission from here. Read work
     stateDoc: MissionStateDocument | null;
   }): MissionCloseoutRequirement[] => {
     const backendStatus = computerUseArtifactBrokerService?.getBackendStatus() ?? null;
+    const computerUseKinds = new Set(getComputerUseArtifactKinds());
     const hasExternalCoverage = (requirementKey: MissionCloseoutRequirementKey): boolean =>
-      backendStatus?.backends.some((backend) =>
-        backend.available && backend.supportedKinds.includes(requirementKey as ValidationEvidenceRequirement)
-      ) ?? false;
+      computerUseKinds.has(requirementKey as ReturnType<typeof getComputerUseArtifactKinds>[number])
+        ? (
+            backendStatus?.backends.some((backend) =>
+              backend.available && backend.supportedKinds.includes(
+                requirementKey as ReturnType<typeof getComputerUseArtifactKinds>[number]
+              )
+            ) ?? false
+          )
+        : false;
     const outcomeSummary = buildOutcomeSummary(args.graph).trim();
     const modifiedFiles = args.stateDoc?.modifiedFiles ?? [];
     const completionDiagnostics = args.graph.completionEvaluation?.diagnostics ?? [];
@@ -3244,7 +3283,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     try {
       events = orchestratorService.listRuntimeEvents({
         eventTypes: ["progress", "heartbeat", "question", "session_ended"],
-        limit: 5_000
+        limit: STARTUP_RUNTIME_EVENT_HYDRATION_LIMIT
       });
     } catch {
       return;
@@ -3341,7 +3380,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         events = orchestratorService.listRuntimeEvents({
           runId: run.id,
           eventTypes: ["question", "intervention_resolved", "progress"],
-          limit: 5_000
+          limit: STARTUP_OPEN_QUESTION_REPLAY_LIMIT
         });
       } catch {
         continue;
@@ -4650,6 +4689,7 @@ Check all worker statuses and continue managing the mission from here. Read work
    */
   const resumeActiveTeamRuntimes = (): void => {
     void (async () => {
+      if (!hasRecoverableRuntimeWork()) return;
       try {
         const pageSize = 100;
         let offset = 0;
@@ -8183,6 +8223,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (disposed || healthSweepTimer) return;
     healthSweepTimer = setInterval(() => {
       if (disposed) return;
+      if (workerStates.size === 0 && activeHealthSweepRuns.size === 0 && !hasRecoverableRuntimeWork()) return;
       void runHealthSweep("interval").catch((error) => {
         logger.debug("ai_orchestrator.health_sweep_interval_failed", {
           error: error instanceof Error ? error.message : String(error)
@@ -8190,7 +8231,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       });
     }, HEALTH_SWEEP_INTERVAL_MS);
     healthSweepTimerRef.current = healthSweepTimer;
-    if (!disposed) {
+    if (!disposed && hasRecoverableRuntimeWork()) {
       void runHealthSweep("startup").catch((error) => {
         logger.debug("ai_orchestrator.health_sweep_startup_failed", {
           error: error instanceof Error ? error.message : String(error)
@@ -8819,6 +8860,16 @@ Check all worker statuses and continue managing the mission from here. Read work
       });
     }
 
+    const missionComputerUse = computerUseArtifactBrokerService
+      ? buildComputerUseOwnerSnapshot({
+          broker: computerUseArtifactBrokerService,
+          owner: { kind: "mission", id: missionId },
+          policy: mission.computerUse,
+          requiredKinds: collectRequiredComputerUseKindsFromPhases(mission.phaseConfiguration?.selectedPhases ?? []),
+          limit: 50,
+        })
+      : null;
+
     return {
       missionId,
       runId: run?.id ?? null,
@@ -8889,6 +8940,7 @@ Check all worker statuses and continue managing the mission from here. Read work
             stateDoc,
           })
         : [],
+      computerUse: missionComputerUse,
     };
   };
 
@@ -9034,22 +9086,26 @@ Check all worker statuses and continue managing the mission from here. Read work
   const propagateAttemptTokenUsage = (runId: string, attemptId: string): void =>
     propagateAttemptTokenUsageCtx(ctx, runId, attemptId);
 
-  hydratePersistedAttemptRuntimeState();
-  hydrateRuntimeSignalsFromEventBus();
-  replayOpenQuestionsFromEventBus();
-  void (async () => {
-    try {
-      await reconcileThreadedMessagingState();
-    } catch (error) {
-      logger.debug("ai_orchestrator.chat_reconciliation_failed", {
-        error: error instanceof Error ? error.message : String(error)
-      });
-    } finally {
-      if (!disposed) {
-        startHealthSweepLoop();
+  if (hasRecoverableRuntimeWork()) {
+    hydratePersistedAttemptRuntimeState();
+    hydrateRuntimeSignalsFromEventBus();
+    replayOpenQuestionsFromEventBus();
+    void (async () => {
+      try {
+        await reconcileThreadedMessagingState();
+      } catch (error) {
+        logger.debug("ai_orchestrator.chat_reconciliation_failed", {
+          error: error instanceof Error ? error.message : String(error)
+        });
+      } finally {
+        if (!disposed) {
+          startHealthSweepLoop();
+        }
       }
-    }
-  })();
+    })();
+  } else {
+    startHealthSweepLoop();
+  }
 
   // ---------------------------------------------------------------------------
   // Smart Agent Recovery: AI-diagnosed failure handling with tiered response

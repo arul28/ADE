@@ -15,6 +15,11 @@ import type {
 } from "./orchestrator";
 import type { AiCliPermissionMode, AiCliSandboxPermissions, AiInProcessPermissionMode } from "./config";
 import type { AgentChatPermissionMode } from "./chat";
+import type {
+  ComputerUseArtifactKind,
+  ComputerUseOwnerSnapshot,
+  ComputerUsePolicy,
+} from "./computerUseArtifacts";
 import type { ExternalMcpMissionSelection } from "./externalMcp";
 
 /** @deprecated Use MissionProviderPermissions instead. Kept for backward compat with stored missions. */
@@ -656,6 +661,7 @@ export type MissionDetail = MissionSummary & {
   artifacts: MissionArtifact[];
   interventions: MissionIntervention[];
   phaseConfiguration?: MissionPhaseConfiguration | null;
+  computerUse?: ComputerUsePolicy | null;
 };
 
 export type MissionAgentRuntimeConfig = {
@@ -702,11 +708,14 @@ export type CreateMissionArgs = {
   phaseOverride?: PhaseCard[];
   /** Per-provider worker permission overrides for this mission */
   permissionConfig?: MissionPermissionConfig;
+  /** Mission-scoped computer-use policy for external backends and fallback handling. */
+  computerUse?: ComputerUsePolicy | null;
 };
 
 export type MissionPreflightCheckId =
   | "models"
   | "capabilities"
+  | "computer_use"
   | "permissions"
   | "worktrees"
   | "knowledge_sync"
@@ -758,6 +767,14 @@ export type MissionPreflightResult = {
   checklist: MissionPreflightChecklistItem[];
   budgetEstimate: MissionPreflightBudgetEstimate | null;
   approvalSummary?: MissionPreflightApprovalSummary | null;
+  computerUse?: {
+    policy: ComputerUsePolicy;
+    requiredKinds: ComputerUseArtifactKind[];
+    missingKinds: ComputerUseArtifactKind[];
+    availableExternalBackends: string[];
+    blocked: boolean;
+    summary: string;
+  } | null;
 };
 
 export type MissionPreflightRequest = {
@@ -870,6 +887,7 @@ export type MissionRunView = {
   progressLog: MissionRunViewProgressItem[];
   lastMeaningfulProgress: MissionRunViewProgressItem | null;
   closeoutRequirements: MissionCloseoutRequirement[];
+  computerUse?: ComputerUseOwnerSnapshot | null;
 };
 
 export type GetMissionRunViewArgs = {

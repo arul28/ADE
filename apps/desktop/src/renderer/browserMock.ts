@@ -1467,7 +1467,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       getMergeContext: async (prId: string) =>
         MOCK_MERGE_CONTEXTS[prId] ?? { prId, groupId: null, groupType: null, sourceLaneIds: [], targetLaneId: null, integrationLaneId: null, members: [] },
       listWithConflicts: resolved(ALL_PRS),
-      getGitHubSnapshot: resolved(MOCK_GITHUB_SNAPSHOT),
+      getGitHubSnapshot: resolvedArg(MOCK_GITHUB_SNAPSHOT),
       listIntegrationWorkflows: resolved(MOCK_INTEGRATION_WORKFLOWS),
       aiResolutionStart: async () => ({
         sessionId: "mock-pr-ai-session",

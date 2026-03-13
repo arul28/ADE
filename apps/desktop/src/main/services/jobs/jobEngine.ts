@@ -20,6 +20,18 @@ export function createJobEngine({
   logger: Logger;
   conflictService?: ReturnType<typeof createConflictService>;
 }) {
+  const devStabilityMode =
+    process.env.ADE_STABILITY_MODE === "1"
+    || !!process.env.VITE_DEV_SERVER_URL;
+  const conflictPredictionEnabledByDefault =
+    devStabilityMode
+    && process.env.ADE_ENABLE_CONFLICT_PREDICTION !== "0"
+    && !!process.env.VITE_DEV_SERVER_URL;
+  const periodicPredictionEnabled =
+    !devStabilityMode
+    || process.env.ADE_ENABLE_ALL_BACKGROUND_TASKS === "1"
+    || process.env.ADE_ENABLE_CONFLICT_PREDICTION === "1"
+    || conflictPredictionEnabledByDefault;
   const laneQueue = new Map<string, LaneQueueState>();
   const dirtyLaneQueue = new Set<string>();
   let dirtyQueueTimer: NodeJS.Timeout | null = null;
@@ -121,14 +133,32 @@ export function createJobEngine({
   };
 
   const startPeriodicPrediction = () => {
-    if (!conflictService || periodicTimer) return;
+    if (!conflictService || periodicTimer || !periodicPredictionEnabled) {
+      if (conflictService && devStabilityMode && !periodicTimer) {
+        logger.info("jobs.conflicts.periodic_skipped", {
+          reason: "stability_mode",
+          enableFlag: "ADE_ENABLE_CONFLICT_PREDICTION",
+        });
+      }
+      return;
+    }
+    if (devStabilityMode) {
+      logger.info("jobs.conflicts.periodic_enabled", {
+        reason: process.env.ADE_ENABLE_ALL_BACKGROUND_TASKS === "1"
+          ? "global_override"
+          : "per_task_override",
+        enableFlag: "ADE_ENABLE_CONFLICT_PREDICTION",
+      });
+    }
     periodicTimer = setInterval(() => {
       queueConflictPrediction({ debounceMs: 250 });
     }, 120_000);
   };
 
   startPeriodicPrediction();
-  queueConflictPrediction({ debounceMs: 2_000 });
+  // Do not schedule a startup-wide prediction sweep automatically. Large workspaces
+  // can make this expensive enough to destabilize the app shortly after project open.
+  // Predictions are still refreshed from lane activity and via explicit user actions.
 
   return {
     enqueueLaneRefresh,

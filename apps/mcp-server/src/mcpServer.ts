@@ -1517,8 +1517,8 @@ async function listToolSpecsForSession(runtime: AdeMcpRuntime, session: SessionS
     }))
     : [];
   const externalComputerUseAvailable = runtime.computerUseArtifactBrokerService
-    .getBackendStatus()
-    .backends.some((backend) => backend.available);
+    ?.getBackendStatus()
+    ?.backends.some((backend) => backend.available) ?? false;
   if (callerCtx.role === "agent") {
     const visibleTools = externalComputerUseAvailable
       ? TOOL_SPECS.filter((tool) => !LOCAL_COMPUTER_USE_TOOL_NAMES.has(tool.name))

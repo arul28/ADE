@@ -1,0 +1,71 @@
+---
+title: "Connecting Backends"
+description: "Step-by-step setup guides for connecting Ghost OS and agent-browser backends to ADE, plus computer use policy reference."
+icon: "plug"
+---
+
+## Connecting a Backend
+
+### Ghost OS Setup
+
+<Steps>
+  <Step title="Install Ghost OS">
+    Download and install the Ghost OS MCP server for macOS from [ghostos.dev](https://ghostos.dev). Start the server — it listens on `https://ghost-os.local/mcp` by default.
+  </Step>
+  <Step title="Add to ADE configuration">
+    Open `.ade/local.secret.yaml` in your project root (create it if it does not exist) and add the Ghost OS entry:
+
+    ```yaml
+    externalMcp:
+      - name: ghost-os
+        transport: http
+        url: https://ghost-os.local/mcp
+        autoStart: true
+    ```
+  </Step>
+  <Step title="Verify connection">
+    Open **Settings → Computer Use**. The Ghost OS card should show a green **Connected** badge with the capability matrix populated. If it shows an error, confirm the Ghost OS server is running and the URL is reachable.
+  </Step>
+  <Step title="Set as preferred backend">
+    In **Settings → Computer Use → Preferred Backend**, select **Ghost OS**. ADE will use Ghost OS for all computer-use requests until you change this setting.
+  </Step>
+</Steps>
+
+### agent-browser Setup
+
+<Steps>
+  <Step title="Ensure Node.js 18+ is installed">
+    Run `node --version` to confirm. If needed, install via [nodejs.org](https://nodejs.org) or `brew install node`.
+  </Step>
+  <Step title="Add to ADE configuration">
+    ```yaml
+    externalMcp:
+      - name: agent-browser
+        transport: stdio
+        command: npx
+        args: ["-y", "@agent-browser/cli"]
+        autoStart: true
+    ```
+  </Step>
+  <Step title="Verify connection">
+    Open **Settings → Computer Use**. The agent-browser card should show **Ready**. On first use, ADE will download the `@agent-browser/cli` package automatically.
+  </Step>
+</Steps>
+
+---
+
+## Computer Use Policies
+
+Each chat session and mission has a computer-use policy header that controls when the agent is allowed to invoke computer-use tools. Set the policy at session start or change it mid-session from the chat header bar.
+
+| Policy | Behavior |
+|---|---|
+| `CU Off` | Computer use tools are never available in this session. Agents cannot invoke them even if they try. |
+| `CU Auto` | ADE decides when computer use is appropriate based on the task. The agent does not choose directly. |
+| `CU On` | Computer use tools are always available. The agent decides when to invoke them. |
+| `Fallback` | The agent attempts the task without computer use. If it cannot complete the task, it falls back to CU. |
+| `Proof` | Computer use is available, but every action must produce a proof artifact. The session blocks if proof is missing. |
+
+<Tip>
+Use `Proof` mode for any automation that will be shared with stakeholders or linked to a Linear issue. The collected artifacts provide an auditable record of exactly what the agent did.
+</Tip>

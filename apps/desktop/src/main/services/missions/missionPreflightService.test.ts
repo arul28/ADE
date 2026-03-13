@@ -485,4 +485,199 @@ describe("missionPreflightService", () => {
     expect(result.checklist.find((item) => item.id === "capabilities")?.severity).toBe("fail");
     expect(result.checklist.find((item) => item.id === "capabilities")?.details.some((detail) => detail.includes("local lane"))).toBe(true);
   });
+
+  it("surfaces computer-use readiness when an external backend satisfies required proof", async () => {
+    const profiles = createProfiles();
+    const phases = profiles[0]!.phases.map((phase, index) => index === 0
+      ? {
+          ...phase,
+          validationGate: {
+            ...phase.validationGate,
+            required: true,
+            capabilityFallback: "block",
+            evidenceRequirements: ["screenshot"],
+          },
+        }
+      : phase);
+    const service = createMissionPreflightService({
+      logger: createLogger(),
+      projectRoot: "/tmp/ade-preflight",
+      missionService: {
+        listPhaseProfiles: () => profiles,
+      } as any,
+      laneService: {
+        list: async () => [{ id: "lane-1", archivedAt: null }],
+      } as any,
+      aiIntegrationService: {
+        getAvailabilityAsync: async () => ({
+          availableModels: [
+            { id: "anthropic/claude-sonnet-4-6", shortId: "claude-sonnet-4-6", family: "anthropic", displayName: "Claude Sonnet 4.6" },
+          ],
+        }),
+        executeTask: async () => ({ structuredOutput: { clear: true, feedback: [] } }),
+      } as any,
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              permissions: {
+                cli: { mode: "full-auto", sandboxPermissions: "workspace-write" },
+                inProcess: { mode: "full-auto" },
+              },
+            },
+          },
+        }),
+      } as any,
+      missionBudgetService: {
+        estimateLaunchBudget: async () => ({
+          estimate: createBudgetEstimate("subscription"),
+          hardLimitExceeded: false,
+          windowUsageCostUsd: 0.1,
+          remainingWindowCostUsd: 10.9,
+          budgetLimitCostUsd: 11,
+        }),
+      } as any,
+      computerUseArtifactBrokerService: {
+        getBackendStatus: () => ({
+          backends: [
+            {
+              name: "Ghost OS",
+              style: "external_mcp",
+              available: true,
+              state: "connected",
+              detail: "Connected",
+              supportedKinds: ["screenshot"],
+            },
+          ],
+          localFallback: {
+            available: false,
+            detail: "Fallback unavailable",
+            supportedKinds: [],
+          },
+        }),
+      } as any,
+    });
+
+    const result = await service.runPreflight({
+      launch: {
+        prompt: "Verify the settings flow.",
+        phaseProfileId: profiles[0]!.id,
+        phaseOverride: phases,
+        computerUse: {
+          mode: "enabled",
+          allowLocalFallback: false,
+          retainArtifacts: true,
+          preferredBackend: "Ghost OS",
+        },
+        modelConfig: {
+          orchestratorModel: {
+            provider: "claude",
+            modelId: "anthropic/claude-sonnet-4-6",
+          },
+        },
+      } as any,
+    });
+
+    expect(result.checklist.find((item) => item.id === "computer_use")?.severity).toBe("pass");
+    expect(result.computerUse?.requiredKinds).toEqual(["screenshot"]);
+    expect(result.computerUse?.availableExternalBackends).toEqual(["Ghost OS"]);
+    expect(result.computerUse?.blocked).toBe(false);
+  });
+
+  it("blocks launch when proof is required but mission computer use is turned off", async () => {
+    const profiles = createProfiles();
+    const phases = profiles[0]!.phases.map((phase, index) => index === 0
+      ? {
+          ...phase,
+          validationGate: {
+            ...phase.validationGate,
+            required: true,
+            capabilityFallback: "block",
+            evidenceRequirements: ["screenshot"],
+          },
+        }
+      : phase);
+    const service = createMissionPreflightService({
+      logger: createLogger(),
+      projectRoot: "/tmp/ade-preflight",
+      missionService: {
+        listPhaseProfiles: () => profiles,
+      } as any,
+      laneService: {
+        list: async () => [{ id: "lane-1", archivedAt: null }],
+      } as any,
+      aiIntegrationService: {
+        getAvailabilityAsync: async () => ({
+          availableModels: [
+            { id: "anthropic/claude-sonnet-4-6", shortId: "claude-sonnet-4-6", family: "anthropic", displayName: "Claude Sonnet 4.6" },
+          ],
+        }),
+        executeTask: async () => ({ structuredOutput: { clear: true, feedback: [] } }),
+      } as any,
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              permissions: {
+                cli: { mode: "full-auto", sandboxPermissions: "workspace-write" },
+                inProcess: { mode: "full-auto" },
+              },
+            },
+          },
+        }),
+      } as any,
+      missionBudgetService: {
+        estimateLaunchBudget: async () => ({
+          estimate: createBudgetEstimate("subscription"),
+          hardLimitExceeded: false,
+          windowUsageCostUsd: 0.1,
+          remainingWindowCostUsd: 10.9,
+          budgetLimitCostUsd: 11,
+        }),
+      } as any,
+      computerUseArtifactBrokerService: {
+        getBackendStatus: () => ({
+          backends: [
+            {
+              name: "Ghost OS",
+              style: "external_mcp",
+              available: true,
+              state: "connected",
+              detail: "Connected",
+              supportedKinds: ["screenshot"],
+            },
+          ],
+          localFallback: {
+            available: false,
+            detail: "Fallback unavailable",
+            supportedKinds: [],
+          },
+        }),
+      } as any,
+    });
+
+    const result = await service.runPreflight({
+      launch: {
+        prompt: "Verify the settings flow.",
+        phaseProfileId: profiles[0]!.id,
+        phaseOverride: phases,
+        computerUse: {
+          mode: "off",
+          allowLocalFallback: false,
+          retainArtifacts: true,
+          preferredBackend: null,
+        },
+        modelConfig: {
+          orchestratorModel: {
+            provider: "claude",
+            modelId: "anthropic/claude-sonnet-4-6",
+          },
+        },
+      } as any,
+    });
+
+    expect(result.checklist.find((item) => item.id === "computer_use")?.severity).toBe("fail");
+    expect(result.computerUse?.blocked).toBe(true);
+    expect(result.canLaunch).toBe(false);
+  });
 });

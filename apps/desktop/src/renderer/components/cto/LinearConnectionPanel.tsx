@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowCounterClockwise,
   ArrowSquareOut,
@@ -32,16 +32,26 @@ export function LinearConnectionPanel({
   const [oauthRedirectUri, setOauthRedirectUri] = useState<string | null>(null);
   const [projects, setProjects] = useState<CtoLinearProject[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const onStatusChangeRef = useRef(onStatusChange);
+  const onProjectsChangeRef = useRef(onProjectsChange);
+
+  useEffect(() => {
+    onStatusChangeRef.current = onStatusChange;
+  }, [onStatusChange]);
+
+  useEffect(() => {
+    onProjectsChangeRef.current = onProjectsChange;
+  }, [onProjectsChange]);
 
   const updateConnection = useCallback((status: LinearConnectionStatus | null) => {
     setConnection(status);
-    onStatusChange?.(status);
-  }, [onStatusChange]);
+    onStatusChangeRef.current?.(status);
+  }, []);
 
   const updateProjects = useCallback((nextProjects: CtoLinearProject[]) => {
     setProjects(nextProjects);
-    onProjectsChange?.(nextProjects);
-  }, [onProjectsChange]);
+    onProjectsChangeRef.current?.(nextProjects);
+  }, []);
 
   const loadProjects = useCallback(async () => {
     if (!window.ade?.cto) return;
@@ -182,6 +192,92 @@ export function LinearConnectionPanel({
     return null;
   }, [connection?.connected, connection?.message, connection?.tokenStored, oauthSessionId]);
 
+  const renderManualTokenCard = () => (
+    <div className={cn(cardCls, compact ? "p-3" : "p-4")}>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-sans text-xs font-bold text-fg">
+            {compact ? "Connect with an API key" : "Manual Token Fallback"}
+          </div>
+          <div className="mt-1 font-mono text-[10px] text-muted-fg/55">
+            {compact
+              ? "Fastest path during setup. Personal API keys are the simplest way to connect Linear."
+              : "Keep this path for personal API keys or when OAuth credentials are not configured."}
+          </div>
+        </div>
+        <Key size={14} className="text-muted-fg/60" />
+      </div>
+
+      <div className="mt-3 space-y-2">
+        <div className={labelCls}>API Token</div>
+        <div className="flex gap-2">
+          <input
+            className={cn(inputCls, "flex-1")}
+            type="password"
+            placeholder="lin_api_..."
+            value={tokenInput}
+            onChange={(event) => setTokenInput(event.target.value)}
+          />
+          <Button
+            variant="outline"
+            onClick={() => void handleValidate()}
+            disabled={validating || !tokenInput.trim()}
+          >
+            {validating ? <CircleNotch size={10} className="animate-spin" /> : "Connect"}
+          </Button>
+        </div>
+        <div className="font-mono text-[9px] text-muted-fg/30">
+          Generate a personal API key at linear.app/settings/api
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderOAuthCard = () => (
+    <div className={cn(cardCls, compact ? "p-3" : "p-4")}>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-sans text-xs font-bold text-fg">
+            {compact ? "Use OAuth instead" : "OAuth Connection"}
+          </div>
+          <div className="mt-1 font-mono text-[10px] text-muted-fg/55">
+            {compact
+              ? "Use this when you are installing a shared app with configured OAuth credentials."
+              : "Recommended when `.ade/secrets/linear-oauth.v1.json` is configured with your Linear OAuth client credentials."}
+          </div>
+        </div>
+        <Plugs size={14} className="text-accent" />
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Button
+          variant="primary"
+          onClick={() => void handleStartOAuth()}
+          disabled={oauthStarting || connection?.oauthAvailable === false}
+        >
+          {oauthStarting ? <CircleNotch size={10} className="animate-spin" /> : <ArrowSquareOut size={10} />}
+          Connect with Linear
+        </Button>
+        {connection?.oauthAvailable === false && (
+          <span className="font-mono text-[10px] text-muted-fg/50">
+            Add OAuth client credentials to enable this path.
+          </span>
+        )}
+      </div>
+
+      {oauthRedirectUri && !compact && (
+        <div className="mt-3 border border-border/10 bg-surface-recessed px-3 py-2">
+          <div className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted-fg/40">
+            Loopback Redirect URI
+          </div>
+          <div className="mt-1 break-all font-mono text-[10px] text-fg/80">
+            {oauthRedirectUri}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div
       className={cn("space-y-4", compact && "space-y-3")}
@@ -255,81 +351,8 @@ export function LinearConnectionPanel({
 
       {!connection?.connected && (
         <div className="space-y-3">
-          <div className={cn(cardCls, compact ? "p-3" : "p-4")}>
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="font-sans text-xs font-bold text-fg">OAuth Connection</div>
-                <div className="mt-1 font-mono text-[10px] text-muted-fg/55">
-                  Recommended when `.ade/secrets/linear-oauth.v1.json` is configured with your Linear OAuth client credentials.
-                </div>
-              </div>
-              <Plugs size={14} className="text-accent" />
-            </div>
-
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <Button
-                variant="primary"
-                onClick={() => void handleStartOAuth()}
-                disabled={oauthStarting || connection?.oauthAvailable === false}
-              >
-                {oauthStarting ? <CircleNotch size={10} className="animate-spin" /> : <ArrowSquareOut size={10} />}
-                Connect with Linear
-              </Button>
-              {connection?.oauthAvailable === false && (
-                <span className="font-mono text-[10px] text-muted-fg/50">
-                  Add OAuth client credentials to enable this path.
-                </span>
-              )}
-            </div>
-
-            {oauthRedirectUri && (
-              <div className="mt-3 border border-border/10 bg-surface-recessed px-3 py-2">
-                <div className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted-fg/40">
-                  Loopback Redirect URI
-                </div>
-                <div className="mt-1 break-all font-mono text-[10px] text-fg/80">
-                  {oauthRedirectUri}
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className={cn(cardCls, compact ? "p-3" : "p-4")}>
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="font-sans text-xs font-bold text-fg">Manual Token Fallback</div>
-                <div className="mt-1 font-mono text-[10px] text-muted-fg/55">
-                  Keep this path for personal API keys or when OAuth credentials are not configured.
-                </div>
-              </div>
-              <Key size={14} className="text-muted-fg/60" />
-            </div>
-
-            <div className="mt-3 space-y-2">
-              <div className={labelCls}>API Token</div>
-              <div className="flex gap-2">
-                <input
-                  className={cn(inputCls, "flex-1")}
-                  type="password"
-                  placeholder="lin_api_..."
-                  value={tokenInput}
-                  onChange={(event) => setTokenInput(event.target.value)}
-                />
-                <Button
-                  variant="outline"
-                  onClick={() => void handleValidate()}
-                  disabled={validating || !tokenInput.trim()}
-                >
-                  {validating ? <CircleNotch size={10} className="animate-spin" /> : "Connect"}
-                </Button>
-              </div>
-              {!compact && (
-                <div className="font-mono text-[9px] text-muted-fg/30">
-                  Generate a personal API key at linear.app/settings/api
-                </div>
-              )}
-            </div>
-          </div>
+          {compact ? renderManualTokenCard() : renderOAuthCard()}
+          {compact ? renderOAuthCard() : renderManualTokenCard()}
         </div>
       )}
 

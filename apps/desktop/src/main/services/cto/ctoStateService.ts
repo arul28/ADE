@@ -69,6 +69,25 @@ function safeYamlParse<T>(raw: string): T | null {
   }
 }
 
+function normalizeOnboardingState(value: unknown): CtoOnboardingState | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const source = value as Record<string, unknown>;
+  const completedSteps = uniqueStrings(asStringArray(source.completedSteps));
+  const dismissedAt =
+    typeof source.dismissedAt === "string" && source.dismissedAt.trim().length
+      ? source.dismissedAt.trim()
+      : undefined;
+  const completedAt =
+    typeof source.completedAt === "string" && source.completedAt.trim().length
+      ? source.completedAt.trim()
+      : undefined;
+  return {
+    completedSteps,
+    ...(dismissedAt ? { dismissedAt } : {}),
+    ...(completedAt ? { completedAt } : {}),
+  };
+}
+
 function normalizeIdentity(input: unknown): CtoIdentity | null {
   if (!input || typeof input !== "object") return null;
   const source = input as Record<string, unknown>;
@@ -88,13 +107,61 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
     source.memoryPolicy && typeof source.memoryPolicy === "object"
       ? (source.memoryPolicy as Record<string, unknown>)
       : {};
+  const communicationStyleRaw =
+    source.communicationStyle && typeof source.communicationStyle === "object"
+      ? (source.communicationStyle as Record<string, unknown>)
+      : {};
   const externalMcpAccess = normalizeExternalMcpAccess(source.externalMcpAccess);
   const openclawContextPolicy = normalizeOpenclawContextPolicy(source.openclawContextPolicy);
+  const onboardingState = normalizeOnboardingState(source.onboardingState);
+  const personality =
+    source.personality === "professional"
+      || source.personality === "casual"
+      || source.personality === "minimal"
+      || source.personality === "custom"
+      ? source.personality
+      : undefined;
+  const customPersonality =
+    typeof source.customPersonality === "string" && source.customPersonality.trim().length
+      ? source.customPersonality.trim()
+      : undefined;
+  const communicationStyle: CtoIdentity["communicationStyle"] =
+    typeof communicationStyleRaw.verbosity === "string"
+    && typeof communicationStyleRaw.proactivity === "string"
+    && typeof communicationStyleRaw.escalationThreshold === "string"
+      ? {
+          verbosity:
+            communicationStyleRaw.verbosity === "detailed"
+            || communicationStyleRaw.verbosity === "adaptive"
+              ? communicationStyleRaw.verbosity
+              : "concise",
+          proactivity:
+            communicationStyleRaw.proactivity === "balanced"
+            || communicationStyleRaw.proactivity === "proactive"
+              ? communicationStyleRaw.proactivity
+              : "reactive",
+          escalationThreshold:
+            communicationStyleRaw.escalationThreshold === "low"
+            || communicationStyleRaw.escalationThreshold === "high"
+              ? communicationStyleRaw.escalationThreshold
+              : "medium",
+        }
+      : undefined;
+  const constraints = uniqueStrings(asStringArray(source.constraints));
+  const systemPromptExtension =
+    typeof source.systemPromptExtension === "string" && source.systemPromptExtension.trim().length
+      ? source.systemPromptExtension.trim()
+      : undefined;
 
   return {
     name,
     version,
     persona,
+    ...(personality ? { personality } : {}),
+    ...(customPersonality ? { customPersonality } : {}),
+    ...(communicationStyle ? { communicationStyle } : {}),
+    ...(constraints.length > 0 ? { constraints } : {}),
+    ...(systemPromptExtension ? { systemPromptExtension } : {}),
     modelPreferences: {
       provider: typeof modelPreferencesRaw.provider === "string" && modelPreferencesRaw.provider.trim().length
         ? modelPreferencesRaw.provider.trim()
@@ -121,6 +188,7 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
     },
     ...(externalMcpAccess ? { externalMcpAccess } : {}),
     ...(openclawContextPolicy ? { openclawContextPolicy } : {}),
+    ...(onboardingState ? { onboardingState } : {}),
     updatedAt,
   };
 }

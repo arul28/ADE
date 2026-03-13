@@ -201,6 +201,20 @@ export function createLinearDispatcherService(args: {
       )
       .map(toRun);
 
+  const hasActiveRuns = (): boolean => {
+    const row = args.db.get<{ total: number }>(
+      `
+        select count(*) as total
+        from linear_workflow_runs
+        where project_id = ?
+          and status in ('queued', 'in_progress', 'waiting_for_target', 'waiting_for_pr', 'awaiting_human_review', 'retry_wait')
+        limit 1
+      `,
+      [args.projectId]
+    );
+    return Number(row?.total ?? 0) > 0;
+  };
+
   const getStepRows = (runId: string): StepRow[] =>
     args.db.all<StepRow>(
       `
@@ -876,6 +890,7 @@ export function createLinearDispatcherService(args: {
     createRun,
     advanceRun,
     listActiveRuns,
+    hasActiveRuns,
     listQueue,
     resolveRunAction,
     findActiveRunForIssue,

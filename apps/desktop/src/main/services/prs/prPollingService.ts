@@ -61,6 +61,7 @@ export function createPrPollingService({
   };
 
   let stopped = false;
+  let started = false;
   let timer: NodeJS.Timeout | null = null;
   let running = false;
   let initialized = false;
@@ -228,10 +229,16 @@ export function createPrPollingService({
     }
   };
 
-  // Start soon after app init, but not immediately, so the renderer can attach listeners.
-  schedule(2_500);
+  const start = () => {
+    if (stopped || started) return;
+    started = true;
+    // PR polling is a background enhancement, not launch-critical work.
+    // Give the rest of the app time to settle before the first GitHub refresh.
+    schedule(12_000);
+  };
 
   return {
+    start,
     dispose() {
       stopped = true;
       if (timer) clearTimeout(timer);

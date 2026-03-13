@@ -489,6 +489,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   const [simulateResult, setSimulateResult] = React.useState<IntegrationProposal | null>(null);
   const [simulateBusy, setSimulateBusy] = React.useState(false);
   const [simulateError, setSimulateError] = React.useState<string | null>(null);
+  const simulateRequestSeqRef = React.useRef(0);
   const [resolverOpen, setResolverOpen] = React.useState(false);
   const [proposalResolverConfig, setProposalResolverConfig] = React.useState<ProposalResolverConfig | null>(null);
   const [deleteConfirm, setDeleteConfirm] = React.useState(false);
@@ -1266,42 +1267,36 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
 
   const handleSimulate = async () => {
     if (!selectedPr) return;
+    const requestSeq = ++simulateRequestSeqRef.current;
+    const sourceLaneIds = [...liveSimulationLaneIds];
+    const baseBranch = selectedPr.baseBranch;
     setSimulateBusy(true); setSimulateError(null); setSimulateResult(null);
     try {
       const result = await window.ade.prs.simulateIntegration({
-        sourceLaneIds: liveSimulationLaneIds,
-        baseBranch: selectedPr.baseBranch,
+        sourceLaneIds,
+        baseBranch,
         persist: false,
       });
+      if (requestSeq !== simulateRequestSeqRef.current) return;
       setSimulateResult(result);
     } catch (err: unknown) {
+      if (requestSeq !== simulateRequestSeqRef.current) return;
       setSimulateError(err instanceof Error ? err.message : String(err));
-    } finally { setSimulateBusy(false); }
+    } finally {
+      if (requestSeq === simulateRequestSeqRef.current) {
+        setSimulateBusy(false);
+      }
+    }
   };
 
-  // Reset + auto-simulate when selecting a different PR
+  // Reset simulation state when selecting a different PR.
   React.useEffect(() => {
+    simulateRequestSeqRef.current += 1;
+    setSimulateBusy(false);
     setSimulateResult(null);
     setSimulateError(null);
     setDeleteConfirm(false);
-
-    if (!selectedPr) return;
-
-    // Auto-run merge simulation so the user sees status immediately
-    let cancelled = false;
-
-    setSimulateBusy(true);
-    window.ade.prs.simulateIntegration({
-      sourceLaneIds: liveSimulationLaneIds,
-      baseBranch: selectedPr.baseBranch,
-      persist: false,
-    })
-      .then((result) => { if (!cancelled) setSimulateResult(result); })
-      .catch((err: unknown) => { if (!cancelled) setSimulateError(err instanceof Error ? err.message : String(err)); })
-      .finally(() => { if (!cancelled) setSimulateBusy(false); });
-
-    return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-simulate on PR selection change
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- only reset when the selected PR/live merge inputs change
   }, [liveSimulationKey, selectedPr?.baseBranch, selectedPrId]);
 
   const handleDelete = async () => {
@@ -1682,7 +1677,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
             </div>
           ) : (
             <div className="font-mono" style={{ fontSize: 11, color: "#52525B", padding: "12px 0" }}>
-              Run a simulation to preview merge outcomes for each source lane.
+              Simulation now runs on demand. Use the merge check above whenever you want a fresh result for this PR.
             </div>
           )}
 

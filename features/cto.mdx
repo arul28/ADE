@@ -1,0 +1,483 @@
+---
+title: "CTO Agent"
+description: "The CTO is ADE's always-on, project-aware AI agent — the top of an intelligent org chart that watches your project, delegates work, syncs with Linear, and answers questions about your codebase."
+icon: "crown"
+---
+
+<Info>**📸 Screenshot needed:** The CTO tab main view — show the five sub-tabs (Chat, Team, Memory, Linear, Settings) with Chat selected. The left side shows the CTO status panel (heartbeat countdown, last activated time, active workers count) and the right/center shows an active chat thread with a question and a multi-paragraph CTO response that references specific files and PRs.</Info>
+
+## What is the CTO Agent?
+
+The **CTO** (Chief Technical Officer) is ADE's persistent, project-scoped AI agent. Unlike agents you spawn for a specific task, the CTO is always running in the background — watching commits, monitoring lane status, tracking PR progress, and building a cumulative understanding of your project over time.
+
+Think of the CTO as the single intelligence that holds your project together. It knows your architecture, your conventions, which lanes are stuck, which PRs are at risk, and what has changed since you were last looking. When you need a quick project status, a code review, or to delegate a large task, the CTO is your first stop.
+
+<CardGroup cols={2}>
+  <Card title="Always-On Awareness" icon="eye">
+    Runs on a configurable heartbeat, checking for new commits, PR status changes, Linear issue updates, and stuck lanes — even when you are not looking.
+  </Card>
+  <Card title="Org Chart Model" icon="sitemap">
+    The CTO sits at the top of an agent hierarchy. It spawns and coordinates specialized Worker agents (Employees) to handle specific tasks.
+  </Card>
+  <Card title="Bidirectional Linear Sync" icon="arrow-right-arrow-left">
+    Reads from and writes to Linear. Creates issues from code changes, updates issue status when PRs merge, and adds analysis comments automatically.
+  </Card>
+  <Card title="Deep Memory" icon="brain">
+    Maintains multi-scope persistent memory across `project`, `identity`, `daily-log`, `run`, and `runtime-thread` scopes. The CTO remembers what happened yesterday.
+  </Card>
+</CardGroup>
+
+---
+
+## CTO vs. Regular Agents
+
+Understanding how the CTO differs from the agents you spawn manually (in chat sessions or missions) helps you know when to use each.
+
+| | **CTO Agent** | **Regular / Worker Agent** |
+|--|---------------|---------------------------|
+| **Lifecycle** | Always on; persistent across sessions | Ephemeral; lives for one task or session |
+| **Scope** | Entire project | Specific lane, task, or mission |
+| **Memory** | Accumulates over weeks/months | Within the current session or run |
+| **Triggers** | Heartbeat schedule + events + manual chat | Explicit user action or automation trigger |
+| **Authority** | Can spawn lanes, create missions, delegate to workers | Operates within its assigned lane/context |
+| **Linear access** | Full bidirectional sync (owner) | Read-only via MCP tools, if granted |
+| **Primary UI** | CTO tab | Lane terminal, Chat pane, Missions tab |
+
+---
+
+## The Org Chart Model
+
+The CTO implements an **org chart model** for AI work delegation.
+
+```
+CTO (always-on, project-scoped)
+├── Worker: "auth-specialist"   (assigned to lane/auth-refactor)
+├── Worker: "test-writer"       (ephemeral, created for one task)
+└── Worker: "pr-reviewer"       (persistent, reviews all new PRs)
+```
+
+The CTO sits at the top. Below it are **Worker agents** (also called Employees) — specialized sub-agents the CTO creates and assigns to specific tasks or lanes. Workers have:
+
+- A **name** and **specialization prompt** that defines their role and constraints
+- An **assigned lane** (optional; some workers operate across lanes)
+- A **tool palette** — a subset of MCP tools they are permitted to use
+- A **budget limit** — a token/cost cap enforced by the CTO
+
+The CTO coordinates workers: it assigns tasks, monitors their output, routes their results back to Linear or PRs, and intervenes if a worker is stuck or over budget.
+
+<Info>**📸 Screenshot needed:** The Team sub-tab in the CTO page — showing an org chart or card grid of workers. Each worker card should show: name, specialization summary, assigned lane (or "Unassigned"), status indicator (active/idle), and a budget usage progress bar. Include a "Hire Worker" button in the top right.</Info>
+
+---
+
+## Setting Up the CTO
+
+<Steps>
+  <Step title="Open the CTO tab">
+    Click the **CTO** tab in ADE's left icon rail. On first launch, the onboarding wizard starts automatically.
+  </Step>
+  <Step title="Complete the onboarding wizard">
+    The wizard walks through three steps:
+    1. **Identity creation** — give the CTO a name and an initial persona prompt. This shapes how it communicates and what it prioritizes.
+    2. **Project scanning** — the CTO reads your repository structure, existing PRD/architecture docs, recent git history, and `.ade/` state to build its initial Project Pack. This takes 30–90 seconds on a typical project.
+    3. **Integration handoff** — optionally connect Linear (OAuth or manual token) and configure the heartbeat schedule.
+
+    <Info>**📸 Screenshot needed:** The CTO onboarding wizard on step 2 ("Project Scanning") — showing a progress indicator with items being checked off: "Reading repository structure ✓", "Analyzing recent commits ✓", "Loading existing packs... (in progress)", "Connecting to Linear (skipped)".</Info>
+  </Step>
+  <Step title="Configure the heartbeat">
+    In **CTO > Settings**, set the heartbeat interval. The default is every 15 minutes. You can also configure event-based triggers (e.g., "run when a PR is opened", "run when a lane enters conflict status").
+  </Step>
+  <Step title="Verify the CTO is active">
+    The CTO Status panel (top of the CTO > Chat sub-tab) shows the last heartbeat time, next scheduled heartbeat, and a green "Active" badge. If it shows "Inactive", check that at least one AI provider is configured in Settings > AI Providers.
+  </Step>
+</Steps>
+
+---
+
+## Heartbeat Configuration
+
+The CTO's heartbeat is its core activation mechanism. On each heartbeat, the CTO runs a full project scan and takes any warranted actions.
+
+### What the CTO checks on each heartbeat
+
+1. **New commits** — compares HEAD SHAs across all lanes to its last-known state
+2. **PR status changes** — checks for newly opened, approved, merged, or failed PRs
+3. **Linear issue updates** — polls for new comments, status transitions, and assignments in connected projects
+4. **Stuck lanes** — identifies lanes in `blocked` or `conflict` status longer than a configurable threshold
+5. **Budget overruns** — flags workers that have exceeded or are approaching their token/cost budgets
+6. **Stale Lane Packs** — identifies packs that have not been regenerated after recent commits
+
+### Heartbeat schedule options
+
+<Tabs>
+  <Tab title="Interval-based">
+    Run every N minutes. Suitable for active development days where you want frequent check-ins.
+
+    ```yaml
+    # .ade/ade.yaml
+    cto:
+      heartbeat:
+        mode: interval
+        interval_minutes: 15
+    ```
+  </Tab>
+  <Tab title="Event-based">
+    Run when specific events occur. Lower noise; triggers only when something notable happens.
+
+    ```yaml
+    cto:
+      heartbeat:
+        mode: events
+        triggers:
+          - pr_opened
+          - pr_merged
+          - lane_blocked
+          - lane_conflict
+          - linear_issue_assigned
+    ```
+  </Tab>
+  <Tab title="Combined">
+    Both interval and events — interval provides a regular health check while events provide immediate response to important changes.
+
+    ```yaml
+    cto:
+      heartbeat:
+        mode: combined
+        interval_minutes: 30
+        triggers:
+          - pr_opened
+          - lane_blocked
+          - linear_issue_assigned
+    ```
+  </Tab>
+</Tabs>
+
+### Manual activation
+
+You can trigger the CTO immediately from the UI:
+- Click **Run Heartbeat Now** in the CTO Status panel
+- Type a message in the CTO Chat — this activates the CTO in conversational mode
+- Via Automations using the `cto-route` executor mode
+
+---
+
+## Understanding CTO Memory
+
+The CTO uses a **multi-scope memory architecture** that gives it persistent, layered knowledge of your project. Unlike a regular agent that forgets everything when the session ends, the CTO accumulates understanding over time.
+
+<Info>**📸 Screenshot needed:** The Memory sub-tab in the CTO tab — showing a tabbed or sectioned view with: "Procedures" (list of learned procedures with confidence scores), "Project Knowledge" (architectural facts with source links), "Daily Log" (recent diary entries with timestamps), and a "Provenance" section showing where a specific memory entry came from (e.g., "Captured from PR #142 intervention on 2026-03-10").</Info>
+
+### Memory scopes
+
+| Scope | Lifetime | Content |
+|-------|----------|---------|
+| `runtime-thread` | Current conversation | In-flight conversation context; discarded when the chat session ends |
+| `run` | Current activation cycle | Context gathered during the current heartbeat run; summarized into `project` at run end |
+| `project` | Persistent | Architecture facts, conventions, key decisions, known pitfalls, module relationships |
+| `identity` | Persistent | CTO's understanding of your working preferences, communication style, delegation patterns |
+| `daily-log` | Rolling 90-day diary | Chronological log of project events: what changed, what was decided, what was delegated |
+
+### Memory tiers
+
+Within each persistent scope, memory is organized into three retrieval tiers:
+
+- **Core** — always present in the CTO's context window. Reserved for the most critical architectural facts and current project state.
+- **Hot** — retrieved on demand via vector search when the CTO determines it is relevant to the current activation or question.
+- **Cold** — archival storage; accessible when explicitly queried but not auto-retrieved.
+
+### Memory Review surface
+
+The **Memory sub-tab** in the CTO tab is an operator-facing memory browser. You can:
+- Review and edit **Procedures** — learned workflows the CTO has developed (e.g., "always run tests before merging", "prefer `go test ./...` over individual test runs")
+- Browse **Project Knowledge** — architectural facts with provenance links back to the commits, PRs, or interventions that established them
+- Read the **Daily Log** — the CTO's rolling diary of project activity
+- Inspect **Raw Provenance** — see exactly where each memory entry came from and when it was captured
+
+<Tip>If the CTO gives you advice based on outdated information, open Memory > Project Knowledge, find the relevant entry, and either edit it or mark it stale. The CTO will update its behavior on the next run.</Tip>
+
+---
+
+## Linear Integration
+
+The CTO is the owner of ADE's bidirectional Linear integration. Connecting Linear unlocks a tight feedback loop between project management and development.
+
+### Connecting Linear
+
+<Steps>
+  <Step title="Open CTO > Linear sub-tab">
+    Click the **Linear** sub-tab in the CTO tab.
+  </Step>
+  <Step title="Authenticate">
+    Click **Connect Linear**. Choose between:
+    - **OAuth** (recommended) — authorizes ADE to access Linear on your behalf with scoped permissions
+    - **Personal Access Token** — paste a token from your Linear account settings
+  </Step>
+  <Step title="Select projects">
+    ADE discovers your Linear workspace and lists all accessible projects. Select the projects you want the CTO to monitor and sync.
+  </Step>
+  <Step title="Configure sync rules">
+    Set up workflow definitions: which Linear issue statuses map to which ADE actions (e.g., "In Progress" → spawn a worker, "In Review" → link the PR, "Done" → close the lane).
+  </Step>
+</Steps>
+
+### What the CTO can do with Linear
+
+**Inbound (Linear → ADE)**:
+- Detect issues assigned to you or matching configured criteria and route them to missions or workers
+- React to status transitions (e.g., issue moved to "In Progress" → create a lane and start a worker)
+- Read issue descriptions, attachments, and comments as context for agent work
+
+**Outbound (ADE → Linear)**:
+- Create new issues when the CTO identifies unreported work from code changes
+- Update issue status when PRs merge (e.g., move to "Done" automatically)
+- Add comments with agent analysis, PR links, and proof artifacts
+- Create sub-issues for discovered scope discovered during implementation
+
+<Note>Linear sync is owned entirely by the CTO. Automation rules that trigger on Linear events use the `linear-trigger` automation type (separate from the CTO's sync). The two systems are complementary: Automations handle simple event-response rules; the CTO handles stateful, intelligent Linear management.</Note>
+
+---
+
+## Worker Agents (Employees)
+
+Workers are the CTO's hands. The CTO thinks and plans; workers execute.
+
+### Worker types
+
+<AccordionGroup>
+  <Accordion title="Persistent Workers" icon="person">
+    Persistent workers are assigned to a lane or a role and stay active across heartbeat cycles. Use them for ongoing responsibilities like "always review PRs in this repository" or "monitor the auth module and flag regressions".
+
+    A persistent worker has a standing assignment and a defined tool palette. It activates when its trigger condition is met (e.g., a new PR opens) and returns to idle when the task is complete.
+  </Accordion>
+  <Accordion title="Ephemeral Workers" icon="person-running">
+    Ephemeral workers are created for a single task and dissolved when that task is complete. The CTO creates ephemeral workers automatically when it decides a task needs dedicated execution — for example, when it receives a complex request in chat or when a Linear issue comes in that requires implementation.
+
+    Ephemeral workers clean up their lane (or operate in an existing lane) and report results back to the CTO before dissolving.
+  </Accordion>
+</AccordionGroup>
+
+### Hiring a worker manually
+
+You can create a worker from the **Team sub-tab** without going through the CTO chat:
+
+<Steps>
+  <Step title="Click Hire Worker">
+    In CTO > Team, click the **Hire Worker** button.
+  </Step>
+  <Step title="Configure the worker">
+    Fill in:
+    - **Name** — a human-readable identifier (e.g., "test-writer", "pr-reviewer")
+    - **Specialization prompt** — describes the worker's role, constraints, and focus area
+    - **Assigned lane** — the lane this worker operates in (leave blank for cross-lane workers)
+    - **Tool palette** — which MCP tools this worker can use (defaults to a safe read/write subset)
+    - **Budget limit** — maximum token/cost for this worker per activation
+    - **Type** — Persistent or Ephemeral
+  </Step>
+  <Step title="Activate the worker">
+    Click **Hire**. The worker appears in the Team org chart with `idle` status. The CTO will use it on the next applicable heartbeat or task delegation.
+  </Step>
+</Steps>
+
+### Worker activity visibility
+
+Worker activity is visible in two places:
+- **CTO > Team** — the org chart shows each worker's current status, assigned task, and budget consumption
+- **Lanes tab** — if a worker is active in a lane, that lane shows the "active" indicator with the worker's name as the agent label
+
+---
+
+## Budget Management
+
+Every agent in ADE — including the CTO itself and all workers — has a configurable token/cost budget. The CTO enforces these limits.
+
+### Budget hierarchy
+
+```
+Project Budget (global cap)
+└── CTO Budget (per heartbeat cycle)
+    ├── Worker: auth-specialist Budget
+    ├── Worker: test-writer Budget
+    └── Ephemeral Worker Budget (inherited from CTO settings)
+```
+
+### How budget enforcement works
+
+- **Subscription users**: Budgets are tracked internally for visibility and reported as informational. ADE reads session logs from `~/.claude/` to compute accurate token usage. Budget alerts fire when thresholds are hit, but agents are not hard-stopped.
+- **API key users**: Budgets are strictly enforced. When a worker reaches its budget cap, it pauses and the CTO is notified. The CTO decides whether to extend the budget, hand the task to a different worker, or escalate to you.
+
+### Configuring budgets
+
+<Tabs>
+  <Tab title="In Settings UI">
+    Go to **Settings > CTO > Budget**. Set the per-heartbeat CTO budget, default worker budget, and the global project cap. These apply to all workers unless overridden at the worker level.
+  </Tab>
+  <Tab title="In ade.yaml">
+    ```yaml
+    # .ade/ade.yaml
+    cto:
+      budget:
+        per_heartbeat_tokens: 50000
+        default_worker_tokens: 20000
+        alert_threshold: 0.8   # alert at 80% of cap
+        hard_stop_api_only: true
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Practical Workflows
+
+### Asking the CTO to review a PR
+
+1. Open **CTO > Chat**.
+2. Type: _"Please review PR #142 and give me a summary of the changes, any concerns, and whether it's safe to merge."_
+3. The CTO reads the PR diff (via the GitHub integration MCP tool), cross-references it against its project memory, checks for conflicts with active lanes, and returns a structured review with: summary, concerns, risk level, and a recommendation.
+
+The CTO's review is informed by accumulated project knowledge — it will note if a change contradicts an architectural decision made last month, or if a test is missing for a pattern it has seen cause regressions before.
+
+### Delegating a feature to a worker
+
+1. Open **CTO > Chat**.
+2. Describe the feature: _"I need a new endpoint: `POST /api/v2/users/:id/preferences` that saves user preference objects. Follow the existing pattern in the `preferences` module."_
+3. The CTO analyzes the request, identifies the relevant context (existing patterns, related files, open issues), creates an ephemeral worker with appropriate specialization, assigns it to a new lane, and generates a Lane Pack with the task intent.
+4. The worker's progress is visible in Lanes (the new lane will show `active`) and in CTO > Team.
+5. When the worker completes, the CTO reports back in the chat thread with a summary, a link to the new lane, and (if configured) a Linear issue update.
+
+<Info>**📸 Screenshot needed:** A CTO chat thread showing a delegation workflow — the user's message at top, the CTO's response explaining its plan (including "I've created a worker 'feature-impl-001' in lane/user-preferences"), then a status update message showing the worker is active with a link to the lane.</Info>
+
+### Getting a daily project summary
+
+You can ask the CTO for a narrative summary of recent activity at any time:
+
+_"Summarize what changed in the project since yesterday morning. What's blocked? What shipped? What's at risk?"_
+
+The CTO draws from its `daily-log` memory, recent checkpoint history, and PR status to produce a structured summary. This is also generated automatically as part of each heartbeat cycle and stored in the daily log.
+
+### Routing an incoming request via Automations
+
+To have external webhooks or scheduled triggers route to the CTO automatically, configure an Automation with executor mode `cto-route`:
+
+```yaml
+# Example: route all new Linear issues to the CTO
+trigger:
+  type: linear-issue-created
+  filter:
+    project: "Backend API"
+executor:
+  mode: cto-route
+  message: "A new Linear issue has been created. Triage it and decide whether to create a mission, assign to a worker, or flag for human review."
+```
+
+---
+
+## CTO Configuration Reference
+
+All CTO configuration lives under `cto:` in `.ade/ade.yaml`, with a UI mirror in **Settings > CTO**.
+
+```yaml
+cto:
+  name: "CTO"                          # Display name in UI
+  persona: |                            # Initial identity prompt
+    You are a senior engineer who
+    knows this codebase deeply...
+  heartbeat:
+    mode: combined                      # interval | events | combined
+    interval_minutes: 15
+    triggers:
+      - pr_opened
+      - lane_blocked
+      - linear_issue_assigned
+  memory:
+    project_retention_days: 90
+    daily_log_retention_days: 90
+    auto_promote_threshold: 0.8         # confidence to auto-promote to core
+  workers:
+    default_budget_tokens: 20000
+    default_tool_palette: standard      # standard | minimal | full
+    auto_dissolve_ephemeral: true
+  linear:
+    sync_enabled: true
+    auto_create_issues: true
+    auto_close_on_merge: true
+  budget:
+    per_heartbeat_tokens: 50000
+    alert_threshold: 0.8
+```
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="CTO shows 'Inactive' status" icon="circle-xmark">
+    The CTO requires at least one AI provider to be configured. Check **Settings > AI Providers** and verify that a provider is active and its credentials are valid. The CTO also needs the MCP server to be running — if you see MCP errors in the main process log, restart ADE.
+  </Accordion>
+  <Accordion title="Heartbeat runs but the CTO takes no action" icon="clock">
+    This is usually expected — the CTO only acts when it detects something actionable. Check the **Recent Actions Log** in the CTO Status panel to confirm the heartbeat ran. If the log shows "No actions needed", the CTO saw no changes worth acting on. You can lower the action threshold in Settings > CTO > Heartbeat Sensitivity.
+
+    If the heartbeat log is empty despite visible project changes, verify that the lane's git history is accessible and that ADE's main process has read access to the `.git` directory.
+  </Accordion>
+  <Accordion title="Budget exhausted — CTO or worker paused" icon="gauge">
+    When a budget is exhausted, the affected agent pauses and an alert appears in the CTO Status panel. For API key users, you can:
+    - Click **Extend Budget** in the alert to increase the cap for this run
+    - Click **Resume with Different Model** to switch to a more cost-efficient model
+    - Click **Dismiss** to cancel the current task
+
+    For subscription users, budget exhaustion is informational. The agent will not be hard-stopped.
+  </Accordion>
+  <Accordion title="Linear sync is not updating issues" icon="arrow-right-arrow-left">
+    Check the **Linear sub-tab** for the sync status indicator. Common causes:
+    - **Token expired** — re-authenticate via OAuth or update the personal access token
+    - **Missing permissions** — the Linear token needs `issues:write` scope for outbound sync
+    - **Project not selected** — confirm the relevant Linear project is selected in CTO > Linear > Projects
+    - **Rate limited** — Linear has API rate limits; the CTO backs off automatically and retries. The sync status shows the next retry time.
+  </Accordion>
+  <Accordion title="CTO gives outdated or wrong architectural advice" icon="rotate">
+    The CTO's project knowledge is built from the initial scan and updated incrementally via heartbeats. If the architecture has changed significantly, you can trigger a full re-scan:
+
+    1. Go to **CTO > Memory > Project Knowledge**
+    2. Click **Re-scan Project**
+    3. The CTO re-reads the repository structure, architecture docs, and recent history, and updates its Core memory
+
+    You can also manually edit or delete individual memory entries that are incorrect.
+  </Accordion>
+  <Accordion title="Worker is stuck and not completing its task" icon="person-circle-question">
+    If a worker has been `active` for an unusually long time without producing checkpoints, it may be stuck in a loop or waiting for a tool response. From **CTO > Team**, select the worker and click **Inspect**. This opens the worker's live terminal output so you can see exactly what it is doing. You can then:
+    - Click **Interrupt** to send a stop signal and ask the CTO to reassess the task
+    - Click **Override** to inject a message directly into the worker's context
+    - Click **Dissolve** to terminate the worker and return the task to the CTO queue
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## OpenClaw Bridge
+
+If you have an OpenClaw account or a compatible external agent platform, you can connect it to ADE's MCP server. The CTO acts as the designated router for inbound requests from OpenClaw:
+
+1. In **Settings > CTO > External Connections**, enable **OpenClaw Bridge**
+2. ADE generates a local MCP endpoint URL for OpenClaw to connect to
+3. OpenClaw can then send development requests to ADE by addressing them to the CTO via the MCP `cto_request` tool
+
+The CTO receives these requests in its chat thread (tagged as external), evaluates them, and routes them to the appropriate internal workflow: mission launch, worker delegation, or human escalation.
+
+<Info>**📸 Screenshot needed:** The CTO > Settings sub-tab showing the "External Connections" section with OpenClaw listed, a toggle switch, a "Connected" badge, and a masked MCP endpoint URL with a copy button.</Info>
+
+---
+
+## What's Next
+
+<CardGroup cols={2}>
+  <Card title="Missions" icon="target" href="/missions/overview">
+    Learn how the CTO spawns and monitors multi-phase missions using the AI orchestrator.
+  </Card>
+  <Card title="Automations" icon="bolt" href="/automations/overview">
+    Set up trigger-based rules that route work to the CTO or spawn agents automatically.
+  </Card>
+  <Card title="Lanes" icon="code-branch" href="/lanes/overview">
+    Understand the isolated workspaces where CTO workers do their actual coding work.
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration/overview">
+    Full reference for `.ade/ade.yaml` configuration including CTO, budget, and Linear settings.
+  </Card>
+</CardGroup>

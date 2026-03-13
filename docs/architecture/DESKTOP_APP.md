@@ -1,184 +1,247 @@
-# Desktop Application Architecture
+# Desktop application architecture
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
+>
+> Last updated: 2026-03-13
 
-> Last updated: 2026-03-05
-
-This document describes the Electron desktop runtime in `apps/desktop`, including process boundaries, service initialization, IPC contracts, and lifecycle behavior.
-
----
-
-## Table of Contents
-
-1. [Overview](#overview)
-2. [Process Model](#process-model)
-3. [Main Process Service Graph](#main-process-service-graph)
-4. [IPC Contract and Preload](#ipc-contract-and-preload)
-5. [Project Switching](#project-switching)
-6. [Shutdown and Cleanup](#shutdown-and-cleanup)
-7. [Implementation Status](#implementation-status)
+This document describes the Electron runtime in `apps/desktop`, with emphasis on the current startup contract, background-service model, and the safeguards that keep the app responsive while project services come online.
 
 ---
 
 ## Overview
 
-ADE desktop is an Electron app with a strict trust split:
+ADE desktop is an Electron application with a strict trust split:
 
-- Main process: trusted runtime for filesystem, git, PTY, process execution, and SQLite state.
-- Renderer process: untrusted React UI.
-- Preload bridge: typed IPC surface (`window.ade`) between renderer and main.
+- **Main process**: trusted runtime for filesystem access, git, PTYs, SQLite, worker orchestration, AI execution, and background services
+- **Renderer process**: untrusted React UI
+- **Preload bridge**: typed IPC surface exposed as `window.ade`
 
-All repository mutation and command execution happens in main-process services.
+All repository mutation and privileged execution happen in main-process services. The renderer only issues typed requests and renders state.
 
----
+The current desktop runtime is built around a **quiet-first startup** contract:
 
-## Process Model
-
-### Main Process (trusted)
-
-`apps/desktop/src/main/main.ts` bootstraps project context, service instances, IPC registration, and lifecycle handlers.
-
-Main-process responsibilities:
-
-- Project root detection and switching
-- `.ade` directory/bootstrap management
-- SQLite (`kvDb`) and local state persistence
-- Lane/worktree orchestration
-- PTY session lifecycle and transcript capture
-- Git operations and conflict-state handling
-- Packs/checkpoints/events/versioning pipeline
-- Mission lifecycle state and intervention tracking
-- Agents (automation, Night Shift, watcher, review) and job engine execution
-- Process/test runners
-- AI integration (AgentExecutor interface, dual SDK, MCP server)
-- Agent chat service (Codex App Server, Claude multi-turn, and unified API/local model chat sessions)
-
-### Renderer Process (untrusted)
-
-React SPA in `apps/desktop/src/renderer` renders product surfaces and forwards all privileged actions through preload APIs.
-
-### Preload Bridge
-
-`apps/desktop/src/preload/preload.ts` exposes a typed `window.ade` API. Renderer has `contextIsolation: true` and `nodeIntegration: false`.
+1. Open the project and render a usable shell quickly.
+2. Load the cheapest project state first.
+3. Start background services in controlled stages.
+4. Keep expensive or optional work off the critical path.
+5. Emit enough structured logs to explain stalls without guesswork.
 
 ---
 
-## Main Process Service Graph
+## Process model
 
-`AppContext` (defined in `registerIpc.ts`) aggregates service instances for the active project and is swapped during project changes.
+### Main process
 
-Core service groups:
+`apps/desktop/src/main/main.ts` owns project bootstrap, service creation, IPC registration, window lifecycle, and background task startup.
 
-- **Project/context bootstrapping**: project service, config service, keybindings, terminal profiles, agent tools, onboarding, CI
-- **Core execution**: lane/session/pty/file/diff/git/process/test/history
-- **Context and risk systems**: pack service (decomposed: `packService.ts` core + `projectPackBuilder.ts`, `missionPackBuilder.ts`, `conflictPackBuilder.ts`, `packUtils.ts`) for remaining compatibility exports, plus `contextDocService.ts`, `sessionDeltaService.ts`, conflict service, rebase suggestion service, auto-rebase service, job engine
-- **AI Integration**: AI integration service (unified executor, `modelId`-first routing), AI orchestrator service (decomposed: `aiOrchestratorService.ts` core + `chatMessageService.ts`, `workerDeliveryService.ts`, `workerTracking.ts`, `missionLifecycle.ts`, `recoveryService.ts`, `modelConfigResolver.ts`, `orchestratorContext.ts`), orchestrator service (decomposed: `orchestratorService.ts` core + `orchestratorQueries.ts`, `stepPolicyResolver.ts`, `orchestratorConstants.ts`), MCP server, GitHub service, PR service + polling, models.dev service (dynamic pricing/capabilities), middleware (logging, retry, cost guard, reasoning extraction), provider options (tier passthrough), universal tools (API-key/local model support). See `docs/ORCHESTRATOR_OVERHAUL.md` for runtime contracts.
-- **Agent Chat**: agent chat service (CodexChatBackend via App Server JSON-RPC, ClaudeChatBackend via community provider multi-turn, unified runtime for API-key/local models with permission modes, persisted as `codex-chat` / `claude-chat` / `ai-chat` sessions)
-- **Agents / Automations (current runtime)**: automation service + automation planner service (automation, Night Shift, watcher, review flows under the current Automations domain model)
-- **Missions**: mission service (mission lifecycle CRUD + eventing)
-- **Shared types**: `src/shared/types/` directory (19 domain modules with barrel `index.ts` -- replaces former monolithic `types.ts`)
-- **Shared utilities**: backend utils (`src/main/services/shared/utils.ts`), renderer formatting/shell/session libs (`src/renderer/lib/`), shared React hooks (`src/renderer/hooks/`)
+Main-process responsibilities include:
 
-Additional runtime loops:
+- project detection and switching
+- `.ade` repair/bootstrap
+- SQLite-backed local state
+- lane/worktree orchestration
+- PTY and transcript lifecycle
+- git operations and conflict analysis
+- missions and orchestrator runtime
+- PR and GitHub/Linear integration services
+- memory lifecycle, digest, and embedding services
+- external MCP, OpenClaw, and automation ingress services
 
-- Head watcher loop to detect out-of-band git HEAD changes
-- Event broadcasters for renderer subscriptions
+### Renderer process
+
+The renderer in `apps/desktop/src/renderer` renders feature surfaces and delegates all privileged work through the preload API. It is treated as untrusted code and never reads the repo or spawns processes directly.
+
+### Preload bridge
+
+`apps/desktop/src/preload/preload.ts` exposes a typed `window.ade` contract. `contextIsolation` remains enabled and `nodeIntegration` remains disabled.
 
 ---
 
-## IPC Contract and Preload
+## Startup lifecycle
+
+### Early process setup
+
+Before ADE creates services or child processes, the main process normalizes the shell `PATH` and applies Electron runtime switches:
+
+- `fixElectronShellPath()` repairs shell resolution on macOS and dev machines.
+- Hardware acceleration is disabled in desktop dev by default (`ADE_DISABLE_HARDWARE_ACCEL=1` or `VITE_DEV_SERVER_URL`) to reduce dev-only GPU instability.
+- Dev builds disable the renderer HTTP cache to avoid stale Vite optimized-dependency artifacts.
+
+### Minimal project open
+
+Project open and project switch intentionally avoid the old "hydrate everything now" behavior.
+
+The renderer-side store now opens a project with:
+
+- `refreshLanes({ includeStatus: false })`
+- `refreshKeybindings()`
+- deferred hydration scheduled later by `scheduleProjectHydration(...)`
+
+The app shell follows the same pattern on initial boot:
+
+- read stored project
+- fetch lanes without status first
+- fetch lane status later
+- fetch provider mode later still
+
+This keeps first paint and tab navigation cheap even on larger repos.
+
+### Background service startup
+
+Background startup is centralized through `scheduleBackgroundProjectTask(...)` in `main.ts`.
+
+That helper is responsible for:
+
+- per-task gating through `ADE_ENABLE_*` flags
+- structured `project.startup_task_enabled`
+- structured `project.startup_task_skipped`
+- structured `project.startup_task_begin`
+- structured `project.startup_task_done`
+- duration logging per task
+
+This made it possible to turn services back on one by one, verify them in isolation, and keep the app usable while the system was being hardened.
+
+### Current dev stability contract
+
+In dev stability mode, ADE no longer depends on one giant delayed startup blob. Instead, tasks are individually gated and started intentionally.
+
+The current default dev-enabled background set includes:
+
+- config reload
+- usage tracking
+- automation ingress
+- external MCP startup
+- OpenClaw bridge startup
+- mission queue bootstrap
+- team runtime recovery
+- Linear sync
+- Linear ingress
+- memory startup sweep
+- memory consolidation check
+- embedding worker start
+- human digest sync
+- conflict prediction
+- episodic summary enablement
+- head watcher
+- skill registry
+
+Two details matter for stability:
+
+- **Linear ingress** only auto-starts when its realtime relay/local webhook configuration is actually present.
+- **Embedding worker** starts on a long delay and is no longer part of the first usable paint.
+
+---
+
+## Responsiveness and crash-resilience contract
+
+The current desktop architecture relies on several guardrails that are now part of the runtime contract rather than temporary debugging scaffolding.
+
+### Controlled background startup
+
+Background services are no longer treated as "free." Each service has an explicit startup point, logs its timing, and can be isolated behind an env flag during debugging.
+
+### Cheap initial lane hydration
+
+Lane status computation is optional during initial project open. This prevents lane-heavy repos from blocking first interaction.
+
+### Route-scoped renderer polling
+
+Renderer polling now lives closer to the surfaces that need it:
+
+- terminal attention only runs on terminal-adjacent routes
+- session-list lookups are deduplicated through a shared renderer cache
+- lane-scoped terminal panels only keep polling while they still have live sessions to watch
+
+### Staged feature hydration
+
+Several heavy surfaces now load in phases:
+
+- CTO loads summary state first and defers team/settings-specific work
+- Missions loads the list first and defers dashboard/settings/model metadata
+- Graph loads topology first and then stages risk, activity, sync, and PR overlays
+- PR workflows load queue/rehearsal state lazily instead of on every visit
+
+### Explicit fallback behavior
+
+Network- or config-dependent services now short-circuit instead of spinning:
+
+- Linear sync skips cycles when there are no enabled workflows or no credentials and no active runs
+- Linear ingress stays dormant when not configured
+- idle/disconnected Linear does not keep burning CPU
+- trivial session summaries are skipped instead of triggering unnecessary AI work
+
+---
+
+## IPC and observability
+
+### Typed IPC
 
 IPC channel constants live in `apps/desktop/src/shared/ipc.ts` and are registered in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 
-The contract spans app/project, lanes, sessions/pty, files/git, conflicts/context/memory, PRs/github, agents/missions, layout/graph, processes/tests, and settings/config domains.
+The preload bridge mirrors those channels into typed methods plus event subscription helpers.
 
-High-frequency/broadcast event channels include:
+### Structured tracing
 
-- `ade.pty.data`
-- `ade.pty.exit`
-- `ade.files.change`
-- `ade.processes.event`
-- `ade.tests.event`
-- `ade.conflicts.event`
-- `ade.prs.event`
-- `ade.agents.event`
-- `ade.missions.event`
-- `ade.lanes.rebaseSuggestions.event`
-- `ade.lanes.autoRebase.event`
-- `ade.agentChat.event`
-- `ade.project.missing`
+IPC handlers now emit:
 
-The preload layer mirrors these domains into typed methods and event subscription helpers for renderer use.
+- `ipc.invoke.begin`
+- `ipc.invoke.done`
+- `ipc.invoke.failed`
 
----
+Each entry includes a call ID, channel, window ID, duration, and summarized args/results.
 
-## Project Switching
+The renderer also emits:
 
-ADE supports runtime repository switching.
+- `renderer.route_change`
+- `renderer.tab_change`
+- `renderer.window_error`
+- `renderer.unhandled_rejection`
+- `renderer.event_loop_stall`
 
-Switch flow:
+This tracing is what turned the stability work from "the app feels bad" into isolated, actionable bottlenecks.
 
-1. Resolve selected path to repo root and base ref.
-2. Dispose active context services (watchers, pollers, processes, PTYs, db handles).
-3. Reinitialize `AppContext` for the new root.
-4. Keep IPC handlers stable via `getCtx()` indirection (handlers always read latest context).
-5. Update recent-project registry in global state.
+### React runtime behavior
 
-This keeps the app process alive while replacing all project-scoped services.
+Electron runtime rendering no longer wraps the app in `React.StrictMode`. Browser-mock development still uses Strict Mode, but Electron runtime behavior now matches real production invocation patterns more closely.
 
 ---
 
-## Shutdown and Cleanup
+## Project switching
 
-On `before-quit`, ADE performs defensive cleanup (each step isolated by try/catch):
+Project switching still rebuilds the active `AppContext`, but the runtime now does so with less renderer churn:
 
-- Stop head watcher
-- Dispose polling and agent/job loops
-- Dispose file watchers
-- Stop tests and managed processes
-- Dispose PTY sessions
-- Dispose agent chat sessions (terminate app-server processes, persist Claude session state)
-- Flush and close SQLite
-
-Uncaught exception and unhandled rejection handlers log structured errors through the main logger.
+1. resolve the repo root
+2. dispose project-scoped services
+3. create the next context
+4. keep IPC handlers stable via context indirection
+5. let the renderer rehydrate in phases instead of forcing full eager refresh
 
 ---
 
-## Implementation Status
+## Shutdown and cleanup
 
-Desktop architecture is mature and production-oriented for current scope:
+Shutdown continues to be defensive and best-effort:
 
-- Service-factory composition and dependency injection are implemented.
-- Project switching is implemented with full context teardown/rebuild.
-- Broad typed IPC contract is implemented and actively used by renderer surfaces.
-- Security boundaries (`contextIsolation`, preload-only IPC surface) are enforced.
-- Head-change and session-end pipelines keep memory/conflicts/compat exports synchronized.
-- AI integration service provides local AI execution via AgentExecutor interface (dual SDK) and MCP server.
-- Agent chat service provides native interactive chat with Codex (via App Server) and Claude (via community provider) with full session tracking.
-- Type system modularized: 19 domain-scoped type modules in `src/shared/types/` replace the former monolithic `types.ts`.
-- Large services decomposed: AI orchestrator (8 extracted modules), orchestrator service (2 extracted modules), pack service (4 extracted modules) all follow a core-plus-modules pattern with shared context objects.
-- Shared utilities consolidated: backend `utils.ts`, renderer `format.ts`/`shell.ts`/`sessions.ts`, and shared React hooks eliminate cross-service duplication.
-- Model system unified: `modelRegistry.ts` includes pricing fields directly; `modelProfiles.ts` derives from the registry instead of maintaining parallel lists.
+- stop head watcher and background timers
+- dispose pollers and ingress services
+- stop file watchers, tests, and managed processes
+- dispose PTYs and agent chat sessions
+- flush and close SQLite
 
-### Shipped Phase 5 Services
+Every cleanup step remains isolated by `try/catch` so one failing service does not block application exit.
 
-| Service | Purpose | Status |
-|---------|---------|--------|
-| `laneEnvironmentService` | Lane environment initialization (env files, port allocation, Docker startup, dependency installation) | Done |
-| `laneProxyService` | Per-lane *.localhost hostname proxy with Host-header routing; preview launch embedded here | Done |
+---
 
-### Planned Services
+## Current runtime status
 
-| Service | Purpose | Phase |
-|---------|---------|-------|
-| `browserProfileService` | Chrome profile isolation per lane for cookie/auth separation | 5 (not yet implemented) |
+The desktop runtime is now shaped around predictable startup and bounded background work instead of hidden deferred bursts.
 
-### Dropped Services
+Current architecture guarantees:
 
-| Service | Reason |
-|---------|--------|
-| `previewLaunchService` | Embedded in `laneProxyService` (not a standalone service) |
-| `computeBackendService` | Phase 5.5 dropped — VPS is just another machine running ADE |
-| `daytonaService` | Phase 5.5 dropped — sandboxing removed from scope |
+- the renderer becomes usable before all background services finish booting
+- background services declare when they start, how long they took, and why they were skipped
+- optional integrations stay dormant when not configured
+- renderer polling is scoped and deduplicated instead of globally eager
+- main-process services remain the only authority for repo mutation and system access
 
-Future architecture expansion (Machines, relay transport, core extraction) is tracked in `docs/final-plan/README.md`.
+Future architecture work can now focus on product features and localized performance issues rather than app-wide crash triage.

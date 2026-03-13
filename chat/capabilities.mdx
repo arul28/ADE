@@ -1,0 +1,108 @@
+---
+title: "Chat Capabilities"
+description: "What the chat agent can do — file operations, terminal commands, git, PRs, Linear integration, mission spawning, context pack queries, and external MCP tools."
+icon: "toolbox"
+---
+
+## What the Agent Can Do
+
+The chat agent has access to a broad tool palette. The exact tools available depend on the lane's permission config and the session's settings.
+
+<CardGroup cols={2}>
+  <Card title="File operations" icon="file-code">
+    Read, write, and search files within the lane's worktree. The agent sees your full directory structure and can reference any file by path.
+  </Card>
+  <Card title="Terminal commands" icon="terminal">
+    Run shell commands in the lane's terminal session — build scripts, test runners, linters, package managers, or any CLI tool installed in your environment.
+  </Card>
+  <Card title="Git operations" icon="code-branch">
+    Create and switch branches, stage and commit changes, view diffs, check status, and push to remote. The agent stays within the lane's worktree.
+  </Card>
+  <Card title="Pull requests" icon="git-pull-request">
+    Create PRs with auto-generated descriptions, update PR bodies, request reviewers, and apply labels — if GitHub integration is configured.
+  </Card>
+  <Card title="Linear integration" icon="layers">
+    Create and update Linear issues, link issues to branches, and attach artifacts to issues.
+  </Card>
+  <Card title="Mission spawning" icon="target">
+    Escalate the current task into a new Mission, carrying over conversation context as the planner's seed.
+  </Card>
+  <Card title="Context pack queries" icon="database">
+    Query the lane's pack for architectural context, file maps, open PRs, recent activity, and human work digests.
+  </Card>
+  <Card title="External MCP tools" icon="plug">
+    If external MCP servers are configured and permitted for the session, the agent can call their tools. Toggle MCP tool groups in the chat header.
+  </Card>
+</CardGroup>
+
+<Note>
+  Provider-native tools (built into the model's API, like Claude's native file tool) are tracked separately from ADE-owned tools (served via MCP). The chat header MCP badge shows the count of ADE/external MCP tools; provider-native tools are always available based on the model.
+</Note>
+
+---
+
+## Creating a PR from Chat
+
+<Info>**📸 Screenshot needed:** PR creation flow in chat — show the agent's message proposing a PR, the pre-filled PR form with auto-generated title and description, and the "Create PR" confirm button.</Info>
+
+The most common workflow is: make changes in chat → have the agent create a PR.
+
+<Steps>
+  <Step title="Make your changes">
+    Work with the agent to implement the feature, fix the bug, or refactor the code. Changes are committed to the lane's branch as you go.
+  </Step>
+  <Step title="Ask the agent to create a PR">
+    Say "create a PR" or "open a pull request." The agent will:
+
+    - Read the current branch name and recent commits
+    - Query the lane pack for architectural context
+    - Generate a PR title and description based on the changes
+    - Pre-fill reviewer suggestions if you have GitHub team integration enabled
+    - Apply relevant labels based on the branch name and changed files
+  </Step>
+  <Step title="Review and confirm">
+    The agent surfaces the PR form as an interactive block in the chat. Edit the title, description, or reviewer list, then click **Create PR**. The PR is opened in GitHub and a link is attached as an artifact in the chat session.
+  </Step>
+</Steps>
+
+<Tip>
+  If your project has a PR description template, put it in the lane's context pack. The agent will use it automatically when generating PR descriptions.
+</Tip>
+
+---
+
+## Spawning a Mission from Chat
+
+When a task is too large for a single chat session, escalate it to a Mission without losing context.
+
+<Steps>
+  <Step title="Recognize the scope">
+    Signs that a task should become a Mission: it requires changes across more than 3–4 unrelated files, it needs parallel workers, it has an explicit validation phase, or you want a formal audit trail.
+  </Step>
+  <Step title="Say 'start a mission'">
+    Type "start a mission for this" or "this should be a mission." ADE opens the Mission creation dialog, pre-filled with:
+
+    - A title derived from the current conversation
+    - A description assembled from your messages in the session
+    - The current lane pre-selected
+  </Step>
+  <Step title="Review and launch">
+    Adjust the mission config as needed (add lanes, set budget cap, configure permissions), then click **Start Mission**. The mission opens in the Mission detail view. The chat session remains in History for reference.
+  </Step>
+</Steps>
+
+---
+
+## Long-Running Tool Calls
+
+Tool calls that take more than a few seconds are displayed as **expandable blocks** in the chat message list:
+
+- A spinner and elapsed timer indicate the call is in progress
+- Click the block to expand it and see partial output as it streams
+- Click the block again to collapse it once it completes
+
+If a tool call is taking unexpectedly long (e.g., a test run has hung), press **Escape** to interrupt it. The agent receives an interruption signal and will report the partial results before asking for guidance.
+
+<Tip>
+  If a tool call fails, the agent automatically explains the error and offers alternatives — you do not need to re-phrase your request. You can either accept the agent's proposed workaround or provide explicit instructions.
+</Tip>

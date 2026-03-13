@@ -17,6 +17,7 @@ import { TilingLayout } from "./TilingLayout";
 import { useNavigate } from "react-router-dom";
 import { sessionIndicatorState } from "../../lib/terminalAttention";
 import { DEFAULT_PROFILE_IDS, isChatToolType, primarySessionLabel, secondarySessionLabel, toolTypeFromProfileId } from "../../lib/sessions";
+import { listSessionsCached } from "../../lib/sessionListCache";
 import { ToolLogo } from "../terminals/ToolLogos";
 
 const tabTrigger =
@@ -61,6 +62,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [launchTracked, setLaunchTracked] = useState(readLaunchTracked());
   const laneSessionIdsRef = useRef<Set<string>>(new Set());
+  const hasPollableSessionsRef = useRef(false);
 
   const focusedSessionId = overrideLaneId != null ? localFocusedSessionId : globalFocusedSessionId;
   const focusSession = useCallback(
@@ -74,14 +76,18 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
     [overrideLaneId, focusGlobalSession]
   );
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (options?: { force?: boolean }) => {
     if (!laneId) return;
-    const rows = await window.ade.sessions.list({ laneId, limit: 80 });
+    const rows = await listSessionsCached(
+      { laneId, limit: 80 },
+      options?.force ? { force: true } : undefined,
+    );
     const nonChatRows = rows.filter((row) => !isChatToolType(row.toolType));
     const chatRows = rows.filter((row) => isChatToolType(row.toolType));
     setSessions(nonChatRows);
     setChatSessions(chatRows);
     laneSessionIdsRef.current = new Set(rows.map((row) => row.id));
+    hasPollableSessionsRef.current = rows.some((row) => row.status === "running");
     if (nonChatRows.length > 0) {
       const runningOnly = nonChatRows.filter((s) => s.status === "running" && Boolean(s.ptyId));
       const visible = viewMode === "tabs" && runningOnly.length ? runningOnly : nonChatRows;
@@ -99,8 +105,9 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
     setChatSessions([]);
     setClosingSessionIds(new Set());
     laneSessionIdsRef.current = new Set();
+    hasPollableSessionsRef.current = false;
     if (!laneId) return;
-    refresh().catch(() => {});
+    refresh({ force: true }).catch(() => {});
   }, [laneId, overrideLaneId, refresh]);
 
   useEffect(() => {
@@ -132,7 +139,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
         next.delete(ev.sessionId);
         return next;
       });
-      refresh().catch(() => {});
+      refresh({ force: true }).catch(() => {});
       refreshLanes().catch(() => {});
     });
     return () => {
@@ -166,7 +173,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
     );
     window.ade.pty.dispose({ ptyId: session.ptyId, sessionId: session.id })
       .then(() => {
-        refresh().catch(() => {});
+        refresh({ force: true }).catch(() => {});
         refreshLanes().catch(() => {});
       })
       .catch(console.error)
@@ -212,12 +219,13 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
     return ordered.slice(0, 10);
   }, [terminalProfiles]);
 
-  // Auto-refresh sessions every 5 seconds
+  // Only keep polling while this lane still has live sessions to watch.
   useEffect(() => {
     if (!laneId) return;
     const id = setInterval(() => {
+      if (!hasPollableSessionsRef.current) return;
       refresh().catch(() => {});
-    }, 5_000);
+    }, 15_000);
     return () => clearInterval(id);
   }, [laneId, refresh]);
 
@@ -251,7 +259,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
         })
         .then(async ({ sessionId }) => {
           focusSession(sessionId);
-          refresh().catch(() => {});
+          refresh({ force: true }).catch(() => {});
         })
         .catch(() => {});
     },

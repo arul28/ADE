@@ -1,0 +1,340 @@
+---
+title: "History"
+description: "A complete, searchable operations timeline for your project — every agent action, commit, mission phase, pack regeneration, and conflict event, with full replay from any checkpoint."
+icon: "clock-rotate-left"
+---
+
+<Info>**📸 Screenshot needed:** The History tab in full two-pane layout — left timeline panel showing a chronological list of event cards (commit, session, mission, conflict event types all visible with distinct icons), right detail panel showing a selected commit event with a full syntax-highlighted diff. The filter bar and search input should be visible at the top of the left panel.</Info>
+
+## What is the History View?
+
+The History view is ADE's complete operations ledger. Every meaningful action that occurs in your project — whether taken by an agent, triggered by automation, or initiated by you — is recorded as a timestamped event in the timeline.
+
+Unlike a standard git log, the History view records the full operational context: agent session transcripts, pack regeneration diffs, mission phase transitions, conflict detection and resolution events, and PR lifecycle events. It is the single place where you can answer: "What exactly happened in this project over the last two days?"
+
+<CardGroup cols={3}>
+  <Card title="Complete Audit Trail" icon="clipboard-list">
+    Every agent action, git operation, lane event, and mission milestone is recorded with full metadata and context.
+  </Card>
+  <Card title="Checkpoints as Save Points" icon="bookmark">
+    Immutable snapshots at significant moments. Return to any checkpoint to see exactly what the project looked like at that instant.
+  </Card>
+  <Card title="Replay from Any Point" icon="rotate-left">
+    Branch a new lane from any checkpoint commit and optionally re-run the agent session that produced it — for debugging, recovery, or exploration.
+  </Card>
+</CardGroup>
+
+---
+
+## Event Types Reference
+
+The History timeline records the following event categories. Each is displayed with a distinct icon and color in the timeline.
+
+<AccordionGroup>
+  <Accordion title="Session Events" icon="terminal">
+    Recorded when agent or terminal sessions start and end, and for significant commands run within them.
+
+    | Event | Description |
+    |-------|-------------|
+    | `session.start` | A terminal or agent chat session began in a lane |
+    | `session.end` | Session ended (user closed it, agent completed, or timeout) |
+    | `session.command` | A significant command was run (long-running commands, commands that modified files) |
+    | `agent.start` | An AI agent session began, including its initial prompt and injected Lane Pack |
+    | `agent.end` | Agent session completed, with final token usage and outcome |
+
+    Session events link to the full **session transcript** in the detail panel — a searchable, time-stamped record of every exchange.
+  </Accordion>
+  <Accordion title="Commit Events" icon="code-commit">
+    One event per git commit, across all lanes.
+
+    | Field | Value |
+    |-------|-------|
+    | Lane | Which lane the commit belongs to |
+    | Branch | The branch the commit landed on |
+    | SHA | Full commit SHA (click to copy) |
+    | Message | Full commit message |
+    | Author | Git author name and email |
+    | Diff | Full diff available in the detail panel |
+
+    Commit events are the most common event type. They are the anchor for checkpoint creation.
+  </Accordion>
+  <Accordion title="Pack Events" icon="box">
+    Recorded when any Pack (Lane Pack, Project Pack, Conflict Pack) is generated, refreshed, or invalidated.
+
+    | Event | Description |
+    |-------|-------------|
+    | `pack.generated` | A new pack was created for a lane or project |
+    | `pack.refreshed` | An existing pack was regenerated after a commit |
+    | `pack.invalidated` | A pack was marked stale (e.g., after a commit made its context outdated) |
+
+    The detail panel for pack events shows a **side-by-side diff** of the old pack content vs. the new pack content — useful for understanding how the AI's understanding of a lane evolved over time.
+  </Accordion>
+  <Accordion title="Lane Operations" icon="code-branch">
+    Recorded for structural lane changes.
+
+    - `lane.created` — new lane added to the project
+    - `lane.archived` — lane archived
+    - `lane.deleted` — lane deleted (metadata retained for 30 days)
+    - `lane.rebased` — lane rebased onto its base branch (includes before/after SHAs)
+    - `lane.stacked` — lane's base was changed (reparented onto another lane)
+    - `lane.pack_regenerated` — manual pack regeneration triggered
+  </Accordion>
+  <Accordion title="Mission Events" icon="target">
+    Recorded at each phase transition and significant milestone in a Mission's lifecycle.
+
+    | Event | Description |
+    |-------|-------------|
+    | `mission.created` | Mission created with initial intent |
+    | `mission.planning` | Mission entered the Planning phase |
+    | `mission.approval_requested` | Plan presented to user for approval |
+    | `mission.approved` | User approved the plan |
+    | `mission.execution_started` | Workers began executing tasks |
+    | `mission.validation_started` | Execution complete, validation phase begun |
+    | `mission.completed` | Mission finished successfully |
+    | `mission.failed` | Mission failed (with reason and last known state) |
+    | `mission.cancelled` | User cancelled the mission mid-execution |
+
+    The detail panel for mission events shows a **mini mission summary**: the plan that was approved, the worker assignments, the validation results, and a phase timeline bar.
+  </Accordion>
+  <Accordion title="Automation Events" icon="bolt">
+    Recorded when an Automation rule fires.
+
+    - `automation.triggered` — trigger condition matched (includes trigger payload)
+    - `automation.started` — automation began executing
+    - `automation.completed` — automation finished (with result summary)
+    - `automation.failed` — automation encountered an error (with error detail and stack)
+
+    Failed automation events are highlighted with a red left border in the timeline for quick scanning.
+  </Accordion>
+  <Accordion title="Conflict Events" icon="triangle-exclamation">
+    Recorded for the full conflict lifecycle.
+
+    - `conflict.detected` — a new conflict was found by the simulation engine (includes lane pair and conflict type)
+    - `conflict.resolved` — conflict was resolved (includes resolution method: proposal, manual, external tool, agent)
+    - `conflict.dismissed` — user dismissed the conflict as not actionable
+
+    The detail panel shows the Conflict Pack that was active at detection time, allowing you to review exactly what the conflict looked like even after it has been resolved.
+  </Accordion>
+  <Accordion title="PR Events" icon="code-pull-request">
+    Recorded for GitHub pull request lifecycle events on all linked PRs.
+
+    - `pr.opened` — PR created (includes initial description)
+    - `pr.updated` — PR description or title updated
+    - `pr.review_submitted` — a reviewer submitted a review (approved, changes_requested, commented)
+    - `pr.merged` — PR merged (includes merge strategy and merge commit SHA)
+    - `pr.closed` — PR closed without merging
+    - `pr.ci_status_changed` — a CI check changed state (with check name and new status)
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## The Timeline Panel
+
+The left panel shows all events in reverse chronological order (newest first). Each event card displays:
+
+- **Event type icon** — a distinct icon for the event category
+- **Short description** — a human-readable summary (e.g., "Commit to `auth-refactor`: add session expiry logic")
+- **Timestamp** — relative time (e.g., "3 hours ago") with full timestamp on hover
+- **Lane / Mission badge** — which lane or mission the event belongs to, colored by lane
+
+### Filtering the Timeline
+
+<Info>**📸 Screenshot needed:** The History timeline filter bar expanded — showing checkboxes for event type categories (commits, sessions, missions, automations, conflicts, prs), a lane selector dropdown, a date range picker, and a search input. A "3 active filters" badge should be visible on the filter button.</Info>
+
+Use the filter bar at the top of the timeline to narrow the event list:
+
+| Filter | Options |
+|--------|---------|
+| **Event type** | One or more categories (commits, sessions, missions, automations, conflicts, PRs, packs, lanes) |
+| **Lane** | One or more specific lanes |
+| **Date range** | Preset ranges (today, last 7 days, last 30 days) or a custom start/end |
+| **Agent** | Filter to events involving a specific AI model or agent role |
+| **Mission** | Show only events belonging to a specific mission |
+
+### Grouping the Timeline
+
+Use the **Group by** dropdown to change how events are organized:
+
+- **None** — flat chronological list (default)
+- **Day** — events grouped by calendar day with date dividers
+- **Session** — events grouped by the agent or terminal session that produced them
+- **Mission** — events grouped under their parent mission
+- **Lane** — all events from a given lane are grouped together
+
+### Searching
+
+The search bar performs full-text search across event descriptions, commit messages, session transcript excerpts, and pack content. Results are highlighted inline in the timeline. Press `Cmd+F` (`Ctrl+F` on Windows/Linux) to focus the search bar from anywhere in the History tab.
+
+---
+
+## The Event Detail Panel
+
+Clicking any event in the timeline opens its full detail in the right panel. The detail content is tailored to the event type.
+
+<Tabs>
+  <Tab title="Commit">
+    - Full diff viewer with syntax highlighting and line numbers
+    - Commit message, author, SHA (copyable), timestamp
+    - Associated lane badge and branch name
+    - "Create Lane from This Commit" button — branches a new lane from this commit's SHA
+    - List of files changed, with click-to-expand per-file diff
+    - Link to the associated checkpoint (if this commit created one)
+  </Tab>
+  <Tab title="Session">
+    - Full session transcript in a scrollable, searchable viewer
+    - Timestamps on every exchange (user message, agent response, tool call, tool result)
+    - Token usage bar (prompt tokens, completion tokens, total, cost)
+    - Lane context injected at session start (the Lane Pack that was active)
+    - Session outcome tag: `completed`, `cancelled`, `error`, `timed_out`
+    - "Replay This Session" button (see [Replay](#replay))
+  </Tab>
+  <Tab title="Mission">
+    - Mission intent (the original goal)
+    - Approved plan summary
+    - Phase timeline: planning → approval → execution → validation, with timestamps for each transition
+    - Worker assignments: which agent ran which task in which lane
+    - Validation results: test outcomes, CI status, acceptance criteria checked/failed
+    - Final cost breakdown (tokens per worker)
+  </Tab>
+  <Tab title="Pack">
+    - Side-by-side diff of old pack content vs. new pack content
+    - Sections highlighted: intent changes, criteria changes, touched files delta, diff summary changes
+    - Trigger reason (commit SHA, manual trigger, or automation)
+    - Pack size (token count) before and after
+  </Tab>
+  <Tab title="Conflict">
+    - Conflict type (file-level, semantic, dependency)
+    - Files involved, with the conflicting hunks
+    - Both lanes' diffs at the time of detection
+    - Resolution method (if resolved): proposal, manual, external tool, or agent
+    - Time to resolution
+    - Link to the Conflicts tab filtered to this lane pair
+  </Tab>
+</Tabs>
+
+---
+
+## Checkpoints
+
+Checkpoints are the "save points" of ADE's history. They are created automatically at significant moments and are **immutable** — their content never changes after creation.
+
+### When Checkpoints Are Created
+
+| Trigger | Description |
+|---------|-------------|
+| Git commit | A checkpoint is created for every commit in every lane |
+| Session end | When a terminal or agent session closes, a checkpoint captures the session transcript and the lane's git state at that moment |
+| Mission phase transition | A checkpoint is created at the completion of each mission phase |
+| Manual checkpoint | You can create a manual checkpoint at any time via the "Create Checkpoint" button in the lane detail header |
+
+### What a Checkpoint Contains
+
+- **Git state**: The commit SHA the lane was on at this moment (or the diff if between commits)
+- **Session transcript**: The full session transcript if this checkpoint was triggered by a session end
+- **Lane Pack snapshot**: The Lane Pack content at this exact moment
+- **Metadata**: Timestamp, the agent or user that triggered it, the associated lane and mission (if any)
+- **Validation results**: Test pass/fail counts, CI status at this point (if available)
+
+<Note>Checkpoints for deleted lanes are retained in ADE's local database for 30 days. After 30 days, checkpoints for deleted lanes are purged. Checkpoints for active and archived lanes are retained indefinitely.</Note>
+
+### Checkpoint Indicators in the Timeline
+
+Checkpoints appear as distinct markers in the timeline — a filled bookmark icon. They are also shown as vertical markers on the timeline's scrubber bar (the narrow strip on the left edge of the timeline panel), giving you a visual density map of activity over time.
+
+---
+
+## Replay
+
+From any checkpoint, you can branch a new lane from that point and optionally re-run the agent session that produced the checkpoint.
+
+<Info>**📸 Screenshot needed:** The Replay dialog — showing a checkpoint selected in the timeline (highlighted in blue), and the "Replay from Here" dialog open with: lane name field pre-filled as "replay-auth-refactor-checkpoint-3", a toggle for "Re-run agent session", and a read-only summary of what the session did (commit count, files touched, agent used). "Create Lane and Replay" and "Create Lane Only" buttons at the bottom.</Info>
+
+<Steps>
+  <Step title="Select a checkpoint">
+    In the timeline, click a checkpoint event to open its detail. Any checkpoint can be replayed — not just the most recent one.
+  </Step>
+  <Step title="Click 'Replay from Here'">
+    In the detail panel's action bar, click **Replay from Here**. The Replay dialog opens.
+  </Step>
+  <Step title="Configure the replay">
+    In the dialog:
+    - **Lane name** — ADE pre-fills a name based on the original lane and checkpoint number. Edit if needed.
+    - **Re-run agent session** — toggle on to have ADE re-execute the agent session that produced this checkpoint, using the same prompt and Lane Pack state. Toggle off to create the lane at this commit without re-running the session.
+    - **Base branch** — defaults to the checkpoint's commit. Can be overridden.
+  </Step>
+  <Step title="Start the replay">
+    Click **Create Lane and Replay**. ADE:
+    1. Creates a new lane (Worktree type) branched from the checkpoint's commit SHA
+    2. Initializes the lane with the pack snapshot from the checkpoint
+    3. If "Re-run agent session" is enabled: queues the agent session to run in the new lane, using the checkpoint's session transcript as the prompt source
+  </Step>
+</Steps>
+
+### Replay Use Cases
+
+<CardGroup cols={2}>
+  <Card title="Debugging Agent Behavior" icon="magnifying-glass">
+    Replay an agent session to observe exactly what it does step by step, with the same starting state. Useful when an agent produced unexpected output and you want to reproduce the problem.
+  </Card>
+  <Card title="Recovery" icon="life-ring">
+    If a lane went in the wrong direction, replay from a checkpoint before things went wrong. Create the replay lane, validate it, then archive the original lane.
+  </Card>
+  <Card title="Counterfactual Exploration" icon="code-fork">
+    Replay from a checkpoint but modify the starting prompt or Lane Pack before re-running the session. Explore "what if we had asked the agent to do X instead."
+  </Card>
+  <Card title="Audit and Compliance" icon="shield-check">
+    Replay produces an exact reconstruction of the agent's working environment at a historical point. Useful for auditing what an agent did and why.
+  </Card>
+</CardGroup>
+
+---
+
+## Feature History View
+
+The **Feature view** is a specialized mode in the History tab that groups all events related to a single Linear issue into one coherent narrative.
+
+To open Feature view: use the **Group by: Mission** or **Group by: Linear Issue** options, then click any mission or issue to expand its full event tree.
+
+A Feature view entry shows:
+
+1. **Planning events** — the CTO's initial triage, mission creation, plan generation, and approval
+2. **Execution events** — all commits, sessions, and worker actions across all lanes involved in the feature
+3. **Conflict events** — any conflicts that arose during development, and how they were resolved
+4. **PR events** — PR creation, review submissions, CI runs, and merge
+5. **Resolution** — the final merged commit SHA and Linear issue closure event
+
+This is the canonical record for understanding the full lifecycle of a feature, from first assignment to final merge.
+
+---
+
+## Keyboard Shortcuts
+
+| Action | macOS | Windows / Linux |
+|--------|-------|-----------------|
+| Open History tab | `Cmd+H` | `Ctrl+H` |
+| Navigate timeline (previous/next event) | `↑` / `↓` | `↑` / `↓` |
+| Expand event detail | `Enter` | `Enter` |
+| Search timeline | `Cmd+F` | `Ctrl+F` |
+| Toggle filter bar | `Cmd+Shift+F` | `Ctrl+Shift+F` |
+| Create checkpoint | `Cmd+Shift+K` | `Ctrl+Shift+K` |
+| Replay selected checkpoint | `Cmd+R` | `Ctrl+R` |
+
+---
+
+## What's Next
+
+<CardGroup cols={2}>
+  <Card title="Conflicts" icon="triangle-exclamation" href="/tools/conflicts">
+    Understand how conflict events are generated and how to use the resolution workflow.
+  </Card>
+  <Card title="Missions" icon="target" href="/missions/overview">
+    See how mission phase transitions create checkpoints and how replay fits into mission debugging.
+  </Card>
+  <Card title="Lanes" icon="code-branch" href="/lanes/overview">
+    Learn how Lane Packs are generated and how pack events appear in the History timeline.
+  </Card>
+  <Card title="Automations" icon="bolt" href="/automations/overview">
+    See how automation trigger and completion events surface in History and how to diagnose failures.
+  </Card>
+</CardGroup>

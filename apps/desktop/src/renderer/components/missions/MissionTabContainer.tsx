@@ -352,6 +352,8 @@ export function MissionTabContent() {
             closeoutRequirements={runView?.closeoutRequirements ?? []}
             missionId={selectedMissionId}
             runId={runGraph?.run.id ?? null}
+            laneId={selectedMission?.laneId ?? null}
+            computerUseSnapshot={runView?.computerUse ?? null}
           />
         )}
       </div>

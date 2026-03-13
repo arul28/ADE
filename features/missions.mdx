@@ -1,0 +1,425 @@
+---
+title: "Missions"
+description: "Structured, multi-phase AI execution units for complex work — with planning gates, parallel workers, full audit trails, and cost tracking."
+icon: "bullseye"
+---
+
+<Info>**📸 Screenshot needed:** Full Missions page overview — show the mission list on the left with status badges (planning, in_progress, intervention_required, completed), and an open mission detail view on the right with the Plan tab active.</Info>
+
+## What is a Mission?
+
+A **Mission** is ADE's formal execution unit for complex, multi-step work that goes beyond what a single chat session can reliably handle. Where a chat is conversational and exploratory, a Mission is deliberate and audited: it proceeds through defined phases, requires your explicit approval before work begins, tracks every decision and tool call, and produces a full artifact record at the end.
+
+Key properties of every Mission:
+
+- **Phased execution** — Planning → Approval Gate → Execution → Validation, with defined entry and exit conditions at each boundary
+- **Multi-worker orchestration** — the mission spawns ephemeral workers that run in parallel, sequentially, or in waves depending on task complexity
+- **Full audit trail** — every tool call, model decision, file change, and worker message is recorded in the mission's History tab
+- **Cost and token tracking** — real-time per-worker and per-mission totals, with configurable budget caps
+- **Mission Pack** — a deterministic context snapshot regenerated at each phase boundary, enabling pause, resume, and replay
+
+<CardGroup cols={2}>
+  <Card title="When to use a Mission" icon="target">
+    Tasks spanning multiple files, teams, or phases — feature implementations, large refactors, test suite builds, or anything requiring coordination across more than one agent.
+  </Card>
+  <Card title="When to use Chat instead" icon="message">
+    Exploratory work, single-file edits, quick questions, or anything you expect to resolve in a single back-and-forth turn. Chat is faster for focused tasks.
+  </Card>
+</CardGroup>
+
+<Note>
+  Missions and Chat are complementary. You can escalate from Chat to a Mission mid-session by saying "start a mission for this" — ADE carries the conversation context over automatically.
+</Note>
+
+---
+
+## Mission Phases
+
+Every Mission passes through four phases in order. The phase boundary is a hard checkpoint — ADE records a Mission Pack snapshot before advancing.
+
+<Steps>
+  <Step title="Planning Phase">
+    The orchestrator analyzes your mission description and generates a detailed execution plan. This includes a breakdown of sub-tasks, which worker will handle each, estimated token costs, required tool permissions, expected outputs, and the recommended execution strategy (`sequential`, `parallel`, `wave`, or `adaptive`).
+
+    Before planning starts, you can open the **Planning Prompt Preview** to see — and optionally edit — the exact prompt the orchestrator will receive.
+
+    <Info>**📸 Screenshot needed:** Planning phase in progress — show the Plan tab with a "Generating plan..." skeleton state and the orchestrator model indicator in the header.</Info>
+  </Step>
+  <Step title="Approval Gate">
+    The completed plan is presented to you for review. This is a **hard stop** — the mission cannot advance without your explicit approval.
+
+    You have three options:
+    - **Approve** — proceed with the plan as generated
+    - **Request modifications** — provide feedback; the orchestrator revises the plan and presents it again
+    - **Cancel** — abort the mission; no workers have run yet
+
+    The plan shows per-worker cost estimates, which lanes will be used, what tools each worker needs, and the expected execution strategy.
+  </Step>
+  <Step title="Execution Phase">
+    Workers execute according to the approved plan. The orchestrator coordinates them using the strategy selected during planning:
+
+    | Strategy | When used |
+    |---|---|
+    | `sequential` | Tasks have strict dependencies; one worker must finish before the next starts |
+    | `parallel` | Tasks are independent; all workers run simultaneously |
+    | `wave` | Groups of tasks run in parallel within each wave; waves are synchronized before advancing |
+    | `adaptive` | Strategy shifts based on runtime signals — a worker failure can trigger a strategy change mid-mission |
+
+    The Plan tab shows a live activity feed with per-worker status, elapsed time, and token consumption. You can chat with the orchestrator in the **Chat tab** at any point without interrupting execution.
+  </Step>
+  <Step title="Validation Phase">
+    After all workers complete, ADE runs the mission's validation suite: tests, TypeScript type checks, linting, and any custom validators defined in the mission configuration. Validation results are collected as artifacts and surfaced in the Artifacts tab. If validation fails, the mission status transitions to `intervention_required` and you are prompted to decide how to proceed.
+  </Step>
+</Steps>
+
+---
+
+## The AI Meta-Reasoner
+
+Before the Planning phase begins, ADE's **meta-reasoner** analyzes the mission description and selects the optimal execution strategy. The meta-reasoner considers:
+
+- Task dependency graph (does step B require step A's output?)
+- Number of independent work units
+- Estimated context size per worker
+- Historical performance of each strategy for similar task shapes
+
+<AccordionGroup>
+  <Accordion title="sequential — one worker at a time">
+    Used for tasks with tight dependencies. Worker 2 only starts after Worker 1 has completed and its output has been verified. Slower overall, but safe when outputs feed inputs.
+  </Accordion>
+  <Accordion title="parallel — all workers simultaneously">
+    Used for independent tasks. All workers start at the same time and run concurrently in their own lanes. Fastest option when there are no inter-worker dependencies.
+  </Accordion>
+  <Accordion title="wave — parallel groups with sync points">
+    A hybrid strategy. Workers in Wave 1 all run in parallel. Once all Wave 1 workers succeed, Wave 2 begins. Useful for tasks where some upfront work (e.g., scaffolding) must complete before downstream work can start, but the downstream work is itself parallelizable.
+  </Accordion>
+  <Accordion title="adaptive — runtime-adjusted">
+    ADE starts with one strategy and switches based on signals: if a worker fails repeatedly, the orchestrator may switch remaining work to sequential for safety. If a sequential run produces independent sub-tasks, it may spawn parallel branches.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Creating a Mission
+
+<Info>**📸 Screenshot needed:** "New Mission" dialog — show the full creation form with fields for title, description, lane selector, model picker, tool permissions grid, and budget cap input.</Info>
+
+<Tabs>
+  <Tab title="From the Missions tab">
+    <Steps>
+      <Step title="Open Missions">
+        Click **Missions** in the left sidebar. You'll see your mission history list.
+      </Step>
+      <Step title="Click New Mission">
+        Press the **+ New Mission** button in the top-right corner of the Missions page.
+      </Step>
+      <Step title="Fill the creation form">
+        Complete the mission creation dialog:
+
+        - **Title** — short, descriptive name (shown in the mission list and history)
+        - **Description** — detailed prompt describing the goal; this is what the orchestrator receives
+        - **Lane(s)** — one or more lanes to scope the mission to; workers run in these lanes' worktrees
+        - **AI Model** — the model to use for the orchestrator and workers
+        - **Tool permissions** — which ADE tools workers can invoke; defaults to the lane's tool palette
+        - **Budget cap** — optional token or USD ceiling; mission pauses if the limit is approached
+      </Step>
+      <Step title="Review preflight checks">
+        Before the mission starts, ADE runs preflight checks: verifies the selected lanes are available, confirms the configured model is reachable, validates the permission config, and warns if any required computer-use capabilities are unavailable.
+      </Step>
+      <Step title="Launch">
+        Click **Start Mission**. The mission enters the Planning phase immediately.
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="From a Lane">
+    Open a Lane, then click **Start Mission** in the lane toolbar. The creation dialog opens pre-filled with that lane's context and tool palette.
+  </Tab>
+  <Tab title="From the CTO chat">
+    In the CTO chat panel, describe your goal and say "start a mission for this." The CTO agent creates and configures the mission, pre-filling the description from the conversation context. You'll see the preflight dialog before planning begins.
+  </Tab>
+  <Tab title="From an existing chat">
+    In any Agent Chat session, say "start a mission for this task." ADE transitions the current context into a new Mission, carrying over the conversation history as seeding context for the planner.
+  </Tab>
+</Tabs>
+
+---
+
+## The Mission Detail View
+
+Once a mission is running (or completed), click it in the mission list to open the detail view. The detail view has four tabs:
+
+<Info>**📸 Screenshot needed:** Mission detail view with the Plan tab open — show worker cards with status dots, token counters, the execution strategy badge, and the live activity feed at the bottom.</Info>
+
+<Tabs>
+  <Tab title="Plan tab">
+    The Plan tab is the mission's live control room. It shows:
+
+    - **Execution strategy badge** — which strategy the meta-reasoner selected
+    - **Worker cards** — one card per spawned worker, each with: assigned lane, current status (running / completed / failed / blocked), elapsed time, and running token count
+    - **Phase status bar** — visual progress through Planning → Execution → Validation
+    - **Live activity feed** — a chronological stream of meaningful events: worker starts, key decisions, tool calls, phase transitions, and intervention triggers
+    - **Open interventions** — any pending approval requests or questions that need your response
+
+    Workers that have `intervention_required` status will highlight in amber. Click the intervention card to respond.
+  </Tab>
+  <Tab title="Chat tab">
+    Chat directly with the mission's orchestrator while it runs. Use this to:
+
+    - Ask the orchestrator why it made a planning decision
+    - Provide additional context mid-mission ("the API endpoint changed to v2")
+    - Redirect a worker that is going off-track
+    - Request a status summary without digging through the activity feed
+
+    Chat signals from worker streams are filtered by ADE's **noise detector**, which suppresses repetitive status updates. Only meaningful signals — decisions, blockers, completions — surface to the mission chat.
+  </Tab>
+  <Tab title="Artifacts tab">
+    All outputs produced during the mission are collected here:
+
+    | Artifact type | Description |
+    |---|---|
+    | `patch` | Code changes (diffs) committed by workers |
+    | `pr` | Pull requests created during execution |
+    | `test_report` | Test run output from the validation phase |
+    | `screenshot` | UI screenshots taken by workers via computer use |
+    | `browser_verification` | Browser-based proof artifacts from computer-use steps |
+    | `browser_trace` | Full browser action traces |
+    | `plan` | The generated execution plan (snapshot at approval gate) |
+    | `summary` | Orchestrator-generated mission summary |
+    | `note` | Inline notes attached by the orchestrator or by you |
+
+    You can promote any artifact to a Lane pack, attach it to a PR, or link it to a Linear issue.
+  </Tab>
+  <Tab title="History tab">
+    A full, immutable timeline of everything that happened inside the mission — every planning step, tool call, model decision, worker message, and phase boundary. The History tab is the source of truth for auditing and debugging.
+
+    Events are timestamped and categorized. You can filter by worker, by event type, or by phase.
+  </Tab>
+</Tabs>
+
+---
+
+## Workers in Missions
+
+Each worker spawned by a mission is **ephemeral** — it exists only for the duration of its assigned tasks and is cleaned up when the mission completes or is canceled.
+
+Every worker receives:
+
+- A dedicated **lane** (its own git worktree and terminal session)
+- A **tool palette** scoped to the mission's permission config
+- A **budget allocation** drawn from the mission's total budget cap
+- A **context window** seeded from the Mission Pack
+
+### Context Compaction
+
+When a worker's context window reaches **70% capacity**, ADE automatically compacts it: older messages are summarized and compressed, while key decisions, file paths, and current task state are preserved in full. This prevents context overflow mid-task without losing work.
+
+### Worker Recovery
+
+If a worker crashes or loses connection mid-task, ADE attempts recovery from the worker's last known state. Recoverable crashes (network blips, transient errors) are retried automatically. If recovery fails, the worker's task is marked `failed` and an intervention is raised.
+
+---
+
+## Approval Gates and Interventions
+
+Beyond the initial plan approval, missions support **mid-execution approval gates** for decisions that require your input.
+
+<Info>**📸 Screenshot needed:** Intervention dialog — show an open intervention card in the Plan tab with the question text, worker context, and the response input field with Accept/Redirect/Skip options.</Info>
+
+When an intervention fires, ADE:
+1. Pauses the relevant worker (other workers continue unaffected)
+2. Surfaces the intervention in the Plan tab activity feed as a highlighted card
+3. Sends a notification if ADE is backgrounded
+
+### Intervention types
+
+<AccordionGroup>
+  <Accordion title="approval_required — user sign-off needed">
+    The worker encountered a decision point requiring explicit authorization. Common triggers: destructive operations (deleting files, force-pushing), operations outside the worker's configured permission scope, or explicit `pause_and_ask` calls from within a custom tool.
+  </Accordion>
+  <Accordion title="budget_limit_reached — spending cap hit">
+    The mission is approaching or has reached its configured budget cap. You can approve additional budget, reduce scope, or stop the mission and accept partial results.
+  </Accordion>
+  <Accordion title="phase_approval — phase boundary gate">
+    A phase was configured to require approval before advancing. Review the phase output and decide whether to proceed to the next phase.
+  </Accordion>
+  <Accordion title="failed_step — worker needs direction">
+    A worker's step failed and automatic retry was not successful. You can provide new instructions, tell the worker to skip the step, or cancel the mission.
+  </Accordion>
+  <Accordion title="orchestrator_escalation — orchestrator surfacing a question">
+    The orchestrator has a question it cannot answer from context. Respond in the mission chat or via the intervention card.
+  </Accordion>
+</AccordionGroup>
+
+### Error classification
+
+All mission errors are classified into three categories:
+
+| Classification | Behavior |
+|---|---|
+| `recoverable` | Worker retries automatically with exponential backoff; no user action needed |
+| `user_action_needed` | Intervention raised; mission pauses the affected worker and waits for your response |
+| `fatal` | Mission stops immediately; a full error report is generated and attached as an artifact |
+
+---
+
+## Budget and Cost Tracking
+
+<Tabs>
+  <Tab title="Setting a budget cap">
+    In the mission creation dialog, set a **Budget cap** in either tokens or USD. This is the combined ceiling across all workers.
+
+    When the mission reaches **80% of the cap**, ADE raises a `budget_limit_reached` intervention to give you time to decide before work stops. You can:
+
+    - **Approve more budget** — increase the cap and continue
+    - **Reduce scope** — cancel remaining workers and accept partial results
+    - **Stop cleanly** — the orchestrator wraps up current work and completes with available results
+  </Tab>
+  <Tab title="Reading the cost breakdown">
+    In the **Plan tab**, the cost panel shows:
+
+    - Total tokens consumed (input + output) across all workers
+    - Per-worker token breakdown
+    - Estimated USD cost based on the configured model's pricing
+    - Projected total at current burn rate
+
+    The per-worker view lets you spot runaway workers before they consume the whole budget.
+  </Tab>
+  <Tab title="Default limits">
+    If you do not set a budget cap, ADE uses the global default from **Settings → Missions → Default budget cap**. Set this to a sensible value to prevent unexpected costs during planning-heavy missions.
+  </Tab>
+</Tabs>
+
+---
+
+## Permissions and Tool Configuration
+
+Each mission has a **permission config** that controls what workers can do. The permission config is set during mission creation and can be inherited from the lane's defaults.
+
+<AccordionGroup>
+  <Accordion title="Provider permission modes">
+    Per-provider permission modes control what Claude CLI, Codex CLI, or unified API workers are allowed to do:
+
+    - `default` — the provider's standard permission set
+    - `strict` — read-only file access, no shell commands
+    - `permissive` — expanded tool access including shell execution
+    - `custom` — explicit allowlist of tool names
+
+    You can configure different modes per provider if your mission uses a mix of Claude and Codex workers.
+  </Accordion>
+  <Accordion title="External MCP tools">
+    External MCP server tools are disabled by default for missions. To enable them, select which MCP tool groups are allowed in the **External MCP** section of the mission creation form. Workers will only have access to the tool groups you explicitly permit.
+  </Accordion>
+  <Accordion title="Computer use policy">
+    Computer use in missions is controlled by the ComputerUsePolicy set on the mission:
+
+    - `off` — no computer use for any worker
+    - `auto` — workers can invoke computer use when needed
+    - `on` — computer use always available
+    - `proof` — computer use is available but every action must produce a proof artifact (screenshot or browser trace)
+
+    The `proof` mode is recommended for missions that will be linked to a PR or Linear issue.
+  </Accordion>
+  <Accordion title="Writable paths">
+    By default, workers can only write within their assigned lane's worktree. You can expand this with explicit `writablePaths` entries in the mission permission config — for example, to allow a worker to write shared fixture files outside its primary lane.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Mission Persistence and Resume
+
+Missions persist across app restarts. All mission state — phases, worker logs, artifacts, interventions — is stored in ADE's local SQLite database and the filesystem.
+
+**Mission Pack** is the key persistence primitive: a deterministic snapshot of all context required to resume or replay the mission from any phase boundary. It is regenerated automatically at each phase transition.
+
+If ADE crashes mid-mission:
+1. Restart ADE
+2. Open the Missions page — the interrupted mission will be in `in_progress` or `intervention_required` status
+3. ADE reloads from the last Mission Pack checkpoint
+4. Workers that were mid-task are recovered where possible; tasks that cannot be recovered are marked `failed` and queued as interventions
+
+---
+
+## Mission Templates and Phase Profiles
+
+For mission types you run frequently, you can save **Phase Profiles** — reusable configurations that define the sequence of phases, approval requirements, and per-phase validator settings.
+
+Built-in profiles include:
+
+| Profile | Phases |
+|---|---|
+| Standard | Planning → Execution → Validation |
+| Lightweight | Planning → Execution (no validation phase) |
+| Rigorous | Planning → Approval → Execution → Validation → Sign-off |
+
+To create a custom profile: open **Settings → Missions → Phase Profiles**, click **New Profile**, and define the phase sequence. Profiles can be imported and exported as JSON for sharing across teams.
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="A worker is stuck (no progress for several minutes)">
+    1. Open the mission's **History tab** and find the last event from the stuck worker.
+    2. Check whether an intervention is open in the **Plan tab** — the worker may be waiting for your response.
+    3. If no intervention is open, open the **Chat tab** and ask the orchestrator for a status update.
+    4. If the worker is genuinely hung, click the worker card in the Plan tab and select **Restart worker**. ADE will attempt to resume from the worker's last checkpoint.
+    5. If restart fails, select **Skip task** to mark the worker's assignment as skipped and allow the mission to continue.
+  </Accordion>
+  <Accordion title="Budget exceeded or approaching limit">
+    When a `budget_limit_reached` intervention fires:
+
+    - Review the per-worker cost breakdown in the Plan tab to identify the most expensive workers.
+    - If a worker is consuming disproportionate budget, you can cancel it individually while leaving others running.
+    - Approve additional budget only if the remaining work is clearly scoped and worth the cost.
+    - Consider switching remaining workers to a less expensive model in **Settings → Missions → Default model**.
+  </Accordion>
+  <Accordion title="Validation phase fails">
+    Validation failures appear as a `failed_step` intervention with a `test_report` artifact attached. To resolve:
+
+    1. Open the artifact to read the test output.
+    2. In the Chat tab, tell the orchestrator what failed and ask it to fix the issue.
+    3. The orchestrator can spawn a new worker scoped to the failing tests.
+    4. Once fixed, approve advancing to complete the validation phase.
+
+    If validation failures are expected (e.g., tests for features not yet implemented), you can dismiss the intervention and mark validation as skipped.
+  </Accordion>
+  <Accordion title="Mission stuck at Approval Gate">
+    The Approval Gate is a hard stop — the mission will remain in `planning` status until you approve, modify, or cancel. If you closed the mission detail view, re-open it from the Missions list. The plan review UI is in the **Plan tab** at the top of the activity feed.
+  </Accordion>
+  <Accordion title="Planning Prompt Preview shows unexpected context">
+    If the generated plan does not reflect your intent, edit the planning prompt before approval:
+
+    1. In the plan review UI, click **Edit Planning Prompt**.
+    2. Modify the prompt to clarify scope, constraints, or excluded approaches.
+    3. Click **Re-plan** — the orchestrator will generate a new plan using the updated prompt.
+    4. Repeat until the plan matches your expectations, then approve.
+  </Accordion>
+  <Accordion title="Mission fails to start (preflight errors)">
+    Preflight errors appear before the mission enters Planning. Common causes:
+
+    - **Lane unavailable** — the selected lane is in use by another active mission. Wait for it to complete or select a different lane.
+    - **Model unreachable** — the configured AI provider is not authenticated or is rate-limited. Check **Settings → AI Providers**.
+    - **Computer use unavailable** — the mission requires computer-use capabilities that are not configured. Check **Settings → Computer Use**.
+    - **Phase sequence invalid** — the selected phase profile has a configuration error. Open **Settings → Missions → Phase Profiles** to inspect and repair it.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Agent Chat" icon="message" href="/chat/overview">
+    Use chat for exploratory work, or escalate to a mission when complexity grows.
+  </Card>
+  <Card title="Lanes" icon="code-branch" href="/lanes/overview">
+    Missions spawn workers in lanes. Understand how lanes isolate work.
+  </Card>
+  <Card title="Computer Use" icon="desktop" href="/computer-use/overview">
+    Configure proof-mode computer use for mission workers.
+  </Card>
+  <Card title="Automations" icon="bolt" href="/automations/overview">
+    Trigger missions automatically from git events, schedules, or Linear updates.
+  </Card>
+</CardGroup>

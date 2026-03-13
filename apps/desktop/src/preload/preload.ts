@@ -521,7 +521,15 @@ import type {
   GetLaneHealthArgs,
   RunHealthCheckArgs,
   ActivateFallbackArgs,
-  DeactivateFallbackArgs
+  DeactivateFallbackArgs,
+  ComputerUseArtifactListArgs,
+  ComputerUseArtifactReviewArgs,
+  ComputerUseArtifactRouteArgs,
+  ComputerUseArtifactView,
+  ComputerUseEventPayload,
+  ComputerUseOwnerSnapshot,
+  ComputerUseOwnerSnapshotArgs,
+  ComputerUseSettingsSnapshot,
 } from "../shared/types";
 
 contextBridge.exposeInMainWorld("ade", {
@@ -1086,6 +1094,23 @@ contextBridge.exposeInMainWorld("ade", {
     changePermissionMode: async (args: import("../shared/types").AgentChatChangePermissionModeArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.agentChatChangePermissionMode, args),
   },
+  computerUse: {
+    getSettings: async (): Promise<ComputerUseSettingsSnapshot> =>
+      ipcRenderer.invoke(IPC.computerUseGetSettings),
+    listArtifacts: async (args: ComputerUseArtifactListArgs = {}): Promise<ComputerUseArtifactView[]> =>
+      ipcRenderer.invoke(IPC.computerUseListArtifacts, args),
+    getOwnerSnapshot: async (args: ComputerUseOwnerSnapshotArgs): Promise<ComputerUseOwnerSnapshot> =>
+      ipcRenderer.invoke(IPC.computerUseGetOwnerSnapshot, args),
+    routeArtifact: async (args: ComputerUseArtifactRouteArgs): Promise<ComputerUseArtifactView> =>
+      ipcRenderer.invoke(IPC.computerUseRouteArtifact, args),
+    updateArtifactReview: async (args: ComputerUseArtifactReviewArgs): Promise<ComputerUseArtifactView> =>
+      ipcRenderer.invoke(IPC.computerUseUpdateArtifactReview, args),
+    onEvent: (cb: (ev: ComputerUseEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: ComputerUseEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.computerUseEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.computerUseEvent, listener);
+    },
+  },
   pty: {
     create: async (args: PtyCreateArgs): Promise<PtyCreateResult> => ipcRenderer.invoke(IPC.ptyCreate, args),
     write: async (arg: { ptyId: string; data: string }): Promise<void> => ipcRenderer.invoke(IPC.ptyWrite, arg),
@@ -1292,8 +1317,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.prsGetMergeContext, { prId }),
     listWithConflicts: (): Promise<PrWithConflicts[]> =>
       ipcRenderer.invoke(IPC.prsListWithConflicts),
-    getGitHubSnapshot: (): Promise<GitHubPrSnapshot> =>
-      ipcRenderer.invoke(IPC.prsGetGitHubSnapshot),
+    getGitHubSnapshot: (args?: { force?: boolean }): Promise<GitHubPrSnapshot> =>
+      ipcRenderer.invoke(IPC.prsGetGitHubSnapshot, args ?? {}),
     listIntegrationWorkflows: (args: ListIntegrationWorkflowsArgs = {}): Promise<IntegrationProposal[]> =>
       ipcRenderer.invoke(IPC.prsListIntegrationWorkflows, args),
     createIntegrationLaneForProposal: (args: CreateIntegrationLaneForProposalArgs): Promise<CreateIntegrationLaneForProposalResult> =>

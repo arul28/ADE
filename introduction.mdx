@@ -1,0 +1,247 @@
+---
+title: "Introduction to ADE"
+description: "ADE is the Agentic Development Environment — a desktop DevOps cockpit for orchestrating parallel AI coding agents across multiple git worktrees."
+icon: "book-open"
+---
+
+<Info>**📸 Screenshot needed:** Full ADE main window at launch — show the left sidebar with all 12 view tabs, an active lanes panel, and the workspace graph filling the center canvas. Should convey the "mission control" aesthetic.</Info>
+
+## What is ADE?
+
+ADE (Agentic Development Environment) is a **macOS desktop application** that serves as the orchestration layer between you and your AI coding agents. While agents write code across multiple git branches simultaneously, ADE watches over them — tracking context, predicting conflicts, surfacing integration risks, managing budgets, and keeping everything synchronized.
+
+Think of it as a cockpit for agentic development. You set direction; ADE coordinates execution.
+
+<CardGroup cols={2}>
+  <Card title="Get Started in 5 Minutes" icon="rocket" href="/quickstart">
+    Download ADE, open your repository, and launch your first parallel lane.
+  </Card>
+  <Card title="Key Concepts" icon="book" href="/key-concepts">
+    Learn about Lanes, Missions, the CTO agent, Packs, and how ADE thinks about parallel work.
+  </Card>
+  <Card title="Lanes" icon="code-branch" href="/lanes/overview">
+    Every task gets its own isolated git worktree. Agents never block each other.
+  </Card>
+  <Card title="MCP Server" icon="server" href="/configuration/mcp-servers">
+    ADE exposes 35+ tools to AI agents via JSON-RPC 2.0 — the Model Context Protocol.
+  </Card>
+</CardGroup>
+
+---
+
+## The Problem ADE Solves
+
+Modern AI coding agents are fast — but running several at once against the same repository quickly turns into chaos:
+
+- **Conflicting changes**: Two agents edit the same files in different branches. By the time you notice, the conflict is deep.
+- **Lost context**: An agent starting a new task has no memory of what other agents did this week. Every session starts cold.
+- **No oversight layer**: There is no single place to see what all your agents are doing, what they spent, or whether they succeeded.
+- **Merge risk is invisible**: You cannot see that two branches will conflict until you actually try to merge them.
+
+ADE addresses every one of these problems with a purpose-built architecture: isolated workspaces (Lanes), durable context bundles (Packs), continuous merge simulation (Conflict Engine), an always-on project agent (the CTO), and a full audit trail (History, Missions).
+
+---
+
+## How ADE Is Different
+
+<AccordionGroup>
+  <Accordion title="Not a code editor" icon="pen-nib">
+    ADE is not trying to replace VS Code, Cursor, or Neovim. It has a built-in file viewer and editor for quick inspections, but its job is **orchestration**, not text editing. You keep using your preferred editor; ADE manages the agents running alongside it.
+  </Accordion>
+  <Accordion title="Not a terminal multiplexer" icon="rectangle-terminal">
+    ADE wraps terminal sessions with rich metadata — agent attribution, session transcripts, timing data, and delta computation — so every shell command is traceable. It is not a replacement for tmux, but it makes your terminals far more observable.
+  </Accordion>
+  <Accordion title="Not a CI/CD system" icon="arrow-rotate-left">
+    ADE runs locally on your machine. It has no remote build agents, no YAML pipelines, and no cloud control plane. It is designed to be the **local counterpart** to your CI system — the place where AI work happens before it reaches CI.
+  </Accordion>
+  <Accordion title="Not a chat interface" icon="comment">
+    ADE includes an Agent Chat pane for direct conversation with AI models inside a lane, but the Chat view is one of twelve integrated views, not the center of the product. ADE's strength is in the orchestration layer above the chat: Missions, the CTO, Automations, and the Conflict Engine.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Architecture: Local-First, Privacy-First
+
+ADE is built on a strict **trust boundary model** that keeps your API keys, source code, and agent outputs on your machine.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Renderer Process (Untrusted UI)                        │
+│  React 18 · TypeScript · Tailwind CSS                   │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │  Preload Bridge (contextBridge)                  │   │
+│  │  Typed IPC channel — no Node.js access           │   │
+│  └──────────────────────────────────────────────────┘   │
+├─────────────────────────────────────────────────────────┤
+│  Main Process (Trusted — full Node.js access)           │
+│  Electron 40.x · SQLite · All services                  │
+│  API keys · File system · Git operations · PTY          │
+└─────────────────────────────────────────────────────────┘
+```
+
+<CardGroup cols={3}>
+  <Card title="Renderer: Untrusted UI" icon="display">
+    The React UI cannot access the file system, spawn processes, or read secrets. It communicates only through the typed IPC bridge.
+  </Card>
+  <Card title="Preload Bridge" icon="arrow-left-right">
+    The `contextBridge` layer exposes a strict API surface. Every call is validated and routed through registered IPC handlers.
+  </Card>
+  <Card title="Main Process: Trusted Core" icon="shield-check">
+    All services run here: git, PTY sessions, AI provider calls, SQLite, MCP server. API keys never leave this boundary.
+  </Card>
+</CardGroup>
+
+<Note>
+All project data is stored in `.ade/` at the root of your repository and in a local SQLite database on your machine. Nothing is sent to ADE servers. AI API calls go directly from the main process to your chosen provider (Anthropic, OpenAI, etc.).
+</Note>
+
+---
+
+## Technology Stack
+
+| Layer | Technology |
+|---|---|
+| Shell | Electron 40.x |
+| UI Framework | React 18 |
+| Language | TypeScript (strict) |
+| Styling | Tailwind CSS |
+| Local Storage | SQLite (via better-sqlite3) |
+| Terminal | node-pty |
+| AI Protocol | Model Context Protocol (MCP) — JSON-RPC 2.0 |
+| Build | Vite + electron-builder |
+
+---
+
+## The 12 Main Views
+
+ADE's left sidebar gives you access to 12 integrated views. Every view is a panel in the main window; you can navigate freely without losing state.
+
+<Info>**📸 Screenshot needed:** Left sidebar showing all 12 view icons with labels, in their default order. Highlight the currently active view.</Info>
+
+<CardGroup cols={2}>
+  <Card title="Project Home" icon="house">
+    Dashboard for the active project: recent activity, active missions, quick-launch shortcuts, and health indicators.
+  </Card>
+  <Card title="Lanes" icon="code-branch">
+    The primary workspace. Lists all lanes (Primary, Worktree, Attached) with their branch, status, and active agent indicators. [→ Lanes](/lanes/overview)
+  </Card>
+  <Card title="Files & Editor" icon="folder-open">
+    Multi-pane file explorer and code viewer across all lane worktrees simultaneously. Diff view for uncommitted changes. [→ Files](/tools/files-editor)
+  </Card>
+  <Card title="Terminals" icon="rectangle-terminal">
+    PTY-backed terminal sessions with metadata — agent attribution, transcript recording, and delta tracking. [→ Terminals](/tools/terminals)
+  </Card>
+  <Card title="Conflicts" icon="triangle-exclamation">
+    Predictive merge conflict engine. Shows file-level overlaps, risk matrices, and AI-generated resolution proposals. [→ Conflicts](/tools/conflicts)
+  </Card>
+  <Card title="Context" icon="brain">
+    Context Packs management — project pack, per-lane packs, and feature packs. Generate, inspect, and export durable context bundles.
+  </Card>
+  <Card title="Workspace Graph" icon="diagram-project">
+    Infinite canvas showing all lanes, branches, PRs, and dependencies. Run merge simulations and spot integration risks visually. [→ Graph](/tools/workspace-graph)
+  </Card>
+  <Card title="Pull Requests" icon="code-pull-request">
+    PR lifecycle management: create, review, track CI status, queue for merge, and run rehearsal merges. [→ PRs](/tools/pull-requests)
+  </Card>
+  <Card title="History" icon="clock-rotate-left">
+    Immutable audit trail: every session, commit, mission run, and automation execution with full replay support. [→ History](/tools/history)
+  </Card>
+  <Card title="CTO" icon="robot">
+    The always-on project agent with persistent memory, Linear sync, budget management, and worker agent spawning. [→ CTO](/cto/overview)
+  </Card>
+  <Card title="Missions" icon="bullseye">
+    Structured AI execution units: Planning → Approval → Execution → Validation. Full cost tracking and audit trail. [→ Missions](/missions/overview)
+  </Card>
+  <Card title="Settings" icon="gear">
+    AI providers, API keys, MCP servers, keybindings, terminal profiles, and project configuration. [→ Configuration](/configuration/overview)
+  </Card>
+</CardGroup>
+
+---
+
+## The MCP Server
+
+ADE includes a built-in **MCP (Model Context Protocol) server** that exposes its capabilities to AI agents as callable tools via JSON-RPC 2.0. When an agent is running inside a lane, it can call ADE tools to:
+
+- Spawn other agents in specific lanes
+- Read and write files across worktrees
+- Execute git operations (commit, push, rebase, merge-simulate)
+- Create and update missions and their steps
+- Query session transcripts and deltas
+- Manage context packs
+- Route computer-use artifacts to missions, PRs, or Linear issues
+- Ask the user a structured question (with rate limiting)
+
+The MCP server runs in the main process and authenticates each session by role (`orchestrator`, `agent`, `external`, `evaluator`). Tools are scoped accordingly — coordinator-level tools are only visible to orchestrator-role callers.
+
+<Tip>
+The MCP server endpoint is available to any process that knows the socket path. This means you can connect Cursor, Claude Desktop, or any other MCP-compatible client to ADE and drive it programmatically.
+</Tip>
+
+---
+
+## How It All Fits Together
+
+Here is a typical flow from a new task to a merged PR:
+
+<Steps>
+  <Step title="Open a Lane">
+    You (or the CTO agent) create a new Worktree Lane. ADE runs `git worktree add` under `.ade/worktrees/` and sets up the lane's process environment.
+  </Step>
+  <Step title="Load Context">
+    The lane's Pack is injected into the agent's system prompt. The Pack contains architecture notes, coding conventions, risk signals, and the lane's stated intent.
+  </Step>
+  <Step title="Agent Runs">
+    You start an agent chat or a Mission. The agent operates inside the lane's worktree, calling ADE's MCP tools for git operations, file edits, and session management.
+  </Step>
+  <Step title="Conflict Engine Monitors">
+    In the background, the Job Engine periodically runs merge simulations between all active lanes. If two lanes touch the same files, a Conflict record is created and surfaced in the Conflicts view.
+  </Step>
+  <Step title="Mission Validates">
+    When execution completes, the Mission's Validation phase runs — a dedicated validator agent reviews the changes, checks against the original goal, and may collect computer-use proof artifacts (screenshots, browser traces).
+  </Step>
+  <Step title="PR Is Created">
+    The agent (or ADE automatically via an Automation) opens a GitHub PR from the lane's branch. ADE links the PR back to the Mission, Linear issue, and any collected artifacts.
+  </Step>
+  <Step title="CTO Synthesizes">
+    The CTO agent sees the completed mission, updates its project memory, adjusts budgets, and either queues the next task or surfaces a summary to you.
+  </Step>
+</Steps>
+
+<Info>**📸 Screenshot needed:** The Workspace Graph view showing 3-4 active lanes with branch connections, one lane with a conflict indicator, and one with an open PR badge. Should illustrate the parallel-work topology.</Info>
+
+---
+
+## Target Users
+
+<CardGroup cols={3}>
+  <Card title="Solo Developers" icon="user">
+    Run 3-5 AI agents in parallel on different features without context collisions. ADE keeps them isolated and synchronized.
+  </Card>
+  <Card title="Small Teams" icon="users">
+    Share a single ADE instance (or relay missions to other machines) across a small engineering team. The CTO agent acts as a shared project memory.
+  </Card>
+  <Card title="AI-Heavy Workflows" icon="wand-magic-sparkles">
+    If you are already running Claude, Codex, or other coding agents heavily, ADE gives you the observability and control layer you are missing.
+  </Card>
+</CardGroup>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Install ADE, open your first project, and run your first agent in under 5 minutes.
+  </Card>
+  <Card title="Key Concepts" icon="book-open" href="/key-concepts">
+    Understand Lanes, Packs, Missions, the CTO, the Job Engine, and every other core concept in ADE.
+  </Card>
+  <Card title="Lanes Deep Dive" icon="code-branch" href="/lanes/overview">
+    Everything about creating, managing, and working inside Lanes.
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration/overview">
+    Set up your AI provider API keys, MCP servers, and project settings.
+  </Card>
+</CardGroup>

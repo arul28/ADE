@@ -4,6 +4,7 @@ import { Brain, GearSix, GitBranch, BookOpenText, Robot, Terminal, Keyboard, Lig
 import { GeneralSection } from "../settings/GeneralSection";
 import { ProjectSection } from "../settings/ProjectSection";
 import { ProvidersSection } from "../settings/ProvidersSection";
+import { ComputerUseSection } from "../settings/ComputerUseSection";
 import { ExternalMcpSection } from "../settings/ExternalMcpSection";
 import { GitHubSection } from "../settings/GitHubSection";
 import { ContextSection } from "../settings/ContextSection";
@@ -25,6 +26,7 @@ const SECTIONS = [
   { id: "general", label: "General", icon: GearSix },
   { id: "project", label: "Project", icon: FolderSimple },
   { id: "providers", label: "Providers", icon: Plugs },
+  { id: "computer-use", label: "Computer Use", icon: Robot },
   { id: "external-mcp", label: "External MCP", icon: Database },
   { id: "ai", label: "AI", icon: Brain },
   { id: "github", label: "GitHub", icon: GitBranch },
@@ -454,6 +456,13 @@ export function SettingsPage() {
     }
   }, [validTab]);
 
+  const navigateToSection = useCallback((next: SectionId) => {
+    setSection(next);
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.set("tab", next);
+    setSearchParams(nextParams, { replace: true });
+  }, [searchParams, setSearchParams]);
+
   return (
     <div style={{ display: "flex", height: "100%", overflow: "hidden" }}>
       {/* Left sidebar */}
@@ -507,7 +516,7 @@ export function SettingsPage() {
             <button
               key={s.id}
               type="button"
-              onClick={() => setSection(s.id)}
+              onClick={() => navigateToSection(s.id)}
               onMouseEnter={() => setHoveredId(s.id)}
               onMouseLeave={() => setHoveredId(null)}
               style={itemStyle}
@@ -531,6 +540,7 @@ export function SettingsPage() {
         {section === "general" && <GeneralSection />}
         {section === "project" && <ProjectSection />}
         {section === "providers" && <ProvidersSection />}
+        {section === "computer-use" && <ComputerUseSection onOpenExternalMcp={() => navigateToSection("external-mcp")} />}
         {section === "external-mcp" && <ExternalMcpSection />}
         {section === "ai" && <AiFeaturesSection />}
         {section === "github" && <GitHubSection />}

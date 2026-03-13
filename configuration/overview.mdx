@@ -1,0 +1,325 @@
+---
+title: "Configuration Overview"
+description: "ADE stores all project configuration in a .ade/ directory at your repository root. Three layered config files give you shared team settings, personal overrides, and secret management — all with a SHA-based trust model."
+icon: "folder-tree"
+---
+
+<Info>**📸 Screenshot needed:** The `.ade/` directory expanded in a file tree, showing `ade.yaml`, `local.yaml`, `local.secret.yaml`, and the `worktrees/` and `artifacts/` subdirectories. Overlay a badge reading "commit this" on `ade.yaml` and "gitignore" on the two `local.*` files.</Info>
+
+## The `.ade/` Directory
+
+When you open a repository in ADE for the first time, ADE initializes a `.ade/` directory at the project root. This directory is the single source of truth for all ADE configuration, runtime artifacts, and worktree management for that project.
+
+```
+.ade/
+  ade.yaml              # Shared team config — commit this to git
+  local.yaml            # Personal preferences — gitignored
+  local.secret.yaml     # API keys and tokens — ALWAYS gitignored
+  worktrees/            # Git worktrees for each lane (auto-managed by ADE)
+  artifacts/
+    packs/              # Context pack snapshots
+    checkpoints/        # Session boundary snapshots
+    sessions/           # Agent session transcripts
+    audit.log           # Append-only audit trail
+```
+
+<Warning>
+Never commit `local.yaml` or `local.secret.yaml` to git. ADE automatically adds both to `.gitignore` on initialization, but verify this if you manage `.gitignore` manually. Committing secrets is irreversible once pushed to a remote.
+</Warning>
+
+The `worktrees/` and `artifacts/` subdirectories are fully managed by ADE. Do not edit files inside them directly — use ADE's UI or MCP tools instead.
+
+---
+
+## Configuration Layering
+
+ADE resolves configuration through three layers applied in order. Lower layers override higher ones.
+
+<CardGroup cols={3}>
+  <Card title="ade.yaml" icon="users">
+    **Shared team config.** Committed to git. Contains project defaults, AI model settings, lane profiles, automation definitions, and trust rules. Every team member reads this file.
+  </Card>
+  <Card title="local.yaml" icon="user">
+    **Personal preferences.** Gitignored. Overrides any value in `ade.yaml` for your machine only. Contains preferred model, theme, editor settings, and notification preferences.
+  </Card>
+  <Card title="local.secret.yaml" icon="key">
+    **Secrets.** Always gitignored. Contains API keys, OAuth tokens, and MCP server credentials. Only the main process reads this file — the renderer UI never has access to its contents.
+  </Card>
+</CardGroup>
+
+When ADE resolves a config value, it checks `local.secret.yaml` first, then `local.yaml`, then `ade.yaml`. If a value exists in `local.yaml`, it shadows the same key in `ade.yaml` for that machine.
+
+<Note>
+The layering order means a developer can override the team's default AI model (set in `ade.yaml`) by specifying `ai.preferredModel` in their own `local.yaml` — without touching the shared config.
+</Note>
+
+---
+
+## The Trust Model (SHA-Based Approval)
+
+`ade.yaml` can contain command definitions (process startup commands, automation executors, test suite runners). Because this file is committed to git, a malicious change in a PR could introduce arbitrary commands that run on your machine. ADE prevents this with a SHA-based approval gate.
+
+<Steps>
+  <Step title="ADE detects a change">
+    Whenever `ade.yaml` changes — from a `git pull`, a teammate's commit landing via fetch, or a direct edit — ADE immediately detects the difference.
+  </Step>
+  <Step title="ADE shows a diff and pauses">
+    ADE presents a structured diff of the changed fields and suspends execution of any commands defined in the new version. No new processes start, no automations trigger, no agents run commands from the updated config.
+  </Step>
+  <Step title="You review and approve">
+    Review the diff in the approval dialog (Settings → Config → Pending Approval, or the banner that appears automatically). If the changes are expected and safe, click **Approve**.
+  </Step>
+  <Step title="ADE records the approved SHA">
+    The SHA of the approved `ade.yaml` is written to your `local.yaml`. Commands from this version of the config are now permitted to execute.
+  </Step>
+</Steps>
+
+<Info>**📸 Screenshot needed:** The config approval dialog — show a diff view with old and new `ade.yaml` side-by-side, the new lines highlighted in green, and "Approve" / "Reject" buttons at the bottom. A warning banner at the top reads "Config changed — commands paused until you approve."</Info>
+
+<Warning>
+The approved SHA is machine-specific. If two developers need to approve the same change, each must approve it on their own machine. This is intentional — one person's trust cannot be delegated to another.
+</Warning>
+
+To re-approve the currently loaded config (e.g., after a manual edit): **Settings → Config → Re-approve current config**.
+
+---
+
+## `ade.yaml` — Full Schema Reference
+
+This file is shared with your team. Commit it. Every field is optional except `name`.
+
+```yaml
+# .ade/ade.yaml
+
+name: "My Project"
+description: "Optional project description shown in ADE's title bar"
+
+# ── AI Defaults ───────────────────────────────────────────────────────────────
+ai:
+  defaultModel: "claude-opus-4-6"       # or "claude-sonnet-4-6", "gpt-4o", etc.
+  defaultBudgetPerSession: 1.00         # USD cap per chat session
+  defaultBudgetPerMission: 5.00         # USD cap per mission run
+  defaultBudgetPerAutomation: 0.50      # USD cap per automation execution
+  monthlyBudgetCap: 100.00              # Hard monthly cap across all agents
+
+# ── Process Definitions ───────────────────────────────────────────────────────
+processes:
+  - name: "Frontend"
+    command: "npm run dev"
+    cwd: "."
+    port: 3000
+    group: "App"
+  - name: "API"
+    command: "npm run api"
+    cwd: "."
+    port: 4000
+    group: "App"
+
+# ── Test Suites ───────────────────────────────────────────────────────────────
+testSuites:
+  - name: "Unit Tests"
+    run: "npm test"
+    watch: "npm test -- --watch"
+    ci: "npm test -- --ci --coverage"
+  - name: "E2E Tests"
+    run: "npm run test:e2e"
+    ci: "npm run test:e2e -- --headless"
+
+# ── Lane Profiles ─────────────────────────────────────────────────────────────
+lanes:
+  profiles:
+    - name: "feature"
+      basePort: 3001
+      env:
+        NODE_ENV: "development"
+      startCommands: ["npm install"]
+    - name: "hotfix"
+      basePort: 4001
+      env:
+        NODE_ENV: "production"
+
+# ── Automation Definitions ────────────────────────────────────────────────────
+automations:
+  - name: "PR Reviewer"
+    trigger:
+      type: "git.pr_opened"
+    executor: "automation-bot"
+    prompt: "Review this PR for code quality, security issues, and adherence to project conventions."
+    toolPalette: "read-only"
+    budgetCap: 0.50
+
+# ── Trust (managed automatically — do not edit manually) ─────────────────────
+trust:
+  approvedSha: "abc123..."
+```
+
+<AccordionGroup>
+  <Accordion title="ai — AI defaults" icon="robot">
+    All `ai.*` values are defaults. They can be overridden per-mission, per-worker, or per-automation at creation time. The `monthlyBudgetCap` is a hard ceiling — once reached, all agent activity pauses until the next billing period or you manually raise the cap in Settings → Budget.
+  </Accordion>
+  <Accordion title="processes — Dev server definitions" icon="server">
+    Process definitions describe how to start development servers. ADE uses these to populate the lane startup commands and to generate the process panel in the Lanes view. The `group` field organizes processes visually in the UI.
+  </Accordion>
+  <Accordion title="testSuites — Test runner config" icon="vial">
+    ADE uses the `run` command in agent contexts when a worker needs to execute tests. The `watch` command is used in lane terminal sessions for continuous testing. The `ci` command is used during Mission validation phases and automation triggers.
+  </Accordion>
+  <Accordion title="lanes.profiles — Lane environment templates" icon="code-branch">
+    Lane profiles are templates applied when creating new lanes. A profile sets the base port offset, environment variables, and startup commands. When you create a lane and select a profile, all profile values are applied as the lane's initial configuration.
+  </Accordion>
+  <Accordion title="automations — Event-driven automation rules" icon="bolt">
+    Automation definitions are shared team-wide. Each automation specifies a trigger event, the executor agent identity, a prompt, the tool palette the agent is allowed to use, and a per-run budget cap. See [Automations](/automations/overview) for the full automation reference.
+  </Accordion>
+  <Accordion title="trust.approvedSha — Do not edit" icon="shield">
+    ADE manages the `trust.approvedSha` field automatically as part of the approval workflow. Editing it manually will cause ADE to treat the config as unapproved and pause all commands until you complete the approval flow again.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## `local.yaml` — Full Schema Reference
+
+This file is yours alone. It is gitignored and never shared. Use it to override team defaults for your own machine.
+
+```yaml
+# .ade/local.yaml
+
+ai:
+  preferredModel: "claude-sonnet-4-6"   # Override the team's default model
+
+editor:
+  theme: "dark"                          # dark | light | monokai | solarized-dark | solarized-light | one-dark
+  fontSize: 14
+  tabSize: 2
+
+terminal:
+  shell: "/bin/zsh"
+  fontFamily: "JetBrains Mono"
+  fontSize: 13
+
+notifications:
+  missionComplete: true
+  conflictDetected: true
+  budgetWarning: true
+  prStatusChange: false
+
+nightShift:
+  idleThresholdMinutes: 15              # Minutes idle before Night Shift activates
+  runWindowStart: "23:00"               # Earliest Night Shift can start
+  runWindowEnd: "06:00"                 # Latest Night Shift runs until
+
+# Approval state — managed automatically
+trust:
+  approvedSha: "abc123..."              # Your machine's approved ade.yaml SHA
+```
+
+---
+
+## `local.secret.yaml` — Full Schema Reference
+
+This file holds your API keys and MCP credentials. It is always gitignored. Only the Electron main process reads it — the renderer (React UI) never has access to its raw contents.
+
+```yaml
+# .ade/local.secret.yaml
+
+anthropic:
+  apiKey: "sk-ant-..."
+
+openai:
+  apiKey: "sk-..."
+
+openrouter:
+  apiKey: "sk-or-..."
+
+github:
+  token: "ghp_..."
+
+linear:
+  apiKey: "lin_api_..."
+
+# Optional: local model endpoint (no key needed for Ollama)
+localModels:
+  baseUrl: "http://localhost:11434/v1"
+
+# External MCP server connections
+externalMcp:
+  - name: "github"
+    transport: "stdio"
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-github"]
+    autoStart: true
+    env:
+      GITHUB_TOKEN: "ghp_..."
+
+  - name: "ghost-os"
+    transport: "http"
+    url: "https://ghost-os.local/mcp"
+    healthCheckInterval: "30s"
+    autoStart: false
+```
+
+<Warning>
+`local.secret.yaml` must never be committed to git. ADE adds it to `.gitignore` automatically, but also add it manually if your project has nested `.gitignore` files. Run `git check-ignore -v .ade/local.secret.yaml` to verify it is excluded.
+</Warning>
+
+---
+
+## Hot-Reload Behavior
+
+ADE watches all three config files using filesystem events (debounced 500ms). Changes take effect without restarting ADE.
+
+| File | What happens on change |
+|------|------------------------|
+| `ade.yaml` | ADE detects the change, diffs against the approved SHA, and suspends commands until you approve the new version |
+| `local.yaml` | Applied immediately; UI reflects changes (theme, font, notification preferences) within one render cycle |
+| `local.secret.yaml` | API key changes take effect on the next agent call; MCP server credential changes trigger reconnection of the affected server |
+
+<Tip>
+If you update an API key in `local.secret.yaml` while an agent is mid-session, the new key is used on the next API call. The in-flight request completes with the old key. No session restart is needed.
+</Tip>
+
+---
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="What to commit" icon="check">
+    **Commit `ade.yaml`.** It contains the team's shared AI model defaults, lane profiles, automation definitions, test suite config, and process definitions. Committing it ensures all team members use the same baseline configuration.
+
+    Do not commit `local.yaml` or `local.secret.yaml`. ADE's `.gitignore` entries cover these, but double-check when initializing new repositories.
+  </Accordion>
+  <Accordion title="Rotating API keys" icon="rotate">
+    To rotate an API key: update the value in `local.secret.yaml` and save. ADE hot-reloads the file and uses the new key on the next API call. The old key is never cached — once the file is saved, the old value is gone from memory.
+
+    Never commit the old or new key values to git during rotation. If a key was accidentally committed, revoke it at the provider immediately regardless of whether you have since removed it from the file.
+  </Accordion>
+  <Accordion title="Reviewing ade.yaml changes from teammates" icon="users">
+    When you `git pull` and `ade.yaml` has changed, ADE shows the approval dialog before resuming any command execution. Read the diff carefully — pay particular attention to changes in `automations[*].executor`, `processes[*].command`, and `testSuites[*].ci`. These fields define commands that will run on your machine.
+  </Accordion>
+  <Accordion title="Using environment variables instead of file values" icon="terminal">
+    For CI environments or machines where you cannot write files, ADE supports supplying API keys via environment variables. Set `ADE_ANTHROPIC_API_KEY`, `ADE_OPENAI_API_KEY`, etc. in the process environment before launching ADE. Environment variable values take precedence over `local.secret.yaml`.
+  </Accordion>
+  <Accordion title="Multiple projects on the same machine" icon="folder-open">
+    Each project has its own `.ade/` directory with its own `local.yaml` and `local.secret.yaml`. You can use different API keys or different preferred models for different projects. Settings in one project's `.ade/` never affect another project.
+  </Accordion>
+</AccordionGroup>
+
+<Info>**📸 Screenshot needed:** The Settings → Config panel showing the three config files listed with their edit buttons, the "Approved SHA" display showing the current hash and a green checkmark, and a "Re-approve current config" button.</Info>
+
+---
+
+## What's Next
+
+<CardGroup cols={2}>
+  <Card title="AI Providers" icon="robot" href="/configuration/ai-providers">
+    Configure Anthropic, OpenAI, OpenRouter, and local models. Set budgets and context preferences.
+  </Card>
+  <Card title="MCP Servers" icon="server" href="/configuration/mcp-servers">
+    Connect external MCP servers like GitHub, Slack, and Ghost OS to give agents additional tools.
+  </Card>
+  <Card title="Settings" icon="gear" href="/configuration/settings">
+    Full reference for every setting in ADE's Settings page.
+  </Card>
+  <Card title="Permissions" icon="shield-check" href="/configuration/permissions">
+    Understand ADE's trust boundary model and configure agent permissions.
+  </Card>
+</CardGroup>

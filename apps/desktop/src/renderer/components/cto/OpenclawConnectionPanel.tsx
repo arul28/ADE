@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowCounterClockwise,
   CheckCircle,
@@ -132,6 +132,11 @@ export function OpenclawConnectionPanel({
     shareMode: identity?.openclawContextPolicy?.shareMode ?? "filtered",
     blockedCategories: (identity?.openclawContextPolicy?.blockedCategories ?? []).join(", "),
   });
+  const onStateChangeRef = useRef(onStateChange);
+
+  useEffect(() => {
+    onStateChangeRef.current = onStateChange;
+  }, [onStateChange]);
 
   const connectionStatus: "connected" | "degraded" | "disconnected" = useMemo(() => {
     if (state?.status.state === "connected") return "connected";
@@ -150,14 +155,14 @@ export function OpenclawConnectionPanel({
       setDraft(stateToDraft(nextState));
       setMessages(nextMessages);
       setError(null);
-      onStateChange?.(nextState);
+      onStateChangeRef.current?.(nextState);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load OpenClaw state.");
       setState(null);
       setMessages([]);
-      onStateChange?.(null);
+      onStateChangeRef.current?.(null);
     }
-  }, [compact, onStateChange]);
+  }, [compact]);
 
   useEffect(() => {
     void load();
@@ -166,10 +171,9 @@ export function OpenclawConnectionPanel({
   useEffect(() => {
     const unsubscribe = window.ade?.cto?.onOpenclawConnectionStatus?.((nextStatus) => {
       setState((current) => current ? { ...current, status: nextStatus } : current);
-      void load();
     });
     return () => unsubscribe?.();
-  }, [load]);
+  }, []);
 
   useEffect(() => {
     setContextDraft({

@@ -18,9 +18,14 @@ export class RendererErrorBoundary extends React.Component<{ children: React.Rea
     };
   }
 
-  componentDidCatch(error: unknown): void {
+  componentDidCatch(error: unknown, info: React.ErrorInfo): void {
     // Keep renderer crashes visible in devtools logs and avoid a blank screen.
-    console.error("renderer.crash", error);
+    console.error("renderer.crash", {
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack ?? null : null,
+      componentStack: info.componentStack,
+      route: window.location.hash || window.location.pathname,
+    });
   }
 
   render() {
@@ -44,4 +49,3 @@ export class RendererErrorBoundary extends React.Component<{ children: React.Rea
     return this.props.children;
   }
 }
-

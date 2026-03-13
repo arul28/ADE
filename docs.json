@@ -1,0 +1,286 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "maple",
+  "name": "ADE",
+  "colors": {
+    "primary": "#16A34A",
+    "light": "#07C983",
+    "dark": "#15803D"
+  },
+  "background": {
+    "decoration": "grid"
+  },
+  "favicon": "/favicon.svg",
+  "logo": {
+    "light": "/logo/light.png",
+    "dark": "/logo/dark.png",
+    "href": "https://ade.dev"
+  },
+  "search": {
+    "prompt": "Search ADE docs..."
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Getting Started",
+        "icon": "rocket",
+        "groups": [
+          {
+            "group": "Welcome",
+            "icon": "hand-wave",
+            "expanded": true,
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Learn",
+            "icon": "graduation-cap",
+            "pages": [
+              "key-concepts"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Lanes",
+        "icon": "code-branch",
+        "groups": [
+          {
+            "group": "Overview",
+            "icon": "circle-info",
+            "expanded": true,
+            "pages": [
+              "lanes/overview"
+            ]
+          },
+          {
+            "group": "Working with Lanes",
+            "icon": "hammer",
+            "pages": [
+              "lanes/creating",
+              "lanes/stacks",
+              "lanes/environment"
+            ]
+          },
+          {
+            "group": "Context",
+            "icon": "brain",
+            "pages": [
+              "lanes/packs"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "AI Agents",
+        "icon": "robot",
+        "groups": [
+          {
+            "group": "CTO Agent",
+            "icon": "crown",
+            "expanded": true,
+            "pages": [
+              "cto/overview",
+              "cto/setup",
+              "cto/memory",
+              "cto/linear",
+              "cto/workers"
+            ]
+          },
+          {
+            "group": "Missions",
+            "icon": "bullseye",
+            "pages": [
+              "missions/overview",
+              "missions/creating",
+              "missions/workers",
+              "missions/budget"
+            ]
+          },
+          {
+            "group": "Agent Chat",
+            "icon": "comments",
+            "pages": [
+              "chat/overview",
+              "chat/capabilities",
+              "chat/context"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Automation",
+        "icon": "bolt",
+        "groups": [
+          {
+            "group": "Automations",
+            "icon": "gears",
+            "expanded": true,
+            "pages": [
+              "automations/overview",
+              "automations/executors",
+              "automations/templates",
+              "automations/guardrails"
+            ]
+          },
+          {
+            "group": "Computer Use",
+            "icon": "desktop",
+            "pages": [
+              "computer-use/overview",
+              "computer-use/setup",
+              "computer-use/proofs",
+              "computer-use/config"
+            ]
+          },
+          {
+            "group": "Context Packs",
+            "icon": "cubes",
+            "pages": [
+              "context-packs/overview",
+              "context-packs/structure",
+              "context-packs/freshness"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Tools & Views",
+        "icon": "grid-2",
+        "groups": [
+          {
+            "group": "Visualization",
+            "icon": "chart-network",
+            "expanded": true,
+            "pages": [
+              "tools/workspace-graph",
+              "tools/project-home"
+            ]
+          },
+          {
+            "group": "Development",
+            "icon": "code",
+            "pages": [
+              "tools/files-editor",
+              "tools/terminals"
+            ]
+          },
+          {
+            "group": "Workflow",
+            "icon": "arrows-rotate",
+            "pages": [
+              "tools/pull-requests",
+              "tools/conflicts",
+              "tools/history"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Configuration",
+        "icon": "gear",
+        "groups": [
+          {
+            "group": "Setup",
+            "icon": "play",
+            "expanded": true,
+            "pages": [
+              "configuration/overview",
+              "configuration/ai-providers"
+            ]
+          },
+          {
+            "group": "Connections",
+            "icon": "plug",
+            "pages": [
+              "configuration/mcp-servers"
+            ]
+          },
+          {
+            "group": "Preferences",
+            "icon": "sliders",
+            "pages": [
+              "configuration/settings",
+              "configuration/permissions"
+            ]
+          }
+        ]
+      }
+    ],
+    "global": {
+      "anchors": [
+        {
+          "anchor": "GitHub",
+          "href": "https://github.com/ade-dev/ade",
+          "icon": "github"
+        },
+        {
+          "anchor": "Discord",
+          "href": "https://discord.gg/ade",
+          "icon": "discord"
+        }
+      ]
+    }
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "Support",
+        "href": "mailto:support@ade.dev",
+        "icon": "envelope"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Download ADE",
+      "href": "https://ade.dev/download"
+    }
+  },
+  "contextual": {
+    "options": [
+      "copy",
+      "view",
+      "claude",
+      "chatgpt",
+      "perplexity",
+      "mcp",
+      "cursor",
+      "vscode"
+    ]
+  },
+  "footer": {
+    "socials": {
+      "x": "https://x.com/ade_dev",
+      "github": "https://github.com/ade-dev/ade",
+      "discord": "https://discord.gg/ade"
+    },
+    "links": [
+      {
+        "header": "Product",
+        "items": [
+          { "label": "Features", "href": "/lanes/overview" },
+          { "label": "Download", "href": "https://ade.dev/download" },
+          { "label": "Changelog", "href": "https://ade.dev/changelog" }
+        ]
+      },
+      {
+        "header": "Resources",
+        "items": [
+          { "label": "Documentation", "href": "/introduction" },
+          { "label": "Quick Start", "href": "/quickstart" },
+          { "label": "Key Concepts", "href": "/key-concepts" }
+        ]
+      },
+      {
+        "header": "Community",
+        "items": [
+          { "label": "Discord", "href": "https://discord.gg/ade" },
+          { "label": "GitHub", "href": "https://github.com/ade-dev/ade" },
+          { "label": "Twitter", "href": "https://x.com/ade_dev" }
+        ]
+      }
+    ]
+  }
+}

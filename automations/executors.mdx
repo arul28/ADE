@@ -1,0 +1,94 @@
+---
+title: "Executor Modes"
+description: "Choose the right executor mode for your automation — from lightweight stateless bots to persistent workers, CTO routing, and deferred Night Shift processing."
+icon: "robot"
+---
+
+## Executor Modes
+
+Each automation uses one of four executor modes. Choosing the right mode affects cost, persistence, and scheduling.
+
+<AccordionGroup>
+  <Accordion title="automation-bot — Lightweight Stateless Executor" icon="robot">
+    A fast, lightweight executor designed for simple, contained tasks. Each run starts fresh with no memory of previous executions. Ideal for tasks that are self-contained and predictable.
+
+    **Best for:** Running tests on every commit, summarizing new commits to a Slack message, formatting changed files, generating changelog entries.
+
+    **Characteristics:**
+    - Stateless — each run is independent
+    - Low latency startup
+    - Best cost efficiency for repetitive tasks
+  </Accordion>
+
+  <Accordion title="employee — Persistent Worker Agent" icon="user-tie">
+    A persistent agent assigned to own a specific type of task. The employee has a memory store and remembers what it has seen across multiple runs. Use this when you need continuity — the agent should accumulate knowledge over time.
+
+    **Best for:** Reviewing all CSS changes (the agent learns your style preferences over time), maintaining the test suite, tracking dependency debt.
+
+    **Characteristics:**
+    - Stateful memory across runs
+    - Builds domain knowledge over time
+    - Higher initial cost, but more accurate over time
+  </Accordion>
+
+  <Accordion title="cto-route — CTO Agent Decision Routing" icon="arrow-up-right-from-square">
+    Routes the trigger event to the CTO agent for high-level decision making. The CTO agent processes the event using its full project context and persistent memory, then decides what to do: spawn a mission, update a plan, comment on a PR, or do nothing.
+
+    **Best for:** Linear issue triage (CTO decides priority and assignment), milestone risk assessment, cross-lane coordination decisions.
+
+    **Characteristics:**
+    - Leverages the CTO's full project memory
+    - Produces high-context, high-quality decisions
+    - Higher cost per execution
+  </Accordion>
+
+  <Accordion title="night-shift — Off-Hours Deferred Execution" icon="moon">
+    Queues the automation to run during off-hours when your machine is idle. ADE batches Night Shift tasks and processes them overnight. This mode is ideal for expensive, non-urgent tasks that do not need immediate results.
+
+    **Best for:** Weekly dependency updates, large codebase refactoring sweeps, generating comprehensive documentation, model evaluation runs.
+
+    **Characteristics:**
+    - Deferred to idle time (default: 15 minutes of inactivity)
+    - Tasks processed one at a time to avoid resource contention
+    - Results available when you return the next morning
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Creating Your First Automation
+
+<Info>**📸 Screenshot needed:** The "New Automation" dialog showing the trigger type selector, executor mode radio buttons, the automation prompt text area, and the tool palette dropdown. The form should look partially filled-in.</Info>
+
+<Steps>
+  <Step title="Open the Automations Tab">
+    Click the **Automations** icon in the left sidebar (the lightning bolt icon). Then click **New Automation** in the top-right corner.
+  </Step>
+  <Step title="Choose a Trigger">
+    Select a trigger family from the dropdown, then configure its filters. For example, for `git.pr_opened`, you can filter to only fire when the source branch matches `feat/*`.
+  </Step>
+  <Step title="Select an Executor Mode">
+    Choose between `automation-bot`, `employee`, `cto-route`, or `night-shift` based on the nature of the task. When in doubt, start with `automation-bot`.
+  </Step>
+  <Step title="Write the Automation Prompt">
+    This is the instruction the executor receives when the trigger fires. Be specific about what the agent should produce. Example:
+
+    ```
+    A PR was just opened. Review the diff for:
+    1. Any hardcoded credentials or secrets
+    2. Missing error handling in async functions
+    3. Files that changed but have no corresponding test changes
+
+    Post a PR comment summarizing your findings. If you find secrets, mark the PR as "Needs Changes".
+    ```
+  </Step>
+  <Step title="Configure Tool Palette">
+    Choose which tools the executor can access. For a PR reviewer, `read-only` is sufficient — the agent needs to read files but should not write anything. See [Tool Palette Security](/automations/guardrails#tool-palette-security) for details.
+  </Step>
+  <Step title="Set Guardrails & Budget">
+    Set a maximum token budget and execution time limit. Enable **Approval Mode** if you want the automation to pause before any write operations.
+  </Step>
+  <Step title="Save and Enable">
+    Click **Save**. The automation is now active. Toggle the enable switch to pause it at any time without deleting it.
+  </Step>
+</Steps>

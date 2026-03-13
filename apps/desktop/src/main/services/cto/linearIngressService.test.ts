@@ -26,6 +26,17 @@ describe("linearIngressService", () => {
         lastDeliveredAt: null,
       }),
     } as Response);
+    fetchMock.mockImplementationOnce(async (_url: string, init?: RequestInit) => {
+      const signal = init?.signal as AbortSignal | undefined;
+      await new Promise<void>((resolve) => {
+        if (signal?.aborted) {
+          resolve();
+          return;
+        }
+        signal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      throw new Error("aborted");
+    });
 
     vi.stubGlobal("fetch", fetchMock);
 
@@ -51,9 +62,39 @@ describe("linearIngressService", () => {
     await service.ensureRelayWebhook(true);
     const status = service.getStatus();
 
+    expect(status.localWebhook.status).toBe("listening");
+    expect(status.localWebhook.url).toContain("/linear-webhooks");
     expect(status.relay.status).toBe("ready");
     expect(status.relay.webhookUrl).toContain("/linear/webhooks/endpoint-1");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    service.dispose();
+    db.close();
+  });
+
+  it("does not auto-start ingress when relay credentials are missing", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-ingress-"));
+    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const service = createLinearIngressService({
+      db,
+      projectId: "project-1",
+      linearClient: {
+        listWebhooks: vi.fn(async () => []),
+        createWebhook: vi.fn(async () => ({ id: "webhook-1" })),
+      } as any,
+      secretService: {
+        getSecret: () => null,
+      } as any,
+    });
+
+    await service.start();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(service.getStatus().localWebhook.status).toBe("disabled");
+    expect(service.canAutoStart()).toBe(false);
 
     service.dispose();
     db.close();

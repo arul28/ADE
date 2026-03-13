@@ -1,0 +1,86 @@
+---
+title: "Lane Environment"
+description: "Port allocation, environment variable overlays, startup commands, preview URLs, runtime isolation, and agent routing for per-lane environments."
+icon: "server"
+---
+
+## Per-Lane Environment
+
+Each lane runs in its own isolated environment, preventing port conflicts and environment variable leakage between parallel workstreams.
+
+### Port Allocation
+
+ADE assigns each lane a unique port lease from a configured range (default: 3001–3099). Lane A might get port 3001, Lane B port 3002, and so on. The port is available as the `$ADE_PORT` environment variable inside the lane's process environment, and is also exposed as a clickable preview URL in the lane detail header.
+
+When a lane is deleted or archived, its port lease is released back to the pool.
+
+### Environment Variable Overlays
+
+Lanes support per-lane environment variable overlays. These are key-value pairs applied on top of the project-level environment when processes run in that lane. Common uses:
+
+- Setting `DATABASE_URL` to a lane-specific test database
+- Pointing `API_BASE_URL` to a lane-specific mock server
+- Enabling feature flags only for this lane's work
+
+Overlays are configured at lane creation time or via the lane's **Environment** settings in the right inspector.
+
+### Startup Commands
+
+Each lane can have a startup command (e.g., `npm run dev`, `python manage.py runserver`) that ADE runs automatically when the lane initializes. This is configured via a **Lane Profile** in `.ade/ade.yaml`.
+
+```yaml
+# .ade/ade.yaml
+lanes:
+  profiles:
+    web-feature:
+      startup: npm run dev
+      port: 3001
+      env:
+        NODE_ENV: development
+        VITE_API_URL: http://localhost:8080
+    api-feature:
+      startup: go run ./cmd/server
+      port: 8080
+      env:
+        GO_ENV: development
+```
+
+### Preview URLs
+
+When a startup command is configured and the lane's process is running, ADE generates a preview URL (`http://<lane-name>.localhost:<port>`) that you can open directly from the lane detail header. The Lane Proxy routes requests through ADE's reverse proxy to the correct lane's port.
+
+<Info>**Screenshot needed:** Lane detail header showing a preview URL badge (e.g., "http://auth-refactor.localhost:3001") next to the branch name, with a green "Running" indicator and a clickable external link icon.</Info>
+
+---
+
+## Lane Runtime Isolation (Phase 5)
+
+Phase 5 introduces full runtime isolation for production-grade parallel development:
+
+<AccordionGroup>
+  <Accordion title="Lane Environment Init with Overlay Policies" icon="layers">
+    Lane environments are initialized from a base environment with an explicit overlay policy. Policies control which project-level variables are inherited, which are overridden, and which are blocked entirely. This prevents accidental access to production secrets in development lanes.
+  </Accordion>
+  <Accordion title="Per-Lane Hostname Isolation" icon="globe">
+    Each lane gets a dedicated `.localhost` subdomain routed through ADE's reverse proxy. This enables cookie isolation, OAuth redirect handling, and realistic preview URL testing without port juggling.
+  </Accordion>
+  <Accordion title="Auth Redirect Handling" icon="key">
+    OAuth flows started in a lane are automatically routed back to the same lane's callback URL. The `state` parameter in OAuth flows carries the lane identifier, and ADE's proxy resolves it to the correct lane's callback handler. This means you can run multiple OAuth-authenticated services in parallel lanes without conflicts.
+  </Accordion>
+  <Accordion title="Port Allocation and Lease Management" icon="network-wired">
+    Ports are leased atomically from a central allocator to prevent races when multiple lanes are created simultaneously. Leases have a TTL and are automatically reclaimed if a lane is deleted or ADE is restarted with orphaned leases.
+  </Accordion>
+  <Accordion title="Runtime Diagnostics" icon="stethoscope">
+    Each lane's runtime environment exposes a health panel in the right inspector with traffic-light indicators for: process running, port bound, environment loaded, and preview URL reachable. A one-click **Fallback Mode** restarts the lane in a minimal environment for debugging startup failures.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Lane Proxy and Agent Routing
+
+The **Lane Proxy** is an internal ADE service that ensures AI agents never accidentally write to the wrong lane's worktree.
+
+When an agent session starts in a lane, ADE assigns it a scoped proxy context. All filesystem operations in that session are validated against the lane's worktree path. Attempts to modify files outside the lane's directory are blocked and logged. This is a safety guarantee — even if an agent produces a path-traversal tool call, it cannot affect a different lane's files.
+
+Agent sessions are also scoped to a lane's memory context. The Lane Pack injected at session start is the pack for that specific lane, not a global pack or a neighboring lane's pack. Context does not leak across lanes.

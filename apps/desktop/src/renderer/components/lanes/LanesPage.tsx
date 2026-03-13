@@ -8,6 +8,7 @@ import { buildIntegrationSourcesByLaneId } from "../../lib/integrationLanes";
 import { EmptyState } from "../ui/EmptyState";
 import { Button } from "../ui/Button";
 import { PaneTilingLayout } from "../ui/PaneTilingLayout";
+import { listSessionsCached } from "../../lib/sessionListCache";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton, conflictDotColor } from "./laneDesignTokens";
 import { ResizeGutter } from "../ui/ResizeGutter";
 import { LaneStackPane } from "./LaneStackPane";
@@ -134,6 +135,7 @@ export function LanesPage() {
   const [conflictStatusByLane, setConflictStatusByLane] = useState<Record<string, ConflictStatus>>({});
   const [conflictChipsByLane, setConflictChipsByLane] = useState<Record<string, ConflictChip[]>>({});
   const chipTimersRef = useRef<Map<string, number>>(new Map());
+  const hasActiveLaneSessionsRef = useRef(false);
   const [rebaseSuggestions, setRebaseSuggestions] = useState<RebaseSuggestion[]>([]);
   const [autoRebaseStatuses, setAutoRebaseStatuses] = useState<AutoRebaseLaneStatus[]>([]);
   const [autoRebaseEnabled, setAutoRebaseEnabled] = useState(false);
@@ -363,7 +365,7 @@ export function LanesPage() {
 
   const refreshAllSessions = useCallback(async () => {
     try {
-      const rows = await window.ade.sessions.list({ limit: 500 });
+      const rows = await listSessionsCached({ limit: 500 });
       setAllSessions(rows);
     } catch {
       setAllSessions([]);
@@ -470,6 +472,17 @@ export function LanesPage() {
   }, [refreshAllSessions, project?.rootPath]);
 
   useEffect(() => {
+    hasActiveLaneSessionsRef.current = allSessions.some((session) => {
+      const bucket = sessionStatusBucket({
+        status: session.status,
+        lastOutputPreview: session.lastOutputPreview,
+        runtimeState: session.runtimeState,
+      });
+      return bucket === "running" || bucket === "awaiting-input";
+    });
+  }, [allSessions]);
+
+  useEffect(() => {
     void refreshIntegrationProposals();
   }, [refreshIntegrationProposals, lanes.length, project?.rootPath]);
 
@@ -487,8 +500,9 @@ export function LanesPage() {
     const unsubChat = window.ade.agentChat.onEvent(scheduleRefresh);
     const intervalId = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
+      if (!hasActiveLaneSessionsRef.current) return;
       void refreshAllSessions();
-    }, 5_000);
+    }, 15_000);
     return () => {
       if (timer) clearTimeout(timer);
       try {

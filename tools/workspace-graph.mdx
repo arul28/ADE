@@ -1,0 +1,307 @@
+---
+title: "Workspace Graph"
+description: "An infinite-canvas visualization of your entire project topology — every Lane, PR, branch, and dependency relationship, with live merge simulation."
+icon: "diagram-project"
+---
+
+<Info>**📸 Screenshot needed:** Full Workspace Graph view — an infinite canvas showing 6-8 lane nodes in a hierarchical tree, color-coded by status (green idle, blue active, orange conflict), with PR nodes connected to their lanes and edge annotations showing merge simulation results. The mini-map should be visible in the bottom-right corner.</Info>
+
+## Overview
+
+The Workspace Graph is ADE's spatial view of your entire project topology. Built on **React Flow** with an **ELK.js** hierarchical layout engine, it renders every Lane, PR, branch, and dependency relationship as a living graph that updates in real time.
+
+Where the Lanes list tells you *what* is happening, the Workspace Graph shows you *how everything connects*. At a glance you can see which lanes are stacked on top of each other, which branches have open PRs, where merge conflicts are likely to emerge, and how far ahead or behind each line of work has drifted.
+
+<CardGroup cols={3}>
+  <Card title="Topology at a Glance" icon="diagram-project">
+    See every lane, PR, and branch relationship in one view. Hierarchical layout auto-arranges nodes based on branch ancestry.
+  </Card>
+  <Card title="Merge Simulation" icon="code-merge">
+    Run a background merge simulation using `git merge-tree`. Predicted conflicts overlay as edge annotations before you touch a single branch.
+  </Card>
+  <Card title="Drag-to-Reparent" icon="arrow-right-arrow-left">
+    Drag a lane node onto another to change its base branch. ADE previews the rebase before committing.
+  </Card>
+</CardGroup>
+
+---
+
+## Opening the Graph
+
+Press `Cmd+G` from anywhere in ADE, or click the **Graph** icon (sixth icon) in the left sidebar. The graph opens as a full-screen tab in the main panel.
+
+<Tip>
+The graph updates live. If an agent commits code or a PR changes review status while the graph is open, the relevant node refreshes automatically — no manual reload needed.
+</Tip>
+
+---
+
+## Understanding Nodes
+
+Every entity in your project is represented as a node on the canvas.
+
+<AccordionGroup>
+  <Accordion title="Lane Nodes" icon="code-branch">
+    Lane nodes are the primary building blocks of the graph. Each node displays:
+
+    - **Lane name** and **branch name**
+    - **Status badge**: color-coded by current state
+    - **Agent activity indicator**: spinning pulse when an agent is actively working
+    - **Pack freshness**: a small indicator showing how fresh the lane's context pack is
+    - **Port allocation**: the port number assigned to this lane (e.g., `:3001`) and its preview URL
+
+    **Status colors:**
+
+    | Color | Status | Meaning |
+    |-------|--------|---------|
+    | Green | Idle | Lane is clean and ready — no active agent, no conflicts |
+    | Blue | Active | An agent is currently working in this lane |
+    | Orange | Conflict | Overlap with another lane's changes detected |
+    | Red | Blocked | Lane is blocked — merge conflict, failing CI, or intervention required |
+    | Gray | Archived | Lane has been archived and is read-only |
+
+  </Accordion>
+  <Accordion title="PR Nodes" icon="code-pull-request">
+    Each lane with an open pull request has a PR node connected to it. PR nodes show:
+
+    - PR number and title (truncated)
+    - Review status: **Draft**, **Open**, **Approved**, **Changes Requested**, **Needs Review**
+    - CI check rollup (all green, some failing, or pending)
+
+    Clicking a PR node opens the PR detail in the Inspector panel without leaving the graph.
+  </Accordion>
+  <Accordion title="Branch Nodes" icon="git-branch">
+    Orphaned branches — branches that exist in your repository but are not registered as a lane in ADE — appear as lighter-weight branch nodes. These are useful for importing stale remote branches or seeing the full repository topology.
+
+    Right-click a branch node to convert it into a full Lane.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Understanding Edges
+
+Edges represent relationships between nodes.
+
+- **Dependency edges**: Lane A's base is Lane B — A is stacked on top of B. Shown as a solid directional line.
+- **PR target edges**: A lane's PR targets the main branch (or another lane's branch). Shown as a dashed line connecting the PR node to its target.
+- **Merge simulation overlays**: After running a simulation, edges gain annotation badges showing predicted merge outcome, conflict count, and risk level.
+
+<Info>**📸 Screenshot needed:** Close-up of two lane nodes connected by an edge with a merge simulation annotation — show a "2 conflicts · High Risk" badge in red on the edge, and a clean "Clean merge" badge in green on another edge nearby.</Info>
+
+---
+
+## View Modes
+
+The toolbar at the top of the graph provides three view modes. Switch between them without losing your canvas position.
+
+<Tabs>
+  <Tab title="Lane View">
+    The default view. Every node shows its lane status, agent activity pulse, and pack freshness indicator. Edges show dependency relationships.
+
+    This mode is optimized for day-to-day orchestration: you see which lanes are active, which need attention, and how work is stacked.
+  </Tab>
+  <Tab title="PR View">
+    PR view emphasizes pull request status across the graph. Lane nodes are de-emphasized in favor of PR nodes, which grow larger and show detailed review status.
+
+    Use PR view during code review cycles when you need to see at a glance which PRs are approved and ready to merge, which need re-review, and which are still in draft.
+
+    **PR status colors in this mode:**
+    - Green: Approved and CI passing
+    - Yellow: Approved but CI pending or failing
+    - Blue: Open, awaiting review
+    - Gray: Draft — not yet ready for review
+    - Red: Changes requested
+  </Tab>
+  <Tab title="Conflict Heat Map">
+    Heat map view colors every node and edge by conflict risk severity, computed from ADE's overlap analysis engine.
+
+    | Color | Risk Level | Meaning |
+    |-------|-----------|---------|
+    | Green | Safe | No overlapping file changes with other branches |
+    | Yellow | Warning | Some file overlap detected; conflicts possible |
+    | Orange | Moderate | Significant overlap; likely conflicts on merge |
+    | Red | High Risk | Direct conflicting edits to the same lines |
+
+    This mode is most useful before a release window when you need to decide merge order and spot integration risks before they become blockers.
+  </Tab>
+</Tabs>
+
+---
+
+## Merge Simulation
+
+The merge simulation feature predicts what would happen if each lane's branch were merged into the base branch, in sequence. ADE uses `git merge-tree` under the hood — the same algorithm Git uses for real merges, but without touching any branch on disk.
+
+<Info>**📸 Screenshot needed:** The Workspace Graph after running merge simulation — show edge annotations with colored badges ("Clean", "2 conflicts", "Diverged"), a "Simulation complete" toast notification at the top, and the simulation timestamp in the toolbar.</Info>
+
+### Running a Simulation
+
+<Steps>
+  <Step title="Click 'Simulate Merges'">
+    Click the **Simulate Merges** button in the graph toolbar (or press `Cmd+Shift+M`). ADE queues merge simulation jobs for all visible lanes.
+  </Step>
+  <Step title="Wait for results">
+    The simulation runs in the background. Individual edge annotations appear as each lane's simulation completes — you do not need to wait for all lanes. Typically 2-5 seconds per lane depending on diff size.
+  </Step>
+  <Step title="Read the annotations">
+    Each edge connecting a lane to its base gains an annotation badge:
+    - **Clean**: The merge would succeed with no conflicts
+    - **N conflicts**: The number of conflicting hunks detected
+    - **Diverged**: The branch has diverged significantly; a manual review is recommended
+  </Step>
+  <Step title="Inspect details">
+    Click any edge annotation badge to open a conflict detail drawer. It shows the conflicting files, the specific hunks in contention, and a side-by-side preview of both versions.
+  </Step>
+</Steps>
+
+<Warning>
+Merge simulation results reflect the state of branches at the time of the simulation run. They go stale as agents commit new code. Re-run the simulation before making merge decisions if significant work has been done since the last run. The timestamp in the toolbar shows when the last simulation was run.
+</Warning>
+
+### Simulating a Subset
+
+To simulate only selected lanes rather than the entire graph, Shift+click to select a set of lane nodes first, then click **Simulate Merges**. ADE runs the simulation only on the selected set — useful for large projects where a full simulation takes longer.
+
+---
+
+## Drag-to-Reparent
+
+You can change a lane's base branch directly in the graph by dragging one lane node onto another.
+
+<Steps>
+  <Step title="Start the drag">
+    Click and hold a lane node, then slowly drag it toward the target lane (the new base you want). After a brief pause, the node enters drag-reparent mode — a blue outline appears on valid drop targets.
+  </Step>
+  <Step title="Preview the rebase">
+    Drop the node onto the target lane. Before committing anything, ADE shows a **Rebase Preview** overlay:
+    - The new parent–child relationship as it would appear
+    - A summary of commits that will be rebased
+    - Any predicted conflicts in the rebase (from `git merge-tree`)
+  </Step>
+  <Step title="Confirm or cancel">
+    Click **Confirm Rebase** to proceed. ADE runs `git rebase --onto <new-base>` in the lane's worktree. Click **Cancel** to discard the change — no branches are touched.
+  </Step>
+  <Step title="Graph updates">
+    After a successful rebase, the graph re-runs ELK layout and animates nodes to their new positions. The edge topology reflects the new dependency.
+  </Step>
+</Steps>
+
+<Warning>
+Drag-to-reparent is a destructive git operation (rebase rewrites history). If the lane's branch has already been pushed to a remote, the rebase will require a force-push. ADE warns you if this is the case before confirming.
+</Warning>
+
+---
+
+## Batch Operations
+
+Select multiple nodes to perform bulk operations across lanes.
+
+**Selecting multiple nodes:**
+- **Shift+click**: Add individual nodes to the selection
+- **Drag-select**: Click and drag on empty canvas space to draw a selection rectangle
+- **Cmd+A**: Select all visible nodes
+
+Once nodes are selected, the batch operations toolbar appears at the bottom of the screen:
+
+| Operation | Description |
+|-----------|-------------|
+| **Archive Selected** | Archive all selected lanes (with a single confirmation dialog) |
+| **Simulate Merges** | Run merge simulation on selected lanes only |
+| **Export Packs** | Export context packs for all selected lanes as a `.zip` |
+| **Run Preflight** | Run mission preflight checks across all selected lanes |
+
+---
+
+## Navigation and Canvas Controls
+
+<CardGroup cols={2}>
+  <Card title="Zoom" icon="magnifying-glass">
+    Scroll (trackpad pinch or mouse wheel) to zoom in and out. `Cmd+0` fits all nodes into view. `Cmd++` and `Cmd+-` zoom in/out in steps.
+  </Card>
+  <Card title="Pan" icon="hand">
+    Click and drag on empty canvas space to pan. On a trackpad, two-finger scroll pans the canvas without zooming.
+  </Card>
+  <Card title="Mini-map" icon="map">
+    The mini-map in the bottom-right corner shows the full graph overview. Click anywhere on the mini-map to jump to that region. Click the mini-map header to collapse it.
+  </Card>
+  <Card title="Node Click" icon="cursor">
+    Clicking a lane node opens that lane's detail in the Inspector panel without leaving the graph tab. Double-click to navigate fully into the lane.
+  </Card>
+</CardGroup>
+
+### Node Hover Tooltips
+
+Hovering over a lane node for 500ms shows a tooltip with:
+- Branch name and last commit message
+- Last commit author and timestamp
+- Agent status (idle / running / completed)
+- Conflict risk score (0–100)
+- Pack freshness age
+
+---
+
+## Graph Layout
+
+ADE uses **ELK.js** (Eclipse Layout Kernel) to automatically arrange nodes in a hierarchical tree based on branch relationships. The main branch sits at the top; lanes forked from it appear below; lanes stacked on other lanes appear further down the hierarchy.
+
+**Manual repositioning:** Drag any node to a custom position. Node positions are persisted per-project — your layout survives restarts. To reset to the auto-layout, click **Reset Layout** in the graph toolbar.
+
+<Note>
+ELK layout runs automatically when new lanes are added or when lanes are archived. If you have manually positioned nodes, ADE attempts to preserve your positions and only moves newly-added nodes into available space.
+</Note>
+
+---
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Cmd+G` | Open the Workspace Graph |
+| `Cmd+A` | Select all nodes |
+| `Cmd+0` | Fit all nodes into view |
+| `Cmd+Shift+M` | Run merge simulation |
+| `Shift+Click` | Add node to selection |
+| `Escape` | Deselect all / cancel drag |
+| `Delete` | Archive selected lane(s) (shows confirmation dialog) |
+| `Cmd++` / `Cmd+-` | Zoom in / zoom out |
+
+---
+
+## Edge Cases and Large Projects
+
+<AccordionGroup>
+  <Accordion title="Very large projects (50+ lanes)" icon="chart-bar">
+    With 50 or more lanes, ELK layout can take 2-3 seconds to compute. ADE shows a "Recalculating layout..." indicator during this time. For very large graphs, consider using **lane groups** (configure in `ade.yaml`) to cluster related lanes and reduce visual noise.
+
+    Merge simulation on 50+ lanes runs all jobs in parallel but may take 30-60 seconds for large repositories with deep histories.
+  </Accordion>
+  <Accordion title="Disconnected branches" icon="code-branch">
+    Branches with no relationship to your base branch (e.g., orphan branches like `gh-pages`) appear as isolated nodes in the upper-right quadrant of the graph. They are not included in merge simulations by default.
+  </Accordion>
+  <Accordion title="Simulation on branches with merge commits" icon="code-merge">
+    `git merge-tree` works best on linear histories. On branches with merge commits, ADE uses the branch tip as the simulation target. The simulation may report false negatives (fewer conflicts than will actually occur) in complex octopus-merge scenarios.
+  </Accordion>
+  <Accordion title="Graph not updating" icon="rotate">
+    If the graph appears stale, press `Cmd+R` to force a full refresh from the database. This is rare — the graph subscribes to live IPC events from the main process. If the issue persists, check that the ADE main process is running and the IPC bridge is healthy (visible in `Settings → Diagnostics`).
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Related Pages
+
+<CardGroup cols={2}>
+  <Card title="Lanes" icon="code-branch" href="/lanes/overview">
+    Understand lane types, status, and lifecycle before diving into the graph.
+  </Card>
+  <Card title="Conflicts" icon="triangle-exclamation" href="/tools/conflicts">
+    Deep dive into ADE's conflict detection and resolution tools.
+  </Card>
+  <Card title="Pull Requests" icon="code-pull-request" href="/tools/pull-requests">
+    Manage PRs from within ADE, including review status and merge workflows.
+  </Card>
+  <Card title="Missions" icon="bullseye" href="/missions/overview">
+    Launch multi-step AI missions across lanes and track them from the graph.
+  </Card>
+</CardGroup>

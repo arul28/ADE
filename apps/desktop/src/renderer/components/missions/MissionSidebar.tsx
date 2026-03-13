@@ -10,6 +10,7 @@ import {
   Kanban,
 } from "@phosphor-icons/react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { useShallow } from "zustand/react/shallow";
 import type { MissionRunViewDisplayStatus, MissionSummary } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton } from "../lanes/laneDesignTokens";
@@ -26,17 +27,32 @@ import { useMissionsStore } from "./useMissionsStore";
 import { openMissionCreateDialog } from "./missionCreateDialogStore";
 import { useMissionRunView } from "./useMissionRunView";
 
+const selectSidebarState = (s: ReturnType<typeof useMissionsStore.getState>) => ({
+  missions: s.missions,
+  selectedMissionId: s.selectedMissionId,
+  searchFilter: s.searchFilter,
+  missionListView: s.missionListView,
+  refreshing: s.refreshing,
+  missionSettingsSnapshot: s.missionSettingsSnapshot,
+});
+
+const selectSidebarFooterState = (s: ReturnType<typeof useMissionsStore.getState>) => ({
+  selectedMissionId: s.selectedMissionId,
+  selectedMission: s.selectedMission,
+  selectedRunId: s.runGraph?.run.id ?? null,
+});
+
 /* ════════════════════ MISSION SIDEBAR ════════════════════ */
 
 export function MissionSidebar() {
-  const missions = useMissionsStore((s) => s.missions);
-  const selectedMissionId = useMissionsStore((s) => s.selectedMissionId);
-  const selectedMission = useMissionsStore((s) => s.selectedMission);
-  const runGraph = useMissionsStore((s) => s.runGraph);
-  const searchFilter = useMissionsStore((s) => s.searchFilter);
-  const missionListView = useMissionsStore((s) => s.missionListView);
-  const refreshing = useMissionsStore((s) => s.refreshing);
-  const missionSettingsSnapshot = useMissionsStore((s) => s.missionSettingsSnapshot);
+  const {
+    missions,
+    selectedMissionId,
+    searchFilter,
+    missionListView,
+    refreshing,
+    missionSettingsSnapshot,
+  } = useMissionsStore(useShallow(selectSidebarState));
 
   const setSelectedMissionId = useMissionsStore((s) => s.setSelectedMissionId);
   const setSearchFilter = useMissionsStore((s) => s.setSearchFilter);
@@ -47,8 +63,6 @@ export function MissionSidebar() {
   const setMissionSettingsError = useMissionsStore((s) => s.setMissionSettingsError);
   const refreshMissionList = useMissionsStore((s) => s.refreshMissionList);
   const loadMissionSettings = useMissionsStore((s) => s.loadMissionSettings);
-  const { runView } = useMissionRunView(selectedMissionId, runGraph?.run.id ?? null);
-  const selectedMissionNarrative = useMemo(() => buildMissionStateNarrative(runView), [runView]);
 
   const filteredMissions = useMemo(() => {
     if (!searchFilter.trim()) return missions;
@@ -223,19 +237,33 @@ export function MissionSidebar() {
         )}
       </div>
 
-      <MissionSidebarStatusBlock
-        missionTitle={selectedMission?.title ?? null}
-        missionPrompt={selectedMission?.prompt ?? null}
-        openInterventions={selectedMission?.openInterventions ?? 0}
-        artifactCount={selectedMission?.artifactCount ?? 0}
-        status={runView?.lifecycle.displayStatus ?? null}
-        summary={selectedMissionNarrative?.detail ?? null}
-        headline={selectedMissionNarrative?.title ?? null}
-        phaseName={runView?.active.phaseName ?? null}
-        stepTitle={runView?.active.stepTitle ?? null}
-        updatedAt={selectedMissionNarrative?.at ?? runView?.lastMeaningfulProgress?.at ?? selectedMission?.updatedAt ?? null}
-      />
+      <MissionSidebarStatusContainer />
     </div>
+  );
+}
+
+function MissionSidebarStatusContainer() {
+  const {
+    selectedMissionId,
+    selectedMission,
+    selectedRunId,
+  } = useMissionsStore(useShallow(selectSidebarFooterState));
+  const { runView } = useMissionRunView(selectedMissionId, selectedRunId);
+  const selectedMissionNarrative = useMemo(() => buildMissionStateNarrative(runView), [runView]);
+
+  return (
+    <MissionSidebarStatusBlock
+      missionTitle={selectedMission?.title ?? null}
+      missionPrompt={selectedMission?.prompt ?? null}
+      openInterventions={selectedMission?.openInterventions ?? 0}
+      artifactCount={selectedMission?.artifactCount ?? 0}
+      status={runView?.lifecycle.displayStatus ?? null}
+      summary={selectedMissionNarrative?.detail ?? null}
+      headline={selectedMissionNarrative?.title ?? null}
+      phaseName={runView?.active.phaseName ?? null}
+      stepTitle={runView?.active.stepTitle ?? null}
+      updatedAt={selectedMissionNarrative?.at ?? runView?.lastMeaningfulProgress?.at ?? selectedMission?.updatedAt ?? null}
+    />
   );
 }
 

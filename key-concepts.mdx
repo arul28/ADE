@@ -1,0 +1,453 @@
+---
+title: "Key Concepts"
+description: "A comprehensive reference for every core ADE concept: Lanes, Stacks, Packs, Checkpoints, Sessions, the CTO, Missions, Automations, Workers, MCP, the Job Engine, Conflicts, and Artifacts."
+icon: "lightbulb"
+---
+
+Understanding ADE's vocabulary is the fastest path to using it effectively. This page defines every core concept, explains how they relate to each other, and points to the deeper feature documentation for each.
+
+<Info>**📸 Screenshot needed:** A high-level diagram (drawn in ADE's Workspace Graph view) showing a project with a Primary Lane, two Worktree Lanes arranged in a Stack, an open Mission, and a Conflict indicator between two lanes. Labels visible for "Lane", "Stack", "Mission", "Conflict".</Info>
+
+---
+
+## Lane
+
+A **Lane** is the fundamental unit of parallel work in ADE. Every lane is an isolated execution environment: it has its own git branch, its own working directory, its own terminal sessions, its own agent context, and its own process environment variables.
+
+<CardGroup cols={3}>
+  <Card title="Primary Lane" icon="house">
+    The repository's main working directory. Every project has exactly one Primary Lane — it represents the cloned repo root itself. Cannot be deleted.
+  </Card>
+  <Card title="Worktree Lane" icon="code-branch">
+    A git worktree created by ADE under `.ade/worktrees/<name>/`. Fully managed by ADE: created, configured, and cleaned up via the Lanes UI.
+  </Card>
+  <Card title="Attached Lane" icon="link">
+    An external git worktree that already exists on disk and has been imported into ADE. ADE tracks it but does not move its files. Can be "adopted" into a full Worktree Lane later.
+  </Card>
+</CardGroup>
+
+Each lane stores:
+- **Branch name** and base branch reference
+- **Appearance** (color, icon) for identification in the UI
+- **Environment status** — whether the lane's dev server, ports, and dependencies are initialized
+- **Active sessions** — current terminal and agent sessions running in this lane's directory
+- **Pack reference** — the context pack currently associated with this lane
+
+<Tip>
+Think of lanes the way you think of browser tabs — each is an isolated context, and switching between them does not disrupt the others. Unlike browser tabs, lanes persist their state even when you are not looking at them.
+</Tip>
+
+<Info>**📸 Screenshot needed:** The Lanes panel showing three lanes: one Primary (with a house icon), one Worktree (green branch icon), and one Attached (chain-link icon). Show the branch name, status badge, and an "active agent" indicator on the Worktree lane.</Info>
+
+---
+
+## Stack
+
+A **Stack** is a layered arrangement of lanes for **stacked PR workflows**. Each lane in a stack targets the lane directly above it as its base branch, forming a dependency chain.
+
+```
+  main
+   └── feature/auth          ← Lane 1 (targets main)
+        └── feature/auth-ui  ← Lane 2 (targets feature/auth)
+             └── feature/auth-tests  ← Lane 3 (targets feature/auth-ui)
+```
+
+Stacks are visualized as a connected chain in the Workspace Graph. ADE understands the stack topology and can:
+- Automatically rebase downstream lanes when an upstream lane is updated
+- Suggest rebase operations when the upstream branch moves
+- Show the full stack chain in the lane inspector
+
+To create a stacked lane, use **Lanes → New Child Lane** and select the parent lane. ADE sets the child's base branch to the parent's current branch automatically.
+
+<Note>
+ADE tracks rebase suggestions per-lane. When an upstream branch changes, ADE surfaces a rebase suggestion with a preview of the affected commits. You can accept, defer, or dismiss it.
+</Note>
+
+---
+
+## Pack
+
+A **Pack** is a durable context bundle that carries project or lane knowledge to AI agents. Packs are structured documents stored in `.ade/artifacts/packs/` and injected into agent system prompts to give agents meaningful project awareness before they write a single line of code.
+
+ADE defines several pack types:
+
+<AccordionGroup>
+  <Accordion title="Project Pack" icon="folder">
+    A project-wide context document generated from the repository's source code, documentation, and git history. Contains:
+    - High-level architecture description
+    - Key modules and their responsibilities
+    - Coding conventions and patterns
+    - Risk signals (files that frequently cause conflicts, complex areas)
+    - Recent significant changes
+
+    The Project Pack is regenerated periodically by the Job Engine and whenever you explicitly trigger a context refresh.
+  </Accordion>
+  <Accordion title="Lane Pack" icon="code-branch">
+    A lane-specific context document. Contains:
+    - The lane's **intent** — what this lane is supposed to accomplish
+    - **Acceptance criteria** — how success is defined
+    - **Checkpoints** — immutable snapshots of progress so far
+    - **Touched files** — which files the lane's agent has modified
+    - **Outstanding risks** — known issues the agent flagged
+
+    Lane Packs are updated at session boundaries and after commits.
+  </Accordion>
+  <Accordion title="Feature Pack" icon="puzzle-piece">
+    An issue-scoped aggregate pack that combines the Project Pack, relevant Lane Packs, and Linear issue context into a single context bundle for a specific feature. Used when a feature spans multiple lanes.
+  </Accordion>
+  <Accordion title="Conflict Pack" icon="triangle-exclamation">
+    A resolution-context pack created when a conflict is detected between two lanes. Contains the conflicting file regions, each lane's intent, and suggested resolution strategies. Injected into the resolver agent's context.
+  </Accordion>
+  <Accordion title="Plan Pack" icon="list-check">
+    A versioned coding plan generated during a Mission's Planning phase. Captures the mission's goal, steps, assumptions, risks, and executor assignments. Serves as the authoritative reference for all workers during execution.
+  </Accordion>
+  <Accordion title="Mission Pack" icon="bullseye">
+    A deterministic snapshot of a mission at a specific point in time — used for resume, audit, and replay. Contains the full mission state: plan, completed steps, artifacts, interventions, and cost data.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Checkpoint
+
+A **Checkpoint** is an immutable execution snapshot created at session or commit boundaries. Checkpoints are the mechanism ADE uses to make work replayable and auditable.
+
+Each checkpoint contains:
+- **SHA anchors** — the git commit SHAs for every lane at the time of the checkpoint
+- **Deltas** — the set of changes since the previous checkpoint
+- **Metadata** — timing, actor (human or agent), session ID, and trigger reason
+- **Validation context** — whether the checkpoint passed any validation gate
+
+Checkpoints appear in the **History** view as a timeline you can navigate. You can replay any checkpoint to restore a lane's state to that exact moment.
+
+<Note>
+Checkpoints are append-only. ADE never deletes them (unless you explicitly clear project data). This makes the History view a complete audit trail of all work done in a project.
+</Note>
+
+---
+
+## Session
+
+A **Session** is a terminal session with rich metadata attached. In ADE, every terminal window — whether you opened it manually or an agent spawned it — is recorded as a session.
+
+Session metadata includes:
+- **Transcript** — the full input/output stream, stored to disk
+- **Timing** — start time, end time, duration
+- **Agent attribution** — whether this session was opened by a human, the CTO, a Mission worker, or an Automation
+- **Delta computation** — which files changed during this session, derived from git status snapshots at open/close
+- **Mission and step linkage** — if the session was opened by a Mission worker, it is linked to the specific step and attempt
+
+Sessions are the atomic unit of terminal work. The History view groups sessions by lane, by mission, and by date.
+
+---
+
+## CTO
+
+The **CTO** (Chief Technical Officer agent) is ADE's always-on, project-aware AI agent that sits at the top of the agent org chart. Unlike lane-level agents that focus on specific tasks, the CTO maintains a persistent memory of the entire project and orchestrates work across all lanes.
+
+The CTO can:
+- Maintain and update a **project memory** (architecture, decisions, team conventions)
+- **Spawn Worker agents** in specific lanes to handle delegated tasks
+- **Sync with Linear** — read issues, update status, create new issues when problems are discovered
+- **Manage budgets** — track per-agent and per-mission token spend, enforce limits
+- **Surface risks** — proactively flag conflict risks, stale lanes, and budget overruns
+- **Conduct retrospectives** — periodically review what missions succeeded and what failed, and update project memory accordingly
+
+<Info>**📸 Screenshot needed:** The CTO view showing the CTO agent's chat interface with a recent message like "I've reviewed this week's missions. Auth lane is blocked by a conflict with the billing lane — I've created a conflict pack and assigned a resolver." Show the Linear sync indicator and the "Memory updated" badge.</Info>
+
+The CTO is configured in **Settings → CTO**. You can set its model, budget limit, Linear workspace, and how aggressively it spawns workers without asking you first.
+
+<Tip>
+If you are a solo developer, think of the CTO as your always-on senior engineer who is watching your project while you sleep. Brief it on your goals at the start of the week; it will decompose the work, assign it to agents, and present you with completed PRs.
+</Tip>
+
+---
+
+## Mission
+
+A **Mission** is a structured AI execution unit for complex, multi-step work. Missions provide accountability, cost tracking, and a formal lifecycle that ad-hoc chat sessions do not.
+
+### Mission Lifecycle
+
+```
+Queued → Planning → [Approval] → Execution → Validation → Completed
+                                                         ↘ Failed
+                                                         ↘ Canceled
+```
+
+<Steps>
+  <Step title="Planning">
+    A planner agent (Claude CLI or Codex CLI) reads the mission goal and generates a structured **Plan** — a JSON document with steps, executor hints, lane claims, dependencies, and a join policy. The planner also asks clarifying questions if the goal is ambiguous.
+  </Step>
+  <Step title="Approval (optional)">
+    If the mission requires human approval before execution, ADE pauses here and presents the plan for review. You can accept, edit, or reject the plan. If `launchMode` is `autopilot`, this phase is skipped.
+  </Step>
+  <Step title="Execution">
+    Worker agents execute the plan's steps. Parallel steps run simultaneously in separate lane worktrees. The Mission coordinator monitors progress, handles failures, and retries steps according to the plan's retry policy.
+  </Step>
+  <Step title="Validation">
+    A dedicated validator agent (or self-validation, depending on the phase profile) reviews the completed work against the mission's goal and acceptance criteria. Computer-use proof may be required (screenshots, browser verification).
+  </Step>
+</Steps>
+
+### Mission Statuses
+
+| Status | Meaning |
+|---|---|
+| `queued` | Created but not yet started |
+| `planning` | Planner agent generating the execution plan |
+| `in_progress` | Workers executing plan steps |
+| `intervention_required` | Paused — requires human input to continue |
+| `completed` | All steps done and validation passed |
+| `failed` | A step failed and could not be recovered |
+| `canceled` | Stopped by the user |
+
+### Interventions
+
+When a mission cannot proceed without human input, it creates an **Intervention** and pauses. Intervention types include:
+- `approval_required` — a phase requires explicit sign-off
+- `manual_input` — the agent needs an answer it cannot infer
+- `conflict` — a merge conflict blocks a step
+- `budget_limit_reached` — the mission has hit its token or cost cap
+- `orchestrator_escalation` — the coordinator detected an unrecoverable error
+
+You resolve interventions from the Mission's Run panel by providing an answer, accepting defaults, or canceling the run.
+
+---
+
+## Automation
+
+An **Automation** is a trigger → executor rule that fires an AI agent in the background when a specific event occurs.
+
+### Trigger Types
+
+<CardGroup cols={2}>
+  <Card title="Git Events" icon="git-alt">
+    Fires on `push`, `pr_opened`, `pr_merged`, `branch_created`, or `status_changed`. Example: auto-run tests when a PR is opened.
+  </Card>
+  <Card title="Linear Events" icon="list">
+    Fires when a Linear issue changes state (e.g., `In Progress` → `In Review`). Example: auto-create a PR when an issue is marked for review.
+  </Card>
+  <Card title="Schedule (Cron)" icon="clock">
+    Fires on a cron schedule. Example: run a dependency audit every Monday at 8am.
+  </Card>
+  <Card title="File Changes" icon="file">
+    Fires when specific files or patterns change. Example: regenerate the API documentation whenever `openapi.yaml` changes.
+  </Card>
+</CardGroup>
+
+### Night Shift
+
+**Night Shift** is a special automation mode that queues up missions to run while you are away. Enable it in the Automations view. ADE drains the Night Shift queue overnight and presents a summary the next morning. Per-run budget limits are enforced so you do not wake up to unexpected bills.
+
+---
+
+## Worker / Employee Agent
+
+A **Worker** (also called an **Employee Agent**) is a sub-agent spawned by the CTO or by a Mission to handle a specific, scoped task. Workers are the agents that actually write code.
+
+Worker characteristics:
+- Run in a **specific lane** with a scoped working directory
+- Have **bounded tool access** — only the tools their role requires
+- Operate within a **budget limit** set by the spawning coordinator
+- Are attributed in session metadata for full traceability
+- Can be `claude_cli`, `codex_cli`, or `unified` (in-process API) executor kinds
+
+The Mission coordinator manages worker lifecycle: spawning, monitoring heartbeats, retrying failed workers, and collecting their outputs.
+
+<Note>
+ADE supports parallel workers — multiple workers executing different plan steps simultaneously in different lanes. The `parallelismCap` field in the mission plan limits how many workers run at once.
+</Note>
+
+---
+
+## MCP (Model Context Protocol)
+
+**MCP** is the protocol ADE uses to expose its capabilities to AI agents as callable tools. ADE's built-in MCP server speaks **JSON-RPC 2.0** over a Unix domain socket and implements the Model Context Protocol 2025-06-18 specification.
+
+When an AI agent is running inside ADE (whether via Claude CLI, Codex CLI, or the in-process API), it can call ADE's MCP tools to perform operations that go beyond simple text generation:
+
+<AccordionGroup>
+  <Accordion title="Git operations" icon="git-alt">
+    Stage files, commit, push, create branches, run merge simulations, cherry-pick, and manage stashes — all with full attribution back to the calling agent.
+  </Accordion>
+  <Accordion title="File access" icon="folder-open">
+    Read and write files across any lane's worktree. File writes are atomic and logged as session deltas.
+  </Accordion>
+  <Accordion title="Terminal control" icon="rectangle-terminal">
+    Spawn a new PTY session in a specific lane, write input, and read the output transcript.
+  </Accordion>
+  <Accordion title="Agent spawning" icon="robot">
+    Spawn a new Claude CLI or Codex CLI session in a lane, with a prompt and a budget limit. This is how the CTO delegates work to workers.
+  </Accordion>
+  <Accordion title="Pack management" icon="box">
+    Read, write, and refresh context packs. Agents can update their own lane pack with new context they have discovered.
+  </Accordion>
+  <Accordion title="Mission management" icon="bullseye">
+    Create missions, update step status, add artifacts, create interventions, and report progress back to the Mission coordinator.
+  </Accordion>
+  <Accordion title="Memory" icon="brain">
+    Add to and search the project's persistent memory store. Rate-limited per session to prevent memory spam.
+  </Accordion>
+  <Accordion title="Computer-use artifacts" icon="desktop">
+    Route screenshots, browser traces, video recordings, and console logs to their owners (missions, PRs, Linear issues, chat sessions).
+  </Accordion>
+</AccordionGroup>
+
+Sessions are authenticated by role: `orchestrator`, `agent`, `external`, or `evaluator`. Coordinator-level tools (spawning agents, creating missions) are only available to `orchestrator`-role callers.
+
+---
+
+## Job Engine
+
+The **Job Engine** is ADE's background task scheduler that handles work that should happen automatically, without user interaction.
+
+Current job types:
+- **Lane pack refresh** — triggered when a lane's files change significantly, to keep the lane's context pack current
+- **Conflict prediction** — periodically runs merge simulations between all active lane pairs to surface potential conflicts early
+- **Rebase suggestion generation** — detects when upstream branches have moved and generates rebase suggestions for downstream lanes
+- **Automation execution** — receives trigger events and executes the appropriate automation rules
+
+The Job Engine uses a per-lane queue with deduplication: if a lane refresh is already running, a second trigger is coalesced into a single pending request rather than creating a duplicate job.
+
+<Note>
+In development mode, the Job Engine's periodic conflict prediction is disabled by default (to reduce noise). Set `ADE_ENABLE_CONFLICT_PREDICTION=1` to force-enable it.
+</Note>
+
+---
+
+## Conflict
+
+A **Conflict** in ADE is a predicted or actual merge conflict between two lanes.
+
+ADE distinguishes between:
+- **Predicted conflicts**: File-level overlaps detected by running `git merge --no-commit --no-ff` simulations between lane pairs. These are surfaced in the Conflicts view before you attempt an actual merge.
+- **Active conflicts**: A real merge conflict that has occurred during a rebase or merge operation and requires resolution.
+
+The Conflict view shows:
+- A **risk matrix** — which lane pairs have the highest overlap risk
+- **File-level overlaps** — which specific files are touched by multiple lanes
+- **AI resolution proposals** — generated by ADE's conflict resolver agent, with a diff-level proposed resolution
+- **External resolver sessions** — if you prefer to use a CLI resolver (e.g., a dedicated agent), ADE can prepare and finalize resolver sessions
+
+<Info>**📸 Screenshot needed:** The Conflicts view showing a risk matrix with three lanes across the top/left, one red high-risk cell, and a details panel on the right showing the overlapping file names and an AI resolution proposal button.</Info>
+
+---
+
+## Proof / Artifact
+
+A **Proof** (also called an **Artifact**) is evidence produced during AI-driven work. ADE collects, normalizes, and routes proof artifacts to the appropriate owners.
+
+### Artifact Types
+
+| Type | Description |
+|---|---|
+| `screenshot` | A static image of the browser or desktop at a specific moment |
+| `browser_verification` | A structured record of a browser-based verification test |
+| `browser_trace` | A full Playwright/CDP trace recording of a browser session |
+| `video_recording` | A screen recording of an agent executing computer-use tasks |
+| `console_logs` | Browser or Node.js console output captured during testing |
+| `test_report` | A structured test run result (pass/fail per test case) |
+| `summary` | A human-readable summary of completed work |
+| `pr` | A link to an opened or merged pull request |
+| `patch` | A raw git patch file |
+| `plan` | The generated mission plan document |
+
+### Computer-Use Flow
+
+When a computer-use backend (Ghost OS, agent-browser, or local fallback) produces an artifact:
+
+1. The artifact is received by ADE's **Computer Use Broker** in the main process
+2. It is normalized into a standard `ComputerUseArtifact` record with kind, owner, and metadata
+3. It is **routed** to its owner — a mission step, a PR, a Linear issue, or a chat session
+4. It is stored under `.ade/artifacts/` and linked in the database
+5. It appears in the **Mission Artifacts tab**, the PR review panel, or the Linear issue sidebar, depending on routing
+
+---
+
+## Relationships Between Concepts
+
+Here is how all the core concepts connect in a typical workflow:
+
+```
+Project
+├── Primary Lane
+├── Worktree Lanes (1..n)
+│   ├── Sessions (terminal + agent)
+│   ├── Pack (context bundle)
+│   ├── Checkpoints (immutable snapshots)
+│   └── Conflicts ↔ other lanes
+│
+├── Stacks (chains of lanes)
+│
+├── Missions (1..n)
+│   ├── Plan (generated by Planner)
+│   ├── Steps → Workers → Sessions
+│   ├── Interventions (human touchpoints)
+│   ├── Artifacts (proof, summaries, PRs)
+│   └── Mission Pack (audit snapshot)
+│
+├── CTO Agent
+│   ├── Project Memory
+│   ├── Workers (spawned into lanes)
+│   └── Linear sync
+│
+├── Automations
+│   └── Triggers → Missions or direct agent runs
+│
+└── Job Engine
+    ├── Conflict prediction
+    ├── Pack refresh
+    └── Automation execution
+```
+
+---
+
+## Glossary
+
+| Term | Definition |
+|---|---|
+| **ADE** | Agentic Development Environment. The product. |
+| **Lane** | Isolated git worktree + process environment, the fundamental unit of parallel work. |
+| **Primary Lane** | The repository's root working directory, always present. |
+| **Worktree Lane** | A lane backed by `git worktree add`, managed by ADE under `.ade/worktrees/`. |
+| **Attached Lane** | An externally created worktree imported into ADE for tracking. |
+| **Stack** | A chain of lanes in a stacked PR topology. |
+| **Pack** | A durable context bundle injected into agent prompts. |
+| **Checkpoint** | An immutable snapshot of lane state at a session or commit boundary. |
+| **Session** | A PTY terminal session with metadata, transcript, and delta tracking. |
+| **CTO** | Always-on project-aware AI agent at the top of the agent org chart. |
+| **Mission** | A structured multi-step AI execution unit with full lifecycle and audit trail. |
+| **Worker / Employee Agent** | A sub-agent spawned by the CTO or a Mission to handle a specific task. |
+| **Automation** | A trigger → executor rule that fires an agent in response to an event. |
+| **Night Shift** | A special automation mode that runs queued work while the developer is away. |
+| **Intervention** | A mission pause point requiring human input to continue. |
+| **MCP** | Model Context Protocol — the JSON-RPC 2.0 protocol ADE uses to expose tools to agents. |
+| **Job Engine** | ADE's background scheduler for pack refresh, conflict prediction, and automation execution. |
+| **Conflict** | A predicted or actual merge conflict between two lanes. |
+| **Artifact / Proof** | Evidence produced by computer-use agents (screenshots, traces, videos, test reports). |
+| **Plan** | The structured execution document generated by a Mission's planner agent. |
+| **Phase** | A stage in a Mission's lifecycle (Planning, Execution, Validation, etc.). |
+| **Phase Profile** | A reusable configuration of phases and their settings, applied to missions at launch. |
+| **Phase Card** | The configuration unit for a single phase: model, budget, validation gate, approval requirement. |
+| **baseRef** | The project's primary integration branch (e.g., `main`). Configured in `ade.yaml`. |
+| **`.ade/`** | The directory ADE creates at the repo root to store its metadata, worktrees, and artifacts. |
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Lanes Deep Dive" icon="code-branch" href="/lanes/overview">
+    Everything about lane creation, templates, environment isolation, and proxy routing.
+  </Card>
+  <Card title="Missions Deep Dive" icon="bullseye" href="/missions/overview">
+    Phase profiles, budget management, interventions, and audit log export.
+  </Card>
+  <Card title="CTO Agent" icon="robot" href="/cto/overview">
+    Configure the CTO with Linear sync, persistent memory, and worker spawning policies.
+  </Card>
+  <Card title="MCP Server Reference" icon="server" href="/configuration/mcp-servers">
+    Full reference for every ADE MCP tool, authentication roles, and connecting external clients.
+  </Card>
+</CardGroup>

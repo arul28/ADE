@@ -1,0 +1,40 @@
+---
+title: "Lane Packs"
+description: "Lane Packs are auto-generated, versioned context bundles that travel with each lane and are automatically injected into every agent session."
+icon: "cube"
+---
+
+## Lane Packs
+
+Every lane carries a **Lane Pack** — an auto-generated, versioned context bundle that travels with the lane and is automatically injected into every agent session that starts in it.
+
+A Lane Pack contains:
+- **Intent** — the stated goal of this lane (editable; ADE generates an initial version from the branch name and recent commits)
+- **Coding criteria** — acceptance criteria and constraints the agent should respect
+- **Touched files** — the set of files modified since the lane branched from its base
+- **Recent checkpoints** — the last N session boundaries with their SHAs, diffs, and outcomes
+- **Current diff summary** — a narrative description of what has changed and why
+
+<Info>**Screenshot needed:** The Packs sub-tab in the right inspector, showing a Lane Pack with labeled sections: intent at the top, criteria as a bulleted list, touched files as a compact file list, and a diff summary paragraph. Show a "Regenerate" button and a pack freshness timestamp in the header.</Info>
+
+---
+
+### Pack Freshness
+
+ADE regenerates the Lane Pack automatically after each committed checkpoint. You can also manually trigger regeneration from the Packs sub-tab. A freshness indicator turns amber if the pack is more than one session stale — this matters because agents injected with stale packs may not have accurate context about recent changes.
+
+<Tip>If the freshness indicator turns amber, use the keyboard shortcut `Cmd+Shift+P` (macOS) / `Ctrl+Shift+P` (Windows/Linux) to instantly regenerate the Lane Pack without leaving the current view.</Tip>
+
+---
+
+### Context Injection
+
+When an agent starts in a lane, ADE prepends the Lane Pack as a system context block before the agent's first prompt. The agent receives the intent, criteria, touched files, and diff summary before it reads any user instructions. This means agents never start cold in a lane — they always know what they are working on and why.
+
+---
+
+## Learn More
+
+<Card title="Context Packs" icon="box" href="/context-packs/overview">
+  Understand how Lane Packs, Project Packs, and other pack types are generated, versioned, and used across ADE.
+</Card>

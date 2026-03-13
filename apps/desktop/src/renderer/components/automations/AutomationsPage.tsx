@@ -65,6 +65,13 @@ export function AutomationsPage() {
     return () => unsubscribe();
   }, [loadMorningBriefing]);
 
+  useEffect(() => {
+    console.info(`renderer.tab_change ${JSON.stringify({
+      page: "automations",
+      tab: activeTab,
+    })}`);
+  }, [activeTab]);
+
   const acknowledgeBriefing = useCallback(async () => {
     if (!morningBriefing) return;
     setBriefingBusy(true);

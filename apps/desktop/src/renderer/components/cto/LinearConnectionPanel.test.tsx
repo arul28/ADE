@@ -128,4 +128,31 @@ describe("LinearConnectionPanel", () => {
       expect(screen.getByText("My Project")).toBeTruthy();
     });
   });
+
+  it("does not refetch status in a loop when onStatusChange triggers a parent rerender", async () => {
+    const bridge = buildBridge();
+    bridge.cto.getLinearConnectionStatus = vi.fn(async () => ({
+      tokenStored: false,
+      connected: false,
+      viewerId: null,
+      viewerName: null,
+      checkedAt: "2026-03-05T00:00:00.000Z",
+      message: null,
+      authMode: null,
+      oauthAvailable: false,
+      tokenExpiresAt: null,
+    }));
+    (window as any).ade = bridge;
+
+    function Wrapper() {
+      const [, setStatus] = React.useState<unknown>(null);
+      return <LinearConnectionPanel onStatusChange={(status) => setStatus(status)} />;
+    }
+
+    render(<Wrapper />);
+
+    await waitFor(() => {
+      expect((window as any).ade.cto.getLinearConnectionStatus).toHaveBeenCalledTimes(1);
+    });
+  });
 });

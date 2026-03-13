@@ -4,6 +4,7 @@
 
 import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
+import type { ComputerUsePolicy } from "./computerUseArtifacts";
 
 export type AgentChatProvider = "codex" | "claude" | "unified" | (string & {});
 
@@ -209,6 +210,7 @@ export type AgentChatSession = {
   permissionMode?: AgentChatPermissionMode;
   identityKey?: AgentChatIdentityKey;
   capabilityMode?: CtoCapabilityMode;
+  computerUse?: ComputerUsePolicy;
   status: AgentChatSessionStatus;
   threadId?: string;
   createdAt: string;
@@ -229,6 +231,7 @@ export type AgentChatSessionSummary = {
   permissionMode?: AgentChatPermissionMode;
   identityKey?: AgentChatIdentityKey;
   capabilityMode?: CtoCapabilityMode;
+  computerUse?: ComputerUsePolicy;
   status: AgentChatSessionStatus;
   startedAt: string;
   endedAt: string | null;
@@ -262,6 +265,7 @@ export type AgentChatCreateArgs = {
   reasoningEffort?: string | null;
   permissionMode?: AgentChatPermissionMode;
   identityKey?: AgentChatIdentityKey;
+  computerUse?: ComputerUsePolicy | null;
 };
 
 export type AgentChatListArgs = {
@@ -315,6 +319,7 @@ export type AgentChatUpdateSessionArgs = {
   modelId?: ModelId;
   reasoningEffort?: string | null;
   permissionMode?: AgentChatPermissionMode;
+  computerUse?: ComputerUsePolicy | null;
 };
 
 export type ContextPackScope = "project" | "lane" | "conflict" | "plan" | "mission" | "feature";

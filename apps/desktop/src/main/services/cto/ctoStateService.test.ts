@@ -305,4 +305,43 @@ describe("ctoStateService", () => {
 
     fixture.db.close();
   });
+
+  it("preserves onboarding state and extended identity fields across reloads", async () => {
+    const fixture = await createFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    service.updateIdentity({
+      personality: "casual",
+      constraints: ["no force push", "write tests"],
+      systemPromptExtension: "Stay calm under pressure.",
+      communicationStyle: {
+        verbosity: "adaptive",
+        proactivity: "balanced",
+        escalationThreshold: "low",
+      },
+    });
+    service.completeOnboardingStep("identity");
+
+    const reloaded = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    expect(reloaded.getOnboardingState().completedSteps).toEqual(["identity"]);
+    expect(reloaded.getIdentity().personality).toBe("casual");
+    expect(reloaded.getIdentity().constraints).toEqual(["no force push", "write tests"]);
+    expect(reloaded.getIdentity().systemPromptExtension).toBe("Stay calm under pressure.");
+    expect(reloaded.getIdentity().communicationStyle).toEqual({
+      verbosity: "adaptive",
+      proactivity: "balanced",
+      escalationThreshold: "low",
+    });
+
+    fixture.db.close();
+  });
 });

@@ -379,6 +379,38 @@ function rowToSummary(row: PullRequestRow): PrSummary {
   };
 }
 
+const BACKGROUND_REFRESH_MAX_PRS = 4;
+const BACKGROUND_REFRESH_MIN_STALE_MS = 2 * 60_000;
+const BACKGROUND_REFRESH_CLOSED_STALE_MS = 15 * 60_000;
+
+function parseIsoMs(value: string | null | undefined): number {
+  if (!value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isBackgroundRefreshCandidate(row: PullRequestRow, nowMs: number): boolean {
+  const state = String(row.state ?? "").toLowerCase();
+  const isActive = state === "open" || state === "draft";
+  const staleAfterMs = isActive ? BACKGROUND_REFRESH_MIN_STALE_MS : BACKGROUND_REFRESH_CLOSED_STALE_MS;
+  const lastSyncedAtMs = parseIsoMs(row.last_synced_at);
+  if (lastSyncedAtMs <= 0) return true;
+  return nowMs - lastSyncedAtMs >= staleAfterMs;
+}
+
+function compareBackgroundRefreshPriority(left: PullRequestRow, right: PullRequestRow): number {
+  const leftState = String(left.state ?? "").toLowerCase();
+  const rightState = String(right.state ?? "").toLowerCase();
+  const leftActive = leftState === "open" || leftState === "draft";
+  const rightActive = rightState === "open" || rightState === "draft";
+  if (leftActive !== rightActive) return leftActive ? -1 : 1;
+
+  const lastSyncedDiff = parseIsoMs(left.last_synced_at) - parseIsoMs(right.last_synced_at);
+  if (lastSyncedDiff !== 0) return lastSyncedDiff;
+
+  return parseIsoMs(right.updated_at) - parseIsoMs(left.updated_at);
+}
+
 function parsePrLocator(raw: string): { owner?: string; repo?: string; number: number } {
   const trimmed = raw.trim();
   if (!trimmed) throw new Error("PR URL or number is required");
@@ -2603,7 +2635,12 @@ export function createPrService({
     return result;
   };
 
-  const getGithubSnapshot = async (): Promise<GitHubPrSnapshot> => {
+  const GITHUB_SNAPSHOT_TTL_MS = 120_000;
+  let cachedGithubSnapshot: GitHubPrSnapshot | null = null;
+  let cachedGithubSnapshotAt = 0;
+  let githubSnapshotInFlight: Promise<GitHubPrSnapshot> | null = null;
+
+  const getGithubSnapshotUncached = async (): Promise<GitHubPrSnapshot> => {
     const githubStatus = await githubService.getStatus();
     if (!githubStatus.tokenStored) {
       throw new Error("GitHub token missing. Set it in Settings to sync pull requests.");
@@ -2719,6 +2756,31 @@ export function createPrService({
         .map((rawPr) => toGitHubItem(rawPr, "external")),
       syncedAt: nowIso(),
     };
+  };
+
+  const getGithubSnapshot = async (options?: { force?: boolean }): Promise<GitHubPrSnapshot> => {
+    const force = options?.force === true;
+    if (!force && cachedGithubSnapshot && Date.now() - cachedGithubSnapshotAt < GITHUB_SNAPSHOT_TTL_MS) {
+      return cachedGithubSnapshot;
+    }
+    if (!force && githubSnapshotInFlight) {
+      return githubSnapshotInFlight;
+    }
+
+    const request = getGithubSnapshotUncached()
+      .then((snapshot) => {
+        cachedGithubSnapshot = snapshot;
+        cachedGithubSnapshotAt = Date.now();
+        return snapshot;
+      })
+      .finally(() => {
+        if (githubSnapshotInFlight === request) {
+          githubSnapshotInFlight = null;
+        }
+      });
+
+    githubSnapshotInFlight = request;
+    return request;
   };
 
   const landQueueNext = async (args: LandQueueNextArgs): Promise<LandResult> => {
@@ -3357,15 +3419,19 @@ export function createPrService({
         return [await refreshOne(args.prId)];
       }
       const rows = listRows();
-      const out: PrSummary[] = [];
-      for (const row of rows) {
+      const nowMs = Date.now();
+      const candidates = rows
+        .filter((row) => isBackgroundRefreshCandidate(row, nowMs))
+        .sort(compareBackgroundRefreshPriority)
+        .slice(0, BACKGROUND_REFRESH_MAX_PRS);
+      for (const row of candidates) {
         try {
-          out.push(await refreshOne(row.id));
+          await refreshOne(row.id);
         } catch (error) {
           logger.warn("prs.refresh_failed", { prId: row.id, error: error instanceof Error ? error.message : String(error) });
         }
       }
-      return out;
+      return listRows().map(rowToSummary);
     },
 
     async getStatus(prId: string): Promise<PrStatus> {
@@ -3460,8 +3526,8 @@ export function createPrService({
       return await listWithConflicts();
     },
 
-    async getGithubSnapshot(): Promise<GitHubPrSnapshot> {
-      return await getGithubSnapshot();
+    async getGithubSnapshot(options?: { force?: boolean }): Promise<GitHubPrSnapshot> {
+      return await getGithubSnapshot(options);
     },
 
     async listIntegrationProposals(): Promise<IntegrationProposal[]> {

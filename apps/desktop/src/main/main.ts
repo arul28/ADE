@@ -147,6 +147,50 @@ function fixElectronShellPath(): void {
 // Must run before any service or child process is created.
 fixElectronShellPath();
 
+const disableHardwareAcceleration =
+  process.env.ADE_DISABLE_HARDWARE_ACCEL === "1"
+  || !!process.env.VITE_DEV_SERVER_URL;
+if (disableHardwareAcceleration) {
+  app.disableHardwareAcceleration();
+}
+
+const devStabilityMode =
+  process.env.ADE_STABILITY_MODE === "1"
+  || !!process.env.VITE_DEV_SERVER_URL;
+const enableAllBackgroundTasks =
+  process.env.ADE_ENABLE_ALL_BACKGROUND_TASKS === "1";
+const defaultEnabledBackgroundTaskFlags = new Set<string>([
+  "ADE_ENABLE_CONFIG_RELOAD",
+  "ADE_ENABLE_USAGE_TRACKING",
+  "ADE_ENABLE_AUTOMATION_INGRESS",
+  "ADE_ENABLE_EXTERNAL_MCP",
+  "ADE_ENABLE_OPENCLAW",
+  "ADE_ENABLE_MISSION_QUEUE",
+  "ADE_ENABLE_TEAM_RUNTIME_RECOVERY",
+  "ADE_ENABLE_LINEAR_SYNC",
+  "ADE_ENABLE_LINEAR_INGRESS",
+  "ADE_ENABLE_MEMORY_STARTUP_SWEEP",
+  "ADE_ENABLE_MEMORY_CONSOLIDATION",
+  "ADE_ENABLE_EMBEDDING_WORKER",
+  "ADE_ENABLE_HUMAN_DIGEST",
+  "ADE_ENABLE_CONFLICT_PREDICTION",
+  "ADE_ENABLE_EPISODIC_SUMMARY",
+  "ADE_ENABLE_HEAD_WATCHER",
+  "ADE_ENABLE_SKILL_REGISTRY",
+]);
+
+function isBackgroundTaskEnabled(enableFlag?: string): boolean {
+  if (!devStabilityMode || enableAllBackgroundTasks) {
+    return true;
+  }
+  if (!enableFlag) {
+    return false;
+  }
+  return process.env[enableFlag] === "1" || defaultEnabledBackgroundTaskFlags.has(enableFlag);
+}
+
+const episodicSummaryEnabled = isBackgroundTaskEnabled("ADE_ENABLE_EPISODIC_SUMMARY");
+
 // The Claude CLI refuses to start if it detects it is inside another Claude Code
 // session (nested session guard). ADE is a host app, not a nested session, so
 // strip the marker env var so the SDK can spawn the CLI cleanly.
@@ -382,6 +426,12 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
 }
 
 app.whenReady().then(async () => {
+  console.log("[info] app.hardware_acceleration", {
+    enabled: !disableHardwareAcceleration,
+    reason: disableHardwareAcceleration
+      ? (process.env.ADE_DISABLE_HARDWARE_ACCEL === "1" ? "env_override" : "dev_mode")
+      : "default",
+  });
   const globalStatePath = path.join(app.getPath("userData"), "ade-state.json");
   const saved = readGlobalState(globalStatePath);
   const fallbackProjectRoot = path.resolve(app.getPath("userData"), "ade-project");
@@ -934,6 +984,7 @@ app.whenReady().then(async () => {
       projectId,
       projectRoot,
       logger,
+      enabled: episodicSummaryEnabled,
       aiIntegrationService,
       memoryService,
       onEpisodeSaved: (memoryId) => proceduralLearningService.onEpisodeSaved(memoryId),
@@ -1233,18 +1284,78 @@ app.whenReady().then(async () => {
       projectConfigService,
     });
     let missionPreflightService: ReturnType<typeof createMissionPreflightService>;
-    const deferredProjectStartHandles = new Set<NodeJS.Immediate>();
+    const deferredProjectStartCancels = new Set<() => void>();
     const scheduleDeferredProjectStart = (
       task: () => Promise<unknown> | unknown,
       onError: (error: unknown) => void,
+      delayMs = 0,
     ) => {
+      if (delayMs > 0) {
+        const cancelTimeout = () => clearTimeout(handle);
+        const handle = setTimeout(() => {
+          deferredProjectStartCancels.delete(cancelTimeout);
+          Promise.resolve()
+            .then(task)
+            .catch(onError);
+        }, delayMs);
+        deferredProjectStartCancels.add(cancelTimeout);
+        return;
+      }
       const handle = setImmediate(() => {
-        deferredProjectStartHandles.delete(handle);
+        deferredProjectStartCancels.delete(cancelImmediate);
         Promise.resolve()
           .then(task)
           .catch(onError);
       });
-      deferredProjectStartHandles.add(handle);
+      const cancelImmediate = () => clearImmediate(handle);
+      deferredProjectStartCancels.add(cancelImmediate);
+    };
+    const scheduleBackgroundProjectTask = (
+      label: string,
+      task: () => Promise<unknown> | unknown,
+      onError: (error: unknown) => void,
+      delayMs = 0,
+      enableFlag?: string,
+    ) => {
+      if (!isBackgroundTaskEnabled(enableFlag)) {
+        logger.info("project.startup_task_skipped", {
+          projectRoot,
+          task: label,
+          reason: "stability_mode",
+          enableFlag: enableFlag ?? null,
+        });
+        return;
+      }
+      if (devStabilityMode) {
+        logger.info("project.startup_task_enabled", {
+          projectRoot,
+          task: label,
+          reason: enableAllBackgroundTasks ? "global_override" : "per_task_override",
+          enableFlag: enableFlag ?? null,
+          delayMs,
+        });
+      }
+      scheduleDeferredProjectStart(
+        async () => {
+          const startedAt = Date.now();
+          logger.info("project.startup_task_begin", {
+            projectRoot,
+            task: label,
+            enableFlag: enableFlag ?? null,
+            delayMs,
+          });
+          await task();
+          logger.info("project.startup_task_done", {
+            projectRoot,
+            task: label,
+            enableFlag: enableFlag ?? null,
+            delayMs,
+            durationMs: Date.now() - startedAt,
+          });
+        },
+        onError,
+        delayMs,
+      );
     };
     const externalMcpService = createExternalMcpService({
       projectRoot,
@@ -1256,13 +1367,16 @@ app.whenReady().then(async () => {
       workerBudgetService,
       missionBudgetService,
     });
-    scheduleDeferredProjectStart(
+    scheduleBackgroundProjectTask(
+      "external_mcp.start",
       () => externalMcpService.start(),
       (error) => {
         logger.warn("external_mcp.start_failed", {
           error: error instanceof Error ? error.message : String(error),
         });
       },
+      0,
+      "ADE_ENABLE_EXTERNAL_MCP",
     );
 
     const openclawBridgeService = createOpenclawBridgeService({
@@ -1278,13 +1392,16 @@ app.whenReady().then(async () => {
       onStatusChange: (status) => emitProjectEvent(projectRoot, IPC.openclawConnectionStatus, status),
     });
     openclawBridgeServiceRef = openclawBridgeService;
-    scheduleDeferredProjectStart(
+    scheduleBackgroundProjectTask(
+      "openclaw_bridge.start",
       () => openclawBridgeService.start(),
       (error) => {
         logger.warn("openclaw_bridge.start_failed", {
           error: error instanceof Error ? error.message : String(error),
         });
       },
+      0,
+      "ADE_ENABLE_OPENCLAW",
     );
 
     const orchestratorService = createOrchestratorService({
@@ -1320,6 +1437,7 @@ app.whenReady().then(async () => {
       orchestratorService,
       externalMcpService,
       logger,
+      onEvent: (payload) => emitProjectEvent(projectRoot, IPC.computerUseEvent, payload),
     });
     missionPreflightService = createMissionPreflightService({
       logger,
@@ -1354,20 +1472,28 @@ app.whenReady().then(async () => {
       onDagMutation: (event) => emitProjectEvent(projectRoot, IPC.orchestratorDagMutation, event)
     });
     aiOrchestratorServiceRef = aiOrchestratorService;
-    try {
-      missionService.processQueue();
-    } catch (error) {
-      logger.warn("missions.queue_autostart_bootstrap_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    scheduleBackgroundProjectTask(
+      "missions.process_queue",
+      () => {
+        missionService.processQueue();
+      },
+      (error) => {
+        logger.warn("missions.queue_autostart_bootstrap_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+      20_000,
+      "ADE_ENABLE_MISSION_QUEUE",
+    );
 
+    logger.info("project.init_stage", { projectRoot, stage: "linear_closeout_init" });
     const linearCloseoutService = createLinearCloseoutService({
       issueTracker: linearIssueTracker,
       outboundService: linearOutboundService,
       missionService,
       orchestratorService,
     });
+    logger.info("project.init_stage", { projectRoot, stage: "linear_dispatcher_init" });
     const linearDispatcherService = createLinearDispatcherService({
       db,
       projectId,
@@ -1385,6 +1511,7 @@ app.whenReady().then(async () => {
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.ctoLinearWorkflowEvent, event),
     });
 
+    logger.info("project.init_stage", { projectRoot, stage: "linear_sync_init" });
     const linearSyncService = createLinearSyncService({
       db,
       logger,
@@ -1394,10 +1521,23 @@ app.whenReady().then(async () => {
       intakeService: linearIntakeService,
       issueTracker: linearIssueTracker,
       dispatcherService: linearDispatcherService,
-      autoStart: true,
+      hasCredentials: () => linearCredentialService.getStatus().tokenStored,
+      autoStart: false,
     });
     linearSyncServiceRef = linearSyncService;
+    scheduleBackgroundProjectTask(
+      "linear.sync_start",
+      () => linearSyncService.start(),
+      (error) => {
+        logger.warn("linear.sync_start_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+      0,
+      "ADE_ENABLE_LINEAR_SYNC",
+    );
 
+    logger.info("project.init_stage", { projectRoot, stage: "linear_ingress_init" });
     const linearIngressService = createLinearIngressService({
       db,
       logger,
@@ -1419,17 +1559,41 @@ app.whenReady().then(async () => {
         }
       },
     });
-    scheduleDeferredProjectStart(
-      () => linearIngressService.start(),
+    scheduleBackgroundProjectTask(
+      "linear.ingress_start",
+      () => {
+        if (!linearIngressService.canAutoStart()) {
+          logger.info("project.startup_task_skipped", {
+            projectRoot,
+            task: "linear.ingress_start",
+            reason: "not_configured",
+            enableFlag: "ADE_ENABLE_LINEAR_INGRESS",
+          });
+          return;
+        }
+        return linearIngressService.start();
+      },
       (error) => {
         logger.warn("linear.ingress_start_failed", {
           error: error instanceof Error ? error.message : String(error),
         });
       },
+      0,
+      "ADE_ENABLE_LINEAR_INGRESS",
     );
 
     // Resume any active team runtimes that were running before app restart
-    setImmediate(() => aiOrchestratorService.resumeActiveTeamRuntimes());
+    scheduleBackgroundProjectTask(
+      "orchestrator.resume_team_runtimes",
+      () => aiOrchestratorService.resumeActiveTeamRuntimes(),
+      (error) => {
+        logger.warn("orchestrator.resume_team_runtimes_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+      60_000,
+      "ADE_ENABLE_TEAM_RUNTIME_RECOVERY",
+    );
 
     const automationPlannerService = createAutomationPlannerService({
       logger,
@@ -1446,13 +1610,16 @@ app.whenReady().then(async () => {
         emitProjectEvent(projectRoot, IPC.usageEvent, snapshot);
       }
     });
-    scheduleDeferredProjectStart(
+    scheduleBackgroundProjectTask(
+      "usage.start",
       () => usageTrackingService.start(),
       (error) => {
         logger.warn("usage.start_failed", {
           error: error instanceof Error ? error.message : String(error),
         });
       },
+      20_000,
+      "ADE_ENABLE_USAGE_TRACKING",
     );
 
     const budgetCapService = createBudgetCapService({
@@ -1470,13 +1637,16 @@ app.whenReady().then(async () => {
       workerHeartbeatService,
       automationRoutingService,
     });
-    scheduleDeferredProjectStart(
+    scheduleBackgroundProjectTask(
+      "automations.ingress_start",
       () => automationIngressService.start(),
       (error) => {
         logger.warn("automations.ingress_start_failed", {
           error: error instanceof Error ? error.message : String(error),
         });
       },
+      0,
+      "ADE_ENABLE_AUTOMATION_INGRESS",
     );
 
     const configReloadService = createConfigReloadService({
@@ -1493,16 +1663,20 @@ app.whenReady().then(async () => {
       logger,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.projectStateEvent, event),
     });
-    scheduleDeferredProjectStart(
+    scheduleBackgroundProjectTask(
+      "project.config_reload.start",
       () => configReloadService.start(),
       (error) => {
         logger.warn("project.config_reload_start_failed", {
           error: error instanceof Error ? error.message : String(error),
         });
       },
+      0,
+      "ADE_ENABLE_CONFIG_RELOAD",
     );
 
-    scheduleDeferredProjectStart(
+    scheduleBackgroundProjectTask(
+      "memory.lifecycle.startup_sweep",
       () => memoryLifecycleService.runStartupSweepIfDue(),
       (error) => {
         logger.warn("memory.lifecycle.startup_sweep_failed", {
@@ -1510,8 +1684,11 @@ app.whenReady().then(async () => {
           error: error instanceof Error ? error.message : String(error)
         });
       },
+      0,
+      "ADE_ENABLE_MEMORY_STARTUP_SWEEP",
     );
-    scheduleDeferredProjectStart(
+    scheduleBackgroundProjectTask(
+      "memory.consolidation.startup_check",
       () => batchConsolidationService.runAutoConsolidationIfNeeded(),
       (error) => {
         logger.warn("memory.consolidation.startup_check_failed", {
@@ -1519,8 +1696,11 @@ app.whenReady().then(async () => {
           error: error instanceof Error ? error.message : String(error)
         });
       },
+      0,
+      "ADE_ENABLE_MEMORY_CONSOLIDATION",
     );
-    scheduleDeferredProjectStart(
+    scheduleBackgroundProjectTask(
+      "memory.embedding_worker.start",
       () => embeddingWorkerService.start(),
       (error) => {
         logger.warn("memory.embedding_worker.start_failed", {
@@ -1528,8 +1708,11 @@ app.whenReady().then(async () => {
           error: error instanceof Error ? error.message : String(error)
         });
       },
+      120_000,
+      "ADE_ENABLE_EMBEDDING_WORKER",
     );
-    scheduleDeferredProjectStart(
+    scheduleBackgroundProjectTask(
+      "memory.human_digest.sync",
       () => humanWorkDigestService.syncKnowledge(),
       (error) => {
         logger.warn("memory.human_digest.startup_sync_failed", {
@@ -1537,8 +1720,11 @@ app.whenReady().then(async () => {
           error: error instanceof Error ? error.message : String(error),
         });
       },
+      45_000,
+      "ADE_ENABLE_HUMAN_DIGEST",
     );
-    scheduleDeferredProjectStart(
+    scheduleBackgroundProjectTask(
+      "memory.skill_registry.start",
       () => skillRegistryService.start(),
       (error) => {
         logger.warn("memory.skill_registry.start_failed", {
@@ -1546,6 +1732,8 @@ app.whenReady().then(async () => {
           error: error instanceof Error ? error.message : String(error),
         });
       },
+      60_000,
+      "ADE_ENABLE_SKILL_REGISTRY",
     );
 
     // Head watcher: detects commits/rebases made outside ADE's Git UI (e.g. in the terminal),
@@ -1553,11 +1741,11 @@ app.whenReady().then(async () => {
     let headWatcherTimer: NodeJS.Timeout | null = null;
     let headWatcherActive = false;
     let headWatcherRunning = false;
-    let headWatcherDelayMs = 5_000;
+    let headWatcherDelayMs = 10_000;
     let missingBroadcasted = false;
 
-    const HEAD_WATCHER_MIN_INTERVAL_MS = 5_000;
-    const HEAD_WATCHER_MAX_INTERVAL_MS = 20_000;
+    const HEAD_WATCHER_MIN_INTERVAL_MS = 15_000;
+    const HEAD_WATCHER_MAX_INTERVAL_MS = 60_000;
 
     const scheduleHeadPoll = (delayMs: number) => {
       if (!headWatcherActive) return;
@@ -1632,7 +1820,7 @@ app.whenReady().then(async () => {
           } else if (lanesChecked === 0) {
             headWatcherDelayMs = HEAD_WATCHER_MAX_INTERVAL_MS;
           } else {
-            headWatcherDelayMs = Math.min(HEAD_WATCHER_MAX_INTERVAL_MS, headWatcherDelayMs + 2_500);
+            headWatcherDelayMs = Math.min(HEAD_WATCHER_MAX_INTERVAL_MS, headWatcherDelayMs + 5_000);
           }
           scheduleHeadPoll(headWatcherDelayMs);
         }
@@ -1643,21 +1831,31 @@ app.whenReady().then(async () => {
       if (headWatcherActive) return;
       headWatcherActive = true;
       headWatcherDelayMs = HEAD_WATCHER_MIN_INTERVAL_MS;
-      void pollHeads();
+      scheduleHeadPoll(headWatcherDelayMs);
     };
 
-    const disposeHeadWatcher = () => {
+      const disposeHeadWatcher = () => {
       headWatcherActive = false;
-      for (const handle of deferredProjectStartHandles) {
-        clearImmediate(handle);
+      for (const cancel of deferredProjectStartCancels) {
+        cancel();
       }
-      deferredProjectStartHandles.clear();
+      deferredProjectStartCancels.clear();
       if (!headWatcherTimer) return;
       clearTimeout(headWatcherTimer);
       headWatcherTimer = null;
     };
 
-    startHeadWatcher();
+    scheduleBackgroundProjectTask(
+      "git.head_watcher.start",
+      () => startHeadWatcher(),
+      (error) => {
+        logger.warn("git.head_watcher_start_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+      15_000,
+      "ADE_ENABLE_HEAD_WATCHER",
+    );
 
     const state = upsertRecentProject(readGlobalState(globalStatePath), project, {
       recordLastProject,
@@ -1763,6 +1961,7 @@ app.whenReady().then(async () => {
       githubService,
       prService,
       prPollingService,
+      computerUseArtifactBrokerService,
       queueLandingService,
       queueRehearsalService,
       jobEngine,
@@ -1852,6 +2051,7 @@ app.whenReady().then(async () => {
       conflictService: null,
       aiIntegrationService: null,
       agentChatService: null,
+      computerUseArtifactBrokerService: null,
       githubService: null,
       prService: null,
       prPollingService: null,

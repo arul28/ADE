@@ -15,6 +15,13 @@ import { MissionSettingsDialog } from "./MissionSettingsDialog";
 import { useMissionPolling } from "./useMissionPolling";
 
 import type { CreateDraft, CreateMissionDefaults } from "./CreateMissionDialog";
+import { prewarmCreateMissionDialogCache } from "./CreateMissionDialog";
+import {
+  hasFreshPhaseItems,
+  hasFreshPhaseProfiles,
+  setCachedPhaseItems,
+  setCachedPhaseProfiles,
+} from "./missionDialogDataCache";
 
 /* Re-export helpers used by tests */
 export { collapsePlannerStreamMessages, resolveStepHeartbeatAt } from "./missionHelpers";
@@ -90,21 +97,67 @@ export default function MissionsPage() {
 
   /* ── Initial data load ── */
   useEffect(() => {
-    void useMissionsStore.getState().refreshMissionList({ preserveSelection: true });
-    void useMissionsStore.getState().loadDashboard();
-  }, []);
-
-  useEffect(() => {
-    void useMissionsStore.getState().loadMissionSettings();
+    let cancelled = false;
+    const store = useMissionsStore.getState();
+    void store.refreshMissionList({ preserveSelection: true });
+    const dashboardTimer = window.setTimeout(() => {
+      if (cancelled) return;
+      void store.loadDashboard();
+    }, 450);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(dashboardTimer);
+    };
   }, []);
 
   useEffect(() => {
     let cancelled = false;
-    window.ade.orchestrator.getModelCapabilities().then(
-      (result) => { if (!cancelled) useMissionsStore.getState().setModelCapabilities(result); },
-      () => { if (!cancelled) useMissionsStore.getState().setModelCapabilities(null); },
-    );
-    return () => { cancelled = true; };
+    const timer = window.setTimeout(() => {
+      if (cancelled) return;
+      void useMissionsStore.getState().loadMissionSettings();
+    }, 900);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      window.ade.orchestrator.getModelCapabilities().then(
+        (result) => { if (!cancelled) useMissionsStore.getState().setModelCapabilities(result); },
+        () => { if (!cancelled) useMissionsStore.getState().setModelCapabilities(null); },
+      );
+    }, 1_200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      if (cancelled) return;
+      if (!hasFreshPhaseProfiles()) {
+        void window.ade.missions.listPhaseProfiles({}).then((profiles) => {
+          if (cancelled || profiles.length === 0) return;
+          setCachedPhaseProfiles(profiles);
+        }).catch(() => {});
+      }
+      if (!hasFreshPhaseItems()) {
+        void window.ade.missions.listPhaseItems({}).then((items) => {
+          if (cancelled) return;
+          setCachedPhaseItems(items);
+        }).catch(() => {});
+      }
+      void prewarmCreateMissionDialogCache().catch(() => {});
+    }, 1_500);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, []);
 
   /* ── Event subscriptions — delegated to store (VAL-ARCH-007) ── */
@@ -231,6 +284,7 @@ export default function MissionsPage() {
           phaseProfileId: draft.phaseProfileId,
           phaseOverride: draft.phaseOverride,
           permissionConfig: draft.permissionConfig,
+          computerUse: draft.computerUse,
           autostart: true,
           launchMode: "autopilot",
         });
@@ -318,19 +372,21 @@ export default function MissionsPage() {
       />
 
       {/* Mission Settings Dialog */}
-      <MissionSettingsDialog
-        open={missionSettingsOpen}
-        onClose={() => {
-          if (missionSettingsBusy) return;
-          useMissionsStore.getState().setMissionSettingsOpen(false);
-        }}
-        draft={missionSettingsDraft}
-        onDraftChange={(update) => useMissionsStore.getState().setMissionSettingsDraft((prev) => ({ ...prev, ...update }))}
-        onSave={() => void useMissionsStore.getState().saveMissionSettings()}
-        busy={missionSettingsBusy}
-        error={missionSettingsError}
-        notice={missionSettingsNotice}
-      />
+      {missionSettingsOpen ? (
+        <MissionSettingsDialog
+          open={missionSettingsOpen}
+          onClose={() => {
+            if (missionSettingsBusy) return;
+            useMissionsStore.getState().setMissionSettingsOpen(false);
+          }}
+          draft={missionSettingsDraft}
+          onDraftChange={(update) => useMissionsStore.getState().setMissionSettingsDraft((prev) => ({ ...prev, ...update }))}
+          onSave={() => void useMissionsStore.getState().saveMissionSettings()}
+          busy={missionSettingsBusy}
+          error={missionSettingsError}
+          notice={missionSettingsNotice}
+        />
+      ) : null}
     </LazyMotion>
   );
 }

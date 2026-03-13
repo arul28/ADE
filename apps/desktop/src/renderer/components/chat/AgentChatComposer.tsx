@@ -7,6 +7,7 @@ import {
   type AgentChatFileRef,
   type AgentChatPermissionMode,
   type ChatSurfaceMode,
+  type ComputerUsePolicy,
   type ContextPackOption,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
@@ -133,6 +134,7 @@ export function AgentChatComposer({
   sessionProvider,
   sessionIsCliWrapped,
   executionMode,
+  computerUsePolicy,
   executionModeOptions = [],
   modelSelectionLocked = false,
   permissionModeLocked = false,
@@ -148,6 +150,7 @@ export function AgentChatComposer({
   onContextPacksChange,
   onExecutionModeChange,
   onPermissionModeChange,
+  onComputerUsePolicyChange,
   onClearEvents
 }: {
   surfaceMode?: ChatSurfaceMode;
@@ -170,6 +173,7 @@ export function AgentChatComposer({
   sessionProvider?: string;
   sessionIsCliWrapped?: boolean;
   executionMode?: AgentChatExecutionMode | null;
+  computerUsePolicy: ComputerUsePolicy;
   executionModeOptions?: ExecutionModeOption[];
   modelSelectionLocked?: boolean;
   permissionModeLocked?: boolean;
@@ -185,6 +189,7 @@ export function AgentChatComposer({
   onContextPacksChange: (packs: ContextPackOption[]) => void;
   onExecutionModeChange?: (mode: AgentChatExecutionMode) => void;
   onPermissionModeChange?: (mode: AgentChatPermissionMode) => void;
+  onComputerUsePolicyChange: (policy: ComputerUsePolicy) => void;
   onClearEvents?: () => void;
 }) {
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
@@ -650,6 +655,56 @@ export function AgentChatComposer({
               })}
             </div>
           ) : null}
+
+          <div className="flex items-center gap-1 rounded-[var(--chat-radius-pill)] border border-white/[0.06] bg-black/10 px-1.5 py-1">
+            {(["off", "auto", "enabled"] as const).map((mode) => {
+              const isActive = computerUsePolicy.mode === mode;
+              return (
+                <button
+                  key={mode}
+                  type="button"
+                  className={cn(
+                    "rounded-[var(--chat-radius-pill)] px-2 py-1 font-mono text-[8px] font-bold uppercase tracking-wider transition-colors",
+                    isActive
+                      ? "border border-sky-400/30 bg-sky-500/12 text-sky-200"
+                      : "text-muted-fg/25 hover:text-muted-fg/55",
+                  )}
+                  onClick={() => onComputerUsePolicyChange({ ...computerUsePolicy, mode })}
+                  title="Computer-use policy for this chat session"
+                >
+                  {mode === "enabled" ? "CU On" : mode === "off" ? "CU Off" : "CU Auto"}
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              className={cn(
+                "rounded-[var(--chat-radius-pill)] px-2 py-1 font-mono text-[8px] uppercase tracking-wider transition-colors",
+                computerUsePolicy.allowLocalFallback ? "text-amber-200" : "text-muted-fg/25 hover:text-muted-fg/55",
+              )}
+              onClick={() => onComputerUsePolicyChange({
+                ...computerUsePolicy,
+                allowLocalFallback: !computerUsePolicy.allowLocalFallback,
+              })}
+              title="Allow ADE local fallback"
+            >
+              Fallback
+            </button>
+            <button
+              type="button"
+              className={cn(
+                "rounded-[var(--chat-radius-pill)] px-2 py-1 font-mono text-[8px] uppercase tracking-wider transition-colors",
+                computerUsePolicy.retainArtifacts ? "text-emerald-200" : "text-muted-fg/25 hover:text-muted-fg/55",
+              )}
+              onClick={() => onComputerUsePolicyChange({
+                ...computerUsePolicy,
+                retainArtifacts: !computerUsePolicy.retainArtifacts,
+              })}
+              title="Retain computer-use proof artifacts"
+            >
+              Proof
+            </button>
+          </div>
 
           <div className="ml-auto flex items-center gap-1">
             <button

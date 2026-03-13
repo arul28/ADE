@@ -1,120 +1,108 @@
-# Onboarding & Settings — Initialization, Trust, and AI Mode
+# Onboarding and settings
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 >
-> Last updated: 2026-03-05
+> Last updated: 2026-03-13
+
+ADE now treats onboarding and settings as two different jobs:
+
+- **onboarding** gets the project usable quickly
+- **settings** controls long-lived behavior, integrations, and policy
+
+The current runtime no longer assumes first-run setup should hydrate every service or require every integration before the user can move on.
 
 ---
 
-## Overview
+## Repository onboarding
 
-Onboarding initializes ADE in an existing repository. Settings controls ongoing behavior across config, automation defaults/integrations, context generation, and AI runtime mode.
+Repository onboarding still covers the initial ADE project bootstrap:
 
-This document reflects the current provider/config baseline, including `ai.mode`-driven behavior and removal of legacy `providers.mode` migration paths. It does **not** mean all historical context-pack/runtime compatibility paths are gone; those still exist where documented elsewhere. It also treats Automations as a separate first-class surface: Settings owns defaults and integrations, while `/automations` owns authoring and operations.
+1. detect common stack signals
+2. suggest config defaults
+3. optionally import existing branches as lanes
+4. prepare initial deterministic context state
 
----
+The main difference now is **timing**: project open favors a cheap first pass and delays secondary hydration until after the app is interactive.
 
-## Onboarding Flow (Current)
+Current behavior:
 
-On first open (or when `.ade/` is missing), onboarding guides users through:
-
-1. project defaults detection,
-2. config review/edit,
-3. optional existing-branch import as lanes,
-4. initial context baseline preparation (project/lane summaries + conflict seeds),
-5. optional initial context doc generation.
-
-### Defaults detection
-
-Detection includes common stack indicators (`package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, `Makefile`, docker compose files) plus `.github/workflows/*` command extraction.
-
-### Suggested config output
-
-Suggested config writes into ADE config structure with:
-
-- processes,
-- test suites,
-- stack buttons,
-- automations,
-- provider context tool generators.
-
-### Initial context baseline generation
-
-Onboarding prepares deterministic project/lane context summaries and seeds conflict prediction state.
-
-Initial context doc generation runs only when effective provider mode is not guest.
+- lanes load without expensive status first
+- keybindings load immediately
+- provider mode and full lane status warm later
+- context generation can still happen, but it is no longer treated as part of "must finish before the app feels usable"
 
 ---
 
-## Trust and Config Boundaries
+## CTO first-run setup
 
-ADE keeps shared vs local config split:
+CTO onboarding is now a lightweight wizard focused on three things:
 
-- shared: `.ade/ade.yaml`
-- local: `.ade/local.yaml`
+1. **identity**
+2. **project context**
+3. **optional Linear connection**
 
-Shared config is intended for team-visible defaults. Local config stores machine/user-specific overrides.
+### Identity step
 
----
+The user defines the CTO's name, provider/model preference, and persona. The system prompt preview is generated live but debounced so typing in the persona field does not spam preview requests or make the setup pane sticky.
 
-## AI Mode and Provider Behavior (No Legacy Migration)
+### Project context step
 
-### Source of truth
+The wizard can seed the CTO from repo-detected defaults or from existing CTO memory. The user can still edit:
 
-Effective provider mode is derived from `effective.ai.mode`:
+- project summary
+- conventions
+- active focus areas
 
-- `subscription` -> provider mode `subscription`
-- any other/missing value -> provider mode `guest`
+### Integrations step
 
-### Legacy key handling
+Linear is optional during setup.
 
-`providers.mode` is ignored during config coercion and removed on save.
+Current behavior:
 
-Current behavior does **not** migrate legacy provider-mode keys from `providers.mode`.
+- the primary action can finish onboarding even when Linear is disconnected
+- the UI explicitly tells the user that Linear can be connected later
+- the fastest supported path is a personal API key
+- OAuth is still available, but it is not the default recommendation
+- OpenClaw is intentionally excluded from first-run setup
 
-### Practical impact
-
-- Guest mode: deterministic/non-AI features continue working.
-- Subscription mode: AI features (planning, narrative, PR drafting, orchestrator usage, context generation) can run based on task routing and feature toggles.
-
----
-
-## Settings Areas
-
-### AI routing and feature toggles
-
-Settings persist AI task routing (`ai.taskRouting`) and per-feature toggles (`ai.features`) for surfaces such as:
-
-- mission planning/orchestrator,
-- narratives,
-- conflict proposals,
-- PR descriptions,
-- terminal summaries,
-- initial context generation.
-
-### Permissions and execution policy
-
-Provider-specific execution permissions are controlled from `ai.permissions` and applied by runtime services.
-
-### Automations
-
-Settings does not serve as the primary automation builder. Instead, it provides the defaults and infrastructure that power the dedicated `/automations` tab.
-
-Settings-owned automation concerns include:
-
-- default model/provider, budget, and approval policies for new automations
-- connector auth and health for GitHub, Linear, and webhook integrations
-- shared Night Shift defaults such as active window, notification delivery, and reserve policies
-- team-shared templates and preset tool palettes
-
-### Context controls
-
-Settings expose context doc status, generation, and open flows tied to `.ade/context/PRD.ade.md` and `.ade/context/ARCHITECTURE.ade.md`.
+The setup flow now favors completion over forced integration ceremony.
 
 ---
 
-## Operational Notes
+## Settings responsibilities
 
-- Onboarding can seed useful deterministic context even before AI generation is available.
-- `ai.mode` is the authoritative knob for guest vs subscription behavior.
-- Legacy provider mode keys are not part of the current contract.
+Settings owns durable configuration and infrastructure concerns, including:
+
+- AI mode and task routing
+- provider-specific permission policy
+- config reload and local/shared config boundaries
+- automation defaults and integration credentials
+- context and memory health tools
+- GitHub, Linear, and related connectivity state
+
+Settings is not the primary authoring surface for automations, missions, or worker structure. It provides defaults and infrastructure for those features.
+
+---
+
+## AI mode and provider behavior
+
+`effective.ai.mode` remains the source of truth for guest versus subscription behavior.
+
+Current behavior:
+
+- **guest mode** keeps local deterministic features usable
+- **subscription mode** unlocks AI-powered orchestration, chat, narratives, summaries, and related features
+- legacy `providers.mode` migration behavior is not part of the current contract
+
+---
+
+## Current UX contract
+
+Onboarding and settings now follow a simpler product rule:
+
+- do not block the user on optional integrations
+- keep setup responsive
+- show the fastest path first
+- defer advanced or heavy configuration to the dedicated feature surface that owns it
+
+That rule now shows up most clearly in CTO onboarding, where finishing setup without Linear is valid and OpenClaw is left for later.

@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import type { GroupedMissionArtifacts, UnifiedMissionArtifact } from "./missionControlViewModel";
-import type { EpisodicMemory, MemoryEntryDto, MissionCloseoutRequirement } from "../../../shared/types";
+import type { ComputerUseOwnerSnapshot, EpisodicMemory, MemoryEntryDto, MissionCloseoutRequirement } from "../../../shared/types";
 import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
+import { MissionComputerUsePanel } from "./MissionComputerUsePanel";
 
 type ArtifactGroupMode = "phase" | "step" | "type";
 
@@ -189,11 +190,15 @@ export function MissionArtifactsTab({
   closeoutRequirements = [],
   missionId = null,
   runId = null,
+  laneId = null,
+  computerUseSnapshot = null,
 }: {
   groupedArtifacts: GroupedMissionArtifacts;
   closeoutRequirements?: MissionCloseoutRequirement[];
   missionId?: string | null;
   runId?: string | null;
+  laneId?: string | null;
+  computerUseSnapshot?: ComputerUseOwnerSnapshot | null;
 }) {
   const [groupMode, setGroupMode] = useState<ArtifactGroupMode>("phase");
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
@@ -292,7 +297,11 @@ export function MissionArtifactsTab({
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3 lg:flex-row">
+    <div className="flex h-full min-h-0 flex-col gap-3">
+      {missionId && computerUseSnapshot ? (
+        <MissionComputerUsePanel missionId={missionId} laneId={laneId} initialSnapshot={computerUseSnapshot} />
+      ) : null}
+      <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
       <div className="min-h-0 min-w-0 lg:w-[380px] lg:max-w-[40%] lg:shrink-0">
         <div className="space-y-3">
           <div className="rounded-sm p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
@@ -552,6 +561,7 @@ export function MissionArtifactsTab({
             Artifact previews will appear here once the mission records files, URIs, or extracted evidence.
           </div>
         )}
+      </div>
       </div>
     </div>
   );

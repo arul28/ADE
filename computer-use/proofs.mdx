@@ -1,0 +1,130 @@
+---
+title: "Proofs & Artifacts"
+description: "Proof artifact types, how computer use integrates with missions and chat sessions, and the artifact ownership model."
+icon: "camera"
+---
+
+## Proof Kinds (Artifact Types)
+
+When a computer-use backend performs an action, ADE can require it to produce one or more proof artifacts. The required proof kinds are configured per mission or per automation.
+
+<AccordionGroup>
+  <Accordion title="screenshot — Static Image Capture" icon="camera">
+    A static PNG/JPEG capture of the screen or browser viewport at a specific moment in the automation.
+
+    **Use when:** You need a visual record of the UI state at key steps. Lightweight, low storage cost.
+
+    **Produced by:** Ghost OS, agent-browser, ADE Local
+  </Accordion>
+
+  <Accordion title="video_recording — Full Session Recording" icon="video">
+    A video recording of the entire automation sequence or a time-bounded segment.
+
+    **Use when:** You need to review the full interaction flow, not just snapshots. Best for debugging unexpected behavior.
+
+    **Produced by:** Ghost OS, agent-browser
+  </Accordion>
+
+  <Accordion title="browser_trace — Structured Interaction Log" icon="list-tree">
+    A machine-readable trace of all browser interactions: DOM events, navigation events, form submissions, network calls, and timing data.
+
+    **Use when:** You need structured, queryable proof rather than visual media. Browser traces can be diffed, replayed, and analyzed by downstream agents.
+
+    **Produced by:** Ghost OS, agent-browser
+  </Accordion>
+
+  <Accordion title="browser_verification — Assertion Result" icon="circle-check">
+    An assertion result — did the expected DOM element exist? Did the page contain the expected text? Returns a boolean with the element snapshot if found.
+
+    **Use when:** You need machine-verifiable confirmation of a UI state (e.g., "confirm the success toast appeared", "confirm the form was submitted").
+
+    **Produced by:** Ghost OS, agent-browser
+  </Accordion>
+
+  <Accordion title="console_logs — Browser Console Output" icon="rectangle-terminal">
+    Browser and application console output captured during the automation session. Includes errors, warnings, and application log statements.
+
+    **Use when:** Debugging automation failures, verifying no JavaScript errors occurred, capturing application-specific log output.
+
+    **Produced by:** Ghost OS, agent-browser
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Computer Use in Missions
+
+Missions with computer use proceed through three stages:
+
+### 1. Launch and Preflight
+
+When creating a mission that requires computer use, ADE shows a **readiness check** before the mission starts:
+
+- Is the preferred backend connected?
+- Are the required proof kinds available from the active backend?
+- Are file-system and permission guardrails satisfied?
+
+If the preflight fails, ADE shows which checks failed and why. You can proceed with a degraded backend or cancel and fix the configuration.
+
+<Info>**Screenshot needed:** The Mission creation dialog's "Computer Use Preflight" step — showing a checklist of backend checks, proof kind availability, and permission checks. Two items should be green (passed) and one should show an amber warning about video recording not being available on the current backend.</Info>
+
+### 2. Mission Run Monitoring
+
+During execution, the **Mission's Artifacts tab** shows a live view:
+
+- Current backend name and status
+- Live thumbnail feed of recent screenshots
+- Running count of each proof kind collected
+- Proof coverage percentage (how many planned steps have associated artifacts)
+
+### 3. Artifact Review and Closeout
+
+After execution (or at any point mid-mission), you review collected artifacts and mark each one:
+
+| Status | Meaning |
+|---|---|
+| `accepted` | Artifact is valid and meets the proof requirement |
+| `needs_more` | The artifact is insufficient — more evidence is required |
+| `dismissed` | Artifact is not relevant and should be excluded |
+| `published` | Artifact is accepted and has been routed to its configured owners |
+
+---
+
+## Computer Use in Chat
+
+When a chat session has a `CU On`, `CU Auto`, or `Proof` policy active, the **Computer Use monitoring panel** appears below the chat message input.
+
+The panel shows:
+- Current active backend and its connection status
+- A thumbnail grid of the most recent screenshots from this session
+- Total action count for the session
+- A live feed indicator when the agent is actively running computer use
+
+<Info>**Screenshot needed:** The Agent Chat pane with the Computer Use monitoring panel visible below the composer. The panel shows a 4-column thumbnail grid of recent screenshots, a "Backend: Ghost OS" badge, and an "8 actions" counter. One thumbnail should be highlighted as the "most recent".</Info>
+
+You can click any thumbnail to expand it full-screen and inspect the screenshot, or click **View All Artifacts** to open the full artifact manager for the session.
+
+---
+
+## Artifact Ownership Model
+
+Every artifact collected by ADE has a canonical record in the local SQLite database. Artifacts can be **owned by multiple entities simultaneously**.
+
+**Ownership types:**
+- Lane (the lane where the computer use occurred)
+- Mission (if the action occurred during a mission execution)
+- Chat Session (if the action occurred in a chat)
+- Pull Request (if the artifact is linked to an open PR)
+- Linear Issue (if the artifact is published to a Linear issue as an attachment)
+
+**Publishing an artifact** routes it to selected owners. For example, a screenshot proving that a UI bug is fixed can be published to both the PR and the Linear issue in one action.
+
+**Artifact lifecycle:**
+
+```
+pending  →  accepted  →  published
+         →  needs_more (agent continues collecting)
+         →  dismissed
+```
+
+<Info>**Screenshot needed:** The Artifact Manager panel showing a mixed list of artifacts from a single mission — some screenshots marked "accepted" in green, one marked "needs_more" in amber, and a video recording entry marked "published" with a chain-link icon showing it is linked to a PR and a Linear issue.</Info>

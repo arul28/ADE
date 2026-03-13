@@ -54,6 +54,7 @@ import {
   buildIntegrationSourcesByLaneId,
   isIntegrationLaneFromMetadata,
 } from "../../lib/integrationLanes";
+import { listSessionsCached } from "../../lib/sessionListCache";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
@@ -112,6 +113,8 @@ import { getPrChecksBadge, getPrReviewsBadge, InlinePrBadge } from "../prs/share
 const nodeTypes = { lane: GraphLaneNode, proposal: GraphProposalNode };
 const edgeTypes = { custom: RiskEdge };
 const MERGE_SUCCESS_ANIMATION_MS = 1200;
+const GRAPH_ACTIVITY_SESSION_LIMIT = 150;
+const GRAPH_ACTIVITY_OPERATION_LIMIT = 150;
 
 function GraphInner() {
   const navigate = useNavigate();
@@ -633,9 +636,15 @@ function GraphInner() {
 
   const refreshActivity = React.useCallback(async () => {
     try {
+      if (lanesRef.current.length === 0) {
+        setActiveSessionsByLaneId({});
+        setActivityScoreByLaneId({});
+        setLastActivityByLaneId({});
+        return;
+      }
       const [sessions, operations] = await Promise.all([
-        window.ade.sessions.list({ limit: 500 }),
-        window.ade.history.listOperations({ limit: 500 })
+        listSessionsCached({ limit: GRAPH_ACTIVITY_SESSION_LIMIT }),
+        window.ade.history.listOperations({ limit: GRAPH_ACTIVITY_OPERATION_LIMIT })
       ]);
       const now = Date.now();
       const activeByLane: Record<string, number> = {};
@@ -707,6 +716,10 @@ function GraphInner() {
   React.useEffect(() => {
     if (!project?.rootPath) return;
     let cancelled = false;
+    let riskTimer: number | null = null;
+    let activityTimer: number | null = null;
+    let syncTimer: number | null = null;
+    let autoRebaseTimer: number | null = null;
     setLoadingTopology(true);
     setLoadedGraphPreferences(false);
     setSessionState(createSessionState());
@@ -722,19 +735,39 @@ function GraphInner() {
       .finally(() => {
         if (!cancelled) setLoadingTopology(false);
       });
-    void refreshRiskBatch();
-    scheduleRefreshActivity(0);
-    void refreshLaneSyncStatuses();
-    void refreshAutoRebaseStatuses();
+
+    riskTimer = window.setTimeout(() => {
+      if (cancelled || document.visibilityState !== "visible") return;
+      void refreshRiskBatch();
+    }, 1_500);
+    activityTimer = window.setTimeout(() => {
+      if (cancelled || document.visibilityState !== "visible") return;
+      scheduleRefreshActivity(250);
+    }, 800);
+    syncTimer = window.setTimeout(() => {
+      if (cancelled || document.visibilityState !== "visible") return;
+      void refreshLaneSyncStatuses();
+    }, 2_500);
+    autoRebaseTimer = window.setTimeout(() => {
+      if (cancelled || document.visibilityState !== "visible") return;
+      void refreshAutoRebaseStatuses();
+    }, 3_500);
 
     return () => {
       cancelled = true;
+      if (riskTimer != null) window.clearTimeout(riskTimer);
+      if (activityTimer != null) window.clearTimeout(activityTimer);
+      if (syncTimer != null) window.clearTimeout(syncTimer);
+      if (autoRebaseTimer != null) window.clearTimeout(autoRebaseTimer);
     };
   }, [project?.rootPath, refreshAutoRebaseStatuses, refreshLaneSyncStatuses, refreshLanes, refreshRiskBatch, reportGraphIssue, scheduleRefreshActivity]);
 
   React.useEffect(() => {
     let cancelled = false;
-    void refreshPrs().catch((err) => console.warn("[Graph] listWithConflicts PRs failed:", err));
+    const initialPrTimer = window.setTimeout(() => {
+      if (cancelled || document.visibilityState !== "visible") return;
+      void refreshPrs().catch((err) => console.warn("[Graph] listWithConflicts PRs failed:", err));
+    }, 4_000);
     let unsub = () => {};
     try {
       unsub = window.ade.prs.onEvent((event) => {
@@ -748,6 +781,7 @@ function GraphInner() {
 
     return () => {
       cancelled = true;
+      window.clearTimeout(initialPrTimer);
       try {
         unsub();
       } catch {
@@ -1025,7 +1059,7 @@ function GraphInner() {
       if (document.visibilityState !== "visible") return;
       void refreshLanes().catch((err) => console.warn("[Graph] periodic refreshLanes failed:", err));
       scheduleRefreshActivity(320);
-    }, 30_000);
+    }, 60_000);
     const syncInterval = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       void refreshLaneSyncStatuses();

@@ -436,6 +436,16 @@ import type {
   BudgetCapConfig,
 } from "../../../shared/types";
 import type { LaneEnvInitConfig, LaneOverlayOverrides, PortLease } from "../../../shared/types";
+import type {
+  ComputerUseArtifactListArgs,
+  ComputerUseArtifactReviewArgs,
+  ComputerUseArtifactRouteArgs,
+  ComputerUseArtifactView,
+  ComputerUseEventPayload,
+  ComputerUseOwnerSnapshot,
+  ComputerUseOwnerSnapshotArgs,
+  ComputerUseSettingsSnapshot,
+} from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
@@ -468,6 +478,12 @@ import type { createPrPollingService } from "../prs/prPollingService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createQueueRehearsalService } from "../prs/queueRehearsalService";
 import type { createAgentChatService } from "../chat/agentChatService";
+import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
+import {
+  buildComputerUseOwnerSnapshot,
+  buildComputerUseSettingsSnapshot,
+  collectRequiredComputerUseKindsFromPhases,
+} from "../computerUse/controlPlane";
 import { readGlobalState, writeGlobalState, reorderRecentProjects } from "../state/globalState";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
 import type { createTerminalProfilesService } from "../terminalProfiles/terminalProfilesService";
@@ -514,7 +530,7 @@ import type { createUsageTrackingService } from "../usage/usageTrackingService";
 import type { createBudgetCapService } from "../usage/budgetCapService";
 import type { AdeProjectService } from "../projects/adeProjectService";
 import type { ConfigReloadService } from "../projects/configReloadService";
-import { getErrorMessage, isRecord, nowIso, toMemoryEntryDto } from "../shared/utils";
+import { getErrorMessage, isRecord, nowIso, toMemoryEntryDto, toOptionalString } from "../shared/utils";
 
 export type AppContext = {
   db: AdeDb;
@@ -547,6 +563,7 @@ export type AppContext = {
   conflictService: ReturnType<typeof createConflictService>;
   aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
   agentChatService: ReturnType<typeof createAgentChatService>;
+  computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService>;
   githubService: ReturnType<typeof createGithubService>;
   prService: ReturnType<typeof createPrService>;
   prPollingService: ReturnType<typeof createPrPollingService>;
@@ -1270,6 +1287,97 @@ export function registerIpc({
     }
   };
 
+  const traceIpcInvokes = !app.isPackaged || process.env.ADE_TRACE_IPC === "1";
+  let ipcInvokeSeq = 0;
+
+  const summarizeIpcValue = (value: unknown, depth = 0): unknown => {
+    if (value == null) return value;
+    if (typeof value === "string") {
+      return value.length > 160 ? `${value.slice(0, 157)}...` : value;
+    }
+    if (typeof value === "number" || typeof value === "boolean") return value;
+    if (typeof value === "bigint") return value.toString();
+    if (value instanceof Date) return value.toISOString();
+    if (Array.isArray(value)) {
+      if (depth >= 1) return `[array:${value.length}]`;
+      return {
+        kind: "array",
+        length: value.length,
+        sample: value.slice(0, 3).map((item) => summarizeIpcValue(item, depth + 1)),
+      };
+    }
+    if (typeof value === "object") {
+      if (depth >= 1) return "[object]";
+      const record = value as Record<string, unknown>;
+      const entries = Object.entries(record).slice(0, 8);
+      return Object.fromEntries(entries.map(([key, entryValue]) => [key, summarizeIpcValue(entryValue, depth + 1)]));
+    }
+    return typeof value;
+  };
+
+  const getTraceLogger = (): Pick<Logger, "info" | "warn"> => {
+    try {
+      return getCtx().logger;
+    } catch {
+      return {
+        info: (event: string, meta?: Record<string, unknown>) => console.log(`[info] ${event}`, meta ?? ""),
+        warn: (event: string, meta?: Record<string, unknown>) => console.warn(`[warn] ${event}`, meta ?? ""),
+      };
+    }
+  };
+
+  type TracedIpcMain = typeof ipcMain & {
+    __adeTraceWrapped?: boolean;
+    __adeOriginalHandle?: typeof ipcMain.handle;
+  };
+
+  const tracedIpcMain = ipcMain as TracedIpcMain;
+  if (traceIpcInvokes && !tracedIpcMain.__adeTraceWrapped) {
+    const originalHandle = tracedIpcMain.handle.bind(ipcMain);
+    tracedIpcMain.__adeOriginalHandle = originalHandle;
+    tracedIpcMain.handle = ((channel, listener) =>
+      originalHandle(channel, async (event, ...args) => {
+        const callId = ++ipcInvokeSeq;
+        const startedAt = Date.now();
+        const winId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
+        const logger = getTraceLogger();
+        logger.info("ipc.invoke.begin", {
+          callId,
+          channel,
+          winId,
+          projectRoot: (() => {
+            try {
+              return getCtx().project.rootPath;
+            } catch {
+              return null;
+            }
+          })(),
+          args: summarizeIpcValue(args),
+        });
+        try {
+          const result = await listener(event, ...args);
+          logger.info("ipc.invoke.done", {
+            callId,
+            channel,
+            winId,
+            durationMs: Date.now() - startedAt,
+            result: summarizeIpcValue(result),
+          });
+          return result;
+        } catch (error) {
+          logger.warn("ipc.invoke.failed", {
+            callId,
+            channel,
+            winId,
+            durationMs: Date.now() - startedAt,
+            err: getErrorMessage(error),
+          });
+          throw error;
+        }
+      })) as typeof ipcMain.handle;
+    tracedIpcMain.__adeTraceWrapped = true;
+  }
+
   const triggerAutoContextDocs = (
     ctx: AppContext,
     args: { event: ContextRefreshEventName; reason: string }
@@ -1287,6 +1395,41 @@ export function registerIpc({
           error: error instanceof Error ? error.message : String(error)
         });
       });
+  };
+
+  const ensureComputerUseBroker = (): AppContext => {
+    const ctx = getCtx();
+    if (!ctx.computerUseArtifactBrokerService) {
+      throw new Error("Computer-use artifact broker is not available.");
+    }
+    return ctx;
+  };
+
+  const resolveComputerUseOwnerSnapshotArgs = async (
+    ctx: AppContext,
+    args: ComputerUseOwnerSnapshotArgs,
+  ): Promise<ComputerUseOwnerSnapshotArgs> => {
+    if (args.owner.kind === "mission") {
+      const mission = ctx.missionService.get(args.owner.id);
+      return {
+        ...args,
+        policy: args.policy ?? mission?.computerUse ?? null,
+        requiredKinds: args.requiredKinds?.length
+          ? args.requiredKinds
+          : collectRequiredComputerUseKindsFromPhases(mission?.phaseConfiguration?.selectedPhases ?? []),
+      };
+    }
+
+    if (args.owner.kind === "chat_session") {
+      const sessions = await ctx.agentChatService.listSessions();
+      const session = sessions.find((candidate) => candidate.sessionId === args.owner.id) ?? null;
+      return {
+        ...args,
+        policy: args.policy ?? session?.computerUse ?? null,
+      };
+    }
+
+    return args;
   };
 
   type PrAiRuntimeSession = {
@@ -2968,7 +3111,15 @@ export function registerIpc({
     }
 
     if (!ctx.laneProxyService.getStatus().running) {
-      await ctx.laneProxyService.start();
+      try {
+        await ctx.laneProxyService.start();
+      } catch (error) {
+        ctx.logger.warn("lane_proxy.preview_start_failed", {
+          laneId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      }
     }
 
     const expectedHostname = ctx.laneProxyService.generateHostname(laneId, lane.name);
@@ -3340,6 +3491,38 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatChangePermissionMode, async (_event, arg: AgentChatChangePermissionModeArgs): Promise<void> => {
     const ctx = getCtx();
     ctx.agentChatService.changePermissionMode(arg);
+  });
+
+  ipcMain.handle(IPC.computerUseGetSettings, async (): Promise<ComputerUseSettingsSnapshot> => {
+    const ctx = ensureComputerUseBroker();
+    return buildComputerUseSettingsSnapshot(ctx.computerUseArtifactBrokerService.getBackendStatus());
+  });
+
+  ipcMain.handle(IPC.computerUseListArtifacts, async (_event, arg: ComputerUseArtifactListArgs = {}): Promise<ComputerUseArtifactView[]> => {
+    const ctx = ensureComputerUseBroker();
+    return ctx.computerUseArtifactBrokerService.listArtifacts(arg);
+  });
+
+  ipcMain.handle(IPC.computerUseGetOwnerSnapshot, async (_event, arg: ComputerUseOwnerSnapshotArgs): Promise<ComputerUseOwnerSnapshot> => {
+    const ctx = ensureComputerUseBroker();
+    const resolved = await resolveComputerUseOwnerSnapshotArgs(ctx, arg);
+    return buildComputerUseOwnerSnapshot({
+      broker: ctx.computerUseArtifactBrokerService,
+      owner: resolved.owner,
+      policy: resolved.policy,
+      requiredKinds: resolved.requiredKinds,
+      limit: resolved.limit,
+    });
+  });
+
+  ipcMain.handle(IPC.computerUseRouteArtifact, async (_event, arg: ComputerUseArtifactRouteArgs): Promise<ComputerUseArtifactView> => {
+    const ctx = ensureComputerUseBroker();
+    return ctx.computerUseArtifactBrokerService.routeArtifact(arg);
+  });
+
+  ipcMain.handle(IPC.computerUseUpdateArtifactReview, async (_event, arg: ComputerUseArtifactReviewArgs): Promise<ComputerUseArtifactView> => {
+    const ctx = ensureComputerUseBroker();
+    return ctx.computerUseArtifactBrokerService.updateArtifactReview(arg);
   });
 
   ipcMain.handle(IPC.ptyCreate, async (_event, arg: PtyCreateArgs): Promise<PtyCreateResult> => {
@@ -3785,23 +3968,29 @@ export function registerIpc({
     return linked;
   });
 
+  const ensurePrPolling = () => {
+    const ctx = getCtx();
+    ctx.prPollingService.start();
+    return ctx;
+  };
+
   ipcMain.handle(IPC.prsGetForLane, async (_event, arg: { laneId: string }): Promise<PrSummary | null> => {
     const ctx = getCtx();
     return ctx.prService.getForLane(arg.laneId);
   });
 
   ipcMain.handle(IPC.prsListAll, async (): Promise<PrSummary[]> => {
-    const ctx = getCtx();
+    const ctx = ensurePrPolling();
     return ctx.prService.listAll();
   });
 
   ipcMain.handle(IPC.prsRefresh, async (_event, arg: { prId?: string } = {}): Promise<PrSummary[]> => {
-    const ctx = getCtx();
+    const ctx = ensurePrPolling();
     return await ctx.prService.refresh(arg);
   });
 
   ipcMain.handle(IPC.prsGetStatus, async (_event, arg: { prId: string }): Promise<PrStatus | null> => {
-    const ctx = getCtx();
+    const ctx = ensurePrPolling();
     try {
       return await ctx.prService.getStatus(arg.prId);
     } catch (err) {
@@ -3812,7 +4001,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.prsGetChecks, async (_event, arg: { prId: string }): Promise<PrCheck[]> => {
-    const ctx = getCtx();
+    const ctx = ensurePrPolling();
     try {
       return await ctx.prService.getChecks(arg.prId);
     } catch (err) {
@@ -3822,7 +4011,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.prsGetComments, async (_event, arg: { prId: string }): Promise<PrComment[]> => {
-    const ctx = getCtx();
+    const ctx = ensurePrPolling();
     try {
       return await ctx.prService.getComments(arg.prId);
     } catch (err) {
@@ -3832,7 +4021,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.prsGetReviews, async (_event, arg: { prId: string }): Promise<PrReview[]> => {
-    const ctx = getCtx();
+    const ctx = ensurePrPolling();
     try {
       return await ctx.prService.getReviews(arg.prId);
     } catch (err) {
@@ -3914,10 +4103,10 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsGetMergeContext, async (_event, arg: { prId: string }): Promise<PrMergeContext> => getCtx().prService.getMergeContext(arg.prId));
 
-  ipcMain.handle(IPC.prsListWithConflicts, async () => getCtx().prService.listWithConflicts());
+  ipcMain.handle(IPC.prsListWithConflicts, async () => ensurePrPolling().prService.listWithConflicts());
 
-  ipcMain.handle(IPC.prsGetGitHubSnapshot, async (): Promise<GitHubPrSnapshot> =>
-    await getCtx().prService.getGithubSnapshot()
+  ipcMain.handle(IPC.prsGetGitHubSnapshot, async (_event, arg?: { force?: boolean }): Promise<GitHubPrSnapshot> =>
+    await ensurePrPolling().prService.getGithubSnapshot({ force: arg?.force === true })
   );
 
   ipcMain.handle(IPC.prsCreateQueue, async (_event, arg: CreateQueuePrsArgs): Promise<CreateQueuePrsResult> => {

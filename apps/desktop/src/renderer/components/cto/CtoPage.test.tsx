@@ -368,6 +368,53 @@ describe("CtoPage", () => {
       expect(screen.getByText("Configure Your CTO")).toBeTruthy();
     });
     expect(screen.getByTestId("cto-onboarding-prompt-preview")).toBeTruthy();
+    expect((window as any).ade.cto.ensureSession).not.toHaveBeenCalled();
+    expect((window as any).ade.cto.listAgents).not.toHaveBeenCalled();
+    expect((window as any).ade.cto.getBudgetSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("lets the user dismiss onboarding on first run", async () => {
+    mockOnboardingState = { completedSteps: [] };
+
+    render(<CtoPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Configure Your CTO")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByText("Skip for now"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Configure Your CTO")).toBeNull();
+    });
+    expect((window as any).ade.cto.dismissOnboarding).toHaveBeenCalledTimes(1);
+  });
+
+  it("can finish onboarding without connecting Linear", async () => {
+    mockOnboardingState = { completedSteps: [] };
+
+    render(<CtoPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Configure Your CTO")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Save & Continue" }));
+    await waitFor(() => {
+      expect(screen.getByText("Project Context")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Save & Continue" }));
+    await waitFor(() => {
+      expect(screen.getByText("Integrations")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Finish Without Linear" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Configure Your CTO")).toBeNull();
+    });
+    expect((window as any).ade.cto.completeOnboardingStep).toHaveBeenCalledWith({ stepId: "integrations" });
   });
 
   it("shows the setup banner when onboarding was dismissed before completion", async () => {
@@ -495,6 +542,10 @@ describe("CtoPage", () => {
 
     expect(screen.queryByTestId("cto-capability-badge")).toBeNull();
 
+    await waitFor(() => {
+      expect((window as any).ade.cto.ensureSession).toHaveBeenCalled();
+    });
+
     resolve(makeSession());
 
     await waitFor(() => {
@@ -517,13 +568,14 @@ describe("CtoPage", () => {
     expect(screen.getByText("Backend Dev")).toBeTruthy();
   });
 
-  it("calls listAgents and getBudgetSnapshot on mount", async () => {
+  it("calls listAgents but defers getBudgetSnapshot on initial chat mount", async () => {
     render(<CtoPage />);
 
     await waitFor(() => {
       expect((window as any).ade.cto.listAgents).toHaveBeenCalledWith({ includeDeleted: false });
-      expect((window as any).ade.cto.getBudgetSnapshot).toHaveBeenCalledWith({});
     });
+
+    expect((window as any).ade.cto.getBudgetSnapshot).not.toHaveBeenCalled();
   });
 
   it("displays budget summary", async () => {
@@ -549,6 +601,30 @@ describe("CtoPage", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("worker-ops-panel")).toBeTruthy();
+    });
+  });
+
+  it("does not start worker chat sessions while browsing the Team tab", async () => {
+    render(<CtoPage />);
+
+    await waitFor(() => expect(screen.getByTestId("worker-row-agent-1")).toBeTruthy());
+
+    clickTab("Team");
+    fireEvent.click(screen.getByTestId("worker-row-agent-1"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("worker-ops-panel")).toBeTruthy();
+    });
+
+    expect((window as any).ade.cto.ensureAgentSession).not.toHaveBeenCalled();
+
+    clickTab("Chat");
+
+    await waitFor(() => {
+      expect((window as any).ade.cto.ensureAgentSession).toHaveBeenCalledWith({
+        agentId: "agent-1",
+        laneId: "lane-1",
+      });
     });
   });
 

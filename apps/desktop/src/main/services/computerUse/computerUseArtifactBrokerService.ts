@@ -10,8 +10,14 @@ import type {
   ComputerUseArtifactListArgs,
   ComputerUseArtifactOwner,
   ComputerUseArtifactRecord,
+  ComputerUseArtifactReviewArgs,
+  ComputerUseArtifactReviewState,
+  ComputerUseArtifactRouteArgs,
+  ComputerUseArtifactView,
   ComputerUseBackendStatus,
   ComputerUseExternalBackendStatus,
+  ComputerUseArtifactWorkflowState,
+  ComputerUseEventPayload,
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import {
@@ -22,6 +28,7 @@ import type { createMissionService } from "../missions/missionService";
 import type { createOrchestratorService } from "../orchestrator/orchestratorService";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
+import type { SqlValue } from "../state/kvDb";
 import type { createExternalMcpService } from "../externalMcp/externalMcpService";
 import {
   fileExists,
@@ -50,6 +57,9 @@ type StoredArtifactRow = {
   metadata_json: string;
   created_at: string;
 };
+
+const DEFAULT_REVIEW_STATE: ComputerUseArtifactReviewState = "pending";
+const DEFAULT_WORKFLOW_STATE: ComputerUseArtifactWorkflowState = "evidence_only";
 
 type StoredLinkRow = {
   id: string;
@@ -122,9 +132,18 @@ export function createComputerUseArtifactBrokerService(args: {
   orchestratorService: ReturnType<typeof createOrchestratorService>;
   externalMcpService?: ReturnType<typeof createExternalMcpService> | null;
   logger?: Logger | null;
+  onEvent?: (payload: ComputerUseEventPayload) => void;
 }) {
-  const { db, projectId, projectRoot, missionService, orchestratorService, externalMcpService, logger } = args;
+  const { db, projectId, projectRoot, missionService, orchestratorService, externalMcpService, logger, onEvent } = args;
   const layout = resolveAdeLayout(projectRoot);
+
+  const emit = (payload: ComputerUseEventPayload): void => {
+    try {
+      onEvent?.(payload);
+    } catch {
+      // Best-effort broadcast only.
+    }
+  };
 
   const materializeInlineContent = (input: ComputerUseArtifactInput, kind: ComputerUseArtifactKind, title: string): string => {
     const extension = inferArtifactExtension(input, kind);
@@ -240,6 +259,75 @@ export function createComputerUseArtifactBrokerService(args: {
     return next;
   };
 
+  const readArtifactById = (artifactId: string): ComputerUseArtifactRecord | null =>
+    readArtifactRows(
+      `
+        select id, artifact_kind, backend_style, backend_name, source_tool_name,
+               original_type, title, description, uri, storage_kind, mime_type,
+               metadata_json, created_at
+        from computer_use_artifacts
+        where project_id = ?
+          and id = ?
+        limit 1
+      `,
+      [projectId, artifactId],
+    )[0] ?? null;
+
+  const toArtifactView = (record: ComputerUseArtifactRecord, links: ComputerUseArtifactLink[]): ComputerUseArtifactView => {
+    const reviewState = toOptionalString(record.metadata.reviewState) as ComputerUseArtifactReviewState | null;
+    const workflowState = toOptionalString(record.metadata.workflowState) as ComputerUseArtifactWorkflowState | null;
+    return {
+      ...record,
+      links,
+      reviewState: reviewState ?? DEFAULT_REVIEW_STATE,
+      workflowState: workflowState ?? DEFAULT_WORKFLOW_STATE,
+      reviewNote: toOptionalString(record.metadata.reviewNote),
+    };
+  };
+
+  const getLink = (artifactId: string, owner: ComputerUseArtifactOwner): ComputerUseArtifactLink | null =>
+    db.get<StoredLinkRow>(
+      `
+        select id, artifact_id, owner_kind, owner_id, relation, metadata_json, created_at
+        from computer_use_artifact_links
+        where artifact_id = ?
+          and project_id = ?
+          and owner_kind = ?
+          and owner_id = ?
+          and relation = ?
+        limit 1
+      `,
+      [artifactId, projectId, owner.kind, owner.id.trim(), owner.relation ?? "attached_to"],
+    )
+      ? readLinkRows([artifactId]).find((link) =>
+          link.ownerKind === owner.kind
+          && link.ownerId === owner.id.trim()
+          && link.relation === (owner.relation ?? "attached_to")
+        ) ?? null
+      : null;
+
+  const updateArtifactMetadata = (artifactId: string, updater: (current: Record<string, unknown>) => Record<string, unknown>): ComputerUseArtifactView => {
+    const current = readArtifactById(artifactId);
+    if (!current) {
+      throw new Error(`Computer-use artifact not found: ${artifactId}`);
+    }
+    const nextMetadata = updater(current.metadata ?? {});
+    db.run(
+      `
+        update computer_use_artifacts
+        set metadata_json = ?
+        where id = ?
+          and project_id = ?
+      `,
+      [JSON.stringify(nextMetadata), artifactId, projectId],
+    );
+    const refreshed = readArtifactById(artifactId);
+    if (!refreshed) {
+      throw new Error(`Failed to refresh computer-use artifact: ${artifactId}`);
+    }
+    return toArtifactView(refreshed, readLinkRows([artifactId]));
+  };
+
   const projectArtifact = (record: ComputerUseArtifactRecord, owners: ComputerUseArtifactOwner[]): void => {
     const missionId = owners.find((owner) => owner.kind === "mission")?.id ?? null;
     const runId = owners.find((owner) => owner.kind === "orchestrator_run")?.id ?? null;
@@ -296,7 +384,7 @@ export function createComputerUseArtifactBrokerService(args: {
     }
   };
 
-  const readArtifactRows = (query: string, params: unknown[]): ComputerUseArtifactRecord[] =>
+  const readArtifactRows = (query: string, params: SqlValue[]): ComputerUseArtifactRecord[] =>
     db.all<StoredArtifactRow>(query, params).map((row) => ({
       id: row.id,
       kind: row.artifact_kind as ComputerUseArtifactKind,
@@ -423,8 +511,20 @@ export function createComputerUseArtifactBrokerService(args: {
         });
         for (const owner of owners) {
           insertLink(record.id, owner);
+          emit({
+            type: "artifact-linked",
+            artifactId: record.id,
+            at: nowIso(),
+            owner,
+          });
         }
         projectArtifact(record, owners);
+        emit({
+          type: "artifact-ingested",
+          artifactId: record.id,
+          at: nowIso(),
+          owner: owners[0] ?? null,
+        });
         return record;
       });
       return {
@@ -433,9 +533,14 @@ export function createComputerUseArtifactBrokerService(args: {
       };
     },
 
-    listArtifacts(args: ComputerUseArtifactListArgs = {}): Array<ComputerUseArtifactRecord & { links: ComputerUseArtifactLink[] }> {
+    listArtifacts(args: ComputerUseArtifactListArgs = {}): ComputerUseArtifactView[] {
       const limit = Math.max(1, Math.min(200, Math.floor(args.limit ?? 50)));
       let artifacts: ComputerUseArtifactRecord[] = [];
+      const artifactId = toOptionalString(args.artifactId);
+      if (artifactId) {
+        const record = readArtifactById(artifactId);
+        artifacts = record ? [record] : [];
+      } else {
       const ownerKind = args.owner?.kind ?? args.ownerKind ?? null;
       const ownerId = args.owner?.id ?? toOptionalString(args.ownerId);
       if (ownerKind && ownerId) {
@@ -474,6 +579,7 @@ export function createComputerUseArtifactBrokerService(args: {
           args.kind ? [projectId, args.kind, limit] : [projectId, limit],
         );
       }
+      }
       const links = readLinkRows(artifacts.map((artifact) => artifact.id));
       const linksByArtifact = new Map<string, ComputerUseArtifactLink[]>();
       for (const link of links) {
@@ -481,10 +587,53 @@ export function createComputerUseArtifactBrokerService(args: {
         bucket.push(link);
         linksByArtifact.set(link.artifactId, bucket);
       }
-      return artifacts.map((artifact) => ({
-        ...artifact,
-        links: linksByArtifact.get(artifact.id) ?? [],
+      return artifacts.map((artifact) => toArtifactView(artifact, linksByArtifact.get(artifact.id) ?? []));
+    },
+
+    routeArtifact(args: ComputerUseArtifactRouteArgs): ComputerUseArtifactView {
+      const artifactId = String(args.artifactId ?? "").trim();
+      if (!artifactId.length) throw new Error("artifactId is required.");
+      const owner = { ...args.owner, id: args.owner.id.trim() };
+      if (!owner.id.length) throw new Error("owner.id is required.");
+      const record = readArtifactById(artifactId);
+      if (!record) throw new Error(`Computer-use artifact not found: ${artifactId}`);
+      const existing = getLink(artifactId, owner);
+      if (!existing) {
+        insertLink(artifactId, owner);
+        projectArtifact(record, [owner]);
+        emit({
+          type: "artifact-linked",
+          artifactId,
+          at: nowIso(),
+          owner,
+        });
+      }
+      return toArtifactView(record, readLinkRows([artifactId]));
+    },
+
+    updateArtifactReview(args: ComputerUseArtifactReviewArgs): ComputerUseArtifactView {
+      const artifactId = String(args.artifactId ?? "").trim();
+      if (!artifactId.length) throw new Error("artifactId is required.");
+      const updated = updateArtifactMetadata(artifactId, (current) => ({
+        ...current,
+        ...(args.reviewState ? { reviewState: args.reviewState } : {}),
+        ...(args.workflowState ? { workflowState: args.workflowState } : {}),
+        ...(args.reviewNote !== undefined ? { reviewNote: toOptionalString(args.reviewNote) } : {}),
       }));
+      emit({
+        type: "artifact-reviewed",
+        artifactId,
+        at: nowIso(),
+        owner: updated.links[0]
+          ? {
+              kind: updated.links[0].ownerKind,
+              id: updated.links[0].ownerId,
+              relation: updated.links[0].relation,
+              metadata: updated.links[0].metadata,
+            }
+          : null,
+      });
+      return updated;
     },
 
     getBackendStatus,

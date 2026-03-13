@@ -135,12 +135,12 @@ export function StepWizard({
       {/* Right — content area */}
       <div className="flex-1 flex flex-col min-w-0 min-h-0">
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 overflow-y-auto p-5">
           {children}
         </div>
 
         {/* Bottom bar */}
-        <div className="shrink-0 flex items-center justify-between border-t border-border/20 px-6 py-3">
+        <div className="shrink-0 flex items-center justify-between border-t border-border/20 bg-bg/95 px-5 py-3 backdrop-blur">
           <div>
             {showSkip && onSkip && (
               <button

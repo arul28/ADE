@@ -1,0 +1,43 @@
+---
+title: "Linear Integration"
+description: "Connect Linear for bidirectional issue sync — the CTO reads from and writes to Linear, routing issues to workers, updating statuses when PRs merge, and adding analysis comments automatically."
+icon: "arrow-right-arrow-left"
+---
+
+## Linear Integration
+
+The CTO is the owner of ADE's bidirectional Linear integration. Connecting Linear unlocks a tight feedback loop between project management and development.
+
+### Connecting Linear
+
+<Steps>
+  <Step title="Open CTO > Linear sub-tab">
+    Click the **Linear** sub-tab in the CTO tab.
+  </Step>
+  <Step title="Authenticate">
+    Click **Connect Linear**. Choose between:
+    - **OAuth** (recommended) — authorizes ADE to access Linear on your behalf with scoped permissions
+    - **Personal Access Token** — paste a token from your Linear account settings
+  </Step>
+  <Step title="Select projects">
+    ADE discovers your Linear workspace and lists all accessible projects. Select the projects you want the CTO to monitor and sync.
+  </Step>
+  <Step title="Configure sync rules">
+    Set up workflow definitions: which Linear issue statuses map to which ADE actions (e.g., "In Progress" → spawn a worker, "In Review" → link the PR, "Done" → close the lane).
+  </Step>
+</Steps>
+
+### What the CTO can do with Linear
+
+**Inbound (Linear → ADE)**:
+- Detect issues assigned to you or matching configured criteria and route them to missions or workers
+- React to status transitions (e.g., issue moved to "In Progress" → create a lane and start a worker)
+- Read issue descriptions, attachments, and comments as context for agent work
+
+**Outbound (ADE → Linear)**:
+- Create new issues when the CTO identifies unreported work from code changes
+- Update issue status when PRs merge (e.g., move to "Done" automatically)
+- Add comments with agent analysis, PR links, and proof artifacts
+- Create sub-issues for discovered scope discovered during implementation
+
+<Note>Linear sync is owned entirely by the CTO. Automation rules that trigger on Linear events use the `linear-trigger` automation type (separate from the CTO's sync). The two systems are complementary: Automations handle simple event-response rules; the CTO handles stateful, intelligent Linear management.</Note>

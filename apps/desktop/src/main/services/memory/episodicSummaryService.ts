@@ -77,11 +77,14 @@ export function createEpisodicSummaryService(args: {
   projectId: string;
   projectRoot: string;
   logger?: Pick<Logger, "warn"> | null;
+  enabled?: boolean;
   aiIntegrationService?: Pick<ReturnType<typeof createAiIntegrationService>, "executeTask"> | null;
   memoryService: Pick<UnifiedMemoryService, "addMemory">;
   onEpisodeSaved?: (memoryId: string) => void | Promise<void>;
 }) {
+  const enabled = args.enabled !== false;
   const enqueue = (job: () => Promise<void>) => {
+    if (!enabled) return;
     void job().catch((error) => {
       args.logger?.warn?.("memory.episodic_summary_job_failed", {
         error: error instanceof Error ? error.message : String(error),
@@ -195,28 +198,44 @@ export function createEpisodicSummaryService(args: {
     decisions?: string[];
     gotchas?: string[];
   }) => {
+    const decisions = uniqueList(input.decisions ?? []);
+    const gotchas = uniqueList(input.gotchas ?? []);
+    const toolsUsed = uniqueList(input.toolsUsed ?? []);
+    const summary = String(input.summary ?? "").trim();
+    const duration = durationSeconds(input.startedAt, input.endedAt);
+    const isTrivialSummary =
+      duration <= 90
+      && decisions.length === 0
+      && gotchas.length === 0
+      && toolsUsed.length === 0
+      && /^(session closed|chat completed|cto session ended|worker session ended)\.?$/iu.test(summary);
+
+    if (!enabled || isTrivialSummary) {
+      return;
+    }
+
     enqueue(async () => {
       const prompt = [
         `Summarize the completed ADE ${input.role} session as a structured episodic memory.`,
         `Session ID: ${input.sessionId}`,
-        `Summary: ${input.summary}`,
-        `Duration seconds: ${durationSeconds(input.startedAt, input.endedAt)}`,
+        `Summary: ${summary}`,
+        `Duration seconds: ${duration}`,
         "Decisions:",
-        ...uniqueList(input.decisions ?? []).map((entry) => `- ${entry}`),
+        ...decisions.map((entry) => `- ${entry}`),
         "Gotchas:",
-        ...uniqueList(input.gotchas ?? []).map((entry) => `- ${entry}`),
+        ...gotchas.map((entry) => `- ${entry}`),
       ].join("\n");
 
       const episode = (await generateWithAi(prompt)) ?? fallbackEpisode({
         sessionId: input.sessionId,
         taskDescription: `${input.role.toUpperCase()} session`,
-        approachTaken: input.summary,
+        approachTaken: summary,
         outcome: "partial",
         patternsDiscovered: [],
-        gotchas: input.gotchas ?? [],
-        decisionsMade: input.decisions ?? [],
-        toolsUsed: input.toolsUsed ?? [],
-        duration: durationSeconds(input.startedAt, input.endedAt),
+        gotchas,
+        decisionsMade: decisions,
+        toolsUsed,
+        duration,
       });
       episode.id = randomUUID();
       episode.sessionId = input.sessionId;

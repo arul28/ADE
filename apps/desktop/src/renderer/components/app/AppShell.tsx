@@ -10,6 +10,7 @@ import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import type { ContextStatus, LinearWorkflowEventPayload, PrEventPayload, TerminalSessionSummary } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
+import { listSessionsCached } from "../../lib/sessionListCache";
 import { summarizeTerminalAttention } from "../../lib/terminalAttention";
 import { getStoredZoomLevel, displayZoomToLevel } from "../../lib/zoom";
 import { cn } from "../ui/cn";
@@ -86,6 +87,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       return false;
     }
   });
+  const shouldTrackTerminalAttention =
+    Boolean(project?.rootPath)
+    && !showWelcome
+    && (location.pathname === "/project"
+      || location.pathname === "/work"
+      || location.pathname === "/lanes"
+      || location.pathname === "/missions");
+
+  useEffect(() => {
+    console.info(`renderer.route_change ${JSON.stringify({
+      pathname: location.pathname,
+      projectRoot: project?.rootPath ?? null,
+      showWelcome,
+    })}`);
+  }, [location.pathname, project?.rootPath, showWelcome]);
 
   useEffect(() => {
     let cancelled = false;
@@ -105,21 +121,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
         if (hasStoredProject) {
           void Promise.allSettled([
-            refreshLanes(),
-            refreshProviderMode(),
+            refreshLanes({ includeStatus: false }),
             refreshKeybindings()
           ]);
+          window.setTimeout(() => {
+            if (cancelled) return;
+            void refreshLanes({ includeStatus: true });
+          }, 1_200);
+          window.setTimeout(() => {
+            if (cancelled) return;
+            void refreshProviderMode();
+          }, 1_800);
         }
-        void window.ade.onboarding
-          .getStatus()
-          .then((status) => {
-            if (cancelled) return;
-            setOnboardingIncomplete(Boolean(status && !status.completedAt));
-          })
-          .catch(() => {
-            if (cancelled) return;
-            setOnboardingIncomplete(false);
-          });
       } catch {
         if (cancelled) return;
         setProject(null);
@@ -135,7 +148,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [setProject, refreshLanes, refreshProviderMode, refreshKeybindings, setShowWelcome]);
 
   useEffect(() => {
-    if (!project?.rootPath || showWelcome) {
+    if (!shouldTrackTerminalAttention) {
       setTerminalAttention(EMPTY_TERMINAL_ATTENTION);
       return;
     }
@@ -152,7 +165,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       if (document.visibilityState !== "visible") return;
       refreshInFlight = true;
       try {
-        const sessions: TerminalSessionSummary[] = await window.ade.sessions.list({ limit: 500 });
+        const sessions: TerminalSessionSummary[] = await listSessionsCached({ limit: 150 });
         setTerminalAttention(summarizeTerminalAttention(sessions));
       } catch {
         // best effort
@@ -165,7 +178,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       }
     };
 
-    const scheduleRefresh = (delayMs = 1_200) => {
+    const scheduleRefresh = (delayMs = 2_500) => {
       if (refreshTimer != null) return;
       refreshTimer = window.setTimeout(() => {
         refreshTimer = null;
@@ -173,7 +186,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       }, delayMs);
     };
 
-    scheduleRefresh(0);
+    scheduleRefresh(2_500);
 
     const unsubData = window.ade.pty.onData(() => scheduleRefresh());
     const unsubExit = window.ade.pty.onExit(() => scheduleRefresh());
@@ -181,7 +194,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const interval = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       scheduleRefresh();
-    }, 5_000);
+    }, 15_000);
     const onFocus = () => scheduleRefresh(0);
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") scheduleRefresh(0);
@@ -202,23 +215,33 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [project?.rootPath, showWelcome, setTerminalAttention]);
+  }, [setTerminalAttention, shouldTrackTerminalAttention]);
 
   useEffect(() => {
     let cancelled = false;
-    void window.ade.onboarding
-      .getStatus()
-      .then((status) => {
-        if (cancelled) return;
-        setOnboardingIncomplete(Boolean(status && !status.completedAt));
-      })
-      .catch(() => {
-        // ignore
-      });
+    if (!project?.rootPath || showWelcome) {
+      setOnboardingIncomplete(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+    const timer = window.setTimeout(() => {
+      void window.ade.onboarding
+        .getStatus()
+        .then((status) => {
+          if (cancelled) return;
+          setOnboardingIncomplete(Boolean(status && !status.completedAt));
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setOnboardingIncomplete(false);
+        });
+    }, 1_200);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
-  }, [location.pathname]);
+  }, [project?.rootPath, showWelcome]);
 
   // Track visited tabs — mark after a short delay so stagger animation can play on first visit
   useEffect(() => {
@@ -250,20 +273,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       setContextStatus(null);
       return;
     }
-    void window.ade.context
-      .getStatus()
-      .then((next) => {
-        if (cancelled) return;
-        setContextStatus(next);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setContextStatus(null);
-      });
+    const timer = window.setTimeout(() => {
+      void window.ade.context
+        .getStatus()
+        .then((next) => {
+          if (cancelled) return;
+          setContextStatus(next);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setContextStatus(null);
+        });
+    }, 1_000);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
-  }, [project?.rootPath, location.pathname]);
+  }, [project?.rootPath]);
 
   useEffect(() => {
     setAiFailure(null);

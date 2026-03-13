@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import type { TerminalSessionSummary, TerminalToolType } from "../../../shared/types";
 import { useAppStore, type WorkDraftKind, type WorkProjectViewState, type WorkStatusFilter, type WorkViewMode } from "../../state/appStore";
+import { listSessionsCached } from "../../lib/sessionListCache";
 import { sessionMatchesStatusFilter, sessionStatusBucket } from "../../lib/terminalAttention";
 import { isChatToolType } from "../../lib/sessions";
 
@@ -223,7 +224,7 @@ export function useWorkSessions() {
     refreshInFlightRef.current = true;
     if (showLoading) setLoading(true);
     try {
-      const rows = await window.ade.sessions.list({ limit: 500 });
+      const rows = await listSessionsCached({ limit: 500 });
       setSessions(rows);
       hasLoadedOnceRef.current = true;
     } finally {

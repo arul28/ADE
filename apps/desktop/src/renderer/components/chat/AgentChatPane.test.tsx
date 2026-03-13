@@ -3,7 +3,13 @@
 import { cleanup, fireEvent, render, screen, waitFor, act } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentChatPane } from "./AgentChatPane";
-import type { AgentChatSessionSummary, AgentChatEventEnvelope } from "../../../shared/types";
+import {
+  createDefaultComputerUsePolicy,
+  type AgentChatEventEnvelope,
+  type AgentChatSessionSummary,
+  type ComputerUseEventPayload,
+  type ComputerUseOwnerSnapshot,
+} from "../../../shared/types";
 
 function mockSession(overrides: Partial<AgentChatSessionSummary> = {}): AgentChatSessionSummary {
   return {
@@ -25,6 +31,89 @@ function mockSession(overrides: Partial<AgentChatSessionSummary> = {}): AgentCha
 }
 
 let eventCallback: ((envelope: AgentChatEventEnvelope) => void) | null = null;
+let computerUseEventCallback: ((payload: ComputerUseEventPayload) => void) | null = null;
+
+function mockComputerUseSnapshot(overrides: Partial<ComputerUseOwnerSnapshot> = {}): ComputerUseOwnerSnapshot {
+  return {
+    owner: { kind: "chat_session", id: "session-1" },
+    policy: createDefaultComputerUsePolicy(),
+    backendStatus: {
+      backends: [
+        {
+          name: "Ghost OS",
+          style: "external_mcp",
+          available: true,
+          state: "connected",
+          detail: "Connected via External MCP.",
+          supportedKinds: ["screenshot", "browser_trace", "browser_verification"],
+        },
+      ],
+      localFallback: {
+        available: true,
+        detail: "ADE local computer-use tools are available as a fallback.",
+        supportedKinds: ["screenshot"],
+      },
+    },
+    summary: "Ghost OS captured the latest screenshot proof for this chat.",
+    activeBackend: {
+      name: "Ghost OS",
+      style: "external_mcp",
+      detail: "Ghost OS produced the latest ingested proof.",
+      source: "artifact",
+    },
+    artifacts: [
+      {
+        id: "artifact-1",
+        kind: "screenshot",
+        backendStyle: "external_mcp",
+        backendName: "Ghost OS",
+        sourceToolName: "ghost_screenshot",
+        originalType: "ghost_screenshot",
+        title: "Settings page screenshot",
+        description: "Captured after the latest verification step.",
+        uri: "https://example.com/artifact-1.png",
+        storageKind: "url",
+        mimeType: "image/png",
+        metadata: {},
+        createdAt: "2026-03-12T14:00:00.000Z",
+        links: [
+          {
+            id: "link-1",
+            artifactId: "artifact-1",
+            ownerKind: "chat_session",
+            ownerId: "session-1",
+            relation: "attached_to",
+            metadata: null,
+            createdAt: "2026-03-12T14:00:00.000Z",
+          },
+        ],
+        reviewState: "pending",
+        workflowState: "evidence_only",
+        reviewNote: null,
+      },
+    ],
+    recentArtifacts: [],
+    activity: [
+      {
+        id: "activity-1",
+        at: "2026-03-12T14:00:00.000Z",
+        kind: "artifact_ingested",
+        title: "screenshot captured",
+        detail: "Ghost OS produced a screenshot.",
+        artifactId: "artifact-1",
+        backendName: "Ghost OS",
+        severity: "success",
+      },
+    ],
+    proofCoverage: {
+      requiredKinds: ["screenshot"],
+      presentKinds: ["screenshot"],
+      missingKinds: [],
+    },
+    usingLocalFallback: false,
+    ...overrides,
+  };
+}
 
 function findAncestorWithClass(node: HTMLElement | null, className: string): HTMLElement | null {
   let current = node;
@@ -48,6 +137,7 @@ function setupWindowAde(overrides: {
   codexAvailable?: boolean;
   claudeAvailable?: boolean;
   availableModelIds?: string[];
+  computerUseSnapshot?: ComputerUseOwnerSnapshot | null;
 } = {}) {
   const sessions = overrides.sessions ?? [];
   const codexAvailable = overrides.codexAvailable ?? true;
@@ -112,6 +202,7 @@ function setupWindowAde(overrides: {
         modelId,
         reasoningEffort: reasoningEffort ?? "medium",
         permissionMode,
+        computerUse: createDefaultComputerUsePolicy(),
         status: "idle",
         createdAt: new Date().toISOString(),
         lastActivityAt: new Date().toISOString()
@@ -122,6 +213,15 @@ function setupWindowAde(overrides: {
       }),
       listContextPacks: vi.fn(async () => []),
       fetchContextPack: vi.fn(async () => ({ scope: "project", content: "", truncated: false }))
+    },
+    computerUse: {
+      getOwnerSnapshot: vi.fn(async () => overrides.computerUseSnapshot ?? null),
+      routeArtifact: vi.fn(async () => {}),
+      updateArtifactReview: vi.fn(async () => {}),
+      onEvent: vi.fn((cb: (payload: ComputerUseEventPayload) => void) => {
+        computerUseEventCallback = cb;
+        return () => { computerUseEventCallback = null; };
+      }),
     },
     sessions: {
       get: vi.fn(async () => null),
@@ -134,6 +234,10 @@ function setupWindowAde(overrides: {
     },
     files: {
       quickOpen: vi.fn(async () => [])
+    },
+    app: {
+      openExternal: vi.fn(async () => {}),
+      revealPath: vi.fn(async () => {}),
     }
   };
 }
@@ -142,6 +246,7 @@ describe("AgentChatPane", () => {
   beforeEach(() => {
     window.localStorage.clear();
     eventCallback = null;
+    computerUseEventCallback = null;
   });
 
   afterEach(() => {
@@ -153,6 +258,24 @@ describe("AgentChatPane", () => {
     setupWindowAde();
     render(<AgentChatPane laneId={null} />);
     expect(screen.getByText("Select a lane to start chatting")).toBeTruthy();
+  });
+
+  it("skips session list bootstrap when locked to an initial session summary", async () => {
+    setupWindowAde({ sessions: [mockSession()] });
+    render(
+      <AgentChatPane
+        laneId="lane-1"
+        lockSessionId="session-1"
+        hideSessionTabs
+        initialSessionSummary={mockSession()}
+      />
+    );
+
+    await waitFor(() => {
+      expect((window as any).ade.ai.getStatus).toHaveBeenCalled();
+    });
+
+    expect((window as any).ade.agentChat.list).not.toHaveBeenCalled();
   });
 
   it("loads models for both providers on boot", async () => {
@@ -205,6 +328,49 @@ describe("AgentChatPane", () => {
       // New API passes modelId
       expect(ade.agentChat.create).toHaveBeenCalledWith(
         expect.objectContaining({ modelId: expect.any(String), sessionProfile: "light" })
+      );
+    });
+  });
+
+  it("passes the selected computer-use policy into new chat sessions", async () => {
+    setupWindowAde();
+    render(<AgentChatPane laneId="lane-1" initialSessionId="latest-session" />);
+
+    await waitFor(() => {
+      expect(screen.getByTitle("New chat")).toBeTruthy();
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("New chat"));
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /CU On/i }));
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/CU enabled/i)).toBeTruthy();
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Fallback/i }));
+    });
+
+    await act(async () => {
+      fireEvent.change(screen.getByPlaceholderText("Message the agent..."), {
+        target: { value: "Capture a verification screenshot." },
+      });
+      fireEvent.click(screen.getByTitle("Send"));
+    });
+
+    await waitFor(() => {
+      expect((window as any).ade.agentChat.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          computerUse: expect.objectContaining({
+            mode: "enabled",
+            allowLocalFallback: false,
+            retainArtifacts: true,
+          }),
+        }),
       );
     });
   });
@@ -446,6 +612,37 @@ describe("AgentChatPane", () => {
     });
 
     expect((window as any).ade.agentChat.onEvent).toHaveBeenCalled();
+    expect((window as any).ade.computerUse.onEvent).toHaveBeenCalled();
+  });
+
+  it("refreshes chat computer-use state when matching artifact events arrive", async () => {
+    const session = mockSession();
+    const snapshot = mockComputerUseSnapshot();
+    setupWindowAde({ sessions: [session], computerUseSnapshot: snapshot });
+
+    render(<AgentChatPane laneId="lane-1" lockSessionId="session-1" />);
+
+    await waitFor(() => {
+      expect((window as any).ade.computerUse.getOwnerSnapshot).toHaveBeenCalledWith({
+        owner: { kind: "chat_session", id: "session-1" },
+      });
+    });
+
+    expect(await screen.findByText("Computer Use")).toBeTruthy();
+    expect(screen.getByText("Ghost OS captured the latest screenshot proof for this chat.")).toBeTruthy();
+
+    await act(async () => {
+      computerUseEventCallback?.({
+        type: "artifact-ingested",
+        artifactId: "artifact-1",
+        at: "2026-03-12T14:05:00.000Z",
+        owner: { kind: "chat_session", id: "session-1" },
+      });
+    });
+
+    await waitFor(() => {
+      expect((window as any).ade.computerUse.getOwnerSnapshot.mock.calls.length).toBeGreaterThan(1);
+    });
   });
 
   it("shows locked session info instead of session switcher", async () => {

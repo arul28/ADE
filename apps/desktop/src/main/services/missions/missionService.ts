@@ -3,6 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   isValidResolutionKind,
+  createDefaultComputerUsePolicy,
+  normalizeComputerUsePolicy,
 } from "../../../shared/types";
 import type {
   AddMissionArtifactArgs,
@@ -605,6 +607,10 @@ function truncateForMetadata(value: string | null, maxChars = 120_000): string |
   if (!value) return null;
   if (value.length <= maxChars) return value;
   return `${value.slice(0, maxChars)}\n...<truncated>`;
+}
+
+function normalizeMissionComputerUse(value: unknown) {
+  return normalizeComputerUsePolicy(value, createDefaultComputerUsePolicy());
 }
 
 
@@ -1858,13 +1864,22 @@ export function createMissionService({
         )
         .map(toMissionIntervention);
 
+      const metadata = safeParseRecord(
+        db.get<{ metadata_json: string | null }>(
+          `select metadata_json from missions where id = ? and project_id = ? limit 1`,
+          [id, projectId]
+        )?.metadata_json ?? null
+      );
+      const launchMetadata = isRecord(metadata?.launch) ? metadata.launch : null;
+
       return {
         ...toMissionSummary(row),
         steps,
         events,
         artifacts,
         interventions,
-        phaseConfiguration: resolveMissionPhaseConfiguration(id)
+        phaseConfiguration: resolveMissionPhaseConfiguration(id),
+        computerUse: launchMetadata ? normalizeMissionComputerUse(launchMetadata.computerUse) : null,
       };
     },
 
@@ -2419,6 +2434,7 @@ export function createMissionService({
       const launchMode = args.launchMode === "manual" ? "manual" : "autopilot";
       const autostart = args.autostart !== false;
       const autopilotExecutor = args.autopilotExecutor ?? "unified";
+      const computerUse = normalizeMissionComputerUse(args.computerUse);
       const launchAgentRuntime = normalizeAgentRuntimeFlags(
         isRecord(args.agentRuntime) ? (args.agentRuntime as Record<string, unknown>) : {}
       );
@@ -2521,6 +2537,7 @@ export function createMissionService({
           ...(args.modelConfig && typeof args.modelConfig === "object" ? { intelligenceConfig: args.modelConfig.intelligenceConfig } : {}),
           ...(launchTeamRuntime ? { teamRuntime: launchTeamRuntime } : {}),
           ...(args.permissionConfig ? { permissionConfig: args.permissionConfig } : {}),
+          computerUse,
           phaseProfileId: selectedProfile?.id ?? null,
           hasPhaseOverride: hasExplicitOverride
         },

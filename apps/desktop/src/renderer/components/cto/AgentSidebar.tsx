@@ -1,4 +1,4 @@
-import React, { useMemo, useCallback } from "react";
+import React, { useMemo } from "react";
 import { Brain, Robot, Plus, CaretRight } from "@phosphor-icons/react";
 import type { AgentIdentity, AgentBudgetSnapshot } from "../../../shared/types";
 import { AgentStatusDot } from "./shared/AgentStatusBadge";
@@ -14,13 +14,13 @@ const AgentRow = React.memo(function AgentRow({
   isSelected,
   depth,
   budgetInfo,
-  onClick,
+  onSelectAgent,
 }: {
   agent: AgentIdentity;
   isSelected: boolean;
   depth: number;
   budgetInfo?: AgentBudgetSnapshot["workers"][number];
-  onClick: () => void;
+  onSelectAgent: (id: string) => void;
 }) {
   const budgetBreached =
     (budgetInfo?.budgetMonthlyCents ?? 0) > 0 &&
@@ -29,7 +29,7 @@ const AgentRow = React.memo(function AgentRow({
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={() => onSelectAgent(agent.id)}
       data-testid={`worker-row-${agent.id}`}
       className={cn(
         "group w-full text-left px-3 py-2 transition-all duration-100",
@@ -80,7 +80,32 @@ const AgentRow = React.memo(function AgentRow({
   );
 });
 
-export function AgentSidebar({
+type WorkerTreeNode = {
+  agent: AgentIdentity;
+  depth: number;
+};
+
+const AgentSidebarBudgetFooter = React.memo(function AgentSidebarBudgetFooter({
+  budgetSnapshot,
+}: {
+  budgetSnapshot: AgentBudgetSnapshot | null;
+}) {
+  return (
+    <div className="shrink-0 border-t border-border/40 px-3 py-2" data-testid="budget-company-row">
+      <div className="flex items-center justify-between">
+        <span className="font-mono text-[9px] text-muted-fg/50 uppercase">Budget</span>
+        <span className="font-mono text-[10px] text-muted-fg">
+          {dollars(budgetSnapshot?.companySpentMonthlyCents ?? 0)}
+          {(budgetSnapshot?.companyBudgetMonthlyCents ?? 0) > 0
+            ? ` / ${dollars(budgetSnapshot!.companyBudgetMonthlyCents)}`
+            : ""}
+        </span>
+      </div>
+    </div>
+  );
+});
+
+export const AgentSidebar = React.memo(function AgentSidebar({
   agents,
   selectedAgentId,
   onSelectAgent,
@@ -105,23 +130,31 @@ export function AgentSidebar({
     return map;
   }, [budgetSnapshot?.workers]);
 
-  const renderTree = useCallback((parentId: string | null, depth = 0): React.ReactNode => {
-    const children = agents
-      .filter((a) => (a.reportsTo ?? null) === parentId)
-      .sort((a, b) => a.name.localeCompare(b.name));
-    return children.map((agent) => (
-      <React.Fragment key={agent.id}>
-        <AgentRow
-          agent={agent}
-          isSelected={selectedAgentId === agent.id}
-          depth={depth}
-          budgetInfo={budgetByWorkerId.get(agent.id)}
-          onClick={() => onSelectAgent(agent.id)}
-        />
-        {renderTree(agent.id, depth + 1)}
-      </React.Fragment>
-    ));
-  }, [agents, selectedAgentId, budgetByWorkerId, onSelectAgent]);
+  const workerTree = useMemo(() => {
+    const byParent = new Map<string | null, AgentIdentity[]>();
+    for (const agent of agents) {
+      const parentId = agent.reportsTo ?? null;
+      const siblings = byParent.get(parentId);
+      if (siblings) {
+        siblings.push(agent);
+      } else {
+        byParent.set(parentId, [agent]);
+      }
+    }
+    for (const siblings of byParent.values()) {
+      siblings.sort((a, b) => a.name.localeCompare(b.name));
+    }
+
+    const flattened: WorkerTreeNode[] = [];
+    const appendNodes = (parentId: string | null, depth: number) => {
+      for (const agent of byParent.get(parentId) ?? []) {
+        flattened.push({ agent, depth });
+        appendNodes(agent.id, depth + 1);
+      }
+    };
+    appendNodes(null, 0);
+    return flattened;
+  }, [agents]);
 
   return (
     <aside
@@ -183,7 +216,7 @@ export function AgentSidebar({
 
       {/* Worker tree */}
       <div className="flex-1 overflow-y-auto min-h-0" data-testid="worker-tree">
-        {agents.filter((a) => a.reportsTo === null).length === 0 ? (
+        {workerTree.length === 0 ? (
           <div className="px-3 py-6 text-center">
             <Robot size={24} className="mx-auto text-muted-fg/30 mb-2" />
             <div className="font-mono text-[10px] text-muted-fg/50">No workers yet</div>
@@ -196,22 +229,21 @@ export function AgentSidebar({
             </button>
           </div>
         ) : (
-          renderTree(null)
+          workerTree.map(({ agent, depth }) => (
+            <AgentRow
+              key={agent.id}
+              agent={agent}
+              isSelected={selectedAgentId === agent.id}
+              depth={depth}
+              budgetInfo={budgetByWorkerId.get(agent.id)}
+              onSelectAgent={onSelectAgent}
+            />
+          ))
         )}
       </div>
 
       {/* Budget footer */}
-      <div className="shrink-0 border-t border-border/40 px-3 py-2" data-testid="budget-company-row">
-        <div className="flex items-center justify-between">
-          <span className="font-mono text-[9px] text-muted-fg/50 uppercase">Budget</span>
-          <span className="font-mono text-[10px] text-muted-fg">
-            {dollars(budgetSnapshot?.companySpentMonthlyCents ?? 0)}
-            {(budgetSnapshot?.companyBudgetMonthlyCents ?? 0) > 0
-              ? ` / ${dollars(budgetSnapshot!.companyBudgetMonthlyCents)}`
-              : ""}
-          </span>
-        </div>
-      </div>
+      <AgentSidebarBudgetFooter budgetSnapshot={budgetSnapshot} />
     </aside>
   );
-}
+});

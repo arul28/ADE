@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LinearWorkflowConfig, NormalizedLinearIssue } from "../../../shared/types";
 import { openKvDb } from "../state/kvDb";
 import { createLinearSyncService } from "./linearSyncService";
@@ -45,6 +45,10 @@ const policy: LinearWorkflowConfig = {
 };
 
 describe("linearSyncService", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("runs an intake cycle and updates the dashboard heartbeat", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-sync-"));
     const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
@@ -73,6 +77,7 @@ describe("linearSyncService", () => {
         fetchIssueById: vi.fn(async () => issueFixture),
       } as any,
       dispatcherService: {
+        hasActiveRuns: vi.fn(() => false),
         findActiveRunForIssue: vi.fn(() => null),
         createRun: vi.fn(),
         advanceRun,
@@ -86,6 +91,68 @@ describe("linearSyncService", () => {
     await service.runSyncNow();
     expect(service.getDashboard().lastSuccessAt).toBeTruthy();
     expect(advanceRun).not.toHaveBeenCalled();
+    db.close();
+  });
+
+  it("starts immediately and continues on the reconciliation interval", async () => {
+    vi.useFakeTimers();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-sync-"));
+    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const fetchCandidates = vi.fn(async () => []);
+
+    const service = createLinearSyncService({
+      db,
+      projectId: "project-1",
+      flowPolicyService: {
+        getPolicy: () => ({
+          ...policy,
+          workflows: [
+            {
+              id: "workflow-1",
+              enabled: true,
+            },
+          ],
+        }),
+      } as any,
+      routingService: {
+        routeIssue: vi.fn(async () => ({
+          workflowId: null,
+          workflowName: null,
+          workflow: null,
+          target: null,
+          reason: "No match",
+          candidates: [],
+          nextStepsPreview: [],
+        })),
+      } as any,
+      intakeService: {
+        fetchCandidates,
+        persistSnapshot: vi.fn(() => {}),
+      } as any,
+      issueTracker: {
+        fetchIssueById: vi.fn(async () => issueFixture),
+      } as any,
+      dispatcherService: {
+        hasActiveRuns: vi.fn(() => false),
+        findActiveRunForIssue: vi.fn(() => null),
+        createRun: vi.fn(),
+        advanceRun: vi.fn(async () => null),
+        listActiveRuns: vi.fn(() => []),
+        listQueue: vi.fn(() => []),
+        resolveRunAction: vi.fn(),
+      } as any,
+      hasCredentials: () => true,
+      reconciliationIntervalSec: 30,
+      autoStart: false,
+    });
+
+    await service.start();
+    expect(fetchCandidates).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(fetchCandidates).toHaveBeenCalledTimes(2);
+
+    service.dispose();
     db.close();
   });
 });

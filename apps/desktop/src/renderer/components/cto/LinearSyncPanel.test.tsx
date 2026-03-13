@@ -204,7 +204,7 @@ describe("LinearSyncPanel", () => {
     expect(screen.getByText("Create your first real-time Linear workflow")).toBeTruthy();
     expect(screen.getByText("Has workflow label")).toBeTruthy();
     expect(screen.getByText("Watch It Live")).toBeTruthy();
-    expect(screen.getByText("Real-Time Ingress")).toBeTruthy();
+    expect(screen.getByText("Optional Real-Time Ingress")).toBeTruthy();
     expect(screen.getByText("Recent Ingress Events")).toBeTruthy();
     expect(screen.getByText("Issue gained workflow label")).toBeTruthy();
   });

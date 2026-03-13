@@ -54,7 +54,7 @@ Roadmap source of truth: `docs/final-plan/README.md` (this PRD captures product 
 
 ## 1. Product Overview
 
-ADE (Agentic Development Environment) is a desktop application that serves as a development operations cockpit for agentic coding workflows. It provides developers with a unified control plane to manage multiple parallel development lanes (git worktrees), terminal sessions, managed processes, test suites, and project configuration. ADE automates context tracking through its unified memory system, predicts conflicts between parallel work streams, and orchestrates AI-powered multi-worker missions through its AI Integration Layer -- provider-native CLI/runtime paths, a local MCP server for ADE-owned tools, and an AI orchestrator that coordinates workers across configured providers (CLI subscriptions, API-key/OpenRouter, and local endpoints). Missions use a configurable phases model where users define the structure and constraints, and the orchestrator executes accordingly. The orchestrator features an AI meta-reasoner for intelligent fan-out, real-time inter-worker communication via @mentions, a context compaction engine for long-running missions, and a scoped memory architecture that enables knowledge sharing across workers and missions. An always-on CTO agent provides persistent project awareness and serves as the intelligent entry point for both users and external systems.
+ADE (Agentic Development Environment) is a desktop application that serves as a development operations cockpit for agentic coding workflows. It provides developers with a unified control plane to manage multiple parallel development lanes (git worktrees), terminal sessions, managed processes, test suites, project configuration, pull requests, missions, and a persistent CTO agent. ADE automates context tracking through its unified memory system, predicts conflicts between parallel work streams, and orchestrates AI-powered multi-worker missions through its AI Integration Layer -- provider-native CLI/runtime paths, a local MCP server for ADE-owned tools, and an AI orchestrator that coordinates workers across configured providers (CLI subscriptions, API-key/OpenRouter, and local endpoints). Missions use a configurable phases model where users define the structure and constraints, and the orchestrator executes accordingly. The orchestrator features an AI meta-reasoner for intelligent fan-out, real-time inter-worker communication via @mentions, a context compaction engine for long-running missions, and a scoped memory architecture that enables knowledge sharing across workers and missions. An always-on CTO agent provides persistent project awareness and serves as the intelligent entry point for both users and external systems. The desktop runtime is now designed around a quiet-first startup contract: the app opens with cheap project state first, then hydrates richer lane status, integrations, and background services in controlled stages so the shell stays responsive while the rest of the system comes online.
 
 ADE is built with Electron and ships as a cross-platform desktop application for macOS, Windows, and Linux.
 
@@ -224,6 +224,8 @@ The Electron main process is the only component with filesystem and process acce
 - Pack materialization and checkpoint capture
 - AI Integration Service (unified runtime contracts, MCP server, orchestrator)
 
+The main process also owns the startup scheduler for project-scoped background services. Services such as Linear sync, memory lifecycle tasks, automation ingress, external MCP, and the embedding worker are started through explicit per-task startup gates with structured logs (`project.startup_task_enabled`, `...begin`, `...done`, `...skipped`). Optional integrations stay dormant when unconfigured instead of spinning in the background.
+
 ### Renderer Process (Untrusted UI)
 
 The React-based renderer handles all user interface rendering. It never directly accesses the filesystem, spawns processes, or runs git commands. All operations are performed through typed IPC calls to the main process via the preload bridge.
@@ -321,7 +323,7 @@ See: [features/FILES_AND_EDITOR.md](features/FILES_AND_EDITOR.md)
 
 ### 7.4 Terminals
 
-The Terminals tab is a global session list optimized for high session volume. It displays all terminal sessions (PTY and agent chat) across lanes with filters (lane, status, tool type, has errors), pin support, and jump-to-lane navigation. Each row shows the lane name, session title/goal, status (running/exited/failure), last output preview, start time, and duration. A secondary grid view (V1) renders multiple sessions simultaneously with lightweight preview frames for unfocused sessions to avoid rendering too many live xterm instances. Agent chat sessions (Codex App Server, Claude multi-turn, and unified API/local runtimes) appear as first-class sessions alongside PTY sessions with unified session tracking, delta computation, and pack integration, using tool types `codex-chat`, `claude-chat`, and `ai-chat`.
+The Terminals tab is a global session list optimized for high session volume. It displays PTY and agent chat sessions across lanes with unified metadata, transcript integration, delta tracking, and jump-to-lane navigation. The current renderer uses shared session-list caching and route-scoped polling so session-derived UI state remains fresh without every surface hammering `ade.sessions.list` independently. Lane-level terminal panels still track live sessions closely, but they now keep polling only while the lane actually has live work to watch.
 
 See: [features/TERMINALS_AND_SESSIONS.md](features/TERMINALS_AND_SESSIONS.md)
 
@@ -357,27 +359,13 @@ See: [features/HISTORY.md](features/HISTORY.md)
 
 ### 7.10 CTO
 
-The CTO tab is home to ADE's always-on, project-aware agent -- a persistent AI assistant that "knows" the entire project. The CTO replaces the former Concierge Agent concept with a richer, interactive agent that serves as both a conversational interface and an intelligent entry point for development workflows.
-
-The CTO tab uses a five-sub-tab layout: **Chat** (persistent conversational interface), **Team** (worker org chart and management), **Memory** (operator-facing memory browser with procedures, skills, knowledge sync, and raw-memory provenance), **Linear** (bidirectional Linear sync with OAuth plus manual token connection, project discovery, and workflow management), and **Settings** (CTO identity, persona, and configuration). An onboarding wizard handles first-run setup including identity creation, project scanning/bootstrap, and integration handoff.
-
-**Core Capabilities**: The CTO has full access to ADE's infrastructure via MCP tools. It can create missions, spin up lanes, check project state, read context packs, review conflict predictions, and route external requests to the appropriate internal workflow. Unlike mission workers (which are ephemeral and task-scoped), the CTO is persistent and project-scoped -- it accumulates knowledge about the project over time and can answer questions, suggest approaches, and take action based on deep project understanding.
-
-**Three-Tier Memory Model**: The CTO uses the same three-tier memory architecture as mission workers (Core/Hot/Cold) with auto-compaction, but with a significantly larger core memory allocation. Its core memory includes project architecture, key conventions, recent mission outcomes, active lane states, and accumulated project knowledge. Hot memory retrieval surfaces relevant historical context (past decisions, learned patterns, known pitfalls) on demand. Cold memory provides access to the full project history when explicitly queried.
-
-**Interaction Model**: The CTO tab's Chat sub-tab presents a persistent chat interface. Users can ask questions about the project ("what's the state of the auth module?"), request actions ("create a mission to refactor the payment service"), or delegate complex workflows ("review what happened overnight and summarize"). The CTO can also receive requests from external systems via the MCP server, making it the designated router for programmatic development requests from tools like OpenClaw or custom agent frameworks.
-
-**Relationship to Missions**: The CTO can create and monitor missions but does not replace the orchestrator. The CTO operates at the project level (strategic), while the orchestrator operates at the mission level (tactical). The CTO might decide a mission is needed, configure its phases, and launch it, then monitor progress and intervene if the orchestrator escalates.
-
-**Linear Integration**: The CTO owns bidirectional Linear sync. Inbound: issues matching configured workflow definitions are ingested, dispatched to missions or workers, and tracked through completion with closeout (state transitions, artifact links, comments). Outbound: mission outcomes, PR links, and proof artifacts are published back to Linear issues. The Linear connection flow supports OAuth with manual token fallback, project discovery, validation, and reconnect/retry states. CTO-owned Linear intake is separate from automation-trigger Linear follow-up actions.
-
-**Memory Review Surface**: The CTO Memory sub-tab is an operator-facing review surface (not just a raw browser). It exposes raw-memory provenance for intervention-derived, PR-derived, and recurring-failure captures; learned procedures with confidence history and source episodes; indexed skills with reveal/re-index actions; and knowledge freshness via the human-work digest sync state.
+The CTO tab is ADE's persistent project-aware agent surface. It remains the strategic entry point for project-level questions, mission creation, worker management, and external routing, but the runtime now favors a lighter chat-first entry path instead of hydrating every management surface immediately. Team/settings-specific work is loaded lazily, the sidebar and session boot path are cheaper, and first-run setup focuses on identity, project context, and optional Linear connection. Linear itself now follows an API-key-first, polling-baseline model with optional realtime ingress instead of assuming OAuth and realtime must be configured up front.
 
 See: [features/CTO.md](features/CTO.md)
 
 ### 7.11 Missions
 
-The Missions tab is the AI orchestrator control center. Missions use a **configurable phases model** where users define the structure and constraints of a mission, and the AI orchestrator executes accordingly. The tab provides mission launch with phase configuration, status-lane board views, intervention queues, phase and task progress, orchestrator run controls (start, pause, resume, cancel), attempt history, outcomes, artifacts (including PR links), and mission timeline events.
+The Missions tab is the AI orchestrator control center. Missions still use a configurable phases model with durable run/step/attempt state, intervention queues, artifacts, and orchestrator controls, but the page and launcher now load in stages. The mission list renders first, dashboard/settings/model metadata warm later, and the create dialog prewarms phase/profile data while only loading budget telemetry when Smart Budget is actually enabled. The result is the same orchestration model with a much lighter launcher and tab-entry path.
 
 #### Configurable Phases Model
 
@@ -497,7 +485,9 @@ See: [features/MISSIONS.md](features/MISSIONS.md)
 
 ### 7.12 Settings
 
-The Settings tab provides application preferences including AI provider configuration (guest mode plus CLI/API/OpenRouter/local provider setup), per-task-type model routing (which model/provider handles planning, implementation, review, conflict resolution, narratives, and PR descriptions), per-feature AI toggles (enable/disable individual AI capabilities: narratives, conflict proposals, PR descriptions, terminal summaries, mission planning, orchestrator), AI usage dashboard (per-feature usage bars, provider status with rate limits where available, budget controls with daily limits, usage history trends), detected provider/CLI health, process/test configuration export/import, keyboard shortcuts reference, theme selection (Clean Paper light or Bloomberg Terminal dark), and mission phase profile management. Budget controls defined here support both subscription (informational) and API key (hard cap) modes, with per-phase budget configuration available in phase profiles.
+The Settings tab provides application preferences including AI provider configuration (guest mode plus CLI/API/OpenRouter/local provider setup), per-task-type model routing (which model/provider handles planning, implementation, review, conflict resolution, narratives, and PR descriptions), per-feature AI toggles (enable/disable individual AI capabilities: narratives, conflict proposals, PR descriptions, terminal summaries, mission planning, orchestrator), AI usage dashboard (per-feature usage bars, provider status with rate limits where available, budget controls with daily limits, usage history trends), detected provider/CLI health, process/test configuration export/import, keyboard shortcuts reference, theme selection (Clean Paper light or Bloomberg Terminal dark), mission phase profile management, and a first-class `Computer Use` readiness surface. Budget controls defined here support both subscription (informational) and API key (hard cap) modes, with per-phase budget configuration available in phase profiles.
+
+**Computer Use Settings**: `Settings > Computer Use` is the user-facing readiness surface for ADE's external-first computer-use model. It shows supported backend types, Ghost OS connection state, agent-browser installation state, which proof kinds are currently satisfiable, and whether ADE local fallback is available. The screen makes ADE's role explicit: external backends perform the automation, while ADE manages artifact ingestion, proof normalization, review, routing, and publication.
 
 **Phase Profile Management**: Settings includes a dedicated section for managing mission phase profiles. Users can create, edit, and delete named phase profiles that define default phase configurations for different mission types. Each profile specifies which phases are included, their ordering, model selection, budget caps, validation gates, and custom instructions. Phase profiles configured here serve as the global defaults that can be overridden per-mission at launch time.
 
@@ -544,6 +534,7 @@ Each architecture area is specified in detail in the following documents. These 
 | 7 | Configuration | [architecture/CONFIGURATION.md](architecture/CONFIGURATION.md) | `.ade/` folder structure, config layering (app defaults, `ade.yaml` shared baseline, `local.yaml` machine overrides), schemas for processes, stack buttons, test suites, lane profiles, overlay policies, validation rules, and trust/change confirmation. |
 | 8 | Security and Privacy | [architecture/SECURITY_AND_PRIVACY.md](architecture/SECURITY_AND_PRIVACY.md) | Default security posture. Covers the trust boundary model, terminal transcript privacy, process/test command trust confirmation, and the safety contract for proposals (diff review before apply, undo points). |
 | 9 | UI Framework | [architecture/UI_FRAMEWORK.md](architecture/UI_FRAMEWORK.md) | Locked UI technology decisions, visual direction (Clean Paper light and Bloomberg Terminal dark themes), app shell layout, typography system (serif headers, monospace data), and high-density console design principles. |
+| 10 | Computer Use Artifact Broker | [architecture/COMPUTER_USE_ARTIFACT_BROKER.md](architecture/COMPUTER_USE_ARTIFACT_BROKER.md) | External-first computer-use boundary. Covers backend readiness, canonical artifact storage, ownership links, review/routing semantics, and how Missions and normal Chat sessions share the same proof model. |
 
 ---
 
@@ -589,13 +580,13 @@ Mission workers are the agents that the orchestrator spawns to execute tasks wit
 
 ### 10.3 Workspace Graph
 
-The workspace graph is an infinite-canvas mindmap showing the entire development topology of a repository. The main branch sits at the center representing production; branches like `develop` or `staging` are positioned as intermediate environment nodes. Feature lanes, worktrees, and attached lanes radiate outward, connected by topology, stack, and risk edges. Environment badges (PROD, STAGING, DEV) are rendered on branches with configured environment mappings. PR status overlays show open PRs on edges alongside conflict risk indicators. Stack edges show parent-child relationships. Users can pan, zoom, click nodes to focus lane details, and click edges to open merge simulation panels. The result is a deployment-aware topology map that answers "what connects to what, where are the conflicts, and which PRs are open" at a glance.
+The workspace graph is ADE's deployment-aware topology map for lanes, stack relationships, conflict risk, sync state, and PR overlays. The current graph still renders the same rich data, but it no longer treats all of that data as required for first paint. Topology renders first, while risk, activity, sync, auto-rebase, and PR overlays hydrate in stages with calmer refresh intervals. That keeps the canvas useful as a coordination surface without making `/graph` one of the renderer's heaviest mount paths.
 
 See: [features/WORKSPACE_GRAPH.md](features/WORKSPACE_GRAPH.md)
 
 ### 10.4 Job Engine
 
-The job engine is the coordination backbone that keeps all ADE state synchronized. It processes events (session end, HEAD change, staged set change, branch switch, base update) and dispatches idempotent, coalesced jobs. Per-lane coalescing ensures only one refresh pipeline runs at a time with at most one pending follow-up. Pairwise conflict passes use short debounce for staged/dirty events. AI augmentation (narrative generation, conflict proposals) is triggered on session end and coalesced during active work. Failure handling is explicit: failed checkpoints mark lanes as stale, failed materializations preserve prior pack versions, and failed predictions mark risk as "unknown" rather than "clean."
+The job engine is ADE's event-driven background scheduler for lane refresh and conflict prediction. It no longer acts as the dumping ground for unrelated startup work; project startup tasks now live behind explicit per-task startup gates in the desktop runtime. The engine's current job is to react to lane and session events, coalesce duplicate refreshes, debounce conflict prediction, and keep those background flows isolated from the user's immediate action path.
 
 See: [architecture/JOB_ENGINE.md](architecture/JOB_ENGINE.md)
 
@@ -691,25 +682,34 @@ Mission workers execute in ADE-managed local runtime boundaries today. The activ
 
 ### 10.7 Worker Computer Use
 
-Workers can interact with running applications visually through computer use capabilities. Three compute environment types support different levels of interaction:
+ADE treats computer use as an external-first capability.
 
-- **Terminal-only**: Default. Worker operates via CLI commands in a worktree or sandbox.
-- **Browser**: Headless browser (Playwright) for web app testing and verification. Worker can navigate, click, type, screenshot.
-- **Desktop**: Full virtual desktop (Xvfb + window manager) for desktop apps, Electron apps, mobile emulators. Worker gets mouse/keyboard control, screenshot capture, and video recording.
+The intended product boundary is:
 
-Computer use is powered by provider-native APIs: Anthropic's Computer Use Tool for Claude workers and OpenAI's CUA for Codex workers. The active plan treats this as a runtime capability layered onto ADE's local execution model rather than a matrix of pluggable compute backends.
+- external tools perform browser or desktop automation
+- ADE discovers those backends, guides workers and chats toward them, ingests the output, normalizes proof, and manages review/publication
 
-Target behavior: artifacts produced by computer use (screenshots, videos, test results) attach to the lane or mission and are included in closeout and PR workflows.
+Current user-visible backends:
 
-Current implementation note (2026-03-12): ADE already supports mission evidence requirements such as `screenshot`, `browser_verification`, and `video_recording`, and can publish artifact links in Linear closeout. Native computer-use runtime tooling and automatic PR proof embedding are not shipped end-to-end yet.
+- **Ghost OS**: external MCP backend for native macOS accessibility/computer use
+- **agent-browser**: external CLI-native browser automation backend
+- **ADE local computer use**: fallback-only compatibility support
+
+This model now applies to both Missions and normal Chat sessions.
+
+Mission launch and preflight show proof readiness, available external backends, and whether required proof is blocked. Mission run view includes a dedicated computer-use monitoring section. Mission artifact review includes a dedicated proof-review panel with routing and publication actions.
+
+Normal Chat sessions expose computer-use policy directly in the header/composer (`off`, `auto`, `enabled`, fallback, proof retention). Selected chats show a live computer-use monitor and first-class artifact review surface, including promotion into missions, lanes, GitHub PRs, and Linear issues.
+
+ADE does not try to turn its legacy local GUI tools into the primary execution path. Local computer use remains fallback-only.
 
 ### 10.8 Artifacts
 
-Artifacts are first-class objects that can attach to missions, lanes, or worker runs. Target types include: summary, pr, link, note, patch, screenshot, video, test-result.
+Artifacts are first-class objects that can attach to missions, lanes, orchestrator runs/steps/attempts, chat sessions, automation runs, GitHub PRs, and Linear issues. Canonical computer-use proof is broker-managed so the same screenshot or trace can move from exploratory chat evidence into mission closeout or publication flows without losing provenance.
 
-Lane-level artifacts enable workers operating in a lane (via chat, mission phases, or automation tasks) to attach visual proof and outputs directly to the lane. The intended UX is for attached screenshots/videos to flow into PR descriptions and closeout summaries once the computer-use runtime and artifact unification work is fully shipped.
+Computer-use artifact kinds include `screenshot`, `video_recording`, `browser_trace`, `browser_verification`, and `console_logs`. Each canonical record captures backend provenance, storage URI, review state, workflow state, and ownership links.
 
-Artifact storage is local under `.ade/artifacts/`, organized by mission or lane. Artifacts are referenced by ID in the SQLite database and linked to their parent entity (mission, lane, or worker run).
+Artifact storage remains local under `.ade/artifacts/` when ADE materializes files locally, but artifacts may also point at remote URLs produced by external systems. The important invariant is that ADE stores a canonical record and link model even when the execution happened outside ADE itself.
 
 ### 10.9 Learning Packs
 
@@ -727,6 +727,8 @@ ADE supports three complementary modes of work:
 - Lane Chat: Direct conversation with Claude or Codex in a lane worktree
 - Terminals: Interactive CLI sessions
 - CTO: Persistent project-aware agent for strategic questions, mission planning, and project oversight
+
+All of these surfaces now follow the same quiet-first UI rule: open the cheap shell first, then warm richer derived state after the user can already interact.
 
 **Missions** (orchestrated, multi-worker):
 - Configurable phase-based workflows with parallel workers in isolated lanes

@@ -1,0 +1,263 @@
+---
+title: "Files & Editor"
+description: "An IDE-style workbench powered by Monaco — full syntax highlighting, IntelliSense, diff views, conflict resolution, and git operations, all scoped to the selected lane's worktree."
+icon: "file-code"
+---
+
+<Info>**📸 Screenshot needed:** The Files & Editor view in 3-pane layout — left file explorer showing a project tree with git status annotations (M, A, ? badges), center Monaco editor with TypeScript code and IntelliSense dropdown open, right inspector showing the file diff. Include the workspace lane selector dropdown at the top.</Info>
+
+## Overview
+
+The Files & Editor view is ADE's built-in IDE workbench. It is powered by **Monaco** — the same editor engine that drives VS Code — giving you full syntax highlighting, IntelliSense code completion, multi-cursor editing, and find/replace across all major programming languages.
+
+What makes ADE's editor different from a standalone IDE is its **lane awareness**. The workspace scope selector at the top of the view lets you switch between lanes instantly. The file tree, open files, and diff views all update to reflect the selected lane's git worktree. You can compare the same file across different lanes without leaving the editor.
+
+<CardGroup cols={3}>
+  <Card title="Monaco Engine" icon="code">
+    Full VS Code editor quality: IntelliSense, multi-cursor, bracket matching, and syntax highlighting for every major language.
+  </Card>
+  <Card title="Lane-Scoped" icon="code-branch">
+    The file tree and every open file are scoped to the selected lane. Switch lanes and the editor instantly shows that worktree's state.
+  </Card>
+  <Card title="Conflict Resolution" icon="code-merge">
+    A 3-way merge editor handles conflicts inline — accept yours, theirs, or both with a single click.
+  </Card>
+</CardGroup>
+
+---
+
+## The Workspace Scope Selector
+
+The **workspace scope selector** is a dropdown at the top of the Files view. It lists all active lanes in your project. Selecting a lane switches the entire file explorer and editor context to that lane's worktree.
+
+<Note>
+When you switch lanes in the scope selector, open file tabs remain open but reload to show the version of each file in the newly selected lane's worktree. If a file does not exist in the new lane, its tab shows a "File not found in this lane" placeholder.
+</Note>
+
+The selector also shows a quick status summary next to each lane name: the number of modified files and any conflict indicators, so you can see at a glance which lanes have pending changes before you switch.
+
+---
+
+## File Explorer
+
+The left panel is a full project file explorer for the selected lane's worktree.
+
+### Git Status Annotations
+
+Every file and directory in the tree displays a git status badge:
+
+| Badge | Status | Meaning |
+|-------|--------|---------|
+| `M` | Modified | File has been changed since last commit |
+| `A` | Added | New file staged for commit |
+| `D` | Deleted | File has been staged for deletion |
+| `?` | Untracked | New file not yet staged |
+| `C` | Conflict | File has unresolved merge conflict markers |
+| `R` | Renamed | File was renamed |
+
+Directories show a badge if any file inside them has a status. Clicking a directory badge expands it to reveal the affected files.
+
+### Right-Click Context Menu
+
+Right-clicking any file in the explorer reveals git and file operations:
+
+| Action | Description |
+|--------|-------------|
+| **Stage** | Stage the file for commit (`git add`) |
+| **Unstage** | Remove the file from the staging area |
+| **Revert** | Discard all working-tree changes to this file (with confirmation) |
+| **View History** | Open a commit log filtered to this file's history |
+| **Blame** | Open the blame view showing per-line commit attribution |
+| **Copy Path** | Copy the absolute or relative file path to clipboard |
+| **Reveal in Finder** | Open the file's directory in macOS Finder |
+
+---
+
+## Editor Modes
+
+The editor renders in one of four modes depending on the file's state.
+
+<Tabs>
+  <Tab title="Normal Mode">
+    Standard editing mode. The full Monaco editor with syntax highlighting, IntelliSense, bracket matching, and all standard editing features.
+
+    Files open in Normal mode when they are unmodified or when you open a file that has not been touched since the last commit.
+  </Tab>
+  <Tab title="Diff Mode">
+    When you open a file that has been modified (status `M`), the editor automatically splits into a side-by-side diff view:
+    - **Left pane**: The base version (last commit on this lane's branch)
+    - **Right pane**: The current working-tree version
+
+    You can edit the right pane directly in diff mode. Changes save normally. Click the **Collapse Diff** button in the toolbar to switch to Normal mode for focused editing, then back to Diff mode to review.
+
+    <Tip>
+    Press `F7` / `Shift+F7` to jump between diff hunks (next/previous change) without scrolling.
+    </Tip>
+  </Tab>
+  <Tab title="Conflict Mode">
+    Files with unresolved merge conflict markers (status `C`) open in a **3-way merge view**:
+    - **Left pane**: Your version (`HEAD`)
+    - **Center pane**: The common ancestor (base)
+    - **Right pane**: Their version (incoming)
+
+    A resolution toolbar above each conflicting hunk provides:
+    - **Accept Mine**: Keep your version of this hunk
+    - **Accept Theirs**: Take the incoming version
+    - **Accept Both**: Append both versions (yours first, then theirs)
+    - **Edit Manually**: Collapse to a single editable pane for custom resolution
+
+    Once all conflicts in a file are resolved, the status badge updates from `C` to `M` and the file is automatically staged.
+  </Tab>
+  <Tab title="Read-Only Mode">
+    Files in archived lanes, pack exports, or history views open in Read-Only mode. The editor displays normally but saves are disabled. A banner at the top of the editor indicates the file is read-only and why.
+
+    To edit a file from an archived lane, you must first unarchive the lane or cherry-pick the file's content into an active lane.
+  </Tab>
+</Tabs>
+
+<Info>**📸 Screenshot needed:** The 3-way conflict resolution view — left "Mine" pane and right "Theirs" pane showing a conflicting function, with the "Accept Mine" and "Accept Theirs" buttons visible above the hunk, and the conflict status badge (`C`) visible in the file explorer on the left.</Info>
+
+---
+
+## Conflict Resolution Workflow
+
+When a rebase or merge produces conflicts in a lane, here is the complete resolution workflow inside ADE:
+
+<Steps>
+  <Step title="Identify conflicted files">
+    Files with conflicts appear in the file explorer with a red `C` badge. The lane's status in the Lanes list also shows `conflict`. Open the Files view scoped to the affected lane.
+  </Step>
+  <Step title="Open the first conflicted file">
+    Click the file in the explorer. It opens automatically in Conflict Mode — the 3-way merge view with your version, the base, and their version side by side.
+  </Step>
+  <Step title="Resolve each hunk">
+    Work through each conflicting hunk using **Accept Mine**, **Accept Theirs**, **Accept Both**, or by editing the result manually. A progress indicator in the editor toolbar shows "3 of 7 conflicts resolved" as you work.
+  </Step>
+  <Step title="File is auto-staged on full resolution">
+    Once the last conflict in a file is marked resolved, ADE automatically stages the file. The badge changes from `C` to `M` (staged).
+  </Step>
+  <Step title="Repeat for all conflicted files">
+    Continue until all `C`-badged files are resolved. The commit/continue bar at the bottom of the editor activates when all conflicts are cleared.
+  </Step>
+  <Step title="Commit or continue the rebase">
+    Click **Complete Merge** (for a merge operation) or **Continue Rebase** (for a rebase). ADE runs the appropriate git command (`git commit` or `git rebase --continue`) and the lane's status returns to `idle`.
+  </Step>
+</Steps>
+
+---
+
+## Saving Files
+
+**Manual save:** `Cmd+S` saves the current file immediately. ADE writes atomically — it writes to a temporary file first, then performs an atomic rename — so there are no partial saves or corruption if the process is interrupted mid-write.
+
+**Auto-save:** Configurable in `Settings → Editor`. Options:
+- **Off**: Files are only saved on `Cmd+S`
+- **On focus loss**: File saves when you click away from the editor pane
+- **After delay**: File saves N milliseconds after the last keystroke (default: 1000ms)
+
+**External change detection:** ADE watches each open file using filesystem events. If a file is modified outside the editor (by an agent's tool call, a terminal command, or a script), a yellow **"File changed on disk"** banner appears at the top of the editor with **Reload** and **Ignore** buttons.
+
+---
+
+## Searching
+
+<CardGroup cols={2}>
+  <Card title="Quick Open" icon="magnifying-glass">
+    Press `Cmd+P` to open the quick file finder. Type any part of a filename to fuzzy-search across all files in the current lane's worktree. Arrow keys navigate results; `Enter` opens the selected file.
+  </Card>
+  <Card title="Find in Workspace" icon="folder-magnifying-glass">
+    Press `Cmd+Shift+F` to open workspace-wide search. Searches all files in the current lane's worktree with full regex support. Results appear in a side panel; clicking a result opens the file at that line.
+  </Card>
+</CardGroup>
+
+Workspace search supports:
+- **Regex mode**: Toggle with the `.*` button
+- **Case sensitivity**: Toggle with the `Aa` button
+- **Include/exclude patterns**: Filter results to specific globs (e.g., `src/**/*.ts`) or exclude directories (e.g., `!node_modules`)
+- **Replace**: Enter a replacement string to replace individual matches or all matches in the workspace
+
+---
+
+## Split Editors
+
+Drag any open file tab to the right edge, bottom edge, or center of the editor area to split the editor pane. ADE supports up to **4 split panes** in any combination of horizontal and vertical splits.
+
+Each pane is independent — you can have Diff Mode in one pane and Normal Mode in another, or view the same file in two different lanes by switching the scope selector per-pane (right-click a pane's header to set its lane scope independently).
+
+To close a split, click the `×` on the pane's header or drag its last tab back into another pane.
+
+---
+
+## Terminal Panel
+
+The optional terminal panel slides up from the bottom of the editor area. Press `Cmd+\`` (backtick) to toggle it. The terminal is scoped to the same lane as the current editor scope — it opens a PTY session in that lane's worktree.
+
+See [Terminals & Sessions](/tools/terminals) for full documentation on terminal session management.
+
+---
+
+## Breadcrumb Navigation
+
+The breadcrumb bar at the top of the editor (just below the tab strip) shows the full path of the currently open file, segmented by directory. Click any path segment to:
+- **Open a directory**: Shows a dropdown listing all siblings at that level, letting you navigate laterally without returning to the file explorer
+- **Navigate up**: Jump directly to any ancestor directory
+
+---
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Cmd+P` | Quick open — fuzzy search files |
+| `Cmd+S` | Save current file |
+| `Cmd+Z` | Undo |
+| `Cmd+Shift+Z` | Redo |
+| `Cmd+/` | Toggle line comment |
+| `Cmd+D` | Select next occurrence of current selection |
+| `Cmd+Shift+L` | Select all occurrences of current selection |
+| `Option+Up` / `Option+Down` | Move current line up / down |
+| `Cmd+Shift+F` | Find in workspace |
+| `Cmd+F` | Find in current file |
+| `Cmd+H` | Find and replace in current file |
+| `F7` / `Shift+F7` | Next / previous diff hunk |
+| `Cmd+\`` | Toggle terminal panel |
+| `Cmd+\` | Split editor right |
+| `Cmd+K Cmd+0` | Fold all regions |
+| `Cmd+K Cmd+J` | Unfold all regions |
+
+<Info>**📸 Screenshot needed:** The Monaco editor with a TypeScript file open in Diff Mode — left pane showing the base version, right pane showing the modified version with added lines highlighted in green and removed lines in red. The diff hunk navigation buttons (F7/Shift+F7) should be visible in the editor toolbar.</Info>
+
+---
+
+## Git Operations from the Editor
+
+Beyond the file explorer's right-click menu, ADE embeds a lightweight git operations bar at the bottom of the Files view. It shows the current branch name, staged/unstaged counts, and provides quick-action buttons:
+
+| Button | Action |
+|--------|--------|
+| **Stage All** | Stage all modified and untracked files |
+| **Commit** | Open an inline commit message composer and commit staged files |
+| **Amend** | Amend the most recent commit with the current staged changes |
+| **Stash** | Stash all current changes with an optional message |
+| **Push** | Push the current branch to its remote tracking branch |
+
+All git operations show their output in a small inline log panel that auto-dismisses after 3 seconds on success, or stays open on error.
+
+---
+
+## Related Pages
+
+<CardGroup cols={2}>
+  <Card title="Terminals" icon="terminal" href="/tools/terminals">
+    Manage PTY terminal sessions inside lanes, including agent sessions and session transcripts.
+  </Card>
+  <Card title="Conflicts" icon="triangle-exclamation" href="/tools/conflicts">
+    ADE's dedicated conflict detection and analysis tooling, beyond in-editor resolution.
+  </Card>
+  <Card title="Lanes" icon="code-branch" href="/lanes/overview">
+    Understand lane types and worktree isolation before using the lane scope selector.
+  </Card>
+  <Card title="History" icon="clock-rotate-left" href="/tools/history">
+    Browse commit history, checkpoints, and session transcripts for any lane.
+  </Card>
+</CardGroup>

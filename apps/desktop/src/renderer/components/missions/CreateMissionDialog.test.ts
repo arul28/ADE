@@ -20,6 +20,12 @@ describe("CreateMissionDialog helpers", () => {
     expect(draft.permissionConfig.providers?.codex).toBe("full-auto");
     expect(draft.permissionConfig.providers?.unified).toBe("full-auto");
     expect(draft.permissionConfig.providers?.codexSandbox).toBe("workspace-write");
+    expect(draft.computerUse).toEqual({
+      mode: "auto",
+      allowLocalFallback: true,
+      retainArtifacts: true,
+      preferredBackend: null,
+    });
   });
 
   it("handles an empty built-in profile list without throwing", () => {
@@ -33,6 +39,12 @@ describe("CreateMissionDialog helpers", () => {
     draft.prompt = "Implement the missions reset.";
     draft.title = "Missions reset";
     draft.laneId = "";
+    draft.computerUse = {
+      mode: "enabled",
+      allowLocalFallback: false,
+      retainArtifacts: true,
+      preferredBackend: "Ghost OS",
+    };
 
     const request = buildMissionLaunchRequest({
       draft,
@@ -44,5 +56,11 @@ describe("CreateMissionDialog helpers", () => {
     expect(request.laneId).toBe("lane-default");
     expect(request.launchMode).toBe("autopilot");
     expect(request.autostart).toBe(true);
+    expect(request.computerUse).toEqual({
+      mode: "enabled",
+      allowLocalFallback: false,
+      retainArtifacts: true,
+      preferredBackend: "Ghost OS",
+    });
   });
 });

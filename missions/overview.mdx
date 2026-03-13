@@ -1,0 +1,115 @@
+---
+title: "Missions Overview"
+description: "Understand what a Mission is, how it progresses through phases, and how the AI meta-reasoner selects the optimal execution strategy."
+icon: "bullseye"
+---
+
+<Info>**📸 Screenshot needed:** Full Missions page overview — show the mission list on the left with status badges (planning, in_progress, intervention_required, completed), and an open mission detail view on the right with the Plan tab active.</Info>
+
+## What is a Mission?
+
+A **Mission** is ADE's formal execution unit for complex, multi-step work that goes beyond what a single chat session can reliably handle. Where a chat is conversational and exploratory, a Mission is deliberate and audited: it proceeds through defined phases, requires your explicit approval before work begins, tracks every decision and tool call, and produces a full artifact record at the end.
+
+Key properties of every Mission:
+
+- **Phased execution** — Planning → Approval Gate → Execution → Validation, with defined entry and exit conditions at each boundary
+- **Multi-worker orchestration** — the mission spawns ephemeral workers that run in parallel, sequentially, or in waves depending on task complexity
+- **Full audit trail** — every tool call, model decision, file change, and worker message is recorded in the mission's History tab
+- **Cost and token tracking** — real-time per-worker and per-mission totals, with configurable budget caps
+- **Mission Pack** — a deterministic context snapshot regenerated at each phase boundary, enabling pause, resume, and replay
+
+<CardGroup cols={2}>
+  <Card title="When to use a Mission" icon="target">
+    Tasks spanning multiple files, teams, or phases — feature implementations, large refactors, test suite builds, or anything requiring coordination across more than one agent.
+  </Card>
+  <Card title="When to use Chat instead" icon="message">
+    Exploratory work, single-file edits, quick questions, or anything you expect to resolve in a single back-and-forth turn. Chat is faster for focused tasks.
+  </Card>
+</CardGroup>
+
+<Note>
+  Missions and Chat are complementary. You can escalate from Chat to a Mission mid-session by saying "start a mission for this" — ADE carries the conversation context over automatically.
+</Note>
+
+---
+
+## Mission Phases
+
+Every Mission passes through four phases in order. The phase boundary is a hard checkpoint — ADE records a Mission Pack snapshot before advancing.
+
+<Steps>
+  <Step title="Planning Phase">
+    The orchestrator analyzes your mission description and generates a detailed execution plan. This includes a breakdown of sub-tasks, which worker will handle each, estimated token costs, required tool permissions, expected outputs, and the recommended execution strategy (`sequential`, `parallel`, `wave`, or `adaptive`).
+
+    Before planning starts, you can open the **Planning Prompt Preview** to see — and optionally edit — the exact prompt the orchestrator will receive.
+
+    <Info>**📸 Screenshot needed:** Planning phase in progress — show the Plan tab with a "Generating plan..." skeleton state and the orchestrator model indicator in the header.</Info>
+  </Step>
+  <Step title="Approval Gate">
+    The completed plan is presented to you for review. This is a **hard stop** — the mission cannot advance without your explicit approval.
+
+    You have three options:
+    - **Approve** — proceed with the plan as generated
+    - **Request modifications** — provide feedback; the orchestrator revises the plan and presents it again
+    - **Cancel** — abort the mission; no workers have run yet
+
+    The plan shows per-worker cost estimates, which lanes will be used, what tools each worker needs, and the expected execution strategy.
+  </Step>
+  <Step title="Execution Phase">
+    Workers execute according to the approved plan. The orchestrator coordinates them using the strategy selected during planning:
+
+    | Strategy | When used |
+    |---|---|
+    | `sequential` | Tasks have strict dependencies; one worker must finish before the next starts |
+    | `parallel` | Tasks are independent; all workers run simultaneously |
+    | `wave` | Groups of tasks run in parallel within each wave; waves are synchronized before advancing |
+    | `adaptive` | Strategy shifts based on runtime signals — a worker failure can trigger a strategy change mid-mission |
+
+    The Plan tab shows a live activity feed with per-worker status, elapsed time, and token consumption. You can chat with the orchestrator in the **Chat tab** at any point without interrupting execution.
+  </Step>
+  <Step title="Validation Phase">
+    After all workers complete, ADE runs the mission's validation suite: tests, TypeScript type checks, linting, and any custom validators defined in the mission configuration. Validation results are collected as artifacts and surfaced in the Artifacts tab. If validation fails, the mission status transitions to `intervention_required` and you are prompted to decide how to proceed.
+  </Step>
+</Steps>
+
+---
+
+## The AI Meta-Reasoner
+
+Before the Planning phase begins, ADE's **meta-reasoner** analyzes the mission description and selects the optimal execution strategy. The meta-reasoner considers:
+
+- Task dependency graph (does step B require step A's output?)
+- Number of independent work units
+- Estimated context size per worker
+- Historical performance of each strategy for similar task shapes
+
+<AccordionGroup>
+  <Accordion title="sequential — one worker at a time">
+    Used for tasks with tight dependencies. Worker 2 only starts after Worker 1 has completed and its output has been verified. Slower overall, but safe when outputs feed inputs.
+  </Accordion>
+  <Accordion title="parallel — all workers simultaneously">
+    Used for independent tasks. All workers start at the same time and run concurrently in their own lanes. Fastest option when there are no inter-worker dependencies.
+  </Accordion>
+  <Accordion title="wave — parallel groups with sync points">
+    A hybrid strategy. Workers in Wave 1 all run in parallel. Once all Wave 1 workers succeed, Wave 2 begins. Useful for tasks where some upfront work (e.g., scaffolding) must complete before downstream work can start, but the downstream work is itself parallelizable.
+  </Accordion>
+  <Accordion title="adaptive — runtime-adjusted">
+    ADE starts with one strategy and switches based on signals: if a worker fails repeatedly, the orchestrator may switch remaining work to sequential for safety. If a sequential run produces independent sub-tasks, it may spawn parallel branches.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Continue Reading
+
+<CardGroup cols={3}>
+  <Card title="Creating Missions" icon="plus" href="/missions/creating">
+    Learn how to create missions from the Missions tab, a Lane, the CTO chat, or an existing chat session.
+  </Card>
+  <Card title="Mission Workers" icon="users" href="/missions/workers">
+    Understand ephemeral workers, context compaction, recovery, and approval gates.
+  </Card>
+  <Card title="Budget & Permissions" icon="coins" href="/missions/budget">
+    Configure budget caps, tool permissions, persistence, templates, and troubleshoot common issues.
+  </Card>
+</CardGroup>

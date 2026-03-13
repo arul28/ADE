@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Database, Plus } from "@phosphor-icons/react";
 import {
+  createDefaultComputerUsePolicy,
   inferAttachmentType,
   type AgentChatApprovalDecision,
   type AgentChatExecutionMode,
@@ -11,6 +12,8 @@ import {
   type ChatSurfaceChip,
   type ChatSurfacePresentation,
   type AgentChatSessionSummary,
+  type ComputerUseOwnerSnapshot,
+  type ComputerUsePolicy,
   type ContextPackOption,
 } from "../../../shared/types";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
@@ -26,6 +29,7 @@ import { ChatSurfaceShell } from "./ChatSurfaceShell";
 import { chatChipToneClass } from "./chatSurfaceTheme";
 import { useChatMcpSummary } from "./useChatMcpSummary";
 import { openExternalMcpSettings } from "./chatNavigation";
+import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 
 type PendingApproval = {
   itemId: string;
@@ -45,6 +49,7 @@ const DEFAULT_MODEL_ID = getDefaultModelDescriptor("unified")?.id
   ?? MODEL_REGISTRY.find((model) => model.family === "anthropic" && model.isCliWrapped)?.id
   ?? MODEL_REGISTRY[0]?.id
   ?? "openai/gpt-5.4";
+const COMPUTER_USE_SNAPSHOT_COOLDOWN_MS = 750;
 
 type ExecutionModeOption = {
   value: AgentChatExecutionMode;
@@ -344,6 +349,7 @@ export function AgentChatPane({
   laneId,
   laneLabel,
   initialSessionId,
+  initialSessionSummary,
   lockSessionId,
   hideSessionTabs = false,
   forceNewSession = false,
@@ -357,6 +363,7 @@ export function AgentChatPane({
   laneId: string | null;
   laneLabel?: string | null;
   initialSessionId?: string | null;
+  initialSessionSummary?: AgentChatSessionSummary | null;
   lockSessionId?: string | null;
   hideSessionTabs?: boolean;
   forceNewSession?: boolean;
@@ -367,6 +374,7 @@ export function AgentChatPane({
   presentation?: ChatSurfacePresentation;
   onSessionCreated?: (sessionId: string) => void | Promise<void>;
 }) {
+  const lockedSingleSessionMode = Boolean(lockSessionId && hideSessionTabs && initialSessionSummary);
   const forceDraft = forceDraftMode || forceNewSession;
   const preferDraftStart = !lockSessionId && !initialSessionId && !forceNewSession;
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
@@ -379,6 +387,7 @@ export function AgentChatPane({
   const [executionMode, setExecutionMode] = useState<AgentChatExecutionMode>("focused");
   const [availableModelIds, setAvailableModelIds] = useState<string[]>([]);
   const [permissionMode, setPermissionMode] = useState<AgentChatPermissionMode>("plan");
+  const [computerUsePolicy, setComputerUsePolicy] = useState<ComputerUsePolicy>(createDefaultComputerUsePolicy());
   const [attachments, setAttachments] = useState<AgentChatFileRef[]>([]);
   const [selectedContextPacks, setSelectedContextPacks] = useState<ContextPackOption[]>([]);
   const [sendOnEnter, setSendOnEnter] = useState(true);
@@ -387,6 +396,7 @@ export function AgentChatPane({
   const [loading, setLoading] = useState(false);
   const [preferencesReady, setPreferencesReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [computerUseSnapshot, setComputerUseSnapshot] = useState<ComputerUseOwnerSnapshot | null>(null);
 
   const appliedInitialSessionIdRef = useRef<string | null>(initialSessionId ?? null);
   const loadedHistoryRef = useRef<Set<string>>(new Set());
@@ -397,6 +407,9 @@ export function AgentChatPane({
   const pendingEventQueueRef = useRef<AgentChatEventEnvelope[]>([]);
   const eventFlushTimerRef = useRef<number | null>(null);
   const refreshSessionsTimerRef = useRef<number | null>(null);
+  const selectedSessionIdRef = useRef<string | null>(selectedSessionId);
+  const computerUseSnapshotInFlightRef = useRef<{ sessionId: string; promise: Promise<void> } | null>(null);
+  const lastComputerUseSnapshotRef = useRef<{ sessionId: string; fetchedAt: number } | null>(null);
   const showMcpStatus = presentation?.showMcpStatus ?? true;
   const mcpSummary = useChatMcpSummary(showMcpStatus);
 
@@ -432,6 +445,7 @@ export function AgentChatPane({
     if (session.permissionMode) {
       setPermissionMode(session.permissionMode);
     }
+    setComputerUsePolicy(session.computerUse ?? createDefaultComputerUsePolicy());
   }, []);
 
   const modelSelectionDiffersFromSession = Boolean(selectedSession && selectedSessionModelId && selectedSessionModelId !== modelId);
@@ -460,6 +474,10 @@ export function AgentChatPane({
     () => executionModeOptions.find((option) => option.value === executionMode) ?? executionModeOptions[0] ?? null,
     [executionMode, executionModeOptions],
   );
+  const hasComputerUseSelectionChanged = useMemo(() => {
+    const sessionPolicy = selectedSession?.computerUse ?? createDefaultComputerUsePolicy();
+    return JSON.stringify(sessionPolicy) !== JSON.stringify(computerUsePolicy);
+  }, [computerUsePolicy, selectedSession?.computerUse]);
   const launchModeEditable = !selectedSessionId || selectedEvents.length === 0;
   const resolvedTitle = presentation?.title?.trim()
     || (surfaceMode === "resolver" ? "AI Resolver" : laneDisplayLabel?.trim() || "Chat");
@@ -571,6 +589,58 @@ export function AgentChatPane({
     });
   }, [forceDraft, laneId, lockSessionId, preferDraftStart]);
 
+  const refreshComputerUseSnapshot = useCallback(async (
+    sessionId: string | null,
+    options?: { force?: boolean },
+  ) => {
+    if (!sessionId) {
+      computerUseSnapshotInFlightRef.current = null;
+      lastComputerUseSnapshotRef.current = null;
+      setComputerUseSnapshot(null);
+      return;
+    }
+    if (!options?.force) {
+      const inFlight = computerUseSnapshotInFlightRef.current;
+      if (inFlight?.sessionId === sessionId) {
+        return inFlight.promise;
+      }
+      const previous = lastComputerUseSnapshotRef.current;
+      if (previous?.sessionId === sessionId && Date.now() - previous.fetchedAt < COMPUTER_USE_SNAPSHOT_COOLDOWN_MS) {
+        return;
+      }
+    }
+
+    let request: Promise<void> | null = null;
+    request = (async () => {
+      try {
+        const snapshot = await window.ade.computerUse.getOwnerSnapshot({
+          owner: { kind: "chat_session", id: sessionId },
+        });
+        lastComputerUseSnapshotRef.current = {
+          sessionId,
+          fetchedAt: Date.now(),
+        };
+        if (selectedSessionIdRef.current === sessionId) {
+          setComputerUseSnapshot(snapshot);
+        }
+      } catch {
+        if (selectedSessionIdRef.current === sessionId) {
+          setComputerUseSnapshot(null);
+        }
+      } finally {
+        if (request && computerUseSnapshotInFlightRef.current?.promise === request) {
+          computerUseSnapshotInFlightRef.current = null;
+        }
+      }
+    })();
+    computerUseSnapshotInFlightRef.current = { sessionId, promise: request };
+    try {
+      await request;
+    } catch {
+      // Errors are reflected by clearing the visible snapshot for the active session.
+    }
+  }, []);
+
   const loadHistory = useCallback(async (sessionId: string) => {
     if (loadedHistoryRef.current.has(sessionId)) return;
     loadedHistoryRef.current.add(sessionId);
@@ -599,6 +669,13 @@ export function AgentChatPane({
       setSelectedSessionId(lockSessionId);
     }
   }, [lockSessionId]);
+
+  useEffect(() => {
+    if (!lockedSingleSessionMode || !lockSessionId || !initialSessionSummary) return;
+    setSessions([initialSessionSummary]);
+    draftSelectionLockedRef.current = false;
+    setSelectedSessionId(lockSessionId);
+  }, [initialSessionSummary, lockSessionId, lockedSingleSessionMode]);
 
   useEffect(() => {
     const nextInitialSessionId = initialSessionId ?? null;
@@ -652,7 +729,15 @@ export function AgentChatPane({
       }
 
       try {
-        await Promise.all([refreshAvailableModels(), refreshSessions()]);
+        if (lockedSingleSessionMode) {
+          if (!cancelled && initialSessionSummary) {
+            setSessions([initialSessionSummary]);
+            setSelectedSessionId(lockSessionId ?? initialSessionSummary.sessionId);
+          }
+          await refreshAvailableModels();
+        } else {
+          await Promise.all([refreshAvailableModels(), refreshSessions()]);
+        }
       } finally {
         if (!cancelled) {
           setLoading(false);
@@ -665,7 +750,7 @@ export function AgentChatPane({
     return () => {
       cancelled = true;
     };
-  }, [refreshAvailableModels, refreshSessions]);
+  }, [initialSessionSummary, lockSessionId, lockedSingleSessionMode, refreshAvailableModels, refreshSessions]);
 
   useEffect(() => {
     if (loading || !availableModelIds.length) return;
@@ -702,9 +787,31 @@ export function AgentChatPane({
   }, [executionMode, executionModeOptions]);
 
   useEffect(() => {
+    selectedSessionIdRef.current = selectedSessionId;
+  }, [selectedSessionId]);
+
+  useEffect(() => {
     if (!selectedSessionId) return;
-    void loadHistory(selectedSessionId);
-  }, [loadHistory, selectedSessionId]);
+    if (!lockedSingleSessionMode) {
+      void loadHistory(selectedSessionId);
+      return;
+    }
+    const handle = window.setTimeout(() => {
+      void loadHistory(selectedSessionId);
+    }, 120);
+    return () => window.clearTimeout(handle);
+  }, [loadHistory, lockedSingleSessionMode, selectedSessionId]);
+
+  useEffect(() => {
+    if (!lockedSingleSessionMode) {
+      void refreshComputerUseSnapshot(selectedSessionId);
+      return;
+    }
+    const handle = window.setTimeout(() => {
+      void refreshComputerUseSnapshot(selectedSessionId);
+    }, 180);
+    return () => window.clearTimeout(handle);
+  }, [lockedSingleSessionMode, refreshComputerUseSnapshot, selectedSessionId]);
 
   useEffect(() => {
     setAttachments([]);
@@ -780,6 +887,16 @@ export function AgentChatPane({
     return unsubscribe;
   }, [lockSessionId, scheduleQueuedEventFlush, scheduleSessionsRefresh]);
 
+  useEffect(() => {
+    const unsubscribe = window.ade.computerUse.onEvent((event) => {
+      if (!selectedSessionId) return;
+      if (event.owner?.kind === "chat_session" && event.owner.id === selectedSessionId) {
+        void refreshComputerUseSnapshot(selectedSessionId, { force: true });
+      }
+    });
+    return unsubscribe;
+  }, [refreshComputerUseSnapshot, selectedSessionId]);
+
   useEffect(() => () => {
     if (eventFlushTimerRef.current != null) {
       window.clearTimeout(eventFlushTimerRef.current);
@@ -850,7 +967,8 @@ export function AgentChatPane({
         modelId,
         sessionProfile,
         reasoningEffort,
-        permissionMode
+        permissionMode,
+        computerUse: computerUsePolicy,
       });
       loadedHistoryRef.current.delete(created.id);
       optimisticSessionIdsRef.current.add(created.id);
@@ -868,7 +986,7 @@ export function AgentChatPane({
         createSessionPromiseRef.current = null;
       }
     }
-  }, [laneId, lockSessionId, modelId, onSessionCreated, permissionMode, reasoningEffort, refreshSessions, selectedSessionId]);
+  }, [computerUsePolicy, laneId, lockSessionId, modelId, onSessionCreated, permissionMode, reasoningEffort, refreshSessions, selectedSessionId]);
 
   const submit = useCallback(async () => {
     if (submitInFlightRef.current || busy) return;
@@ -914,13 +1032,13 @@ export function AgentChatPane({
         && Boolean(selectedSessionModelId)
         && selectedSessionModelId !== modelId;
 
-      if (sessionId && selectedModelChanged && !turnActive) {
-        // Model switched within the same family — update the session in-place
+      if (sessionId && !turnActive && (selectedModelChanged || hasComputerUseSelectionChanged)) {
         await window.ade.agentChat.updateSession({
           sessionId,
           modelId,
           reasoningEffort,
-          permissionMode
+          permissionMode,
+          computerUse: computerUsePolicy,
         });
         await refreshSessions();
       } else if (!sessionId) {
@@ -961,8 +1079,10 @@ export function AgentChatPane({
     attachments,
     busy,
     createSession,
+    computerUsePolicy,
     draft,
     executionMode,
+    hasComputerUseSelectionChanged,
     laneId,
     launchModeEditable,
     modelId,
@@ -1020,6 +1140,21 @@ export function AgentChatPane({
     }
   }, [selectedSessionId]);
 
+  const handleComputerUsePolicyChange = useCallback(async (nextPolicy: ComputerUsePolicy) => {
+    setComputerUsePolicy(nextPolicy);
+    if (!selectedSessionId) return;
+    try {
+      await window.ade.agentChat.updateSession({
+        sessionId: selectedSessionId,
+        computerUse: nextPolicy,
+      });
+      await refreshSessions();
+      await refreshComputerUseSnapshot(selectedSessionId, { force: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [refreshComputerUseSnapshot, refreshSessions, selectedSessionId]);
+
   if (!laneId) {
     return (
       <ChatSurfaceShell mode={surfaceMode} accentColor={presentation?.accentColor}>
@@ -1069,6 +1204,12 @@ export function AgentChatPane({
               {mcpChip.label}
             </button>
           ) : null}
+          <span
+            className="inline-flex items-center rounded-[var(--chat-radius-pill)] border px-2.5 py-1 font-mono text-[9px] font-bold uppercase tracking-[0.16em]"
+            style={{ borderColor: "rgba(125, 211, 252, 0.18)", color: "rgba(186, 230, 253, 0.88)", background: "rgba(14, 165, 233, 0.08)" }}
+          >
+            CU {computerUsePolicy.mode}
+          </span>
         </div>
       </div>
 
@@ -1116,6 +1257,7 @@ export function AgentChatPane({
               setDraft("");
               setAttachments([]);
               setSelectedContextPacks([]);
+              setComputerUsePolicy(createDefaultComputerUsePolicy());
             }}
           >
             <Plus size={10} weight="bold" />
@@ -1149,11 +1291,13 @@ export function AgentChatPane({
             sessionProvider={sessionProvider}
             sessionIsCliWrapped={sessionIsCliWrapped}
             executionMode={selectedExecutionMode?.value ?? "focused"}
+            computerUsePolicy={computerUsePolicy}
             executionModeOptions={launchModeEditable ? executionModeOptions : []}
             modelSelectionLocked={modelSelectionLocked}
             permissionModeLocked={permissionModeLocked}
             onExecutionModeChange={setExecutionMode}
             onPermissionModeChange={handlePermissionModeChange}
+            onComputerUsePolicyChange={handleComputerUsePolicyChange}
             onModelChange={(nextModelId) => {
               if (selectedSessionModelId && effectiveAvailableModelIds.length && !effectiveAvailableModelIds.includes(nextModelId)) {
                 return;
@@ -1207,23 +1351,34 @@ export function AgentChatPane({
               </div>
             </div>
           ) : selectedSessionId ? (
-            <AgentChatMessageList
-              events={selectedEvents}
-              showStreamingIndicator={turnActive}
-              className="min-h-0 border-0"
-              surfaceMode={surfaceMode}
-              onApproval={(itemId, decision, responseText) => {
-                if (!selectedSessionId) return;
-                window.ade.agentChat.approve({ sessionId: selectedSessionId, itemId, decision, responseText }).then(() => {
-                  setApprovalsBySession((prev) => ({
-                    ...prev,
-                    [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((e) => e.itemId !== itemId)
-                  }));
-                }).catch((err) => {
-                  setError(err instanceof Error ? err.message : String(err));
-                });
-              }}
-            />
+            <div className="flex h-full min-h-0 flex-col overflow-hidden">
+              <div className="border-b border-white/[0.04] p-3">
+                <ChatComputerUsePanel
+                  laneId={laneId}
+                  sessionId={selectedSessionId}
+                  policy={computerUsePolicy}
+                  snapshot={computerUseSnapshot}
+                  onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
+                />
+              </div>
+              <AgentChatMessageList
+                events={selectedEvents}
+                showStreamingIndicator={turnActive}
+                className="min-h-0 border-0"
+                surfaceMode={surfaceMode}
+                onApproval={(itemId, decision, responseText) => {
+                  if (!selectedSessionId) return;
+                  window.ade.agentChat.approve({ sessionId: selectedSessionId, itemId, decision, responseText }).then(() => {
+                    setApprovalsBySession((prev) => ({
+                      ...prev,
+                      [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((e) => e.itemId !== itemId)
+                    }));
+                  }).catch((err) => {
+                    setError(err instanceof Error ? err.message : String(err));
+                  });
+                }}
+              />
+            </div>
           ) : (
             <div className="flex h-full flex-col items-center justify-center px-6">
               <div className="flex flex-col items-center gap-4 text-center">

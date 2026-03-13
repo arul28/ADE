@@ -3,6 +3,7 @@
 import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDefaultComputerUsePolicy } from "../../../shared/types";
 import { AgentChatComposer } from "./AgentChatComposer";
 
 function renderComposer(overrides: Partial<React.ComponentProps<typeof AgentChatComposer>> = {}) {
@@ -13,6 +14,7 @@ function renderComposer(overrides: Partial<React.ComponentProps<typeof AgentChat
   const onInterrupt = vi.fn();
   const onApproval = vi.fn();
   const onPermissionModeChange = vi.fn();
+  const onComputerUsePolicyChange = vi.fn();
   const onAddAttachment = vi.fn();
   const onRemoveAttachment = vi.fn();
   const onSearchAttachments = vi.fn(async () => []);
@@ -36,7 +38,9 @@ function renderComposer(overrides: Partial<React.ComponentProps<typeof AgentChat
     onInterrupt,
     onApproval,
     permissionMode: "edit",
+    computerUsePolicy: createDefaultComputerUsePolicy(),
     onPermissionModeChange,
+    onComputerUsePolicyChange,
     onAddAttachment,
     onRemoveAttachment,
     onSearchAttachments,
@@ -57,6 +61,7 @@ function renderComposer(overrides: Partial<React.ComponentProps<typeof AgentChat
     onInterrupt,
     onApproval,
     onPermissionModeChange,
+    onComputerUsePolicyChange,
     onAddAttachment,
     onRemoveAttachment,
     onSearchAttachments,

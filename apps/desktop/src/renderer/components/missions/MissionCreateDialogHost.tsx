@@ -34,6 +34,10 @@ export const MissionCreateDialogHost = React.memo(function MissionCreateDialogHo
     }
   }, [onLaunch]);
 
+  if (!open && !busy) {
+    return null;
+  }
+
   return (
     <CreateMissionDialog
       open={open}

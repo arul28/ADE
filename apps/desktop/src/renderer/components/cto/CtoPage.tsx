@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Brain,
   ChatCircle,
@@ -20,6 +20,7 @@ import type {
   CtoSessionLogEntry,
   CtoSubordinateActivityEntry,
   AgentStatus,
+  AgentChatSessionSummary,
   HeartbeatPolicy,
   OpenclawBridgeStatus,
   WorkerAgentRun,
@@ -38,7 +39,6 @@ import { OnboardingWizard } from "./OnboardingWizard";
 import { OnboardingBanner } from "./OnboardingBanner";
 import { WorkerCreationWizard } from "./WorkerCreationWizard";
 import { CtoMemoryBrowser } from "./CtoMemoryBrowser";
-import { OpenclawConnectionPanel } from "./OpenclawConnectionPanel";
 import { TimelineEntry } from "./shared/TimelineEntry";
 import { cardCls, shellBodyCls, shellTabBarCls } from "./shared/designTokens";
 
@@ -87,6 +87,7 @@ export function CtoPage() {
   const [workerWakeError, setWorkerWakeError] = useState<string | null>(null);
   const [wakingWorker, setWakingWorker] = useState(false);
   const [externalMcpServerNames, setExternalMcpServerNames] = useState<string[]>([]);
+  const [budgetLoading, setBudgetLoading] = useState(false);
 
   // Worker creation wizard
   const [showWorkerWizard, setShowWorkerWizard] = useState(false);
@@ -95,6 +96,8 @@ export function CtoPage() {
   const [workerDraft, setWorkerDraft] = useState<WorkerEditorDraft>(workerDraftFromAgent(null));
   const [savingWorker, setSavingWorker] = useState(false);
   const [workerError, setWorkerError] = useState<string | null>(null);
+  const ctoHistoryLoadedRef = useRef(false);
+  const lastBudgetLoadAtRef = useRef(0);
 
   const laneId = useMemo(() => {
     if (selectedLaneId && lanes.some((lane) => lane.id === selectedLaneId)) return selectedLaneId;
@@ -120,23 +123,16 @@ export function CtoPage() {
 
   /* ── Data loading ── */
 
-  const loadCtoState = useCallback(async () => {
+  const loadCtoSummary = useCallback(async () => {
     if (!window.ade?.cto) return;
     try {
-      const openclawPromise = typeof window.ade.cto.getOpenclawState === "function"
-        ? window.ade.cto.getOpenclawState().catch(() => null)
-        : Promise.resolve(null);
-      const [snapshot, obState, openclawState] = await Promise.all([
-        window.ade.cto.getState({ recentLimit: 20 }),
+      const [snapshot, obState] = await Promise.all([
+        window.ade.cto.getState({ recentLimit: 0 }),
         window.ade.cto.getOnboardingState(),
-        openclawPromise,
       ]);
       setCtoIdentity(snapshot.identity);
       setCoreMemory(snapshot.coreMemory);
-      setSessionLogs(snapshot.recentSessions);
-      setSubordinateActivity(snapshot.recentSubordinateActivity);
       setOnboardingState(obState);
-      setOpenclawStatus(openclawState?.status ?? null);
       // Auto-show onboarding if first run
       if (obState.completedSteps.length === 0 && !obState.dismissedAt && !obState.completedAt) {
         setShowOnboarding(true);
@@ -144,20 +140,48 @@ export function CtoPage() {
     } catch { /* non-fatal */ }
   }, []);
 
-  const loadWorkersAndBudget = useCallback(async () => {
+  const loadCtoHistory = useCallback(async () => {
     if (!window.ade?.cto) return;
     try {
-      const [nextAgents, nextBudget] = await Promise.all([
-        window.ade.cto.listAgents({ includeDeleted: false }),
-        window.ade.cto.getBudgetSnapshot({}),
-      ]);
+      const snapshot = await window.ade.cto.getState({ recentLimit: 20 });
+      setCtoIdentity(snapshot.identity);
+      setCoreMemory(snapshot.coreMemory);
+      setSessionLogs(snapshot.recentSessions);
+      setSubordinateActivity(snapshot.recentSubordinateActivity);
+      ctoHistoryLoadedRef.current = true;
+    } catch {
+      // non-fatal
+    }
+  }, []);
+
+  const loadAgents = useCallback(async () => {
+    if (!window.ade?.cto) return;
+    try {
+      const nextAgents = await window.ade.cto.listAgents({ includeDeleted: false });
       setAgents(nextAgents);
-      setBudgetSnapshot(nextBudget);
       if (selectedAgentId && !nextAgents.some((a) => a.id === selectedAgentId)) {
         setSelectedAgentId(null);
       }
     } catch { /* non-fatal */ }
   }, [selectedAgentId]);
+
+  const loadBudgetSnapshot = useCallback(async (options?: { force?: boolean }) => {
+    if (!window.ade?.cto || budgetLoading) return;
+    const now = Date.now();
+    if (!options?.force && budgetSnapshot && now - lastBudgetLoadAtRef.current < 30_000) {
+      return;
+    }
+    setBudgetLoading(true);
+    try {
+      const nextBudget = await window.ade.cto.getBudgetSnapshot({});
+      setBudgetSnapshot(nextBudget);
+      lastBudgetLoadAtRef.current = Date.now();
+    } catch {
+      // non-fatal
+    } finally {
+      setBudgetLoading(false);
+    }
+  }, [budgetLoading, budgetSnapshot]);
 
   const loadExternalMcpRegistry = useCallback(async () => {
     if (!window.ade?.externalMcp) return;
@@ -170,8 +194,39 @@ export function CtoPage() {
   }, []);
 
   useEffect(() => {
-    void Promise.all([loadCtoState(), loadWorkersAndBudget(), loadExternalMcpRegistry()]);
-  }, [loadCtoState, loadWorkersAndBudget, loadExternalMcpRegistry]);
+    void loadCtoSummary();
+  }, [loadCtoSummary]);
+
+  useEffect(() => {
+    if (!onboardingState || needsOnboarding) return;
+    void loadAgents();
+  }, [loadAgents, needsOnboarding, onboardingState]);
+
+  useEffect(() => {
+    if (!onboardingState || needsOnboarding) return;
+    if (activeTab !== "team" && activeTab !== "settings") return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      if (!cancelled) {
+        void loadBudgetSnapshot();
+      }
+    }, 900);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [activeTab, loadBudgetSnapshot, needsOnboarding, onboardingState]);
+
+  useEffect(() => {
+    if ((activeTab !== "team" && activeTab !== "settings") || ctoHistoryLoadedRef.current) return;
+    void loadCtoHistory();
+  }, [activeTab, loadCtoHistory]);
+
+  useEffect(() => {
+    if (activeTab !== "settings" && !editorOpen) return;
+    if (externalMcpServerNames.length > 0) return;
+    void loadExternalMcpRegistry();
+  }, [activeTab, editorOpen, externalMcpServerNames.length, loadExternalMcpRegistry]);
 
   useEffect(() => {
     const unsubscribe = window.ade?.cto?.onOpenclawConnectionStatus?.((status) => {
@@ -183,8 +238,9 @@ export function CtoPage() {
   // Load revisions when worker selected
   useEffect(() => {
     if (!window.ade?.cto || !selectedAgentId) { setRevisions([]); return; }
+    if (activeTab !== "team") return;
     void window.ade.cto.listAgentRevisions({ agentId: selectedAgentId, limit: 20 }).then(setRevisions).catch(() => setRevisions([]));
-  }, [selectedAgentId]);
+  }, [activeTab, selectedAgentId]);
 
   // Load worker details when selected
   useEffect(() => {
@@ -193,6 +249,7 @@ export function CtoPage() {
       setWorkerOpsError(null); setWorkerWakeStatus(null); setWorkerWakeError(null);
       return;
     }
+    if (activeTab !== "team") return;
     let cancelled = false;
     void Promise.all([
       window.ade.cto.getAgentCoreMemory({ agentId: selectedAgentId }),
@@ -207,12 +264,27 @@ export function CtoPage() {
       setWorkerCoreMemory(null); setWorkerSessionLogs([]); setWorkerRuns([]);
     });
     return () => { cancelled = true; };
-  }, [selectedAgentId]);
+  }, [activeTab, selectedAgentId]);
 
   // Establish chat session
   useEffect(() => {
+    if (activeTab !== "chat") {
+      setLoading(false);
+      setSession(null);
+      return;
+    }
+    if (!window.ade?.cto) {
+      setLoading(false);
+      setError("CTO bridge is unavailable.");
+      setSession(null);
+      return;
+    }
+    if (!onboardingState || showOnboarding || needsOnboarding) {
+      setLoading(false);
+      setSession(null);
+      return;
+    }
     if (!laneId) { setSession(null); return; }
-    if (!window.ade?.cto) { setError("CTO bridge is unavailable."); setSession(null); return; }
     let cancelled = false;
     setLoading(true); setError(null);
     const promise = selectedAgentId
@@ -223,7 +295,7 @@ export function CtoPage() {
       .catch((err) => { if (!cancelled) { setError(err instanceof Error ? err.message : String(err)); setSession(null); } })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [laneId, selectedAgentId]);
+  }, [activeTab, laneId, needsOnboarding, onboardingState, selectedAgentId, showOnboarding]);
 
   // Deep link to linear-sync
   useEffect(() => {
@@ -231,6 +303,14 @@ export function CtoPage() {
       setActiveTab("linear");
     }
   }, []);
+
+  useEffect(() => {
+    console.info(`renderer.tab_change ${JSON.stringify({
+      page: "cto",
+      tab: activeTab,
+      workerId: selectedAgentId,
+    })}`);
+  }, [activeTab, selectedAgentId]);
 
   /* ── Callbacks ── */
 
@@ -296,13 +376,14 @@ export function CtoPage() {
         },
       });
       setEditorOpen(false);
-      await loadWorkersAndBudget();
+      await loadAgents();
+      await loadBudgetSnapshot({ force: true });
     } catch (err) {
       setWorkerError(err instanceof Error ? err.message : "Failed to save worker.");
     } finally {
       setSavingWorker(false);
     }
-  }, [loadWorkersAndBudget, workerDraft]);
+  }, [loadAgents, loadBudgetSnapshot, workerDraft]);
 
   const removeWorker = useCallback(async (agentId: string) => {
     if (!window.ade?.cto) return;
@@ -310,22 +391,25 @@ export function CtoPage() {
     if (selectedAgentId === agentId) {
       setSelectedAgentId(null);
     }
-    await loadWorkersAndBudget();
-  }, [loadWorkersAndBudget, selectedAgentId]);
+    await loadAgents();
+    await loadBudgetSnapshot({ force: true });
+  }, [loadAgents, loadBudgetSnapshot, selectedAgentId]);
 
   const setSelectedWorkerStatus = useCallback(async (status: AgentStatus) => {
     if (!window.ade?.cto || !selectedAgentId) return;
     await window.ade.cto.setAgentStatus({ agentId: selectedAgentId, status });
-    await loadWorkersAndBudget();
-  }, [loadWorkersAndBudget, selectedAgentId]);
+    await loadAgents();
+    await loadBudgetSnapshot({ force: true });
+  }, [loadAgents, loadBudgetSnapshot, selectedAgentId]);
 
   const rollbackRevision = useCallback(async (revisionId: string) => {
     if (!window.ade?.cto || !selectedAgentId) return;
     await window.ade.cto.rollbackAgentRevision({ agentId: selectedAgentId, revisionId });
-    await loadWorkersAndBudget();
+    await loadAgents();
+    await loadBudgetSnapshot({ force: true });
     const next = await window.ade.cto.listAgentRevisions({ agentId: selectedAgentId, limit: 20 });
     setRevisions(next);
-  }, [loadWorkersAndBudget, selectedAgentId]);
+  }, [loadAgents, loadBudgetSnapshot, selectedAgentId]);
 
   const wakeSelectedWorker = useCallback(async () => {
     if (!window.ade?.cto || !selectedAgentId) return;
@@ -355,23 +439,70 @@ export function CtoPage() {
   }, [selectedWorker]);
 
   const handleOnboardingComplete = useCallback(async () => {
+    const completedAt = new Date().toISOString();
+    setOnboardingState((current) => ({
+      completedSteps: Array.from(new Set([...(current?.completedSteps ?? []), "identity", "project", "integrations"])),
+      completedAt: current?.completedAt ?? completedAt,
+      dismissedAt: current?.dismissedAt,
+    }));
     setShowOnboarding(false);
-    await loadCtoState();
-  }, [loadCtoState]);
+    try {
+      await loadCtoSummary();
+    } catch {
+      // Keep the local optimistic state even if the refresh fails.
+    }
+  }, [loadCtoSummary]);
 
   const handleDismissOnboarding = useCallback(async () => {
-    if (!window.ade?.cto) return;
-    await window.ade.cto.dismissOnboarding();
+    const dismissedAt = new Date().toISOString();
+    setOnboardingState((current) => ({
+      completedSteps: current?.completedSteps ?? [],
+      completedAt: current?.completedAt,
+      dismissedAt,
+    }));
     setShowOnboarding(false);
-    await loadCtoState();
-  }, [loadCtoState]);
+    if (!window.ade?.cto) return;
+    try {
+      await window.ade.cto.dismissOnboarding();
+      await loadCtoSummary();
+    } catch {
+      // Let the user continue even if persistence or refresh fails.
+    }
+  }, [loadCtoSummary]);
 
   const handleResetOnboarding = useCallback(async () => {
     if (!window.ade?.cto) return;
     await window.ade.cto.resetOnboarding();
     setShowOnboarding(true);
-    await loadCtoState();
-  }, [loadCtoState]);
+    await loadCtoSummary();
+  }, [loadCtoSummary]);
+
+  const lockedSessionSummary = useMemo<AgentChatSessionSummary | null>(() => {
+    if (!session) return null;
+    return {
+      sessionId: session.id,
+      laneId: session.laneId,
+      provider: session.provider,
+      model: session.model,
+      modelId: session.modelId,
+      sessionProfile: session.sessionProfile,
+      title: null,
+      goal: null,
+      reasoningEffort: session.reasoningEffort ?? null,
+      executionMode: session.executionMode ?? null,
+      permissionMode: session.permissionMode,
+      identityKey: session.identityKey,
+      capabilityMode: session.capabilityMode,
+      computerUse: session.computerUse,
+      status: session.status,
+      startedAt: session.createdAt,
+      endedAt: session.status === "ended" ? session.lastActivityAt : null,
+      lastActivityAt: session.lastActivityAt,
+      lastOutputPreview: null,
+      summary: null,
+      threadId: session.threadId,
+    };
+  }, [session]);
 
   /* ── Render ── */
 
@@ -389,6 +520,28 @@ export function CtoPage() {
     return counts;
   }, [agents]);
 
+  const sidebarCtoModelInfo = useMemo(
+    () => (
+      ctoIdentity
+        ? {
+          provider: ctoIdentity.modelPreferences.provider,
+          model: ctoIdentity.modelPreferences.model,
+        }
+        : null
+    ),
+    [ctoIdentity],
+  );
+
+  const handleSelectSidebarAgent = useCallback((id: string) => {
+    setSelectedAgentId(id);
+    setActiveTab("team");
+  }, []);
+
+  const handleSelectSidebarCto = useCallback(() => {
+    setSelectedAgentId(null);
+    setActiveTab("chat");
+  }, []);
+
   return (
     <div className={shellBodyCls}>
       {/* Onboarding wizard overlay */}
@@ -404,15 +557,12 @@ export function CtoPage() {
       <AgentSidebar
         agents={agents}
         selectedAgentId={selectedAgentId}
-        onSelectAgent={(id) => {
-          setSelectedAgentId(id);
-          setActiveTab("team");
-        }}
-        onSelectCto={() => { setSelectedAgentId(null); setActiveTab("chat"); }}
+        onSelectAgent={handleSelectSidebarAgent}
+        onSelectCto={handleSelectSidebarCto}
         isCtoSelected={!selectedAgentId}
         budgetSnapshot={budgetSnapshot}
         onHireWorker={handleHireWorker}
-        ctoModelInfo={ctoIdentity ? { provider: ctoIdentity.modelPreferences.provider, model: ctoIdentity.modelPreferences.model } : null}
+        ctoModelInfo={sidebarCtoModelInfo}
       />
 
       {/* Main content */}
@@ -495,19 +645,13 @@ export function CtoPage() {
               </div>
 
               {/* Chat pane */}
-              {!selectedWorker && (
-                <div className="shrink-0 border-b border-white/[0.06] px-4 py-3 bg-white/[0.02] backdrop-blur-xl">
-                  <OpenclawConnectionPanel
-                    compact
-                    showConfig={false}
-                    showRecentTraffic
-                    onStateChange={(nextState) => setOpenclawStatus(nextState?.status ?? null)}
-                  />
-                </div>
-              )}
-
               <div className="flex-1 min-h-0">
-                <AgentChatPane laneId={laneId} lockSessionId={session?.id ?? null} />
+                <AgentChatPane
+                  laneId={laneId}
+                  lockSessionId={session?.id ?? null}
+                  initialSessionSummary={lockedSessionSummary}
+                  hideSessionTabs
+                />
               </div>
             </div>
           )}
@@ -521,7 +665,8 @@ export function CtoPage() {
                     agents={agents}
                     onComplete={async () => {
                       setShowWorkerWizard(false);
-                      await loadWorkersAndBudget();
+                      await loadAgents();
+                      await loadBudgetSnapshot({ force: true });
                     }}
                     onCancel={() => setShowWorkerWizard(false)}
                   />

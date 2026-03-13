@@ -9,6 +9,7 @@ import type {
 } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 import { relativeWhen } from "../../lib/format";
+import { formatComputerUseKind, formatComputerUseMode, summarizeComputerUseProof } from "../../lib/computerUse";
 import { getMissionInterventionOwnerLabel } from "./missionHelpers";
 
 // ---------------------------------------------------------------------------
@@ -306,6 +307,53 @@ function ProgressEntry({ item }: { item: MissionRunViewProgressItem }) {
       >
         {item.title}
       </span>
+    </div>
+  );
+}
+
+function ComputerUsePanel({ runView }: { runView: MissionRunView }) {
+  const snapshot = runView.computerUse;
+  if (!snapshot) return null;
+
+  return (
+    <div style={sectionStyle}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div style={sectionLabelStyle}>Computer Use</div>
+        <span style={{ fontSize: 9, fontFamily: MONO_FONT, color: snapshot.usingLocalFallback ? COLORS.warning : COLORS.success }}>
+          {snapshot.usingLocalFallback ? "local fallback" : "external-first"}
+        </span>
+      </div>
+      <div className="mt-1 text-[11px]" style={{ color: COLORS.textPrimary }}>
+        {snapshot.summary}
+      </div>
+      <div className="mt-2 flex flex-wrap gap-3 text-[9px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+        <span>Policy: {formatComputerUseMode(snapshot.policy)}</span>
+        <span>{summarizeComputerUseProof(snapshot)}</span>
+        <span>
+          Backend: {snapshot.activeBackend ? `${snapshot.activeBackend.name} (${snapshot.activeBackend.source})` : "not selected"}
+        </span>
+      </div>
+      {snapshot.activity.length > 0 ? (
+        <div className="mt-3 space-y-1">
+          {snapshot.activity.slice(0, 4).map((item) => (
+            <div key={item.id} className="flex items-start gap-2 text-[10px]" style={{ fontFamily: MONO_FONT }}>
+              <span style={{ color: SEVERITY_COLOR[item.severity] ?? COLORS.textMuted, minWidth: 50 }}>
+                {relativeWhen(item.at)}
+              </span>
+              <span style={{ color: COLORS.textSecondary }}>{item.title}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {snapshot.recentArtifacts.length > 0 ? (
+        <div className="mt-3 flex flex-wrap gap-2 text-[9px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+          {snapshot.recentArtifacts.slice(0, 4).map((artifact) => (
+            <span key={artifact.id}>
+              {formatComputerUseKind(artifact.kind)} via {artifact.backendName}
+            </span>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -610,6 +658,8 @@ export function MissionRunPanel({
           )}
         </div>
       )}
+
+      <ComputerUsePanel runView={runView} />
 
       {/* ── 5. Workers ── */}
       {sortedWorkers.length > 0 && (

@@ -230,6 +230,29 @@ describe("laneProxyService", () => {
       await svc.stop();
     });
 
+    it("falls back to an ephemeral port when the requested port is already in use", async () => {
+      const occupiedServer = http.createServer((_req, res) => {
+        res.writeHead(200);
+        res.end("occupied");
+      });
+
+      await new Promise<void>((resolve) => {
+        occupiedServer.listen(0, "127.0.0.1", () => resolve());
+      });
+
+      const occupiedAddress = occupiedServer.address();
+      const occupiedPort =
+        typeof occupiedAddress === "object" && occupiedAddress ? occupiedAddress.port : 0;
+
+      try {
+        const status = await svc.start(occupiedPort);
+        expect(status.running).toBe(true);
+        expect(status.proxyPort).not.toBe(occupiedPort);
+      } finally {
+        await new Promise<void>((resolve) => occupiedServer.close(() => resolve()));
+      }
+    });
+
     it("stopping when not running is a no-op", async () => {
       await svc.stop(); // Should not throw
     });

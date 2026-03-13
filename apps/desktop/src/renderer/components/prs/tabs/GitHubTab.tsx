@@ -1,7 +1,7 @@
 import React from "react";
 import { ArrowsClockwise, CaretDown, CaretRight, GithubLogo, Link, Warning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
-import type { GitHubPrListItem, LaneSummary, MergeMethod } from "../../../../shared/types";
+import type { GitHubPrListItem, GitHubPrSnapshot, LaneSummary, MergeMethod } from "../../../../shared/types";
 import { EmptyState } from "../../ui/EmptyState";
 import { COLORS, LABEL_STYLE, MONO_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
 import { PrDetailPane } from "../detail/PrDetailPane";
@@ -16,6 +16,32 @@ type GitHubTabProps = {
 };
 
 type GitHubFilter = "open" | "closed" | "merged" | "all";
+const GITHUB_SNAPSHOT_TTL_MS = 120_000;
+
+let cachedGitHubSnapshot: GitHubPrSnapshot | null = null;
+let cachedGitHubSnapshotAt = 0;
+let inFlightGitHubSnapshot: Promise<GitHubPrSnapshot> | null = null;
+
+function hasFreshGitHubSnapshot(): boolean {
+  return cachedGitHubSnapshot != null && Date.now() - cachedGitHubSnapshotAt < GITHUB_SNAPSHOT_TTL_MS;
+}
+
+async function fetchGitHubSnapshot(options?: { force?: boolean }): Promise<GitHubPrSnapshot> {
+  if (!options?.force && hasFreshGitHubSnapshot()) {
+    return cachedGitHubSnapshot!;
+  }
+  if (inFlightGitHubSnapshot) {
+    return inFlightGitHubSnapshot;
+  }
+  inFlightGitHubSnapshot = window.ade.prs.getGitHubSnapshot({ force: options?.force === true }).then((snapshot) => {
+    cachedGitHubSnapshot = snapshot;
+    cachedGitHubSnapshotAt = Date.now();
+    return snapshot;
+  }).finally(() => {
+    inFlightGitHubSnapshot = null;
+  });
+  return inFlightGitHubSnapshot;
+}
 
 function formatTimestampLabel(iso: string | null): string {
   if (!iso) return "---";
@@ -179,8 +205,8 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
     detailBusy,
   } = usePrs();
 
-  const [snapshot, setSnapshot] = React.useState<import("../../../../shared/types").GitHubPrSnapshot | null>(null);
-  const [loading, setLoading] = React.useState(true);
+  const [snapshot, setSnapshot] = React.useState<GitHubPrSnapshot | null>(() => cachedGitHubSnapshot);
+  const [loading, setLoading] = React.useState(() => cachedGitHubSnapshot == null);
   const [error, setError] = React.useState<string | null>(null);
   const [filter, setFilter] = React.useState<GitHubFilter>("open");
   const [selectedItemId, setSelectedItemId] = React.useState<string | null>(null);
@@ -188,20 +214,32 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
   const [linkLaneId, setLinkLaneId] = React.useState("");
   const [linkingItemId, setLinkingItemId] = React.useState<string | null>(null);
 
-  const loadSnapshot = React.useCallback(async () => {
-    setLoading(true);
+  const loadSnapshot = React.useCallback(async (options?: { force?: boolean; silent?: boolean }) => {
+    if (!options?.silent) {
+      setLoading((prev) => options?.force || snapshot == null ? true : prev);
+    }
     setError(null);
     try {
-      const next = await window.ade.prs.getGitHubSnapshot();
+      const next = await fetchGitHubSnapshot({ force: options?.force });
       setSnapshot(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (!options?.silent) {
+        setLoading(false);
+      }
     }
-  }, []);
+  }, [snapshot]);
 
   React.useEffect(() => {
+    if (cachedGitHubSnapshot) {
+      setSnapshot(cachedGitHubSnapshot);
+      setLoading(false);
+      if (!hasFreshGitHubSnapshot()) {
+        void loadSnapshot({ silent: true });
+      }
+      return;
+    }
     void loadSnapshot();
   }, [loadSnapshot]);
 
@@ -246,7 +284,7 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
   const handleSync = React.useCallback(async () => {
     await Promise.all([
       onRefreshAll().catch(() => {}),
-      loadSnapshot(),
+      loadSnapshot({ force: true }),
     ]);
   }, [loadSnapshot, onRefreshAll]);
 

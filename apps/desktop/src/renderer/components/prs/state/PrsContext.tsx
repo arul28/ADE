@@ -233,20 +233,30 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   const prsRef = React.useRef<PrWithConflicts[]>([]);
   prsRef.current = prs;
 
-  // Load merge contexts for all PRs
-  const loadMergeContexts = useCallback(async (prList: PrWithConflicts[]) => {
+  const refreshMergeContexts = useCallback(async (prIds: string[]) => {
+    const uniquePrIds = [...new Set(prIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
+    if (uniquePrIds.length === 0) return;
     const contexts: Record<string, PrMergeContext> = {};
     await Promise.all(
-      prList.map(async (pr) => {
+      uniquePrIds.map(async (prId) => {
         try {
-          const ctx = await window.ade.prs.getMergeContext(pr.id);
-          contexts[pr.id] = ctx;
+          const ctx = await window.ade.prs.getMergeContext(prId);
+          contexts[prId] = ctx;
         } catch {
           /* skip failures */
         }
       }),
     );
-    setMergeContextByPrId((prev) => (jsonEqual(prev, contexts) ? prev : contexts));
+    setMergeContextByPrId((prev) => {
+      const allowed = new Set(prsRef.current.map((pr) => pr.id));
+      const next = Object.fromEntries(
+        Object.entries(prev).filter(([prId]) => allowed.has(prId))
+      ) as Record<string, PrMergeContext>;
+      for (const [prId, ctx] of Object.entries(contexts)) {
+        next[prId] = ctx;
+      }
+      return jsonEqual(prev, next) ? prev : next;
+    });
   }, []);
 
   // Track whether the initial data load has completed
@@ -262,11 +272,16 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     if (isInitial) setLoading(true);
     setError(null);
     try {
+      const shouldLoadWorkflowState = activeTab !== "normal";
       const [prList, laneList, queueStateList, queueRehearsalList] = await Promise.all([
         window.ade.prs.listWithConflicts(),
         window.ade.lanes.list({ includeStatus: false }),
-        window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 }),
-        window.ade.prs.listQueueRehearsals({ includeCompleted: true, limit: 50 }),
+        shouldLoadWorkflowState
+          ? window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 })
+          : Promise.resolve([] as QueueLandingState[]),
+        shouldLoadWorkflowState
+          ? window.ade.prs.listQueueRehearsals({ includeCompleted: true, limit: 50 })
+          : Promise.resolve([] as QueueRehearsalState[]),
       ]);
       const prsChanged = !jsonEqual(prsRef.current, prList);
 
@@ -291,7 +306,13 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       });
 
       if (prsChanged) {
-        await loadMergeContexts(prList);
+        setMergeContextByPrId((prev) => {
+          const allowed = new Set(prList.map((pr) => pr.id));
+          const next = Object.fromEntries(
+            Object.entries(prev).filter(([prId]) => allowed.has(prId))
+          ) as Record<string, PrMergeContext>;
+          return jsonEqual(prev, next) ? prev : next;
+        });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -300,7 +321,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       initialLoadDone.current = true;
       refreshInFlight.current = false;
     }
-  }, [loadMergeContexts]);
+  }, [activeTab]);
 
   // Initial load
   useEffect(() => {
@@ -359,6 +380,19 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       cancelled = true;
     };
   }, [selectedPrId]);
+
+  useEffect(() => {
+    if (!selectedPrId) return;
+    if (mergeContextByPrId[selectedPrId]) return;
+    void refreshMergeContexts([selectedPrId]);
+  }, [mergeContextByPrId, refreshMergeContexts, selectedPrId]);
+
+  useEffect(() => {
+    if (activeTab === "normal") return;
+    const prIds = prsRef.current.map((pr) => pr.id);
+    if (prIds.length === 0) return;
+    void refreshMergeContexts(prIds);
+  }, [activeTab, prs, refreshMergeContexts]);
 
   // Subscribe to PR events
   useEffect(() => {

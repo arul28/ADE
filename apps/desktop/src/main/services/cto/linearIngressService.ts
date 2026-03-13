@@ -45,6 +45,9 @@ type RelayEventResponse = {
   timedOut?: boolean;
 };
 
+const RELAY_DISABLED_RETRY_MS = 15_000;
+const RELAY_ERROR_RETRY_MS = 5_000;
+
 function normalizeHeader(headers: Record<string, string | string[] | undefined>, key: string): string {
   const needle = key.toLowerCase();
   for (const [headerKey, headerValue] of Object.entries(headers)) {
@@ -270,7 +273,14 @@ export function createLinearIngressService(args: LinearIngressServiceArgs) {
     };
   };
 
-  const ensureRelayWebhook = async (force = false): Promise<RelayEnsureWebhookResponse | null> => {
+  const sleep = (ms: number): Promise<void> =>
+    new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    });
+
+  const hasRelayConfiguration = (): boolean => buildRelayConfig().configured;
+
+  const ensureRelayEndpoint = async (force = false): Promise<RelayEnsureWebhookResponse | null> => {
     const config = buildRelayConfig();
     if (!config.configured) {
       updateStatus({
@@ -361,10 +371,10 @@ export function createLinearIngressService(args: LinearIngressServiceArgs) {
     await args.onEvent?.(event);
   };
 
-  const pollRelay = async (): Promise<void> => {
+  const pollRelay = async (): Promise<boolean> => {
     const config = buildRelayConfig();
-    if (!config.configured) return;
-    await ensureRelayWebhook();
+    if (!config.configured) return false;
+    await ensureRelayEndpoint();
     const status = loadStatus();
     const after = status.relay.lastCursor ?? null;
     const response = await fetch(
@@ -409,13 +419,24 @@ export function createLinearIngressService(args: LinearIngressServiceArgs) {
         lastError: null,
       },
     });
+    return true;
+  };
+
+  const ensureRealtimeIngressStarted = async (): Promise<void> => {
+    await startLocalWebhook();
+    if (!relayAbortController) {
+      void startRelayLoop();
+    }
   };
 
   const startRelayLoop = async (): Promise<void> => {
     relayAbortController = new AbortController();
     while (!disposed) {
       try {
-        await pollRelay();
+        const configured = await pollRelay();
+        if (!configured && !disposed) {
+          await sleep(RELAY_DISABLED_RETRY_MS);
+        }
       } catch (error) {
         if (disposed) break;
         updateStatus({
@@ -427,6 +448,7 @@ export function createLinearIngressService(args: LinearIngressServiceArgs) {
             lastPolledAt: nowIso(),
           },
         });
+        await sleep(RELAY_ERROR_RETRY_MS);
       }
     }
   };
@@ -504,13 +526,41 @@ export function createLinearIngressService(args: LinearIngressServiceArgs) {
   };
 
   return {
+    canAutoStart(): boolean {
+      return hasRelayConfiguration();
+    },
+
     async start(): Promise<void> {
-      await startLocalWebhook();
-      void startRelayLoop();
+      if (!hasRelayConfiguration()) {
+        updateStatus({
+          localWebhook: {
+            configured: false,
+            healthy: false,
+            status: "disabled",
+            url: null,
+            port: null,
+            lastError: null,
+          },
+          relay: {
+            configured: false,
+            healthy: false,
+            status: "disabled",
+            webhookUrl: null,
+            endpointId: null,
+            lastError: null,
+          },
+        });
+        return;
+      }
+      await ensureRealtimeIngressStarted();
     },
 
     async ensureRelayWebhook(force = false): Promise<void> {
-      await ensureRelayWebhook(force);
+      await ensureRelayEndpoint(force);
+      await startLocalWebhook();
+      if (hasRelayConfiguration() && !relayAbortController) {
+        void startRelayLoop();
+      }
     },
 
     getStatus(): LinearIngressStatus {
