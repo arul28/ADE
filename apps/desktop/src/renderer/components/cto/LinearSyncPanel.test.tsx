@@ -2,7 +2,7 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, cleanup } from "@testing-library/react";
-import type { LinearWorkflowConfig } from "../../../shared/types";
+import type { LinearWorkflowConfig, LinearWorkflowRunDetail, LinearSyncQueueItem } from "../../../shared/types";
 import { LinearSyncPanel } from "./LinearSyncPanel";
 
 function buildBasePolicy(): LinearWorkflowConfig {
@@ -44,13 +44,20 @@ function buildBasePolicy(): LinearWorkflowConfig {
   };
 }
 
-function buildBridge(policy = buildBasePolicy()) {
+function buildBridge(
+  policy = buildBasePolicy(),
+  options: {
+    queue?: LinearSyncQueueItem[];
+    runDetail?: LinearWorkflowRunDetail | null;
+  } = {}
+) {
   const saveFlowPolicy = vi.fn(async ({ policy: nextPolicy }: { policy: LinearWorkflowConfig }) => nextPolicy);
   const ensureLinearWebhook = vi.fn(async () => ({
     localWebhook: { configured: true, healthy: true, status: "listening", url: "http://127.0.0.1:4580/linear-webhooks" },
     relay: { configured: true, healthy: true, status: "ready", webhookUrl: "https://relay.example.com/webhooks/linear/flow-1" },
     reconciliation: { enabled: true, intervalSec: 30, lastRunAt: "2026-03-05T00:00:00.000Z" },
   }));
+  const queue = options.queue ?? [];
 
   return {
     app: {
@@ -76,10 +83,18 @@ function buildBridge(policy = buildBasePolicy()) {
         lastPollAt: "2026-03-05T00:00:00.000Z",
         lastSuccessAt: "2026-03-05T00:00:00.000Z",
         lastError: null,
-        queue: { queued: 0, retryWaiting: 0, escalated: 0, dispatched: 0, failed: 0 },
+        queue: {
+          queued: queue.filter((item) => item.status === "queued").length,
+          retryWaiting: queue.filter((item) => item.status === "retry_wait").length,
+          escalated: queue.filter((item) => item.status === "escalated").length,
+          dispatched: queue.filter((item) => item.status === "dispatched").length,
+          failed: queue.filter((item) => item.status === "failed").length,
+        },
         claimsActive: 0,
       })),
-      listLinearSyncQueue: vi.fn(async () => []),
+      listLinearSyncQueue: vi.fn(async () => queue),
+      resolveLinearSyncQueueItem: vi.fn(async () => queue[0] ?? null),
+      getLinearWorkflowRunDetail: vi.fn(async () => options.runDetail ?? null),
       runLinearSyncNow: vi.fn(async () => ({
         enabled: true,
         running: false,
@@ -88,7 +103,13 @@ function buildBridge(policy = buildBasePolicy()) {
         lastPollAt: "2026-03-05T00:00:00.000Z",
         lastSuccessAt: "2026-03-05T00:00:00.000Z",
         lastError: null,
-        queue: { queued: 0, retryWaiting: 0, escalated: 0, dispatched: 0, failed: 0 },
+        queue: {
+          queued: queue.filter((item) => item.status === "queued").length,
+          retryWaiting: queue.filter((item) => item.status === "retry_wait").length,
+          escalated: queue.filter((item) => item.status === "escalated").length,
+          dispatched: queue.filter((item) => item.status === "dispatched").length,
+          failed: queue.filter((item) => item.status === "failed").length,
+        },
         claimsActive: 0,
       })),
       simulateFlowRoute: vi.fn(async () => ({
@@ -124,7 +145,7 @@ function buildBridge(policy = buildBasePolicy()) {
           id: "agent-1",
           slug: "backend-dev",
           name: "Backend Dev",
-          role: "backend",
+          role: "engineer",
           title: "Backend Engineer",
           reportsTo: null,
           capabilities: ["code"],
@@ -202,6 +223,8 @@ describe("LinearSyncPanel", () => {
     await waitFor(() => expect(screen.getByText("Assigned to employee")).toBeTruthy());
     expect(screen.getByTestId("linear-first-run-guide")).toBeTruthy();
     expect(screen.getByText("Create your first real-time Linear workflow")).toBeTruthy();
+    expect(screen.getByText("Where Linear workflows fit")).toBeTruthy();
+    expect(screen.getByText(/CTO > Linear is for issue-driven automation/)).toBeTruthy();
     expect(screen.getByText("Has workflow label")).toBeTruthy();
     expect(screen.getByText("Watch It Live")).toBeTruthy();
     expect(screen.getByText("Real-Time Ingress")).toBeTruthy();
@@ -246,6 +269,165 @@ describe("LinearSyncPanel", () => {
       "emit_app_notification",
       "complete_issue",
     ]);
+  });
+
+  it("authors a supervised fresh-lane workflow without YAML", async () => {
+    const bridge = buildBridge();
+    (window as any).ade = bridge;
+
+    render(<LinearSyncPanel />);
+
+    await waitFor(() => expect(screen.getByTestId("linear-target-type-select")).toBeTruthy());
+
+    fireEvent.change(screen.getByTestId("linear-target-type-select"), { target: { value: "worker_run" } });
+    fireEvent.change(screen.getByTestId("linear-wait-target-select"), { target: { value: "yes" } });
+    fireEvent.change(screen.getByTestId("linear-lane-selection-select"), { target: { value: "fresh_issue_lane" } });
+    fireEvent.change(screen.getByTestId("linear-pr-behavior-select"), { target: { value: "per-lane" } });
+    fireEvent.change(screen.getByTestId("linear-pr-timing-select"), { target: { value: "after_start" } });
+    fireEvent.change(screen.getByTestId("linear-supervisor-mode-select"), { target: { value: "after_pr" } });
+    fireEvent.change(screen.getByTestId("linear-supervisor-identity-select"), { target: { value: "cto" } });
+    fireEvent.change(screen.getByTestId("linear-supervisor-reject-select"), { target: { value: "loop_back" } });
+    fireEvent.change(screen.getByTestId("linear-review-ready-select"), { target: { value: "pr_ready" } });
+    fireEvent.click(screen.getByTestId("linear-save-policy-btn"));
+
+    await waitFor(() => expect(bridge.cto.saveFlowPolicy).toHaveBeenCalledTimes(1));
+
+    const savedPolicy = bridge.cto.saveFlowPolicy.mock.calls[0]?.[0]?.policy as LinearWorkflowConfig;
+    const workflow = savedPolicy.workflows[0];
+    expect(workflow?.target.type).toBe("worker_run");
+    expect(workflow?.target.laneSelection).toBe("fresh_issue_lane");
+    expect(workflow?.target.prTiming).toBe("after_start");
+    expect(workflow?.closeout?.reviewReadyWhen).toBe("pr_ready");
+    expect(workflow?.steps.map((step) => step.type)).toEqual([
+      "launch_target",
+      "wait_for_target_status",
+      "wait_for_pr",
+      "request_human_review",
+      "complete_issue",
+    ]);
+    expect(workflow?.steps.find((step) => step.type === "request_human_review")?.rejectAction).toBe("loop_back");
+  });
+
+  it("renders run timeline detail and supervisor controls for a selected run", async () => {
+    const queue: LinearSyncQueueItem[] = [
+      {
+        id: "run-1",
+        runId: "run-1",
+        issueId: "issue-1",
+        identifier: "MY-1",
+        title: "Implement backend workflow",
+        status: "escalated",
+        workflowId: "flow-1",
+        workflowName: "Assigned employee -> review handoff",
+        targetType: "worker_run",
+        laneId: "lane-42",
+        workerId: "agent-1",
+        workerSlug: "backend-dev",
+        missionId: null,
+        sessionId: null,
+        workerRunId: "worker-run-1",
+        prId: "pr-42",
+        prState: "open",
+        prChecksStatus: "passing",
+        prReviewStatus: "requested",
+        currentStepId: "review",
+        currentStepLabel: "Supervisor review",
+        reviewState: "pending",
+        supervisorIdentityKey: "cto",
+        reviewReadyReason: null,
+        latestReviewNote: null,
+        attemptCount: 0,
+        nextAttemptAt: null,
+        lastError: null,
+        createdAt: "2026-03-05T00:00:00.000Z",
+        updatedAt: "2026-03-05T00:05:00.000Z",
+      },
+    ];
+
+    const runDetail: LinearWorkflowRunDetail = {
+      run: {
+        id: "run-1",
+        issueId: "issue-1",
+        identifier: "MY-1",
+        title: "Implement backend workflow",
+        workflowId: "flow-1",
+        workflowName: "Assigned employee -> review handoff",
+        workflowVersion: "2026-03-05T00:00:00.000Z",
+        source: "repo",
+        targetType: "worker_run",
+        status: "awaiting_human_review",
+        currentStepIndex: 2,
+        currentStepId: "review",
+        executionLaneId: "lane-42",
+        linkedMissionId: null,
+        linkedSessionId: null,
+        linkedWorkerRunId: "worker-run-1",
+        linkedPrId: "pr-42",
+        reviewState: "pending",
+        supervisorIdentityKey: "cto",
+        reviewReadyReason: null,
+        prState: "open",
+        prChecksStatus: "passing",
+        prReviewStatus: "requested",
+        latestReviewNote: null,
+        retryCount: 0,
+        retryAfter: null,
+        closeoutState: "pending",
+        terminalOutcome: null,
+        lastError: null,
+        sourceIssueSnapshot: {},
+        createdAt: "2026-03-05T00:00:00.000Z",
+        updatedAt: "2026-03-05T00:05:00.000Z",
+      },
+      steps: [
+        { id: "step-1", runId: "run-1", workflowStepId: "launch", type: "launch_target", name: "Launch worker run", status: "completed", startedAt: "2026-03-05T00:00:10.000Z", completedAt: "2026-03-05T00:00:20.000Z", payload: { laneId: "lane-42" } },
+        { id: "step-2", runId: "run-1", workflowStepId: "wait", type: "wait_for_target_status", name: "Wait", status: "completed", startedAt: "2026-03-05T00:01:00.000Z", completedAt: "2026-03-05T00:04:00.000Z", payload: { targetState: "completed" } },
+        { id: "step-3", runId: "run-1", workflowStepId: "review", type: "request_human_review", name: "Supervisor review", status: "waiting", startedAt: "2026-03-05T00:05:00.000Z", completedAt: null, payload: { reviewerIdentityKey: "cto" } },
+      ],
+      events: [
+        { id: "event-1", runId: "run-1", eventType: "run.created", status: "queued", message: "Matched workflow 'Assigned employee -> review handoff'.", payload: null, createdAt: "2026-03-05T00:00:00.000Z" },
+        { id: "event-2", runId: "run-1", eventType: "step.request_human_review", status: "waiting", message: "Awaiting supervisor approval.", payload: { reviewerIdentityKey: "cto" }, createdAt: "2026-03-05T00:05:00.000Z" },
+      ],
+      ingressEvents: [
+        {
+          id: "ingress-1",
+          source: "relay",
+          deliveryId: "delivery-1",
+          eventId: "event-1",
+          entityType: "Issue",
+          action: "update",
+          issueId: "issue-1",
+          issueIdentifier: "MY-1",
+          summary: "Issue gained workflow label",
+          payload: null,
+          createdAt: "2026-03-05T00:00:00.000Z",
+        },
+      ],
+      issue: null,
+      reviewContext: {
+        reviewerIdentityKey: "cto",
+        rejectAction: "loop_back",
+        loopToStepId: "launch",
+        instructions: "Review the worker handoff before moving to In Review.",
+      },
+    };
+
+    const bridge = buildBridge(buildBasePolicy(), { queue, runDetail });
+    (window as any).ade = bridge;
+
+    render(<LinearSyncPanel />);
+
+    await waitFor(() => expect(screen.getByTestId("linear-run-timeline-card")).toBeTruthy());
+    expect(screen.getByText("Supervisor action required")).toBeTruthy();
+    expect(screen.getByText("Awaiting supervisor approval.")).toBeTruthy();
+    expect(screen.getByTestId("linear-run-timeline")).toBeTruthy();
+
+    fireEvent.click(screen.getByText("Approve handoff"));
+    await waitFor(() => expect(bridge.cto.resolveLinearSyncQueueItem).toHaveBeenCalledWith({
+      queueItemId: "run-1",
+      action: "approve",
+      note: undefined,
+    }));
   });
 
   it("ensures the webhook from the ingress card", async () => {

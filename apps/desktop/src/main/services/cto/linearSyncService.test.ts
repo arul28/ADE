@@ -88,4 +88,48 @@ describe("linearSyncService", () => {
     expect(advanceRun).not.toHaveBeenCalled();
     db.close();
   });
+
+  it("immediately advances queue actions after a supervisor decision", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-sync-review-action-"));
+    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const advanceRun = vi.fn(async () => ({ id: "run-1", status: "queued" }));
+
+    const service = createLinearSyncService({
+      db,
+      projectId: "project-1",
+      flowPolicyService: { getPolicy: () => policy } as any,
+      routingService: {
+        routeIssue: vi.fn(async () => ({
+          workflowId: null,
+          workflowName: null,
+          workflow: null,
+          target: null,
+          reason: "No match",
+          candidates: [],
+          nextStepsPreview: [],
+        })),
+      } as any,
+      intakeService: {
+        fetchCandidates: vi.fn(async () => []),
+        persistSnapshot: vi.fn(() => {}),
+      } as any,
+      issueTracker: {
+        fetchIssueById: vi.fn(async () => issueFixture),
+      } as any,
+      dispatcherService: {
+        findActiveRunForIssue: vi.fn(() => null),
+        createRun: vi.fn(),
+        advanceRun,
+        listActiveRuns: vi.fn(() => []),
+        listQueue: vi.fn(() => [{ id: "run-1" }]),
+        resolveRunAction: vi.fn(async () => ({ id: "run-1", status: "queued" })),
+        getRunDetail: vi.fn(async () => null),
+      } as any,
+      autoStart: false,
+    });
+
+    await service.resolveQueueItem({ queueItemId: "run-1", action: "approve" });
+    expect(advanceRun).toHaveBeenCalledWith("run-1", policy);
+    db.close();
+  });
 });

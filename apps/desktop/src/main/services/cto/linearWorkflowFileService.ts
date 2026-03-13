@@ -117,6 +117,16 @@ function normalizeWorkflow(input: unknown, fallbackId: string): LinearWorkflowDe
       ...(input.target.runMode === "autopilot" || input.target.runMode === "assisted" || input.target.runMode === "manual"
         ? { runMode: input.target.runMode }
         : {}),
+      ...(input.target.prTiming === "after_start" || input.target.prTiming === "after_target_complete" || input.target.prTiming === "none"
+        ? { prTiming: input.target.prTiming }
+        : {}),
+      ...(input.target.laneSelection === "primary" || input.target.laneSelection === "fresh_issue_lane"
+        ? { laneSelection: input.target.laneSelection }
+        : {}),
+      ...(input.target.sessionReuse === "reuse_existing" || input.target.sessionReuse === "fresh_session"
+        ? { sessionReuse: input.target.sessionReuse }
+        : {}),
+      ...(typeof input.target.freshLaneName === "string" ? { freshLaneName: input.target.freshLaneName } : {}),
       ...(typeof input.target.phaseProfile === "string" ? { phaseProfile: input.target.phaseProfile } : {}),
       ...(isRecord(input.target.prStrategy) ? { prStrategy: input.target.prStrategy as LinearWorkflowDefinition["target"]["prStrategy"] } : {}),
     },
@@ -133,6 +143,13 @@ function normalizeWorkflow(input: unknown, fallbackId: string): LinearWorkflowDe
             ...(typeof entry.label === "string" ? { label: entry.label } : {}),
             ...(typeof entry.notificationTitle === "string" ? { notificationTitle: entry.notificationTitle } : {}),
             ...(typeof entry.targetStatus === "string" ? { targetStatus: entry.targetStatus as LinearWorkflowDefinition["steps"][number]["targetStatus"] } : {}),
+            ...(typeof entry.reviewerIdentityKey === "string"
+              ? { reviewerIdentityKey: entry.reviewerIdentityKey as LinearWorkflowDefinition["steps"][number]["reviewerIdentityKey"] }
+              : {}),
+            ...(entry.rejectAction === "cancel" || entry.rejectAction === "reopen_issue" || entry.rejectAction === "loop_back"
+              ? { rejectAction: entry.rejectAction }
+              : {}),
+            ...(typeof entry.loopToStepId === "string" || entry.loopToStepId === null ? { loopToStepId: entry.loopToStepId ?? null } : {}),
           }))
       : [],
     closeout: isRecord(input.closeout)
@@ -144,6 +161,9 @@ function normalizeWorkflow(input: unknown, fallbackId: string): LinearWorkflowDe
           ...(ensureStringArray(input.closeout.applyLabels).length ? { applyLabels: ensureStringArray(input.closeout.applyLabels) } : {}),
           ...(typeof input.closeout.reopenOnFailure === "boolean" ? { reopenOnFailure: input.closeout.reopenOnFailure } : {}),
           ...(typeof input.closeout.resolveOnSuccess === "boolean" ? { resolveOnSuccess: input.closeout.resolveOnSuccess } : {}),
+          ...(input.closeout.reviewReadyWhen === "work_complete" || input.closeout.reviewReadyWhen === "pr_created" || input.closeout.reviewReadyWhen === "pr_ready"
+            ? { reviewReadyWhen: input.closeout.reviewReadyWhen }
+            : {}),
           ...(input.closeout.artifactMode === "attachments" ? { artifactMode: "attachments" } : {}),
         }
       : undefined,

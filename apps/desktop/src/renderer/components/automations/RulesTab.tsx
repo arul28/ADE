@@ -832,6 +832,9 @@ export function RulesTab({
               Last success: {formatDate(linearDashboard.lastSuccessAt)} | Reconcile: {linearDashboard.reconciliationIntervalSec}s
             </div>
           )}
+          <div className="mt-2 font-mono text-[9px] text-[#71717A]">
+            CTO &gt; Linear is where you configure assignee + label driven Linear issue workflows. Automations is ADE&apos;s broader rule system for repo, session, briefing, and non-Linear automation.
+          </div>
           {linearCardError && <div className="mt-1 text-xs text-red-300">{linearCardError}</div>}
         </div>
 

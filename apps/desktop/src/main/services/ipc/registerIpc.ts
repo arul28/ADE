@@ -424,6 +424,8 @@ import type {
   LinearSyncDashboard,
   LinearSyncQueueItem,
   CtoResolveLinearSyncQueueItemArgs,
+  CtoGetLinearWorkflowRunDetailArgs,
+  LinearWorkflowRunDetail,
   LinearWorkflowConfig,
   NormalizedLinearIssue,
   ExternalMcpServerConfig,
@@ -5168,6 +5170,15 @@ export function registerIpc({
       const ctx = getCtx();
       if (!ctx.linearSyncService) throw new Error("Linear sync service is not available.");
       return ctx.linearSyncService.resolveQueueItem(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.ctoGetLinearWorkflowRunDetail,
+    async (_event, arg: CtoGetLinearWorkflowRunDetailArgs): Promise<LinearWorkflowRunDetail | null> => {
+      const ctx = getCtx();
+      if (!ctx.linearSyncService) throw new Error("Linear sync service is not available.");
+      return ctx.linearSyncService.getRunDetail(arg);
     }
   );
 

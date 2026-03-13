@@ -175,7 +175,15 @@ function buildBridge() {
         queue: { queued: 1, retryWaiting: 1, escalated: 2, dispatched: 0, failed: 0 },
         claimsActive: 0,
       })),
-      getFlowPolicy: vi.fn(async () => ({ enabled: true })),
+      getFlowPolicy: vi.fn(async () => ({
+        version: 1,
+        source: "repo",
+        settings: {},
+        workflows: [{ id: "flow-1", name: "Flow 1", enabled: true }],
+        files: [],
+        migration: { hasLegacyConfig: false, needsSave: false },
+        legacyConfig: null,
+      })),
       runLinearSyncNow: vi.fn(async () => ({
         enabled: true,
         running: false,
@@ -234,9 +242,12 @@ describe("AutomationsPage", () => {
     mountPage();
 
     await waitFor(() => expect(screen.getByTestId("linear-intake-policy-card")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Policy Enabled")).toBeTruthy());
     expect(screen.getByText("Linear Intake Policy")).toBeTruthy();
+    expect(
+      screen.getByText(/CTO > Linear is where you configure assignee \+ label driven Linear issue workflows\./i)
+    ).toBeTruthy();
     expect(screen.getByText("Connected")).toBeTruthy();
-    expect(screen.getByText("Policy Enabled")).toBeTruthy();
     expect(screen.getByText("Queue: 4")).toBeTruthy();
   });
 
@@ -245,7 +256,10 @@ describe("AutomationsPage", () => {
     mountPage();
 
     await waitFor(() => expect(screen.getByTestId("linear-intake-policy-card")).toBeTruthy());
-    fireEvent.click(screen.getByRole("button", { name: /run sync now/i }));
+    await waitFor(() => expect(screen.getByText("Policy Enabled")).toBeTruthy());
+    const runSyncButton = screen.getByRole("button", { name: /run sync now/i });
+    await waitFor(() => expect(runSyncButton.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(runSyncButton);
     await waitFor(() => expect(bridge.cto.runLinearSyncNow).toHaveBeenCalledTimes(1));
 
     fireEvent.click(screen.getByRole("button", { name: /open in cto/i }));

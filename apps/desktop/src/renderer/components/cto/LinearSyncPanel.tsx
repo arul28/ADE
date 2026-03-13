@@ -11,13 +11,16 @@ import type {
   LinearRouteDecision,
   LinearSyncDashboard,
   LinearSyncQueueItem,
+  LinearWorkflowRunDetail,
   LinearWorkflowCatalog,
   LinearWorkflowConfig,
   LinearWorkflowDefinition,
+  LinearWorkflowReviewRejectionAction,
   LinearWorkflowStep,
   LinearWorkflowTargetType,
 } from "../../../shared/types";
 import { LinearConnectionPanel } from "./LinearConnectionPanel";
+import { TimelineEntry } from "./shared/TimelineEntry";
 import { Button } from "../ui/Button";
 import { PaneHeader } from "../ui/PaneHeader";
 import { Chip } from "../ui/Chip";
@@ -36,6 +39,8 @@ type SetupChecklistItem = {
   done: boolean;
 };
 
+type SupervisorMode = "none" | "after_work" | "before_pr" | "after_pr";
+
 type SimulationDraft = {
   identifier: string;
   title: string;
@@ -51,7 +56,11 @@ type VisualPlan = {
   startState: string;
   waitForCompletion: boolean;
   waitForPr: boolean;
+  prTiming: "none" | "after_start" | "after_target_complete";
   reviewReadyWhen: "work_complete" | "pr_created" | "pr_ready";
+  supervisorMode: SupervisorMode;
+  supervisorIdentityKey: string;
+  rejectAction: LinearWorkflowReviewRejectionAction;
   notificationEnabled: boolean;
   notificationMilestone: NonNullable<LinearWorkflowStep["notifyOn"]>;
 };
@@ -131,6 +140,16 @@ function defaultLaunchStep(targetType: LinearWorkflowTargetType): LinearWorkflow
   };
 }
 
+function defaultReviewStep(): LinearWorkflowStep {
+  return {
+    id: "review",
+    type: "request_human_review",
+    name: "Supervisor review",
+    reviewerIdentityKey: "cto",
+    rejectAction: "loop_back",
+  };
+}
+
 function defaultNotificationStep(targetType: LinearWorkflowTargetType): LinearWorkflowStep {
   return {
     id: "notify",
@@ -153,6 +172,9 @@ function buildWorkflow(targetType: LinearWorkflowTargetType): LinearWorkflowDefi
           type: targetType,
           runMode: "assisted",
           sessionTemplate: "default",
+          laneSelection: "primary",
+          sessionReuse: "reuse_existing",
+          prTiming: "after_target_complete",
         }
       : targetType === "review_gate"
         ? {
@@ -164,11 +186,14 @@ function buildWorkflow(targetType: LinearWorkflowTargetType): LinearWorkflowDefi
               type: targetType,
               runMode: "autopilot",
               prStrategy: { kind: "per-lane", draft: true },
+              laneSelection: "primary",
+              prTiming: "after_target_complete",
             }
           : {
               type: targetType,
               runMode: "autopilot",
               workerSelector: targetType === "mission" ? { mode: "none" } : { mode: "none" },
+              ...(targetType === "worker_run" ? { laneSelection: "primary", prTiming: "after_target_complete" as const } : {}),
               ...(targetType === "mission" ? { missionTemplate: "default" } : {}),
             };
 
@@ -177,7 +202,7 @@ function buildWorkflow(targetType: LinearWorkflowTargetType): LinearWorkflowDefi
     defaultLaunchStep(targetType),
   ];
   if (targetType === "review_gate") {
-    steps.push({ id: "review", type: "request_human_review", name: "Await human review" });
+    steps.push(defaultReviewStep());
   } else {
     steps.push({ id: "wait", type: "wait_for_target_status", name: "Wait for delegated work", targetStatus: "completed" });
   }
@@ -251,13 +276,28 @@ function getStep(workflow: LinearWorkflowDefinition, type: LinearWorkflowStep["t
   return workflow.steps.find((step) => step.type === type);
 }
 
+function reviewStepPosition(workflow: LinearWorkflowDefinition): SupervisorMode {
+  const reviewIndex = workflow.steps.findIndex((step) => step.type === "request_human_review");
+  if (reviewIndex < 0) return "none";
+  const waitPrIndex = workflow.steps.findIndex((step) => step.type === "wait_for_pr");
+  if (waitPrIndex >= 0) {
+    return reviewIndex > waitPrIndex ? "after_pr" : "before_pr";
+  }
+  return "after_work";
+}
+
 function deriveVisualPlan(workflow: LinearWorkflowDefinition): VisualPlan {
   const notificationStep = getStep(workflow, "emit_app_notification");
+  const reviewStep = getStep(workflow, "request_human_review");
   return {
     startState: getStep(workflow, "set_linear_state")?.state ?? "",
     waitForCompletion: Boolean(getStep(workflow, "wait_for_target_status")),
     waitForPr: Boolean(getStep(workflow, "wait_for_pr")),
+    prTiming: workflow.target.prStrategy ? workflow.target.prTiming ?? "after_target_complete" : "none",
     reviewReadyWhen: workflow.closeout?.reviewReadyWhen ?? (getStep(workflow, "wait_for_pr") ? "pr_created" : "work_complete"),
+    supervisorMode: reviewStepPosition(workflow),
+    supervisorIdentityKey: reviewStep?.reviewerIdentityKey ?? workflow.humanReview?.reviewers?.[0] ?? "cto",
+    rejectAction: reviewStep?.rejectAction ?? (workflow.closeout?.reopenOnFailure ? "reopen_issue" : "cancel"),
     notificationEnabled: Boolean(notificationStep),
     notificationMilestone: notificationStep?.notifyOn ?? (getStep(workflow, "wait_for_pr") ? "review_ready" : "completed"),
   };
@@ -268,6 +308,12 @@ function rebuildWorkflowSteps(workflow: LinearWorkflowDefinition, planPatch: Par
   const nextPlan = { ...currentPlan, ...planPatch };
   const customSteps = workflow.steps.filter((step) => !visualManagedStepTypes.has(step.type));
   const steps: LinearWorkflowStep[] = [];
+  const reviewStep = {
+    ...(getStep(workflow, "request_human_review") ?? defaultReviewStep()),
+    reviewerIdentityKey: (nextPlan.supervisorIdentityKey || "cto") as LinearWorkflowStep["reviewerIdentityKey"],
+    rejectAction: nextPlan.rejectAction,
+    loopToStepId: getStep(workflow, "launch_target")?.id ?? "launch",
+  } satisfies LinearWorkflowStep;
 
   if (nextPlan.startState.trim()) {
     steps.push({
@@ -280,7 +326,7 @@ function rebuildWorkflowSteps(workflow: LinearWorkflowDefinition, planPatch: Par
   steps.push(getStep(workflow, "launch_target") ?? defaultLaunchStep(workflow.target.type));
 
   if (workflow.target.type === "review_gate") {
-    steps.push(getStep(workflow, "request_human_review") ?? { id: "review", type: "request_human_review", name: "Await human review" });
+    steps.push(reviewStep);
   } else if (nextPlan.waitForCompletion) {
     steps.push(
       getStep(workflow, "wait_for_target_status") ?? {
@@ -292,8 +338,16 @@ function rebuildWorkflowSteps(workflow: LinearWorkflowDefinition, planPatch: Par
     );
   }
 
+  if (nextPlan.supervisorMode !== "none" && nextPlan.supervisorMode !== "after_pr") {
+    steps.push(reviewStep);
+  }
+
   if (nextPlan.waitForPr) {
     steps.push(getStep(workflow, "wait_for_pr") ?? { id: "wait-pr", type: "wait_for_pr", name: "Wait for PR" });
+  }
+
+  if (nextPlan.supervisorMode === "after_pr") {
+    steps.push(reviewStep);
   }
 
   steps.push(...customSteps);
@@ -309,11 +363,29 @@ function rebuildWorkflowSteps(workflow: LinearWorkflowDefinition, planPatch: Par
 
   return {
     ...workflow,
+    target: {
+      ...workflow.target,
+      prTiming: workflow.target.prStrategy ? nextPlan.prTiming : "none",
+    },
     steps,
     closeout: {
       ...(workflow.closeout ?? {}),
       reviewReadyWhen: nextPlan.waitForPr ? nextPlan.reviewReadyWhen : "work_complete",
     },
+    humanReview:
+      nextPlan.supervisorMode === "none"
+        ? workflow.humanReview
+          ? {
+              ...workflow.humanReview,
+              required: false,
+              reviewers: nextPlan.supervisorIdentityKey ? [nextPlan.supervisorIdentityKey] : workflow.humanReview.reviewers,
+            }
+          : undefined
+        : {
+            ...(workflow.humanReview ?? {}),
+            required: true,
+            reviewers: [nextPlan.supervisorIdentityKey || "cto"],
+          },
   };
 }
 
@@ -360,14 +432,102 @@ function buildMonitorStory(args: {
     {
       title: "Review handoff happens",
       detail:
-        latestRun?.prId
+        latestRun?.status === "escalated"
+          ? `Supervisor review is waiting on ${latestRun.supervisorIdentityKey ?? "the configured reviewer"}.`
+          : latestRun?.prId
           ? `PR ${latestRun.prId} is linked and the run can move the issue to review.`
           : latestRun?.status === "resolved"
             ? "The workflow completed and closeout should have moved the issue to review."
             : "PR linking and final closeout will appear here when the workflow progresses.",
-      done: Boolean(latestRun?.prId || latestRun?.status === "resolved"),
+      done: Boolean(latestRun?.prId || latestRun?.status === "resolved" || latestRun?.status === "escalated"),
     },
   ];
+}
+
+function formatIdentityLabel(value: string | null | undefined, agents: AgentIdentity[]): string {
+  if (!value) return "Unassigned";
+  if (value === "cto") return "CTO";
+  if (value.startsWith("agent:")) {
+    const agentId = value.slice("agent:".length);
+    const match = agents.find((agent) => agent.id === agentId);
+    return match ? `${match.name} (${match.slug})` : value;
+  }
+  return value;
+}
+
+function formatQueueRunStatus(item: LinearSyncQueueItem): string {
+  if (item.status === "escalated") return "Awaiting supervisor";
+  if (item.status === "resolved") return "Completed";
+  return item.status.replace(/_/g, " ");
+}
+
+function formatPrStatus(item: LinearSyncQueueItem): string {
+  if (!item.prId) return "No PR";
+  return [item.prState ?? "unknown", item.prChecksStatus ?? "none", item.prReviewStatus ?? "none"].join(" · ");
+}
+
+function buildRunTimeline(detail: LinearWorkflowRunDetail): Array<{
+  id: string;
+  timestamp: string;
+  title: string;
+  subtitle: string;
+  status: string;
+  statusVariant: "info" | "success" | "warning" | "error" | "muted";
+  payload: Record<string, unknown> | null;
+}> {
+  const entries = [
+    ...detail.ingressEvents.map((event) => ({
+      id: `ingress:${event.id}`,
+      timestamp: event.createdAt,
+      title: `Ingress · ${event.issueIdentifier ?? event.issueId ?? "Issue update"}`,
+      subtitle: `${event.source} · ${event.summary}`,
+      status: event.source,
+      statusVariant: "muted" as const,
+      payload: event.payload ?? null,
+    })),
+    ...detail.events.map((event) => {
+      const statusVariant: "info" | "success" | "warning" | "error" | "muted" =
+        event.status === "failed"
+          ? "error"
+          : event.status === "completed"
+            ? "success"
+            : event.status === "waiting"
+              ? "warning"
+              : "info";
+      return {
+        id: `event:${event.id}`,
+        timestamp: event.createdAt,
+        title: event.message?.trim() || event.eventType,
+        subtitle: event.eventType,
+        status: event.status ?? "event",
+        statusVariant,
+        payload: event.payload ?? null,
+      };
+    }),
+    ...detail.steps
+      .filter((step) => step.startedAt || step.completedAt)
+      .map((step) => {
+        const statusVariant: "info" | "success" | "warning" | "error" | "muted" =
+          step.status === "failed"
+            ? "error"
+            : step.status === "completed"
+              ? "success"
+              : step.status === "waiting"
+                ? "warning"
+                : "muted";
+        return {
+          id: `step:${step.id}`,
+          timestamp: step.completedAt ?? step.startedAt ?? detail.run.createdAt,
+          title: step.name ?? step.workflowStepId,
+          subtitle: step.type,
+          status: step.status,
+          statusVariant,
+          payload: step.payload ?? null,
+        };
+      }),
+  ];
+
+  return entries.sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
 }
 
 export function LinearSyncPanel() {
@@ -377,6 +537,11 @@ export function LinearSyncPanel() {
   const [loadedPolicy, setLoadedPolicy] = useState<LinearWorkflowConfig>(createDefaultPolicy());
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(createDefaultPolicy().workflows[0]?.id ?? null);
   const [queue, setQueue] = useState<LinearSyncQueueItem[]>([]);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedRunDetail, setSelectedRunDetail] = useState<LinearWorkflowRunDetail | null>(null);
+  const [runDetailLoading, setRunDetailLoading] = useState(false);
+  const [reviewNote, setReviewNote] = useState("");
+  const [queueActionLoading, setQueueActionLoading] = useState<"approve" | "reject" | "retry" | null>(null);
   const [revisions, setRevisions] = useState<CtoFlowPolicyRevision[]>([]);
   const [catalog, setCatalog] = useState<LinearWorkflowCatalog>({ users: [], labels: [], states: [] });
   const [agents, setAgents] = useState<AgentIdentity[]>([]);
@@ -412,13 +577,29 @@ export function LinearSyncPanel() {
     [selectedWorkflow]
   );
 
+  const ctoAssigneeName = useMemo(
+    () => policy.settings.ctoLinearAssigneeName?.trim() || "CTO",
+    [policy.settings.ctoLinearAssigneeName]
+  );
+
   const availableEmployees = useMemo(
     () => agents.filter((agent) => !agent.deletedAt),
     [agents]
   );
 
   const availableAssigneeOptions = useMemo(
-    () => availableEmployees.map((agent) => ({ value: agent.id, label: `${agent.name} (${agent.slug})` })),
+    () => [
+      { value: ctoAssigneeName, label: `${ctoAssigneeName} (ADE CTO)` },
+      ...availableEmployees.map((agent) => ({ value: agent.id, label: `${agent.name} (${agent.slug})` })),
+    ],
+    [availableEmployees, ctoAssigneeName]
+  );
+
+  const delegatedEmployeeOptions = useMemo(
+    () => [
+      { value: "cto", label: "CTO" },
+      ...availableEmployees.map((agent) => ({ value: `agent:${agent.id}`, label: `${agent.name} (${agent.slug})` })),
+    ],
     [availableEmployees]
   );
 
@@ -447,6 +628,15 @@ export function LinearSyncPanel() {
     }
   }, [availableLabelOptions, labelPicker]);
 
+  useEffect(() => {
+    if (!queue.length) {
+      setSelectedRunId(null);
+      setSelectedRunDetail(null);
+      return;
+    }
+    setSelectedRunId((current) => (current && queue.some((item) => item.id === current) ? current : queue[0]?.id ?? null));
+  }, [queue]);
+
   const hydrate = useCallback((nextPolicy: LinearWorkflowConfig) => {
     setPolicy(nextPolicy);
     setLoadedPolicy(nextPolicy);
@@ -471,6 +661,24 @@ export function LinearSyncPanel() {
     setQueue(q);
     setIngressStatus(nextIngressStatus);
     setIngressEvents(nextIngressEvents);
+  }, []);
+
+  const loadRunDetail = useCallback(async (runId: string | null) => {
+    if (!window.ade?.cto || !runId) {
+      setSelectedRunDetail(null);
+      return;
+    }
+    setRunDetailLoading(true);
+    try {
+      const detail = await window.ade.cto.getLinearWorkflowRunDetail({ runId });
+      setSelectedRunDetail(detail);
+      setReviewNote(detail?.run.latestReviewNote ?? "");
+    } catch (err) {
+      setSelectedRunDetail(null);
+      setError(err instanceof Error ? err.message : "Failed to load run detail.");
+    } finally {
+      setRunDetailLoading(false);
+    }
   }, []);
 
   const loadAll = useCallback(async () => {
@@ -498,9 +706,29 @@ export function LinearSyncPanel() {
     }
   }, [hydrate, loadRuntimeState]);
 
+  const openPath = useCallback((path: string) => {
+    window.history.pushState({}, "", path);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    window.dispatchEvent(new Event("hashchange"));
+  }, []);
+
   useEffect(() => {
     void loadAll();
   }, [loadAll]);
+
+  useEffect(() => {
+    void loadRunDetail(selectedRunId);
+  }, [loadRunDetail, selectedRunId]);
+
+  useEffect(() => {
+    const unsubscribe = window.ade?.cto?.onLinearWorkflowEvent?.(() => {
+      void loadRuntimeState();
+      if (selectedRunId) {
+        void loadRunDetail(selectedRunId);
+      }
+    });
+    return () => unsubscribe?.();
+  }, [loadRunDetail, loadRuntimeState, selectedRunId]);
 
   const updateSelectedWorkflow = useCallback(
     (updater: (workflow: LinearWorkflowDefinition) => LinearWorkflowDefinition) => {
@@ -531,6 +759,35 @@ export function LinearSyncPanel() {
       updateSelectedWorkflow((workflow) => rebuildWorkflowSteps(workflow, patch));
     },
     [updateSelectedWorkflow]
+  );
+
+  const actOnRun = useCallback(
+    async (action: "approve" | "reject" | "retry") => {
+      if (!window.ade?.cto || !selectedRunId) return;
+      setQueueActionLoading(action);
+      setError(null);
+      try {
+        await window.ade.cto.resolveLinearSyncQueueItem({
+          queueItemId: selectedRunId,
+          action,
+          note: reviewNote.trim() || undefined,
+        });
+        await loadRuntimeState();
+        await loadRunDetail(selectedRunId);
+        setStatusNote(
+          action === "approve"
+            ? "Supervisor approval recorded."
+            : action === "reject"
+              ? "Supervisor decision recorded."
+              : "Workflow queued to retry."
+        );
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to update the workflow run.");
+      } finally {
+        setQueueActionLoading(null);
+      }
+    },
+    [loadRunDetail, loadRuntimeState, reviewNote, selectedRunId]
   );
 
   const savePolicy = useCallback(async () => {
@@ -625,12 +882,13 @@ export function LinearSyncPanel() {
   }, [loadedPolicy.workflows, selectedWorkflow]);
 
   const selectedEmployeeBinding = selectedWorkflow?.target.employeeIdentityKey ?? "__assigned__";
+  const selectedSupervisorBinding = visualPlan?.supervisorIdentityKey ?? "cto";
   const labelRequirementReady = Boolean(selectedWorkflow?.triggers.labels?.length);
   const assigneeRequirementReady = Boolean(selectedWorkflow?.triggers.assignees?.length);
   const webhookReady = Boolean(
     ingressStatus && ((ingressStatus.relay.configured && ingressStatus.relay.healthy) || (ingressStatus.localWebhook.configured && ingressStatus.localWebhook.healthy))
   );
-  const employeeSetupReady = availableEmployees.length > 0;
+  const employeeSetupReady = Boolean(ctoAssigneeName || availableEmployees.length > 0);
   const checklistItems = useMemo<SetupChecklistItem[]>(
     () => [
       {
@@ -643,7 +901,9 @@ export function LinearSyncPanel() {
         id: "employees",
         title: "Configure ADE employees",
         description: employeeSetupReady
-          ? `${availableEmployees.length} employee ${availableEmployees.length === 1 ? "identity is" : "identities are"} available for assignment matching.`
+          ? availableEmployees.length
+            ? `${availableEmployees.length} mapped ADE ${availableEmployees.length === 1 ? "employee is" : "employees are"} available, and CTO is always available for direct supervisor workflows.`
+            : "CTO is ready now. Open CTO > Team if you want non-CTO employees to match Linear assignees too."
           : "Open CTO > Team and add at least one employee identity before using assignee-based workflows.",
         done: employeeSetupReady,
       },
@@ -667,7 +927,7 @@ export function LinearSyncPanel() {
       {
         id: "monitor",
         title: "Test and monitor it",
-        description: "Use simulation, recent ingress events, and run observability in the right rail to watch the workflow progress.",
+        description: "Use simulation, recent ingress events, and the per-run timeline in the right rail to watch the workflow progress and approve supervisor handoffs.",
         done: Boolean(simulationResult || ingressEvents.length || queue.length),
       },
     ],
@@ -686,6 +946,14 @@ export function LinearSyncPanel() {
   );
   const completedChecklistCount = checklistItems.filter((item) => item.done).length;
   const monitorStory = useMemo(() => buildMonitorStory({ ingressEvents, queue }), [ingressEvents, queue]);
+  const selectedRunQueueItem = useMemo(
+    () => queue.find((item) => item.id === selectedRunId) ?? null,
+    [queue, selectedRunId]
+  );
+  const selectedRunTimeline = useMemo(
+    () => (selectedRunDetail ? buildRunTimeline(selectedRunDetail) : []),
+    [selectedRunDetail]
+  );
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="linear-sync-panel">
@@ -778,12 +1046,31 @@ export function LinearSyncPanel() {
             <div className={cardCls}>No workflow selected.</div>
           ) : (
             <div className="space-y-4">
+              <div className={cardCls}>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="font-sans text-sm font-semibold text-fg">Where Linear workflows fit</div>
+                    <div className="mt-1 max-w-3xl font-mono text-[10px] text-muted-fg">
+                      CTO &gt; Linear is for issue-driven automation that starts when a Linear assignee match AND a workflow label match happen together. Automations is ADE&apos;s broader rule system for repo, session, briefing, and non-Linear workflows.
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button variant="outline" size="sm" onClick={() => openPath("/cto#team-setup")}>
+                      Open Team Setup
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => openPath("/automations")}>
+                      Open Automations
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
               <div className={cardCls} data-testid="linear-first-run-guide">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <div className="font-sans text-sm font-semibold text-fg">Create your first real-time Linear workflow</div>
                     <div className="mt-1 max-w-3xl font-mono text-[10px] text-muted-fg">
-                      The normal setup is: connect Linear, make sure your ADE employees exist, pick who the issue must be assigned to, pick the workflow label, choose what ADE should launch, then save and test it.
+                      The normal setup is: connect Linear, confirm CTO or your ADE employees are mapped in CTO &gt; Team, pick who the issue must be assigned to, pick the workflow label from Linear, choose how ADE should execute the work, then save and test it end to end.
                     </div>
                   </div>
                   <Chip>{completedChecklistCount}/{checklistItems.length} ready</Chip>
@@ -807,6 +1094,9 @@ export function LinearSyncPanel() {
                   ))}
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
+                  <Button variant="outline" size="sm" onClick={() => openPath("/cto#team-setup")}>
+                    Open CTO Team
+                  </Button>
                   <Button variant="outline" size="sm" onClick={() => void ensureWebhook()} disabled={!connection?.connected}>
                     <Lightning size={10} />
                     Ensure real-time webhook
@@ -814,6 +1104,9 @@ export function LinearSyncPanel() {
                   <Button variant="outline" size="sm" onClick={() => void simulate()}>
                     <Shuffle size={10} />
                     Test this workflow
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => openPath("/automations")}>
+                    See broader Automations
                   </Button>
                 </div>
               </div>
@@ -869,7 +1162,7 @@ export function LinearSyncPanel() {
                       <Chip>{selectedWorkflow.triggers.assignees?.length ?? 0}</Chip>
                     </div>
                     <div className="mt-1 font-mono text-[10px] text-muted-fg">
-                      OR within this card. Match any selected ADE employee identity. Employees come from CTO &gt; Team, where each ADE employee can map to one or more Linear identities.
+                      OR within this card. Match CTO or any selected ADE employee identity. Employees come from CTO &gt; Team, where each ADE employee can map to one or more Linear identities.
                     </div>
                     <div className="mt-3 flex flex-wrap gap-2">
                       {(selectedWorkflow.triggers.assignees ?? []).map((value) => (
@@ -908,6 +1201,10 @@ export function LinearSyncPanel() {
                     {!employeeSetupReady ? (
                       <div className="mt-2 font-mono text-[10px] text-warning">
                         No ADE employees are configured yet. Open CTO &gt; Team first, then come back here to match Linear assignees.
+                      </div>
+                    ) : availableEmployees.length === 0 ? (
+                      <div className="mt-2 font-mono text-[10px] text-muted-fg">
+                        CTO is available now. Open CTO &gt; Team only if you want additional ADE employees to match Linear assignees too.
                       </div>
                     ) : null}
                   </div>
@@ -985,7 +1282,21 @@ export function LinearSyncPanel() {
               <div className={cardCls}>
                 <div className="mb-3 font-sans text-sm font-semibold text-fg">Execution Target</div>
                 <div className="mb-3 font-mono text-[10px] text-muted-fg">
-                  Most teams want `employee_session` here. That means ADE will open the assigned employee's chat, send the Linear issue context into it, and start work automatically.
+                  Pick how ADE should execute the matched issue. `employee_session` is the direct handoff path, `worker_run` is the delegated isolated worker path, and `mission` is best when you want a broader multi-step mission instead of a single employee/session handoff.
+                </div>
+                <div className="mb-3 grid gap-2 md:grid-cols-3">
+                  <div className="rounded border border-border/20 bg-surface-recessed p-3">
+                    <div className="font-sans text-xs font-semibold text-fg">Direct CTO session</div>
+                    <div className="mt-1 font-mono text-[10px] text-muted-fg">Assign to CTO + add a workflow label. ADE opens the CTO chat and sends the issue context immediately.</div>
+                  </div>
+                  <div className="rounded border border-border/20 bg-surface-recessed p-3">
+                    <div className="font-sans text-xs font-semibold text-fg">Fresh worker lane</div>
+                    <div className="mt-1 font-mono text-[10px] text-muted-fg">Use `worker_run` with a fresh issue lane when you want isolated delegated implementation before review.</div>
+                  </div>
+                  <div className="rounded border border-border/20 bg-surface-recessed p-3">
+                    <div className="font-sans text-xs font-semibold text-fg">Mission workflow</div>
+                    <div className="mt-1 font-mono text-[10px] text-muted-fg">Use `mission` when the issue should become a broader ADE mission instead of a single employee-owned chat.</div>
+                  </div>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
                   <div>
@@ -1039,6 +1350,7 @@ export function LinearSyncPanel() {
                     <select
                       className={selectCls}
                       value={selectedEmployeeBinding}
+                      data-testid="linear-delegated-employee-select"
                       onChange={(e) =>
                         updateSelectedWorkflow((workflow) => ({
                           ...workflow,
@@ -1051,59 +1363,125 @@ export function LinearSyncPanel() {
                       }
                     >
                       <option value="__assigned__">Use the Linear assignee</option>
-                      {availableEmployees.map((agent) => (
-                        <option key={agent.id} value={`agent:${agent.id}`}>
-                          {agent.name} ({agent.slug})
+                      {delegatedEmployeeOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
                         </option>
                       ))}
                     </select>
                   </div>
                   <div>
-                    <label className={labelCls}>Worker Selector Mode</label>
+                    <label className={labelCls}>Lane Behavior</label>
                     <select
                       className={selectCls}
-                      value={selectedWorkflow.target.workerSelector?.mode ?? "none"}
+                      value={selectedWorkflow.target.laneSelection ?? "primary"}
+                      data-testid="linear-lane-selection-select"
+                      disabled={selectedWorkflow.target.type === "mission" || selectedWorkflow.target.type === "review_gate"}
                       onChange={(e) =>
                         updateSelectedWorkflow((workflow) => ({
                           ...workflow,
                           target: {
                             ...workflow.target,
-                            workerSelector:
-                              e.target.value === "none"
-                                ? { mode: "none" }
-                                : {
-                                    mode: e.target.value as "id" | "slug" | "capability",
-                                    value: workerSelectorValue(workflow.target.workerSelector),
-                                  },
+                            laneSelection: e.target.value as NonNullable<LinearWorkflowDefinition["target"]["laneSelection"]>,
                           },
                         }))
                       }
                     >
-                      <option value="none">none</option>
-                      <option value="slug">slug</option>
-                      <option value="id">id</option>
-                      <option value="capability">capability</option>
+                      <option value="primary">Reuse the primary lane</option>
+                      <option value="fresh_issue_lane">Create a fresh dedicated issue lane</option>
                     </select>
                   </div>
-                  <div>
-                    <label className={labelCls}>Worker Selector Value</label>
-                    <input
-                      className={inputCls}
-                      value={workerSelectorValue(selectedWorkflow.target.workerSelector)}
-                      onChange={(e) =>
-                        updateSelectedWorkflow((workflow) => ({
-                          ...workflow,
-                          target: {
-                            ...workflow.target,
-                            workerSelector:
-                              workflow.target.workerSelector && workflow.target.workerSelector.mode !== "none"
-                                ? { ...workflow.target.workerSelector, value: e.target.value }
-                                : { mode: "slug", value: e.target.value },
-                          },
-                        }))
-                      }
-                    />
-                  </div>
+                  {selectedWorkflow.target.type === "employee_session" ? (
+                    <div>
+                      <label className={labelCls}>Session Behavior</label>
+                      <select
+                        className={selectCls}
+                        value={selectedWorkflow.target.sessionReuse ?? "reuse_existing"}
+                        data-testid="linear-session-reuse-select"
+                        onChange={(e) =>
+                          updateSelectedWorkflow((workflow) => ({
+                            ...workflow,
+                            target: {
+                              ...workflow.target,
+                              sessionReuse: e.target.value as NonNullable<LinearWorkflowDefinition["target"]["sessionReuse"]>,
+                            },
+                          }))
+                        }
+                      >
+                        <option value="reuse_existing">Reuse the employee&apos;s existing session</option>
+                        <option value="fresh_session">Create a fresh dedicated session</option>
+                      </select>
+                    </div>
+                  ) : null}
+                  {selectedWorkflow.target.laneSelection === "fresh_issue_lane" && selectedWorkflow.target.type !== "mission" && selectedWorkflow.target.type !== "review_gate" ? (
+                    <div>
+                      <label className={labelCls}>Fresh Lane Name</label>
+                      <input
+                        className={inputCls}
+                        placeholder="Defaults to issue identifier + title"
+                        value={selectedWorkflow.target.freshLaneName ?? ""}
+                        onChange={(e) =>
+                          updateSelectedWorkflow((workflow) => ({
+                            ...workflow,
+                            target: {
+                              ...workflow.target,
+                              freshLaneName: e.target.value,
+                            },
+                          }))
+                        }
+                      />
+                    </div>
+                  ) : null}
+                  {selectedWorkflow.target.type !== "employee_session" && selectedWorkflow.target.type !== "review_gate" ? (
+                    <>
+                      <div>
+                        <label className={labelCls}>Worker Selector Mode</label>
+                        <select
+                          className={selectCls}
+                          value={selectedWorkflow.target.workerSelector?.mode ?? "none"}
+                          onChange={(e) =>
+                            updateSelectedWorkflow((workflow) => ({
+                              ...workflow,
+                              target: {
+                                ...workflow.target,
+                                workerSelector:
+                                  e.target.value === "none"
+                                    ? { mode: "none" }
+                                    : {
+                                        mode: e.target.value as "id" | "slug" | "capability",
+                                        value: workerSelectorValue(workflow.target.workerSelector),
+                                      },
+                              },
+                            }))
+                          }
+                        >
+                          <option value="none">none</option>
+                          <option value="slug">slug</option>
+                          <option value="id">id</option>
+                          <option value="capability">capability</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className={labelCls}>Worker Selector Value</label>
+                        <input
+                          className={inputCls}
+                          value={workerSelectorValue(selectedWorkflow.target.workerSelector)}
+                          onChange={(e) =>
+                            updateSelectedWorkflow((workflow) => ({
+                              ...workflow,
+                              target: {
+                                ...workflow.target,
+                                workerSelector:
+                                  workflow.target.workerSelector && workflow.target.workerSelector.mode !== "none"
+                                    ? { ...workflow.target.workerSelector, value: e.target.value }
+                                    : { mode: "slug", value: e.target.value },
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+                    </>
+                  ) : null}
                   <div>
                     <label className={labelCls}>Template</label>
                     <input
@@ -1120,12 +1498,21 @@ export function LinearSyncPanel() {
                     />
                   </div>
                 </div>
+                <div className="mt-3 font-mono text-[10px] text-muted-fg">
+                  {selectedWorkflow.target.type === "employee_session"
+                    ? "Direct employee sessions can reuse the person’s ongoing chat, create a fresh session in the same lane, or create a fresh issue lane for fully isolated execution."
+                    : selectedWorkflow.target.type === "worker_run"
+                      ? "Worker runs are ideal when you want a delegated implementation path that can still hand back to a supervisor later."
+                      : selectedWorkflow.target.type === "review_gate"
+                        ? "Review gate is a manual approval-only target. For most supervised implementation flows, use employee_session or worker_run plus a supervisor step below."
+                        : "Mission and PR-resolution targets keep the same webhook-first trigger semantics but change the execution engine."}
+                </div>
               </div>
 
               <div className={cardCls}>
                 <div className="mb-3 font-sans text-sm font-semibold text-fg">Execution Plan</div>
                 <div className="mb-3 font-mono text-[10px] text-muted-fg">
-                  Common path: move issue to In Progress, launch delegated work, optionally wait for a PR, hand off to In Review, then notify you in ADE.
+                  Common path: move the issue to In Progress, launch delegated work, optionally create or wait for a PR, optionally route to a supervisor, then hand off to In Review and notify you in ADE.
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
                   <div>
@@ -1165,9 +1552,9 @@ export function LinearSyncPanel() {
                       data-testid="linear-pr-behavior-select"
                       onChange={(e) =>
                         updateSelectedWorkflow((workflow) => ({
-                          ...rebuildWorkflowSteps(workflow, {
-                            waitForPr: e.target.value !== "none",
-                          }),
+                          ...rebuildWorkflowSteps(workflow, e.target.value === "none"
+                            ? { waitForPr: false, reviewReadyWhen: "work_complete", prTiming: "none" }
+                            : { prTiming: deriveVisualPlan(workflow).prTiming === "none" ? "after_target_complete" : deriveVisualPlan(workflow).prTiming }),
                           target: {
                             ...workflow.target,
                             prStrategy:
@@ -1176,6 +1563,12 @@ export function LinearSyncPanel() {
                                 : e.target.value === "manual"
                                   ? { kind: "manual" }
                                   : { kind: e.target.value as "integration" | "per-lane" | "queue", draft: true },
+                            prTiming:
+                              e.target.value === "none"
+                                ? "none"
+                                : workflow.target.prTiming === "none" || !workflow.target.prTiming
+                                  ? "after_target_complete"
+                                  : workflow.target.prTiming,
                           },
                         }))
                       }
@@ -1188,7 +1581,21 @@ export function LinearSyncPanel() {
                     </select>
                   </div>
                   <div>
-                    <label className={labelCls}>Review-ready when</label>
+                    <label className={labelCls}>ADE-managed PR Timing</label>
+                    <select
+                      className={selectCls}
+                      value={visualPlan?.prTiming ?? "none"}
+                      data-testid="linear-pr-timing-select"
+                      onChange={(e) => patchVisualPlan({ prTiming: e.target.value as VisualPlan["prTiming"] })}
+                      disabled={!selectedWorkflow.target.prStrategy || selectedWorkflow.target.prStrategy.kind === "manual"}
+                    >
+                      <option value="after_start">Create or link a PR right after work starts</option>
+                      <option value="after_target_complete">Create or link a PR after delegated work completes</option>
+                      <option value="none">Do not manage PR timing here</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className={labelCls}>Block review-ready until</label>
                     <select
                       className={selectCls}
                       value={visualPlan?.reviewReadyWhen ?? "work_complete"}
@@ -1198,6 +1605,62 @@ export function LinearSyncPanel() {
                       <option value="work_complete">Delegated work completes</option>
                       <option value="pr_created">A PR exists</option>
                       <option value="pr_ready">A PR is ready for review</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className={labelCls}>Supervisor Path</label>
+                    <select
+                      className={selectCls}
+                      value={visualPlan?.supervisorMode ?? "none"}
+                      data-testid="linear-supervisor-mode-select"
+                      disabled={selectedWorkflow.target.type === "review_gate"}
+                      onChange={(e) => {
+                        const nextMode = e.target.value as SupervisorMode;
+                        patchVisualPlan(
+                          nextMode === "before_pr" || nextMode === "after_pr"
+                            ? {
+                                supervisorMode: nextMode,
+                                waitForPr: true,
+                                reviewReadyWhen: (visualPlan?.reviewReadyWhen ?? "work_complete") === "work_complete"
+                                  ? "pr_created"
+                                  : (visualPlan?.reviewReadyWhen ?? "pr_created"),
+                              }
+                            : { supervisorMode: nextMode }
+                        );
+                      }}
+                    >
+                      <option value="none">No supervisor step</option>
+                      <option value="after_work">Send to supervisor after delegated work completes</option>
+                      <option value="before_pr">Require supervisor approval before PR handoff</option>
+                      <option value="after_pr">Require supervisor approval after PR handoff</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className={labelCls}>Supervisor</label>
+                    <select
+                      className={selectCls}
+                      value={selectedSupervisorBinding}
+                      data-testid="linear-supervisor-identity-select"
+                      onChange={(e) => patchVisualPlan({ supervisorIdentityKey: e.target.value })}
+                    >
+                      {delegatedEmployeeOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className={labelCls}>If supervisor rejects</label>
+                    <select
+                      className={selectCls}
+                      value={visualPlan?.rejectAction ?? "cancel"}
+                      data-testid="linear-supervisor-reject-select"
+                      onChange={(e) => patchVisualPlan({ rejectAction: e.target.value as LinearWorkflowReviewRejectionAction })}
+                    >
+                      <option value="loop_back">Request changes and loop back to delegated work</option>
+                      <option value="reopen_issue">Reject and reopen the Linear issue</option>
+                      <option value="cancel">Reject and cancel the workflow</option>
                     </select>
                   </div>
                   <div>
@@ -1260,6 +1723,10 @@ export function LinearSyncPanel() {
                   </div>
                 </div>
 
+                <div className="mt-3 font-mono text-[10px] text-muted-fg">
+                  Direct workflows hand off to review-ready as soon as the configured work/PR milestone is met. Supervised workflows insert a real approval step so CTO or another ADE employee can approve, reject, or loop the issue back before closeout continues.
+                </div>
+
                 <div className="mt-4 rounded border border-border/20 bg-surface-recessed p-3">
                   <div className="mb-2 font-sans text-sm font-semibold text-fg">What Happens Next</div>
                   <div className="space-y-2">
@@ -1271,6 +1738,8 @@ export function LinearSyncPanel() {
                           <div className="font-mono text-[10px] text-muted-fg">
                             {step.type}
                             {step.type === "set_linear_state" && step.state ? ` -> ${step.state}` : ""}
+                            {step.type === "wait_for_pr" && selectedWorkflow.target.prStrategy ? ` -> ${selectedWorkflow.target.prStrategy.kind}` : ""}
+                            {step.type === "request_human_review" ? ` -> ${formatIdentityLabel(step.reviewerIdentityKey ?? null, availableEmployees)} (${step.rejectAction ?? "cancel"})` : ""}
                             {step.type === "emit_app_notification" && step.notifyOn ? ` -> ${step.notifyOn}` : ""}
                           </div>
                         </div>
@@ -1493,7 +1962,16 @@ export function LinearSyncPanel() {
               {queue.length ? (
                 <div className="mt-3 space-y-2">
                   {queue.slice(0, 10).map((item) => (
-                    <div key={item.id} className="rounded border border-border/20 bg-surface px-3 py-2">
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setSelectedRunId(item.id)}
+                      className={cn(
+                        "w-full rounded border px-3 py-2 text-left",
+                        selectedRunId === item.id ? "border-accent bg-accent/10" : "border-border/20 bg-surface"
+                      )}
+                      data-testid={`linear-run-row-${item.id}`}
+                    >
                       <div className="flex items-center justify-between gap-2">
                         <div className="min-w-0 truncate font-sans text-xs font-semibold text-fg">{item.identifier}</div>
                         <Chip>{item.status}</Chip>
@@ -1504,11 +1982,118 @@ export function LinearSyncPanel() {
                       <div className="mt-1 font-mono text-[10px] text-muted-fg">
                         current={item.currentStepId ?? "none"} {item.reviewState ? `· review=${item.reviewState}` : ""}
                       </div>
-                    </div>
+                      <div className="mt-1 font-mono text-[10px] text-muted-fg">
+                        lane={item.laneId ?? "none"} · pr={formatPrStatus(item)}
+                      </div>
+                    </button>
                   ))}
                 </div>
               ) : (
                 <div className="mt-3 font-mono text-[10px] text-muted-fg">No workflow runs yet.</div>
+              )}
+            </div>
+
+            <div className={cardCls} data-testid="linear-run-timeline-card">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="font-sans text-sm font-semibold text-fg">Run Timeline</div>
+                {selectedRunQueueItem ? <Chip>{formatQueueRunStatus(selectedRunQueueItem)}</Chip> : null}
+              </div>
+              {!selectedRunId ? (
+                <div className="font-mono text-[10px] text-muted-fg">Select a workflow run above to inspect its exact timeline, PR state, and supervisor handoff.</div>
+              ) : runDetailLoading ? (
+                <div className="font-mono text-[10px] text-muted-fg">Loading run detail…</div>
+              ) : !selectedRunDetail ? (
+                <div className="font-mono text-[10px] text-muted-fg">Run detail is unavailable.</div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="rounded border border-border/20 bg-surface-recessed p-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Chip>{selectedRunDetail.run.identifier}</Chip>
+                      <Chip>{selectedRunDetail.run.workflowName}</Chip>
+                      <Chip>{selectedRunDetail.run.targetType}</Chip>
+                    </div>
+                    <div className="mt-2 font-mono text-[10px] text-muted-fg">
+                      lane={selectedRunDetail.run.executionLaneId ?? "none"} · session={selectedRunDetail.run.linkedSessionId ?? "none"} · workerRun={selectedRunDetail.run.linkedWorkerRunId ?? "none"}
+                    </div>
+                    <div className="mt-1 font-mono text-[10px] text-muted-fg">
+                      pr={selectedRunDetail.run.linkedPrId ?? "none"} · state={selectedRunDetail.run.prState ?? "none"} · checks={selectedRunDetail.run.prChecksStatus ?? "none"} · reviews={selectedRunDetail.run.prReviewStatus ?? "none"}
+                    </div>
+                    <div className="mt-1 font-mono text-[10px] text-muted-fg">
+                      supervisor={formatIdentityLabel(selectedRunDetail.run.supervisorIdentityKey, availableEmployees)} · review-ready={selectedRunDetail.run.reviewReadyReason ?? "pending"}
+                    </div>
+                  </div>
+
+                  {selectedRunDetail.reviewContext && selectedRunDetail.run.status === "awaiting_human_review" ? (
+                    <div className="rounded border border-warning/30 bg-warning/5 p-3">
+                      <div className="font-sans text-xs font-semibold text-fg">Supervisor action required</div>
+                      <div className="mt-1 font-mono text-[10px] text-muted-fg">
+                        Routed to {formatIdentityLabel(selectedRunDetail.reviewContext.reviewerIdentityKey, availableEmployees)}. Reject behavior: {selectedRunDetail.reviewContext.rejectAction ?? "cancel"}.
+                      </div>
+                      {selectedRunDetail.reviewContext.instructions ? (
+                        <div className="mt-2 font-mono text-[10px] text-muted-fg">{selectedRunDetail.reviewContext.instructions}</div>
+                      ) : null}
+                      <div className="mt-3">
+                        <label className={labelCls}>Supervisor Note</label>
+                        <textarea
+                          className={textareaCls}
+                          rows={3}
+                          value={reviewNote}
+                          onChange={(e) => setReviewNote(e.target.value)}
+                          placeholder="Approve, reject, or request changes with context for the delegated worker."
+                        />
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <Button variant="primary" size="sm" onClick={() => void actOnRun("approve")} disabled={queueActionLoading !== null}>
+                          Approve handoff
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={() => void actOnRun("reject")} disabled={queueActionLoading !== null}>
+                          {selectedRunDetail.reviewContext.rejectAction === "loop_back"
+                            ? "Request changes"
+                            : selectedRunDetail.reviewContext.rejectAction === "reopen_issue"
+                              ? "Reject + reopen"
+                              : "Reject"}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {(selectedRunDetail.run.status === "failed" || selectedRunDetail.run.status === "cancelled" || selectedRunDetail.run.status === "retry_wait") ? (
+                    <div className="rounded border border-border/20 bg-surface-recessed p-3">
+                      <div className="font-sans text-xs font-semibold text-fg">Retry / rerun</div>
+                      <div className="mt-1 font-mono text-[10px] text-muted-fg">
+                        Requeue this workflow from ADE if you want to try the run again with the current workflow definition.
+                      </div>
+                      <div className="mt-3 flex items-center gap-2">
+                        <Button variant="outline" size="sm" onClick={() => void actOnRun("retry")} disabled={queueActionLoading !== null}>
+                          Retry run
+                        </Button>
+                        {selectedRunDetail.run.lastError ? <span className="font-mono text-[10px] text-warning">{selectedRunDetail.run.lastError}</span> : null}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="space-y-2" data-testid="linear-run-timeline">
+                    {selectedRunTimeline.map((entry) => (
+                      <TimelineEntry
+                        key={entry.id}
+                        timestamp={entry.timestamp}
+                        title={entry.title}
+                        subtitle={entry.subtitle}
+                        status={entry.status}
+                        statusVariant={entry.statusVariant}
+                        defaultExpanded={false}
+                      >
+                        {entry.payload ? (
+                          <pre className="overflow-auto font-mono text-[10px] text-muted-fg whitespace-pre-wrap">
+                            {JSON.stringify(entry.payload, null, 2)}
+                          </pre>
+                        ) : (
+                          <div className="font-mono text-[10px] text-muted-fg">No extra payload captured for this event.</div>
+                        )}
+                      </TimelineEntry>
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
 

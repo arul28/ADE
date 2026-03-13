@@ -1,13 +1,18 @@
 import { randomUUID } from "node:crypto";
 import type {
+  AgentChatIdentityKey,
   AdapterType,
+  LinearIngressEventRecord,
   LinearSyncQueueItem,
   LinearWorkflowConfig,
   LinearWorkflowDefinition,
   LinearWorkflowEventPayload,
   LinearWorkflowMatchResult,
+  LinearWorkflowRunDetail,
   LinearWorkflowRun,
+  LinearWorkflowRunEvent,
   LinearWorkflowRunStatus,
+  LinearWorkflowRunStep,
   LinearWorkflowStep,
   NormalizedLinearIssue,
 } from "../../../shared/types";
@@ -38,11 +43,18 @@ type RunRow = {
   status: LinearWorkflowRunStatus;
   current_step_index: number;
   current_step_id: string | null;
+  execution_lane_id: string | null;
   linked_mission_id: string | null;
   linked_session_id: string | null;
   linked_worker_run_id: string | null;
   linked_pr_id: string | null;
   review_state: LinearWorkflowRun["reviewState"];
+  supervisor_identity_key: string | null;
+  review_ready_reason: LinearWorkflowRun["reviewReadyReason"];
+  pr_state: LinearWorkflowRun["prState"];
+  pr_checks_status: LinearWorkflowRun["prChecksStatus"];
+  pr_review_status: LinearWorkflowRun["prReviewStatus"];
+  latest_review_note: string | null;
   retry_count: number;
   retry_after: string | null;
   closeout_state: LinearWorkflowRun["closeoutState"];
@@ -64,6 +76,16 @@ type StepRow = {
   payload_json: string | null;
 };
 
+type EventRow = {
+  id: string;
+  run_id: string;
+  event_type: string;
+  status: string | null;
+  message: string | null;
+  payload_json: string | null;
+  created_at: string;
+};
+
 function toRun(row: RunRow): LinearWorkflowRun {
   return {
     id: row.id,
@@ -78,11 +100,18 @@ function toRun(row: RunRow): LinearWorkflowRun {
     status: row.status,
     currentStepIndex: row.current_step_index,
     currentStepId: row.current_step_id,
+    executionLaneId: row.execution_lane_id,
     linkedMissionId: row.linked_mission_id,
     linkedSessionId: row.linked_session_id,
     linkedWorkerRunId: row.linked_worker_run_id,
     linkedPrId: row.linked_pr_id,
     reviewState: row.review_state,
+    supervisorIdentityKey: (row.supervisor_identity_key ?? null) as AgentChatIdentityKey | null,
+    reviewReadyReason: row.review_ready_reason,
+    prState: row.pr_state,
+    prChecksStatus: row.pr_checks_status,
+    prReviewStatus: row.pr_review_status,
+    latestReviewNote: row.latest_review_note,
     retryCount: row.retry_count,
     retryAfter: row.retry_after,
     closeoutState: row.closeout_state,
@@ -90,6 +119,33 @@ function toRun(row: RunRow): LinearWorkflowRun {
     sourceIssueSnapshot: JSON.parse(row.source_issue_snapshot_json),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function toRunStep(row: StepRow, workflow?: LinearWorkflowDefinition | null): LinearWorkflowRunStep {
+  const step = workflow?.steps.find((entry) => entry.id === row.workflow_step_id);
+  return {
+    id: row.id,
+    runId: row.run_id,
+    workflowStepId: row.workflow_step_id,
+    type: row.type,
+    name: step?.name ?? row.workflow_step_id,
+    status: row.status,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    payload: row.payload_json ? JSON.parse(row.payload_json) : null,
+  };
+}
+
+function toRunEvent(row: EventRow): LinearWorkflowRunEvent {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    eventType: row.event_type,
+    status: row.status,
+    message: row.message,
+    payload: row.payload_json ? JSON.parse(row.payload_json) : null,
+    createdAt: row.created_at,
   };
 }
 
@@ -103,6 +159,16 @@ function buildPrompt(issue: NormalizedLinearIssue): string {
     `Priority: ${issue.priorityLabel}`,
     `Labels: ${issue.labels.join(", ") || "none"}`,
   ].join("\n");
+}
+
+function describePrBehavior(workflow: LinearWorkflowDefinition): string {
+  const strategy = workflow.target.prStrategy;
+  if (!strategy) return "No PR will be created unless a later workflow step requires one.";
+  const timing = workflow.target.prTiming ?? "after_target_complete";
+  if (strategy.kind === "manual") {
+    return `Track a manually created PR (${timing === "after_start" ? "watch immediately" : "wait after delegated work"}).`;
+  }
+  return `${strategy.kind} PR (${timing === "after_start" ? "create or link right after launch" : "create or link after delegated work"}).`;
 }
 
 export function createLinearDispatcherService(args: {
@@ -212,15 +278,33 @@ export function createLinearDispatcherService(args: {
       [runId]
     );
 
+  const getEventRows = (runId: string): EventRow[] =>
+    args.db.all<EventRow>(
+      `
+        select id, run_id, event_type, status, message, payload_json, created_at
+        from linear_workflow_run_events
+        where run_id = ?
+        order by datetime(created_at) asc
+      `,
+      [runId]
+    );
+
   const updateRun = (runId: string, patch: Partial<{
     status: LinearWorkflowRunStatus;
     currentStepIndex: number;
     currentStepId: string | null;
+    executionLaneId: string | null;
     linkedMissionId: string | null;
     linkedSessionId: string | null;
     linkedWorkerRunId: string | null;
     linkedPrId: string | null;
     reviewState: LinearWorkflowRun["reviewState"];
+    supervisorIdentityKey: AgentChatIdentityKey | null;
+    reviewReadyReason: LinearWorkflowRun["reviewReadyReason"];
+    prState: LinearWorkflowRun["prState"];
+    prChecksStatus: LinearWorkflowRun["prChecksStatus"];
+    prReviewStatus: LinearWorkflowRun["prReviewStatus"];
+    latestReviewNote: string | null;
     retryCount: number;
     retryAfter: string | null;
     closeoutState: LinearWorkflowRun["closeoutState"];
@@ -235,11 +319,18 @@ export function createLinearDispatcherService(args: {
         set status = ?,
             current_step_index = ?,
             current_step_id = ?,
+            execution_lane_id = ?,
             linked_mission_id = ?,
             linked_session_id = ?,
             linked_worker_run_id = ?,
             linked_pr_id = ?,
             review_state = ?,
+            supervisor_identity_key = ?,
+            review_ready_reason = ?,
+            pr_state = ?,
+            pr_checks_status = ?,
+            pr_review_status = ?,
+            latest_review_note = ?,
             retry_count = ?,
             retry_after = ?,
             closeout_state = ?,
@@ -253,11 +344,18 @@ export function createLinearDispatcherService(args: {
         patch.status ?? existing.status,
         patch.currentStepIndex ?? existing.current_step_index,
         patch.currentStepId === undefined ? existing.current_step_id : patch.currentStepId,
+        patch.executionLaneId === undefined ? existing.execution_lane_id : patch.executionLaneId,
         patch.linkedMissionId === undefined ? existing.linked_mission_id : patch.linkedMissionId,
         patch.linkedSessionId === undefined ? existing.linked_session_id : patch.linkedSessionId,
         patch.linkedWorkerRunId === undefined ? existing.linked_worker_run_id : patch.linkedWorkerRunId,
         patch.linkedPrId === undefined ? existing.linked_pr_id : patch.linkedPrId,
         patch.reviewState === undefined ? existing.review_state : patch.reviewState,
+        patch.supervisorIdentityKey === undefined ? existing.supervisor_identity_key : patch.supervisorIdentityKey,
+        patch.reviewReadyReason === undefined ? existing.review_ready_reason : (patch.reviewReadyReason ?? null),
+        patch.prState === undefined ? existing.pr_state : patch.prState,
+        patch.prChecksStatus === undefined ? existing.pr_checks_status : patch.prChecksStatus,
+        patch.prReviewStatus === undefined ? existing.pr_review_status : patch.prReviewStatus,
+        patch.latestReviewNote === undefined ? existing.latest_review_note : patch.latestReviewNote,
         patch.retryCount ?? existing.retry_count,
         patch.retryAfter === undefined ? existing.retry_after : patch.retryAfter,
         patch.closeoutState ?? existing.closeout_state,
@@ -302,26 +400,33 @@ export function createLinearDispatcherService(args: {
     );
   };
 
-  const resolveWorker = (workflow: LinearWorkflowDefinition): { id: string; slug: string; adapterType: string } | null => {
+  type ResolvedWorkerTarget = { id: string; slug: string; adapterType: AdapterType };
+  type ResolvedEmployeeSessionTarget = {
+    identityKey: AgentChatIdentityKey;
+    worker: ResolvedWorkerTarget | null;
+    label: string;
+  };
+
+  const resolveWorker = (workflow: LinearWorkflowDefinition): ResolvedWorkerTarget | null => {
     const selector = workflow.target.workerSelector;
     const workers = args.workerAgentService.listAgents({ includeDeleted: false });
     if (!selector || selector.mode === "none") return null;
     if (selector.mode === "id") {
       const match = workers.find((entry) => entry.id === selector.value);
-      return match ? { id: match.id, slug: match.slug, adapterType: match.adapterType } : null;
+      return match ? { id: match.id, slug: match.slug, adapterType: match.adapterType as AdapterType } : null;
     }
     if (selector.mode === "slug") {
       const match = workers.find((entry) => entry.slug === selector.value);
-      return match ? { id: match.id, slug: match.slug, adapterType: match.adapterType } : null;
+      return match ? { id: match.id, slug: match.slug, adapterType: match.adapterType as AdapterType } : null;
     }
     if (selector.mode === "capability") {
       const match = workers.find((entry) => entry.capabilities.includes(selector.value));
-      return match ? { id: match.id, slug: match.slug, adapterType: match.adapterType } : null;
+      return match ? { id: match.id, slug: match.slug, adapterType: match.adapterType as AdapterType } : null;
     }
     return null;
   };
 
-  const resolveWorkerFromAssignee = (issue: NormalizedLinearIssue): { id: string; slug: string; adapterType: string } | null => {
+  const resolveWorkerFromAssignee = (issue: NormalizedLinearIssue): ResolvedWorkerTarget | null => {
     const assigneeValues = new Set(
       [issue.assigneeId, issue.assigneeName]
         .map((value) => (value ?? "").trim().toLowerCase())
@@ -343,32 +448,80 @@ export function createLinearDispatcherService(args: {
           .filter(Boolean)
       );
       if ([...assigneeValues].some((value) => aliases.has(value))) {
-        return { id: worker.id, slug: worker.slug, adapterType: worker.adapterType };
+        return { id: worker.id, slug: worker.slug, adapterType: worker.adapterType as AdapterType };
       }
     }
     return null;
   };
 
-  const resolveEmployeeTarget = (workflow: LinearWorkflowDefinition, issue: NormalizedLinearIssue) => {
+  const issueMatchesCto = (policy: LinearWorkflowConfig, issue: NormalizedLinearIssue): boolean => {
+    const assigneeValues = new Set(
+      [issue.assigneeId, issue.assigneeName]
+        .map((value) => (value ?? "").trim().toLowerCase())
+        .filter(Boolean)
+    );
+    if (!assigneeValues.size) return false;
+    const ctoAliases = new Set(
+      [
+        policy.settings.ctoLinearAssigneeId,
+        policy.settings.ctoLinearAssigneeName,
+        ...(policy.settings.ctoLinearAssigneeAliases ?? []),
+        "cto",
+      ]
+        .map((value) => (value ?? "").trim().toLowerCase())
+        .filter(Boolean)
+    );
+    return [...assigneeValues].some((value) => ctoAliases.has(value));
+  };
+
+  const resolveEmployeeTarget = (
+    policy: LinearWorkflowConfig,
+    workflow: LinearWorkflowDefinition,
+    issue: NormalizedLinearIssue
+  ): ResolvedEmployeeSessionTarget | null => {
     const explicitIdentity = workflow.target.employeeIdentityKey?.trim() ?? "";
+    if (explicitIdentity === "cto") {
+      return {
+        identityKey: "cto",
+        worker: null,
+        label: "CTO",
+      };
+    }
     if (explicitIdentity.startsWith("agent:")) {
       const agentId = explicitIdentity.slice("agent:".length);
       const direct = args.workerAgentService.getAgent(agentId);
       if (direct) {
-        return { id: direct.id, slug: direct.slug, adapterType: direct.adapterType };
+        return {
+          identityKey: `agent:${direct.id}`,
+          worker: { id: direct.id, slug: direct.slug, adapterType: direct.adapterType as AdapterType },
+          label: direct.name,
+        };
       }
     }
-    return resolveWorkerFromAssignee(issue) ?? resolveWorker(workflow);
+    if (issueMatchesCto(policy, issue)) {
+      return {
+        identityKey: "cto",
+        worker: null,
+        label: "CTO",
+      };
+    }
+    const worker = resolveWorkerFromAssignee(issue) ?? resolveWorker(workflow);
+    if (!worker) return null;
+    return {
+      identityKey: `agent:${worker.id}`,
+      worker,
+      label: worker.slug,
+    };
   };
 
-  const primaryLaneId = async (): Promise<string> => {
+  const primaryLane = async () => {
     const lanes = await args.laneService.list({ includeArchived: false, includeStatus: false });
     const preferred = lanes.find((entry) => entry.laneType === "primary") ?? lanes[0];
     if (!preferred) throw new Error("No lane available for employee session launch.");
-    return preferred.id;
+    return preferred;
   };
 
-  const buildDelegationPrompt = (workflow: LinearWorkflowDefinition, issue: NormalizedLinearIssue): string => {
+  const buildDelegationPrompt = (run: LinearWorkflowRun, workflow: LinearWorkflowDefinition, issue: NormalizedLinearIssue): string => {
     const rendered = args.templateService.renderTemplate({
       templateId: workflow.target.sessionTemplate ?? workflow.target.missionTemplate ?? "default",
       issue,
@@ -382,7 +535,14 @@ export function createLinearDispatcherService(args: {
         assigneeName: issue.assigneeName,
       },
     });
-    const prMode = workflow.target.prStrategy ? `PR behavior: ${workflow.target.prStrategy}` : "PR behavior: only if the workflow reaches a PR step.";
+    const prMode = `PR behavior: ${describePrBehavior(workflow)}`;
+    const supervisorFeedback = run.latestReviewNote?.trim()
+      ? [
+          "",
+          "Supervisor feedback to address before you hand this back:",
+          run.latestReviewNote.trim(),
+        ].join("\n")
+      : "";
     return [
       rendered.prompt,
       "",
@@ -391,6 +551,7 @@ export function createLinearDispatcherService(args: {
       "- Keep progress observable in ADE and Linear.",
       `- ${prMode}`,
       "- When implementation is ready, leave the session in a state where ADE can move the issue to review.",
+      supervisorFeedback,
     ].join("\n");
   };
 
@@ -400,6 +561,7 @@ export function createLinearDispatcherService(args: {
   };
 
   const resolveRunLaneId = async (run: LinearWorkflowRun): Promise<string | null> => {
+    if (run.executionLaneId) return run.executionLaneId;
     const launchContext = getLaunchContext(run.id);
     const laneId = typeof launchContext.laneId === "string" ? launchContext.laneId.trim() : "";
     if (laneId) return laneId;
@@ -411,16 +573,73 @@ export function createLinearDispatcherService(args: {
     return null;
   };
 
-  const ensureLinkedPr = async (run: LinearWorkflowRun, workflow: LinearWorkflowDefinition): Promise<string | null> => {
-    if (run.linkedPrId) return run.linkedPrId;
-    const laneId = await resolveRunLaneId(run);
+  const ensureExecutionLane = async (
+    run: LinearWorkflowRun,
+    workflow: LinearWorkflowDefinition,
+    issue: NormalizedLinearIssue
+  ): Promise<string | null> => {
+    if (workflow.target.type === "mission" || workflow.target.type === "review_gate") {
+      return null;
+    }
+    if (run.executionLaneId) return run.executionLaneId;
+    const preferredPrimary = await primaryLane();
+    if (workflow.target.laneSelection !== "fresh_issue_lane") {
+      return preferredPrimary.id;
+    }
+    const lane = await args.laneService.create({
+      name: (workflow.target.freshLaneName?.trim() || `${issue.identifier} ${issue.title}`).slice(0, 72),
+      description: `Linear workflow ${workflow.name} for ${issue.identifier}`,
+      parentLaneId: preferredPrimary.id,
+    });
+    appendEvent(run.id, "run.lane_created", "completed", `Created dedicated lane '${lane.name}'.`, {
+      laneId: lane.id,
+      laneName: lane.name,
+      parentLaneId: preferredPrimary.id,
+    });
+    return lane.id;
+  };
+
+  const syncPrState = async (runId: string, prId: string): Promise<Awaited<ReturnType<typeof args.prService.getStatus>> | null> => {
+    try {
+      const status = await args.prService.getStatus(prId);
+      updateRun(runId, {
+        prState: status.state,
+        prChecksStatus: status.checksStatus,
+        prReviewStatus: status.reviewStatus,
+      });
+      return status;
+    } catch {
+      return null;
+    }
+  };
+
+  const isPrReviewReady = (status: Awaited<ReturnType<typeof args.prService.getStatus>> | null): boolean => {
+    if (!status) return false;
+    return status.state === "open" && status.checksStatus !== "failing" && status.reviewStatus !== "changes_requested";
+  };
+
+  const ensureLinkedPr = async (
+    run: LinearWorkflowRun,
+    workflow: LinearWorkflowDefinition,
+    laneIdOverride?: string | null
+  ): Promise<string | null> => {
+    if (run.linkedPrId) {
+      await syncPrState(run.id, run.linkedPrId);
+      return run.linkedPrId;
+    }
+    const laneId = laneIdOverride ?? await resolveRunLaneId(run);
     if (!laneId) return null;
     const existing = args.prService.getForLane(laneId);
     if (existing) {
-      updateRun(run.id, { linkedPrId: existing.id });
+      updateRun(run.id, { linkedPrId: existing.id, executionLaneId: laneId });
+      await syncPrState(run.id, existing.id);
       appendEvent(run.id, "run.pr_linked", "completed", `Linked PR #${existing.githubPrNumber}.`, { prId: existing.id, laneId });
-      emitRunEvent({ ...run, linkedPrId: existing.id }, "pr_linked", `Linked PR #${existing.githubPrNumber}.`);
+      emitRunEvent({ ...run, linkedPrId: existing.id, executionLaneId: laneId }, "pr_linked", `Linked PR #${existing.githubPrNumber}.`);
       return existing.id;
+    }
+
+    if (workflow.target.prStrategy?.kind === "manual") {
+      return null;
     }
 
     if (!workflow.target.prStrategy && workflow.closeout?.reviewReadyWhen === "work_complete") {
@@ -433,19 +652,21 @@ export function createLinearDispatcherService(args: {
       body: `Automated PR for Linear workflow ${workflow.name}.\n\nIssue: ${run.identifier}`,
       draft: true,
     });
-    updateRun(run.id, { linkedPrId: created.id });
+    updateRun(run.id, { linkedPrId: created.id, executionLaneId: laneId });
+    await syncPrState(run.id, created.id);
     appendEvent(run.id, "run.pr_created", "completed", `Created PR #${created.githubPrNumber}.`, { prId: created.id, laneId });
-    emitRunEvent({ ...run, linkedPrId: created.id }, "pr_linked", `Created PR #${created.githubPrNumber}.`);
+    emitRunEvent({ ...run, linkedPrId: created.id, executionLaneId: laneId }, "pr_linked", `Created PR #${created.githubPrNumber}.`);
     return created.id;
   };
 
   const executeTarget = async (
     run: LinearWorkflowRun,
+    policy: LinearWorkflowConfig,
     workflow: LinearWorkflowDefinition,
     issue: NormalizedLinearIssue
   ): Promise<Partial<LinearWorkflowRun> & Record<string, unknown>> => {
     const worker = resolveWorker(workflow);
-    const employeeWorker = resolveEmployeeTarget(workflow, issue);
+    const employeeTarget = resolveEmployeeTarget(policy, workflow, issue);
 
     if (workflow.target.type === "mission") {
       const rendered = args.templateService.renderTemplate({
@@ -475,66 +696,82 @@ export function createLinearDispatcherService(args: {
           workflowId: workflow.id,
         },
       });
-      return {
+      const missionPatch: Partial<LinearWorkflowRun> & Record<string, unknown> = {
         linkedMissionId: mission.id,
         status: "waiting_for_target",
         workerId: worker?.id ?? null,
         workerSlug: worker?.slug ?? null,
       };
+      return missionPatch;
     }
 
     if (workflow.target.type === "employee_session") {
-      if (!employeeWorker) throw new Error(`Workflow '${workflow.name}' could not resolve an employee session owner.`);
-      const laneId = await primaryLaneId();
+      if (!employeeTarget) throw new Error(`Workflow '${workflow.name}' could not resolve an employee session owner.`);
+      const laneId = await ensureExecutionLane(run, workflow, issue);
+      if (!laneId) throw new Error(`Workflow '${workflow.name}' could not resolve a lane for employee session launch.`);
       const session = await args.agentChatService.ensureIdentitySession({
-        identityKey: `agent:${employeeWorker.id}`,
+        identityKey: employeeTarget.identityKey,
         laneId,
+        reuseExisting: workflow.target.sessionReuse !== "fresh_session" && workflow.target.laneSelection !== "fresh_issue_lane",
       });
-      const taskKey = args.workerTaskSessionService.deriveTaskKey({
-        agentId: employeeWorker.id,
-        laneId,
-        linearIssueId: issue.id,
-        chatSessionId: session.id,
-        summary: issue.title,
-      });
-      args.workerTaskSessionService.ensureTaskSession({
-        agentId: employeeWorker.id,
-        adapterType: employeeWorker.adapterType as AdapterType,
-        taskKey,
-        payload: {
-          source: "linear_workflow",
-          workflowId: workflow.id,
-          workflowName: workflow.name,
-          issueId: issue.id,
-          issueIdentifier: issue.identifier,
-          issueTitle: issue.title,
-          issueUrl: issue.url,
+      if (employeeTarget.worker) {
+        const taskKey = args.workerTaskSessionService.deriveTaskKey({
+          agentId: employeeTarget.worker.id,
           laneId,
-          runId: run.id,
-        },
-      });
+          linearIssueId: issue.id,
+          chatSessionId: session.id,
+          summary: issue.title,
+        });
+        args.workerTaskSessionService.ensureTaskSession({
+          agentId: employeeTarget.worker.id,
+          adapterType: employeeTarget.worker.adapterType,
+          taskKey,
+          payload: {
+            source: "linear_workflow",
+            workflowId: workflow.id,
+            workflowName: workflow.name,
+            issueId: issue.id,
+            issueIdentifier: issue.identifier,
+            issueTitle: issue.title,
+            issueUrl: issue.url,
+            laneId,
+            runId: run.id,
+          },
+        });
+      }
       await args.agentChatService.sendMessage({
         sessionId: session.id,
-        text: buildDelegationPrompt(workflow, issue),
+        text: buildDelegationPrompt(run, workflow, issue),
       });
-      return {
+      const sessionPatch: Partial<LinearWorkflowRun> & Record<string, unknown> = {
+        executionLaneId: laneId,
         linkedSessionId: session.id,
         status: "waiting_for_target",
-        workerId: employeeWorker.id,
-        workerSlug: employeeWorker.slug,
+        workerId: employeeTarget.worker?.id ?? null,
+        workerSlug: employeeTarget.worker?.slug ?? null,
+        sessionIdentityKey: employeeTarget.identityKey,
+        sessionLabel: employeeTarget.label,
         laneId,
       };
+      if (workflow.target.prStrategy && workflow.target.prTiming === "after_start") {
+        const linkedPrId = await ensureLinkedPr({ ...run, ...sessionPatch }, workflow, laneId);
+        if (linkedPrId) {
+          sessionPatch.linkedPrId = linkedPrId;
+        }
+      }
+      return sessionPatch;
     }
 
     if (workflow.target.type === "worker_run" || workflow.target.type === "pr_resolution") {
       if (!worker) throw new Error(`Workflow '${workflow.name}' could not resolve a worker.`);
-      const laneId = await primaryLaneId();
+      const laneId = await ensureExecutionLane(run, workflow, issue);
+      if (!laneId) throw new Error(`Workflow '${workflow.name}' could not resolve a lane for worker launch.`);
       const wake = await args.workerHeartbeatService.triggerWakeup({
         agentId: worker.id,
         reason: "assignment",
         taskKey: `linear:${issue.identifier}`,
         issueKey: issue.identifier,
-        prompt: buildDelegationPrompt(workflow, issue),
+        prompt: buildDelegationPrompt(run, workflow, issue),
         context: {
           source: "linear_workflow",
           issueId: issue.id,
@@ -544,13 +781,21 @@ export function createLinearDispatcherService(args: {
           runId: run.id,
         },
       });
-      return {
+      const workerPatch: Partial<LinearWorkflowRun> & Record<string, unknown> = {
+        executionLaneId: laneId,
         linkedWorkerRunId: wake.runId,
         status: workflow.target.type === "pr_resolution" ? "waiting_for_pr" : "waiting_for_target",
         workerId: worker.id,
         workerSlug: worker.slug,
         laneId,
       };
+      if (workflow.target.prStrategy && workflow.target.prTiming === "after_start") {
+        const linkedPrId = await ensureLinkedPr({ ...run, ...workerPatch }, workflow, laneId);
+        if (linkedPrId) {
+          workerPatch.linkedPrId = linkedPrId;
+        }
+      }
+      return workerPatch;
     }
 
     return {
@@ -612,6 +857,54 @@ export function createLinearDispatcherService(args: {
     }
   };
 
+  const findStepIndex = (workflow: LinearWorkflowDefinition, stepId: string | null | undefined): number =>
+    workflow.steps.findIndex((entry) => entry.id === stepId);
+
+  const resetStepsFromIndex = (runId: string, startIndex: number, workflow: LinearWorkflowDefinition): void => {
+    const stepRows = getStepRows(runId);
+    for (let index = startIndex; index < workflow.steps.length; index += 1) {
+      const workflowStep = workflow.steps[index];
+      if (!workflowStep) continue;
+      const row = stepRows.find((entry) => entry.workflow_step_id === workflowStep.id);
+      if (!row) continue;
+      updateStep(row.id, {
+        status: "pending",
+        startedAt: null,
+        completedAt: null,
+        payload: null,
+      });
+    }
+  };
+
+  const hasFutureStepType = (workflow: LinearWorkflowDefinition, startIndex: number, type: LinearWorkflowStep["type"]): boolean =>
+    workflow.steps.slice(startIndex + 1).some((entry) => entry.type === type);
+
+  const maybeEmitReviewReady = (
+    runId: string,
+    workflow: LinearWorkflowDefinition,
+    completedStepIndex: number,
+    fallbackReason: LinearWorkflowRun["reviewReadyReason"],
+    message: string
+  ): void => {
+    if (hasFutureStepType(workflow, completedStepIndex, "wait_for_pr")) return;
+    if (hasFutureStepType(workflow, completedStepIndex, "request_human_review")) return;
+    const current = getRunRow(runId);
+    if (!current) return;
+    if (!current.review_ready_reason && fallbackReason) {
+      updateRun(runId, { reviewReadyReason: fallbackReason });
+    }
+    const refreshed = toRun(getRunRow(runId)!);
+    emitRunEvent(refreshed, "review_ready", message);
+    emitNotification(refreshed, `${refreshed.identifier} moved to review`, message, "success");
+  };
+
+  const buildReviewContext = (workflow: LinearWorkflowDefinition, step: LinearWorkflowStep) => ({
+    reviewerIdentityKey: (step.reviewerIdentityKey ?? workflow.humanReview?.reviewers?.[0] ?? "cto") as AgentChatIdentityKey | null,
+    rejectAction: step.rejectAction ?? (workflow.closeout?.reopenOnFailure ? "reopen_issue" : "cancel"),
+    loopToStepId: step.loopToStepId ?? (workflow.steps.find((entry) => entry.type === "launch_target")?.id ?? null),
+    instructions: step.instructions?.trim() || workflow.humanReview?.instructions?.trim() || null,
+  });
+
   const advanceRun = async (runId: string, policy: LinearWorkflowConfig): Promise<LinearWorkflowRun | null> => {
     const row = getRunRow(runId);
     if (!row) return null;
@@ -637,7 +930,7 @@ export function createLinearDispatcherService(args: {
       updateStep(stepRow.id, { status: "running", startedAt: stepRow.started_at ?? nowIso() });
 
       if (step.type === "launch_target") {
-        const patch = await executeTarget(run, workflow, run.sourceIssueSnapshot as NormalizedLinearIssue);
+        const patch = await executeTarget(toRun(getRunRow(run.id)!), policy, workflow, run.sourceIssueSnapshot as NormalizedLinearIssue);
         updateRun(run.id, { ...patch, currentStepIndex: index + 1, currentStepId: workflow.steps[index + 1]?.id ?? null });
         updateStep(stepRow.id, { status: "completed", completedAt: nowIso(), payload: patch });
         appendEvent(run.id, "step.launch_target", "completed", `Launched ${workflow.target.type}.`, patch as Record<string, unknown>);
@@ -660,7 +953,11 @@ export function createLinearDispatcherService(args: {
           await finalizeRun(toRun(getRunRow(run.id)!), workflow, targetState === "failed" ? "failed" : "cancelled", `Target ${targetState}.`);
           return toRun(getRunRow(run.id)!);
         }
+        if ((workflow.closeout?.reviewReadyWhen ?? "work_complete") === "work_complete") {
+          updateRun(run.id, { reviewReadyReason: "work_complete" });
+        }
         updateStep(stepRow.id, { status: "completed", completedAt: nowIso(), payload: { targetState } });
+        maybeEmitReviewReady(run.id, workflow, index, "work_complete", "Delegated work finished and the workflow is review-ready.");
         continue;
       }
 
@@ -669,20 +966,126 @@ export function createLinearDispatcherService(args: {
         const linkedPrId = await ensureLinkedPr(refreshed, workflow);
         if (!linkedPrId) {
           updateRun(run.id, { status: "waiting_for_pr" });
-          updateStep(stepRow.id, { status: "waiting" });
+          updateStep(stepRow.id, { status: "waiting", payload: { waitingFor: "pr_link" } });
           return toRun(getRunRow(run.id)!);
         }
+        const prStatus = await syncPrState(run.id, linkedPrId);
+        const reviewReadyWhen = workflow.closeout?.reviewReadyWhen ?? "pr_created";
+        if (reviewReadyWhen === "pr_ready" && !isPrReviewReady(prStatus)) {
+          updateRun(run.id, { status: "waiting_for_pr" });
+          updateStep(stepRow.id, {
+            status: "waiting",
+            payload: {
+              waitingFor: "pr_review_ready",
+              linkedPrId,
+              prState: prStatus?.state ?? null,
+              prChecksStatus: prStatus?.checksStatus ?? null,
+              prReviewStatus: prStatus?.reviewStatus ?? null,
+            },
+          });
+          return toRun(getRunRow(run.id)!);
+        }
+        updateRun(run.id, { reviewReadyReason: reviewReadyWhen === "pr_ready" ? "pr_ready" : "pr_created" });
         updateStep(stepRow.id, { status: "completed", completedAt: nowIso() });
-        const linkedRun = toRun(getRunRow(run.id)!);
-        emitRunEvent(linkedRun, "review_ready", `PR linked for ${linkedRun.identifier}.`);
-        emitNotification(linkedRun, `${linkedRun.identifier} moved to review`, "A PR is linked and the workflow is review-ready.", "success");
+        maybeEmitReviewReady(
+          run.id,
+          workflow,
+          index,
+          reviewReadyWhen === "pr_ready" ? "pr_ready" : "pr_created",
+          reviewReadyWhen === "pr_ready"
+            ? "PR is open and review-ready."
+            : "A PR is linked and the workflow is review-ready."
+        );
         continue;
       }
 
       if (step.type === "request_human_review") {
-        updateRun(run.id, { reviewState: "pending", status: "awaiting_human_review" });
-        updateStep(stepRow.id, { status: "waiting", payload: { reviewState: "pending" } });
-        appendEvent(run.id, "step.request_human_review", "waiting", "Awaiting approval.", null);
+        const reviewContext = buildReviewContext(workflow, step);
+        const liveRun = toRun(getRunRow(run.id)!);
+        if (liveRun.reviewState === "approved") {
+          updateStep(stepRow.id, {
+            status: "completed",
+            completedAt: nowIso(),
+            payload: {
+              reviewState: "approved",
+              reviewerIdentityKey: reviewContext.reviewerIdentityKey,
+              note: liveRun.latestReviewNote ?? null,
+            },
+          });
+          appendEvent(run.id, "run.review_approved", "completed", liveRun.latestReviewNote ?? "Supervisor approved the handoff.", {
+            reviewerIdentityKey: reviewContext.reviewerIdentityKey,
+          });
+          maybeEmitReviewReady(run.id, workflow, index, liveRun.reviewReadyReason ?? "supervisor_approved", "Supervisor approved the workflow handoff.");
+          continue;
+        }
+        if (liveRun.reviewState === "rejected" || liveRun.reviewState === "changes_requested") {
+          if (reviewContext.rejectAction === "loop_back") {
+            const loopIndex = Math.max(0, findStepIndex(workflow, reviewContext.loopToStepId));
+            resetStepsFromIndex(run.id, loopIndex, workflow);
+            updateRun(run.id, {
+              status: "queued",
+              currentStepIndex: loopIndex,
+              currentStepId: workflow.steps[loopIndex]?.id ?? null,
+              reviewState: "changes_requested",
+              reviewReadyReason: null,
+              linkedMissionId: null,
+              linkedSessionId: null,
+              linkedWorkerRunId: null,
+            });
+            appendEvent(run.id, "run.review_changes_requested", "queued", liveRun.latestReviewNote ?? "Supervisor requested changes.", {
+              reviewerIdentityKey: reviewContext.reviewerIdentityKey,
+              loopToStepId: workflow.steps[loopIndex]?.id ?? null,
+            });
+            return toRun(getRunRow(run.id)!);
+          }
+          if (reviewContext.rejectAction === "reopen_issue") {
+            updateStep(stepRow.id, {
+              status: "failed",
+              completedAt: nowIso(),
+              payload: { reviewState: liveRun.reviewState, note: liveRun.latestReviewNote ?? null },
+            });
+            await finalizeRun(
+              toRun(getRunRow(run.id)!),
+              workflow,
+              "failed",
+              liveRun.latestReviewNote ?? "Supervisor rejected the workflow handoff and reopened the issue."
+            );
+            return toRun(getRunRow(run.id)!);
+          }
+          updateStep(stepRow.id, {
+            status: "failed",
+            completedAt: nowIso(),
+            payload: { reviewState: liveRun.reviewState, note: liveRun.latestReviewNote ?? null },
+          });
+          await finalizeRun(
+            toRun(getRunRow(run.id)!),
+            workflow,
+            "cancelled",
+            liveRun.latestReviewNote ?? "Supervisor rejected the workflow handoff."
+          );
+          return toRun(getRunRow(run.id)!);
+        }
+        updateRun(run.id, {
+          reviewState: "pending",
+          supervisorIdentityKey: reviewContext.reviewerIdentityKey,
+          status: "awaiting_human_review",
+        });
+        updateStep(stepRow.id, {
+          status: "waiting",
+          payload: {
+            reviewState: "pending",
+            reviewerIdentityKey: reviewContext.reviewerIdentityKey,
+            rejectAction: reviewContext.rejectAction,
+            loopToStepId: reviewContext.loopToStepId,
+            instructions: reviewContext.instructions,
+          },
+        });
+        appendEvent(run.id, "step.request_human_review", "waiting", "Awaiting supervisor approval.", {
+          reviewerIdentityKey: reviewContext.reviewerIdentityKey,
+          rejectAction: reviewContext.rejectAction,
+          loopToStepId: reviewContext.loopToStepId,
+        });
+        emitRunEvent(toRun(getRunRow(run.id)!), "supervisor_handoff", "Supervisor review is required before the workflow can continue.");
         return toRun(getRunRow(run.id)!);
       }
 
@@ -693,11 +1096,23 @@ export function createLinearDispatcherService(args: {
         const stepState = step.state;
         const nextState = states.find((entry) => entry.type === (stepState === "done" ? "completed" : stepState === "in_progress" ? "started" : undefined))
           ?? states.find((entry) => entry.name.toLowerCase().includes(stepState.replace(/_/g, " ")));
-        if (nextState) await args.issueTracker.updateIssueState(run.issueId, nextState.id);
+        if (nextState) {
+          await args.issueTracker.updateIssueState(run.issueId, nextState.id);
+          appendEvent(run.id, "step.set_linear_state", "completed", `Moved issue to ${nextState.name}.`, {
+            stateId: nextState.id,
+            stateName: nextState.name,
+          });
+        }
       } else if (step.type === "set_linear_assignee") {
         await args.issueTracker.updateIssueAssignee(run.issueId, step.assigneeId ?? null);
+        appendEvent(run.id, "step.set_linear_assignee", "completed", "Updated the Linear assignee.", {
+          assigneeId: step.assigneeId ?? null,
+        });
       } else if (step.type === "apply_linear_label" && step.label?.trim()) {
         await args.issueTracker.addLabel(run.issueId, step.label.trim());
+        appendEvent(run.id, "step.apply_linear_label", "completed", `Applied label '${step.label.trim()}'.`, {
+          label: step.label.trim(),
+        });
       } else if (step.type === "complete_issue") {
         await finalizeRun(toRun(getRunRow(run.id)!), workflow, "completed", "Workflow completed successfully.");
         updateStep(stepRow.id, { status: "completed", completedAt: nowIso() });
@@ -734,10 +1149,11 @@ export function createLinearDispatcherService(args: {
       `
         insert into linear_workflow_runs(
           id, project_id, issue_id, identifier, title, workflow_id, workflow_name, workflow_version, source, target_type,
-          status, current_step_index, current_step_id, linked_mission_id, linked_session_id, linked_worker_run_id, linked_pr_id,
-          review_state, retry_count, retry_after, closeout_state, terminal_outcome, source_issue_snapshot_json, last_error, created_at, updated_at
+          status, current_step_index, current_step_id, execution_lane_id, linked_mission_id, linked_session_id, linked_worker_run_id, linked_pr_id,
+          review_state, supervisor_identity_key, review_ready_reason, pr_state, pr_checks_status, pr_review_status, latest_review_note,
+          retry_count, retry_after, closeout_state, terminal_outcome, source_issue_snapshot_json, last_error, created_at, updated_at
         )
-        values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, null, null, null, null, null, 0, null, 'pending', null, ?, null, ?, ?)
+        values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, null, null, null, null, null, null, null, null, null, null, null, null, 0, null, 'pending', null, ?, null, ?, ?)
       `,
       [
         id,
@@ -794,19 +1210,60 @@ export function createLinearDispatcherService(args: {
     return row ? toRun(row) : null;
   };
 
-  const resolveRunAction = async (queueItemId: string, action: "approve" | "reject" | "retry", note?: string): Promise<LinearWorkflowRun | null> => {
+  const resolveRunAction = async (
+    queueItemId: string,
+    action: "approve" | "reject" | "retry",
+    note: string | undefined,
+    policy: LinearWorkflowConfig
+  ): Promise<LinearWorkflowRun | null> => {
     const row = getRunRow(queueItemId);
     const run = row ? toRun(row) : null;
     if (!run) return null;
+    const workflow = policy.workflows.find((entry) => entry.id === run.workflowId);
+    const currentStep = workflow?.steps.find((entry) => entry.id === run.currentStepId) ?? null;
+    const currentStepRow = getStepRows(run.id).find((entry) => entry.workflow_step_id === run.currentStepId) ?? null;
+    const reviewContext = workflow && currentStep?.type === "request_human_review"
+      ? buildReviewContext(workflow, currentStep)
+      : null;
 
     if (action === "approve") {
-      updateRun(run.id, { reviewState: "approved", status: "in_progress" });
-      appendEvent(run.id, "run.approved", "completed", note ?? "Approved for dispatch.", null);
+      if (currentStepRow && currentStep?.type === "request_human_review") {
+        updateStep(currentStepRow.id, {
+          status: "completed",
+          completedAt: nowIso(),
+          payload: {
+            reviewState: "approved",
+            reviewerIdentityKey: reviewContext?.reviewerIdentityKey ?? null,
+            note: note ?? null,
+          },
+        });
+      }
+      updateRun(run.id, {
+        reviewState: "approved",
+        latestReviewNote: note ?? null,
+        status: "queued",
+      });
+      appendEvent(run.id, "run.approved", "completed", note ?? "Approved for dispatch.", {
+        reviewerIdentityKey: reviewContext?.reviewerIdentityKey ?? null,
+      });
     } else if (action === "reject") {
-      updateRun(run.id, { reviewState: "rejected", status: "cancelled", terminalOutcome: "cancelled", lastError: note ?? "Rejected by reviewer." });
-      appendEvent(run.id, "run.rejected", "cancelled", note ?? "Rejected by reviewer.", null);
+      updateRun(run.id, {
+        reviewState: reviewContext?.rejectAction === "loop_back" ? "changes_requested" : "rejected",
+        latestReviewNote: note ?? "Rejected by reviewer.",
+        status: reviewContext?.rejectAction === "loop_back" ? "queued" : "in_progress",
+        lastError: note ?? "Rejected by reviewer.",
+      });
+      appendEvent(run.id, "run.rejected", "queued", note ?? "Rejected by reviewer.", {
+        reviewerIdentityKey: reviewContext?.reviewerIdentityKey ?? null,
+        rejectAction: reviewContext?.rejectAction ?? null,
+      });
     } else {
-      updateRun(run.id, { status: "queued", retryAfter: null, retryCount: run.retryCount + 1 });
+      updateRun(run.id, {
+        status: "queued",
+        retryAfter: null,
+        retryCount: run.retryCount + 1,
+        latestReviewNote: note ?? run.latestReviewNote,
+      });
       appendEvent(run.id, "run.retried", "queued", note ?? "Queued for retry.", null);
     }
 
@@ -854,15 +1311,22 @@ export function createLinearDispatcherService(args: {
         workflowId: row.workflow_id,
         workflowName: row.workflow_name,
         targetType: row.target_type,
+        laneId: row.execution_lane_id ?? (typeof launchContext.laneId === "string" ? launchContext.laneId : null),
         workerId: typeof launchContext.workerId === "string" ? launchContext.workerId : null,
         workerSlug: typeof launchContext.workerSlug === "string" ? launchContext.workerSlug : null,
         missionId: row.linked_mission_id,
         sessionId: row.linked_session_id,
         workerRunId: row.linked_worker_run_id,
         prId: row.linked_pr_id,
+        prState: row.pr_state,
+        prChecksStatus: row.pr_checks_status,
+        prReviewStatus: row.pr_review_status,
         currentStepId: row.current_step_id,
-        currentStepLabel: currentStep?.workflow_step_id ?? null,
+        currentStepLabel: currentStep?.workflow_step_id ?? row.current_step_id,
         reviewState: row.review_state,
+        supervisorIdentityKey: (row.supervisor_identity_key ?? null) as AgentChatIdentityKey | null,
+        reviewReadyReason: row.review_ready_reason,
+        latestReviewNote: row.latest_review_note,
         attemptCount: row.retry_count,
         nextAttemptAt: row.retry_after,
         lastError: row.last_error,
@@ -872,12 +1336,45 @@ export function createLinearDispatcherService(args: {
     });
   };
 
+  const getRunDetail = async (runId: string, policy: LinearWorkflowConfig): Promise<LinearWorkflowRunDetail | null> => {
+    const row = getRunRow(runId);
+    if (!row) return null;
+    const run = toRun(row);
+    const workflow = policy.workflows.find((entry) => entry.id === run.workflowId) ?? null;
+    if (run.linkedPrId) {
+      await syncPrState(run.id, run.linkedPrId);
+    }
+    const refreshed = toRun(getRunRow(run.id)!);
+    const currentStep = workflow?.steps.find((entry) => entry.id === refreshed.currentStepId) ?? null;
+    return {
+      run: refreshed,
+      steps: getStepRows(run.id).map((entry) => toRunStep(entry, workflow)),
+      events: getEventRows(run.id).map(toRunEvent),
+      ingressEvents: args.db.all(
+        `
+          select *
+          from linear_ingress_events
+          where project_id = ?
+            and issue_id = ?
+          order by datetime(created_at) desc
+          limit 12
+        `,
+        [args.projectId, refreshed.issueId]
+      ) as LinearIngressEventRecord[],
+      issue: refreshed.sourceIssueSnapshot as NormalizedLinearIssue,
+      reviewContext: currentStep?.type === "request_human_review"
+        ? buildReviewContext(workflow!, currentStep)
+        : null,
+    };
+  };
+
   return {
     createRun,
     advanceRun,
     listActiveRuns,
     listQueue,
     resolveRunAction,
+    getRunDetail,
     findActiveRunForIssue,
   };
 }

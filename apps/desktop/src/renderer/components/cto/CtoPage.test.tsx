@@ -320,6 +320,7 @@ describe("CtoPage", () => {
     mockSelectedLaneId = "lane-1";
     mockSnapshot = makeSnapshot();
     mockOnboardingState = { completedSteps: ["identity", "project", "integrations"], completedAt: "2026-03-05T00:00:00.000Z" };
+    window.location.hash = "";
     (window as any).ade = {
       cto: buildCtoBridge(),
       onboarding: {
@@ -466,6 +467,18 @@ describe("CtoPage", () => {
     expect((window as any).ade.cto.ensureSession).not.toHaveBeenCalled();
   });
 
+  it("opens the Team tab when the URL hash points to team setup", async () => {
+    window.location.hash = "#team-setup";
+
+    render(<CtoPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Department Overview")).toBeTruthy();
+    });
+
+    window.location.hash = "";
+  });
+
   it("shows loading state while ensureSession is pending", async () => {
     let resolve!: (v: ReturnType<typeof makeSession>) => void;
     (window as any).ade.cto.ensureSession = vi.fn(
@@ -515,6 +528,34 @@ describe("CtoPage", () => {
     });
 
     expect(screen.getByText("Backend Dev")).toBeTruthy();
+  });
+
+  it("saves Linear identity mapping fields for a worker", async () => {
+    render(<CtoPage />);
+
+    await waitFor(() => expect(screen.getByTestId("worker-row-agent-1")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("worker-row-agent-1"));
+
+    await waitFor(() => expect(screen.getByText("Edit")).toBeTruthy());
+    fireEvent.click(screen.getByText("Edit"));
+
+    await waitFor(() => expect(screen.getByText("Linear Identity Matching")).toBeTruthy());
+    fireEvent.change(screen.getByPlaceholderText("user-123, user-456"), { target: { value: "user-1, user-2" } });
+    fireEvent.change(screen.getByPlaceholderText("Alex Johnson, A. Johnson"), { target: { value: "Alex Johnson" } });
+    fireEvent.change(screen.getByPlaceholderText("alex, backend-oncall"), { target: { value: "alex" } });
+    fireEvent.click(screen.getByText("Save"));
+
+    await waitFor(() => {
+      expect((window as any).ade.cto.saveAgent).toHaveBeenCalledWith(expect.objectContaining({
+        agent: expect.objectContaining({
+          linearIdentity: {
+            userIds: ["user-1", "user-2"],
+            displayNames: ["Alex Johnson"],
+            aliases: ["alex"],
+          },
+        }),
+      }));
+    });
   });
 
   it("calls listAgents and getBudgetSnapshot on mount", async () => {
