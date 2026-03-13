@@ -23,6 +23,34 @@ The coordinator is responsible for:
 - delegating to a planning worker
 - explicitly advancing phases
 
+The coordinator now emits structured lifecycle status updates at each stage:
+
+- `booting` — coordinator is initializing
+- `analyzing_prompt` — parsing the user's mission prompt
+- `fetching_project_context` — loading project state and context
+- `launching_planner` — spawning the planning worker
+- `waiting_on_planner` — planner is running
+- `planner_launch_failed` — planner spawn failed (triggers retry or intervention)
+- `stopped` — coordinator has shut down
+
+A planning-startup guard prevents non-ADE/native tool drift during the prep phase. If the coordinator detects tool calls that don't belong to the planning setup (e.g., arbitrary external MCP calls during context fetch), it traps them and routes into explicit recovery rather than allowing silent fallback.
+
+### Planner launch reliability
+
+The planner launch path now tracks attempts, categorizes failures (transient vs. permanent), and retries on transient errors. When a planner launch fails:
+
+- transient failures (network, timeout, resource contention) trigger automatic retry with structured intervention logging
+- permanent failures (config errors, missing capabilities) create an explicit intervention for the operator
+- all failure categories are tracked in the run timeline for observability
+
+### Root propagation
+
+Worker tools now correctly resolve DB state from the canonical repo root while file access still happens in the lane workspace. This applies to both desktop-launched and headless-launched workers, ensuring that:
+
+- tool calls that query project state (mission status, artifacts, etc.) read from the correct database
+- file operations (reads, writes, diffs) operate within the lane's workspace boundary
+- headless workers launched via the MCP server get the same root propagation as desktop workers
+
 The runtime is responsible for:
 
 - durable run/step state

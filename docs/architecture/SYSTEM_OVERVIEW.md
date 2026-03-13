@@ -66,6 +66,12 @@ ADE remains provider-flexible:
 
 The orchestrator, agent chat, and CTO all use those provider paths through ADE's runtime contracts rather than a hosted ADE backend.
 
+### 4. Orchestrator and coordinator
+
+The orchestrator now emits structured lifecycle status updates at each coordinator stage (booting, analyzing prompt, fetching project context, launching planner, waiting, failure, stopped). A planning-startup guard prevents tool drift during the prep phase. Planner launch failures are categorized (transient vs. permanent) with automatic retry on transient errors.
+
+Worker root propagation ensures tools resolve DB state from the canonical repo root while file operations stay in the lane workspace, for both desktop and headless workers.
+
 ---
 
 ## Responsiveness architecture

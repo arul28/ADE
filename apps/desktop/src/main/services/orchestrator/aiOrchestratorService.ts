@@ -7323,6 +7323,11 @@ Check all worker statuses and continue managing the mission from here. Read work
       }
       const startedRun = started.run;
       const startedRunId = startedRun.id;
+      // Transition mission to in_progress early so that failure paths
+      // (lane creation, coordinator startup) can move it to intervention_required.
+      // The queued -> intervention_required transition is not allowed.
+      transitionMissionStatus(missionId, "in_progress");
+
       emitCoordinatorLifecycle({
         missionId,
         runId: startedRunId,

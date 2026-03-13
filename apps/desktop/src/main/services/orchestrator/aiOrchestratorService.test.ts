@@ -1779,8 +1779,8 @@ describe("aiOrchestratorService", () => {
       });
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((s) => s.status === "ready");
-      if (!readyStep) throw new Error("Expected a ready step");
+      const readyStep = graph.steps.find((s) => s.stepKey === "implement-changes");
+      if (!readyStep) throw new Error("Expected implement-changes step");
 
       // Start attempt → fire event → worker should be "working"
       const attempt = await fixture.orchestratorService.startAttempt({
@@ -1799,16 +1799,17 @@ describe("aiOrchestratorService", () => {
       });
 
       const workingStates = fixture.aiOrchestratorService.getWorkerStates({ runId });
-      expect(workingStates.length).toBe(1);
-      expect(workingStates[0].state).toBe("working");
-      expect(workingStates[0].attemptId).toBe(attempt.id);
-      expect(workingStates[0].executorKind).toBe("manual");
+      const targetWorking = workingStates.find((ws) => ws.attemptId === attempt.id);
+      expect(targetWorking).toBeTruthy();
+      expect(targetWorking!.state).toBe("working");
+      expect(targetWorking!.executorKind).toBe("manual");
 
       // Complete attempt → fire event → worker should be "completed"
       await fixture.orchestratorService.completeAttempt({
         attemptId: attempt.id,
         status: "succeeded"
       });
+
       fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
         type: "orchestrator-attempt-updated",
         runId,
@@ -1819,9 +1820,10 @@ describe("aiOrchestratorService", () => {
       });
 
       const completedStates = fixture.aiOrchestratorService.getWorkerStates({ runId });
-      expect(completedStates.length).toBe(1);
-      expect(completedStates[0].state).toBe("completed");
-      expect(completedStates[0].completedAt).toBeTruthy();
+      const targetCompleted = completedStates.find((ws) => ws.attemptId === attempt.id);
+      expect(targetCompleted).toBeTruthy();
+      expect(targetCompleted!.state).toBe("completed");
+      expect(targetCompleted!.completedAt).toBeTruthy();
     } finally {
       fixture.aiOrchestratorService.dispose();
     }
@@ -3069,8 +3071,8 @@ describe("aiOrchestratorService", () => {
       });
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((step) => step.status === "ready");
-      if (!readyStep) throw new Error("Expected a ready step");
+      const readyStep = graph.steps.find((step) => step.stepKey === "implement-changes");
+      if (!readyStep) throw new Error("Expected implement-changes step");
 
       const attempt = await fixture.orchestratorService.startAttempt({
         runId,
@@ -3390,8 +3392,8 @@ describe("aiOrchestratorService", () => {
       });
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((s) => s.status === "ready");
-      if (!readyStep) throw new Error("Expected a ready step");
+      const readyStep = graph.steps.find((s) => s.stepKey === "implement-changes");
+      if (!readyStep) throw new Error("Expected implement-changes step");
 
       const attempt = await fixture.orchestratorService.startAttempt({
         runId,
@@ -3766,8 +3768,8 @@ describe("aiOrchestratorService", () => {
       });
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((step) => step.status === "ready");
-      if (!readyStep) throw new Error("Expected a ready step");
+      const readyStep = graph.steps.find((step) => step.stepKey === "implement-changes");
+      if (!readyStep) throw new Error("Expected implement-changes step");
 
       const attempt = await fixture.orchestratorService.startAttempt({
         runId,
@@ -3852,8 +3854,8 @@ describe("aiOrchestratorService", () => {
       });
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((step) => step.status === "ready");
-      if (!readyStep) throw new Error("Expected a ready step");
+      const readyStep = graph.steps.find((step) => step.stepKey === "implement-changes");
+      if (!readyStep) throw new Error("Expected implement-changes step");
 
       const attempt = await fixture.orchestratorService.startAttempt({
         runId,
@@ -3925,8 +3927,8 @@ describe("aiOrchestratorService", () => {
       });
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((s) => s.status === "ready");
-      if (!readyStep) throw new Error("Expected a ready step");
+      const readyStep = graph.steps.find((s) => s.stepKey === "implement-changes");
+      if (!readyStep) throw new Error("Expected implement-changes step");
 
       const attempt = await fixture.orchestratorService.startAttempt({
         runId,
@@ -4762,9 +4764,14 @@ describe("aiOrchestratorService", () => {
 
       const runs = fixture.orchestratorService.listRuns({ missionId: mission.id });
       expect(runs.length).toBeGreaterThan(0);
-      // The run starts with empty steps — the coordinator will create tasks and lanes
+      // The run starts with empty user steps — the coordinator may create
+      // system-managed tracking steps (e.g. planner-launch-tracker), so filter those out.
       const graph = fixture.orchestratorService.getRunGraph({ runId: runs[0]!.id });
-      expect(graph.steps).toHaveLength(0);
+      const userSteps = graph.steps.filter((step) => {
+        const meta = step.metadata && typeof step.metadata === "object" && !Array.isArray(step.metadata) ? step.metadata as Record<string, unknown> : {};
+        return !meta.systemManaged;
+      });
+      expect(userSteps).toHaveLength(0);
 
       const refreshedMission = fixture.missionService.get(mission.id);
       expect(refreshedMission?.status).toBe("in_progress");
@@ -5075,8 +5082,8 @@ describe("aiOrchestratorService", () => {
       });
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((s) => s.status === "ready");
-      if (!readyStep) throw new Error("Expected a ready step");
+      const readyStep = graph.steps.find((s) => s.stepKey === "implement-changes");
+      if (!readyStep) throw new Error("Expected implement-changes step");
 
       const attempt = await fixture.orchestratorService.startAttempt({
         runId,
@@ -5102,8 +5109,9 @@ describe("aiOrchestratorService", () => {
       }).not.toThrow();
 
       const states = fixture.aiOrchestratorService.getWorkerStates({ runId });
-      expect(states.length).toBe(1);
-      expect(states[0].state).toBe("completed");
+      const targetState = states.find((ws) => ws.attemptId === attempt.id);
+      expect(targetState).toBeTruthy();
+      expect(targetState!.state).toBe("completed");
     } finally {
       fixture.dispose();
     }
@@ -5764,6 +5772,13 @@ describe("aiOrchestratorService", () => {
         laneId: fixture.laneId
       });
 
+      // Start a mission run so hasRecoverableRuntimeWork() returns true on restart
+      await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+
       const queued = fixture.aiOrchestratorService.sendThreadMessage({
         missionId: mission.id,
         content: "Queue this guidance until worker runtime is ready.",
@@ -5819,6 +5834,14 @@ describe("aiOrchestratorService", () => {
         prompt: "Legacy metadata entries without IDs should not be imported.",
         laneId: fixture.laneId
       });
+
+      // Start a mission run so hasRecoverableRuntimeWork() returns true on restart
+      await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+
       const legacyContent = "legacy-backfill-without-id";
       const missionThreadId = `mission:${mission.id}`;
       fixture.db.run(
@@ -6514,6 +6537,8 @@ describe("aiOrchestratorService", () => {
         `update orchestrator_runs set status = 'active', updated_at = ? where id = ?`,
         [new Date().toISOString(), started.run.id],
       );
+      // Transition mission to in_progress so syncMissionFromRun can transition to completed
+      fixture.missionService.update({ missionId: mission.id, status: "in_progress" });
       const runId = started.run.id;
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
@@ -6665,6 +6690,8 @@ describe("aiOrchestratorService", () => {
         `update orchestrator_runs set status = 'active', updated_at = ? where id = ?`,
         [new Date().toISOString(), started.run.id],
       );
+      // Transition mission to in_progress so syncMissionFromRun can transition to failed
+      fixture.missionService.update({ missionId: mission.id, status: "in_progress" });
       const runId = started.run.id;
 
       // Assign different laneIds and complete all steps sequentially

@@ -517,7 +517,16 @@ describe("orchestrator smoke", () => {
         if (graph.run.status === "succeeded" || graph.run.status === "failed" || graph.run.status === "canceled") {
           break;
         }
-        const ready = graph.steps.filter((step) => step.status === "ready");
+        const ready = graph.steps.filter((step) => {
+          if (step.status !== "ready") return false;
+          // Skip system-managed steps (e.g. planner-launch-tracker) — they are
+          // created automatically by the coordinator and should not be driven
+          // by the smoke-runner loop.
+          const meta = step.metadata && typeof step.metadata === "object" && !Array.isArray(step.metadata)
+            ? (step.metadata as Record<string, unknown>)
+            : {};
+          return !meta.systemManaged;
+        });
         if (!ready.length) {
           fixture.orchestratorService.tick({ runId });
           continue;
@@ -560,7 +569,16 @@ describe("orchestrator smoke", () => {
       const finalGraph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
       const refreshedMission = fixture.missionService.get(mission.id);
       expect(finalGraph.run.status).toBe("succeeded");
-      expect(finalGraph.steps.every((step) => step.status === "succeeded")).toBe(true);
+      // Filter out system-managed steps (e.g. planner-launch-tracker) which
+      // may remain in a non-succeeded state since they are not driven by the
+      // smoke test loop.
+      const userSteps = finalGraph.steps.filter((step) => {
+        const meta = step.metadata && typeof step.metadata === "object" && !Array.isArray(step.metadata)
+          ? (step.metadata as Record<string, unknown>)
+          : {};
+        return !meta.systemManaged;
+      });
+      expect(userSteps.every((step) => step.status === "succeeded")).toBe(true);
       expect(refreshedMission?.status).toBe("completed");
       expect(refreshedMission?.openInterventions ?? 0).toBe(0);
 
@@ -1154,8 +1172,17 @@ describe("orchestrator smoke", () => {
         orchestratorService.tick({ runId });
         await orchestratorService.startReadyAutopilotAttempts({ runId, reason: "smoke_test_driver" });
 
-        // Once all steps are done, explicitly finalize (tick no longer auto-terminates).
-        const allStepsDone = graph.steps.length > 0 && graph.steps.every(
+        // Once all user-managed steps are done, explicitly finalize (tick no
+        // longer auto-terminates).  System-managed steps like
+        // planner-launch-tracker may remain non-terminal because the
+        // coordinator agent cannot run inside a test harness.
+        const userManagedSteps = graph.steps.filter((s) => {
+          const meta = s.metadata && typeof s.metadata === "object" && !Array.isArray(s.metadata)
+            ? (s.metadata as Record<string, unknown>)
+            : {};
+          return !meta.systemManaged;
+        });
+        const allStepsDone = userManagedSteps.length > 0 && userManagedSteps.every(
           (s) => s.status === "succeeded" || s.status === "skipped" || s.status === "failed" || s.status === "canceled"
         );
         if (allStepsDone && (status === "active" || status === "completing" || status === "bootstrapping")) {
