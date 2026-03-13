@@ -197,6 +197,108 @@ export function buildCoordinatorMcpAllowedTools(serverName = "ade", extraToolNam
   );
 }
 
+export type PlannerLaunchFailureCategory =
+  | "run_context_bug"
+  | "provider_unreachable"
+  | "permission_denied"
+  | "tool_schema_error"
+  | "unknown";
+
+export type PlannerLaunchFailureClassification = {
+  category: PlannerLaunchFailureCategory;
+  interventionType: "provider_unreachable" | "policy_block" | "unrecoverable_error" | "failed_step";
+  reasonCode: string;
+  retryable: boolean;
+  recoveryOptions: Array<"retry" | "switch_to_fallback_model" | "cancel_run">;
+};
+
+export function classifyPlannerLaunchFailure(error: unknown): PlannerLaunchFailureClassification {
+  const message = typeof error === "string"
+    ? error.trim()
+    : error instanceof Error
+      ? error.message.trim()
+      : String(error ?? "").trim();
+  const normalized = message.toLowerCase();
+
+  if (
+    normalized.includes("run not found")
+    || normalized.includes("mission not found")
+    || normalized.includes("project not found")
+    || normalized.includes("caller context")
+    || normalized.includes("missing run context")
+  ) {
+    return {
+      category: "run_context_bug",
+      interventionType: "unrecoverable_error",
+      reasonCode: "planner_launch_run_context_bug",
+      retryable: false,
+      recoveryOptions: ["cancel_run"],
+    };
+  }
+
+  if (
+    normalized.includes("requires approval")
+    || normalized.includes("permission denied")
+    || normalized.includes("policy block")
+    || normalized.includes("not allowed")
+    || normalized.includes("approval denied")
+  ) {
+    return {
+      category: "permission_denied",
+      interventionType: "policy_block",
+      reasonCode: "planner_launch_permission_denied",
+      retryable: false,
+      recoveryOptions: ["retry", "cancel_run"],
+    };
+  }
+
+  if (
+    normalized.includes("inputvalidationerror")
+    || normalized.includes("invalid input")
+    || normalized.includes("unexpected command")
+    || normalized.includes("schema")
+    || normalized.includes("validation error")
+  ) {
+    return {
+      category: "tool_schema_error",
+      interventionType: "failed_step",
+      reasonCode: "planner_launch_tool_schema_error",
+      retryable: false,
+      recoveryOptions: ["retry", "cancel_run"],
+    };
+  }
+
+  if (
+    normalized.includes("rate limit")
+    || normalized.includes("timed out")
+    || normalized.includes("timeout")
+    || normalized.includes("temporarily unavailable")
+    || normalized.includes("connection refused")
+    || normalized.includes("network")
+    || normalized.includes("provider")
+    || normalized.includes("model")
+    || normalized.includes("api key")
+    || normalized.includes("authentication")
+    || normalized.includes("unauthorized")
+  ) {
+    return {
+      category: "provider_unreachable",
+      interventionType: "provider_unreachable",
+      reasonCode: "planner_launch_provider_unreachable",
+      retryable: true,
+      recoveryOptions: ["retry", "switch_to_fallback_model", "cancel_run"],
+    };
+  }
+
+  return {
+    category: "unknown",
+    interventionType: "failed_step",
+    reasonCode: "planner_launch_unknown_failure",
+    retryable: false,
+    recoveryOptions: ["retry", "cancel_run"],
+  };
+}
+
 export type CoordinatorWorkerDeliveryStatus =
   | { ok: true; delivered: true; method: "send" | "steer" }
   | { ok: true; delivered: false; reason: "worker_busy_steered"; method: "steer" }

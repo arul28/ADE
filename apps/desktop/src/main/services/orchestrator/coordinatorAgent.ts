@@ -9,6 +9,7 @@ import path from "node:path";
 import { streamText, stepCountIs, type ModelMessage } from "ai";
 import {
   buildCoordinatorMcpAllowedTools,
+  classifyPlannerLaunchFailure,
   createCoordinatorToolSet,
   type CoordinatorSendWorkerMessageFn,
 } from "./coordinatorTools";
@@ -33,7 +34,10 @@ import type {
   AgentChatEvent,
   DagMutationEvent,
   MissionBudgetSnapshot,
+  MissionInterventionType,
   OrchestratorRuntimeEvent,
+  OrchestratorStep,
+  OrchestratorStepStatus,
   PhaseCard,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
@@ -114,6 +118,34 @@ export type CoordinatorAgentDeps = {
   missionLaneId?: string;
   /** Callback to create a new lane branching from the mission's base lane. */
   provisionLane?: (name: string, description?: string) => Promise<{ laneId: string; name: string }>;
+  onPlanningStartupFailure?: (failure: CoordinatorPlanningStartupFailure) => void;
+};
+
+export type PlanningStartupState =
+  | "inactive"
+  | "awaiting_project_context"
+  | "awaiting_planner_launch"
+  | "waiting_on_planner"
+  | "failed";
+
+export type CoordinatorPlanningStartupFailure = {
+  category:
+    | "run_context_bug"
+    | "provider_unreachable"
+    | "permission_denied"
+    | "tool_schema_error"
+    | "unknown"
+    | "native_tool_violation";
+  reasonCode: string;
+  interventionType: MissionInterventionType;
+  retryable: boolean;
+  recoveryOptions: Array<"retry" | "switch_to_fallback_model" | "cancel_run">;
+  message: string;
+  title: string;
+  body: string;
+  requestedAction: string;
+  toolName?: string | null;
+  retryCount: number;
 };
 
 type QueuedEvent = {
@@ -134,11 +166,32 @@ const MAX_EVENT_RETRY_COUNT = 2;
 const CHECKPOINT_TURN_INTERVAL = 5;
 const CHECKPOINT_SUMMARY_MAX_CHARS = 8_000;
 const COORDINATOR_TURN_TIMEOUT_MS = 120_000;
+const PLANNING_STARTUP_RETRY_LIMIT = 1;
+const PLANNER_LAUNCH_TRACKER_STEP_KEY = "planner-launch-tracker";
 const CHECKPOINT_DAG_MUTATION_TOOLS = new Set([
   "spawn_worker",
   "revise_plan",
   "mark_step_complete",
   "complete_mission",
+]);
+const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "canceled"]);
+const TERMINAL_PLANNING_TRACKER_STATUSES = new Set<OrchestratorStepStatus>([
+  "succeeded",
+  "failed",
+  "blocked",
+  "skipped",
+  "superseded",
+  "canceled",
+]);
+const PLANNING_STARTUP_ALLOWED_TOOL_NAMES = new Set([
+  "get_project_context",
+  "spawn_worker",
+  "get_mission",
+  "get_run_graph",
+  "get_step_output",
+  "get_worker_states",
+  "get_timeline",
+  "stream_events",
 ]);
 
 export function shouldUseSdkTools(modelId: string): boolean {
@@ -254,6 +307,10 @@ function formatStreamError(error: unknown): string {
   }
 }
 
+class CoordinatorFatalError extends Error {
+  readonly nonRetryable = true;
+}
+
 // ---------------------------------------------------------------------------
 // Coordinator Agent
 // ---------------------------------------------------------------------------
@@ -273,6 +330,10 @@ export class CoordinatorAgent {
   private cachedModelAt = 0;
   private compactionCount = 0;
   private lastEventTimestampMs: number | null = null;
+  private activeAbortController: AbortController | null = null;
+  private planningStartupState: PlanningStartupState = "inactive";
+  private planningStartupRetryCount = 0;
+  private plannerLaunchTrackerStepId: string | null = null;
 
   constructor(deps: CoordinatorAgentDeps) {
     // ── VAL-PLAN-005 / Mandatory planning enforcement ──
@@ -337,6 +398,8 @@ export class CoordinatorAgent {
     });
     this.wrapDagMutationToolsWithCheckpoint();
     this.systemPrompt = this.buildSystemPrompt();
+    this.planningStartupState = this.isPlanningFirstPhaseRun() ? "awaiting_project_context" : "inactive";
+    this.ensurePlannerLaunchTrackerStep();
 
     // Initialize compaction monitor if enabled
     if (deps.enableCompaction) {
@@ -388,6 +451,9 @@ export class CoordinatorAgent {
   /** Stop the coordinator. No further events will be processed. */
   shutdown(): void {
     this.dead = true;
+    this.eventQueue = [];
+    this.activeAbortController?.abort();
+    this.activeAbortController = null;
     if (this.batchTimer) {
       clearTimeout(this.batchTimer);
       this.batchTimer = null;
@@ -418,7 +484,7 @@ export class CoordinatorAgent {
         `SELECT status FROM orchestrator_runs WHERE id = ? AND project_id = ?`,
         [this.deps.runId, this.deps.projectId],
       );
-      return row?.status === "paused";
+      return row?.status === "paused" || TERMINAL_RUN_STATUSES.has(String(row?.status ?? "").trim().toLowerCase());
     } catch {
       // If the run can't be queried, treat as not paused (let other guards handle it)
       return false;
@@ -440,6 +506,7 @@ export class CoordinatorAgent {
       return;
     // Guard: do not process batches while the run is paused
     if (this.isRunPaused()) return;
+    this.refreshPlanningStartupState();
     this.processing = true;
 
     // Take a snapshot of events before removing from queue
@@ -482,12 +549,14 @@ export class CoordinatorAgent {
       });
 
       // Re-enqueue events that failed processing (with retry limit)
-      for (const event of events) {
-        const retryCount = (event.retryCount ?? 0) + 1;
-        if (retryCount <= MAX_EVENT_RETRY_COUNT) {
-          this.eventQueue.push({ ...event, retryCount });
+      if (!(err instanceof CoordinatorFatalError)) {
+        for (const event of events) {
+          const retryCount = (event.retryCount ?? 0) + 1;
+          if (retryCount <= MAX_EVENT_RETRY_COUNT) {
+            this.eventQueue.push({ ...event, retryCount });
+          }
+          // Events exceeding MAX_EVENT_RETRY_COUNT are dropped to prevent infinite loops
         }
-        // Events exceeding MAX_EVENT_RETRY_COUNT are dropped to prevent infinite loops
       }
     } finally {
       this.processing = false;
@@ -559,6 +628,323 @@ export class CoordinatorAgent {
     });
   }
 
+  private normalizeCoordinatorToolName(toolName: string): string {
+    const trimmed = toolName.trim();
+    if (trimmed.startsWith("mcp__")) {
+      const parts = trimmed.split("__");
+      return (parts[2] ?? trimmed).trim();
+    }
+    return trimmed;
+  }
+
+  private isPlanningExecutionStep(step: OrchestratorStep | null | undefined): boolean {
+    if (!step) return false;
+    const metadata = asRecord(step.metadata);
+    if (metadata?.isTask === true || metadata?.displayOnlyTask === true || metadata?.plannerLaunchTracker === true) {
+      return false;
+    }
+    const phaseKey = typeof metadata?.phaseKey === "string" ? metadata.phaseKey.trim().toLowerCase() : "";
+    const phaseName = typeof metadata?.phaseName === "string" ? metadata.phaseName.trim().toLowerCase() : "";
+    const stepType = typeof metadata?.stepType === "string" ? metadata.stepType.trim().toLowerCase() : "";
+    return phaseKey === "planning" || phaseName === "planning" || stepType === "planning";
+  }
+
+  private resolvePlannerLaunchTrackerStep(): OrchestratorStep | null {
+    if (!this.isPlanningFirstPhaseRun()) return null;
+    try {
+      const graph = this.deps.orchestratorService.getRunGraph({
+        runId: this.deps.runId,
+        timelineLimit: 0,
+      });
+      const step = graph.steps.find((candidate) => {
+        if (this.plannerLaunchTrackerStepId && candidate.id === this.plannerLaunchTrackerStepId) return true;
+        const metadata = asRecord(candidate.metadata);
+        return metadata?.plannerLaunchTracker === true || candidate.stepKey === PLANNER_LAUNCH_TRACKER_STEP_KEY;
+      }) ?? null;
+      if (step?.id) this.plannerLaunchTrackerStepId = step.id;
+      return step;
+    } catch {
+      return null;
+    }
+  }
+
+  private ensurePlannerLaunchTrackerStep(): void {
+    if (!this.isPlanningFirstPhaseRun()) return;
+    const existing = this.resolvePlannerLaunchTrackerStep();
+    if (existing) return;
+    try {
+      const created = this.deps.orchestratorService.addSteps({
+        runId: this.deps.runId,
+        steps: [
+          {
+            stepKey: PLANNER_LAUNCH_TRACKER_STEP_KEY,
+            title: "Launch planning worker",
+            stepIndex: -1_000,
+            dependencyStepKeys: [],
+            joinPolicy: "all_success",
+            laneId: this.deps.missionLaneId ?? null,
+            executorKind: "manual",
+            metadata: {
+              isTask: true,
+              displayOnlyTask: true,
+              plannerLaunchTracker: true,
+              systemManaged: true,
+              phaseKey: "planning",
+              phaseName: "Planning",
+              stepType: "planner_launch",
+              plannerLaunchState: "pending",
+            },
+          },
+        ],
+      });
+      this.plannerLaunchTrackerStepId = created[0]?.id ?? null;
+    } catch (error) {
+      this.deps.logger.debug("coordinator_agent.planner_launch_tracker_create_failed", {
+        runId: this.deps.runId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private updatePlannerLaunchTrackerStep(args: {
+    status: OrchestratorStepStatus;
+    reason: string;
+    detail?: Record<string, unknown> | null;
+  }): void {
+    const step = this.resolvePlannerLaunchTrackerStep();
+    if (!step) return;
+    const now = new Date().toISOString();
+    const metadata = {
+      ...(asRecord(step.metadata) ?? {}),
+      plannerLaunchTracker: true,
+      plannerLaunchState: args.status,
+      plannerLaunchReason: args.reason,
+      plannerLaunchUpdatedAt: now,
+      ...(args.detail ? { plannerLaunchDetail: args.detail } : {}),
+    };
+    const startedAt = args.status === "pending" ? step.startedAt ?? null : (step.startedAt ?? now);
+    const completedAt = TERMINAL_PLANNING_TRACKER_STATUSES.has(args.status) ? now : null;
+    try {
+      this.deps.db.run(
+        `
+          update orchestrator_steps
+          set status = ?,
+              metadata_json = ?,
+              updated_at = ?,
+              started_at = ?,
+              completed_at = ?
+          where id = ?
+            and run_id = ?
+            and project_id = ?
+        `,
+        [
+          args.status,
+          JSON.stringify(metadata),
+          now,
+          startedAt,
+          completedAt,
+          step.id,
+          this.deps.runId,
+          this.deps.projectId,
+        ],
+      );
+      this.deps.orchestratorService.appendTimelineEvent({
+        runId: this.deps.runId,
+        stepId: step.id,
+        eventType: "planner_launch_status",
+        reason: args.reason,
+        detail: {
+          plannerLaunchState: args.status,
+          ...(args.detail ?? {}),
+        },
+      });
+      this.deps.orchestratorService.emitRuntimeUpdate({
+        runId: this.deps.runId,
+        stepId: step.id,
+        reason: `planner_launch_${args.status}`,
+      });
+    } catch (error) {
+      this.deps.logger.debug("coordinator_agent.planner_launch_tracker_update_failed", {
+        runId: this.deps.runId,
+        stepId: step.id,
+        status: args.status,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private refreshPlanningStartupState(): void {
+    if (!this.isPlanningFirstPhaseRun()) {
+      this.planningStartupState = "inactive";
+      return;
+    }
+    if (this.planningStartupState === "inactive" || this.planningStartupState === "failed") return;
+    try {
+      const graph = this.deps.orchestratorService.getRunGraph({
+        runId: this.deps.runId,
+        timelineLimit: 0,
+      });
+      const planningSteps = filterExecutionSteps(graph.steps).filter((step) => this.isPlanningExecutionStep(step));
+      if (planningSteps.some((step) => step.status === "succeeded")) {
+        this.planningStartupState = "inactive";
+        this.updatePlannerLaunchTrackerStep({
+          status: "succeeded",
+          reason: "planner_ready",
+        });
+        return;
+      }
+      if (planningSteps.some((step) => step.status === "failed" || step.status === "blocked" || step.status === "canceled")) {
+        this.planningStartupState = "failed";
+        return;
+      }
+      if (planningSteps.some((step) => step.status === "ready" || step.status === "running")) {
+        this.planningStartupState = "waiting_on_planner";
+      }
+    } catch {
+      // Best-effort state refresh only.
+    }
+  }
+
+  private isPlanningStartupGuardActive(): boolean {
+    this.refreshPlanningStartupState();
+    return this.planningStartupState !== "inactive" && this.planningStartupState !== "failed";
+  }
+
+  private queueInternalMessage(message: string): void {
+    if (this.dead) return;
+    const receivedAt = Date.now();
+    this.lastEventTimestampMs = receivedAt;
+    this.eventQueue.push({ message, receivedAt });
+  }
+
+  private buildNativeToolPlanningFailure(toolName: string): CoordinatorPlanningStartupFailure {
+    return {
+      category: "native_tool_violation",
+      reasonCode: "planning_startup_native_tool_violation",
+      interventionType: "policy_block",
+      retryable: false,
+      recoveryOptions: ["cancel_run"],
+      message: `Coordinator tried to use '${toolName}' during planning startup.`,
+      title: "Planning startup left the safe tool lane",
+      body:
+        `During the planning startup phase, the coordinator attempted to call '${toolName}' instead of staying inside ADE's planning tools. ` +
+        "ADE stopped the turn and opened an explicit recovery path instead of allowing unbounded repo exploration.",
+      requestedAction: "Retry planning or cancel the run.",
+      toolName,
+      retryCount: this.planningStartupRetryCount,
+    };
+  }
+
+  private buildPlannerLaunchFailure(message: string, toolName?: string | null): CoordinatorPlanningStartupFailure {
+    const classification = classifyPlannerLaunchFailure(message);
+    const requestedAction = classification.category === "provider_unreachable"
+      ? "Retry the planner, switch to a fallback model if one is available, or cancel the run."
+      : classification.category === "permission_denied"
+        ? "Adjust the permission or tool policy, then retry the planner."
+        : classification.category === "run_context_bug"
+          ? "Cancel the run and fix the run-context wiring before retrying."
+          : "Retry the planner or cancel the run.";
+    const title = classification.category === "provider_unreachable"
+      ? "Planner launch is blocked by the model provider"
+      : classification.category === "permission_denied"
+        ? "Planner launch is blocked by tool permissions"
+        : classification.category === "run_context_bug"
+          ? "Planner launch lost its run context"
+          : classification.category === "tool_schema_error"
+            ? "Planner launch failed validation"
+            : "Planner launch failed";
+    return {
+      ...classification,
+      message,
+      title,
+      body:
+        `ADE could not launch the planning worker during planning startup. ${message.trim() || "No additional error detail was provided."} ` +
+        "The coordinator did not fall back into planner-style repo exploration.",
+      requestedAction,
+      toolName: toolName ?? null,
+      retryCount: this.planningStartupRetryCount,
+    };
+  }
+
+  private schedulePlanningStartupRetry(failure: CoordinatorPlanningStartupFailure): void {
+    this.planningStartupRetryCount += 1;
+    this.planningStartupState = "awaiting_planner_launch";
+    this.updatePlannerLaunchTrackerStep({
+      status: "pending",
+      reason: "planner_launch_retry_scheduled",
+      detail: {
+        category: failure.category,
+        message: failure.message,
+        retryCount: this.planningStartupRetryCount,
+      },
+    });
+    this.deps.onCoordinatorEvent?.({
+      type: "status",
+      turnStatus: "interrupted",
+      message: "The planner hit a launch issue, so I’m retrying once.",
+    });
+    this.queueInternalMessage(
+      "Planner launch hit a transient provider issue. Retry spawning exactly one planning worker now. " +
+      "Do not inspect files, call native tools, or continue planning work yourself while retrying.",
+    );
+  }
+
+  private handlePlanningStartupFailure(failure: CoordinatorPlanningStartupFailure): void {
+    this.planningStartupState = "failed";
+    this.updatePlannerLaunchTrackerStep({
+      status: failure.category === "permission_denied" || failure.category === "native_tool_violation" ? "blocked" : "failed",
+      reason: failure.reasonCode,
+      detail: {
+        category: failure.category,
+        message: failure.message,
+        retryCount: failure.retryCount,
+        recoveryOptions: failure.recoveryOptions,
+        toolName: failure.toolName ?? null,
+      },
+    });
+    this.deps.onCoordinatorEvent?.({
+      type: "status",
+      turnStatus: "failed",
+      message: failure.category === "permission_denied"
+        ? "The planner was blocked by a permission issue, so I paused the run."
+        : failure.category === "provider_unreachable"
+          ? "The planner hit a launch issue, so I paused the run and opened recovery options."
+          : "The planner hit a launch issue, so I paused the run.",
+    });
+    this.deps.onPlanningStartupFailure?.(failure);
+  }
+
+  private handlePlanningStartupToolCall(toolName: string): void {
+    if (!this.isPlanningStartupGuardActive()) return;
+    const normalizedToolName = this.normalizeCoordinatorToolName(toolName);
+    const isObservationOnlyTool = normalizedToolName !== "get_project_context" && normalizedToolName !== "spawn_worker";
+    const allowedInCurrentState =
+      this.planningStartupState === "waiting_on_planner"
+        ? isObservationOnlyTool && PLANNING_STARTUP_ALLOWED_TOOL_NAMES.has(normalizedToolName)
+        : PLANNING_STARTUP_ALLOWED_TOOL_NAMES.has(normalizedToolName);
+    if (allowedInCurrentState) {
+      if (normalizedToolName === "get_project_context" && this.planningStartupState === "awaiting_project_context") {
+        this.planningStartupState = "awaiting_planner_launch";
+        this.updatePlannerLaunchTrackerStep({
+          status: "running",
+          reason: "fetching_project_context",
+        });
+      }
+      if (normalizedToolName === "spawn_worker" && this.planningStartupState !== "waiting_on_planner") {
+        this.planningStartupState = "awaiting_planner_launch";
+        this.updatePlannerLaunchTrackerStep({
+          status: "running",
+          reason: "launching_planner",
+        });
+      }
+      return;
+    }
+
+    const failure = this.buildNativeToolPlanningFailure(toolName);
+    this.handlePlanningStartupFailure(failure);
+    throw new CoordinatorFatalError(failure.message);
+  }
+
   private isPlanningFirstPhaseRun(): boolean {
     if (!Array.isArray(this.deps.phases) || this.deps.phases.length === 0) return false;
     const firstPhase = [...this.deps.phases].sort((a, b) => a.position - b.position)[0];
@@ -610,13 +996,7 @@ export class CoordinatorAgent {
         runId: this.deps.runId,
         timelineLimit: 0,
       });
-      return filterExecutionSteps(graph.steps).some((step) => {
-        const metadata = asRecord(step.metadata);
-        const phaseKey = typeof metadata?.phaseKey === "string" ? metadata.phaseKey.trim().toLowerCase() : "";
-        const phaseName = typeof metadata?.phaseName === "string" ? metadata.phaseName.trim().toLowerCase() : "";
-        const stepType = typeof metadata?.stepType === "string" ? metadata.stepType.trim().toLowerCase() : "";
-        return phaseKey === "planning" || phaseName === "planning" || stepType === "planning";
-      });
+      return filterExecutionSteps(graph.steps).some((step) => this.isPlanningExecutionStep(step));
     } catch {
       return false;
     }
@@ -687,8 +1067,11 @@ export class CoordinatorAgent {
     const sdkModel = await this.resolveModel();
     const useSdkTools = shouldUseSdkTools(this.deps.modelId);
     const abortController = new AbortController();
+    this.activeAbortController = abortController;
     const timeoutHandle = setTimeout(() => abortController.abort(), COORDINATOR_TURN_TIMEOUT_MS);
     let awaitingBlockingUserInput = false;
+    let planningStartupAbortMode: "none" | "retry" | "failed" = "none";
+    let planningStartupFailure: CoordinatorPlanningStartupFailure | null = null;
 
     this.deps.logger.info("coordinator_agent.turn_started", {
       runId: this.deps.runId,
@@ -762,7 +1145,7 @@ export class CoordinatorAgent {
             this.deps.onCoordinatorEvent?.({
               type: "activity",
               activity: "thinking",
-              detail: "Reasoning through the next step",
+              detail: "Thinking through the next move",
               turnId,
             });
             this.deps.onCoordinatorEvent?.({
@@ -776,6 +1159,7 @@ export class CoordinatorAgent {
         }
         if (part.type === "tool-call") {
           const toolName = String(part.toolName ?? "tool");
+          this.handlePlanningStartupToolCall(toolName);
           const lowerToolName = toolName.toLowerCase();
           let activity: "searching" | "reading" | "editing_file" | "running_command" | "tool_calling";
           if (lowerToolName.includes("search")) {
@@ -806,6 +1190,7 @@ export class CoordinatorAgent {
         }
         if (part.type === "tool-result") {
           const toolName = String(part.toolName ?? "tool");
+          const normalizedToolName = this.normalizeCoordinatorToolName(toolName);
           const toolOutput = asRecord(part.output);
           this.deps.onCoordinatorEvent?.({
             type: "tool_result",
@@ -822,16 +1207,78 @@ export class CoordinatorAgent {
             awaitingBlockingUserInput = true;
             abortController.abort();
           }
+          if (normalizedToolName === "spawn_worker" && this.planningStartupState !== "inactive") {
+            if (toolOutput?.ok === true) {
+              this.planningStartupState = "waiting_on_planner";
+              this.updatePlannerLaunchTrackerStep({
+                status: "running",
+                reason: toolOutput?.launched === false ? "planner_queued" : "planner_launched",
+                detail: {
+                  launched: toolOutput?.launched ?? null,
+                  launchNote: typeof toolOutput?.launchNote === "string" ? toolOutput.launchNote : null,
+                  stepId: typeof toolOutput?.stepId === "string" ? toolOutput.stepId : null,
+                },
+              });
+              this.deps.onCoordinatorEvent?.({
+                type: "status",
+                turnStatus: "started",
+                turnId,
+                message: toolOutput?.launched === false
+                  ? "The planning agent is queued. I’m waiting for it to start."
+                  : "The planning agent is running. I’m waiting for its result.",
+              });
+            } else {
+              const failure = this.buildPlannerLaunchFailure(
+                typeof toolOutput?.error === "string" ? toolOutput.error : `Tool '${toolName}' failed to launch the planner.`,
+                toolName,
+              );
+              planningStartupFailure = failure;
+              if (failure.retryable && this.planningStartupRetryCount < PLANNING_STARTUP_RETRY_LIMIT) {
+                this.schedulePlanningStartupRetry(failure);
+                planningStartupAbortMode = "retry";
+              } else {
+                this.handlePlanningStartupFailure(failure);
+                planningStartupAbortMode = "failed";
+              }
+              abortController.abort();
+            }
+          }
           continue;
         }
         if (part.type === "tool-error") {
+          const toolName = String(part.toolName ?? "tool");
+          const normalizedToolName = this.normalizeCoordinatorToolName(toolName);
+          if (normalizedToolName === "spawn_worker" && this.planningStartupState !== "inactive") {
+            const failure = this.buildPlannerLaunchFailure(formatStreamError(part.error), toolName);
+            planningStartupFailure = failure;
+            if (failure.retryable && this.planningStartupRetryCount < PLANNING_STARTUP_RETRY_LIMIT) {
+              this.schedulePlanningStartupRetry(failure);
+              planningStartupAbortMode = "retry";
+            } else {
+              this.handlePlanningStartupFailure(failure);
+              planningStartupAbortMode = "failed";
+            }
+            abortController.abort();
+          }
           this.deps.onCoordinatorEvent?.({
             type: "error",
-            message: `Tool '${String(part.toolName ?? "tool")}' failed: ${formatStreamError(part.error)}`,
+            message: `Tool '${toolName}' failed: ${formatStreamError(part.error)}`,
             itemId: String(part.toolCallId ?? `${turnId}-tool`),
             turnId,
           });
         }
+      }
+
+      if (planningStartupAbortMode === "retry") {
+        this.deps.logger.info("coordinator_agent.planner_launch_retry_scheduled", {
+          runId: this.deps.runId,
+          retryCount: this.planningStartupRetryCount,
+          error: planningStartupFailure?.message ?? null,
+        });
+        return;
+      }
+      if (planningStartupAbortMode === "failed") {
+        throw new CoordinatorFatalError(planningStartupFailure?.message ?? "Planner launch failed during planning startup.");
       }
 
       await this.enforcePlanningFirstTurnDelegation(turnId);
@@ -901,6 +1348,17 @@ export class CoordinatorAgent {
         });
         return;
       }
+      if (aborted && planningStartupAbortMode === "retry") {
+        this.deps.logger.info("coordinator_agent.turn_restarted_for_planner_retry", {
+          runId: this.deps.runId,
+          turnId,
+          retryCount: this.planningStartupRetryCount,
+        });
+        return;
+      }
+      if (aborted && planningStartupAbortMode === "failed") {
+        throw new CoordinatorFatalError(planningStartupFailure?.message ?? "Planner launch failed during planning startup.");
+      }
       this.deps.onCoordinatorEvent?.({
         type: "status",
         turnStatus: aborted ? "interrupted" : "failed",
@@ -921,6 +1379,9 @@ export class CoordinatorAgent {
       });
       throw error;
     } finally {
+      if (this.activeAbortController === abortController) {
+        this.activeAbortController = null;
+      }
       clearTimeout(timeoutHandle);
     }
   }
@@ -1427,6 +1888,7 @@ Your initial plan is a hypothesis. Adjust it as you learn:
         return undefined;
       }
       const launch = resolveAdeMcpServerLaunch({
+        projectRoot: this.deps.projectRoot,
         workspaceRoot: this.deps.workspaceRoot,
         runtimeRoot: resolveUnifiedRuntimeRoot(),
         missionId: this.deps.missionId,

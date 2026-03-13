@@ -6,6 +6,7 @@ import type { PackDeltaDigestV1, PackExport, PackType } from "../../../shared/ty
 import { openKvDb } from "../state/kvDb";
 import { createMissionService } from "../missions/missionService";
 import { createOrchestratorService } from "./orchestratorService";
+import { CoordinatorAgent } from "./coordinatorAgent";
 import {
   buildCoordinatorEvaluationActionHints,
   createAiOrchestratorService,
@@ -1158,6 +1159,119 @@ describe("aiOrchestratorService", () => {
     }
   });
 
+  it("emits immediate coordinator lifecycle status before any reasoning stream arrives", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Plan the startup path cleanly.",
+        laneId: fixture.laneId,
+      });
+      setMissionPlanningMode(fixture.db, mission.id, "auto");
+
+      const launched = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "autopilot",
+        defaultExecutorKind: "unified",
+      });
+      const runId = launched.started?.run.id;
+      if (!runId) throw new Error("Expected mission run to start");
+
+      const chat = fixture.aiOrchestratorService.getChat({ missionId: mission.id });
+      expect(chat.some((entry) => entry.content.includes("I’m online and getting the run ready."))).toBe(true);
+      expect(chat.some((entry) => entry.content.includes("I’m reading your prompt and sizing up the work."))).toBe(true);
+
+      const lifecycleEvents = fixture.orchestratorService
+        .listRuntimeEvents({ runId, eventTypes: ["progress"], limit: 50 })
+        .filter((entry) => {
+          const payload = entry.payload as Record<string, unknown> | null;
+          return payload?.source === "coordinator_lifecycle";
+        });
+      const lifecycleStates = lifecycleEvents.map((entry) =>
+        String((entry.payload as Record<string, unknown> | null)?.state ?? ""),
+      );
+      expect(lifecycleStates).toContain("booting");
+      expect(lifecycleStates).toContain("analyzing_prompt");
+
+      const runGraph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 50 });
+      expect(runGraph.run.metadata).toMatchObject({
+        coordinator: {
+          lifecycleState: "analyzing_prompt",
+          lifecycleMessage: "I’m reading your prompt and sizing up the work.",
+        },
+      });
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("persists planning startup lifecycle transitions from coordinator tool events", async () => {
+    let capturedCoordinator: CoordinatorAgent | null = null;
+    const originalEnsurePlannerLaunchTrackerStep = (CoordinatorAgent.prototype as any).ensurePlannerLaunchTrackerStep;
+    const captureSpy = vi
+      .spyOn(CoordinatorAgent.prototype as any, "ensurePlannerLaunchTrackerStep")
+      .mockImplementation(function (this: CoordinatorAgent) {
+        capturedCoordinator = this;
+        return originalEnsurePlannerLaunchTrackerStep.call(this);
+      });
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Plan first and expose each startup phase.",
+        laneId: fixture.laneId,
+      });
+      setMissionPlanningMode(fixture.db, mission.id, "auto");
+
+      const launched = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "autopilot",
+        defaultExecutorKind: "unified",
+      });
+      const runId = launched.started?.run.id;
+      if (!runId) throw new Error("Expected mission run to start");
+      expect(capturedCoordinator).toBeTruthy();
+
+      (capturedCoordinator as any)?.deps.onCoordinatorEvent?.({
+        type: "tool_call",
+        tool: "get_project_context",
+        args: {},
+        turnId: "turn-1",
+        itemId: "tool-ctx",
+      });
+      (capturedCoordinator as any)?.deps.onCoordinatorEvent?.({
+        type: "tool_call",
+        tool: "spawn_worker",
+        args: { name: "planning-worker" },
+        turnId: "turn-1",
+        itemId: "tool-spawn",
+      });
+      (capturedCoordinator as any)?.deps.onCoordinatorEvent?.({
+        type: "tool_result",
+        tool: "spawn_worker",
+        result: { ok: true, launched: true, stepId: "planner-step-1" },
+        status: "completed",
+        turnId: "turn-1",
+        itemId: "tool-spawn",
+      });
+
+      await waitFor(() => {
+        const states = fixture.orchestratorService
+          .listRuntimeEvents({ runId, eventTypes: ["progress"], limit: 50 })
+          .map((entry) => String((entry.payload as Record<string, unknown> | null)?.state ?? ""));
+        return states.includes("fetching_project_context")
+          && states.includes("launching_planner")
+          && states.includes("waiting_on_planner");
+      });
+
+      const chat = fixture.aiOrchestratorService.getChat({ missionId: mission.id });
+      expect(chat.some((entry) => entry.content.includes("I’m pulling project context so the planner starts with the right picture."))).toBe(true);
+      expect(chat.some((entry) => entry.content.includes("I’m starting the planning agent now."))).toBe(true);
+      expect(chat.some((entry) => entry.content.includes("The planning agent is running. I’m waiting for its result."))).toBe(true);
+    } finally {
+      captureSpy.mockRestore();
+      fixture.dispose();
+    }
+  });
+
   it("initializes mission memory with the resolved mission project id during launch", async () => {
     const missionMemoryLifecycleService = {
       startMission: vi.fn(),
@@ -1276,6 +1390,90 @@ describe("aiOrchestratorService", () => {
         })
       );
     } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("opens a structured intervention when planner launch fails during coordinator startup", async () => {
+    let capturedCoordinator: CoordinatorAgent | null = null;
+    const originalEnsurePlannerLaunchTrackerStep = (CoordinatorAgent.prototype as any).ensurePlannerLaunchTrackerStep;
+    const captureSpy = vi
+      .spyOn(CoordinatorAgent.prototype as any, "ensurePlannerLaunchTrackerStep")
+      .mockImplementation(function (this: CoordinatorAgent) {
+        capturedCoordinator = this;
+        return originalEnsurePlannerLaunchTrackerStep.call(this);
+      });
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Plan first, then implement the change.",
+        laneId: fixture.laneId,
+      });
+      setMissionPlanningMode(fixture.db, mission.id, "auto");
+
+      const launched = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "autopilot",
+        defaultExecutorKind: "unified",
+      });
+      const runId = launched.started?.run.id;
+      if (!runId) throw new Error("Expected mission run to start");
+      expect(capturedCoordinator).toBeTruthy();
+
+      (capturedCoordinator as any)?.deps.onPlanningStartupFailure?.({
+        category: "provider_unreachable",
+        reasonCode: "planner_launch_provider_unreachable",
+        interventionType: "provider_unreachable",
+        retryable: true,
+        recoveryOptions: ["retry", "switch_to_fallback_model", "cancel_run"],
+        message: "Model provider timeout while launching the planning worker.",
+        title: "Planner launch is blocked by the model provider",
+        body: "ADE could not launch the planning worker because the model provider timed out.",
+        requestedAction: "Retry the planner, switch to a fallback model if one is available, or cancel the run.",
+        retryCount: 1,
+      });
+
+      await waitFor(() => {
+        const refreshedMission = fixture.missionService.get(mission.id);
+        return Boolean(
+          refreshedMission?.interventions.some(
+            (entry) =>
+              entry.status === "open"
+              && entry.interventionType === "provider_unreachable"
+              && String(entry.metadata?.reasonCode ?? "") === "planner_launch_provider_unreachable",
+          ),
+        );
+      });
+
+      const refreshedMission = fixture.missionService.get(mission.id);
+      const intervention = refreshedMission?.interventions.find(
+        (entry) =>
+          entry.status === "open"
+          && entry.interventionType === "provider_unreachable"
+          && String(entry.metadata?.reasonCode ?? "") === "planner_launch_provider_unreachable",
+      );
+      expect(intervention).toBeTruthy();
+      expect(refreshedMission?.status).toBe("intervention_required");
+
+      const chat = fixture.aiOrchestratorService.getChat({ missionId: mission.id });
+      expect(chat.some((entry) => entry.content.includes("The planner hit a launch issue, so I paused the run and opened recovery options."))).toBe(true);
+
+      const lifecycleEvents = fixture.orchestratorService
+        .listRuntimeEvents({ runId, eventTypes: ["progress"], limit: 50 })
+        .filter((entry) => {
+          const payload = entry.payload as Record<string, unknown> | null;
+          return payload?.source === "coordinator_lifecycle" && payload?.state === "planner_launch_failed";
+        });
+      expect(lifecycleEvents.length).toBeGreaterThan(0);
+
+      const runGraph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 20 });
+      expect(runGraph.run.metadata).toMatchObject({
+        coordinator: {
+          lifecycleState: "planner_launch_failed",
+        },
+      });
+    } finally {
+      captureSpy.mockRestore();
       fixture.dispose();
     }
   });
@@ -2026,6 +2224,152 @@ describe("aiOrchestratorService", () => {
       expect(interrupt).toHaveBeenCalled();
       expect(disposeSession).toHaveBeenCalled();
     } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("shuts down the live coordinator on cancel and suppresses late coordinator writes", async () => {
+    let capturedCoordinator: CoordinatorAgent | null = null;
+    const originalEnsurePlannerLaunchTrackerStep = (CoordinatorAgent.prototype as any).ensurePlannerLaunchTrackerStep;
+    const captureSpy = vi
+      .spyOn(CoordinatorAgent.prototype as any, "ensurePlannerLaunchTrackerStep")
+      .mockImplementation(function (this: CoordinatorAgent) {
+        capturedCoordinator = this;
+        return originalEnsurePlannerLaunchTrackerStep.call(this);
+      });
+    const shutdownSpy = vi.spyOn(CoordinatorAgent.prototype, "shutdown");
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Cancel while only the coordinator is active.",
+        laneId: fixture.laneId,
+      });
+      setMissionPlanningMode(fixture.db, mission.id, "auto");
+
+      const launched = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "autopilot",
+        defaultExecutorKind: "unified",
+      });
+      const runId = launched.started?.run.id;
+      if (!runId) throw new Error("Expected mission run to start");
+      expect(capturedCoordinator).toBeTruthy();
+
+      const beforeCancelChatCount = fixture.aiOrchestratorService.getChat({ missionId: mission.id }).length;
+      const canceled = await fixture.aiOrchestratorService.cancelRunGracefully({
+        runId,
+        reason: "User canceled from Missions UI.",
+      });
+      expect(canceled.status).toBe("canceled");
+      expect(shutdownSpy).toHaveBeenCalled();
+
+      const coordinatorThread = fixture.aiOrchestratorService
+        .listChatThreads({ missionId: mission.id, includeClosed: true })
+        .find((thread) => thread.threadType === "coordinator");
+      expect(coordinatorThread?.status).toBe("closed");
+
+      const afterCancelMessages = fixture.aiOrchestratorService.getChat({ missionId: mission.id });
+      expect(afterCancelMessages.length).toBeGreaterThan(beforeCancelChatCount);
+      const afterCancelCount = afterCancelMessages.length;
+
+      (capturedCoordinator as any)?.deps.onCoordinatorMessage?.("late plain coordinator message");
+      (capturedCoordinator as any)?.deps.onCoordinatorEvent?.({
+        type: "text",
+        text: "late structured coordinator message",
+        turnId: "turn-late",
+        itemId: "late-1",
+      });
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-run-updated",
+        runId,
+        at: new Date().toISOString(),
+        reason: "status_updated",
+      } as any);
+
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      const finalMessages = fixture.aiOrchestratorService.getChat({ missionId: mission.id });
+      expect(finalMessages).toHaveLength(afterCancelCount);
+      expect(finalMessages.some((entry) => entry.content.includes("late plain coordinator message"))).toBe(false);
+      expect(finalMessages.some((entry) => entry.content.includes("late structured coordinator message"))).toBe(false);
+
+      const openCoordinatorInterventions = fixture.missionService
+        .get(mission.id)
+        ?.interventions.filter(
+          (entry) => entry.status === "open" && /coordinator/i.test(entry.title),
+        ) ?? [];
+      expect(openCoordinatorInterventions).toHaveLength(0);
+    } finally {
+      shutdownSpy.mockRestore();
+      captureSpy.mockRestore();
+      fixture.dispose();
+    }
+  });
+
+  it("cancels runs cleanly when both the coordinator and worker sessions are active", async () => {
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const interrupt = vi.fn().mockResolvedValue(undefined);
+    const disposeSession = vi.fn().mockResolvedValue(undefined);
+    const shutdownSpy = vi.spyOn(CoordinatorAgent.prototype, "shutdown");
+    const fixture = await createFixture({
+      agentChatService: createMockAgentChatService({
+        sendMessage,
+        interrupt,
+        dispose: disposeSession,
+      }),
+    });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Cancel after coordinator startup and worker launch.",
+        laneId: fixture.laneId,
+      });
+      setMissionPlanningMode(fixture.db, mission.id, "auto");
+
+      const launched = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "autopilot",
+        defaultExecutorKind: "unified",
+      });
+      const runId = launched.started?.run.id;
+      if (!runId) throw new Error("Expected mission run to start");
+
+      fixture.orchestratorService.addSteps({
+        runId,
+        steps: [{ stepKey: "implement", title: "Implement", stepIndex: 0, dependencyStepKeys: [], executorKind: "manual" }],
+      });
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+      const readyStep = graph.steps.find((step) => step.status === "ready" && step.stepKey === "implement");
+      if (!readyStep) throw new Error("Expected implementation step to be ready");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual",
+      });
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set executor_kind = 'unified',
+              executor_session_id = ?
+          where id = ?
+        `,
+        ["worker-session-cancel-3", attempt.id],
+      );
+
+      const canceled = await fixture.aiOrchestratorService.cancelRunGracefully({
+        runId,
+        reason: "Cancel both coordinator and workers.",
+      });
+
+      expect(canceled.status).toBe("canceled");
+      expect(shutdownSpy).toHaveBeenCalled();
+      expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "worker-session-cancel-3" }));
+      expect(interrupt).toHaveBeenCalledWith({ sessionId: "worker-session-cancel-3" });
+      expect(disposeSession).toHaveBeenCalledWith({ sessionId: "worker-session-cancel-3" });
+    } finally {
+      shutdownSpy.mockRestore();
       fixture.dispose();
     }
   });

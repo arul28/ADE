@@ -100,6 +100,7 @@ export type AdeMcpPaths = {
 
 export type AdeMcpRuntime = {
   projectRoot: string;
+  workspaceRoot: string;
   projectId: string;
   project: { rootPath: string; displayName: string; baseRef: string };
   paths: AdeMcpPaths;
@@ -149,10 +150,17 @@ export function ensureAdePaths(projectRoot: string): AdeMcpPaths {
   };
 }
 
-export async function createAdeMcpRuntime(projectRootInput: string): Promise<AdeMcpRuntime> {
-  const projectRoot = path.resolve(projectRootInput);
+export async function createAdeMcpRuntime(args: { projectRoot: string; workspaceRoot?: string } | string): Promise<AdeMcpRuntime> {
+  const resolvedArgs = typeof args === "string"
+    ? { projectRoot: args, workspaceRoot: args }
+    : args;
+  const projectRoot = path.resolve(resolvedArgs.projectRoot);
+  const workspaceRoot = path.resolve(resolvedArgs.workspaceRoot ?? resolvedArgs.projectRoot);
   if (!fs.existsSync(projectRoot) || !fs.statSync(projectRoot).isDirectory()) {
     throw new Error(`Project root does not exist: ${projectRoot}`);
+  }
+  if (!fs.existsSync(workspaceRoot) || !fs.statSync(workspaceRoot).isDirectory()) {
+    throw new Error(`Workspace root does not exist: ${workspaceRoot}`);
   }
 
   const baseRef = await detectDefaultBaseRef(projectRoot);
@@ -235,7 +243,7 @@ export async function createAdeMcpRuntime(projectRootInput: string): Promise<Ade
   });
 
   const ptyService = createPtyService({
-    projectRoot,
+    projectRoot: workspaceRoot,
     transcriptsDir: paths.transcriptsDir,
     laneService,
     sessionService,
@@ -415,6 +423,7 @@ export async function createAdeMcpRuntime(projectRootInput: string): Promise<Ade
 
   return {
     projectRoot,
+    workspaceRoot,
     projectId,
     project,
     paths,

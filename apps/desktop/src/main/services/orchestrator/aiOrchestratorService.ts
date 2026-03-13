@@ -123,7 +123,7 @@ import {
   getComputerUseArtifactKinds,
 } from "../computerUse/controlPlane";
 import { createMemoryService } from "../memory/memoryService";
-import { CoordinatorAgent } from "./coordinatorAgent";
+import { CoordinatorAgent, type CoordinatorPlanningStartupFailure } from "./coordinatorAgent";
 import { routeEventToCoordinator } from "./runtimeEventRouter";
 import {
   deleteCoordinatorCheckpoint,
@@ -139,6 +139,15 @@ import {
   buildPlanningPromptPreview,
   buildWorkerPromptInspector,
 } from "./promptInspector";
+
+type CoordinatorLifecycleState =
+  | "booting"
+  | "analyzing_prompt"
+  | "fetching_project_context"
+  | "launching_planner"
+  | "waiting_on_planner"
+  | "planner_launch_failed"
+  | "stopped";
 
 // ── Module imports (extracted from this file) ────────────────────
 import type {
@@ -814,6 +823,8 @@ export function createAiOrchestratorService(args: {
   // ── V2 Coordinator Agents (tool-based, replaces specialist calls) ──
   const coordinatorAgents = new Map<string, CoordinatorAgent>();
   const coordinatorRecoveryAttempts = new Map<string, number>();
+  const coordinatorLifecycleStates = new Map<string, { state: CoordinatorLifecycleState; message: string }>();
+  const coordinatorWriteBarrierRuns = new Set<string>();
 
   // Team runtime state tracking
   const teamRuntimeStates = new Map<string, OrchestratorTeamRuntimeState>();
@@ -883,6 +894,7 @@ export function createAiOrchestratorService(args: {
     runRecoveryLoopStates.delete(runId);
     pendingIntegrations.delete(runId);
     teamRuntimeStates.delete(runId);
+    coordinatorLifecycleStates.delete(runId);
     for (const key of milestoneReadyNotificationSignatures.keys()) {
       if (key.startsWith(`${runId}::`)) {
         milestoneReadyNotificationSignatures.delete(key);
@@ -965,6 +977,123 @@ export function createAiOrchestratorService(args: {
   const WORKER_PROGRESS_CHAT_REPEAT_INTERVAL_MS = 45_000;
   const structuredThreadMessageIds = new Map<string, string>();
   const structuredChatSessions = new Set<string>();
+  const TERMINAL_COORDINATOR_RUN_STATUSES = new Set<OrchestratorRunStatus>(["succeeded", "failed", "canceled"]);
+
+  const getRunStatusDirect = (runId: string): OrchestratorRunStatus | null => {
+    try {
+      const row = db.get<{ status: string | null }>(
+        `select status from orchestrator_runs where id = ? limit 1`,
+        [runId],
+      );
+      const status = typeof row?.status === "string" ? row.status.trim() : "";
+      return status.length > 0 ? status as OrchestratorRunStatus : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const shouldSuppressCoordinatorWrites = (runId: string): boolean => {
+    if (coordinatorWriteBarrierRuns.has(runId)) return true;
+    const status = getRunStatusDirect(runId);
+    return status != null && TERMINAL_COORDINATOR_RUN_STATUSES.has(status);
+  };
+
+  const closeCoordinatorThread = (missionId: string, runId: string): void => {
+    upsertThread({
+      missionId,
+      threadId: `mission:${missionId}`,
+      threadType: "coordinator",
+      title: "Orchestrator",
+      target: {
+        kind: "coordinator",
+        runId,
+      },
+      status: "closed",
+    });
+  };
+
+  const updateCoordinatorMissionState = (args: {
+    missionId: string;
+    runId: string;
+    state: CoordinatorLifecycleState;
+    message: string;
+  }): void => {
+    const detailByState: Record<CoordinatorLifecycleState, { available: boolean; mode: MissionCoordinatorAvailability["mode"] }> = {
+      booting: { available: true, mode: "continuation_required" },
+      analyzing_prompt: { available: true, mode: "continuation_required" },
+      fetching_project_context: { available: true, mode: "continuation_required" },
+      launching_planner: { available: true, mode: "continuation_required" },
+      waiting_on_planner: { available: true, mode: "consult_only" },
+      planner_launch_failed: { available: true, mode: "consult_only" },
+      stopped: { available: false, mode: "offline" },
+    };
+    updateMissionStateDoc(args.runId, {
+      coordinatorAvailability: {
+        available: detailByState[args.state].available,
+        mode: detailByState[args.state].mode,
+        summary: args.message,
+        detail: null,
+        updatedAt: nowIso(),
+      },
+      pendingInterventions: pendingInterventionsForMission(args.missionId),
+    });
+  };
+
+  const emitCoordinatorLifecycle = (args: {
+    missionId: string;
+    runId: string;
+    state: CoordinatorLifecycleState;
+    message: string;
+    force?: boolean;
+  }): void => {
+    if (!args.force && shouldSuppressCoordinatorWrites(args.runId)) return;
+    const previous = coordinatorLifecycleStates.get(args.runId);
+    if (!args.force && previous?.state === args.state && previous.message === args.message) return;
+    coordinatorLifecycleStates.set(args.runId, { state: args.state, message: args.message });
+    updateRunMetadata(args.runId, (metadata) => {
+      metadata.coordinator = {
+        ...(isRecord(metadata.coordinator) ? metadata.coordinator : {}),
+        lifecycleState: args.state,
+        lifecycleMessage: args.message,
+        lifecycleUpdatedAt: nowIso(),
+      };
+    });
+    persistStructuredCoordinatorChatEvent({
+      missionId: args.missionId,
+      runId: args.runId,
+      event: {
+        type: "status",
+        turnStatus: args.state === "planner_launch_failed" ? "failed" : args.state === "stopped" ? "interrupted" : "started",
+        message: args.message,
+      },
+    });
+    recordRuntimeEvent({
+      runId: args.runId,
+      eventType: "progress",
+      eventKey: `coordinator_lifecycle:${args.state}`,
+      payload: {
+        source: "coordinator_lifecycle",
+        state: args.state,
+        message: args.message,
+      },
+    });
+    orchestratorService.appendTimelineEvent({
+      runId: args.runId,
+      eventType: "coordinator_status",
+      reason: args.state,
+      detail: {
+        state: args.state,
+        message: args.message,
+      },
+    });
+    emitOrchestratorMessage(args.missionId, args.message, null, {
+      role: "coordinator_v2",
+      runId: args.runId,
+      source: "coordinator_lifecycle",
+      lifecycleState: args.state,
+    });
+    updateCoordinatorMissionState(args);
+  };
 
   const emitWorkerThreadMessage = (args: {
     missionId: string;
@@ -1073,7 +1202,7 @@ export function createAiOrchestratorService(args: {
       case "approval_request":
         return event.description;
       case "status":
-        return `Turn ${event.turnStatus}.`;
+        return event.message?.trim().length ? event.message.trim() : `Turn ${event.turnStatus}.`;
       case "done":
         return `Turn ${event.status}.`;
       case "error":
@@ -1473,6 +1602,7 @@ export function createAiOrchestratorService(args: {
     event: AgentChatEvent;
     timestamp?: string;
   }): void => {
+    if (shouldSuppressCoordinatorWrites(args.runId)) return;
     const threadId = `mission:${args.missionId}`;
     upsertThread({
       missionId: args.missionId,
@@ -1612,6 +1742,93 @@ export function createAiOrchestratorService(args: {
     });
   };
 
+  const normalizeCoordinatorToolEventName = (toolName: string): string => {
+    const trimmed = toolName.trim();
+    if (trimmed.startsWith("mcp__")) {
+      const parts = trimmed.split("__");
+      return (parts[2] ?? trimmed).trim();
+    }
+    return trimmed;
+  };
+
+  const syncCoordinatorLifecycleFromEvent = (args: {
+    missionId: string;
+    runId: string;
+    planningIsFirstPhase: boolean;
+    event: AgentChatEvent;
+  }): void => {
+    if (!args.planningIsFirstPhase) return;
+    if (args.event.type === "tool_call") {
+      const toolName = normalizeCoordinatorToolEventName(args.event.tool);
+      if (toolName === "get_project_context") {
+        emitCoordinatorLifecycle({
+          missionId: args.missionId,
+          runId: args.runId,
+          state: "fetching_project_context",
+          message: "I’m pulling project context so the planner starts with the right picture.",
+        });
+      } else if (toolName === "spawn_worker") {
+        emitCoordinatorLifecycle({
+          missionId: args.missionId,
+          runId: args.runId,
+          state: "launching_planner",
+          message: "I’m starting the planning agent now.",
+        });
+      }
+      return;
+    }
+
+    if (args.event.type === "tool_result") {
+      const toolName = normalizeCoordinatorToolEventName(args.event.tool);
+      if (toolName !== "spawn_worker") return;
+      const result = asRecord(args.event.result);
+      if (result?.ok === true) {
+        emitCoordinatorLifecycle({
+          missionId: args.missionId,
+          runId: args.runId,
+          state: "waiting_on_planner",
+          message: result?.launched === false
+            ? "The planning agent is queued. I’m waiting for it to start."
+            : "The planning agent is running. I’m waiting for its result.",
+        });
+      } else if (result?.ok === false) {
+        emitCoordinatorLifecycle({
+          missionId: args.missionId,
+          runId: args.runId,
+          state: "planner_launch_failed",
+          message: "The planner hit a launch issue, so I’m diagnosing that now.",
+        });
+      }
+      return;
+    }
+
+    if (args.event.type === "status" && typeof args.event.message === "string" && args.event.message.trim().length > 0) {
+      const message = args.event.message.trim();
+      if (/retrying once/i.test(message)) {
+        emitCoordinatorLifecycle({
+          missionId: args.missionId,
+          runId: args.runId,
+          state: "launching_planner",
+          message,
+        });
+      } else if (/waiting for (?:it to start|its result)/i.test(message)) {
+        emitCoordinatorLifecycle({
+          missionId: args.missionId,
+          runId: args.runId,
+          state: "waiting_on_planner",
+          message,
+        });
+      } else if (/paused the run/i.test(message)) {
+        emitCoordinatorLifecycle({
+          missionId: args.missionId,
+          runId: args.runId,
+          state: "planner_launch_failed",
+          message,
+        });
+      }
+    }
+  };
+
   // ── Coordinator Session Management ──────────────────────────────
   // Spins up a persistent AI coordinator session for a mission run.
   // The coordinator observes runtime events and can intervene with
@@ -1658,6 +1875,10 @@ export function createAiOrchestratorService(args: {
         }
         return projectRoot;
       })();
+      const initialCoordinatorPhase = Array.isArray(opts?.phases)
+        ? [...opts.phases].sort((a, b) => a.position - b.position)[0] ?? null
+        : null;
+      const planningIsFirstPhase = initialCoordinatorPhase?.phaseKey.trim().toLowerCase() === "planning";
       const agent = new CoordinatorAgent({
         orchestratorService,
         missionService,
@@ -1684,6 +1905,12 @@ export function createAiOrchestratorService(args: {
           if (onDagMutation) onDagMutation(event);
         },
         onCoordinatorEvent: (event) => {
+          syncCoordinatorLifecycleFromEvent({
+            missionId,
+            runId,
+            planningIsFirstPhase,
+            event,
+          });
           persistStructuredCoordinatorChatEvent({ missionId, runId, event });
         },
         onRunFinalize: (args) => {
@@ -1717,6 +1944,35 @@ export function createAiOrchestratorService(args: {
         sendWorkerMessageToSession: async ({ sessionId, text, priority }) =>
           sendWorkerMessageToSessionWithStatusCtx(ctx, sessionId, text, { priority }),
         enableCompaction: true,
+        onPlanningStartupFailure: (failure: CoordinatorPlanningStartupFailure) => {
+          emitCoordinatorLifecycle({
+            missionId,
+            runId,
+            state: "planner_launch_failed",
+            message: failure.category === "permission_denied"
+              ? "The planner was blocked by a permission issue, so I paused the run."
+              : failure.category === "provider_unreachable"
+                ? "The planner hit a launch issue, so I paused the run and opened recovery options."
+                : "The planner hit a launch issue, so I paused the run.",
+          });
+          pauseRunWithIntervention({
+            runId,
+            missionId,
+            source: "transition_decision",
+            interventionType: failure.interventionType,
+            reasonCode: failure.reasonCode,
+            title: failure.title,
+            body: failure.body,
+            requestedAction: failure.requestedAction,
+            metadata: {
+              category: failure.category,
+              retryable: failure.retryable,
+              recoveryOptions: failure.recoveryOptions,
+              toolName: failure.toolName ?? null,
+              retryCount: failure.retryCount,
+            },
+          });
+        },
         userRules: opts?.userRules,
         projectContext: opts?.projectContext,
         availableProviders: opts?.availableProviders,
@@ -1732,16 +1988,12 @@ export function createAiOrchestratorService(args: {
       });
 
       coordinatorAgents.set(runId, agent);
-      const initialCoordinatorPhase = Array.isArray(opts?.phases)
-        ? [...opts.phases].sort((a, b) => a.position - b.position)[0] ?? null
-        : null;
 
       // Inject the mission prompt — the coordinator takes it from here
       if (!opts?.skipInitialActivationMessage) {
         const laneContext = opts?.missionLaneId
           ? `\n\nA primary mission lane has been created for you (lane ID: ${opts.missionLaneId}). All workers should be assigned to this lane or to additional lanes you create with provision_lane. NEVER assign workers to the base lane directly.`
           : "";
-        const planningIsFirstPhase = initialCoordinatorPhase?.phaseKey.trim().toLowerCase() === "planning";
         agent.injectMessage(
           planningIsFirstPhase
             ? `You have been activated. Your mission:\n\n${missionGoal}\n\nPlanning is the active first phase. If no planning questions are needed, immediately call get_project_context, spawn the planning worker in read-only mode, and then wait for its output instead of continuing to reason on your own.${laneContext}`
@@ -1754,18 +2006,6 @@ export function createAiOrchestratorService(args: {
         runId,
         modelId,
       });
-      emitOrchestratorMessage(
-        missionId,
-        initialCoordinatorPhase?.phaseKey.trim().toLowerCase() === "planning"
-          ? "Orchestrator online. Planning is active, and I’m briefing the planning worker now."
-          : "Orchestrator online. I’m aligning the active phase and will start the first worker shortly.",
-        null,
-        {
-          role: "coordinator_v2",
-          runId,
-          modelId,
-        },
-      );
 
       return agent;
     } catch (error) {
@@ -1780,15 +2020,20 @@ export function createAiOrchestratorService(args: {
 
   const endCoordinatorAgentV2 = (runId: string): void => {
     const agent = coordinatorAgents.get(runId);
-    if (!agent) return;
-    agent.shutdown();
-    coordinatorAgents.delete(runId);
-    coordinatorRecoveryAttempts.delete(runId);
-    logger.info("ai_orchestrator.coordinator_agent_v2_ended", {
-      runId,
-      turns: agent.turns,
-      historyLength: agent.historyLength,
-    });
+    const missionId = getMissionIdForRun(runId);
+    if (agent) {
+      agent.shutdown();
+      coordinatorAgents.delete(runId);
+      coordinatorRecoveryAttempts.delete(runId);
+      logger.info("ai_orchestrator.coordinator_agent_v2_ended", {
+        runId,
+        turns: agent.turns,
+        historyLength: agent.historyLength,
+      });
+    }
+    if (missionId) {
+      closeCoordinatorThread(missionId, runId);
+    }
   };
 
   /**
@@ -1925,7 +2170,22 @@ Check all worker statuses and continue managing the mission from here. Read work
     content: string,
     stepKey?: string | null,
     metadata?: Record<string, unknown> | null
-  ): OrchestratorChatMessage => emitOrchestratorMessageCtx(ctx, missionId, content, stepKey, metadata, { appendChatMessage });
+  ): OrchestratorChatMessage => {
+    const runId = typeof metadata?.runId === "string" ? metadata.runId : null;
+    const role = typeof metadata?.role === "string" ? metadata.role : null;
+    if (runId && role === "coordinator_v2" && shouldSuppressCoordinatorWrites(runId)) {
+      return {
+        id: randomUUID(),
+        missionId,
+        role: "orchestrator",
+        content,
+        timestamp: nowIso(),
+        stepKey: stepKey ?? null,
+        metadata: metadata ?? null,
+      };
+    }
+    return emitOrchestratorMessageCtx(ctx, missionId, content, stepKey, metadata, { appendChatMessage });
+  };
 
   const emitValidationSystemSignal = (args: {
     event: OrchestratorRuntimeEvent;
@@ -6057,6 +6317,10 @@ Check all worker statuses and continue managing the mission from here. Read work
       });
     }
 
+    updateMissionStateDoc(args.runId, {
+      pendingInterventions: pendingInterventionsForMission(args.missionId),
+    });
+
     return interventionId;
   };
 
@@ -7059,6 +7323,12 @@ Check all worker statuses and continue managing the mission from here. Read work
       }
       const startedRun = started.run;
       const startedRunId = startedRun.id;
+      emitCoordinatorLifecycle({
+        missionId,
+        runId: startedRunId,
+        state: "booting",
+        message: "I’m online and getting the run ready.",
+      });
 
       startupStage = "memory_init";
       if (missionMemoryLifecycleService && missionProjectId.length > 0) {
@@ -7101,6 +7371,12 @@ Check all worker statuses and continue managing the mission from here. Read work
       }
 
       startupStage = "coordinator_start";
+      emitCoordinatorLifecycle({
+        missionId,
+        runId: startedRunId,
+        state: "analyzing_prompt",
+        message: "I’m reading your prompt and sizing up the work.",
+      });
       const coordinatorModelConfig = resolveOrchestratorModelConfig(missionId, "coordinator");
       const coordinatorAgent = startCoordinatorAgentV2(missionId, startedRunId, missionGoal, coordinatorModelConfig, {
         userRules,
@@ -7135,12 +7411,18 @@ Check all worker statuses and continue managing the mission from here. Read work
       startupStage = "run_activate";
       const activatedRun = orchestratorService.activateRun(startedRunId);
       transitionMissionStatus(missionId, "in_progress");
-      emitOrchestratorMessage(
-        missionId,
-        initialPhase?.phaseKey.trim().toLowerCase() === "planning"
-          ? "Mission started. Planning is active, and I’m sending the first planning task out now."
-          : "Mission started. I’m following the enabled phases and will advance workers as each phase opens."
-      );
+      if (initialPhase?.phaseKey.trim().toLowerCase() !== "planning") {
+        emitOrchestratorMessage(
+          missionId,
+          "I’m ready and moving into the first task.",
+          null,
+          {
+            role: "coordinator_v2",
+            runId: startedRunId,
+            source: "coordinator_lifecycle",
+          },
+        );
+      }
 
       const initialGraph = getRunGraphSafe(started.run.id);
       updateMissionStateDoc(
@@ -7376,6 +7658,22 @@ Check all worker statuses and continue managing the mission from here. Read work
 
     const reason = toOptionalString(cancelArgs.reason) ?? "Run canceled.";
     const missionId = getMissionIdForRun(runId);
+    if (missionId) {
+      emitCoordinatorLifecycle({
+        missionId,
+        runId,
+        state: "stopped",
+        message: "I’ve stopped the run.",
+        force: true,
+      });
+    }
+    const evalTimer = pendingCoordinatorEvals.get(runId);
+    if (evalTimer) {
+      clearTimeout(evalTimer);
+      pendingCoordinatorEvals.delete(runId);
+    }
+    coordinatorWriteBarrierRuns.add(runId);
+    endCoordinatorAgentV2(runId);
     const targets = collectGracefulShutdownTargets(runId);
 
     logger.info("ai_orchestrator.run_cancel_graceful_start", {
@@ -9675,13 +9973,34 @@ Check all worker statuses and continue managing the mission from here. Read work
         const recovered = attemptCoordinatorRecovery(runId);
         if (recovered?.isAlive) coordinator = recovered;
       }
+      const coordinatorWritesSuppressed = coordinatorWriteBarrierRuns.has(runId);
       if (!coordinator) {
         const runStatus = getEventGraph().run.status;
+        const terminalCoordinatorRun =
+          typeof runStatus === "string" && TERMINAL_COORDINATOR_RUN_STATUSES.has(runStatus as OrchestratorRunStatus);
         const waitingForCoordinatorStartup =
           !existingCoordinator &&
           event.type === "orchestrator-run-updated" &&
           (runStatus === "bootstrapping" || runStatus === "queued");
         if (waitingForCoordinatorStartup) {
+          return;
+        }
+        if (coordinatorWritesSuppressed || terminalCoordinatorRun) {
+          if (event.reason === "finalized" || terminalCoordinatorRun) {
+            resolveCoordinatorHealthInterventions({
+              runId,
+              note: `Run reached terminal state (${runStatus}) and stale coordinator availability intervention was closed.`,
+              resolutionReason: "run_terminal",
+            });
+          }
+          void syncMissionFromRun(runId, event.reason);
+          logger.info("ai_orchestrator.coordinator_unavailable_suppressed_terminal", {
+            runId,
+            eventType: event.type,
+            reason: event.reason,
+            runStatus,
+            writeBarrier: coordinatorWritesSuppressed,
+          });
           return;
         }
         if (event.reason !== "finalized") {

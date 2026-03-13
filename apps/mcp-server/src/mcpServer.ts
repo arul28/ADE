@@ -1939,7 +1939,7 @@ function getCoordinatorToolSet(args: {
     logger: args.runtime.logger,
     db: args.runtime.db,
     projectRoot: args.runtime.projectRoot,
-    workspaceRoot: args.runtime.projectRoot,
+    workspaceRoot: args.runtime.workspaceRoot,
     missionLaneId: missionLaneId ?? undefined,
     onRunFinalize: ({ runId }) => {
       args.runtime.aiOrchestratorService.finalizeRun({ runId, force: true });
@@ -3702,10 +3702,11 @@ async function runTool(args: {
         const mcpConfigPath = path.join(mcpConfigDir, `spawn-${attemptId ?? Date.now()}.json`);
         const builtEntry = path.join(runtime.projectRoot, "apps", "mcp-server", "dist", "index.cjs");
         const srcEntry = path.join(runtime.projectRoot, "apps", "mcp-server", "src", "index.ts");
+        const workerWorkspaceRoot = runtime.workspaceRoot ?? runtime.projectRoot;
         const mcpCmd = fs.existsSync(builtEntry) ? "node" : "npx";
         const mcpArgs = fs.existsSync(builtEntry)
-          ? [builtEntry, "--project-root", runtime.projectRoot]
-          : ["tsx", srcEntry, "--project-root", runtime.projectRoot];
+          ? [builtEntry, "--project-root", runtime.projectRoot, "--workspace-root", workerWorkspaceRoot]
+          : ["tsx", srcEntry, "--project-root", runtime.projectRoot, "--workspace-root", workerWorkspaceRoot];
         const mcpConfig = {
           mcpServers: {
             ade: {
@@ -3713,6 +3714,7 @@ async function runTool(args: {
               args: mcpArgs,
               env: {
                 ADE_PROJECT_ROOT: runtime.projectRoot,
+                ADE_WORKSPACE_ROOT: workerWorkspaceRoot,
                 ADE_MISSION_ID: callerCtx.missionId ?? "",
                 ADE_RUN_ID: runId,
                 ADE_STEP_ID: stepId ?? "",

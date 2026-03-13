@@ -70,6 +70,7 @@ function createRuntime() {
 
   const runtime = {
     projectRoot,
+    workspaceRoot: projectRoot,
     projectId: "project-1",
     project: { rootPath: projectRoot, displayName: "project", baseRef: "main" },
     paths: {
@@ -289,6 +290,11 @@ function createRuntime() {
           content: [{ type: "text", text: "ok" }],
         },
       })),
+    } as any,
+    computerUseArtifactBrokerService: {
+      getBackendStatus: vi.fn(() => ({ backends: [] })),
+      listArtifacts: vi.fn(() => []),
+      ingest: vi.fn(() => ({ artifacts: [] })),
     } as any,
     orchestratorService: {
       listRuns: vi.fn(() => []),
@@ -841,6 +847,71 @@ describe("mcpServer", () => {
     expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("requires run context");
   });
 
+  it("spawns workers for active runs when project and workspace roots differ", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mcp-runtime-workspace-"));
+    fixture.runtime.orchestratorService.getRunGraph = vi.fn(({ runId }: any) => ({
+      run: {
+        id: runId,
+        missionId: "mission-1",
+        status: "running",
+        metadata: {
+          phaseOverride: [
+            {
+              id: "phase-planning",
+              phaseKey: "planning",
+              name: "Planning",
+              position: 0,
+              instructions: "Plan first.",
+              model: { modelId: "anthropic/claude-sonnet-4-6" },
+              budget: {},
+              askQuestions: { enabled: true, maxQuestions: 3 },
+              validationGate: { tier: "none", required: false },
+              orderingConstraints: { mustBeFirst: true },
+            },
+          ],
+          phaseRuntime: {
+            currentPhaseKey: "planning",
+            currentPhaseName: "Planning",
+            currentPhaseModel: {
+              modelId: "anthropic/claude-sonnet-4-6",
+            },
+          },
+        },
+      },
+      steps: [],
+      attempts: [],
+      claims: [],
+      contextSnapshots: [],
+      handoffs: [],
+      timeline: [],
+      runtimeEvents: [],
+      completionEvaluation: { complete: false },
+    }));
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "coord-1",
+      role: "orchestrator",
+      missionId: "mission-1",
+      runId: "run-1",
+    });
+
+    const response = await callTool(handler, "spawn_worker", {
+      name: "planning-worker",
+      prompt: "Research the codebase and propose a plan.",
+      laneId: "lane-1",
+    });
+
+    expect(response.isError).toBeUndefined();
+    expect(response.structuredContent).toMatchObject({
+      ok: true,
+      name: "planning-worker",
+    });
+    expect(fixture.runtime.projectRoot).not.toBe(fixture.runtime.workspaceRoot);
+    expect(JSON.stringify(response.structuredContent ?? {})).not.toContain("Run not found");
+  });
+
   it("falls back to env orchestrator role when initialize sends an unknown role", async () => {
     const fixture = createRuntime();
     const previousRole = process.env.ADE_DEFAULT_ROLE;
@@ -1109,6 +1180,48 @@ describe("mcpServer", () => {
     expect(response.structuredContent.startupCommand).toContain("--permission-mode");
     expect(response.structuredContent.permissionMode).toBe("edit");
     expect(response.structuredContent.contextRef?.path).toBeNull();
+  });
+
+  it("writes spawn_agent MCP config with canonical project root and workspace root", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mcp-spawn-workspace-"));
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator", runId: "run-1" });
+    const response = await callTool(handler, "spawn_agent", {
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      prompt: "Implement API wiring",
+      title: "Orchestrator Spawn",
+      runId: "run-1",
+      attemptId: "attempt-workspace-roots"
+    });
+
+    expect(response?.isError).toBeUndefined();
+    const configPath = path.join(
+      fixture.runtime.projectRoot,
+      ".ade",
+      "cache",
+      "orchestrator",
+      "mcp-configs",
+      "spawn-attempt-workspace-roots.json"
+    );
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      mcpServers: {
+        ade: {
+          args: string[];
+          env: Record<string, string>;
+        };
+      };
+    };
+
+    expect(config.mcpServers.ade.args).toContain("--project-root");
+    expect(config.mcpServers.ade.args).toContain(fixture.runtime.projectRoot);
+    expect(config.mcpServers.ade.args).toContain("--workspace-root");
+    expect(config.mcpServers.ade.args).toContain(fixture.runtime.workspaceRoot);
+    expect(config.mcpServers.ade.env.ADE_PROJECT_ROOT).toBe(fixture.runtime.projectRoot);
+    expect(config.mcpServers.ade.env.ADE_WORKSPACE_ROOT).toBe(fixture.runtime.workspaceRoot);
   });
 
   it("routes coordinator report_status via MCP and mutates run metadata through coordinator tools", async () => {

@@ -1867,6 +1867,7 @@ app.whenReady().then(async () => {
     const mcpEventBuffer = createEventBuffer();
     const mcpRuntime: AdeMcpRuntime = {
       projectRoot,
+      workspaceRoot: projectRoot,
       projectId,
       project,
       paths: adePaths as unknown as AdeMcpPaths,

@@ -23,9 +23,11 @@ describe("buildCodexMcpConfigFlags", () => {
       "-c",
       "'mcp_servers.ade.command=\"npx\"'",
       "-c",
-      `'mcp_servers.ade.args=["tsx", "/tmp/ade-runtime/apps/mcp-server/src/index.ts", "--project-root", "/Users/admin/Projects/ADE"]'`,
+      `'mcp_servers.ade.args=["tsx", "/tmp/ade-runtime/apps/mcp-server/src/index.ts", "--project-root", "/Users/admin/Projects/ADE", "--workspace-root", "/Users/admin/Projects/ADE"]'`,
       "-c",
       `'mcp_servers.ade.env.ADE_PROJECT_ROOT="/Users/admin/Projects/ADE"'`,
+      "-c",
+      `'mcp_servers.ade.env.ADE_WORKSPACE_ROOT="/Users/admin/Projects/ADE"'`,
       "-c",
       `'mcp_servers.ade.env.ADE_MISSION_ID="mission-123"'`,
       "-c",
@@ -51,11 +53,9 @@ describe("buildClaudeReadOnlyWorkerAllowedTools", () => {
       "mcp__ade__stream_events",
       "mcp__ade__get_timeline",
       "mcp__ade__get_pending_messages",
-      "mcp__ade__get_environment_info",
-      "mcp__ade__launch_app",
-      "mcp__ade__interact_gui",
-      "mcp__ade__screenshot_environment",
-      "mcp__ade__record_environment",
+      "mcp__ade__get_computer_use_backend_status",
+      "mcp__ade__list_computer_use_artifacts",
+      "mcp__ade__ingest_computer_use_artifacts",
       "mcp__ade__report_status",
       "mcp__ade__report_result",
       "mcp__ade__ask_user",
@@ -255,9 +255,9 @@ describe("createUnifiedOrchestratorAdapter", () => {
     expect(result.status).toBe("accepted");
     expect(startupCommand).toContain("--permission-mode 'default'");
     expect(startupCommand).not.toContain("--dangerously-skip-permissions");
-    expect(startupCommand).toContain("mcp__ade__get_environment_info");
-    expect(startupCommand).toContain("mcp__ade__screenshot_environment");
-    expect(startupCommand).toContain("mcp__ade__record_environment");
+    expect(startupCommand).toContain("mcp__ade__get_computer_use_backend_status");
+    expect(startupCommand).toContain("mcp__ade__list_computer_use_artifacts");
+    expect(startupCommand).toContain("mcp__ade__ingest_computer_use_artifacts");
     expect(startupCommand).not.toContain("Bash");
     expect(startupCommand).toContain(`-p "$(cat '`);
     expect(startupCommand).toContain(".ade/cache/orchestrator/worker-prompts/worker-attempt-1.txt");
@@ -326,5 +326,69 @@ describe("createUnifiedOrchestratorAdapter", () => {
     expect(result.status).toBe("accepted");
     expect(startupCommand).toContain("mcp__ade__ext.notion.search");
     expect(startupCommand).not.toContain("mcp__ade__ext.notion.update");
+  });
+
+  it("writes worker MCP launch config with canonical project root and lane workspace root", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-unified-project-root-"));
+    const laneWorktreePath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-unified-lane-root-"));
+    const adapter = createUnifiedOrchestratorAdapter({
+      projectRoot,
+      workspaceRoot: projectRoot,
+      runtimeRoot: path.join(projectRoot, "runtime"),
+    });
+
+    const result = await adapter.start({
+      run: {
+        id: "run-1",
+        missionId: "mission-1",
+        metadata: { missionGoal: "Plan the work" },
+      } as any,
+      step: {
+        id: "step-1",
+        title: "Planning worker",
+        stepKey: "planning-worker",
+        laneId: "lane-1",
+        metadata: {
+          modelId: "anthropic/claude-sonnet-4-6",
+          readOnlyExecution: true,
+          laneWorktreePath,
+        },
+        dependencyStepIds: [],
+        joinPolicy: "all_success",
+      } as any,
+      attempt: { id: "attempt-1" } as any,
+      allSteps: [],
+      contextProfile: {} as any,
+      laneExport: null,
+      projectExport: { content: "" } as any,
+      docsRefs: [],
+      fullDocs: [],
+      permissionConfig: {
+        _providers: {
+          claude: "full-auto",
+        },
+      } as any,
+      createTrackedSession: async () => ({ ptyId: "pty-1", sessionId: "session-1" }),
+    } as any);
+
+    expect(result.status).toBe("accepted");
+    const configPath = path.join(projectRoot, ".ade", "cache", "orchestrator", "mcp-configs", "worker-attempt-1.json");
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    expect(config.mcpServers.ade.args).toEqual([
+      "tsx",
+      path.join(projectRoot, "runtime", "apps", "mcp-server", "src", "index.ts"),
+      "--project-root",
+      projectRoot,
+      "--workspace-root",
+      laneWorktreePath,
+    ]);
+    expect(config.mcpServers.ade.env).toMatchObject({
+      ADE_PROJECT_ROOT: projectRoot,
+      ADE_WORKSPACE_ROOT: laneWorktreePath,
+      ADE_MISSION_ID: "mission-1",
+      ADE_RUN_ID: "run-1",
+      ADE_STEP_ID: "step-1",
+      ADE_ATTEMPT_ID: "attempt-1",
+    });
   });
 });
