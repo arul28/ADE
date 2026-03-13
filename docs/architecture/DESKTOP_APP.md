@@ -232,6 +232,56 @@ Every cleanup step remains isolated by `try/catch` so one failing service does n
 
 ---
 
+## Performance best practices
+
+These rules codify the patterns that eliminated ADE's earlier crash-prone startup behavior. All new code must follow them. They are not suggestions — violating them reintroduces the exact problems the stability work fixed.
+
+### Background services
+
+1. **All new background services must go through `scheduleBackgroundProjectTask()`** in `main.ts`. This gives the service an explicit label, delay, env gate (`ADE_ENABLE_*`), and structured timing logs (`project.startup_task_begin` / `project.startup_task_done`). Never add a raw `setTimeout` or `setImmediate` for service startup.
+
+2. **New integrations must be dormant-until-configured.** If the service depends on external credentials, configuration, or a connected account, it must check for that state and short-circuit immediately when unconfigured. It must not spin, poll, or retry in the background. Examples: Linear sync skips when no workflows or credentials exist; Linear ingress only auto-starts when realtime config is present; OpenClaw stays dormant until explicitly configured.
+
+3. **Background services must not block the renderer.** No background task should delay first paint or prevent tab navigation. If a service needs heavy initialization, it runs after the renderer is usable, on a controlled delay.
+
+### Renderer and feature pages
+
+4. **New feature pages must stage heavy data.** Load the cheapest state first (list, summary, or topology), then hydrate expensive state (dashboard, settings, model metadata, overlays) on controlled delays. Never call every supporting query on mount. Follow the existing patterns:
+   - CTO: summary → team/settings/budget
+   - Missions: list → dashboard → settings → model capabilities
+   - Graph: topology → risk → activity → sync → PRs
+   - PRs: workflow state only, simulation on demand
+
+5. **Never hydrate everything on mount.** If a component needs data from multiple IPC calls, stagger them. Use `useEffect` with controlled delays or load-on-interaction patterns for secondary data. The user should see a usable surface within the first frame.
+
+6. **Conditional data fetching — only fetch what is active.** Do not fetch budget telemetry unless budget controls are enabled. Do not fetch model capabilities until the user opens the create dialog. Do not fetch integration state until the user visits the integration tab. The pattern is: if the user hasn't asked for it yet, don't load it.
+
+7. **Mount expensive UI only when needed.** Settings dialogs, advanced launcher sections (budget, team runtime, permissions, computer-use), and detail panels should mount when opened and unmount when closed. Do not leave hidden heavy trees in the DOM.
+
+### Renderer polling and caching
+
+8. **Renderer polling must be route-scoped.** Terminal attention only polls on terminal-adjacent routes. Lane terminal panels only poll while live sessions exist. Never add global polling that runs regardless of the active route.
+
+9. **Use shared caches for high-frequency calls.** Session-list lookups go through `sessionListCache.ts` with TTL-based deduplication. GitHub snapshots use fingerprint-based change detection to avoid cascading re-renders. New high-frequency IPC calls should get a similar cache layer rather than firing raw on every render.
+
+10. **Memoize expensive renderer computations.** Sidebar worker trees, overlay data, and repeated filter/sort operations should use `useMemo` or `React.memo`. Budget footers and other frequently-refreshing sub-trees should be isolated so their refreshes do not re-render parent components.
+
+### IPC and observability
+
+11. **New IPC handlers must emit structured telemetry.** Every handler should produce `ipc.invoke.begin`, `ipc.invoke.done`, and `ipc.invoke.failed` events with call ID, channel, window ID, and duration. This is not optional — it is what makes stall diagnosis possible without a debugger.
+
+12. **Renderer must emit lifecycle events.** Route changes (`renderer.route_change`), tab changes (`renderer.tab_change`), errors (`renderer.window_error`, `renderer.unhandled_rejection`), and event-loop stalls (`renderer.event_loop_stall`) must continue to be emitted. New surfaces should add equivalent telemetry when they introduce novel lifecycle transitions.
+
+### General rules
+
+13. **Never add a service that starts unconditionally.** Every background service, poller, watcher, or sync loop must have a reason to run and a condition under which it stays idle. "It exists" is not a reason to start it.
+
+14. **Prefer `Promise.allSettled` over `Promise.all` for parallel startup.** One failing service must not block other services from starting. Failures should be logged and isolated, not propagated.
+
+15. **Test with the quiet-first contract in mind.** If your change makes the app visibly slower on project open or tab switch, that is a regression, not a trade-off. Profile first, defer second, cache third, then ask whether the work is actually needed at that point in the lifecycle.
+
+---
+
 ## Current runtime status
 
 The desktop runtime is now shaped around predictable startup and bounded background work instead of hidden deferred bursts.

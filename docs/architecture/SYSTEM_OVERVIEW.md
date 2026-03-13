@@ -192,6 +192,12 @@ The graph still provides topology, risk, PR, and activity overlays, but it now s
 
 ---
 
+## Performance best practices
+
+The prescriptive rules for maintaining ADE's responsiveness live in `docs/architecture/DESKTOP_APP.md` under **Performance best practices**. That section covers mandatory patterns for background services, feature page hydration, renderer polling, caching, IPC telemetry, and general stability rules. All new code must follow those rules to avoid reintroducing the startup and tab-switch regressions the stability work eliminated.
+
+---
+
 ## Current status
 
 ADE's architecture is no longer "everything eventually starts and hopefully it settles." The current runtime has explicit control points for startup, bounded integration behavior, scoped renderer hydration, and enough tracing to explain failures quickly.
