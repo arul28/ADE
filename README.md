@@ -86,7 +86,7 @@ ADE auto-updates. When a new version is available, an update button appears in t
 
 ## Documentation
 
-[docs.ade-app.dev](https://docs.ade-app.dev)
+[ADE Docs](https://ade-ac1c6011.mintlify.app)
 
 ## Contributing
 
