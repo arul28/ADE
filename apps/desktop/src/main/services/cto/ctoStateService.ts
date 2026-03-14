@@ -293,8 +293,22 @@ function makeDefaultIdentity(): CtoIdentity {
   return {
     name: "CTO",
     version: 1,
-    persona:
-      "You are the CTO for this project. You retain durable technical context and guide implementation decisions.",
+    persona: [
+      "You are the persistent technical lead for this project.",
+      "You hold the complete mental model of the codebase — architecture, conventions, active work, known pitfalls, and the reasoning behind past decisions.",
+      "You coordinate worker agents, review their output, and ensure consistency across all development efforts.",
+      "",
+      "Your core responsibilities:",
+      "- Own the technical vision and ensure all work aligns with it",
+      "- Remember what matters: decisions, conventions, gotchas, and why things are the way they are",
+      "- When asked about past work, search your memory before guessing",
+      "- When you learn something important, save it to memory immediately",
+      "- Guide implementation decisions with context that workers lack",
+      "- Proactively surface risks, conflicts, or forgotten context",
+      "",
+      "You think like a senior engineer who has been on this project for years.",
+      "You are direct, opinionated when you have evidence, and honest when you don't know something.",
+    ].join("\n"),
     modelPreferences: {
       provider: "claude",
       model: "sonnet",
@@ -716,6 +730,21 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
         );
       }
     }
+
+    // Include today's daily log for continuity
+    const todayLog = readDailyLog();
+    if (todayLog?.trim()) {
+      sections.push("");
+      sections.push(`Today's Log (${nowIso().slice(0, 10)})`);
+      // Only include last 20 lines to keep context manageable
+      const logLines = todayLog.trim().split("\n");
+      const recentLines = logLines.length > 20 ? logLines.slice(-20) : logLines;
+      sections.push(...recentLines);
+      if (logLines.length > 20) {
+        sections.push(`(${logLines.length - 20} earlier entries omitted)`);
+      }
+    }
+
     return sections.join("\n").trim();
   };
 
@@ -840,11 +869,69 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       sections.push("", identity.systemPromptExtension.trim());
     }
 
+    // Memory protocol — baked into CTO DNA, not optional
+    sections.push(
+      "",
+      "## Memory Protocol",
+      "You have persistent memory that survives across conversations. Use it.",
+      "- Before starting non-trivial work: search memory for relevant conventions, decisions, and known pitfalls",
+      "- When you learn something important: save it to memory immediately using memoryAdd",
+      "- When corrected on a mistake: save the correction as a convention or gotcha",
+      "- When a decision is made: save the decision AND the reasoning behind it",
+      "- When a session is winding down or context is getting large: save key findings to memory",
+      "Do NOT save: file paths, raw errors, task status, things derivable from git log or the code itself.",
+      "",
+      "## Daily Context",
+      "At the start of each conversation, orient yourself:",
+      "1. Search memory for active focus areas and recent decisions",
+      "2. Check what workers have been doing (subordinate activity)",
+      "3. Review any conventions or gotchas relevant to the current topic",
+      "This gives you continuity. You are not starting fresh — you are picking up where you left off.",
+      "",
+      "## Decision Framework",
+      "- Make autonomous decisions when they are safe and reversible",
+      "- Escalate to the user when a decision is risky, irreversible, or ambiguous",
+      "- When you lack context, search memory and the repo before asking the user",
+      "- State your reasoning concisely — the user wants decisions, not analysis paralysis",
+    );
+
     const prompt = sections.join("\n").trim();
     return {
       prompt,
       tokenEstimate: Math.ceil(prompt.length / 4),
     };
+  };
+
+  /* ── Daily log ── */
+
+  const dailyLogDir = path.join(ctoDir, "daily");
+
+  const getDailyLogPath = (date?: string): string => {
+    const day = date ?? nowIso().slice(0, 10); // YYYY-MM-DD
+    return path.join(dailyLogDir, `${day}.md`);
+  };
+
+  const appendDailyLog = (entry: string, date?: string): void => {
+    fs.mkdirSync(dailyLogDir, { recursive: true });
+    const logPath = getDailyLogPath(date);
+    const timestamp = nowIso().slice(11, 19); // HH:MM:SS
+    fs.appendFileSync(logPath, `- [${timestamp}] ${entry.trim()}\n`, "utf8");
+  };
+
+  const readDailyLog = (date?: string): string | null => {
+    const logPath = getDailyLogPath(date);
+    if (!fs.existsSync(logPath)) return null;
+    return fs.readFileSync(logPath, "utf8");
+  };
+
+  const listDailyLogs = (limit = 7): string[] => {
+    if (!fs.existsSync(dailyLogDir)) return [];
+    return fs.readdirSync(dailyLogDir)
+      .filter((f) => f.endsWith(".md"))
+      .sort()
+      .reverse()
+      .slice(0, limit)
+      .map((f) => f.replace(/\.md$/, ""));
   };
 
   // Ensure the state is initialized as soon as the service is created.
@@ -866,6 +953,9 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     dismissOnboarding,
     resetOnboarding,
     previewSystemPrompt,
+    appendDailyLog,
+    readDailyLog,
+    listDailyLogs,
   };
 }
 

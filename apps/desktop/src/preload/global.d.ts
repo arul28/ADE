@@ -783,6 +783,7 @@ declare global {
         changePermissionMode: (args: import("../shared/types").AgentChatChangePermissionModeArgs) => Promise<void>;
         slashCommands: (args: import("../shared/types").AgentChatSlashCommandsArgs) => Promise<import("../shared/types").AgentChatSlashCommand[]>;
         fileSearch: (args: import("../shared/types").AgentChatFileSearchArgs) => Promise<import("../shared/types").AgentChatFileSearchResult[]>;
+        saveTempAttachment: (args: { data: string; filename: string }) => Promise<{ path: string }>;
       };
       computerUse: {
         getSettings: () => Promise<ComputerUseSettingsSnapshot>;
@@ -878,6 +879,8 @@ declare global {
         getStatus: () => Promise<ContextStatus>;
         generateDocs: (args: ContextGenerateDocsArgs) => Promise<ContextGenerateDocsResult>;
         openDoc: (args: ContextOpenDocArgs) => Promise<void>;
+        getPrefs: () => Promise<import("../shared/types").ContextDocPrefs>;
+        savePrefs: (prefs: import("../shared/types").ContextDocPrefs) => Promise<import("../shared/types").ContextDocPrefs>;
       };
       github: {
         getStatus: () => Promise<GitHubStatus>;

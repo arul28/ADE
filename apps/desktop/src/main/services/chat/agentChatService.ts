@@ -14,10 +14,10 @@ import {
   type UserContent,
 } from "ai";
 import { query as claudeQuery, unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
-import type { Query as ClaudeSDKQuery, SDKMessage, Options as ClaudeSDKOptions, PermissionResult as ClaudePermissionResult } from "@anthropic-ai/claude-agent-sdk";
+import type { Query as ClaudeSDKQuery, SDKMessage, SDKUserMessage, Options as ClaudeSDKOptions, PermissionResult as ClaudePermissionResult } from "@anthropic-ai/claude-agent-sdk";
 
 type ClaudeV2Session = {
-  send: (msg: string) => Promise<void>;
+  send: (msg: string | Partial<SDKUserMessage>) => Promise<void>;
   stream: () => AsyncGenerator<SDKMessage, void>;
   close: () => void;
   readonly sessionId: string;
@@ -2196,6 +2196,77 @@ export function createAgentChatService(args: {
 
   // ── Claude SDK streaming turn ──
 
+  /** MIME types the Anthropic API accepts for inline image content blocks. */
+  const ANTHROPIC_IMAGE_MEDIA_TYPES = new Set([
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+  ]);
+
+  /**
+   * Build the message payload for a Claude V2 session turn.
+   * When image attachments are present, returns a streaming-input-format
+   * SDKUserMessage with image content blocks (per Agent SDK docs).
+   * Otherwise returns a plain string.
+   */
+  function buildClaudeV2Message(
+    promptText: string,
+    attachments: AgentChatFileRef[],
+  ): string | Partial<SDKUserMessage> {
+    const imageAttachments = attachments.filter((a) => a.type === "image");
+    if (!imageAttachments.length) {
+      // No images — include file paths as text hints, return plain string
+      if (!attachments.length) return promptText;
+      const hints = attachments.map((a) => `[File attached: ${a.path}]`).join("\n");
+      return `${promptText}\n\n${hints}`;
+    }
+
+    // Build content blocks following the Agent SDK streaming input format:
+    // https://platform.claude.com/docs/en/agent-sdk/streaming-vs-single-mode
+    const content: Array<Record<string, unknown>> = [
+      { type: "text", text: promptText },
+    ];
+
+    for (const attachment of attachments) {
+      if (attachment.type !== "image") {
+        content.push({ type: "text", text: `\n[File attached: ${attachment.path}]` });
+        continue;
+      }
+
+      const resolvedPath = path.resolve(attachment.path);
+      if (!fs.existsSync(resolvedPath)) {
+        content.push({ type: "text", text: `\n[Image missing: ${attachment.path}]` });
+        continue;
+      }
+
+      try {
+        const mediaType = inferAttachmentMediaType(attachment);
+        if (!ANTHROPIC_IMAGE_MEDIA_TYPES.has(mediaType)) {
+          content.push({ type: "text", text: `\n[Image attached (${mediaType}): ${attachment.path}]` });
+          continue;
+        }
+        const data = fs.readFileSync(resolvedPath);
+        content.push({
+          type: "image",
+          source: { type: "base64", media_type: mediaType, data: data.toString("base64") },
+        });
+      } catch (error) {
+        content.push({
+          type: "text",
+          text: `\n[Image unavailable: ${attachment.path}${error instanceof Error ? ` (${error.message})` : ""}]`,
+        });
+      }
+    }
+
+    // Match the streaming input format from the SDK docs — minimal fields,
+    // let the SDK fill in session_id, parent_tool_use_id, etc.
+    return {
+      type: "user",
+      message: { role: "user", content },
+    } as Partial<SDKUserMessage>;
+  }
+
   const runClaudeTurn = async (
     managed: ManagedChatSession,
     args: {
@@ -2221,18 +2292,15 @@ export function createAgentChatService(args: {
     const attachments = args.attachments ?? [];
     const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
 
-    const attachmentHint = attachments.length
-      ? `\n\nAttached context:\n${attachments.map((file) => `- ${file.type}: ${file.path}`).join("\n")}`
-      : "";
     const reconstructionContext = managed.pendingReconstructionContext?.trim() ?? "";
-    const promptText = [
+    const basePromptText = [
       reconstructionContext.length
         ? [
             "System context (identity reconstruction, do not echo verbatim):",
             reconstructionContext,
           ].join("\n")
         : null,
-      `${args.promptText}${attachmentHint}`,
+      args.promptText,
     ].filter((section): section is string => Boolean(section)).join("\n\n");
     if (reconstructionContext.length) {
       managed.pendingReconstructionContext = null;
@@ -2268,8 +2336,12 @@ export function createAgentChatService(args: {
         }
       }
 
+      // Build the message — plain string for text-only, or SDKUserMessage with
+      // image content blocks (streaming input format per SDK docs).
+      const messageToSend = buildClaudeV2Message(basePromptText, attachments);
+
       // V2 pattern: send() then stream() per turn. Session stays alive between turns.
-      await runtime.v2Session.send(promptText);
+      await runtime.v2Session.send(messageToSend);
 
       // Don't emit a pre-emptive "thinking" activity — wait for actual content from the stream.
       // The renderer will show the turn as "started" (from the status event above) which is sufficient.
@@ -2333,6 +2405,11 @@ export function createAgentChatService(args: {
             preTokens: typeof compactMsg.compact_metadata?.pre_tokens === "number" ? compactMsg.compact_metadata.pre_tokens : undefined,
             turnId,
           });
+          // Re-inject identity context after compaction so the CTO doesn't lose
+          // its persona, core memory, or memory protocol instructions.
+          if (managed.session.identityKey) {
+            refreshReconstructionContext(managed);
+          }
           continue;
         }
 
@@ -2937,7 +3014,7 @@ export function createAgentChatService(args: {
 
       const thinkingLevel = mapReasoningEffortToThinking(managed.session.reasoningEffort);
       const providerOptions = providerResolver.buildProviderOptions(runtime.modelDescriptor, thinkingLevel);
-      const harnessPrompt = lightweight
+      const baseHarnessPrompt = lightweight
         ? undefined
         : buildCodingAgentSystemPrompt({
             cwd: managed.laneWorktreePath,
@@ -2945,6 +3022,16 @@ export function createAgentChatService(args: {
             permissionMode: runtime.permissionMode,
             toolNames: Object.keys(tools),
           });
+      // For CTO sessions, compose the CTO's identity prompt into the system
+      // prompt so it survives compaction (system prompt is never compacted).
+      const harnessPrompt = (() => {
+        if (!baseHarnessPrompt) return undefined;
+        if (managed.session.identityKey === "cto" && ctoStateService) {
+          const ctoPrompt = ctoStateService.previewSystemPrompt().prompt;
+          return `${baseHarnessPrompt}\n\n## CTO Identity\n${ctoPrompt}`;
+        }
+        return baseHarnessPrompt;
+      })();
 
       const stream = streamText({
         model: runtime.resolvedModel,
@@ -4755,7 +4842,8 @@ export function createAgentChatService(args: {
         summary: row.summary ?? persisted?.completion?.summary ?? null,
         ...(persisted?.threadId ? { threadId: persisted.threadId } : {})
       } satisfies AgentChatSessionSummary;
-    });
+    // CTO and worker identity sessions are managed separately — exclude from Work tab
+    }).filter((summary) => !summary.identityKey);
   };
 
   const ensureIdentitySession = async (args: {

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { At, Image, Square, X, Hash, PaperPlaneTilt, Lightning } from "@phosphor-icons/react";
+import { At, Image, Paperclip, Square, X, Hash, PaperPlaneTilt, Lightning } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   type AgentChatApprovalDecision,
@@ -163,23 +163,6 @@ function PermissionHoverPane({ opt }: { opt: PermissionOption }) {
       </div>
     </div>
   );
-}
-
-function normalizeFileList(files: FileList | null | undefined): AgentChatFileRef[] {
-  if (!files?.length) return [];
-  return Array.from(files)
-    .map((file) => {
-      const fileWithPath = file as File & { path?: string };
-      const path = typeof fileWithPath.path === "string" && fileWithPath.path.trim().length
-        ? fileWithPath.path
-        : file.name;
-      if (!path.trim().length) return null;
-      return {
-        path,
-        type: inferAttachmentType(path, file.type),
-      } satisfies AgentChatFileRef;
-    })
-    .filter((entry): entry is AgentChatFileRef => Boolean(entry));
 }
 
 export function AgentChatComposer({
@@ -357,10 +340,31 @@ export function AgentChatComposer({
     setAttachmentPickerOpen(false);
   };
 
-  const addFileAttachments = (files: FileList | null | undefined) => {
-    if (!canAttach) return;
-    for (const attachment of normalizeFileList(files)) {
-      onAddAttachment(attachment);
+  const addFileAttachments = async (files: FileList | null | undefined) => {
+    if (!canAttach || !files?.length) return;
+    for (const file of Array.from(files)) {
+      const fileWithPath = file as File & { path?: string };
+      const hasRealPath = typeof fileWithPath.path === "string" && fileWithPath.path.trim().length > 0;
+
+      if (hasRealPath) {
+        // File from filesystem (drag-drop from Finder, native picker)
+        const filePath = fileWithPath.path!;
+        onAddAttachment({ path: filePath, type: inferAttachmentType(filePath, file.type) });
+      } else {
+        // Clipboard paste or browser drag — no filesystem path.
+        // Read the blob, save to a temp file via IPC, then attach.
+        try {
+          const buf = await file.arrayBuffer();
+          const base64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+          const { path: tempPath } = await window.ade.agentChat.saveTempAttachment({
+            data: base64,
+            filename: file.name || "clipboard.png",
+          });
+          onAddAttachment({ path: tempPath, type: inferAttachmentType(tempPath, file.type) });
+        } catch {
+          // Silently skip files that can't be saved
+        }
+      }
     }
   };
 
@@ -471,7 +475,7 @@ export function AgentChatComposer({
   const handlePaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
     if (!canAttach || !event.clipboardData.files.length) return;
     event.preventDefault();
-    addFileAttachments(event.clipboardData.files);
+    void addFileAttachments(event.clipboardData.files);
   };
 
   const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
@@ -489,7 +493,7 @@ export function AgentChatComposer({
     if (!canAttach || !event.dataTransfer.files.length) return;
     event.preventDefault();
     setDragActive(false);
-    addFileAttachments(event.dataTransfer.files);
+    void addFileAttachments(event.dataTransfer.files);
   };
 
   return (
@@ -545,7 +549,7 @@ export function AgentChatComposer({
             multiple
             className="hidden"
             onChange={(event) => {
-              addFileAttachments(event.target.files);
+              void addFileAttachments(event.target.files);
               event.currentTarget.value = "";
             }}
           />
@@ -818,6 +822,13 @@ export function AgentChatComposer({
                 onClick={() => canAttach && setAttachmentPickerOpen((o) => !o)}
                 title="Attach files or images (@)"
               >@</button>
+              <button
+                type="button"
+                className="rounded-md px-1.5 py-1 text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
+                disabled={!canAttach}
+                onClick={openUploadPicker}
+                title="Upload file from disk"
+              ><Paperclip size={12} /></button>
               <button
                 type="button"
                 className="rounded-md px-2 py-1 font-sans text-[10px] text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"

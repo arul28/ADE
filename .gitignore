@@ -45,3 +45,4 @@ release-stable/
 .factory/
 .codex/
 .pnpm-store/
+/apps/desktop/.ade

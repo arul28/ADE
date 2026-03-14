@@ -11,6 +11,7 @@ import type { LinearCredentialService } from "./linearCredentialService";
 const LINEAR_AUTHORIZE_URL = "https://linear.app/oauth/authorize";
 const LINEAR_TOKEN_URL = "https://api.linear.app/oauth/token";
 const CALLBACK_PATH = "/oauth/callback";
+const OAUTH_PORT = 19836;
 const SESSION_TTL_MS = 10 * 60 * 1000;
 
 type LinearOAuthSessionState = {
@@ -195,7 +196,7 @@ export function createLinearOAuthService(args: {
 
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => {
+      server.listen(OAUTH_PORT, "127.0.0.1", () => {
         server.off("error", reject);
         resolve();
       });
@@ -214,6 +215,8 @@ export function createLinearOAuthService(args: {
     authUrl.searchParams.set("response_type", "code");
     authUrl.searchParams.set("state", state);
     authUrl.searchParams.set("scope", "read,write");
+    // Always show consent screen so users can pick which workspace to connect.
+    authUrl.searchParams.set("prompt", "consent");
     if (pkce) {
       authUrl.searchParams.set("code_challenge_method", "S256");
       authUrl.searchParams.set("code_challenge", pkce.challenge);

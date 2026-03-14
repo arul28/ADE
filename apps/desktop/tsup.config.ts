@@ -14,5 +14,9 @@ export default defineConfig({
   external: ["electron", "sql.js", "node-pty", "onnxruntime-node"],
   outDir: "dist",
   sourcemap: true,
-  clean: true
+  clean: true,
+  // Inline build-time env variables so they're available in the packaged app.
+  define: {
+    "process.env.ADE_LINEAR_CLIENT_ID": JSON.stringify(process.env.ADE_LINEAR_CLIENT_ID ?? ""),
+  },
 });

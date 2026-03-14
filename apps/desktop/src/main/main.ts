@@ -148,8 +148,7 @@ function fixElectronShellPath(): void {
 fixElectronShellPath();
 
 const disableHardwareAcceleration =
-  process.env.ADE_DISABLE_HARDWARE_ACCEL === "1"
-  || !!process.env.VITE_DEV_SERVER_URL;
+  process.env.ADE_DISABLE_HARDWARE_ACCEL === "1";
 if (disableHardwareAcceleration) {
   app.disableHardwareAcceleration();
 }
@@ -159,24 +158,14 @@ const devStabilityMode =
   || !!process.env.VITE_DEV_SERVER_URL;
 const enableAllBackgroundTasks =
   process.env.ADE_ENABLE_ALL_BACKGROUND_TASKS === "1";
+// In dev stability mode, only enable essential background tasks by default.
+// Use ADE_ENABLE_ALL_BACKGROUND_TASKS=1 or individual flags to enable others.
 const defaultEnabledBackgroundTaskFlags = new Set<string>([
   "ADE_ENABLE_CONFIG_RELOAD",
   "ADE_ENABLE_USAGE_TRACKING",
-  "ADE_ENABLE_AUTOMATION_INGRESS",
-  "ADE_ENABLE_EXTERNAL_MCP",
-  "ADE_ENABLE_OPENCLAW",
   "ADE_ENABLE_MISSION_QUEUE",
   "ADE_ENABLE_TEAM_RUNTIME_RECOVERY",
-  "ADE_ENABLE_LINEAR_SYNC",
-  "ADE_ENABLE_LINEAR_INGRESS",
-  "ADE_ENABLE_MEMORY_STARTUP_SWEEP",
-  "ADE_ENABLE_MEMORY_CONSOLIDATION",
-  "ADE_ENABLE_EMBEDDING_WORKER",
-  "ADE_ENABLE_HUMAN_DIGEST",
-  "ADE_ENABLE_CONFLICT_PREDICTION",
-  "ADE_ENABLE_EPISODIC_SUMMARY",
   "ADE_ENABLE_HEAD_WATCHER",
-  "ADE_ENABLE_SKILL_REGISTRY",
   "ADE_ENABLE_PORT_ALLOCATION_RECOVERY",
 ]);
 

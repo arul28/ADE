@@ -2308,8 +2308,13 @@ Check all worker statuses and continue managing the mission from here. Read work
     const dedupeKey = `${signalType}:${args.event.runId}:${args.event.stepId ?? "none"}:${args.event.attemptId ?? "none"}`;
     if (validationSystemSignalDedupe.has(dedupeKey)) return;
     validationSystemSignalDedupe.add(dedupeKey);
-    if (validationSystemSignalDedupe.size > 4_000) {
+    if (validationSystemSignalDedupe.size > 500) {
+      // Evict oldest half instead of full clear to preserve recent dedup keys
+      const entries = [...validationSystemSignalDedupe];
       validationSystemSignalDedupe.clear();
+      for (const key of entries.slice(entries.length >> 1)) {
+        validationSystemSignalDedupe.add(key);
+      }
     }
 
     const step = args.event.stepId
@@ -4339,6 +4344,20 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (disposed) return { sweeps: 0, staleRecovered: 0 };
     const startedAtMs = Date.now();
     pruneSessionRuntimeSignals();
+
+    // Prune expired call-type config cache entries
+    for (const [key, entry] of callTypeConfigCache.entries()) {
+      if (entry.expiresAt < startedAtMs) callTypeConfigCache.delete(key);
+    }
+
+    // Cap workerProgressChatState to prevent unbounded growth
+    if (workerProgressChatState.size > 500) {
+      const sorted = [...workerProgressChatState.entries()]
+        .sort((a, b) => a[1].lastEmittedAtMs - b[1].lastEmittedAtMs);
+      for (const [key] of sorted.slice(0, sorted.length - 250)) {
+        workerProgressChatState.delete(key);
+      }
+    }
     const runs = orchestratorService
       .listRuns({ limit: HEALTH_SWEEP_ACTIVE_RUN_SCAN_LIMIT })
       .filter((run) => run.status === "active" || run.status === "bootstrapping" || run.status === "queued");
@@ -8698,7 +8717,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       processSessionRuntimeSignal,
       replayQueuedWorkerMessages,
     });
-    if (sessionRuntimeSignals.size > 500) {
+    if (sessionRuntimeSignals.size > 200) {
       pruneSessionRuntimeSignals();
     }
   };
@@ -10404,6 +10423,10 @@ Check all worker statuses and continue managing the mission from here. Read work
       runTeamManifests.clear();
       runRecoveryLoopStates.clear();
       teamRuntimeStates.clear();
+      validationSystemSignalDedupe.clear();
+      workerProgressChatState.clear();
+      milestoneReadyNotificationSignatures.clear();
+      callTypeConfigCache.clear();
       // Shutdown all coordinator agents
       for (const [rid, agent] of coordinatorAgents.entries()) {
         agent.shutdown();

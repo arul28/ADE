@@ -1104,6 +1104,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.agentChatSlashCommands, args),
     fileSearch: async (args: import("../shared/types").AgentChatFileSearchArgs): Promise<import("../shared/types").AgentChatFileSearchResult[]> =>
       ipcRenderer.invoke(IPC.agentChatFileSearch, args),
+    saveTempAttachment: async (args: { data: string; filename: string }): Promise<{ path: string }> =>
+      ipcRenderer.invoke(IPC.agentChatSaveTempAttachment, args),
   },
   computerUse: {
     getSettings: async (): Promise<ComputerUseSettingsSnapshot> =>
@@ -1258,7 +1260,10 @@ contextBridge.exposeInMainWorld("ade", {
     getStatus: async (): Promise<ContextStatus> => ipcRenderer.invoke(IPC.contextGetStatus),
     generateDocs: async (args: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> =>
       ipcRenderer.invoke(IPC.contextGenerateDocs, args),
-    openDoc: async (args: ContextOpenDocArgs): Promise<void> => ipcRenderer.invoke(IPC.contextOpenDoc, args)
+    openDoc: async (args: ContextOpenDocArgs): Promise<void> => ipcRenderer.invoke(IPC.contextOpenDoc, args),
+    getPrefs: async (): Promise<import("../shared/types").ContextDocPrefs> => ipcRenderer.invoke(IPC.contextGetPrefs),
+    savePrefs: async (prefs: import("../shared/types").ContextDocPrefs): Promise<import("../shared/types").ContextDocPrefs> =>
+      ipcRenderer.invoke(IPC.contextSavePrefs, prefs),
   },
   github: {
     getStatus: async (): Promise<GitHubStatus> => ipcRenderer.invoke(IPC.githubGetStatus),

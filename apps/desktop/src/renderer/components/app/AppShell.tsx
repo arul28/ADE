@@ -5,7 +5,6 @@ import { TabNav } from "./TabNav";
 import { TopBar } from "./TopBar";
 import { RightEdgeFloatingPane } from "./RightEdgeFloatingPane";
 import { TabBackground } from "../ui/TabBackground";
-import { GenerateDocsModal } from "../context/GenerateDocsModal";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import type { ContextStatus, LinearWorkflowEventPayload, PrEventPayload, TerminalSessionSummary } from "../../../shared/types";
@@ -78,7 +77,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [aiMockProvider, setAiMockProvider] = useState<{ createdAt: string } | null>(null);
   const [onboardingIncomplete, setOnboardingIncomplete] = useState(false);
   const [contextStatus, setContextStatus] = useState<ContextStatus | null>(null);
-  const [contextGenerateOpen, setContextGenerateOpen] = useState(false);
   const [projectMissing, setProjectMissing] = useState(false);
   const [onboardingDismissed, setOnboardingDismissed] = useState(() => {
     try {
@@ -454,17 +452,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
           Missing ADE context docs:
           {contextStatus.docs.filter((doc) => !doc.exists).map((doc) => ` ${doc.label}`).join(", ")}.
-          <span className="ml-2 inline-flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-6 px-2 text-[11px]"
-              onClick={() => setContextGenerateOpen(true)}
-            >
-              Generate Docs
-            </Button>
-            <Link to="/settings?tab=context" className="underline">Open Settings</Link>
-          </span>
+          <Link to="/settings?tab=context" className="ml-2 underline">Generate Docs</Link>
         </div>
       ) : null}
 
@@ -637,13 +625,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </div>
 
       <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
-      <GenerateDocsModal
-        open={contextGenerateOpen}
-        onOpenChange={setContextGenerateOpen}
-        onCompleted={() => {
-          void window.ade.context.getStatus().then(setContextStatus).catch(() => {});
-        }}
-      />
     </div>
   );
 }

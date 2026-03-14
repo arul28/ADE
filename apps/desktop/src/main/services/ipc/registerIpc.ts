@@ -3607,6 +3607,20 @@ export function registerIpc({
     }));
   });
 
+  ipcMain.handle(IPC.agentChatSaveTempAttachment, async (_event, arg: { data: string; filename: string }): Promise<{ path: string }> => {
+    const ctx = getCtx();
+    // Save within the project's .ade directory so CLI subprocesses (Claude Code)
+    // have filesystem access. Fall back to system temp if no project is open.
+    const baseDir = ctx.project?.rootPath
+      ? path.join(ctx.project.rootPath, ".ade", "attachments")
+      : path.join(app.getPath("temp"), "ade-attachments");
+    fs.mkdirSync(baseDir, { recursive: true });
+    const ext = path.extname(arg.filename) || ".png";
+    const destPath = path.join(baseDir, `${randomUUID()}${ext}`);
+    fs.writeFileSync(destPath, Buffer.from(arg.data, "base64"));
+    return { path: destPath };
+  });
+
   ipcMain.handle(IPC.computerUseGetSettings, async (): Promise<ComputerUseSettingsSnapshot> => {
     const ctx = ensureComputerUseBroker();
     return buildComputerUseSettingsSnapshot(ctx.computerUseArtifactBrokerService.getBackendStatus());
@@ -4043,6 +4057,18 @@ export function registerIpc({
       throw new Error("Context doc service is not available.");
     }
     return ctx.contextDocService.generateDocs(arg);
+  });
+
+  ipcMain.handle(IPC.contextGetPrefs, async () => {
+    const ctx = getCtx();
+    if (!ctx.contextDocService) throw new Error("Context doc service is not available.");
+    return ctx.contextDocService.getPrefs();
+  });
+
+  ipcMain.handle(IPC.contextSavePrefs, async (_event, arg) => {
+    const ctx = getCtx();
+    if (!ctx.contextDocService) throw new Error("Context doc service is not available.");
+    return ctx.contextDocService.savePrefs(arg);
   });
 
   ipcMain.handle(IPC.contextOpenDoc, async (_event, arg: ContextOpenDocArgs): Promise<void> => {

@@ -425,6 +425,14 @@ export type ContextRefreshEvents = {
   onLaneCreate?: boolean;
 };
 
+/** Saved preferences for context doc generation (model, effort, events). */
+export type ContextDocPrefs = {
+  provider: ContextDocProvider;
+  modelId: string | null;
+  reasoningEffort: string | null;
+  events: ContextRefreshEvents;
+};
+
 export type ContextGenerateDocsArgs = {
   provider?: ContextDocProvider;
   modelId?: string;

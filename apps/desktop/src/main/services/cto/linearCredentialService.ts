@@ -5,6 +5,12 @@ import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
 import { isRecord, getErrorMessage, isEnoentError } from "../shared/utils";
 
+// Bundled OAuth client ID — ships with ADE so users get "Sign in with Linear"
+// out of the box without configuring their own OAuth app.
+// This is a public value (visible in the auth URL); no secret is bundled (we use PKCE).
+const BUNDLED_LINEAR_OAUTH_CLIENT_ID: string | null =
+  process.env.ADE_LINEAR_CLIENT_ID || "432fb2ddb16f939ae5d5270e2c86571f";
+
 const TOKEN_FILE = "linear-token.v1.bin";
 const OAUTH_CLIENT_FILE = "linear-oauth-client.v1.bin";
 const IMPORT_SENTINEL = "linear-token.imported.v1";
@@ -250,11 +256,13 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
 
   const readOAuthClientCredentials = (): LinearOAuthClientCredentials | null => {
     if (cachedOAuthCreds !== undefined) return cachedOAuthCreds;
+    // Priority 1: User-configured credentials (encrypted store)
     const stored = readStoredOAuthClientCredentials();
     if (stored) {
       cachedOAuthCreds = stored;
       return cachedOAuthCreds;
     }
+    // Priority 2: Config files in secrets dir
     for (const filename of OAUTH_CONFIG_FILES) {
       const configPath = path.join(secretsDir, filename);
       try {
@@ -274,6 +282,11 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
           error: getErrorMessage(error),
         });
       }
+    }
+    // Priority 3: Bundled client ID (ships with ADE, no secret — uses PKCE)
+    if (BUNDLED_LINEAR_OAUTH_CLIENT_ID) {
+      cachedOAuthCreds = { clientId: BUNDLED_LINEAR_OAUTH_CLIENT_ID, clientSecret: null };
+      return cachedOAuthCreds;
     }
     cachedOAuthCreds = null;
     return null;
