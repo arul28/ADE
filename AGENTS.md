@@ -33,14 +33,11 @@
 - Use "lane" for ADE worktrees/branches.
 - Use "mission" for orchestrated multi-step work.
 - Use "computer use" for screenshot/video/GUI/browser proof flows.
-- TODO: add any additional product-specific terminology preferences for this repo.
-
 ## Style preferences
 
 - Prefer direct, operational language over marketing phrasing.
 - Keep user-facing copy concrete and stateful: say what changed, what is blocked, and what the next action is.
 - Use sentence case for headings and labels unless the existing UI pattern is intentionally uppercase.
-- TODO: add any additional project-specific writing or UI copy preferences for this repo.
 
 ## Content boundaries
 

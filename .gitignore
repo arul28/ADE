@@ -1,7 +1,6 @@
 .DS_Store
 *.pem
 node_modules/
-infra/
 /.npm-cache
 /apps/desktop/release-stable
 /apps/desktop/.cache
@@ -28,6 +27,7 @@ __pycache__/
 PRtab
 .sandbox_probe
 .pnpm-debug.log
+pnpm-lock.yaml
 release/
 release-stable/
 /.electron-cache
@@ -36,6 +36,9 @@ release-stable/
 .env*
 !.env.example
 *.key
+
+# Docs / binary assets
+*.pdf
 
 # Tool configs (personal)
 .claude/
