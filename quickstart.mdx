@@ -1,0 +1,85 @@
+---
+title: "Quickstart"
+description: "Install ADE, open your first project, create a Lane, and run your first AI agent in under 10 minutes."
+icon: "rocket"
+---
+
+Use the quickstart as a checklist, not as one long article.
+
+<CardGroup cols={2}>
+  <Card title="1. Install ADE" icon="download" href="/getting-started/install">
+    Download the DMG, drag ADE into `/Applications`, and launch it.
+  </Card>
+  <Card title="2. Connect a provider" icon="key" href="/getting-started/connect-provider">
+    Add an Anthropic or OpenAI-compatible key so ADE can run agents.
+  </Card>
+  <Card title="3. Open your repo" icon="folder-open" href="/getting-started/open-project">
+    Point ADE at a Git repository and let onboarding create the local ADE state.
+  </Card>
+  <Card title="4. Create a lane" icon="code-branch" href="/getting-started/first-lane">
+    Fork a task into its own isolated worktree.
+  </Card>
+  <Card title="5. Run your first agent" icon="robot" href="/getting-started/first-agent">
+    Use Agent Chat for a fast task or launch a Mission for structured execution.
+  </Card>
+  <Card title="6. Learn the model" icon="book-open" href="/key-concepts">
+    Read the concepts page once so the rest of the docs make sense.
+  </Card>
+</CardGroup>
+
+<Steps>
+  <Step title="Install the app">
+    ADE currently ships a macOS beta installer. Download the DMG from [ade.dev/download](https://ade.dev/download) and drag **ADE.app** into `/Applications`.
+  </Step>
+  <Step title="Add one AI provider">
+    Open **Settings** and save at least one provider credential. Anthropic is the fastest path to a working setup.
+  </Step>
+  <Step title="Open a Git repository">
+    Use **Open Repository** on the welcome screen or press `Cmd+O`.
+  </Step>
+  <Step title="Create a lane">
+    Create a new lane from your base branch so the first task does not run in the primary checkout.
+  </Step>
+  <Step title="Run a small task">
+    Start with one contained change, like adding a health endpoint or updating a small component. That gives you a clean first pass through the chat, file diff, and commit flow.
+  </Step>
+</Steps>
+
+## Recommended first task
+
+Use something narrow enough to verify the full loop:
+
+```text
+Add a GET /health endpoint that returns { "status": "ok" } and add one test for it.
+```
+
+That task is small, easy to review, and exercises the core ADE workflow:
+
+- open a lane
+- run an agent
+- inspect the diff
+- validate the result
+- commit or promote the work
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Key Concepts" icon="book" href="/key-concepts">
+    Understand every core concept in ADE: Lanes, Packs, Missions, the CTO, Automations, and more.
+  </Card>
+  <Card title="Lanes" icon="code-branch" href="/lanes/overview">
+    Deep dive into lane types, templates, environment isolation, port allocation, and proxy routing.
+  </Card>
+  <Card title="Missions" icon="bullseye" href="/missions/overview">
+    Learn how to configure phase profiles, set budget limits, handle interventions, and export audit bundles.
+  </Card>
+  <Card title="CTO Agent" icon="robot" href="/cto/overview">
+    Set up the always-on CTO agent with Linear sync, project memory, and worker agent delegation.
+  </Card>
+  <Card title="Automations" icon="bolt" href="/automations/overview">
+    Create trigger-driven automation rules that fire agents in response to git events, Linear updates, and schedules.
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration/overview">
+    Configure AI providers, MCP servers, permissions, and the full `ade.yaml` schema.
+  </Card>
+</CardGroup>

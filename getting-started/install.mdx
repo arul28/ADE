@@ -1,0 +1,38 @@
+---
+title: "Install ADE"
+description: "Download the macOS beta, move ADE into Applications, and launch it for the first time."
+icon: "download"
+---
+
+## Requirements
+
+<CardGroup cols={3}>
+  <Card title="macOS" icon="apple">
+    ADE currently ships a macOS beta installer for Apple Silicon and Intel Macs.
+  </Card>
+  <Card title="Git" icon="git-alt">
+    You need a working Git installation because ADE manages worktrees and branches.
+  </Card>
+  <Card title="Node.js" icon="node-js">
+    Node.js is recommended for projects that depend on local tooling and ADE's bundled workflows.
+  </Card>
+</CardGroup>
+
+## Install the beta
+
+<Steps>
+  <Step title="Download the DMG">
+    Go to [ade.dev/download](https://ade.dev/download) and download the latest macOS installer.
+  </Step>
+  <Step title="Move ADE into Applications">
+    Open the DMG and drag **ADE.app** into `/Applications`.
+  </Step>
+  <Step title="Launch ADE">
+    Open ADE from `/Applications`. If macOS warns that the app was downloaded from the internet, confirm that you want to open it.
+  </Step>
+</Steps>
+
+## Optional permissions
+
+Computer Use workflows may ask for **Accessibility** or **Automation** permissions. You can grant those later in macOS **System Settings** if you are not using browser or desktop automation yet.
+

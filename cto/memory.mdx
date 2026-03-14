@@ -1,0 +1,39 @@
+---
+title: "CTO Memory"
+description: "Understand the CTO's multi-scope memory architecture — persistent, layered knowledge of your project that accumulates over time across runtime, run, project, identity, and daily-log scopes."
+icon: "brain"
+---
+
+## Understanding CTO Memory
+
+The CTO uses a **multi-scope memory architecture** that gives it persistent, layered knowledge of your project. Unlike a regular agent that forgets everything when the session ends, the CTO accumulates understanding over time.
+
+<Info>**📸 Screenshot needed:** The Memory sub-tab in the CTO tab — showing a tabbed or sectioned view with: "Procedures" (list of learned procedures with confidence scores), "Project Knowledge" (architectural facts with source links), "Daily Log" (recent diary entries with timestamps), and a "Provenance" section showing where a specific memory entry came from (e.g., "Captured from PR #142 intervention on 2026-03-10").</Info>
+
+### Memory scopes
+
+| Scope | Lifetime | Content |
+|-------|----------|---------|
+| `runtime-thread` | Current conversation | In-flight conversation context; discarded when the chat session ends |
+| `run` | Current activation cycle | Context gathered during the current heartbeat run; summarized into `project` at run end |
+| `project` | Persistent | Architecture facts, conventions, key decisions, known pitfalls, module relationships |
+| `identity` | Persistent | CTO's understanding of your working preferences, communication style, delegation patterns |
+| `daily-log` | Rolling 90-day diary | Chronological log of project events: what changed, what was decided, what was delegated |
+
+### Memory tiers
+
+Within each persistent scope, memory is organized into three retrieval tiers:
+
+- **Core** — always present in the CTO's context window. Reserved for the most critical architectural facts and current project state.
+- **Hot** — retrieved on demand via vector search when the CTO determines it is relevant to the current activation or question.
+- **Cold** — archival storage; accessible when explicitly queried but not auto-retrieved.
+
+### Memory Review surface
+
+The **Memory sub-tab** in the CTO tab is an operator-facing memory browser. You can:
+- Review and edit **Procedures** — learned workflows the CTO has developed (e.g., "always run tests before merging", "prefer `go test ./...` over individual test runs")
+- Browse **Project Knowledge** — architectural facts with provenance links back to the commits, PRs, or interventions that established them
+- Read the **Daily Log** — the CTO's rolling diary of project activity
+- Inspect **Raw Provenance** — see exactly where each memory entry came from and when it was captured
+
+<Tip>If the CTO gives you advice based on outdated information, open Memory > Project Knowledge, find the relevant entry, and either edit it or mark it stale. The CTO will update its behavior on the next run.</Tip>

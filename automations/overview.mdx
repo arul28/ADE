@@ -1,0 +1,79 @@
+---
+title: "Automations Overview"
+description: "Programmable trigger-driven rules that run AI agents in the background. When a trigger fires, a fully capable AI executor acts on your behalf — without blocking your work."
+icon: "bolt"
+---
+
+<Info>Screenshot needed: The Automations tab showing a list of active automations with name, trigger type, executor mode, and status columns.</Info>
+
+## Overview
+
+Automations are ADE's background execution layer. Each automation is a simple rule:
+
+> **Trigger** → **Executor**
+
+When a trigger fires (a PR is opened, a commit lands, a Linear issue is created, or a cron schedule fires), ADE hands control to an AI executor that runs with full tool access. The executor works in the background — you do not need to watch it, approve each step, or even be at your machine.
+
+Think of Automations as GitHub Actions, but instead of a shell script, the "action" is a fully capable AI agent that can read your codebase, write files, commit, open PRs, and update Linear issues.
+
+<CardGroup cols={2}>
+  <Card title="Event-Driven" icon="bolt">
+    Git events, Linear webhooks, file changes, and scheduled crons all trigger automations automatically.
+  </Card>
+  <Card title="Four Executor Modes" icon="robot">
+    Choose a lightweight bot, a persistent worker, CTO routing, or Night Shift queuing based on the task.
+  </Card>
+  <Card title="Configurable Guardrails" icon="shield-check">
+    Budget caps, file-path restrictions, dry-run mode, and approval gates keep automated agents safe.
+  </Card>
+  <Card title="Built-in Templates" icon="layer-group">
+    ADE ships with PR Reviewer, Test Guardian, Linear Triager, Daily Standup, and more out of the box.
+  </Card>
+</CardGroup>
+
+---
+
+## Trigger Types
+
+### Local Git & File Events
+
+| Trigger | Description | Filter Options |
+|---|---|---|
+| `git.push` | Code is pushed to any branch | Branch name or glob pattern |
+| `git.pr_opened` | A PR is opened from any lane | Source branch pattern |
+| `git.pr_merged` | A PR is merged | Target branch |
+| `git.pr_closed` | A PR is closed without merging | Source branch pattern |
+| `git.commit` | A commit is made locally | File path filter (glob) |
+| `file.change` | A specific file or glob changes on disk | File path glob |
+| `lane.created` | A new lane is created | Lane name pattern |
+| `lane.archived` | A lane is archived | Lane name pattern |
+| `schedule` | Cron expression | Any valid cron expression |
+| `manual` | User clicks "Run" in the Automations UI | — |
+
+### External Events (Linear)
+
+| Trigger | Description | Filter Options |
+|---|---|---|
+| `linear.issue_created` | A new Linear issue is created | Team, label, project |
+| `linear.issue_updated` | An issue is updated | Status transition, field changed |
+| `linear.issue_assigned` | An issue is assigned | Assignee (person or ADE bot) |
+
+<Note>
+Linear triggers require an active Linear integration. See [Configuration → Linear](/configuration/settings) to connect your workspace. ADE distinguishes between reading Linear (always allowed) and writing Linear — the `linear.write` permission must be explicitly enabled per automation.
+</Note>
+
+---
+
+## Explore Automations
+
+<CardGroup cols={2}>
+  <Card title="Executor Modes" icon="robot" href="/automations/executors">
+    Learn about the four executor modes and how to create your first automation.
+  </Card>
+  <Card title="Templates & Outputs" icon="layer-group" href="/automations/templates">
+    Browse built-in automation templates and configure output routing.
+  </Card>
+  <Card title="Guardrails & Security" icon="shield-check" href="/automations/guardrails">
+    Tool palette security, memory modes, Night Shift queue, and troubleshooting.
+  </Card>
+</CardGroup>

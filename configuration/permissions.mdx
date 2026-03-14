@@ -1,0 +1,421 @@
+---
+title: "Permissions & Security"
+description: "ADE's layered security model — trust boundaries, SHA-based config approval, per-agent permissions, file path restrictions, command policies, secret protection, and the audit trail."
+icon: "shield-check"
+---
+
+<Info>**📸 Screenshot needed:** Settings → Permissions panel showing four sub-sections stacked vertically: "File Path Restrictions" with a glob input and an allowed-paths list, "Terminal Commands" with allow-list and block-list fields, "Git Restrictions" showing the protected-branches field set to "main|master|production", and "Network Access" with a policy dropdown set to "Allow All."</Info>
+
+## Core Security Principle
+
+ADE is built on a **local-first, trust boundary model**. Your source code, API keys, and agent outputs never leave your machine through ADE's infrastructure. All sensitive operations are confined to the Electron main process, which is isolated from the renderer UI by a strictly typed IPC bridge.
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│  Renderer Process (Untrusted)                                  │
+│  React UI · TypeScript · Tailwind                              │
+│  Cannot access: filesystem, git, API keys, MCP servers         │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  Preload Bridge (contextBridge)                          │  │
+│  │  Typed IPC only · validates all calls · no raw Node.js   │  │
+│  └──────────────────────────────────────────────────────────┘  │
+├────────────────────────────────────────────────────────────────┤
+│  Main Process (Trusted — full Node.js access)                  │
+│  Electron main · SQLite · All services                         │
+│  API keys · File I/O · Git · PTY · MCP servers                 │
+└────────────────────────────────────────────────────────────────┘
+```
+
+<CardGroup cols={3}>
+  <Card title="Renderer: Untrusted UI" icon="display">
+    The React UI cannot access the filesystem, spawn processes, or read secrets. Every sensitive operation is routed through the typed IPC bridge and handled in the main process.
+  </Card>
+  <Card title="Preload Bridge" icon="arrow-left-right">
+    The `contextBridge` exposes only named, typed IPC channels. Renderer code cannot call arbitrary Node.js APIs. Every IPC handler validates its input before executing.
+  </Card>
+  <Card title="Main Process: Trusted Core" icon="shield-check">
+    API keys, git operations, file I/O, and MCP connections all live here. The main process is the only process that reads `local.secret.yaml`.
+  </Card>
+</CardGroup>
+
+---
+
+## SHA-Based Config Approval
+
+`ade.yaml` can define commands — process startup scripts, automation executors, test runners — that will run on your machine. A malicious change to this file (from a supply-chain attack, a rogue PR, or a compromised teammate account) could introduce arbitrary code execution. ADE prevents this with a SHA-based approval gate.
+
+### How It Works
+
+<Steps>
+  <Step title="Change detected">
+    ADE monitors `ade.yaml` using filesystem events. Any change — from a `git pull`, a direct edit, or an automated tool — triggers the approval workflow immediately.
+  </Step>
+  <Step title="Commands suspended">
+    All command execution sourced from `ade.yaml` pauses. This includes: automation triggers, process startup commands, test suite runs, and mission executors defined in the config. Agents that are mid-session continue their current operation but cannot launch new commands from the updated config.
+  </Step>
+  <Step title="Diff presented">
+    ADE shows a structured diff of every changed field in `ade.yaml`. Fields that define commands (`processes[*].command`, `automations[*].executor`, `testSuites[*].run`, `testSuites[*].ci`) are highlighted with a distinct visual treatment — these are the fields that matter most for security review.
+  </Step>
+  <Step title="User reviews and decides">
+    You choose one of three actions:
+    - **Approve** — the new SHA is recorded in `local.yaml` and command execution resumes
+    - **Reject** — ADE reverts to the last-approved version (runs `git checkout .ade/ade.yaml` against the approved SHA)
+    - **Dismiss** — the diff dialog closes but commands remain suspended until you approve or reject
+  </Step>
+  <Step title="SHA recorded">
+    On approval, ADE writes the SHA of the approved file to `local.yaml` under `trust.approvedSha`. This is machine-specific — teammates must approve the same change on their own machines.
+  </Step>
+</Steps>
+
+<Info>**📸 Screenshot needed:** The config approval dialog showing: a two-column diff view with the old `ade.yaml` on the left and new on the right. A changed `automations[0].prompt` is highlighted in the diff. A warning banner at the top reads "Review this config change before command execution resumes." Approve and Reject buttons are visible at the bottom right.</Info>
+
+<Warning>
+Do not edit `trust.approvedSha` manually. ADE treats any mismatch between the stored SHA and the current file as an unapproved change and will suspend commands until the approval flow completes. If `local.yaml` becomes inconsistent, use Settings → Config → Re-approve current config.
+</Warning>
+
+---
+
+## Per-Agent Permission Levels
+
+Every agent type in ADE has a default permission level. You can override these at creation time for individual instances.
+
+| Permission Level | Can Do |
+|-----------------|--------|
+| `read-only` | Read files, list directories, read git status. Cannot write files, run commands, or make git commits. |
+| `write-local` | Read and write files within the lane's worktree. Cannot push to remote, run terminal commands, or call external APIs. |
+| `write-git` | `write-local` plus: `git commit`, `git push`, `git rebase`. Cannot interact with external services (GitHub PRs, Linear). |
+| `write-external` | `write-git` plus: create PRs, post to Linear, call external MCP tools. |
+| `full` | All operations permitted (subject to block lists and network policy). |
+
+### Default Levels by Agent Type
+
+| Agent Type | Default Level | Override Location |
+|------------|--------------|------------------|
+| CTO agent | `write-external` | CTO Settings |
+| Mission orchestrator | `write-git` | Mission creation dialog |
+| Mission worker | `write-git` | Mission creation dialog → Per-worker |
+| Automation bot | `read-only` | Automation config → Tool Palette |
+| Chat agent | `write-local` | Chat header → Session Permissions |
+
+<Note>
+Automation agents default to `read-only` because most automations (PR review, issue triage, context summarization) only need to read. Grant `write-external` to automations that need to post comments, create issues, or update PR descriptions.
+</Note>
+
+---
+
+## File Path Restrictions
+
+Restrict which filesystem paths agents can access. Path rules are evaluated as glob patterns and applied to every file tool call (`ade_read_file`, `ade_write_file`, `ade_list_files`, etc.).
+
+<Tabs>
+  <Tab title="Allow list (restrict to specific paths)">
+    When `allowedPaths` is non-empty, agents can only access files matching at least one pattern:
+
+    ```yaml
+    # .ade/ade.yaml
+    permissions:
+      allowedPaths:
+        - "src/**"
+        - "tests/**"
+        - "package.json"
+        - "*.config.*"
+    ```
+
+    An agent attempting to read `secrets/.env` would receive an `access_denied` error.
+  </Tab>
+  <Tab title="Block list (deny specific paths)">
+    `blockedPaths` denies access to specific patterns regardless of `allowedPaths`. Block list takes precedence.
+
+    ```yaml
+    # .ade/ade.yaml
+    permissions:
+      blockedPaths:
+        - ".env*"
+        - "**/*.key"
+        - "**/*.pem"
+        - ".ade/local.secret.yaml"
+        - "infra/**"
+    ```
+  </Tab>
+  <Tab title="Per-automation path restriction">
+    Override at the automation level to scope specific automations to specific directories:
+
+    ```yaml
+    # .ade/ade.yaml
+    automations:
+      - name: "Test Generator"
+        trigger:
+          type: "git.pr_opened"
+        permissions:
+          allowedPaths:
+            - "src/**"
+            - "tests/**"
+          blockedPaths:
+            - "src/db/**"    # No database changes from this automation
+    ```
+  </Tab>
+</Tabs>
+
+Violations are logged to the audit trail with: the agent identity, the tool called, the path attempted, the rule that blocked it, and the timestamp.
+
+---
+
+## Terminal Command Policy
+
+Control which shell commands agents can run via `ade_run_command`.
+
+```yaml
+# .ade/ade.yaml
+permissions:
+  terminal:
+    # Allow list: agents may only run commands matching these patterns
+    # Empty list = all commands allowed (subject to block list)
+    allowList:
+      - "npm *"
+      - "npx *"
+      - "git *"
+      - "python *"
+      - "pytest *"
+
+    # Block list: agents may NEVER run these commands
+    # Takes precedence over allow list
+    blockList:
+      - "rm -rf *"
+      - "git push --force*"
+      - "git push -f*"
+      - "curl * | sh"
+      - "wget * | sh"
+      - "sudo *"
+      - "chmod 777 *"
+
+    # ask-first: agents request approval for commands not on allow list
+    askFirst: true
+```
+
+### Ask-First Mode
+
+When `askFirst: true`, an agent that wants to run a command not matched by the allow list will call `ade_request_approval` and wait for your response before proceeding. You see the exact command, the agent's rationale, and approve or deny with one click.
+
+<Tip>
+Ask-first mode is the recommended setting for teams. It lets agents work autonomously within their allowed command set while surfacing novel or unexpected commands for human review — without blocking the agent entirely.
+</Tip>
+
+---
+
+## Git Operation Restrictions
+
+Protect branches and restrict git operations available to agents.
+
+```yaml
+# .ade/ade.yaml
+permissions:
+  git:
+    # Regex patterns — agents cannot push to matching branches
+    protectedBranches:
+      - "main"
+      - "master"
+      - "production"
+      - "release/*"
+
+    # Never allow force push (overrides any agent request)
+    allowForcePush: false
+
+    # Require confirmation before agents delete branches
+    requireBranchDeleteConfirmation: true
+
+    # Allowed merge strategies for agents
+    allowedMergeStrategies:
+      - "merge"
+      - "rebase"
+      # "squash" is not listed, so agents cannot run squash merges
+```
+
+<Warning>
+`allowForcePush: false` is the default and should almost never be changed. Force pushing to shared branches can irrecoverably destroy commit history. If a mission or automation attempts a force push, ADE blocks it and logs the attempt — it is not silently ignored.
+</Warning>
+
+### Agent-Specific Git Rules
+
+Override git rules for specific agent types when stricter control is needed:
+
+```yaml
+# .ade/ade.yaml
+permissions:
+  agentOverrides:
+    - role: "automation"
+      git:
+        # Automation agents can only commit — no push at all
+        allowedGitOperations: ["commit", "status", "log", "diff"]
+```
+
+---
+
+## Network Access Policy
+
+Control which external domains agents can reach. This applies to: MCP tool calls that make HTTP requests, agent-browser automations, and any outbound network traffic initiated from agent sessions.
+
+```yaml
+# .ade/ade.yaml
+permissions:
+  network:
+    policy: "allow-all"    # "allow-all" | "allow-list" | "block-list"
+
+    # Used when policy is "allow-list":
+    allowedDomains:
+      - "api.anthropic.com"
+      - "api.openai.com"
+      - "github.com"
+      - "*.github.com"
+      - "linear.app"
+
+    # Used when policy is "block-list":
+    blockedDomains:
+      - "*.internal.company.com"    # Block internal infrastructure access
+```
+
+<Note>
+Network policy is enforced at the MCP tool call level. ADE does not operate as a network proxy — it cannot intercept raw TCP connections made by subprocesses outside of MCP. For stronger network isolation, use OS-level firewall rules alongside ADE's policy.
+</Note>
+
+---
+
+## External MCP Tool Permissions
+
+External MCP tool access is controlled through a layered system. See [MCP Servers → Permission Model](/configuration/mcp-servers#permission-model) for the full four-layer reference.
+
+The high-level controls in Settings → Permissions apply to all agents by default:
+
+```yaml
+# .ade/ade.yaml
+permissions:
+  externalMcp:
+    # Default: which servers are accessible to all agents
+    # (agents can be further restricted per-instance)
+    defaultAccess:
+      - "github"
+      - "filesystem"
+    # "ghost-os" is not listed — no agent gets ghost-os access by default
+    # Grant it explicitly per-agent in CTO settings or mission config
+```
+
+---
+
+## Secret Protection
+
+API keys and OAuth tokens are handled according to the following rules:
+
+<AccordionGroup>
+  <Accordion title="Storage" icon="hard-drive">
+    Secrets live only in `local.secret.yaml` on disk, written by you or by ADE's Settings UI. This file is gitignored. ADE does not write secrets anywhere else — not to SQLite, not to the renderer IPC channel, not to log files.
+  </Accordion>
+  <Accordion title="In-memory handling" icon="microchip">
+    At startup, the main process reads `local.secret.yaml` into memory. The parsed values are held in module-level variables inside the main process only. No IPC channel exposes raw secret values to the renderer. If you inspect the IPC traffic (DevTools → Network), you will not see any API key values.
+  </Accordion>
+  <Accordion title="SQLite" icon="database">
+    ADE's SQLite database stores session metadata, cost records, audit events, and config metadata. It never stores API keys, tokens, or any value from `local.secret.yaml`. The database is readable without a password — it is designed to be inspectable via the Database Inspector in Developer settings.
+  </Accordion>
+  <Accordion title="Log redaction" icon="eye-slash">
+    All log output is scanned for patterns matching known secret formats (`sk-ant-*`, `sk-*`, `ghp_*`, `lin_api_*`, `Bearer *`). Matching values are replaced with `***` before the log entry is written to disk. This applies at all log levels, including `verbose`.
+  </Accordion>
+  <Accordion title="Rotating a secret" icon="rotate">
+    Update the value in `local.secret.yaml` (directly or via Settings → AI Providers → Rotate). ADE hot-reloads the file within 500ms. The new key is used on the next API call. The old key is removed from memory immediately on file reload — no restart needed.
+
+    If a key was accidentally committed to git, **revoke it at the provider immediately** — even if you have since removed it from the file. Assume it is compromised.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Per-Lane Proxy Security
+
+Each Worktree Lane has an isolated proxy context managed by ADE's Lane Proxy Service.
+
+- **Worktree scoping**: All file tool calls from an agent session in Lane A are validated against Lane A's worktree path. Attempting to read or write files outside the lane's worktree returns an `access_denied` error, even if the path restriction rules would otherwise allow it.
+- **Cross-lane isolation**: An agent in Lane A cannot modify Lane B's worktree by any means — not through file tools, not through git commands, not through external MCP tools.
+- **Cross-lane reads (explicit)**: ADE permits cross-lane reads for specific operations: conflict detection, pack generation, and project-level context queries. These are initiated by ADE's orchestration layer, not by agent tool calls.
+
+---
+
+## Audit Trail
+
+Every agent action that touches sensitive resources is logged to `.ade/artifacts/audit.log`.
+
+### What Is Logged
+
+| Event | Fields recorded |
+|-------|----------------|
+| File read | Agent ID, tool name, file path, timestamp, session ID |
+| File write | Agent ID, tool name, file path, bytes written, timestamp |
+| Git operation | Agent ID, tool name, command, args (secrets redacted), result, timestamp |
+| Terminal command | Agent ID, command (secrets redacted), exit code, duration, timestamp |
+| MCP tool call (external) | Agent ID, server name, tool name, args (secrets redacted), response summary, timestamp |
+| Permission denied | Agent ID, tool attempted, reason, rule matched, timestamp |
+| Config approval | Approving user, old SHA, new SHA, changed fields, timestamp |
+| Budget cap reached | Agent ID, session/mission, cap type, amount, timestamp |
+
+### Audit Log Format
+
+```
+2026-03-12T14:23:01.042Z [audit] tool_call agent=worker-3 session=s_abc123
+  tool=ade_write_file path=src/components/Button.tsx bytes=2048
+  mission=m_xyz789 lane=lane/feature-auth result=success
+
+2026-03-12T14:23:05.881Z [audit] permission_denied agent=automation-bot
+  tool=ade_run_command command="rm -rf node_modules"
+  rule=blockList pattern="rm -rf *" lane=primary
+```
+
+### Properties
+
+- **Append-only**: Log entries are never modified or deleted (only rolled over at the configured retention limit)
+- **Retention**: 30 days by default; configurable in Settings → Developer → Audit Log Retention
+- **Location**: `.ade/artifacts/audit.log` in the project directory
+- **Rotation**: Logs rotate at 50MB. Up to 10 rotated files are retained before the oldest is deleted.
+
+<Info>**📸 Screenshot needed:** The History tab filtered to show "Audit Events" — a chronological list of agent actions with columns for: timestamp, agent ID, action type (color-coded: file write = blue, git = purple, permission denied = red), and a one-line description. One "permission denied" row is expanded to show full detail.</Info>
+
+---
+
+## Best Practices for Teams
+
+<AccordionGroup>
+  <Accordion title="Use conservative defaults in ade.yaml" icon="shield">
+    Set restrictive defaults in `ade.yaml` — blocked commands, protected branches, conservative automation permissions. Individual developers can grant themselves additional permissions via `local.yaml` for their machine. It is easier to relax restrictions than to discover that an agent did something unexpected on everyone's machine.
+  </Accordion>
+  <Accordion title="Review ade.yaml changes in PRs explicitly" icon="eye">
+    Treat `ade.yaml` changes in PRs with the same scrutiny as `Dockerfile` or CI pipeline changes. Any new `processes[*].command`, `automations[*].executor`, or `testSuites[*].ci` entry is a new command that will run on every team member's machine after they pull and approve.
+
+    Consider adding a CI lint step that fails if `ade.yaml` changes without a review from a designated security reviewer.
+  </Accordion>
+  <Accordion title="Scope automation tool palettes tightly" icon="crosshairs">
+    Automations that use `toolPalette: "read-only"` cannot write files or run commands. Use this for all automations that only need to analyze and comment (PR review, issue triage, documentation generation). Only grant `write-local` or higher when the automation genuinely needs to modify files.
+  </Accordion>
+  <Accordion title="Rotate API keys periodically" icon="rotate">
+    Even though ADE keeps keys in `local.secret.yaml` (gitignored), establish a rotation schedule — especially for high-privilege tokens like `GITHUB_TOKEN`. ADE's hot-reload makes rotation seamless: update the file, the new key is active in seconds.
+  </Accordion>
+  <Accordion title="Monitor the audit log for unexpected activity" icon="magnifying-glass">
+    Review `.ade/artifacts/audit.log` periodically — especially the `permission_denied` entries. Frequent denials from a specific agent may indicate a misconfigured automation or an agent that is not working within its expected scope. They may also reveal a mistake in your allow/block rules that is blocking legitimate work.
+  </Accordion>
+  <Accordion title="Use mission-level permission overrides for high-risk work" icon="bullseye">
+    For missions that touch critical infrastructure, production configuration, or security-sensitive files, set a restrictive permission profile at mission creation: limit to specific paths, require Ask-First for all terminal commands, and disable external MCP access. The mission-level override applies to all workers spawned by that mission, regardless of their default permission level.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## What's Next
+
+<CardGroup cols={2}>
+  <Card title="Configuration Overview" icon="gear" href="/configuration/overview">
+    Review the .ade/ directory structure, layering model, and SHA approval workflow in full.
+  </Card>
+  <Card title="MCP Servers" icon="server" href="/configuration/mcp-servers">
+    Understand the four-layer permission model for external MCP tool access.
+  </Card>
+  <Card title="Settings" icon="sliders" href="/configuration/settings">
+    Configure permissions, git restrictions, and command policies in the Settings UI.
+  </Card>
+  <Card title="Automations" icon="bolt" href="/automations/overview">
+    Set appropriate tool palettes and permission scopes for your automation rules.
+  </Card>
+</CardGroup>

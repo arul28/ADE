@@ -1,0 +1,34 @@
+---
+title: "Create your first lane"
+description: "Start your first isolated worktree so AI tasks do not run in the primary checkout."
+icon: "code-branch"
+---
+
+## Why lanes matter
+
+A lane is ADE's unit of parallel work. Each lane maps to its own Git worktree and branch state, so separate tasks do not collide immediately.
+
+## Create a lane
+
+<Steps>
+  <Step title="Open the Lanes view">
+    Use the **Lanes** view from the sidebar.
+  </Step>
+  <Step title="Create a new lane">
+    Click **New Lane** and choose a name plus a base branch.
+  </Step>
+  <Step title="Wait for the worktree">
+    ADE creates the worktree, registers it, and marks it ready once the checkout is usable.
+  </Step>
+</Steps>
+
+## Naming guidance
+
+- Use a short task-oriented name
+- Match your Git branch conventions when they matter
+- Prefer one lane per feature, fix, or experiment
+
+<Tip>
+If you are unsure, start from your project's default branch and let ADE create a fresh feature lane from there.
+</Tip>
+

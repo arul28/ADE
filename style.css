@@ -1,0 +1,29 @@
+/* ADE Documentation — Custom Styles */
+
+/* Smooth anchor scroll */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Refine card hover transitions */
+[class*="Card"] {
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+[class*="Card"]:hover {
+  transform: translateY(-2px);
+}
+
+/* Make accordion icons match brand color */
+[class*="Accordion"] svg {
+  color: var(--primary);
+}
+
+/* Footer link spacing */
+footer a {
+  transition: opacity 0.15s ease;
+}
+
+footer a:hover {
+  opacity: 0.8;
+}

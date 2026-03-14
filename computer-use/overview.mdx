@@ -1,0 +1,131 @@
+---
+title: "Computer Use Overview"
+description: "ADE is the control plane for computer use — it discovers backends, injects guidance, ingests proof artifacts, and links them to missions, chats, PRs, and Linear issues."
+icon: "desktop"
+---
+
+<Info>Screenshot needed: The Computer Use section in Settings showing backend cards with connection status and the capability matrix.</Info>
+
+## Overview
+
+ADE does not perform computer use directly. Instead, it acts as the **control plane** — the orchestration layer between your AI agents and external automation backends. This architecture means:
+
+- ADE works with any computer-use backend, not just one vendor.
+- Agents can request browser or desktop actions through a unified API regardless of which backend is active.
+- All proof artifacts (screenshots, traces, recordings) are normalized, stored, and linked to the relevant mission, chat, PR, or Linear issue.
+- Backend health, capability coverage, and proof requirements are visible at a glance in Settings.
+
+<CardGroup cols={2}>
+  <Card title="Backend Agnostic" icon="plug">
+    Connect Ghost OS, agent-browser, or use the built-in ADE Local fallback. Switch backends without changing automation code.
+  </Card>
+  <Card title="Proof Collection" icon="camera">
+    Every computer-use action can be required to produce proof — screenshots, video recordings, browser traces, or DOM verifications.
+  </Card>
+  <Card title="Artifact Ownership" icon="link">
+    Artifacts are linked to lanes, missions, chat sessions, PRs, and Linear issues. Review and publish them from a single panel.
+  </Card>
+  <Card title="Policy Control" icon="sliders">
+    Per-session policies control when computer use is active: Off, Auto, On, Fallback, or Proof-required mode.
+  </Card>
+</CardGroup>
+
+---
+
+## Supported Backends
+
+<Tabs>
+  <Tab title="Ghost OS (Recommended)">
+    Ghost OS is an external MCP server for full macOS desktop automation. It provides complete control over the desktop environment — browsers, native apps, file dialogs, and system UI.
+
+    **Capabilities:**
+    - Full desktop automation (not just browser)
+    - Native macOS accessibility API integration
+    - Multi-display support
+    - App-level isolation per mission
+
+    **Connection:** HTTP transport via `.ade/local.secret.yaml`
+
+    ```yaml
+    externalMcp:
+      - name: ghost-os
+        transport: http
+        url: https://ghost-os.local/mcp
+        autoStart: true
+    ```
+
+    <Tip>
+    Ghost OS is the recommended backend for mission-critical automation where high reliability and proof coverage are required. Its structured trace format integrates most deeply with ADE's artifact system.
+    </Tip>
+  </Tab>
+
+  <Tab title="agent-browser">
+    `agent-browser` is a CLI-native browser automation tool. ADE launches it as a subprocess via stdio transport. It is limited to web automation but requires no external server setup.
+
+    **Capabilities:**
+    - Chromium-based browser automation
+    - DOM interaction, form filling, navigation
+    - Network request interception
+    - Console log capture
+
+    **Connection:** stdio subprocess via `.ade/local.secret.yaml`
+
+    ```yaml
+    externalMcp:
+      - name: agent-browser
+        transport: stdio
+        command: npx
+        args: ["-y", "@agent-browser/cli"]
+        autoStart: true
+    ```
+
+    <Note>
+    `agent-browser` requires Node.js 18+ and a Chromium installation. ADE will attempt to use the system Chromium or download a compatible version on first launch.
+    </Note>
+  </Tab>
+
+  <Tab title="ADE Local (Fallback)">
+    ADE Local is the built-in fallback backend. It provides limited computer-use capabilities when neither Ghost OS nor agent-browser is available. It is not recommended for production automation workflows.
+
+    **Capabilities:**
+    - Basic screenshot capture
+    - System clipboard read/write
+    - URL open in default browser
+
+    **Configuration:** No configuration required. ADE Local activates automatically when no other backend is connected.
+
+    <Warning>
+    ADE Local does not support browser traces, DOM verification, or video recording. It is intended as a minimal compatibility shim, not a primary backend. For any serious automation, configure Ghost OS or agent-browser.
+    </Warning>
+  </Tab>
+</Tabs>
+
+### Backend Capability Matrix
+
+| Capability | Ghost OS | agent-browser | ADE Local |
+|---|---|---|---|
+| Browser automation | Yes | Yes | No |
+| Desktop automation | Yes | No | No |
+| Screenshot capture | Yes | Yes | Yes |
+| Video recording | Yes | Yes | No |
+| Browser trace | Yes | Yes | No |
+| DOM verification | Yes | Yes | No |
+| Console log capture | Yes | Yes | No |
+| Multi-display | Yes | No | No |
+| Native app control | Yes | No | No |
+
+---
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="Connecting Backends" icon="plug" href="/computer-use/setup">
+    Step-by-step setup guides for Ghost OS and agent-browser, plus computer use policy reference.
+  </Card>
+  <Card title="Proofs & Artifacts" icon="camera" href="/computer-use/proofs">
+    Proof kinds, artifact ownership, and how computer use integrates with missions and chat.
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/computer-use/config">
+    Proof requirement profiles and troubleshooting common issues.
+  </Card>
+</CardGroup>

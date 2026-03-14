@@ -1,0 +1,41 @@
+---
+title: "Connect an AI provider"
+description: "Add a provider credential so ADE can start agents and missions."
+icon: "key"
+---
+
+## Open AI provider settings
+
+Press `Cmd+,` or open **Settings** and select **AI Providers**.
+
+## Add one provider first
+
+ADE works best once you have at least one verified provider configured.
+
+<CardGroup cols={2}>
+  <Card title="Anthropic" icon="sparkles">
+    Good default for Claude-backed chat, missions, and orchestration.
+  </Card>
+  <Card title="OpenAI-compatible" icon="server">
+    Works for OpenAI and other endpoints that expose the same API shape.
+  </Card>
+</CardGroup>
+
+## Save and verify
+
+<Steps>
+  <Step title="Paste the API key">
+    Enter the credential into the correct provider field.
+  </Step>
+  <Step title="Save it">
+    Click **Save** so ADE can store the credential locally.
+  </Step>
+  <Step title="Verify the connection">
+    ADE runs a lightweight check to confirm the credential works before you start a real task.
+  </Step>
+</Steps>
+
+<Warning>
+ADE is local-first. Provider calls go directly from your machine to the model provider.
+</Warning>
+

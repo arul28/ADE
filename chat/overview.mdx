@@ -1,0 +1,138 @@
+---
+title: "Agent Chat Overview"
+description: "Conversational AI with real project access — read files, run commands, create PRs, spawn missions, and control computer use, all from a single chat interface."
+icon: "comments"
+---
+
+<Info>Screenshot needed: Agent Chat pane in a Lane view showing the chat composer, a conversation with tool call blocks, the context meter, and the MCP tool indicator.</Info>
+
+## What is Agent Chat?
+
+**Agent Chat** is ADE's conversational interface for working with AI agents in the context of your actual project. Unlike a generic AI chat, Agent Chat is wired directly into your development environment: the agent can read and write real files, run terminal commands, create branches and PRs, query your project's context pack, and spawn a Mission when the task grows beyond what a single conversation can handle.
+
+Every chat session is recorded with a full transcript, tool call log, and timing data. Sessions are resumable and their artifacts can be promoted into the lane's persistent context.
+
+<CardGroup cols={2}>
+  <Card title="What Chat is for" icon="message">
+    Exploratory work, targeted edits, quick Q&A about your codebase, PR creation, test runs, and anything that resolves in a single focused session.
+  </Card>
+  <Card title="When to escalate to a Mission" icon="target">
+    Tasks spanning multiple files or agents, work requiring a formal audit trail, or anything you expect to run for more than 15–20 minutes.
+  </Card>
+</CardGroup>
+
+---
+
+## Chat Scoping
+
+Chat in ADE is always scoped — it operates within a defined context boundary that determines what the agent can access and what its tool calls affect.
+
+<Tabs>
+  <Tab title="Lane Chat">
+    **Lane chat** is the most common mode. It is opened from within a specific Lane view and anchors the agent to that lane's context:
+
+    - File reads and writes are scoped to the lane's git worktree
+    - Terminal commands run in the lane's terminal session
+    - Git operations affect the lane's branch
+    - Context is seeded from the lane's pack (recent activity, file map, open PRs)
+
+    Lane chat is how you do day-to-day development work with an agent.
+  </Tab>
+  <Tab title="CTO Chat">
+    The **CTO chat** operates at project scope. The CTO agent has access to:
+
+    - Project-wide context (all lanes, all branches, all pack snapshots)
+    - Linear sync — it can read and write issues
+    - Delegation — it can spawn worker agents or new missions
+    - Architecture decisions recorded in the project pack
+
+    Use CTO chat for cross-cutting questions, planning, and delegation rather than hands-on coding.
+  </Tab>
+  <Tab title="Mission Chat">
+    **Mission chat** is embedded inside a Mission's detail view. It is a direct channel to the mission's orchestrator while the mission is running. Use it to:
+
+    - Ask the orchestrator for a status summary
+    - Provide additional context mid-mission
+    - Redirect a worker that has gone off course
+
+    Mission chat does not start new work — it communicates with the orchestrator of an already-running mission.
+  </Tab>
+</Tabs>
+
+---
+
+## Starting a Chat
+
+<Steps>
+  <Step title="Open a Lane">
+    Navigate to the lane you want to work in from the left sidebar or the Workspace Graph.
+  </Step>
+  <Step title="Open the Chat pane">
+    Click the **Chat** button in the lane toolbar, or press `Cmd+K`. A new chat session opens with automatic context injection from the lane's pack.
+  </Step>
+  <Step title="Choose a model (optional)">
+    The model selector in the chat header defaults to your configured preferred model. Click it to switch models for this session. ADE remembers your last-used model per lane.
+  </Step>
+  <Step title="Set execution mode (optional)">
+    For CLI-wrapped models (Claude, Codex), an **execution mode** selector appears in the header:
+
+    - **Focused** — single-threaded; the agent works through the task in one thread
+    - **Parallel** — the agent can spawn parallel sub-agents for independent parts of the task
+
+    Use Parallel mode for tasks the model can naturally decompose (e.g., "add tests for all these functions").
+  </Step>
+  <Step title="Type your first message">
+    The agent receives your message along with the injected context. Tool calls begin immediately if the task requires them.
+  </Step>
+</Steps>
+
+<Tip>
+  Start a new session from an existing session's history by opening the History tab and clicking **Resume**. The previous transcript is loaded as context so the agent picks up where you left off.
+</Tip>
+
+---
+
+## Computer Use Policy
+
+<Info>Screenshot needed: Chat header close-up showing the computer-use policy chip, MCP tool count badge, model selector, and context meter.</Info>
+
+The chat header displays the current **computer-use policy** for the session. This controls whether and how the agent can invoke computer-use capabilities (browser automation, screenshot capture, desktop interaction).
+
+Click the policy chip to change it for the current session.
+
+<AccordionGroup>
+  <Accordion title="CU Off — computer use disabled">
+    The agent cannot invoke any computer-use tools. Use this for sessions focused purely on code changes where you do not want any visual verification steps.
+  </Accordion>
+  <Accordion title="CU Auto — ADE decides">
+    ADE enables computer use when the agent's task naturally calls for it — e.g., verifying a UI change, testing a web flow, or checking a rendered output. The agent will not use computer use for tasks that can be completed via file and terminal tools alone.
+  </Accordion>
+  <Accordion title="CU On — always available">
+    Computer use tools are always in the agent's tool palette. The agent may invoke them freely. Use this when you are explicitly working on UI-heavy tasks.
+  </Accordion>
+  <Accordion title="Fallback — try without, then use if needed">
+    The agent first attempts to complete the task without computer use. If it cannot (e.g., a required verification only works via a browser), it falls back to computer use automatically.
+  </Accordion>
+  <Accordion title="Proof — require proof artifacts">
+    Computer use is available, but every action must produce a proof artifact (a screenshot or browser trace). All proof artifacts are collected and can be attached to a PR or Linear issue. Recommended when the session will feed into a code review.
+  </Accordion>
+</AccordionGroup>
+
+When computer use is active, a **monitoring panel** expands below the chat. It shows:
+
+- Recent screenshots captured during the session
+- Browser action log (clickable to expand each action)
+- A proof summary for the current session
+
+---
+
+## Explore More
+
+<CardGroup cols={2}>
+  <Card title="Chat Capabilities" icon="toolbox" href="/chat/capabilities">
+    What the agent can do — file operations, git, PRs, missions, MCP tools, and more.
+  </Card>
+  <Card title="Context & Artifacts" icon="database" href="/chat/context">
+    Managing context windows, working with artifacts, MCP tool visibility, chat history, and troubleshooting.
+  </Card>
+</CardGroup>

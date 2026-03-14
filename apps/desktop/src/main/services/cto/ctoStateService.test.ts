@@ -1,0 +1,347 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+import { openKvDb } from "../state/kvDb";
+import { createCtoStateService } from "./ctoStateService";
+
+function createLogger() {
+  return {
+    debug: () => {},
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+  } as any;
+}
+
+async function createFixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cto-state-"));
+  const adeDir = path.join(root, ".ade");
+  fs.mkdirSync(adeDir, { recursive: true });
+  const dbPath = path.join(adeDir, "ade.db");
+  const db = await openKvDb(dbPath, createLogger());
+  const projectId = "project-test";
+  return { root, adeDir, db, projectId };
+}
+
+describe("ctoStateService", () => {
+  it("creates default CTO identity/core memory when absent", async () => {
+    const fixture = await createFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    const snapshot = service.getSnapshot();
+    expect(snapshot.identity.name).toBe("CTO");
+    expect(snapshot.identity.version).toBeGreaterThanOrEqual(1);
+    expect(snapshot.coreMemory.version).toBeGreaterThanOrEqual(1);
+
+    expect(fs.existsSync(path.join(fixture.adeDir, "cto", "identity.yaml"))).toBe(true);
+    expect(fs.existsSync(path.join(fixture.adeDir, "cto", "core-memory.json"))).toBe(true);
+    expect(fs.existsSync(path.join(fixture.adeDir, "cto", "sessions.jsonl"))).toBe(false);
+
+    fixture.db.close();
+  });
+
+  it("recreates files from DB-only state", async () => {
+    const fixture = await createFixture();
+    const identityPayload = {
+      name: "CTO",
+      version: 7,
+      persona: "DB canonical identity",
+      modelPreferences: { provider: "claude", model: "sonnet" },
+      memoryPolicy: {
+        autoCompact: true,
+        compactionThreshold: 0.7,
+        preCompactionFlush: true,
+        temporalDecayHalfLifeDays: 30,
+      },
+      updatedAt: "2026-03-05T12:00:00.000Z",
+    };
+    const corePayload = {
+      version: 9,
+      updatedAt: "2026-03-05T12:00:00.000Z",
+      projectSummary: "DB summary",
+      criticalConventions: ["strict typing"],
+      userPreferences: ["tests first"],
+      activeFocus: [],
+      notes: [],
+    };
+
+    fixture.db.run(
+      `insert into cto_identity_state(project_id, version, payload_json, updated_at) values(?, ?, ?, ?)`,
+      [fixture.projectId, identityPayload.version, JSON.stringify(identityPayload), identityPayload.updatedAt]
+    );
+    fixture.db.run(
+      `insert into cto_core_memory_state(project_id, version, payload_json, updated_at) values(?, ?, ?, ?)`,
+      [fixture.projectId, corePayload.version, JSON.stringify(corePayload), corePayload.updatedAt]
+    );
+
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+    const snapshot = service.getSnapshot();
+    expect(snapshot.identity.persona).toBe("DB canonical identity");
+    expect(snapshot.coreMemory.projectSummary).toBe("DB summary");
+
+    const identityFile = fs.readFileSync(path.join(fixture.adeDir, "cto", "identity.yaml"), "utf8");
+    expect(identityFile).toContain("DB canonical identity");
+    const coreFile = JSON.parse(fs.readFileSync(path.join(fixture.adeDir, "cto", "core-memory.json"), "utf8"));
+    expect(coreFile.projectSummary).toBe("DB summary");
+
+    fixture.db.close();
+  });
+
+  it("recreates DB rows from file-only state", async () => {
+    const fixture = await createFixture();
+    const ctoDir = path.join(fixture.adeDir, "cto");
+    fs.mkdirSync(ctoDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(ctoDir, "identity.yaml"),
+      [
+        "name: CTO",
+        "version: 4",
+        'persona: "File identity"',
+        "modelPreferences:",
+        '  provider: "codex"',
+        '  model: "gpt-5.3-codex"',
+        "memoryPolicy:",
+        "  autoCompact: true",
+        "  compactionThreshold: 0.8",
+        "  preCompactionFlush: true",
+        "  temporalDecayHalfLifeDays: 45",
+        'updatedAt: "2026-03-05T13:00:00.000Z"',
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+    fs.writeFileSync(
+      path.join(ctoDir, "core-memory.json"),
+      JSON.stringify(
+        {
+          version: 6,
+          updatedAt: "2026-03-05T13:00:00.000Z",
+          projectSummary: "File core memory",
+          criticalConventions: ["no force push"],
+          userPreferences: ["small PRs"],
+          activeFocus: ["stability"],
+          notes: ["remember regression suite"],
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    const identityRow = fixture.db.get<{ payload_json: string }>(
+      `select payload_json from cto_identity_state where project_id = ? limit 1`,
+      [fixture.projectId]
+    );
+    const coreRow = fixture.db.get<{ payload_json: string }>(
+      `select payload_json from cto_core_memory_state where project_id = ? limit 1`,
+      [fixture.projectId]
+    );
+    expect(JSON.parse(identityRow?.payload_json ?? "{}").persona).toBe("File identity");
+    expect(JSON.parse(coreRow?.payload_json ?? "{}").projectSummary).toBe("File core memory");
+
+    fixture.db.close();
+  });
+
+  it("uses newer doc and prefers file when timestamps tie", async () => {
+    const fixture = await createFixture();
+    const ctoDir = path.join(fixture.adeDir, "cto");
+    fs.mkdirSync(ctoDir, { recursive: true });
+
+    // DB newer than file -> DB should win.
+    fs.writeFileSync(
+      path.join(ctoDir, "core-memory.json"),
+      JSON.stringify(
+        {
+          version: 1,
+          updatedAt: "2026-03-01T00:00:00.000Z",
+          projectSummary: "old file",
+          criticalConventions: [],
+          userPreferences: [],
+          activeFocus: [],
+          notes: [],
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+    fixture.db.run(
+      `insert into cto_core_memory_state(project_id, version, payload_json, updated_at) values(?, ?, ?, ?)`,
+      [
+        fixture.projectId,
+        2,
+        JSON.stringify({
+          version: 2,
+          updatedAt: "2026-03-02T00:00:00.000Z",
+          projectSummary: "new db",
+          criticalConventions: [],
+          userPreferences: [],
+          activeFocus: [],
+          notes: [],
+        }),
+        "2026-03-02T00:00:00.000Z",
+      ]
+    );
+
+    let service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+    expect(service.getCoreMemory().projectSummary).toBe("new db");
+
+    // Tie timestamp with different content -> file should win.
+    const tiePayload = {
+      version: 3,
+      updatedAt: "2026-03-03T00:00:00.000Z",
+      projectSummary: "file wins tie",
+      criticalConventions: [],
+      userPreferences: [],
+      activeFocus: [],
+      notes: [],
+    };
+    fs.writeFileSync(path.join(ctoDir, "core-memory.json"), JSON.stringify(tiePayload, null, 2), "utf8");
+    fixture.db.run(
+      `update cto_core_memory_state set version = ?, payload_json = ?, updated_at = ? where project_id = ?`,
+      [
+        3,
+        JSON.stringify({ ...tiePayload, projectSummary: "db loses tie" }),
+        tiePayload.updatedAt,
+        fixture.projectId,
+      ]
+    );
+
+    service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+    expect(service.getCoreMemory().projectSummary).toBe("file wins tie");
+
+    fixture.db.close();
+  });
+
+  it("keeps session log integrity and backfills DB from jsonl", async () => {
+    const fixture = await createFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    const entry = service.appendSessionLog({
+      sessionId: "session-1",
+      summary: "First CTO session",
+      startedAt: "2026-03-05T10:00:00.000Z",
+      endedAt: "2026-03-05T10:05:00.000Z",
+      provider: "codex",
+      modelId: "openai/gpt-5.3-codex",
+      capabilityMode: "full_mcp",
+    });
+    expect(entry.sessionId).toBe("session-1");
+    expect(service.getSessionLogs(10).length).toBe(1);
+
+    fixture.db.run(`delete from cto_session_logs where project_id = ? and session_id = ?`, [fixture.projectId, "session-1"]);
+    const afterDelete = fixture.db.get<{ count: number }>(
+      `select count(*) as count from cto_session_logs where project_id = ? and session_id = ?`,
+      [fixture.projectId, "session-1"]
+    );
+    expect(Number(afterDelete?.count ?? 0)).toBe(0);
+
+    const recovered = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+    const logs = recovered.getSessionLogs(10);
+    expect(logs.length).toBe(1);
+    expect(logs[0]?.summary).toBe("First CTO session");
+
+    fixture.db.close();
+  });
+
+  it("tracks subordinate activity and exposes it in CTO reconstruction context", async () => {
+    const fixture = await createFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    const entry = service.appendSubordinateActivity({
+      agentId: "mobile-dev",
+      agentName: "Mobile Dev",
+      activityType: "chat_turn",
+      summary: "Investigated navigation regressions and proposed a stack-level fix.",
+      sessionId: "session-mobile",
+      taskKey: "task:navigation-fix",
+      issueKey: "ISSUE-77",
+    });
+
+    expect(entry.agentId).toBe("mobile-dev");
+    const snapshot = service.getSnapshot(10);
+    expect(snapshot.recentSubordinateActivity.length).toBe(1);
+    expect(snapshot.recentSubordinateActivity[0]?.summary).toContain("navigation regressions");
+
+    const reconstruction = service.buildReconstructionContext(10);
+    expect(reconstruction).toContain("Recent Employee Activity");
+    expect(reconstruction).toContain("Mobile Dev");
+    expect(reconstruction).toContain("task:navigation-fix");
+
+    fixture.db.close();
+  });
+
+  it("preserves onboarding state and extended identity fields across reloads", async () => {
+    const fixture = await createFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    service.updateIdentity({
+      personality: "casual",
+      constraints: ["no force push", "write tests"],
+      systemPromptExtension: "Stay calm under pressure.",
+      communicationStyle: {
+        verbosity: "adaptive",
+        proactivity: "balanced",
+        escalationThreshold: "low",
+      },
+    });
+    service.completeOnboardingStep("identity");
+
+    const reloaded = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    expect(reloaded.getOnboardingState().completedSteps).toEqual(["identity"]);
+    expect(reloaded.getIdentity().personality).toBe("casual");
+    expect(reloaded.getIdentity().constraints).toEqual(["no force push", "write tests"]);
+    expect(reloaded.getIdentity().systemPromptExtension).toBe("Stay calm under pressure.");
+    expect(reloaded.getIdentity().communicationStyle).toEqual({
+      verbosity: "adaptive",
+      proactivity: "balanced",
+      escalationThreshold: "low",
+    });
+
+    fixture.db.close();
+  });
+});

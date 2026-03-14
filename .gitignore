@@ -1,0 +1,47 @@
+.DS_Store
+*.pem
+node_modules/
+infra/.sst/
+infra/.pulumi/
+infra/.tools/
+/infra/.home
+/infra/.env
+/.npm-cache
+/apps/desktop/release-stable
+/apps/desktop/.cache
+
+# Temp/debug artifacts
+*_diff.txt
+*.png
+!docs/**/*.png
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Database
+*.db
+
+# Build outputs
+/apps/mcp-server/dist/
+/apps/desktop/release/
+/apps/desktop/dist/
+/.ade
+
+# Release & local
+PRtab
+.sandbox_probe
+.pnpm-debug.log
+release/
+release-stable/
+/.electron-cache
+
+# Secrets & env
+.env.local
+.env
+
+# Tool configs (personal)
+.claude/
+.factory/
+.codex/
+.pnpm-store/

@@ -1,0 +1,1702 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowDown, ArrowsClockwise, Check, Stack, Upload, Warning } from "@phosphor-icons/react";
+import { useAppStore } from "../../state/appStore";
+import { cn } from "../ui/cn";
+import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton, primaryButton, dangerButton } from "./laneDesignTokens";
+import { CommitTimeline } from "./CommitTimeline";
+import type {
+  DiffChanges,
+  FileChange,
+  GitCommitSummary,
+  GitConflictState,
+  GitRecommendedAction,
+  GitStashSummary,
+  GitSyncMode,
+  GitUpstreamSyncStatus,
+  AutoRebaseLaneStatus,
+  LaneSummary
+} from "../../../shared/types";
+
+type LaneTextPromptState = {
+  title: string;
+  message?: string;
+  placeholder?: string;
+  value: string;
+  confirmLabel: string;
+  validate?: (value: string) => string | null;
+  resolve: (value: string | null) => void;
+};
+
+type NextActionHint = {
+  action: GitRecommendedAction | "rebase_push";
+  label: string;
+  detail: string;
+};
+
+type CommitMessageAiState = {
+  enabled: boolean;
+  modelId: string | null;
+};
+
+type ResponsiveMode = "narrow" | "medium" | "wide";
+
+const AUTO_GENERATE_COMMIT_ACTION = "generate commit message";
+
+function formatRelativeTime(ts: string | null): string {
+  if (!ts) return "unknown time";
+  const date = new Date(ts);
+  if (Number.isNaN(date.getTime())) return ts;
+  const diffMs = Date.now() - date.getTime();
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return date.toLocaleDateString();
+}
+
+function getResponsiveMode(width: number): ResponsiveMode {
+  if (width < 640) return "narrow";
+  if (width < 900) return "medium";
+  return "wide";
+}
+
+function getLaneHeaderDotColor(lane: LaneSummary | null): string {
+  if (!lane) return "#10B981";
+  if (lane.laneType === "primary") return COLORS.accent;
+  return lane.status.dirty ? COLORS.warning : "#10B981";
+}
+
+function getLaneHeaderDotTitle(lane: LaneSummary | null): string {
+  if (lane?.laneType === "primary") return "Primary lane";
+  if (lane?.status.dirty) return "Lane has uncommitted changes";
+  return "Lane is clean";
+}
+
+function getFileKindColor(kind: FileChange["kind"]): string {
+  if (kind === "modified") return COLORS.info;
+  if (kind === "added") return COLORS.success;
+  if (kind === "deleted") return COLORS.danger;
+  return COLORS.warning;
+}
+
+function getCommitButtonLabel(args: {
+  busyAction: string | null;
+  amendCommit: boolean;
+}): string {
+  if (args.busyAction === AUTO_GENERATE_COMMIT_ACTION) {
+    return "GENERATING...";
+  }
+  const commitActionLabel = args.amendCommit ? "amend commit" : "commit";
+  if (args.busyAction === commitActionLabel) {
+    return "COMMITTING...";
+  }
+  return args.amendCommit ? "AMEND COMMIT" : "COMMIT";
+}
+
+function getCommitHelperText(args: {
+  commitMessage: string;
+  commitMessageAi: CommitMessageAiState;
+}): string {
+  if (args.commitMessage.trim().length > 0) {
+    return "Press Cmd+Enter to commit with the typed message.";
+  }
+  if (args.commitMessageAi.enabled && args.commitMessageAi.modelId) {
+    return `Blank messages will be auto-generated with ${args.commitMessageAi.modelId}.`;
+  }
+  if (args.commitMessageAi.enabled) {
+    return "Commit Messages is enabled, but no model is selected in Settings.";
+  }
+  return "Type a commit message, or enable Commit Messages in Settings to auto-generate one when blank.";
+}
+
+function getAutoRebaseBannerConfig(state: AutoRebaseLaneStatus["state"]): {
+  color: string;
+  label: string;
+  fallbackMessage: string;
+} {
+  if (state === "autoRebased") {
+    return {
+      color: COLORS.success,
+      label: "AUTO REBASED",
+      fallbackMessage: "Lane was rebased automatically."
+    };
+  }
+  if (state === "rebaseConflict") {
+    return {
+      color: COLORS.danger,
+      label: "AUTO REBASE BLOCKED",
+      fallbackMessage: "Conflicts are expected. Resolve manually, then publish."
+    };
+  }
+  return {
+    color: COLORS.warning,
+    label: "AUTO REBASE PENDING",
+    fallbackMessage: "Waiting for manual rebase."
+  };
+}
+
+function getPullModeSummary(mode: GitSyncMode): string {
+  return mode === "merge"
+    ? "Merge keeps both histories and may create a merge commit."
+    : "Rebase replays your local commits on top of the remote branch for a cleaner history.";
+}
+
+function getPushSummary(syncStatus: GitUpstreamSyncStatus | null): string {
+  if (syncStatus?.hasUpstream === false) {
+    return "Publish lane creates the remote branch and connects this lane to it.";
+  }
+  return "Push sends your local commits to the tracked remote branch.";
+}
+
+function getAmendSummary(amendCommit: boolean): string {
+  return amendCommit
+    ? "Amend is on. Your next commit will replace the latest commit instead of creating a new one."
+    : "Amend rewrites the latest commit with your staged changes and optional new message.";
+}
+
+function SectionCard({
+  title,
+  description,
+  aside,
+  children,
+  dataTestId,
+  showDescription = false,
+  sectionStyle,
+  bodyStyle,
+}: {
+  title: string;
+  description?: string;
+  aside?: React.ReactNode;
+  children: React.ReactNode;
+  dataTestId?: string;
+  showDescription?: boolean;
+  sectionStyle?: React.CSSProperties;
+  bodyStyle?: React.CSSProperties;
+}) {
+  return (
+    <section
+      data-testid={dataTestId}
+      title={!showDescription ? description : undefined}
+      style={{
+        border: `1px solid ${COLORS.border}`,
+        background: COLORS.cardBg,
+        display: "flex",
+        flexDirection: "column",
+        minWidth: 0,
+        ...sectionStyle,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
+          padding: "8px 10px",
+          borderBottom: `1px solid ${COLORS.border}`,
+          background: COLORS.recessedBg,
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div style={{ ...LABEL_STYLE, color: COLORS.textPrimary }}>{title}</div>
+          {description && showDescription ? (
+            <div style={{ marginTop: 4, fontSize: 11, lineHeight: 1.45, color: COLORS.textMuted }}>
+              {description}
+            </div>
+          ) : null}
+        </div>
+        {aside ? <div style={{ display: "flex", alignItems: "center", gap: 8 }}>{aside}</div> : null}
+      </div>
+      <div
+        style={{
+          padding: 10,
+          display: "flex",
+          flexDirection: "column",
+          gap: 8,
+          minWidth: 0,
+          ...bodyStyle,
+        }}
+      >
+        {children}
+      </div>
+    </section>
+  );
+}
+
+function ActionButton({
+  title,
+  detail,
+  onClick,
+  disabled,
+  emphasis = "secondary",
+  badge,
+  icon,
+  fullWidth = false,
+}: {
+  title: string;
+  detail: string;
+  onClick: () => void;
+  disabled: boolean;
+  emphasis?: "primary" | "secondary";
+  badge?: string | null;
+  icon?: React.ReactNode;
+  fullWidth?: boolean;
+}) {
+  const primary = emphasis === "primary";
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 8,
+        width: fullWidth ? "100%" : "auto",
+        minWidth: 0,
+        height: 34,
+        padding: "0 10px",
+        border: primary ? `1px solid ${COLORS.accent}` : `1px solid ${COLORS.outlineBorder}`,
+        background: primary ? `${COLORS.accent}14` : "transparent",
+        color: primary ? COLORS.textPrimary : COLORS.textSecondary,
+        textAlign: "left",
+        cursor: disabled ? "default" : "pointer",
+        opacity: disabled ? 0.45 : 1,
+      }}
+      title={`${title}. ${detail}`}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+        {icon ? <span style={{ flexShrink: 0, display: "inline-flex", alignItems: "center" }}>{icon}</span> : null}
+        <span
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            fontFamily: MONO_FONT,
+            letterSpacing: "0.7px",
+            textTransform: "uppercase",
+            minWidth: 0,
+            whiteSpace: "nowrap",
+          }}
+        >
+          {title}
+        </span>
+      </div>
+      {badge ? <span style={inlineBadge(COLORS.accent, { fontSize: 9 })}>{badge}</span> : null}
+    </button>
+  );
+}
+
+export function LaneGitActionsPane({
+  laneId,
+  autoRebaseEnabled,
+  onOpenSettings,
+  onRebaseNowLocal,
+  onRebaseAndPush,
+  onViewRebaseDetails,
+  onResolveRebaseConflict,
+  onSelectFile,
+  onSelectCommit,
+  selectedPath,
+  selectedMode,
+  selectedCommitSha
+}: {
+  laneId: string | null;
+  autoRebaseEnabled: boolean;
+  onOpenSettings: () => void;
+  onRebaseNowLocal?: (laneId: string) => Promise<void> | void;
+  onRebaseAndPush?: (laneId: string) => Promise<void> | void;
+  onViewRebaseDetails?: () => void;
+  onResolveRebaseConflict?: (laneId: string, parentLaneId: string | null) => void;
+  onSelectFile: (path: string, mode: "staged" | "unstaged") => void;
+  onSelectCommit: (commit: GitCommitSummary | null) => void;
+  selectedPath: string | null;
+  selectedMode: "staged" | "unstaged" | null;
+  selectedCommitSha: string | null;
+}) {
+  const lanes = useAppStore((s) => s.lanes);
+  const refreshLanes = useAppStore((s) => s.refreshLanes);
+
+  const lane = useMemo(() => lanes.find((entry) => entry.id === laneId) ?? null, [lanes, laneId]);
+  const parentLane = useMemo(() => {
+    if (!lane?.parentLaneId) return null;
+    return lanes.find((entry) => entry.id === lane.parentLaneId) ?? null;
+  }, [lanes, lane]);
+
+  const originLabel = useMemo(() => {
+    if (!lane || lane.laneType === "primary") return null;
+    if (parentLane) return `from ${parentLane.name}/${parentLane.branchRef}`;
+    return `from primary/${lane.baseRef}`;
+  }, [lane, parentLane]);
+
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [paneWidth, setPaneWidth] = useState(1024);
+
+  const [loading, setLoading] = useState(false);
+  const [changes, setChanges] = useState<DiffChanges>({ unstaged: [], staged: [] });
+  const [commitMessage, setCommitMessage] = useState("");
+  const [commitMessageAi, setCommitMessageAi] = useState<CommitMessageAiState>({ enabled: false, modelId: null });
+  const [syncMode, setSyncMode] = useState<GitSyncMode>("merge");
+  const [stashes, setStashes] = useState<GitStashSummary[]>([]);
+  const [syncStatus, setSyncStatus] = useState<GitUpstreamSyncStatus | null>(null);
+  const [forcePushSuggested, setForcePushSuggested] = useState(false);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [textPrompt, setTextPrompt] = useState<LaneTextPromptState | null>(null);
+  const [textPromptError, setTextPromptError] = useState<string | null>(null);
+  const [commitTimelineKey, setCommitTimelineKey] = useState(0);
+  const [amendCommit, setAmendCommit] = useState(false);
+  const [autoRebaseStatus, setAutoRebaseStatus] = useState<AutoRebaseLaneStatus | null>(null);
+  const [stuckRebase, setStuckRebase] = useState<GitConflictState | null>(null);
+
+  const stagedCount = changes.staged.length;
+  const hasStaged = stagedCount > 0;
+  const responsiveMode = getResponsiveMode(paneWidth);
+  const actionGridColumns =
+    responsiveMode === "wide" ? "repeat(3, minmax(0, 1fr))" : responsiveMode === "medium" ? "repeat(2, minmax(0, 1fr))" : "1fr";
+
+  useEffect(() => {
+    if (typeof ResizeObserver === "undefined") {
+      setPaneWidth(rootRef.current?.clientWidth ?? window.innerWidth);
+      return;
+    }
+    const node = rootRef.current;
+    if (!node) return;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? node.clientWidth;
+      if (width > 0) setPaneWidth(width);
+    });
+    observer.observe(node);
+    setPaneWidth(node.clientWidth || window.innerWidth);
+    return () => observer.disconnect();
+  }, []);
+
+  const requestTextInput = useCallback(
+    (args: {
+      title: string;
+      message?: string;
+      placeholder?: string;
+      defaultValue?: string;
+      confirmLabel?: string;
+      validate?: (value: string) => string | null;
+    }): Promise<string | null> => {
+      return new Promise((resolve) => {
+        setTextPromptError(null);
+        setTextPrompt({
+          title: args.title,
+          message: args.message,
+          placeholder: args.placeholder,
+          value: args.defaultValue ?? "",
+          confirmLabel: args.confirmLabel ?? "Confirm",
+          validate: args.validate,
+          resolve
+        });
+      });
+    },
+    []
+  );
+
+  const cancelTextPrompt = useCallback(() => {
+    setTextPrompt((prev) => {
+      if (prev) prev.resolve(null);
+      return null;
+    });
+    setTextPromptError(null);
+  }, []);
+
+  const submitTextPrompt = useCallback(() => {
+    setTextPrompt((prev) => {
+      if (!prev) return prev;
+      const value = prev.value.trim();
+      const validationError = prev.validate?.(value) ?? null;
+      if (validationError) {
+        setTextPromptError(validationError);
+        return prev;
+      }
+      setTextPromptError(null);
+      prev.resolve(value);
+      return null;
+    });
+  }, []);
+
+  const refreshChanges = async () => {
+    if (!laneId) return;
+    setLoading(true);
+    try {
+      const next = await window.ade.diff.getChanges({ laneId });
+      setChanges(next);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const refreshGitMeta = async () => {
+    if (!laneId) return;
+    const [stashesResult, syncStatusResult, conflictResult] = await Promise.allSettled([
+      window.ade.git.stashList({ laneId }),
+      window.ade.git.getSyncStatus({ laneId }),
+      window.ade.git.getConflictState(laneId)
+    ]);
+
+    if (stashesResult.status === "fulfilled") setStashes(stashesResult.value);
+    if (syncStatusResult.status === "fulfilled") {
+      setSyncStatus(syncStatusResult.value);
+    } else {
+      setSyncStatus(null);
+    }
+    if (conflictResult.status === "fulfilled") {
+      const cs = conflictResult.value;
+      setStuckRebase(cs.kind === "rebase" && cs.inProgress ? cs : null);
+    } else {
+      setStuckRebase(null);
+    }
+  };
+
+  const refreshAll = async (options?: { fetchRemote?: boolean }) => {
+    if (laneId && options?.fetchRemote) {
+      try {
+        await window.ade.git.fetch({ laneId });
+      } catch {
+        // best effort
+      }
+    }
+    await Promise.all([refreshChanges(), refreshLanes(), refreshGitMeta()]);
+    setCommitTimelineKey((prev) => prev + 1);
+  };
+
+  const refreshAutoRebaseStatus = useCallback(async () => {
+    if (!laneId) {
+      setAutoRebaseStatus(null);
+      return;
+    }
+    try {
+      const statuses = await window.ade.lanes.listAutoRebaseStatuses();
+      setAutoRebaseStatus(statuses.find((entry) => entry.laneId === laneId) ?? null);
+    } catch {
+      setAutoRebaseStatus(null);
+    }
+  }, [laneId]);
+
+  const refreshCommitMessageAiState = useCallback(async () => {
+    try {
+      const snapshot = await window.ade.projectConfig.get();
+      const effectiveAi = snapshot.effective?.ai;
+      const features = effectiveAi && typeof effectiveAi === "object" && "features" in effectiveAi
+        ? (effectiveAi.features as Record<string, unknown> | undefined)
+        : undefined;
+      const featureModelOverrides = effectiveAi && typeof effectiveAi === "object" && "featureModelOverrides" in effectiveAi
+        ? (effectiveAi.featureModelOverrides as Record<string, unknown> | undefined)
+        : undefined;
+      const enabled = features?.commit_messages === true;
+      const modelIdRaw = typeof featureModelOverrides?.commit_messages === "string"
+        ? featureModelOverrides.commit_messages.trim()
+        : "";
+      setCommitMessageAi({
+        enabled,
+        modelId: modelIdRaw.length ? modelIdRaw : null,
+      });
+    } catch {
+      setCommitMessageAi({ enabled: false, modelId: null });
+    }
+  }, []);
+
+  const isNonFastForwardError = useCallback((rawMessage: string): boolean => {
+    const lower = rawMessage.toLowerCase();
+    return lower.includes("non-fast-forward") || lower.includes("failed to push some refs");
+  }, []);
+
+  const formatActionError = useCallback((actionName: string, rawMessage: string): string => {
+    if ((actionName === "push" || actionName === "force push") && isNonFastForwardError(rawMessage)) {
+      return "Push rejected because remote history changed. Use Force Push (lease) after a rebase, amend, or other rewritten history.";
+    }
+    return rawMessage;
+  }, [isNonFastForwardError]);
+
+  const runAction = async (actionName: string, fn: () => Promise<void>) => {
+    setBusyAction(actionName);
+    setNotice(null);
+    setError(null);
+    try {
+      await fn();
+      const shouldFetchRemote =
+        actionName === "pull" ||
+        actionName === "fetch" ||
+        actionName === "push" ||
+        actionName === "force push" ||
+        actionName === "rebase" ||
+        actionName === "rebase and push";
+      await refreshAll({ fetchRemote: shouldFetchRemote });
+      if (
+        actionName === "push" ||
+        actionName === "force push" ||
+        actionName === "pull" ||
+        actionName === "fetch" ||
+        actionName === "rebase" ||
+        actionName === "rebase and push"
+      ) {
+        setForcePushSuggested(false);
+      }
+      setNotice(`${actionName} completed`);
+      setTimeout(() => setNotice(null), 3000);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message === "__ade_cancelled__") return;
+      if (actionName === "push" && isNonFastForwardError(message)) {
+        setForcePushSuggested(true);
+      }
+      setError(formatActionError(actionName, message));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const completeCommitRefresh = useCallback(async () => {
+    await Promise.all([refreshChanges(), refreshLanes(), refreshGitMeta()]);
+    setCommitTimelineKey((prev) => prev + 1);
+    setCommitMessage("");
+    setAmendCommit(false);
+  }, [refreshChanges, refreshGitMeta, refreshLanes]);
+
+  const submitCommit = useCallback(async () => {
+    if (!laneId || (!hasStaged && !amendCommit) || busyAction != null) return;
+
+    const message = commitMessage.trim();
+    if (message.length > 0) {
+      void runAction(amendCommit ? "amend commit" : "commit", async () => {
+        await window.ade.git.commit({ laneId, message, amend: amendCommit });
+        await completeCommitRefresh();
+      });
+      return;
+    }
+
+    setBusyAction(AUTO_GENERATE_COMMIT_ACTION);
+    setNotice("Generating commit message...");
+    setError(null);
+    try {
+      const generated = await window.ade.git.generateCommitMessage({ laneId, amend: amendCommit });
+      setCommitMessage(generated.message);
+      await window.ade.git.commit({ laneId, message: generated.message, amend: amendCommit });
+      await completeCommitRefresh();
+      setNotice("commit completed");
+      window.setTimeout(() => setNotice(null), 3000);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setNotice(null);
+      setError(message);
+    } finally {
+      setBusyAction(null);
+    }
+  }, [
+    amendCommit,
+    busyAction,
+    commitMessage,
+    completeCommitRefresh,
+    hasStaged,
+    laneId,
+  ]);
+
+  useEffect(() => {
+    setChanges({ staged: [], unstaged: [] });
+    setStashes([]);
+    setSyncStatus(null);
+    setForcePushSuggested(false);
+    setNotice(null);
+    setError(null);
+    setAmendCommit(false);
+    setCommitMessageAi({ enabled: false, modelId: null });
+    setAutoRebaseStatus(null);
+    setStuckRebase(null);
+    if (!laneId) return;
+    refreshAll().catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    void refreshAutoRebaseStatus();
+    void refreshCommitMessageAiState();
+  }, [laneId, lane?.branchRef, refreshAutoRebaseStatus, refreshCommitMessageAiState]);
+
+  useEffect(() => {
+    if (!laneId) return;
+    let refreshTimer: number | null = null;
+    const refreshSyncStatus = () => {
+      void window.ade.git
+        .getSyncStatus({ laneId })
+        .then((nextStatus) => setSyncStatus(nextStatus))
+        .catch(() => setSyncStatus(null));
+    };
+    const scheduleRefreshSyncStatus = (delayMs = 0) => {
+      if (refreshTimer != null) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        if (document.visibilityState !== "visible") return;
+        refreshSyncStatus();
+      }, delayMs);
+    };
+    scheduleRefreshSyncStatus();
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      scheduleRefreshSyncStatus(250);
+    }, 20_000);
+    const onFocus = () => scheduleRefreshSyncStatus();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") scheduleRefreshSyncStatus();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearInterval(intervalId);
+      if (refreshTimer != null) window.clearTimeout(refreshTimer);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [laneId]);
+
+  useEffect(() => {
+    const unsubscribe = window.ade.lanes.onAutoRebaseEvent((event) => {
+      if (event.type !== "auto-rebase-updated") return;
+      if (!laneId) {
+        setAutoRebaseStatus(null);
+        return;
+      }
+      setAutoRebaseStatus(event.statuses.find((entry) => entry.laneId === laneId) ?? null);
+    });
+    return unsubscribe;
+  }, [laneId]);
+
+  const changedFileCount = useMemo(() => {
+    const paths = new Set<string>();
+    for (const file of changes.staged) paths.add(file.path);
+    for (const file of changes.unstaged) paths.add(file.path);
+    return paths.size;
+  }, [changes]);
+
+  const stagedPathSet = useMemo(() => new Set(changes.staged.map((file) => file.path)), [changes.staged]);
+  const unstagedPathSet = useMemo(() => new Set(changes.unstaged.map((file) => file.path)), [changes.unstaged]);
+
+  const toggleStageFile = async (path: string, isStaged: boolean) => {
+    if (!laneId) return;
+    if (isStaged) {
+      await window.ade.git.unstageFile({ laneId, path });
+    } else {
+      await window.ade.git.stageFile({ laneId, path });
+    }
+    await refreshChanges();
+  };
+
+  const stageAll = () => {
+    if (!laneId) return;
+    void runAction("stage all", async () => {
+      await window.ade.git.stageAll({ laneId, paths: changes.unstaged.map((file) => file.path) });
+    });
+  };
+
+  const unstageAll = () => {
+    if (!laneId) return;
+    void runAction("unstage all", async () => {
+      await window.ade.git.unstageAll({ laneId, paths: changes.staged.map((file) => file.path) });
+    });
+  };
+
+  const runPush = (forceWithLease: boolean) => {
+    if (!laneId) return;
+    void runAction(forceWithLease ? "force push" : "push", async () => {
+      await window.ade.git.push({ laneId, forceWithLease });
+    });
+  };
+
+  const runPull = (mode: GitSyncMode) => {
+    if (!laneId) return;
+    void runAction("pull", async () => {
+      const latestSyncStatus = await window.ade.git.getSyncStatus({ laneId }).catch(() => null);
+      if (latestSyncStatus) setSyncStatus(latestSyncStatus);
+      const targetBaseRef = latestSyncStatus?.hasUpstream && latestSyncStatus.upstreamRef
+        ? latestSyncStatus.upstreamRef
+        : (lane?.baseRef ?? undefined);
+      await window.ade.git.sync({ laneId, mode, baseRef: targetBaseRef });
+    });
+  };
+
+  const runFetchOnly = () => {
+    if (!laneId) return;
+    void runAction("fetch", async () => {
+      await window.ade.git.fetch({ laneId });
+    });
+  };
+
+  const runRebaseAndPushFlow = (confirmPublish = true) => {
+    if (!laneId) return;
+    void runAction("rebase and push", async () => {
+      if (onRebaseAndPush) {
+        await onRebaseAndPush(laneId);
+        return;
+      }
+
+      const start = await window.ade.lanes.rebaseStart({
+        laneId,
+        scope: "lane_only",
+        pushMode: "none",
+        actor: "user"
+      });
+      if (start.run.state === "failed" || start.run.failedLaneId || start.run.error) {
+        throw new Error(start.run.error ?? "Rebase failed.");
+      }
+
+      await window.ade.git.fetch({ laneId }).catch(() => {});
+      const latestSyncStatus = await window.ade.git.getSyncStatus({ laneId });
+      setSyncStatus(latestSyncStatus);
+
+      if (!latestSyncStatus.hasUpstream) {
+        if (confirmPublish) {
+          const ok = window.confirm(`Publish lane '${lane?.name ?? laneId}' to origin/${lane?.branchRef ?? "current branch"}?`);
+          if (!ok) throw new Error("__ade_cancelled__");
+        }
+        await window.ade.git.push({ laneId });
+        return;
+      }
+
+      if (latestSyncStatus.diverged && latestSyncStatus.ahead > 0) {
+        if (confirmPublish) {
+          const ok = window.confirm(
+            `Lane '${lane?.name ?? laneId}' diverged from remote (${latestSyncStatus.ahead} local ahead, ${latestSyncStatus.behind} remote ahead). Force push with lease now?`
+          );
+          if (!ok) throw new Error("__ade_cancelled__");
+        }
+        await window.ade.git.push({ laneId, forceWithLease: true });
+        return;
+      }
+
+      if (latestSyncStatus.ahead > 0) {
+        if (confirmPublish) {
+          const ok = window.confirm(
+            `Push ${latestSyncStatus.ahead} commit${latestSyncStatus.ahead === 1 ? "" : "s"} for lane '${lane?.name ?? laneId}' now?`
+          );
+          if (!ok) throw new Error("__ade_cancelled__");
+        }
+        await window.ade.git.push({ laneId });
+      }
+    });
+  };
+
+  const nextActionHint = useMemo<NextActionHint | null>(() => {
+    if (!laneId) return null;
+    if (lane?.parentLaneId && lane.status.behind > 0) {
+      return {
+        action: "rebase_push",
+        label: "Rebase and push",
+        detail: `Behind parent by ${lane.status.behind} commit${lane.status.behind === 1 ? "" : "s"}. Rebase locally, then publish the rewritten branch.`
+      };
+    }
+    if (forcePushSuggested) {
+      return {
+        action: "force_push_lease",
+        label: "Force push (lease)",
+        detail: "The last push was rejected because the remote branch history changed."
+      };
+    }
+    if (!syncStatus) return null;
+    if (!syncStatus.hasUpstream) {
+      return {
+        action: "push",
+        label: "Publish lane",
+        detail: "No remote branch exists yet. Publish once so collaborators and PRs can see this lane."
+      };
+    }
+    if (syncStatus.recommendedAction === "push") {
+      return {
+        action: "push",
+        label: "Push",
+        detail: `${syncStatus.ahead} local commit${syncStatus.ahead === 1 ? "" : "s"} are ready to send to remote.`
+      };
+    }
+    if (syncStatus.recommendedAction === "pull") {
+      if (syncStatus.diverged) {
+        return {
+          action: "pull",
+          label: "Resolve divergence",
+          detail: "Remote and local both changed. Pull (rebase) keeps remote changes; force push publishes your rewritten local history."
+        };
+      }
+      return {
+        action: "pull",
+        label: "Pull",
+        detail: `${syncStatus.behind} upstream commit${syncStatus.behind === 1 ? "" : "s"} have not been brought into this lane yet.`
+      };
+    }
+    return null;
+  }, [forcePushSuggested, lane, laneId, syncStatus]);
+
+  const divergedSync = Boolean(syncStatus?.diverged);
+  const headerDotColor = getLaneHeaderDotColor(lane);
+  const pushButtonTitle = syncStatus?.hasUpstream === false ? "Publish lane" : "Push to remote";
+  const rebaseConflictParentLaneId = autoRebaseStatus?.parentLaneId ?? lane?.parentLaneId ?? null;
+  const isGeneratingCommitMessage = busyAction === AUTO_GENERATE_COMMIT_ACTION;
+  const commitButtonLabel = getCommitButtonLabel({ busyAction, amendCommit });
+  const commitHelperText = getCommitHelperText({ commitMessage, commitMessageAi });
+  const primaryPushLabel = syncStatus?.hasUpstream === false ? "Publish lane" : "Push to remote";
+
+  const renderFileRow = (file: FileChange, mode: "staged" | "unstaged") => {
+    const rowSelected = selectedPath === file.path && selectedMode === mode;
+    const alsoStaged = mode === "unstaged" && stagedPathSet.has(file.path);
+    const alsoUnstaged = mode === "staged" && unstagedPathSet.has(file.path);
+    const kindColor = getFileKindColor(file.kind);
+
+    return (
+      <div
+        key={`${mode}:${file.path}`}
+        className="group flex items-center gap-2 cursor-pointer transition-all duration-150"
+        style={{
+          padding: "7px 8px",
+          fontSize: 12,
+          fontFamily: MONO_FONT,
+          borderLeft: rowSelected ? `3px solid ${COLORS.accent}` : "3px solid transparent",
+          background: rowSelected ? COLORS.accentSubtle : "transparent",
+          color: rowSelected ? COLORS.textPrimary : COLORS.textMuted,
+        }}
+        onClick={() => {
+          onSelectCommit(null);
+          onSelectFile(file.path, mode);
+        }}
+        onMouseEnter={(event) => {
+          if (!rowSelected) event.currentTarget.style.background = COLORS.hoverBg;
+        }}
+        onMouseLeave={(event) => {
+          if (!rowSelected) event.currentTarget.style.background = "transparent";
+        }}
+      >
+        <button
+          type="button"
+          className="shrink-0 flex items-center justify-center"
+          style={{
+            width: 16,
+            height: 16,
+            background: COLORS.recessedBg,
+            border: `1px solid ${COLORS.border}`,
+            cursor: "pointer",
+          }}
+          onClick={(event) => {
+            event.stopPropagation();
+            void toggleStageFile(file.path, mode === "staged");
+          }}
+          title={mode === "staged" ? "Remove this file from the next commit." : "Include this file in the next commit."}
+        >
+          {mode === "staged" ? <Check size={9} style={{ color: COLORS.accent }} /> : null}
+        </button>
+        <span
+          className="shrink-0"
+          title={`${file.kind} file`}
+          style={{ width: 7, height: 7, borderRadius: "50%", background: kindColor }}
+        />
+        <span className="truncate flex-1" style={{ fontSize: 11 }}>{file.path}</span>
+        {(alsoStaged || alsoUnstaged) ? (
+          <span
+            title="This file has both staged and unstaged changes."
+            style={inlineBadge(COLORS.warning, { fontSize: 9 })}
+          >
+            PARTIAL
+          </span>
+        ) : null}
+      </div>
+    );
+  };
+
+  return (
+    <div ref={rootRef} className="flex h-full min-h-0 min-w-0 flex-col" style={{ background: COLORS.pageBg }}>
+      <div
+        className="shrink-0"
+        style={{ padding: "12px 16px", background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}` }}
+      >
+        <div className="flex flex-wrap items-center gap-2" style={{ rowGap: 8 }}>
+          <span
+            className="shrink-0"
+            title={getLaneHeaderDotTitle(lane)}
+            style={{ width: 10, height: 10, borderRadius: "50%", background: headerDotColor }}
+          />
+          <span
+            style={{
+              fontSize: 12,
+              fontWeight: 700,
+              fontFamily: MONO_FONT,
+              letterSpacing: "1px",
+              textTransform: "uppercase",
+              color: COLORS.textPrimary,
+            }}
+            className="truncate"
+            title={lane?.name}
+          >
+            {lane?.name ?? "NO LANE"}
+          </span>
+          {lane ? (
+            <>
+              <span
+                title={`Git branch: ${lane.branchRef}`}
+                style={{
+                  padding: "3px 8px",
+                  fontSize: 10,
+                  fontWeight: 600,
+                  fontFamily: MONO_FONT,
+                  color: COLORS.accent,
+                  background: `${COLORS.accent}15`,
+                  letterSpacing: "0.5px",
+                }}
+              >
+                {lane.branchRef}
+              </span>
+              <span
+                title={lane.status.dirty ? "Worktree has uncommitted changes." : "Worktree is clean."}
+                style={{
+                  padding: "3px 8px",
+                  fontSize: 10,
+                  fontWeight: 600,
+                  fontFamily: MONO_FONT,
+                  color: lane.status.dirty ? COLORS.warning : "#10B981",
+                  background: lane.status.dirty ? `${COLORS.warning}15` : "#10B98115",
+                  letterSpacing: "0.5px",
+                }}
+              >
+                {lane.status.dirty ? "DIRTY" : "CLEAN"}
+              </span>
+            </>
+          ) : null}
+          <div
+            className="flex flex-wrap items-center gap-2"
+            style={{ marginLeft: responsiveMode === "wide" ? "auto" : 0, color: COLORS.textDim }}
+          >
+            {lane ? (
+              <span
+                style={{ fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.4px" }}
+                title={`${lane.status.ahead} commit${lane.status.ahead === 1 ? "" : "s"} ahead of base, ${lane.status.behind} commit${lane.status.behind === 1 ? "" : "s"} behind base`}
+              >
+                base ↑{lane.status.ahead} ↓{lane.status.behind}
+              </span>
+            ) : null}
+            {syncStatus ? (
+              syncStatus.hasUpstream ? (
+                <span
+                  style={{ fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.4px" }}
+                  title={`Compared to ${syncStatus.upstreamRef ?? "upstream"}`}
+                >
+                  remote ↑{syncStatus.ahead} ↓{syncStatus.behind}
+                </span>
+              ) : (
+                <span
+                  style={{ fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.4px", color: COLORS.warning }}
+                  title="This lane has not been published to remote yet."
+                >
+                  remote unpublished
+                </span>
+              )
+            ) : null}
+          </div>
+        </div>
+        {lane && originLabel ? (
+          <div
+            title="The parent lane this branch was created from."
+            style={{ marginTop: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, letterSpacing: "0.5px" }}
+          >
+            {originLabel}
+          </div>
+        ) : null}
+      </div>
+
+      {stuckRebase ? (
+        <div
+          className="shrink-0"
+          style={{
+            padding: "10px 16px",
+            background: `${COLORS.danger}12`,
+            borderBottom: `1px solid ${COLORS.danger}30`,
+          }}
+        >
+          <div className="flex flex-wrap items-center gap-3">
+            <Warning size={16} weight="bold" color={COLORS.danger} style={{ flexShrink: 0 }} />
+            <div style={{ flex: 1, minWidth: 220 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, fontFamily: MONO_FONT, letterSpacing: "0.8px", textTransform: "uppercase", color: COLORS.danger }}>
+                Rebase in progress
+              </div>
+              <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, marginTop: 2, letterSpacing: "0.3px" }}>
+                {stuckRebase.conflictedFiles.length > 0
+                  ? `${stuckRebase.conflictedFiles.length} conflicted file${stuckRebase.conflictedFiles.length === 1 ? "" : "s"}. Commits and pushes are blocked until you resolve them.`
+                  : "An interrupted rebase is blocking commits and pushes. Abort or continue to unlock the lane."}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {stuckRebase.canAbort ? (
+                <button
+                  type="button"
+                  style={dangerButton({ height: 28, padding: "0 12px", fontSize: 10 })}
+                  disabled={busyAction != null}
+                  onClick={() => {
+                    if (!laneId) return;
+                    void runAction("abort rebase", async () => {
+                      await window.ade.git.rebaseAbort(laneId);
+                    });
+                  }}
+                >
+                  ABORT REBASE
+                </button>
+              ) : null}
+              {stuckRebase.canContinue ? (
+                <button
+                  type="button"
+                  style={primaryButton({ height: 28, padding: "0 12px", fontSize: 10 })}
+                  disabled={busyAction != null}
+                  onClick={() => {
+                    if (!laneId) return;
+                    void runAction("continue rebase", async () => {
+                      await window.ade.git.rebaseContinue(laneId);
+                    });
+                  }}
+                >
+                  CONTINUE REBASE
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {autoRebaseStatus ? (() => {
+        const bannerConfig = getAutoRebaseBannerConfig(autoRebaseStatus.state);
+        return (
+          <div
+            className="shrink-0 flex flex-wrap items-center gap-3"
+            style={{
+              padding: "8px 16px",
+              fontSize: 10,
+              fontFamily: MONO_FONT,
+              borderBottom: `1px solid ${COLORS.border}`,
+              background: `${bannerConfig.color}08`,
+              color: bannerConfig.color
+            }}
+          >
+            <span style={{ ...LABEL_STYLE, color: "inherit" }}>
+              {bannerConfig.label}
+            </span>
+            <span className="truncate" style={{ color: COLORS.textMuted, letterSpacing: "0.5px", flex: 1, minWidth: 220 }}>
+              {autoRebaseStatus.message ?? bannerConfig.fallbackMessage}
+            </span>
+            {autoRebaseStatus.state !== "autoRebased" ? (
+              autoRebaseStatus.state === "rebaseConflict" ? (
+                <button
+                  type="button"
+                  style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }}
+                  disabled={!laneId || busyAction != null}
+                  onClick={() => {
+                    if (laneId) onResolveRebaseConflict?.(laneId, rebaseConflictParentLaneId);
+                  }}
+                >
+                  RESOLVE IN CONFLICTS
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }}
+                  disabled={!laneId || busyAction != null}
+                  onClick={() => runRebaseAndPushFlow(true)}
+                >
+                  REBASE AND PUSH
+                </button>
+              )
+            ) : null}
+          </div>
+        );
+      })() : null}
+
+      <div className="flex-1 min-h-0 overflow-hidden" style={{ padding: 10, display: "flex", flexDirection: "column", gap: 10 }}>
+        <SectionCard
+          title="Sync"
+          description="Compact sync controls with hover help."
+          dataTestId="sync-section"
+          aside={
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                style={{ ...LABEL_STYLE, color: nextActionHint ? COLORS.accent : COLORS.textDim }}
+                title={nextActionHint?.detail ?? "Local and remote are in sync."}
+              >
+                {nextActionHint ? `NEXT: ${nextActionHint.label}` : "UP TO DATE"}
+              </span>
+              <button
+                type="button"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: 28,
+                  height: 28,
+                  border: `1px solid ${COLORS.outlineBorder}`,
+                  background: "transparent",
+                  color: COLORS.textMuted,
+                  cursor: "pointer",
+                }}
+                onClick={() => refreshAll({ fetchRemote: true }).catch(() => {})}
+                title="Refresh git state"
+              >
+                <ArrowsClockwise size={14} className={cn(loading && "animate-spin")} />
+              </button>
+            </div>
+          }
+        >
+          <div
+            className="flex flex-wrap items-center gap-2"
+            style={{ justifyContent: "space-between", rowGap: 8 }}
+          >
+            <div className="flex flex-wrap items-center gap-2" style={{ minWidth: 0 }}>
+              <span style={LABEL_STYLE}>PULL MODE</span>
+              {(["merge", "rebase"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  disabled={!laneId || busyAction != null}
+                  onClick={() => setSyncMode(mode)}
+                  style={{
+                    ...outlineButton({ height: 26, padding: "0 8px", fontSize: 10 }),
+                    color: syncMode === mode ? COLORS.accent : COLORS.textSecondary,
+                    borderColor: syncMode === mode ? `${COLORS.accent}55` : COLORS.outlineBorder,
+                    background: syncMode === mode ? `${COLORS.accent}10` : "transparent",
+                    opacity: !laneId || busyAction != null ? 0.5 : 1,
+                  }}
+                  title={getPullModeSummary(mode)}
+                >
+                  {mode === "merge" ? "PULL MERGE" : "PULL REBASE"}
+                </button>
+              ))}
+            </div>
+            <div
+              className="flex flex-wrap items-center gap-2"
+              style={{ minWidth: 0, color: COLORS.textDim, fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.4px" }}
+            >
+              <span title={syncStatus?.hasUpstream ? `Tracking ${syncStatus.upstreamRef ?? "upstream"}` : "This lane has not been published to remote yet."}>
+                {!syncStatus ? "REMOTE …" : syncStatus.hasUpstream ? `REMOTE ↑${syncStatus.ahead} ↓${syncStatus.behind}` : "REMOTE UNPUBLISHED"}
+              </span>
+              {divergedSync ? <span style={inlineBadge(COLORS.warning, { fontSize: 9 })}>DIVERGED</span> : null}
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: actionGridColumns, gap: 8 }}>
+            <ActionButton
+              title={`Pull (${syncMode})`}
+              detail={`Bring remote changes into this lane. ${getPullModeSummary(syncMode)}`}
+              icon={<ArrowDown size={14} weight="bold" />}
+              emphasis={nextActionHint?.action === "pull" ? "primary" : "secondary"}
+              badge={nextActionHint?.action === "pull" ? "NEXT" : null}
+              fullWidth={responsiveMode === "narrow"}
+              disabled={!laneId || busyAction != null}
+              onClick={() => runPull(syncMode)}
+            />
+            <ActionButton
+              title={primaryPushLabel}
+              detail={`${getPushSummary(syncStatus)}${divergedSync ? " Remote and local have both changed, so you may need Force Push (lease)." : ""}`}
+              icon={<Upload size={14} weight="bold" />}
+              emphasis={nextActionHint?.action === "push" ? "primary" : "secondary"}
+              badge={nextActionHint?.action === "push" ? "NEXT" : null}
+              fullWidth={responsiveMode === "narrow"}
+              disabled={!laneId || busyAction != null}
+              onClick={() => runPush(false)}
+            />
+            {lane?.parentLaneId ? (
+              <ActionButton
+                title="Rebase and push"
+                detail="Update this lane from its parent, then publish the rewritten history to remote in one flow."
+                icon={<Stack size={14} weight="bold" />}
+                emphasis={nextActionHint?.action === "rebase_push" ? "primary" : "secondary"}
+                badge={nextActionHint?.action === "rebase_push" ? "NEXT" : null}
+                fullWidth={responsiveMode === "narrow"}
+                disabled={!laneId || busyAction != null}
+                onClick={() => runRebaseAndPushFlow(true)}
+              />
+            ) : null}
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          title="Commit"
+          description="Compact commit controls with inline amend help."
+          dataTestId="commit-section"
+        >
+          <div style={{ display: "flex", flexDirection: responsiveMode === "narrow" ? "column" : "row", gap: 8 }}>
+            <input
+              disabled={busyAction != null}
+              style={{
+                height: 34,
+                flex: 1,
+                minWidth: 0,
+                padding: "0 10px",
+                fontSize: 11,
+                fontFamily: MONO_FONT,
+                letterSpacing: "0.4px",
+                background: COLORS.recessedBg,
+                border: `1px solid ${COLORS.outlineBorder}`,
+                color: COLORS.textSecondary,
+                outline: "none",
+                opacity: busyAction != null ? 0.7 : 1,
+              }}
+              title="Type a commit message. If blank, ADE can auto-generate one when Commit Messages AI is enabled."
+              placeholder="Commit message"
+              value={commitMessage}
+              onChange={(event) => setCommitMessage(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                  event.preventDefault();
+                  void submitCommit();
+                }
+              }}
+            />
+            <button
+              type="button"
+              style={{
+                ...outlineButton({ height: 34, padding: "0 10px", fontSize: 10 }),
+                color: amendCommit ? COLORS.warning : COLORS.textSecondary,
+                borderColor: amendCommit ? `${COLORS.warning}40` : COLORS.outlineBorder,
+                background: amendCommit ? `${COLORS.warning}10` : "transparent",
+              }}
+              disabled={busyAction != null}
+              onClick={() => setAmendCommit((prev) => !prev)}
+              title={getAmendSummary(amendCommit)}
+            >
+              {amendCommit ? "AMEND LAST COMMIT ON" : "AMEND LAST COMMIT"}
+            </button>
+            <button
+              type="button"
+              style={{
+                ...primaryButton({ height: 34, padding: "0 14px", fontSize: 10 }),
+                opacity: ((!hasStaged && !amendCommit) || busyAction != null) ? 0.45 : 1,
+                pointerEvents: ((!hasStaged && !amendCommit) || busyAction != null) ? "none" : "auto",
+              }}
+              disabled={(!hasStaged && !amendCommit) || busyAction != null}
+              onClick={() => {
+                void submitCommit();
+              }}
+              title={amendCommit ? "Rewrite the latest commit using the staged changes." : "Create a new commit from the staged changes."}
+            >
+              {commitButtonLabel}
+            </button>
+          </div>
+          <div
+            className="flex flex-wrap items-center gap-3"
+            style={{ fontSize: 10, color: amendCommit ? COLORS.warning : isGeneratingCommitMessage ? COLORS.accent : COLORS.textMuted, lineHeight: 1.5 }}
+          >
+            <span style={{ minWidth: 0, flex: 1 }}>{commitHelperText}</span>
+            <span>{getAmendSummary(amendCommit)}</span>
+            {!commitMessage.trim() && (!commitMessageAi.enabled || !commitMessageAi.modelId) ? (
+              <button
+                type="button"
+                style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                onClick={onOpenSettings}
+                disabled={busyAction != null}
+              >
+                AI SETTINGS
+              </button>
+            ) : null}
+          </div>
+        </SectionCard>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: responsiveMode === "narrow" ? "1fr" : "minmax(0, 1.15fr) minmax(320px, 0.85fr)",
+            gridTemplateRows: responsiveMode === "narrow" ? "minmax(0, 1fr) minmax(0, 1fr)" : "minmax(0, 1fr)",
+            gap: 10,
+            flex: "1 1 0",
+            minWidth: 0,
+            minHeight: 0,
+            alignItems: "stretch",
+          }}
+        >
+          <SectionCard
+            title="Files"
+            description="Changed files and stash controls."
+            dataTestId="files-section"
+            sectionStyle={{ minHeight: 0, height: "100%" }}
+            bodyStyle={{ flex: 1, minHeight: 0 }}
+            aside={
+              <div className="flex flex-wrap items-center gap-2">
+                <span title={`${changedFileCount} changed file${changedFileCount === 1 ? "" : "s"}`} style={inlineBadge(COLORS.accent, { fontSize: 9 })}>
+                  {changedFileCount}
+                </span>
+                {changes.unstaged.length > 0 ? (
+                  <button
+                    type="button"
+                    style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                    onClick={stageAll}
+                  >
+                    STAGE ALL
+                  </button>
+                ) : null}
+                {changes.staged.length > 0 ? (
+                  <button
+                    type="button"
+                    style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                    onClick={unstageAll}
+                  >
+                    UNSTAGE ALL
+                  </button>
+                ) : null}
+              </div>
+            }
+          >
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+                paddingBottom: 8,
+                borderBottom: `1px solid ${COLORS.border}`,
+              }}
+            >
+              <div className="flex flex-wrap items-center gap-2" style={{ justifyContent: "space-between", rowGap: 6 }}>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span style={LABEL_STYLE}>STASHES</span>
+                  <span style={{ fontSize: 10, color: COLORS.textDim }}>
+                    {stashes.length === 0 ? "None saved" : `${stashes.length} saved`}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                  disabled={!laneId || busyAction != null}
+                  onClick={() => {
+                    if (!laneId) return;
+                    void runAction("stash push", async () => {
+                      const msg = await requestTextInput({
+                        title: "Stash message",
+                        placeholder: "Optional note",
+                        confirmLabel: "Save stash",
+                      });
+                      if (msg == null) throw new Error("__ade_cancelled__");
+                      await window.ade.git.stashPush({ laneId, message: msg || undefined });
+                    });
+                  }}
+                >
+                  STASH NOW
+                </button>
+              </div>
+              {stashes.length === 0 ? (
+                <div style={{ fontSize: 10, color: COLORS.textMuted, lineHeight: 1.5 }}>
+                  Use stash when you want to clear the worktree without committing. Hover the buttons for the git details.
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {stashes.slice(0, responsiveMode === "wide" ? 2 : 3).map((stash) => (
+                    <div
+                      key={stash.ref}
+                      className="flex flex-wrap items-center gap-2"
+                      style={{
+                        padding: "6px 8px",
+                        border: `1px solid ${COLORS.border}`,
+                        background: COLORS.pageBg,
+                        minWidth: 0,
+                      }}
+                    >
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div className="truncate" style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textPrimary }}>
+                          {stash.subject || stash.ref}
+                        </div>
+                        <div className="truncate" style={{ fontSize: 9, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                          {stash.ref} · {formatRelativeTime(stash.createdAt)}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                        disabled={!laneId || busyAction != null}
+                        title="Apply keeps the stash saved and also restores it into your worktree."
+                        onClick={() => {
+                          if (!laneId) return;
+                          void runAction("stash apply", async () => {
+                            await window.ade.git.stashApply({ laneId, stashRef: stash.ref });
+                          });
+                        }}
+                      >
+                        APPLY
+                      </button>
+                      <button
+                        type="button"
+                        style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                        disabled={!laneId || busyAction != null}
+                        title="Pop restores the stash and removes it from the stash list."
+                        onClick={() => {
+                          if (!laneId) return;
+                          void runAction("stash pop", async () => {
+                            await window.ade.git.stashPop({ laneId, stashRef: stash.ref });
+                          });
+                        }}
+                      >
+                        POP
+                      </button>
+                      <button
+                        type="button"
+                        style={dangerButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                        disabled={!laneId || busyAction != null}
+                        title="Drop deletes this stash entry."
+                        onClick={() => {
+                          if (!laneId) return;
+                          void runAction("stash drop", async () => {
+                            await window.ade.git.stashDrop({ laneId, stashRef: stash.ref });
+                          });
+                        }}
+                      >
+                        DROP
+                      </button>
+                    </div>
+                  ))}
+                  {stashes.length > (responsiveMode === "wide" ? 2 : 3) ? (
+                    <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
+                      +{stashes.length - (responsiveMode === "wide" ? 2 : 3)} more stash entr{stashes.length - (responsiveMode === "wide" ? 2 : 3) === 1 ? "y" : "ies"}.
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1, minHeight: 0, overflow: "auto" }}>
+              {changes.staged.length > 0 ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  <div style={{ padding: "0 8px 4px", ...LABEL_STYLE }}>STAGED ({changes.staged.length})</div>
+                  {changes.staged.map((file) => renderFileRow(file, "staged"))}
+                </div>
+              ) : null}
+              {changes.unstaged.length > 0 ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  <div style={{ padding: "0 8px 4px", ...LABEL_STYLE }}>UNSTAGED ({changes.unstaged.length})</div>
+                  {changes.unstaged.map((file) => renderFileRow(file, "unstaged"))}
+                </div>
+              ) : null}
+              {changes.staged.length === 0 && changes.unstaged.length === 0 ? (
+                <div style={{ padding: 12, textAlign: "center", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, fontStyle: "italic" }}>
+                  No changes
+                </div>
+              ) : null}
+            </div>
+          </SectionCard>
+
+          <SectionCard
+            title="History"
+            description="Recent commits on this branch."
+            dataTestId="history-section"
+            sectionStyle={{ minHeight: 0, height: "100%" }}
+            bodyStyle={{ flex: 1, minHeight: 0 }}
+          >
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <CommitTimeline
+                laneId={laneId ?? null}
+                selectedSha={selectedCommitSha}
+                refreshTrigger={commitTimelineKey}
+                hasUpstream={syncStatus?.hasUpstream ?? null}
+                onSelectCommit={(commit) => {
+                  onSelectCommit(commit);
+                }}
+              />
+            </div>
+          </SectionCard>
+        </div>
+
+        <SectionCard
+          title="Advanced Git"
+          description="Less common actions. Hover for details."
+          dataTestId="advanced-section"
+        >
+          <div style={{ display: "grid", gridTemplateColumns: actionGridColumns, gap: 8 }}>
+            <ActionButton
+              title="Fetch only"
+              detail="Download remote updates without changing your local branch. Good when you just want to inspect the latest remote state."
+              fullWidth={responsiveMode === "narrow"}
+              disabled={!laneId || busyAction != null}
+              onClick={runFetchOnly}
+            />
+            <ActionButton
+              title="Force push (lease)"
+              detail="Overwrite the remote branch only if nobody else pushed in the meantime. Use after rebase, amend, or other rewritten history."
+              badge={nextActionHint?.action === "force_push_lease" || divergedSync ? "CHECK FIRST" : null}
+              fullWidth={responsiveMode === "narrow"}
+              disabled={!laneId || busyAction != null}
+              onClick={() => runPush(true)}
+            />
+            {lane?.parentLaneId ? (
+              <ActionButton
+                title="Rebase local only"
+                detail="Update this lane from its parent without pushing anything yet."
+                fullWidth={responsiveMode === "narrow"}
+                disabled={!laneId || busyAction != null}
+                onClick={() => {
+                  if (!laneId) return;
+                  if (onRebaseNowLocal) {
+                    void runAction("rebase", async () => {
+                      await onRebaseNowLocal(laneId);
+                    });
+                    return;
+                  }
+                  void runAction("rebase", async () => {
+                    const start = await window.ade.lanes.rebaseStart({
+                      laneId,
+                      scope: "lane_only",
+                      pushMode: "none",
+                      actor: "user"
+                    });
+                    if (start.run.state === "failed" || start.run.failedLaneId || start.run.error) {
+                      throw new Error(start.run.error ?? "Rebase failed.");
+                    }
+                  });
+                }}
+              />
+            ) : null}
+            {lane?.parentLaneId ? (
+              <ActionButton
+                title="View rebase details"
+                detail="See detailed rebase history, including conflicts and timing."
+                fullWidth={responsiveMode === "narrow"}
+                disabled={!laneId || busyAction != null}
+                onClick={() => onViewRebaseDetails?.()}
+              />
+            ) : null}
+            <ActionButton
+              title="Revert commit"
+              detail="Create a new commit that undoes an earlier commit without rewriting history."
+              fullWidth={responsiveMode === "narrow"}
+              disabled={!laneId || busyAction != null}
+              onClick={() => {
+                if (!laneId) return;
+                void runAction("revert commit", async () => {
+                  const commits = await window.ade.git.listRecentCommits({ laneId, limit: 20 });
+                  const sha = await requestTextInput({
+                    title: "Commit SHA to revert",
+                    defaultValue: commits[0]?.sha ?? "",
+                    validate: (value) => (value ? null : "Commit SHA is required")
+                  });
+                  if (!sha) throw new Error("__ade_cancelled__");
+                  await window.ade.git.revertCommit({ laneId, commitSha: sha });
+                });
+              }}
+            />
+            <ActionButton
+              title="Cherry-pick"
+              detail="Apply a commit from another branch onto this lane."
+              fullWidth={responsiveMode === "narrow"}
+              disabled={!laneId || busyAction != null}
+              onClick={() => {
+                if (!laneId) return;
+                void runAction("cherry-pick", async () => {
+                  const sha = await requestTextInput({
+                    title: "Commit SHA to cherry-pick",
+                    validate: (value) => (value ? null : "Commit SHA is required")
+                  });
+                  if (!sha) throw new Error("__ade_cancelled__");
+                  await window.ade.git.cherryPickCommit({ laneId, commitSha: sha });
+                });
+              }}
+            />
+          </div>
+        </SectionCard>
+
+        {!autoRebaseEnabled && nextActionHint?.action === "rebase_push" ? (
+          <div
+            style={{
+              padding: "10px 14px",
+              fontSize: 10,
+              fontFamily: MONO_FONT,
+              letterSpacing: "0.5px",
+              border: `1px solid ${COLORS.border}`,
+              background: `${COLORS.info}08`,
+              color: COLORS.info,
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 10,
+              alignItems: "center",
+            }}
+          >
+            <span style={{ flex: 1, minWidth: 220 }}>
+              Auto-rebase is off. Enable it in Settings if you want child lanes rebased automatically when their parent advances.
+            </span>
+            <button
+              type="button"
+              style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), marginLeft: "auto" }}
+              onClick={onOpenSettings}
+            >
+              SETTINGS
+            </button>
+          </div>
+        ) : null}
+      </div>
+
+      {(notice || error || busyAction) ? (
+        <div
+          className="shrink-0 flex items-center justify-between"
+          style={{
+            padding: "4px 16px",
+            fontSize: 10,
+            fontFamily: MONO_FONT,
+            letterSpacing: "0.5px",
+            borderTop: `1px solid ${COLORS.border}`,
+            background: error ? `${COLORS.danger}15` : `${COLORS.accent}12`,
+            color: error ? COLORS.danger : COLORS.accent,
+          }}
+        >
+          <span>
+            {error ? `ERROR: ${error}` : notice ? notice.toUpperCase() : busyAction ? `RUNNING ${busyAction.toUpperCase()}...` : ""}
+          </span>
+        </div>
+      ) : null}
+
+      {textPrompt ? (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }}>
+          <div style={{ width: "min(460px, 100%)", background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: 20 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, fontFamily: MONO_FONT, letterSpacing: "1px", textTransform: "uppercase", color: COLORS.textPrimary }}>
+              {textPrompt.title}
+            </div>
+            {textPrompt.message ? (
+              <div style={{ marginTop: 6, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                {textPrompt.message}
+              </div>
+            ) : null}
+            <input
+              autoFocus
+              value={textPrompt.value}
+              onChange={(event) => {
+                const nextValue = event.target.value;
+                setTextPrompt((prev) => (prev ? { ...prev, value: nextValue } : prev));
+                if (textPromptError) setTextPromptError(null);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  cancelTextPrompt();
+                } else if (event.key === "Enter") {
+                  event.preventDefault();
+                  submitTextPrompt();
+                }
+              }}
+              placeholder={textPrompt.placeholder}
+              style={{
+                marginTop: 12,
+                height: 36,
+                width: "100%",
+                padding: "0 12px",
+                fontSize: 11,
+                fontFamily: MONO_FONT,
+                letterSpacing: "0.5px",
+                background: COLORS.recessedBg,
+                border: `1px solid ${COLORS.outlineBorder}`,
+                color: COLORS.textSecondary,
+                outline: "none",
+              }}
+            />
+            {textPromptError ? (
+              <div style={{ marginTop: 8, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.danger }}>
+                {textPromptError}
+              </div>
+            ) : null}
+            <div className="flex justify-end gap-2" style={{ marginTop: 16 }}>
+              <button type="button" style={outlineButton({ height: 32, padding: "0 14px", fontSize: 10 })} onClick={cancelTextPrompt}>
+                CANCEL
+              </button>
+              <button type="button" style={primaryButton({ height: 32, padding: "0 14px", fontSize: 10 })} onClick={submitTextPrompt}>
+                {textPrompt.confirmLabel.toUpperCase()}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}

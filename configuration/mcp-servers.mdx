@@ -1,0 +1,411 @@
+---
+title: "MCP Servers"
+description: "Connect external MCP (Model Context Protocol) servers to ADE. ADE proxies their tools to all agents under a namespaced ext.<server>.<tool> interface, with centralized permission control."
+icon: "plug"
+---
+
+<Info>**📸 Screenshot needed:** Settings → Integrations → External MCP panel showing three server rows: "github" (connected, green dot, 12 tools), "filesystem" (connected, green dot, 5 tools), and "ghost-os" (disconnected, grey dot). Each row has a chevron to expand a tool list and a "Test Connection" button.</Info>
+
+## What External MCP Is
+
+MCP (Model Context Protocol) is an open standard for AI tool servers. Any process that speaks the MCP JSON-RPC protocol can expose tools to AI agents. ADE ships with a built-in MCP server that exposes 35+ native tools, and it also lets you connect external MCP servers — services like GitHub, Slack, a filesystem server, or Ghost OS.
+
+When you connect an external MCP server, ADE re-exposes its tools through ADE's own MCP server under a namespaced prefix:
+
+```
+ext.<server-name>.<tool-name>
+```
+
+For example, a GitHub MCP server's `create_issue` tool becomes `ext.github.create_issue` from the agent's perspective.
+
+<CardGroup cols={3}>
+  <Card title="Centralized" icon="circle-nodes">
+    One place to configure, audit, and budget all external tool access. Agents always connect to ADE's MCP — ADE proxies the external calls.
+  </Card>
+  <Card title="Secure" icon="shield">
+    ADE enforces per-server `allowedTools` and `blockedTools` lists, per-agent server access rules, and per-mission tool filtering. No agent can use a tool you have not permitted.
+  </Card>
+  <Card title="Namespaced" icon="tag">
+    The `ext.` prefix ensures agents cannot confuse external tools with ADE-native tools. Tool names are always unambiguous.
+  </Card>
+</CardGroup>
+
+---
+
+## Architecture
+
+```
+Agent Session
+    │
+    ▼
+ADE MCP Server (main process)
+    ├── Native tools:  ade_read_file, ade_create_lane, ade_start_mission, ...
+    └── Proxied tools: ext.github.*, ext.filesystem.*, ext.ghost-os.*
+            │
+            ├── stdio: github MCP subprocess (npx @modelcontextprotocol/server-github)
+            ├── stdio: filesystem MCP subprocess (npx @modelcontextprotocol/server-filesystem)
+            └── http:  ghost-os MCP server (https://ghost-os.local/mcp)
+```
+
+Agents never connect directly to external MCP servers. Every call passes through ADE's MCP layer, which applies permission checks, logs the call to the audit trail, and tracks cost attribution.
+
+---
+
+## Transports
+
+ADE supports two transport modes for external MCP servers:
+
+<Tabs>
+  <Tab title="stdio (subprocess)">
+    ADE spawns the MCP server as a child process and communicates over its stdin/stdout. This is the standard transport for locally-installed MCP servers distributed as npm packages or binaries.
+
+    ```yaml
+    externalMcp:
+      - name: "github"
+        transport: "stdio"
+        command: "npx"
+        args: ["-y", "@modelcontextprotocol/server-github"]
+        autoStart: true
+        env:
+          GITHUB_TOKEN: "ghp_..."
+    ```
+
+    **When to use stdio:** Any MCP server you install locally. Examples: `@modelcontextprotocol/server-github`, `@modelcontextprotocol/server-filesystem`, `@modelcontextprotocol/server-postgres`, custom servers you build yourself.
+  </Tab>
+  <Tab title="http (SSE)">
+    ADE connects to a remote MCP server over HTTP using Server-Sent Events. This transport is used for cloud services and remote infrastructure like Ghost OS.
+
+    ```yaml
+    externalMcp:
+      - name: "ghost-os"
+        transport: "http"
+        url: "https://ghost-os.local/mcp"
+        healthCheckInterval: "30s"
+        headers:
+          Authorization: "Bearer <token>"
+        autoStart: false
+    ```
+
+    **When to use http:** Cloud services, shared team MCP servers, remote infrastructure. The `healthCheckInterval` controls how often ADE pings the server's health endpoint to detect disconnections.
+  </Tab>
+</Tabs>
+
+---
+
+## Full Configuration Reference
+
+All external MCP configuration lives in `local.secret.yaml` because it typically contains credentials.
+
+```yaml
+# .ade/local.secret.yaml
+
+externalMcp:
+  # ── stdio: GitHub MCP ──────────────────────────────────────────────────────
+  - name: "github"
+    transport: "stdio"
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-github"]
+    autoStart: true
+    healthCheckInterval: "30s"
+    env:
+      GITHUB_TOKEN: "ghp_..."
+    allowedTools: []          # empty list = all tools allowed
+    blockedTools: []          # explicit block list (takes precedence over allowed)
+
+  # ── stdio: Filesystem (read-only) ─────────────────────────────────────────
+  - name: "filesystem"
+    transport: "stdio"
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/projects"]
+    autoStart: true
+    allowedTools: ["read_file", "list_directory", "search_files"]
+    blockedTools: ["write_file", "delete_file", "move_file"]
+
+  # ── http: Ghost OS ─────────────────────────────────────────────────────────
+  - name: "ghost-os"
+    transport: "http"
+    url: "https://ghost-os.local/mcp"
+    healthCheckInterval: "30s"
+    autoStart: false          # start manually from Settings UI
+
+  # ── http: Slack ────────────────────────────────────────────────────────────
+  - name: "slack"
+    transport: "http"
+    url: "https://mcp.slack.com/v1"
+    headers:
+      Authorization: "Bearer xoxb-..."
+    allowedTools: ["post_message", "list_channels"]
+    blockedTools: []
+```
+
+### Configuration Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Unique identifier. Used in tool namespacing (`ext.<name>.*`) and UI labels. |
+| `transport` | `stdio` \| `http` | Yes | Connection transport. |
+| `command` | string | stdio only | The executable to spawn. |
+| `args` | string[] | stdio only | Arguments passed to the command. |
+| `url` | string | http only | The MCP server's base URL. |
+| `headers` | object | http only | HTTP headers sent with every request (e.g., Authorization). |
+| `env` | object | No | Environment variables injected into the subprocess (stdio only). |
+| `autoStart` | boolean | No | If `true`, ADE connects on startup. Default: `true`. |
+| `healthCheckInterval` | string | No | How often to run a health check. Format: `"30s"`, `"1m"`. |
+| `allowedTools` | string[] | No | If non-empty, only these tools are exposed. Empty = all tools allowed. |
+| `blockedTools` | string[] | No | Tools to always block, even if listed in `allowedTools`. |
+
+---
+
+## Connection States
+
+Each external MCP server transitions through the following states:
+
+| State | Meaning | UI indicator |
+|-------|---------|-------------|
+| `disconnected` | Configured but not connected | Grey dot |
+| `connecting` | ADE is establishing the connection | Amber dot, spinner |
+| `connected` | Connected and tools are available to agents | Green dot |
+| `reconnecting` | Connection dropped; ADE is retrying with backoff | Amber dot, retry count |
+| `draining` | Shutting down gracefully (finishing pending calls) | Blue dot |
+| `failed` | Connection failed after max retries (5 attempts) | Red dot, error message |
+
+<Tip>
+When a server enters `failed` state, click the server row in Settings → Integrations → External MCP to see the exact error (connection refused, timeout, auth error, etc.). Click **Retry** to attempt reconnection immediately, or fix the configuration and save to trigger an automatic reconnect.
+</Tip>
+
+---
+
+## Permission Model
+
+ADE applies permissions in four layers, evaluated in order from most specific to most general. A tool call is permitted only if it passes every applicable layer.
+
+<AccordionGroup>
+  <Accordion title="Layer 1: Server config (allowedTools / blockedTools)" icon="server">
+    Set in `local.secret.yaml` per server. `blockedTools` always takes precedence — if a tool appears in both lists, it is blocked. An empty `allowedTools` means all tools from that server are available (subject to other layers).
+
+    ```yaml
+    - name: "filesystem"
+      allowedTools: ["read_file", "list_directory"]
+      blockedTools: ["delete_file"]    # Redundant here, but explicit is good
+    ```
+  </Accordion>
+  <Accordion title="Layer 2: Agent identity policy" icon="user-shield">
+    CTO workers, Mission workers, and automation agents each have a configurable `externalMcpAccess` list specifying which server names they are allowed to use. An agent without a server in its access list cannot call any tools from that server, even if the server config allows them.
+
+    Configure in: CTO Settings → Worker Config, Mission creation dialog → Permissions, Automation config → Tool Palette.
+  </Accordion>
+  <Accordion title="Layer 3: Mission permission config" icon="bullseye">
+    Each Mission can specify which external MCP servers its workers are permitted to use. This is set at mission creation time and cannot be changed after the Approval Gate. Mission-level restrictions are stricter than identity-level restrictions.
+  </Accordion>
+  <Accordion title="Layer 4: Execution mode" icon="eye">
+    When a lane or session is in **read-only planning mode**, all external tools are restricted to read-only operations. ADE determines read-only status by checking the tool name against a list of known write-operation patterns (`create_`, `write_`, `delete_`, `post_`, `update_`, `push_`). Any tool matching a write pattern is blocked in planning mode.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Tool Namespacing
+
+All external tools appear to agents with the `ext.` prefix:
+
+```
+ext.github.create_issue
+ext.github.list_pull_requests
+ext.filesystem.read_file
+ext.filesystem.list_directory
+ext.ghost-os.take_screenshot
+ext.slack.post_message
+```
+
+The `ext.` prefix is enforced by ADE's MCP proxy layer. Agents cannot call external tools without the prefix, and the prefix cannot be faked to call ADE-native tools.
+
+<Note>
+Server names with hyphens (e.g., `ghost-os`) are valid in tool names. The full namespace is preserved exactly: `ext.ghost-os.take_screenshot`. When writing agent prompts that reference external tools, use the full namespaced form.
+</Note>
+
+---
+
+## Dynamic Reload
+
+ADE watches `local.secret.yaml` for changes (debounced 500ms). The behavior when you save the file:
+
+| Change type | ADE behavior |
+|-------------|-------------|
+| Add a new server entry | ADE connects to the new server automatically |
+| Remove a server entry | ADE drains pending calls, then disconnects |
+| Change `allowedTools` or `blockedTools` | Takes effect immediately, no reconnect needed |
+| Change `url`, `command`, or `args` | ADE drains, disconnects, and reconnects with new params |
+| Change `env` values | ADE restarts the subprocess with the new environment |
+| Change credentials in `headers` or `env` | ADE reconnects (treated as connection parameter change) |
+
+---
+
+## ADE Built-In MCP Tools
+
+ADE's own MCP server exposes the following native tools. These are always available to all agents and do not require any external server configuration.
+
+<Info>**📸 Screenshot needed:** The MCP tool browser in Settings → Integrations → External MCP, expanded to show ADE's built-in tool list with categories: File Operations, Git, Sessions, Lanes, Missions, Packs, Pull Requests. Each tool row shows the tool name and a one-line description.</Info>
+
+<AccordionGroup>
+  <Accordion title="File Operations" icon="folder-open">
+    | Tool | Description |
+    |------|-------------|
+    | `ade_read_file` | Read file contents from the current lane's worktree |
+    | `ade_write_file` | Write or overwrite a file in the current lane's worktree |
+    | `ade_list_files` | List files and directories with optional glob filtering |
+    | `ade_search_files` | Full-text search across the current lane's worktree |
+    | `ade_delete_file` | Delete a file (subject to permission policy) |
+  </Accordion>
+  <Accordion title="Git Operations" icon="code-branch">
+    | Tool | Description |
+    |------|-------------|
+    | `ade_git_status` | Get current git status for the lane's worktree |
+    | `ade_git_commit` | Stage and commit changes with a message |
+    | `ade_git_push` | Push the current branch to the remote |
+    | `ade_git_create_branch` | Create a new branch from HEAD or a given ref |
+    | `ade_git_merge_simulate` | Simulate merging into a target branch without applying |
+    | `ade_git_log` | Get recent commit history for the current branch |
+  </Accordion>
+  <Accordion title="Sessions and Context" icon="brain">
+    | Tool | Description |
+    |------|-------------|
+    | `ade_get_session_transcript` | Retrieve the full transcript of a session |
+    | `ade_get_lane_pack` | Get the current lane's context pack content |
+    | `ade_get_project_pack` | Get the project-level context pack |
+    | `ade_create_checkpoint` | Create a named checkpoint at the current state |
+    | `ade_get_history` | Retrieve session history with timestamps and deltas |
+  </Accordion>
+  <Accordion title="Lanes and Workers" icon="code-branch">
+    | Tool | Description |
+    |------|-------------|
+    | `ade_create_lane` | Create a new Worktree lane from a branch |
+    | `ade_archive_lane` | Archive a lane (preserves history) |
+    | `ade_get_lane_status` | Get status and health indicators for a lane |
+    | `ade_spawn_worker` | Spawn an ephemeral worker agent in a specified lane |
+  </Accordion>
+  <Accordion title="Missions" icon="bullseye">
+    | Tool | Description |
+    |------|-------------|
+    | `ade_start_mission` | Create and start a new mission |
+    | `ade_get_mission_status` | Get the current phase and status of a mission |
+    | `ade_update_mission_step` | Mark a mission step as complete or failed |
+    | `ade_request_intervention` | Surface an intervention request to the user |
+  </Accordion>
+  <Accordion title="Pull Requests" icon="code-pull-request">
+    | Tool | Description |
+    |------|-------------|
+    | `ade_create_pr` | Open a GitHub PR from the current lane's branch |
+    | `ade_get_pr_status` | Get PR status, CI checks, and review state |
+    | `ade_update_pr` | Update PR title, description, or labels |
+    | `ade_request_pr_review` | Request review from a specific GitHub user |
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Setting Up Common External Servers
+
+<Tabs>
+  <Tab title="GitHub MCP">
+    ```bash
+    # No installation needed — npx handles it
+    ```
+
+    ```yaml
+    # .ade/local.secret.yaml
+    externalMcp:
+      - name: "github"
+        transport: "stdio"
+        command: "npx"
+        args: ["-y", "@modelcontextprotocol/server-github"]
+        autoStart: true
+        env:
+          GITHUB_TOKEN: "ghp_..."
+        # Restrict to safe operations by default:
+        blockedTools: ["delete_repository", "delete_branch"]
+    ```
+
+    Tools exposed: `create_issue`, `list_pull_requests`, `create_pull_request`, `get_file_contents`, `search_repositories`, and more.
+  </Tab>
+  <Tab title="Filesystem MCP">
+    ```bash
+    # No installation needed — npx handles it
+    ```
+
+    ```yaml
+    # .ade/local.secret.yaml
+    externalMcp:
+      - name: "filesystem"
+        transport: "stdio"
+        command: "npx"
+        args:
+          - "-y"
+          - "@modelcontextprotocol/server-filesystem"
+          - "/Users/me/projects"        # Root path the server can access
+        autoStart: true
+        # Read-only: allow reads, block writes
+        allowedTools: ["read_file", "list_directory", "search_files", "get_file_info"]
+        blockedTools: ["write_file", "create_directory", "delete_file", "move_file"]
+    ```
+  </Tab>
+  <Tab title="Ghost OS">
+    ```yaml
+    # .ade/local.secret.yaml
+    externalMcp:
+      - name: "ghost-os"
+        transport: "http"
+        url: "https://ghost-os.local/mcp"
+        healthCheckInterval: "30s"
+        autoStart: true    # Set false if Ghost OS may not be running
+    ```
+
+    Ghost OS tools are namespaced as `ext.ghost-os.*` and include computer-use primitives: `take_screenshot`, `click`, `type_text`, `scroll`, `get_accessibility_tree`, and more.
+  </Tab>
+</Tabs>
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Server enters 'failed' state immediately" icon="circle-xmark">
+    For stdio servers: verify the `command` is installed and in PATH. Run the command manually in a terminal to see any startup errors. For `npx`-based servers, ensure you have Node.js installed.
+
+    For http servers: verify the URL is reachable from your machine (`curl <url>/health` is a quick test). Check that any required authentication headers are correctly specified.
+  </Accordion>
+  <Accordion title="Tool not found (ext.github.create_issue returns 'unknown tool')" icon="circle-question">
+    The tool name may have changed in a newer version of the MCP server package. Browse the server's current tool list by expanding the server row in Settings → Integrations → External MCP. The tool browser shows all currently-exposed tools with their exact names.
+
+    Also check `allowedTools` — if it is non-empty, only listed tools are exposed.
+  </Accordion>
+  <Accordion title="Permission denied on tool call" icon="lock">
+    ADE blocked the tool call at one of the four permission layers. Check: (1) Is the tool in the server's `blockedTools` list? (2) Does the agent's identity policy include this server in `externalMcpAccess`? (3) Does the mission's permission config allow this server? (4) Is the session in read-only planning mode?
+
+    The audit log at `.ade/artifacts/audit.log` records the exact permission layer that blocked the call.
+  </Accordion>
+  <Accordion title="Server keeps reconnecting" icon="rotate">
+    Frequent reconnects indicate an unstable connection. For http servers, check that `healthCheckInterval` is not too aggressive (try `"60s"` instead of `"10s"`). For stdio servers, check that the subprocess is not crashing due to memory limits or configuration errors. Set `MCP_DEBUG=1` in the server's `env` to get verbose subprocess logging in ADE's developer log.
+  </Accordion>
+  <Accordion title="Tools appear with wrong namespace" icon="tag">
+    The tool namespace is derived from the `name` field in `local.secret.yaml`. If you rename a server (e.g., from `"gh"` to `"github"`), the namespace changes from `ext.gh.*` to `ext.github.*`. Any agent prompts or automation templates that reference the old namespace will need to be updated.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## What's Next
+
+<CardGroup cols={2}>
+  <Card title="Computer Use" icon="display" href="/computer-use/overview">
+    Learn how Ghost OS and other computer-use backends connect to ADE via MCP.
+  </Card>
+  <Card title="Permissions" icon="shield-check" href="/configuration/permissions">
+    Understand the full permission model for agents, lanes, and external MCP tools.
+  </Card>
+  <Card title="Automations" icon="bolt" href="/automations/overview">
+    Set up event-driven automations that use external MCP tools in their tool palette.
+  </Card>
+  <Card title="Settings" icon="gear" href="/configuration/settings">
+    Manage integrations, view connection status, and browse tool lists in the Settings UI.
+  </Card>
+</CardGroup>

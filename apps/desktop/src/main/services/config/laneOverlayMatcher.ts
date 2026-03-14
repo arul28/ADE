@@ -1,0 +1,113 @@
+import type { LaneEnvInitConfig, LaneOverlayOverrides, LaneOverlayPolicy, LaneSummary } from "../../../shared/types";
+import { globToRegExp, normalizeSet } from "../shared/utils";
+
+function intersectOrAdopt(current: string[] | undefined, next: string[] | undefined): string[] | undefined {
+  if (!next || next.length === 0) return current;
+  if (!current || current.length === 0) return [...next];
+  const allowed = new Set(next);
+  return current.filter((entry) => allowed.has(entry));
+}
+
+function matchesPolicy(lane: LaneSummary, policy: LaneOverlayPolicy): boolean {
+  if (!policy.enabled) return false;
+  const match = policy.match ?? {};
+
+  if (match.laneIds && match.laneIds.length > 0 && !match.laneIds.includes(lane.id)) {
+    return false;
+  }
+  if (match.laneTypes && match.laneTypes.length > 0 && !match.laneTypes.includes(lane.laneType)) {
+    return false;
+  }
+  if (match.namePattern) {
+    const pattern = globToRegExp(match.namePattern);
+    if (!pattern.test(lane.name)) return false;
+  }
+  if (match.branchPattern) {
+    const pattern = globToRegExp(match.branchPattern);
+    if (!pattern.test(lane.branchRef)) return false;
+  }
+  if (match.tags && match.tags.length > 0) {
+    const laneTags = normalizeSet(lane.tags);
+    const required = normalizeSet(match.tags);
+    const hasOverlap = [...required].some((tag) => laneTags.has(tag));
+    if (!hasOverlap) return false;
+  }
+
+  return true;
+}
+
+function normalizeEnvInit(config: LaneEnvInitConfig): LaneEnvInitConfig {
+  return {
+    ...(config.envFiles?.length ? { envFiles: config.envFiles } : {}),
+    ...(config.docker ? { docker: config.docker } : {}),
+    ...(config.dependencies?.length ? { dependencies: config.dependencies } : {}),
+    ...(config.mountPoints?.length ? { mountPoints: config.mountPoints } : {})
+  };
+}
+
+function cloneDockerConfig(config: NonNullable<LaneEnvInitConfig["docker"]>): LaneEnvInitConfig["docker"] {
+  return config.services
+    ? { ...config, services: [...config.services] }
+    : { ...config };
+}
+
+function mergeDockerConfig(
+  current: LaneEnvInitConfig["docker"] | undefined,
+  next: LaneEnvInitConfig["docker"] | undefined
+): LaneEnvInitConfig["docker"] | undefined {
+  if (!current && !next) return undefined;
+  if (!current) return next ? cloneDockerConfig(next) : undefined;
+  if (!next) return cloneDockerConfig(current);
+  const services = next.services ?? current.services;
+  return {
+    ...current,
+    ...next,
+    ...(services ? { services: [...services] } : {})
+  };
+}
+
+function mergeEnvInit(current: LaneEnvInitConfig | undefined, next: LaneEnvInitConfig): LaneEnvInitConfig {
+  if (!current) return normalizeEnvInit(next);
+  const docker = mergeDockerConfig(current.docker, next.docker);
+  return normalizeEnvInit({
+    envFiles: [...(current.envFiles ?? []), ...(next.envFiles ?? [])],
+    ...(docker ? { docker } : {}),
+    dependencies: [...(current.dependencies ?? []), ...(next.dependencies ?? [])],
+    mountPoints: [...(current.mountPoints ?? []), ...(next.mountPoints ?? [])]
+  });
+}
+
+export function matchLaneOverlayPolicies(lane: LaneSummary, policies: LaneOverlayPolicy[]): LaneOverlayOverrides {
+  const merged: LaneOverlayOverrides = {};
+
+  for (const policy of policies) {
+    if (!matchesPolicy(lane, policy)) continue;
+    const overrides = policy.overrides ?? {};
+    if (overrides.env) {
+      merged.env = {
+        ...(merged.env ?? {}),
+        ...overrides.env
+      };
+    }
+    const cwdTrimmed = typeof overrides.cwd === "string" ? overrides.cwd.trim() : "";
+    if (cwdTrimmed) merged.cwd = cwdTrimmed;
+    merged.processIds = intersectOrAdopt(merged.processIds, overrides.processIds);
+    merged.testSuiteIds = intersectOrAdopt(merged.testSuiteIds, overrides.testSuiteIds);
+    if (overrides.portRange) merged.portRange = { ...overrides.portRange };
+    const hostnameTrimmed = typeof overrides.proxyHostname === "string" ? overrides.proxyHostname.trim() : "";
+    if (hostnameTrimmed) merged.proxyHostname = hostnameTrimmed;
+    if (overrides.computeBackend) merged.computeBackend = overrides.computeBackend;
+    if (overrides.envInit) {
+      merged.envInit = mergeEnvInit(merged.envInit, overrides.envInit);
+    }
+  }
+
+  if (merged.processIds && merged.processIds.length === 0) {
+    delete merged.processIds;
+  }
+  if (merged.testSuiteIds && merged.testSuiteIds.length === 0) {
+    delete merged.testSuiteIds;
+  }
+
+  return merged;
+}

@@ -1,0 +1,148 @@
+---
+title: "Context & Artifacts"
+description: "Managing context windows, compaction strategies, MCP tool visibility, working with artifacts, chat history, and troubleshooting common issues."
+icon: "database"
+---
+
+## Managing Context
+
+<Info>**📸 Screenshot needed:** Context meter in the chat header — show it at ~65% capacity with the "Compact now" suggestion tooltip visible.</Info>
+
+Every chat session has a **context window** — the amount of conversation history and injected context the model can hold at once. ADE shows the context fill level as a meter in the chat header.
+
+<Tabs>
+  <Tab title="Automatic compaction">
+    When the context meter reaches **70%**, ADE suggests compaction. If auto-compaction is enabled (configured in **Settings → Chat → Auto-compact threshold**), ADE compacts automatically without prompting.
+
+    Compaction summarizes older messages while preserving:
+    - Key decisions made in the session
+    - File paths and code blocks from recent turns
+    - Current task state and open questions
+    - Tool call results from the last few turns
+  </Tab>
+  <Tab title="Manual compaction">
+    Click the context meter in the header and select **Compact now** to trigger compaction immediately. A compact summary is injected as a synthetic message before the conversation continues.
+  </Tab>
+  <Tab title="Starting a fresh session">
+    If you prefer a clean context window, click **New session** in the chat header. The new session will receive a fresh context injection from the lane pack but will not carry over the previous conversation. The old session is saved in History.
+  </Tab>
+</Tabs>
+
+<Warning>
+  Compaction is lossy by design — exact wording of older messages is not preserved. If there is something in the conversation you want the agent to remember verbatim (e.g., a specific constraint), call it out explicitly before compacting: "Remember: the API must remain backwards compatible with v1 clients."
+</Warning>
+
+---
+
+## MCP Tool Visibility and Control
+
+The chat header shows a badge indicating how many MCP tools are active for the current session. Click it to open the **MCP tool panel**:
+
+- View all configured MCP servers and their available tools
+- Toggle individual tool groups on or off for this session
+- See which tools have been called in the current session and their call counts
+
+Disabling a tool group mid-session takes effect immediately — the agent will not invoke those tools in subsequent turns, though any in-flight tool calls complete normally.
+
+<Note>
+  MCP tool changes are session-scoped. They do not affect the lane's default configuration. To change defaults, go to **Settings → MCP Servers**.
+</Note>
+
+---
+
+## Working with Artifacts
+
+At the end of a session (or mid-session when the agent produces notable outputs), artifacts are surfaced for your review.
+
+### Artifact types produced in chat
+
+| Artifact | When it appears |
+|---|---|
+| File changes | After any file write tool call |
+| Screenshots | After any computer-use visual capture |
+| Browser traces | After browser automation sequences |
+| PR links | After a PR is created |
+| Test reports | After test runner tool calls |
+| Notes | When the agent explicitly attaches a note |
+
+### What you can do with artifacts
+
+<Steps>
+  <Step title="Keep — attach to lane pack">
+    Promotes the artifact into the lane's persistent context. Future chat sessions and missions will have access to it via context injection.
+  </Step>
+  <Step title="Attach to Mission / PR / Linear issue">
+    Links the artifact to an existing Mission, opens it for attachment to a PR description, or creates a Linear issue attachment.
+  </Step>
+  <Step title="Download">
+    Saves the artifact to your local filesystem (useful for screenshots and browser traces).
+  </Step>
+  <Step title="Dismiss">
+    Removes the artifact from the session's artifact list. It remains accessible in the session's History entry but is not promoted.
+  </Step>
+</Steps>
+
+---
+
+## Chat History and Sessions
+
+Every chat session is stored with its full transcript, tool call log, timing data, and attached artifacts.
+
+Access sessions from the **History tab** within a Lane view. Each entry shows:
+- Session start time and duration
+- Message count and token total
+- Model used
+- Number of tool calls
+- Artifacts produced
+
+Click any session to open its transcript in read-only view. Click **Resume** to open a new chat session seeded with the previous session's summary.
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="The agent is not seeing my recent file changes">
+    The agent's file access is always live — it reads from the filesystem at the time of the tool call. If your changes are not reflected, check:
+
+    1. Are the changes saved? The agent reads saved files, not editor buffers.
+    2. Is the agent working in the correct lane? Confirm the lane selector in the chat header.
+    3. Ask the agent explicitly: "Re-read `src/foo.ts` and tell me what you see."
+  </Accordion>
+  <Accordion title="Context meter is full and compaction isn't helping">
+    If the session context is very large (deeply nested tool call results, very long files), compaction may not free enough space. Options:
+
+    - Start a **new session** — previous context is preserved in History
+    - Ask the agent to summarize key decisions and start fresh with that summary
+    - Switch to a model with a larger context window in the model selector
+  </Accordion>
+  <Accordion title="Computer use panel is not appearing">
+    The computer-use monitoring panel only appears when a computer-use tool is actively being invoked. If the panel is not showing:
+
+    - Confirm the session's computer-use policy is not `CU Off`
+    - Check **Settings → Computer Use** to confirm a backend (Ghost OS, agent-browser) is connected
+    - Verify the agent's task actually requires visual interaction — the agent will not invoke computer use for purely code-based tasks even in `CU On` mode unless a visual task is present
+  </Accordion>
+  <Accordion title="MCP tool calls are failing">
+    If an external MCP tool call fails consistently:
+
+    1. Open the MCP tool panel from the chat header and check the server's status indicator.
+    2. Go to **Settings → MCP Servers** and click **Test connection** for the failing server.
+    3. Check the server's logs — ADE surfaces MCP server stderr in the settings panel.
+    4. Disable the failing tool group for the session to unblock the agent while you investigate.
+  </Accordion>
+  <Accordion title="The agent created a PR on the wrong branch">
+    PR creation uses the lane's current branch. If the agent created a PR on the wrong branch:
+
+    1. Close or update the PR in GitHub directly.
+    2. In the chat, tell the agent: "You created the PR on the wrong branch. The correct branch is `feature/xyz`. Please update or re-create the PR."
+    3. To prevent this in future sessions, use an explicit branch name when asking for a PR: "create a PR from `feature/xyz` to `main`."
+  </Accordion>
+  <Accordion title="The agent keeps calling the same tool in a loop">
+    This usually indicates the agent is not seeing the tool's output correctly, or the task goal is ambiguous. Try:
+
+    1. Press **Escape** to interrupt the current turn.
+    2. Clarify the goal: "Stop. The issue is X. I need you to Y instead."
+    3. If the loop continues after clarification, start a new session with a more explicit initial prompt.
+  </Accordion>
+</AccordionGroup>

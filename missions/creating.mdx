@@ -1,0 +1,101 @@
+---
+title: "Creating Missions"
+description: "How to create a new Mission from the Missions tab, a Lane, the CTO chat, or an existing chat session — plus a tour of the Mission Detail View."
+icon: "plus"
+---
+
+## Creating a Mission
+
+<Info>**📸 Screenshot needed:** "New Mission" dialog — show the full creation form with fields for title, description, lane selector, model picker, tool permissions grid, and budget cap input.</Info>
+
+<Tabs>
+  <Tab title="From the Missions tab">
+    <Steps>
+      <Step title="Open Missions">
+        Click **Missions** in the left sidebar. You'll see your mission history list.
+      </Step>
+      <Step title="Click New Mission">
+        Press the **+ New Mission** button in the top-right corner of the Missions page.
+      </Step>
+      <Step title="Fill the creation form">
+        Complete the mission creation dialog:
+
+        - **Title** — short, descriptive name (shown in the mission list and history)
+        - **Description** — detailed prompt describing the goal; this is what the orchestrator receives
+        - **Lane(s)** — one or more lanes to scope the mission to; workers run in these lanes' worktrees
+        - **AI Model** — the model to use for the orchestrator and workers
+        - **Tool permissions** — which ADE tools workers can invoke; defaults to the lane's tool palette
+        - **Budget cap** — optional token or USD ceiling; mission pauses if the limit is approached
+      </Step>
+      <Step title="Review preflight checks">
+        Before the mission starts, ADE runs preflight checks: verifies the selected lanes are available, confirms the configured model is reachable, validates the permission config, and warns if any required computer-use capabilities are unavailable.
+      </Step>
+      <Step title="Launch">
+        Click **Start Mission**. The mission enters the Planning phase immediately.
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="From a Lane">
+    Open a Lane, then click **Start Mission** in the lane toolbar. The creation dialog opens pre-filled with that lane's context and tool palette.
+  </Tab>
+  <Tab title="From the CTO chat">
+    In the CTO chat panel, describe your goal and say "start a mission for this." The CTO agent creates and configures the mission, pre-filling the description from the conversation context. You'll see the preflight dialog before planning begins.
+  </Tab>
+  <Tab title="From an existing chat">
+    In any Agent Chat session, say "start a mission for this task." ADE transitions the current context into a new Mission, carrying over the conversation history as seeding context for the planner.
+  </Tab>
+</Tabs>
+
+---
+
+## The Mission Detail View
+
+Once a mission is running (or completed), click it in the mission list to open the detail view. The detail view has four tabs:
+
+<Info>**📸 Screenshot needed:** Mission detail view with the Plan tab open — show worker cards with status dots, token counters, the execution strategy badge, and the live activity feed at the bottom.</Info>
+
+<Tabs>
+  <Tab title="Plan tab">
+    The Plan tab is the mission's live control room. It shows:
+
+    - **Execution strategy badge** — which strategy the meta-reasoner selected
+    - **Worker cards** — one card per spawned worker, each with: assigned lane, current status (running / completed / failed / blocked), elapsed time, and running token count
+    - **Phase status bar** — visual progress through Planning → Execution → Validation
+    - **Live activity feed** — a chronological stream of meaningful events: worker starts, key decisions, tool calls, phase transitions, and intervention triggers
+    - **Open interventions** — any pending approval requests or questions that need your response
+
+    Workers that have `intervention_required` status will highlight in amber. Click the intervention card to respond.
+  </Tab>
+  <Tab title="Chat tab">
+    Chat directly with the mission's orchestrator while it runs. Use this to:
+
+    - Ask the orchestrator why it made a planning decision
+    - Provide additional context mid-mission ("the API endpoint changed to v2")
+    - Redirect a worker that is going off-track
+    - Request a status summary without digging through the activity feed
+
+    Chat signals from worker streams are filtered by ADE's **noise detector**, which suppresses repetitive status updates. Only meaningful signals — decisions, blockers, completions — surface to the mission chat.
+  </Tab>
+  <Tab title="Artifacts tab">
+    All outputs produced during the mission are collected here:
+
+    | Artifact type | Description |
+    |---|---|
+    | `patch` | Code changes (diffs) committed by workers |
+    | `pr` | Pull requests created during execution |
+    | `test_report` | Test run output from the validation phase |
+    | `screenshot` | UI screenshots taken by workers via computer use |
+    | `browser_verification` | Browser-based proof artifacts from computer-use steps |
+    | `browser_trace` | Full browser action traces |
+    | `plan` | The generated execution plan (snapshot at approval gate) |
+    | `summary` | Orchestrator-generated mission summary |
+    | `note` | Inline notes attached by the orchestrator or by you |
+
+    You can promote any artifact to a Lane pack, attach it to a PR, or link it to a Linear issue.
+  </Tab>
+  <Tab title="History tab">
+    A full, immutable timeline of everything that happened inside the mission — every planning step, tool call, model decision, worker message, and phase boundary. The History tab is the source of truth for auditing and debugging.
+
+    Events are timestamped and categorized. You can filter by worker, by event type, or by phase.
+  </Tab>
+</Tabs>

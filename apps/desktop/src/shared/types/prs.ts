@@ -1,0 +1,1053 @@
+// ---------------------------------------------------------------------------
+// PR types
+// ---------------------------------------------------------------------------
+
+import type {
+  ConflictFileType,
+  ConflictResolverOriginSurface,
+  ConflictResolverPermissionMode,
+  ConflictRiskLevel,
+  ExternalConflictResolverProvider,
+} from "./conflicts";
+import type { GitHubRepoRef } from "./git";
+
+export type PrState = "draft" | "open" | "merged" | "closed";
+export type PrChecksStatus = "pending" | "passing" | "failing" | "none";
+export type PrReviewStatus = "none" | "requested" | "approved" | "changes_requested";
+export type MergeMethod = "merge" | "squash" | "rebase";
+export type PrNotificationKind = "checks_failing" | "review_requested" | "changes_requested" | "merge_ready";
+
+export type PrSummary = {
+  id: string;
+  laneId: string;
+  projectId: string;
+  repoOwner: string;
+  repoName: string;
+  githubPrNumber: number;
+  githubUrl: string;
+  githubNodeId: string | null;
+  title: string;
+  state: PrState;
+  baseBranch: string;
+  headBranch: string;
+  checksStatus: PrChecksStatus;
+  reviewStatus: PrReviewStatus;
+  additions: number;
+  deletions: number;
+  lastSyncedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PrStatus = {
+  prId: string;
+  state: PrState;
+  checksStatus: PrChecksStatus;
+  reviewStatus: PrReviewStatus;
+  isMergeable: boolean;
+  mergeConflicts: boolean;
+  behindBaseBy: number;
+};
+
+export type PrCheck = {
+  name: string;
+  status: "queued" | "in_progress" | "completed";
+  conclusion: "success" | "failure" | "neutral" | "skipped" | "cancelled" | null;
+  detailsUrl: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+};
+
+export type PrReview = {
+  reviewer: string;
+  state: "pending" | "approved" | "changes_requested" | "commented" | "dismissed";
+  body: string | null;
+  submittedAt: string | null;
+};
+
+export type PrComment = {
+  id: string;
+  author: string;
+  body: string | null;
+  source: "issue" | "review";
+  url: string | null;
+  path: string | null;
+  line: number | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+export type GitHubPrListItem = {
+  id: string;
+  scope: "repo" | "external";
+  repoOwner: string;
+  repoName: string;
+  githubPrNumber: number;
+  githubUrl: string;
+  title: string;
+  state: PrState;
+  isDraft: boolean;
+  baseBranch: string | null;
+  headBranch: string | null;
+  author: string | null;
+  createdAt: string;
+  updatedAt: string;
+  linkedPrId: string | null;
+  linkedGroupId: string | null;
+  linkedLaneId: string | null;
+  linkedLaneName: string | null;
+  adeKind: "single" | "queue" | "integration" | null;
+  workflowDisplayState: IntegrationWorkflowDisplayState | null;
+  cleanupState: IntegrationCleanupState | null;
+};
+
+export type GitHubPrSnapshot = {
+  repo: GitHubRepoRef | null;
+  viewerLogin: string | null;
+  repoPullRequests: GitHubPrListItem[];
+  externalPullRequests: GitHubPrListItem[];
+  syncedAt: string;
+};
+
+export type PrEventPayload =
+  | {
+      type: "prs-updated";
+      polledAt: string;
+      prs: PrSummary[];
+    }
+  | {
+      type: "pr-notification";
+      polledAt: string;
+      kind: PrNotificationKind;
+      laneId: string;
+      prId: string;
+      prNumber: number;
+      title: string;
+      githubUrl: string;
+      message: string;
+      state: PrState;
+      checksStatus: PrChecksStatus;
+      reviewStatus: PrReviewStatus;
+    }
+  | {
+      type: "queue-step";
+      groupId: string;
+      prId: string;
+      entryState: QueueEntryState;
+      position: number;
+      timestamp: string;
+    }
+  | {
+      type: "queue-state";
+      groupId: string;
+      state: QueueState;
+      currentPosition: number;
+      timestamp: string;
+    }
+  | {
+      type: "queue-rehearsal-step";
+      groupId: string;
+      rehearsalId: string;
+      prId: string;
+      entryState: QueueRehearsalEntryState;
+      position: number;
+      timestamp: string;
+    }
+  | {
+      type: "queue-rehearsal-state";
+      groupId: string;
+      rehearsalId: string;
+      state: QueueRehearsalStateStatus;
+      currentPosition: number;
+      timestamp: string;
+    }
+  | {
+      type: "integration-step";
+      groupId: string;
+      laneId: string;
+      outcome: IntegrationProposalStep["outcome"];
+      position: number;
+      timestamp: string;
+    }
+  | {
+      type: "integration-state";
+      groupId: string;
+      flowState: IntegrationFlowState;
+      timestamp: string;
+    }
+  | {
+      type: "rebase-status";
+      laneId: string;
+      behindBy: number;
+      conflictPredicted: boolean;
+      timestamp: string;
+    }
+  | {
+      type: "resolution-progress";
+      laneId: string;
+      provider: "codex" | "claude";
+      confidence: number;
+      filesResolved: number;
+      filesTotal: number;
+      timestamp: string;
+    }
+  | {
+      type: "proposal-stale";
+      proposalId: string;
+      reason: string;
+      timestamp: string;
+    };
+
+export type LandResult = {
+  prId: string;
+  prNumber: number;
+  success: boolean;
+  mergeCommitSha: string | null;
+  branchDeleted: boolean;
+  laneArchived: boolean;
+  error: string | null;
+};
+
+export type CreatePrFromLaneArgs = {
+  laneId: string;
+  title: string;
+  body: string;
+  draft: boolean;
+  baseBranch?: string;
+  labels?: string[];
+  reviewers?: string[];
+  allowDirtyWorktree?: boolean;
+};
+
+export type LinkPrToLaneArgs = {
+  laneId: string;
+  prUrlOrNumber: string;
+};
+
+export type DraftPrDescriptionArgs = {
+  laneId: string;
+  model?: string;
+  reasoningEffort?: string | null;
+};
+
+export type UpdatePrDescriptionArgs = {
+  prId: string;
+  body: string;
+};
+
+export type LandPrArgs = {
+  prId: string;
+  method: MergeMethod;
+  archiveLane?: boolean;
+};
+
+export type DeletePrArgs = {
+  prId: string;
+  closeOnGitHub?: boolean;
+  archiveLane?: boolean;
+};
+
+export type DeletePrResult = {
+  prId: string;
+  laneId: string;
+  removedLocal: boolean;
+  githubClosed: boolean;
+  githubCloseError: string | null;
+  laneArchived: boolean;
+  laneArchiveError: string | null;
+};
+
+export type LandStackArgs = {
+  rootLaneId: string;
+  method: MergeMethod;
+};
+
+// --------------------------------
+// PR Tab Enhancement (Phase 8+)
+// --------------------------------
+
+export type PrGroupType = "queue" | "integration";
+export type PrGroupMemberRole = "source" | "integration" | "target";
+
+export type PrGroup = {
+  id: string;
+  projectId: string;
+  groupType: PrGroupType;
+  createdAt: string;
+};
+
+export type PrGroupMember = {
+  groupId: string;
+  prId: string;
+  laneId: string;
+  position: number;
+  role: PrGroupMemberRole;
+};
+
+export type PrGroupContextMember = {
+  prId: string;
+  laneId: string;
+  laneName: string;
+  prNumber: number | null;
+  position: number;
+  role: PrGroupMemberRole;
+};
+
+export type PrMergeContext = {
+  prId: string;
+  groupId: string | null;
+  groupType: PrGroupType | null;
+  sourceLaneIds: string[];
+  targetLaneId: string | null;
+  integrationLaneId: string | null;
+  members: PrGroupContextMember[];
+};
+
+export type CreateQueuePrsArgs = {
+  laneIds: string[];
+  targetBranch: string;
+  titles?: Record<string, string>;
+  draft?: boolean;
+  autoRebase?: boolean;
+  ciGating?: boolean;
+  queueName?: string;
+  allowDirtyWorktree?: boolean;
+};
+
+export type CreateQueuePrsResult = {
+  groupId: string;
+  prs: PrSummary[];
+  errors: Array<{ laneId: string; error: string }>;
+};
+
+export type CreateIntegrationPrArgs = {
+  sourceLaneIds: string[];
+  integrationLaneName: string;
+  baseBranch: string;
+  title: string;
+  body?: string;
+  draft?: boolean;
+  allowDirtyWorktree?: boolean;
+};
+
+export type CreateIntegrationPrResult = {
+  groupId: string;
+  integrationLaneId: string;
+  pr: PrSummary;
+  mergeResults: Array<{ laneId: string; success: boolean; error?: string }>;
+};
+
+export type LandStackEnhancedArgs = {
+  rootLaneId: string;
+  method: MergeMethod;
+  mode: "sequential" | "all-at-once";
+};
+
+// --------------------------------
+// Integration Proposal Types
+// --------------------------------
+
+export type IntegrationProposalStep = {
+  laneId: string;
+  laneName: string;
+  position: number;
+  outcome: "clean" | "conflict" | "blocked" | "pending";
+  conflictingFiles: Array<{
+    path: string;
+    conflictType?: ConflictFileType | null;
+    conflictMarkers: string;
+    oursExcerpt: string | null;
+    theirsExcerpt: string | null;
+    diffHunk: string | null;
+  }>;
+  diffStat: { insertions: number; deletions: number; filesChanged: number };
+};
+
+export type IntegrationPairwiseResult = {
+  laneAId: string;
+  laneAName: string;
+  laneBId: string;
+  laneBName: string;
+  outcome: "clean" | "conflict";
+  conflictingFiles: Array<{
+    path: string;
+    conflictType?: ConflictFileType | null;
+    conflictMarkers: string;
+    oursExcerpt: string | null;
+    theirsExcerpt: string | null;
+    diffHunk: string | null;
+  }>;
+};
+
+export type IntegrationLaneSummary = {
+  laneId: string;
+  laneName: string;
+  outcome: "clean" | "conflict" | "blocked";
+  commitHash: string;
+  commitCount: number;
+  conflictsWith: string[];
+  diffStat: { insertions: number; deletions: number; filesChanged: number };
+};
+
+export type IntegrationWorkflowDisplayState = "active" | "history";
+export type IntegrationCleanupState = "none" | "required" | "declined" | "completed";
+
+export type IntegrationProposal = {
+  proposalId: string;
+  sourceLaneIds: string[];
+  baseBranch: string;
+  pairwiseResults: IntegrationPairwiseResult[];
+  laneSummaries: IntegrationLaneSummary[];
+  // Kept for backward compatibility with existing consumers.
+  steps: IntegrationProposalStep[];
+  overallOutcome: "clean" | "conflict" | "blocked";
+  createdAt: string;
+  title?: string;
+  body?: string;
+  draft?: boolean;
+  integrationLaneName?: string;
+  status: "proposed" | "committed";
+  integrationLaneId?: string | null;
+  linkedGroupId?: string | null;
+  linkedPrId?: string | null;
+  workflowDisplayState?: IntegrationWorkflowDisplayState;
+  cleanupState?: IntegrationCleanupState;
+  closedAt?: string | null;
+  mergedAt?: string | null;
+  completedAt?: string | null;
+  cleanupDeclinedAt?: string | null;
+  cleanupCompletedAt?: string | null;
+  resolutionState?: IntegrationResolutionState | null;
+};
+
+export type IntegrationLaneSnapshot = {
+  headSha: string | null;
+  dirty: boolean;
+};
+
+export type IntegrationLaneChangeStatus = "unchanged" | "changed" | "unknown" | "missing";
+
+export type UpdateIntegrationProposalArgs = {
+  proposalId: string;
+  title?: string;
+  body?: string;
+  draft?: boolean;
+  integrationLaneName?: string;
+};
+
+export type ListIntegrationWorkflowsArgs = {
+  view?: IntegrationWorkflowDisplayState | "all";
+};
+
+export type SimulateIntegrationArgs = {
+  sourceLaneIds: string[];
+  baseBranch: string;
+  persist?: boolean;
+};
+
+export type CommitIntegrationArgs = {
+  proposalId: string;
+  integrationLaneName: string;
+  title: string;
+  body?: string;
+  draft?: boolean;
+  pauseOnConflict?: boolean;
+  allowDirtyWorktree?: boolean;
+};
+
+export type IntegrationStepResolution = "pending" | "merged-clean" | "resolving" | "resolved" | "failed";
+
+export type IntegrationResolutionState = {
+  integrationLaneId: string;
+  stepResolutions: Record<string, IntegrationStepResolution>; // keyed by laneId
+  activeWorkerStepId: string | null;
+  activeLaneId: string | null;
+  createdSnapshot?: IntegrationLaneSnapshot | null;
+  currentSnapshot?: IntegrationLaneSnapshot | null;
+  laneChangeStatus?: IntegrationLaneChangeStatus;
+  updatedAt: string;
+};
+
+export type DeleteIntegrationProposalArgs = {
+  proposalId: string;
+  deleteIntegrationLane?: boolean;
+};
+
+export type DeleteIntegrationProposalResult = {
+  proposalId: string;
+  integrationLaneId: string | null;
+  deletedIntegrationLane: boolean;
+};
+
+export type DismissIntegrationCleanupArgs = {
+  proposalId: string;
+};
+
+export type CleanupIntegrationWorkflowArgs = {
+  proposalId: string;
+  archiveIntegrationLane?: boolean;
+  archiveSourceLaneIds?: string[];
+};
+
+export type CleanupIntegrationWorkflowResult = {
+  proposalId: string;
+  archivedLaneIds: string[];
+  skippedLaneIds: string[];
+  workflowDisplayState: IntegrationWorkflowDisplayState;
+  cleanupState: IntegrationCleanupState;
+};
+
+export type CreateIntegrationLaneForProposalArgs = {
+  proposalId: string;
+};
+
+export type CreateIntegrationLaneForProposalResult = {
+  integrationLaneId: string;
+  mergedCleanLanes: string[];
+  conflictingLanes: string[];
+};
+
+export type StartIntegrationResolutionArgs = {
+  proposalId: string;
+  laneId: string; // the conflicting source lane to resolve
+};
+
+export type StartIntegrationResolutionResult = {
+  conflictFiles: string[];
+  mergedClean: boolean;
+  integrationLaneId: string;
+};
+
+export type AiPermissionMode = "read_only" | "guarded_edit" | "full_edit";
+
+export type PrAiResolutionContext = {
+  sourceTab: "rebase" | "normal" | "integration" | "queue" | "conflicts";
+  sourceLaneId?: string | null;
+  sourceLaneIds?: string[];
+  targetLaneId?: string | null;
+  proposalId?: string | null;
+  integrationLaneId?: string | null;
+  laneId?: string | null;
+  scenario?: "single-merge" | "sequential-merge" | "integration-merge";
+};
+
+export type PrAiResolutionSessionStatus = "idle" | "running" | "completed" | "failed" | "cancelled";
+
+export type PrAiResolutionSessionInfo = {
+  contextKey: string;
+  sessionId: string;
+  provider: "codex" | "claude";
+  model: string | null;
+  modelId: string | null;
+  reasoning: string | null;
+  permissionMode: AiPermissionMode | null;
+  context: PrAiResolutionContext;
+  status: PrAiResolutionSessionStatus;
+};
+
+export type PrAiResolutionStartArgs = {
+  context: PrAiResolutionContext;
+  model: string;
+  reasoning?: string | null;
+  permissionMode?: AiPermissionMode;
+};
+
+export type PrAiResolutionStartResult = {
+  sessionId: string;
+  provider: "codex" | "claude";
+  ptyId: string | null;
+  status: "started" | "failed";
+  error: string | null;
+  context: PrAiResolutionContext;
+};
+
+export type PrAiResolutionInputArgs = {
+  sessionId: string;
+  text: string;
+};
+
+export type PrAiResolutionStopArgs = {
+  sessionId: string;
+};
+
+export type PrAiResolutionEventPayload = {
+  sessionId: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  message: string | null;
+  timestamp: string;
+};
+
+export type PrAiResolutionGetSessionArgs = {
+  context: PrAiResolutionContext;
+};
+
+export type PrAiResolutionGetSessionResult = PrAiResolutionSessionInfo | null;
+
+export function normalizePrAiResolutionContext(context: PrAiResolutionContext): PrAiResolutionContext {
+  const sourceLaneIds = Array.from(
+    new Set(
+      (context.sourceLaneIds ?? [])
+        .map((value) => value.trim())
+        .filter(Boolean)
+    ),
+  ).sort((a, b) => a.localeCompare(b));
+  const sourceLaneId = context.sourceLaneId?.trim() || null;
+  if (sourceLaneId && !sourceLaneIds.includes(sourceLaneId)) {
+    sourceLaneIds.push(sourceLaneId);
+  }
+  sourceLaneIds.sort((a, b) => a.localeCompare(b));
+  return {
+    sourceTab: context.sourceTab,
+    ...(sourceLaneId ? { sourceLaneId } : {}),
+    ...(sourceLaneIds.length ? { sourceLaneIds } : {}),
+    ...(context.targetLaneId?.trim() ? { targetLaneId: context.targetLaneId.trim() } : {}),
+    ...(context.proposalId?.trim() ? { proposalId: context.proposalId.trim() } : {}),
+    ...(context.integrationLaneId?.trim() ? { integrationLaneId: context.integrationLaneId.trim() } : {}),
+    ...(context.laneId?.trim() ? { laneId: context.laneId.trim() } : {}),
+    ...(context.scenario ? { scenario: context.scenario } : {}),
+  };
+}
+
+export function buildPrAiResolutionContextKey(context: PrAiResolutionContext): string {
+  const normalized = normalizePrAiResolutionContext(context);
+  return JSON.stringify({
+    sourceTab: normalized.sourceTab,
+    sourceLaneId: normalized.sourceLaneId ?? null,
+    sourceLaneIds: normalized.sourceLaneIds ?? [],
+    targetLaneId: normalized.targetLaneId ?? null,
+    proposalId: normalized.proposalId ?? null,
+    integrationLaneId: normalized.integrationLaneId ?? null,
+    laneId: normalized.laneId ?? null,
+    scenario: normalized.scenario ?? null,
+  });
+}
+
+export type RecheckIntegrationStepArgs = {
+  proposalId: string;
+  laneId: string;
+};
+
+export type RecheckIntegrationStepResult = {
+  resolution: IntegrationStepResolution;
+  remainingConflictFiles: string[];
+  allResolved: boolean;
+  message: string | null;
+};
+
+// --------------------------------
+// Rebase Types (shared with conflicts)
+// --------------------------------
+
+export type RebaseNeed = {
+  laneId: string;
+  laneName: string;
+  baseBranch: string;
+  behindBy: number;
+  conflictPredicted: boolean;
+  conflictingFiles: string[];
+  prId: string | null;
+  groupContext: string | null;
+  dismissedAt: string | null;
+  deferredUntil: string | null;
+};
+
+// --------------------------------
+// Queue / Integration State Types
+// --------------------------------
+
+export type QueueEntryState = "pending" | "landing" | "rebasing" | "resolving" | "landed" | "failed" | "paused" | "skipped";
+export type QueueState = "idle" | "landing" | "paused" | "completed" | "cancelled";
+export type IntegrationFlowState = "proposal" | "creating" | "merging" | "conflict" | "resolving" | "completed" | "failed";
+export type QueueWaitReason =
+  | "ci"
+  | "review"
+  | "merge_conflict"
+  | "resolver_failed"
+  | "merge_blocked"
+  | "manual"
+  | "canceled";
+
+export type QueueRehearsalEntryState =
+  | "pending"
+  | "rehearsing"
+  | "resolving"
+  | "ready"
+  | "resolved"
+  | "failed"
+  | "blocked"
+  | "cancelled";
+
+export type QueueRehearsalStateStatus = "running" | "paused" | "completed" | "failed" | "cancelled";
+
+export type QueueRehearsalWaitReason =
+  | "manual"
+  | "resolver_failed"
+  | "capability_gap"
+  | "canceled";
+
+export type QueueAutomationConfig = {
+  method: MergeMethod;
+  archiveLane: boolean;
+  autoResolve: boolean;
+  ciGating: boolean;
+  resolverProvider: ExternalConflictResolverProvider | null;
+  resolverModel: string | null;
+  reasoningEffort: string | null;
+  permissionMode: ConflictResolverPermissionMode | null;
+  confidenceThreshold: number | null;
+  originSurface: ConflictResolverOriginSurface;
+  originMissionId: string | null;
+  originRunId: string | null;
+  originLabel: string | null;
+};
+
+export type QueueRehearsalConfig = {
+  method: MergeMethod;
+  autoResolve: boolean;
+  resolverProvider: ExternalConflictResolverProvider | null;
+  resolverModel: string | null;
+  reasoningEffort: string | null;
+  permissionMode: ConflictResolverPermissionMode | null;
+  preserveScratchLane: boolean;
+  originSurface: ConflictResolverOriginSurface;
+  originMissionId: string | null;
+  originRunId: string | null;
+  originLabel: string | null;
+};
+
+export type StartQueueAutomationArgs = {
+  groupId: string;
+  method: MergeMethod;
+  archiveLane?: boolean;
+  autoResolve?: boolean;
+  ciGating?: boolean;
+  resolverProvider?: ExternalConflictResolverProvider | null;
+  resolverModel?: string | null;
+  reasoningEffort?: string | null;
+  permissionMode?: ConflictResolverPermissionMode | null;
+  confidenceThreshold?: number | null;
+  originSurface?: ConflictResolverOriginSurface;
+  originMissionId?: string | null;
+  originRunId?: string | null;
+  originLabel?: string | null;
+};
+
+export type StartQueueRehearsalArgs = {
+  groupId: string;
+  method: MergeMethod;
+  autoResolve?: boolean;
+  resolverProvider?: ExternalConflictResolverProvider | null;
+  resolverModel?: string | null;
+  reasoningEffort?: string | null;
+  permissionMode?: ConflictResolverPermissionMode | null;
+  preserveScratchLane?: boolean;
+  originSurface?: ConflictResolverOriginSurface;
+  originMissionId?: string | null;
+  originRunId?: string | null;
+  originLabel?: string | null;
+};
+
+export type ResumeQueueAutomationArgs = {
+  queueId: string;
+  method?: MergeMethod;
+  archiveLane?: boolean;
+  autoResolve?: boolean;
+  ciGating?: boolean;
+  resolverProvider?: ExternalConflictResolverProvider | null;
+  resolverModel?: string | null;
+  reasoningEffort?: string | null;
+  permissionMode?: ConflictResolverPermissionMode | null;
+  confidenceThreshold?: number | null;
+  originSurface?: ConflictResolverOriginSurface;
+  originMissionId?: string | null;
+  originRunId?: string | null;
+  originLabel?: string | null;
+};
+
+export type PauseQueueAutomationArgs = {
+  queueId: string;
+};
+
+export type CancelQueueAutomationArgs = {
+  queueId: string;
+};
+
+export type LandQueueNextArgs = {
+  groupId: string;
+  method: MergeMethod;
+  archiveLane?: boolean;
+  autoResolve?: boolean;
+  confidenceThreshold?: number;
+};
+
+export type QueueLandingEntry = {
+  prId: string;
+  laneId: string;
+  laneName: string;
+  position: number;
+  state: QueueEntryState;
+  prNumber?: number | null;
+  githubUrl?: string | null;
+  resolvedByAi?: boolean;
+  resolverRunId?: string | null;
+  mergeCommitSha?: string | null;
+  waitingOn?: QueueWaitReason | null;
+  updatedAt?: string | null;
+  error?: string;
+};
+
+export type QueueLandingState = {
+  queueId: string;
+  groupId: string;
+  groupName: string | null;
+  targetBranch: string | null;
+  state: QueueState;
+  entries: QueueLandingEntry[];
+  currentPosition: number;
+  activePrId: string | null;
+  activeResolverRunId: string | null;
+  lastError: string | null;
+  waitReason: QueueWaitReason | null;
+  config: QueueAutomationConfig;
+  startedAt: string;
+  completedAt: string | null;
+  updatedAt: string;
+};
+
+export type QueueRehearsalEntry = {
+  prId: string;
+  laneId: string;
+  laneName: string;
+  position: number;
+  state: QueueRehearsalEntryState;
+  prNumber?: number | null;
+  githubUrl?: string | null;
+  resolvedByAi?: boolean;
+  resolverRunId?: string | null;
+  simulatedCommitSha?: string | null;
+  changedFiles?: string[];
+  conflictPaths?: string[];
+  updatedAt?: string | null;
+  error?: string;
+};
+
+export type QueueRehearsalState = {
+  rehearsalId: string;
+  groupId: string;
+  groupName: string | null;
+  targetBranch: string | null;
+  state: QueueRehearsalStateStatus;
+  entries: QueueRehearsalEntry[];
+  currentPosition: number;
+  scratchLaneId: string | null;
+  activePrId: string | null;
+  activeResolverRunId: string | null;
+  lastError: string | null;
+  waitReason: QueueRehearsalWaitReason | null;
+  config: QueueRehearsalConfig;
+  startedAt: string;
+  completedAt: string | null;
+  updatedAt: string;
+};
+
+// --------------------------------
+// PrHealth Unified Type
+// --------------------------------
+
+export type PrHealth = {
+  prId: string;
+  laneId: string;
+  state: PrState;
+  checksStatus: PrChecksStatus;
+  reviewStatus: PrReviewStatus;
+  conflictAnalysis: PrConflictAnalysis | null;
+  rebaseNeeded: boolean;
+  behindBy: number;
+  mergeContext: PrMergeContext | null;
+};
+
+export type PrConflictAnalysis = {
+  prId: string;
+  laneId: string;
+  riskLevel: ConflictRiskLevel;
+  overlapCount: number;
+  conflictPredicted: boolean;
+  peerConflicts: Array<{
+    peerId: string;
+    peerName: string;
+    riskLevel: ConflictRiskLevel;
+    overlapFiles: string[];
+  }>;
+  analyzedAt: string;
+};
+
+export type PrWithConflicts = PrSummary & {
+  conflictAnalysis: PrConflictAnalysis | null;
+};
+
+/** Controls how deep the orchestrator goes with PR lifecycle management. Never merges — enforced at orchestrator level. */
+export type PrDepth =
+  | "propose-only"       // Create PR proposals/drafts, flag conflicts but don't resolve
+  | "resolve-conflicts"  // Also resolve conflicts via orchestrator workers
+  | "open-and-comment";  // Also open the PR and add review summary comments
+
+export type PrStrategy =
+  | { kind: "integration"; targetBranch?: string; draft?: boolean; prDepth?: PrDepth }
+  | { kind: "per-lane"; targetBranch?: string; draft?: boolean; prDepth?: PrDepth }
+  | {
+      kind: "queue";
+      targetBranch?: string;
+      draft?: boolean;
+      autoRebase?: boolean;
+      ciGating?: boolean;
+      prDepth?: PrDepth;
+      autoLand?: boolean;
+      rehearseQueue?: boolean;
+      autoResolveConflicts?: boolean;
+      archiveLaneOnLand?: boolean;
+      mergeMethod?: MergeMethod;
+      conflictResolverModel?: string;
+      reasoningEffort?: string;
+      permissionMode?: ConflictResolverPermissionMode;
+    }
+  | { kind: "manual" };
+
+// --------------------------------
+// PR Detail Overhaul Types
+// --------------------------------
+
+/** Full PR detail fetched from GitHub API with body, labels, assignees, etc. */
+export type PrDetail = {
+  prId: string;
+  body: string | null;
+  labels: PrLabel[];
+  assignees: PrUser[];
+  requestedReviewers: PrUser[];
+  author: PrUser;
+  isDraft: boolean;
+  milestone: string | null;
+  linkedIssues: Array<{ number: number; title: string; state: string }>;
+};
+
+export type PrLabel = {
+  name: string;
+  color: string;
+  description: string | null;
+};
+
+export type PrUser = {
+  login: string;
+  avatarUrl: string | null;
+};
+
+/** A changed file in a PR with patch/diff data. */
+export type PrFile = {
+  filename: string;
+  status: "added" | "removed" | "modified" | "renamed" | "copied";
+  additions: number;
+  deletions: number;
+  patch: string | null;
+  previousFilename: string | null;
+};
+
+/** GitHub Actions workflow run. */
+export type PrActionRun = {
+  id: number;
+  name: string;
+  status: "queued" | "in_progress" | "completed" | "waiting";
+  conclusion: "success" | "failure" | "neutral" | "cancelled" | "skipped" | "timed_out" | "action_required" | null;
+  headSha: string;
+  htmlUrl: string;
+  createdAt: string;
+  updatedAt: string;
+  jobs: PrActionJob[];
+};
+
+export type PrActionJob = {
+  id: number;
+  name: string;
+  status: "queued" | "in_progress" | "completed";
+  conclusion: "success" | "failure" | "neutral" | "cancelled" | "skipped" | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  steps: PrActionStep[];
+};
+
+export type PrActionStep = {
+  name: string;
+  status: "queued" | "in_progress" | "completed";
+  conclusion: "success" | "failure" | "neutral" | "cancelled" | "skipped" | null;
+  number: number;
+  startedAt: string | null;
+  completedAt: string | null;
+};
+
+/** Unified activity event for the PR timeline. */
+export type PrActivityEvent = {
+  id: string;
+  type: "comment" | "review" | "commit" | "label" | "ci_run" | "state_change" | "review_request";
+  author: string;
+  avatarUrl: string | null;
+  body: string | null;
+  timestamp: string;
+  metadata: Record<string, unknown>;
+};
+
+// Args types for new PR actions
+
+export type AddPrCommentArgs = {
+  prId: string;
+  body: string;
+  inReplyToCommentId?: string;
+};
+
+export type UpdatePrTitleArgs = {
+  prId: string;
+  title: string;
+};
+
+export type UpdatePrBodyArgs = {
+  prId: string;
+  body: string;
+};
+
+export type SetPrLabelsArgs = {
+  prId: string;
+  labels: string[];
+};
+
+export type RequestPrReviewersArgs = {
+  prId: string;
+  reviewers: string[];
+};
+
+export type SubmitPrReviewArgs = {
+  prId: string;
+  event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
+  body?: string;
+};
+
+export type ClosePrArgs = {
+  prId: string;
+};
+
+export type ReopenPrArgs = {
+  prId: string;
+};
+
+export type RerunPrChecksArgs = {
+  prId: string;
+  checkRunIds?: number[];
+};
+
+export type AiReviewSummaryArgs = {
+  prId: string;
+  model?: string;
+};
+
+export type AiReviewSummary = {
+  summary: string;
+  potentialIssues: string[];
+  recommendations: string[];
+  mergeReadiness: "ready" | "needs_work" | "blocked";
+};

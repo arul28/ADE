@@ -1,0 +1,87 @@
+---
+title: "CTO Agent Overview"
+description: "The CTO is ADE's always-on, project-aware AI agent — the top of an intelligent org chart that watches your project, delegates work, syncs with Linear, and answers questions about your codebase."
+icon: "crown"
+---
+
+<Info>Screenshot needed: The CTO tab main view showing the five sub-tabs (Chat, Team, Memory, Linear, Settings) with Chat selected, the CTO status panel on the left, and an active chat thread on the right.</Info>
+
+## What is the CTO Agent?
+
+The **CTO** (Chief Technical Officer) is ADE's persistent, project-scoped AI agent. Unlike agents you spawn for a specific task, the CTO is always running in the background — watching commits, monitoring lane status, tracking PR progress, and building a cumulative understanding of your project over time.
+
+Think of the CTO as the single intelligence that holds your project together. It knows your architecture, your conventions, which lanes are stuck, which PRs are at risk, and what has changed since you were last looking. When you need a quick project status, a code review, or to delegate a large task, the CTO is your first stop.
+
+<CardGroup cols={2}>
+  <Card title="Always-On Awareness" icon="eye">
+    Runs on a configurable heartbeat, checking for new commits, PR status changes, Linear issue updates, and stuck lanes — even when you are not looking.
+  </Card>
+  <Card title="Org Chart Model" icon="sitemap">
+    The CTO sits at the top of an agent hierarchy. It spawns and coordinates specialized Worker agents (Employees) to handle specific tasks.
+  </Card>
+  <Card title="Bidirectional Linear Sync" icon="arrow-right-arrow-left">
+    Reads from and writes to Linear. Creates issues from code changes, updates issue status when PRs merge, and adds analysis comments automatically.
+  </Card>
+  <Card title="Deep Memory" icon="brain">
+    Maintains multi-scope persistent memory across `project`, `identity`, `daily-log`, `run`, and `runtime-thread` scopes. The CTO remembers what happened yesterday.
+  </Card>
+</CardGroup>
+
+---
+
+## CTO vs. Regular Agents
+
+Understanding how the CTO differs from the agents you spawn manually (in chat sessions or missions) helps you know when to use each.
+
+| | **CTO Agent** | **Regular / Worker Agent** |
+|--|---------------|---------------------------|
+| **Lifecycle** | Always on; persistent across sessions | Ephemeral; lives for one task or session |
+| **Scope** | Entire project | Specific lane, task, or mission |
+| **Memory** | Accumulates over weeks/months | Within the current session or run |
+| **Triggers** | Heartbeat schedule + events + manual chat | Explicit user action or automation trigger |
+| **Authority** | Can spawn lanes, create missions, delegate to workers | Operates within its assigned lane/context |
+| **Linear access** | Full bidirectional sync (owner) | Read-only via MCP tools, if granted |
+| **Primary UI** | CTO tab | Lane terminal, Chat pane, Missions tab |
+
+---
+
+## The Org Chart Model
+
+The CTO implements an **org chart model** for AI work delegation.
+
+```
+CTO (always-on, project-scoped)
+├── Worker: "auth-specialist"   (assigned to lane/auth-refactor)
+├── Worker: "test-writer"       (ephemeral, created for one task)
+└── Worker: "pr-reviewer"       (persistent, reviews all new PRs)
+```
+
+The CTO sits at the top. Below it are **Worker agents** (also called Employees) — specialized sub-agents the CTO creates and assigns to specific tasks or lanes. Workers have:
+
+- A **name** and **specialization prompt** that defines their role and constraints
+- An **assigned lane** (optional; some workers operate across lanes)
+- A **tool palette** — a subset of MCP tools they are permitted to use
+- A **budget limit** — a token/cost cap enforced by the CTO
+
+The CTO coordinates workers: it assigns tasks, monitors their output, routes their results back to Linear or PRs, and intervenes if a worker is stuck or over budget.
+
+<Info>Screenshot needed: The Team sub-tab showing an org chart or card grid of workers with name, specialization, assigned lane, status indicator, and budget usage.</Info>
+
+---
+
+## Explore CTO Features
+
+<CardGroup cols={2}>
+  <Card title="Setting Up the CTO" icon="wand-magic-sparkles" href="/cto/setup">
+    Walk through onboarding, heartbeat configuration, and verifying the CTO is active.
+  </Card>
+  <Card title="CTO Memory" icon="brain" href="/cto/memory">
+    Understand multi-scope persistent memory, memory tiers, and the memory review surface.
+  </Card>
+  <Card title="Linear Integration" icon="arrow-right-arrow-left" href="/cto/linear">
+    Connect Linear for bidirectional issue sync, status updates, and intelligent triage.
+  </Card>
+  <Card title="Workers & Budget" icon="users" href="/cto/workers">
+    Hire workers, manage budgets, configure practical workflows, and troubleshoot issues.
+  </Card>
+</CardGroup>

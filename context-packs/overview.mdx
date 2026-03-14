@@ -1,0 +1,175 @@
+---
+title: "Context Packs Overview"
+description: "Packs are durable context bundles that give AI agents instant, structured knowledge of your codebase. ADE auto-generates and auto-refreshes them so agents are never starting cold."
+icon: "cubes"
+---
+
+<Info>**📸 Screenshot needed:** The Context view in ADE's left sidebar showing the Pack tree — a Project Pack at the top, then lane packs listed for each active lane with freshness timestamps (e.g., "Updated 4 min ago"). One lane pack should show an amber "Stale" badge. A "Refresh All" button is visible in the top-right.</Info>
+
+## Overview
+
+When an AI agent starts working on your codebase, it has no idea what it is looking at. Packs solve this.
+
+A **Pack** is a durable, structured context bundle that captures project or lane knowledge in a machine-readable format. Packs give agents instant orientation — architecture conventions, current intent, touched files, recent checkpoints, and risk signals — without requiring the agent to re-derive this context from scratch every session.
+
+Packs are always **synthesized exports**, never primary storage. The authoritative source of truth is ADE's SQLite database and your live filesystem. If a pack seems stale or incorrect, a force-refresh will derive a fresh one from the live state.
+
+<CardGroup cols={2}>
+  <Card title="Auto-Generated" icon="wand-magic-sparkles">
+    ADE generates and refreshes packs automatically on commits, PR merges, and significant file changes. No manual maintenance required.
+  </Card>
+  <Card title="Stable API for Agents" icon="code">
+    Packs use stable section markers that agents can rely on across regenerations. The structure never changes unexpectedly.
+  </Card>
+  <Card title="Layered Priority" icon="layer-group">
+    Agents receive context in priority order: Lane Pack first, then Feature Pack, then Project Pack. More specific context always wins.
+  </Card>
+  <Card title="Mission & PR Integration" icon="link">
+    Packs are automatically embedded in mission planning, conflict resolution, and PR descriptions. Reviewers see context without asking for it.
+  </Card>
+</CardGroup>
+
+---
+
+## Pack Types
+
+<AccordionGroup>
+  <Accordion title="Project Pack — Codebase-Wide Context" icon="folder-open">
+    The Project Pack is generated for the entire repository and serves as the foundational context layer included in every agent session.
+
+    **Contents:**
+    - Architecture overview (system components, their responsibilities, and how they interact)
+    - Technology stack and dependency summary
+    - Project-wide coding conventions and style guidelines
+    - Key architectural decisions and their rationale
+    - Risk signals (known unstable areas, files with high churn, deprecated patterns)
+    - Top-level file structure with purpose annotations
+
+    **Used by:** CTO agent, Mission planning phase, new Lane initializations, all automations
+
+    **Location:** `.ade/artifacts/packs/project/current.md`
+  </Accordion>
+
+  <Accordion title="Lane Pack — Per-Lane Work Context" icon="code-branch">
+    A Lane Pack captures everything relevant to a specific lane's current work. It is the most specific and highest-priority context an agent receives.
+
+    **Contents:**
+    - Lane intent (what is this lane trying to accomplish?)
+    - Coding criteria (definition of done for this lane)
+    - Touched files since lane creation
+    - Recent checkpoint summaries
+    - Current diff summary (what has changed since last commit)
+    - Active conflicts with other lanes
+
+    **Used by:** All agents running inside the lane, Lane chat, Lane-scoped automations
+
+    **Location:** `.ade/artifacts/packs/lanes/<lane-id>/current.md`
+  </Accordion>
+
+  <Accordion title="Feature Pack — Cross-Lane Feature Context" icon="puzzle-piece">
+    A Feature Pack aggregates context for a specific Linear issue or feature that may span multiple lanes. It combines relevant lane packs with the issue description and related code paths.
+
+    **Contents:**
+    - Linear issue description, acceptance criteria, and comments
+    - All lane packs for lanes linked to this issue
+    - Relevant code paths identified by the CTO
+    - Cross-lane dependency summary
+
+    **Used by:** Multi-lane feature coordination, CTO feature planning, mission scope determination
+
+    **Location:** `.ade/artifacts/packs/features/<issue-id>/current.md`
+  </Accordion>
+
+  <Accordion title="Conflict Pack — Merge Conflict Context" icon="triangle-exclamation">
+    A Conflict Pack is generated when ADE detects a merge conflict between two lanes. It provides a resolution agent with everything it needs to understand and resolve the conflict without starting from scratch.
+
+    **Contents:**
+    - Both sides of the conflict (lane A intent + lane B intent)
+    - The conflicting diffs, annotated with intent context
+    - Previous resolution attempts (if any)
+    - Suggested resolution strategy generated by the CTO
+    - File ownership context (which lane "owns" each conflicting file)
+
+    **Used by:** Conflict resolution agents, the Conflicts view panel, PR merge rehearsals
+
+    **Location:** `.ade/artifacts/packs/conflicts/<conflict-id>/current.md`
+  </Accordion>
+
+  <Accordion title="Plan Pack — Versioned Coding Plan" icon="clipboard-list">
+    A Plan Pack is a versioned implementation plan created during a Mission's planning phase. It contains the full step-by-step plan that the mission executor will follow.
+
+    **Contents:**
+    - Detailed implementation steps in order
+    - Acceptance criteria for each step
+    - Dependency map (which steps must complete before others can start)
+    - Risk assessment for each major change
+    - Estimated token budget per phase
+
+    **Used by:** Mission executor, Mission validation phase, post-mission review
+
+    **Location:** `.ade/artifacts/packs/missions/<mission-id>/plan.md`
+  </Accordion>
+
+  <Accordion title="Mission Pack — Phase-Boundary Snapshots" icon="bullseye">
+    A Mission Pack is a deterministic snapshot of a mission's full context recorded at each phase boundary (planning complete, execution complete, validation complete). It enables mission resume after a crash, full audit, and replay.
+
+    **Contents:**
+    - Complete mission state at each phase boundary
+    - All inputs consumed and all outputs produced at each phase
+    - Executor decisions and their reasoning
+    - Cost and token usage per phase
+
+    **Used by:** Mission resume, mission audit trail, History view replay
+
+    **Location:** `.ade/artifacts/packs/missions/<mission-id>/phase-<n>.md`
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Pack Filesystem Layout
+
+All packs live inside `.ade/artifacts/packs/` at your project root. The layout is deterministic and stable.
+
+```
+.ade/
+  artifacts/
+    packs/
+      project/
+        current.md          ← always the latest project pack
+        history/
+          <timestamp>.md    ← previous versions
+      lanes/
+        <lane-id>/
+          current.md
+          history/
+      features/
+        <issue-id>/
+          current.md
+      conflicts/
+        <conflict-id>/
+          current.md
+      missions/
+        <mission-id>/
+          plan.md
+          phase-1.md
+          phase-2.md
+          ...
+```
+
+<Note>
+Pack history files are retained for 30 days by default. You can adjust retention in **Settings → Context → Pack History Retention**. History files are useful for auditing what context an agent had during a specific session.
+</Note>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Pack Structure & Priority" icon="code" href="/context-packs/structure">
+    Learn about the pack content contract, section markers, export levels, and how ADE assembles the context priority stack.
+  </Card>
+  <Card title="Freshness & Integration" icon="arrows-rotate" href="/context-packs/freshness">
+    Understand auto-refresh triggers, freshness indicators, and how packs integrate with missions, PRs, and the memory system.
+  </Card>
+</CardGroup>

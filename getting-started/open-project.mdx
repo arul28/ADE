@@ -1,0 +1,43 @@
+---
+title: "Open your first project"
+description: "Connect ADE to a Git repository and complete the first-run onboarding flow."
+icon: "folder-open"
+---
+
+## Open a repository
+
+Use **Open Repository** on the welcome screen or press `Cmd+O`.
+
+ADE expects the root of a Git repository. If you do not have one ready, create a new directory and run:
+
+```bash
+git init
+```
+
+## What ADE creates
+
+When ADE opens a repository for the first time, it creates a local `.ade/` directory for worktrees, metadata, packs, and artifacts.
+
+## First-run onboarding
+
+ADE walks through a short onboarding flow:
+
+<Steps>
+  <Step title="Detect repository defaults">
+    ADE reads local Git settings and common project signals.
+  </Step>
+  <Step title="Review project config">
+    ADE proposes a starting config for the repository.
+  </Step>
+  <Step title="Import existing branches">
+    ADE can register existing branches as attached lanes.
+  </Step>
+  <Step title="Generate context">
+    ADE builds an initial context baseline so new agents do not start completely cold.
+  </Step>
+</Steps>
+
+<Tip>
+If `.ade/` is not already ignored, add it to `.gitignore`.
+</Tip>
+

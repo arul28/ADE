@@ -1,0 +1,91 @@
+---
+title: "Introduction to ADE"
+description: "ADE is the Agentic Development Environment — a desktop DevOps cockpit for orchestrating parallel AI coding agents across multiple git worktrees."
+icon: "book-open"
+---
+
+## What is ADE?
+
+ADE is a **macOS desktop application** for running several AI coding agents against the same repository without losing control of the work. It gives each task its own isolated lane, keeps shared context warm, and surfaces merge risk before it turns into cleanup.
+
+Think of it as the control plane for agentic development. You decide the work. ADE coordinates the execution.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Take the shortest path from install to your first working agent.
+  </Card>
+  <Card title="Key Concepts" icon="book" href="/key-concepts">
+    Learn how ADE thinks about lanes, missions, the CTO agent, and packs.
+  </Card>
+  <Card title="Features" icon="sparkles" href="/lanes/overview">
+    Explore the product by capability instead of digging through one long page.
+  </Card>
+  <Card title="Setup" icon="gear" href="/configuration/overview">
+    Configure providers, permissions, and external connections.
+  </Card>
+</CardGroup>
+
+## The Problem ADE Solves
+
+AI coding agents are fast. Parallel AI work is where things break down:
+
+- **Conflicts show up too late**: two agents touch the same files and you do not see the collision until merge time.
+- **Context resets constantly**: each agent starts from a colder prompt than it should.
+- **Oversight is fragmented**: sessions, branches, costs, and artifacts live in separate tools.
+- **Execution gets noisy**: you can launch work, but it is hard to track quality, ownership, and state.
+
+ADE addresses that with isolated lanes, durable context packs, missions, a coordinator agent, and a workspace-wide view of branch state.
+
+## Start with the product map
+
+<CardGroup cols={2}>
+  <Card title="Get started" icon="flag-checkered" href="/getting-started/install">
+    Install ADE, add a provider, open a repo, create a lane, and run your first task.
+  </Card>
+  <Card title="Lanes" icon="code-branch" href="/lanes/overview">
+    ADE's isolated workspaces for parallel branches and agents.
+  </Card>
+  <Card title="Missions" icon="bullseye" href="/missions/overview">
+    Structured execution when the work needs planning, validation, or audit history.
+  </Card>
+  <Card title="CTO agent" icon="crown" href="/cto/overview">
+    Persistent project coordination and delegated worker management.
+  </Card>
+  <Card title="Workspace tools" icon="grid-2" href="/tools/project-home">
+    Files, terminals, graph, conflicts, PRs, and history.
+  </Card>
+  <Card title="Setup and integrations" icon="gear" href="/configuration/overview">
+    Provider credentials, MCP servers, permissions, and editor-specific setup.
+  </Card>
+</CardGroup>
+
+## Core principles
+
+<CardGroup cols={3}>
+  <Card title="Parallel by default" icon="arrows-left-right">
+    Every meaningful task should have its own lane.
+  </Card>
+  <Card title="Local first" icon="shield-check">
+    Source code, secrets, and artifacts stay on your machine.
+  </Card>
+  <Card title="Observable execution" icon="chart-line">
+    ADE tracks runs, costs, sessions, and branch state in one place.
+  </Card>
+</CardGroup>
+
+## Where to go next
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Follow the shortest path from install to your first successful run.
+  </Card>
+  <Card title="Key Concepts" icon="book-open" href="/key-concepts">
+    Get the mental model before you go deeper.
+  </Card>
+  <Card title="Lanes Deep Dive" icon="code-branch" href="/lanes/overview">
+    Learn how ADE isolates and manages parallel work.
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration/overview">
+    Configure providers, permissions, and integrations.
+  </Card>
+</CardGroup>

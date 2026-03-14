@@ -1,0 +1,148 @@
+---
+title: "Budget & Permissions"
+description: "Configure budget caps, tool permissions, computer use policies, mission persistence, templates, and troubleshoot common mission issues."
+icon: "coins"
+---
+
+## Budget and Cost Tracking
+
+<Tabs>
+  <Tab title="Setting a budget cap">
+    In the mission creation dialog, set a **Budget cap** in either tokens or USD. This is the combined ceiling across all workers.
+
+    When the mission reaches **80% of the cap**, ADE raises a `budget_limit_reached` intervention to give you time to decide before work stops. You can:
+
+    - **Approve more budget** — increase the cap and continue
+    - **Reduce scope** — cancel remaining workers and accept partial results
+    - **Stop cleanly** — the orchestrator wraps up current work and completes with available results
+  </Tab>
+  <Tab title="Reading the cost breakdown">
+    In the **Plan tab**, the cost panel shows:
+
+    - Total tokens consumed (input + output) across all workers
+    - Per-worker token breakdown
+    - Estimated USD cost based on the configured model's pricing
+    - Projected total at current burn rate
+
+    The per-worker view lets you spot runaway workers before they consume the whole budget.
+  </Tab>
+  <Tab title="Default limits">
+    If you do not set a budget cap, ADE uses the global default from **Settings → Missions → Default budget cap**. Set this to a sensible value to prevent unexpected costs during planning-heavy missions.
+  </Tab>
+</Tabs>
+
+---
+
+## Permissions and Tool Configuration
+
+Each mission has a **permission config** that controls what workers can do. The permission config is set during mission creation and can be inherited from the lane's defaults.
+
+<AccordionGroup>
+  <Accordion title="Provider permission modes">
+    Per-provider permission modes control what Claude CLI, Codex CLI, or unified API workers are allowed to do:
+
+    - `default` — the provider's standard permission set
+    - `strict` — read-only file access, no shell commands
+    - `permissive` — expanded tool access including shell execution
+    - `custom` — explicit allowlist of tool names
+
+    You can configure different modes per provider if your mission uses a mix of Claude and Codex workers.
+  </Accordion>
+  <Accordion title="External MCP tools">
+    External MCP server tools are disabled by default for missions. To enable them, select which MCP tool groups are allowed in the **External MCP** section of the mission creation form. Workers will only have access to the tool groups you explicitly permit.
+  </Accordion>
+  <Accordion title="Computer use policy">
+    Computer use in missions is controlled by the ComputerUsePolicy set on the mission:
+
+    - `off` — no computer use for any worker
+    - `auto` — workers can invoke computer use when needed
+    - `on` — computer use always available
+    - `proof` — computer use is available but every action must produce a proof artifact (screenshot or browser trace)
+
+    The `proof` mode is recommended for missions that will be linked to a PR or Linear issue.
+  </Accordion>
+  <Accordion title="Writable paths">
+    By default, workers can only write within their assigned lane's worktree. You can expand this with explicit `writablePaths` entries in the mission permission config — for example, to allow a worker to write shared fixture files outside its primary lane.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Mission Persistence and Resume
+
+Missions persist across app restarts. All mission state — phases, worker logs, artifacts, interventions — is stored in ADE's local SQLite database and the filesystem.
+
+**Mission Pack** is the key persistence primitive: a deterministic snapshot of all context required to resume or replay the mission from any phase boundary. It is regenerated automatically at each phase transition.
+
+If ADE crashes mid-mission:
+1. Restart ADE
+2. Open the Missions page — the interrupted mission will be in `in_progress` or `intervention_required` status
+3. ADE reloads from the last Mission Pack checkpoint
+4. Workers that were mid-task are recovered where possible; tasks that cannot be recovered are marked `failed` and queued as interventions
+
+---
+
+## Mission Templates and Phase Profiles
+
+For mission types you run frequently, you can save **Phase Profiles** — reusable configurations that define the sequence of phases, approval requirements, and per-phase validator settings.
+
+Built-in profiles include:
+
+| Profile | Phases |
+|---|---|
+| Standard | Planning → Execution → Validation |
+| Lightweight | Planning → Execution (no validation phase) |
+| Rigorous | Planning → Approval → Execution → Validation → Sign-off |
+
+To create a custom profile: open **Settings → Missions → Phase Profiles**, click **New Profile**, and define the phase sequence. Profiles can be imported and exported as JSON for sharing across teams.
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="A worker is stuck (no progress for several minutes)">
+    1. Open the mission's **History tab** and find the last event from the stuck worker.
+    2. Check whether an intervention is open in the **Plan tab** — the worker may be waiting for your response.
+    3. If no intervention is open, open the **Chat tab** and ask the orchestrator for a status update.
+    4. If the worker is genuinely hung, click the worker card in the Plan tab and select **Restart worker**. ADE will attempt to resume from the worker's last checkpoint.
+    5. If restart fails, select **Skip task** to mark the worker's assignment as skipped and allow the mission to continue.
+  </Accordion>
+  <Accordion title="Budget exceeded or approaching limit">
+    When a `budget_limit_reached` intervention fires:
+
+    - Review the per-worker cost breakdown in the Plan tab to identify the most expensive workers.
+    - If a worker is consuming disproportionate budget, you can cancel it individually while leaving others running.
+    - Approve additional budget only if the remaining work is clearly scoped and worth the cost.
+    - Consider switching remaining workers to a less expensive model in **Settings → Missions → Default model**.
+  </Accordion>
+  <Accordion title="Validation phase fails">
+    Validation failures appear as a `failed_step` intervention with a `test_report` artifact attached. To resolve:
+
+    1. Open the artifact to read the test output.
+    2. In the Chat tab, tell the orchestrator what failed and ask it to fix the issue.
+    3. The orchestrator can spawn a new worker scoped to the failing tests.
+    4. Once fixed, approve advancing to complete the validation phase.
+
+    If validation failures are expected (e.g., tests for features not yet implemented), you can dismiss the intervention and mark validation as skipped.
+  </Accordion>
+  <Accordion title="Mission stuck at Approval Gate">
+    The Approval Gate is a hard stop — the mission will remain in `planning` status until you approve, modify, or cancel. If you closed the mission detail view, re-open it from the Missions list. The plan review UI is in the **Plan tab** at the top of the activity feed.
+  </Accordion>
+  <Accordion title="Planning Prompt Preview shows unexpected context">
+    If the generated plan does not reflect your intent, edit the planning prompt before approval:
+
+    1. In the plan review UI, click **Edit Planning Prompt**.
+    2. Modify the prompt to clarify scope, constraints, or excluded approaches.
+    3. Click **Re-plan** — the orchestrator will generate a new plan using the updated prompt.
+    4. Repeat until the plan matches your expectations, then approve.
+  </Accordion>
+  <Accordion title="Mission fails to start (preflight errors)">
+    Preflight errors appear before the mission enters Planning. Common causes:
+
+    - **Lane unavailable** — the selected lane is in use by another active mission. Wait for it to complete or select a different lane.
+    - **Model unreachable** — the configured AI provider is not authenticated or is rate-limited. Check **Settings → AI Providers**.
+    - **Computer use unavailable** — the mission requires computer-use capabilities that are not configured. Check **Settings → Computer Use**.
+    - **Phase sequence invalid** — the selected phase profile has a configuration error. Open **Settings → Missions → Phase Profiles** to inspect and repair it.
+  </Accordion>
+</AccordionGroup>

@@ -1,0 +1,36 @@
+---
+title: "Stacked Lanes"
+description: "Arrange lanes into stacks — layered branch chains for stacked PR workflows with automatic rebase propagation and drag-to-reparent."
+icon: "layer-group"
+---
+
+## Stacks
+
+Lanes can be arranged into **stacks** — a layered chain where each lane's branch is based on another lane's branch, rather than directly on `main`. This enables stacked PR workflows where changes are reviewed incrementally.
+
+```
+main
+└── lane/auth-refactor        (base: main)
+    └── lane/auth-tests       (base: lane/auth-refactor)
+        └── lane/auth-docs    (base: lane/auth-tests)
+```
+
+---
+
+### Creating a Stack
+
+When creating a new lane, set its **base branch** to the branch of an existing lane (rather than `main`). ADE recognizes this as a stack relationship and visualizes it in the Stack Graph view in the left pane.
+
+---
+
+### Rebasing a Stack
+
+When the root lane's branch receives new commits (from a merge or rebase against `main`), ADE detects that child lanes are now stale and offers a **Rebase Stack** action. This propagates the parent's changes through each child in dependency order, handling the full rebase chain automatically.
+
+<Note>ADE uses `git rebase --onto` internally to rebase each child onto the updated parent. If conflicts are detected during this process, the affected lane enters `conflict` status and the rebase pauses for human resolution before continuing down the chain.</Note>
+
+---
+
+### Drag-to-Reparent
+
+In the **Workspace Graph** view, you can drag a lane node onto another lane to change its base branch. ADE will preview the reparenting operation and ask for confirmation before executing the rebase chain.

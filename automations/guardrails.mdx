@@ -1,0 +1,130 @@
+---
+title: "Guardrails & Security"
+description: "Secure your automations with tool palette restrictions, memory modes, budget caps, and Night Shift deferred processing. Includes troubleshooting for common issues."
+icon: "shield-check"
+---
+
+## Tool Palette Security
+
+Every automation runs with a restricted set of tools called a **palette**. This is a security best practice — an automation that runs unattended should only have access to exactly what it needs.
+
+| Palette | Capabilities | When to Use |
+|---|---|---|
+| `read-only` | Read files, read git history, read context packs | PR review, summarization, analysis |
+| `write-files` | Everything in read-only + write and create files | Auto-formatting, documentation generation |
+| `full-git` | Everything in write-files + all git operations | Auto-committing, branch management |
+| `full-ade` | All ADE tools including Linear and mission management | Complex orchestration automations |
+| Custom | Explicitly listed tools | Fine-grained control |
+
+<Warning>
+Avoid granting `full-ade` permissions to automations that run on external triggers like `linear.issue_created`. A malformed or adversarial issue body could attempt prompt injection. Use the minimum palette required for the task.
+</Warning>
+
+---
+
+## Memory Modes
+
+Control how much state an automation carries between runs.
+
+<Tabs>
+  <Tab title="stateless">
+    Each execution starts completely fresh. The automation has no knowledge of previous runs. This is the default and the safest option.
+
+    ```yaml
+    memory: stateless
+    ```
+  </Tab>
+  <Tab title="stateful">
+    The automation has a persistent memory store scoped to that automation. Useful for tracking state across executions — for example, "remember the last PR you reviewed so you don't repeat yourself."
+
+    ```yaml
+    memory: stateful
+    ```
+  </Tab>
+  <Tab title="project">
+    The automation reads from and writes to the project-level memory shared with the CTO and other automations. Use this when your automation needs to coordinate with other agents or influence CTO decisions.
+
+    ```yaml
+    memory: project
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Night Shift Queue
+
+<Info>**📸 Screenshot needed:** The Automations → Night Shift tab showing a queue of pending tasks with their estimated cost, priority order, and a "Run Night Shift Now" button. One task should show as "Completed at 2:14 AM" with a green checkmark.</Info>
+
+The Night Shift system allows you to defer expensive, non-urgent automations to run while your machine is idle.
+
+**How it works:**
+
+1. Any automation with executor mode `night-shift` adds to the queue when its trigger fires.
+2. ADE monitors system idle time. After **15 minutes** of no keyboard or mouse input, Night Shift processing begins.
+3. Tasks are processed **one at a time** to avoid CPU/memory contention with background processes.
+4. Results (commits, PRs, comments, notifications) are available when you return.
+
+**Managing the Queue:**
+
+- Navigate to **Automations → Night Shift** to see the current queue, estimated costs, and history of past runs.
+- Click **Run Night Shift Now** to process the queue immediately, regardless of idle state.
+- Individual tasks can be removed from the queue or reprioritized by dragging.
+
+<Tip>
+Schedule resource-intensive tasks like dependency updates or full test suite runs as Night Shift automations. They will complete overnight without competing with your daytime work.
+</Tip>
+
+---
+
+## Guardrails Reference
+
+| Guardrail | Description |
+|---|---|
+| Budget Cap | Maximum token cost per execution. Automation halts if exceeded. |
+| Time Limit | Maximum wall-clock execution time. Halts and reports timeout. |
+| File Path Restriction | Automation can only read/write files matching a specified glob pattern. |
+| Dry-Run Mode | Shows what the automation would do without performing any writes. |
+| Approval Mode | Automation pauses and requests your approval before any write operation. |
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Automation is not firing" icon="circle-question">
+    1. Confirm the automation is **enabled** — check the toggle in the Automations list.
+    2. Verify the trigger filter is not too restrictive. For example, a `git.push` trigger with `branch: release/*` will not fire on pushes to `main`.
+    3. For Linear triggers, confirm the Linear integration is connected and the webhook is registered: **Settings → Integrations → Linear → Webhook Status**.
+    4. Check the automation's **Run History** tab for any error entries — trigger evaluation errors are logged there even if the executor never ran.
+  </Accordion>
+
+  <Accordion title="Budget exceeded — automation halted" icon="circle-dollar-to-slot">
+    The automation hit its configured token budget cap and stopped mid-execution. To resolve:
+
+    1. Review the partial results in **Run History** to understand how far it got.
+    2. Increase the budget cap in the automation's settings if the task genuinely requires more tokens.
+    3. Alternatively, break the automation's prompt into a smaller, more focused task.
+    4. For recurring budget overruns, switch to `night-shift` mode which has a separate, higher default budget ceiling.
+  </Accordion>
+
+  <Accordion title="Guardrail blocked a file write" icon="lock">
+    The automation attempted to write a file outside its configured file path restriction. This is the guardrail working as intended.
+
+    If the write was legitimate, update the **File Path Restriction** glob in the automation settings to include the path that was blocked. If unexpected, investigate the automation prompt — the agent may be hallucinating file paths.
+  </Accordion>
+
+  <Accordion title="Night Shift queue is not processing" icon="moon">
+    Night Shift requires your machine to be idle for 15 minutes (configurable in **Settings → Automations → Idle Threshold**). Common reasons the queue does not process:
+
+    - A background process (e.g., video call, build process) is keeping the machine active.
+    - The ADE app was closed before idle threshold was reached.
+    - Manual "Run Night Shift Now" button is always available as an override.
+  </Accordion>
+
+  <Accordion title="Linear automation writing without permission" icon="triangle-exclamation">
+    By default, automations can only **read** Linear data. To allow writes (comments, status changes, assignments), you must explicitly enable the `linear.write` permission in the automation's settings under **Permissions → External Services**.
+  </Accordion>
+</AccordionGroup>
+
+<Info>**📸 Screenshot needed:** The Automation Run History panel for a single automation — showing a table of recent runs with timestamps, trigger event, executor mode, token cost, duration, and status (success/halted/error). One row should be expanded to show the execution log.</Info>

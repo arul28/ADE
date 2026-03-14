@@ -1,0 +1,68 @@
+---
+title: "Configuration"
+description: "Proof requirement profiles and troubleshooting common computer use issues in ADE."
+icon: "sliders"
+---
+
+## Proof Requirements Configuration
+
+Configure which proof kinds are required for different task types in **Settings → Computer Use → Proof Requirements**.
+
+```yaml
+# Example proof requirement configuration
+proofRequirements:
+  default:
+    - screenshot
+  uiValidation:
+    - screenshot
+    - browser_verification
+  bugFix:
+    - screenshot
+    - browser_trace
+  fullAudit:
+    - screenshot
+    - video_recording
+    - browser_trace
+    - browser_verification
+    - console_logs
+```
+
+Missions and automations reference these named profiles by key (e.g., `proofProfile: uiValidation`).
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Backend shows 'Disconnected' in Settings" icon="circle-question">
+    1. Confirm the backend process is running. For Ghost OS: check the menu bar icon. For agent-browser: ADE should have launched it automatically.
+    2. Verify the `url` or `command` in `.ade/local.secret.yaml` is correct.
+    3. Check for firewall or security software blocking the connection (Ghost OS uses HTTP locally).
+    4. Restart ADE — the `autoStart: true` flag will attempt to reconnect on startup.
+    5. Open **Settings → Computer Use** and click **Reconnect** to force a reconnection attempt.
+  </Accordion>
+
+  <Accordion title="Video recording not available" icon="video-slash">
+    Video recording requires either Ghost OS or agent-browser. ADE Local does not support it. If your mission requires video proof:
+
+    1. Connect Ghost OS or agent-browser (see setup instructions above).
+    2. Set the preferred backend to a capable one in Settings.
+    3. If you must proceed without video, change the mission's proof profile to one that does not require `video_recording`.
+  </Accordion>
+
+  <Accordion title="Proof coverage is low — mission blocked" icon="triangle-exclamation">
+    A `Proof` policy session requires every action to produce an artifact. If coverage is below the required threshold, the session may block.
+
+    1. Review the artifacts already collected in the Artifacts tab — some steps may have artifacts that need to be manually marked `accepted`.
+    2. Re-run specific steps from the mission's execution log to collect missing artifacts.
+    3. If the backend is failing to produce artifacts silently, check the backend's own logs (Ghost OS logs are available from its menu bar icon; agent-browser logs are in **ADE → View → Developer Tools → Console**).
+  </Accordion>
+
+  <Accordion title="Screenshots are blank or corrupted" icon="image">
+    This typically indicates a permissions issue with the macOS Screen Recording permission.
+
+    1. Open **System Settings → Privacy & Security → Screen Recording**.
+    2. Ensure ADE (and Ghost OS if applicable) are listed and enabled.
+    3. Restart ADE after granting permissions — macOS requires a restart of the process for permission changes to take effect.
+  </Accordion>
+</AccordionGroup>

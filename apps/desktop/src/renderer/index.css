@@ -1,0 +1,2413 @@
+@import "tailwindcss";
+
+/* JetBrains Mono Variable Font (primary mono) */
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('../../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2') format('woff2');
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Space Grotesk Variable Font (primary sans / headlines) */
+@font-face {
+  font-family: 'Space Grotesk';
+  src: url('../../node_modules/@fontsource-variable/space-grotesk/files/space-grotesk-latin-wght-normal.woff2') format('woff2');
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Geist Variable Fonts (fallback) */
+@font-face {
+  font-family: 'Geist';
+  src: url('../../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('../../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@theme {
+  --radius-xl: 16px;
+  --radius-lg: 12px;
+  --radius-md: 8px;
+  --radius-sm: 6px;
+  --radius-full: 9999px;
+
+  --pane-gap: 4px;
+  --pane-radius: 12px;
+  --pane-minimized-height: 28px;
+
+  --font-sans: "Geist", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: "JetBrains Mono", "Geist Mono", ui-monospace, monospace;
+
+  --shadow-card: 0 2px 8px -2px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(45, 40, 64, 0.2);
+  --shadow-card-hover: 0 6px 20px -4px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(45, 40, 64, 0.35);
+  --shadow-float: 0 12px 40px -12px rgba(0, 0, 0, 0.7);
+
+  --chat-radius-shell: 18px;
+  --chat-radius-card: 16px;
+  --chat-radius-pill: 9999px;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Dark Theme (DEFAULT)
+   ═══════════════════════════════════════════════════════════ */
+
+:root,
+[data-theme="dark"] {
+  --color-bg: #09080C;
+  --color-fg: #FAFAFA;
+  --color-surface: #14111D;
+  --color-card: #181423;
+  --color-card-fg: #FAFAFA;
+  --color-card-rgb: 24, 20, 35;
+  --color-secondary: #231F30;
+  --color-secondary-fg: #A1A1AA;
+  --color-muted: #1C1828;
+  --color-muted-fg: #8B8B9A;
+  --color-border: #2D2840;
+  --color-accent: #A78BFA;
+  --color-accent-fg: #09080C;
+  --color-accent-muted: rgba(167, 139, 250, 0.20);
+  --color-surface-raised: #1E1A2C;
+  --color-surface-recessed: #0B0A0F;
+  --color-surface-overlay: #1E1A2C;
+  --shadow-inset: inset 0 1px 2px rgba(0, 0, 0, 0.6);
+  --shadow-separator: inset 0 0 4px 0 rgba(0, 0, 0, 0.5);
+  --shadow-panel: 0 2px 12px -2px rgba(0, 0, 0, 0.7);
+  --color-separator: #2D2840;
+  --color-separator-active: #A78BFA;
+  --border-separator: #352F4A;
+  --gradient-surface: linear-gradient(180deg, #14111D 0%, #09080C 100%);
+  --gradient-panel: linear-gradient(180deg, #1E1A2C 0%, #14111D 100%);
+  --color-glow: rgba(167, 139, 250, 0.25);
+  --pane-bg: rgba(24, 20, 35, 0.94);
+  --pane-border: rgba(45, 40, 64, 0.6);
+  --chat-shell-shadow: 0 24px 60px -34px rgba(0, 0, 0, 0.86), 0 0 0 1px rgba(167, 139, 250, 0.12);
+  --chat-card-shadow: 0 16px 32px -24px rgba(0, 0, 0, 0.8);
+  --chat-composer-shadow: 0 -12px 30px -26px rgba(0, 0, 0, 0.8);
+  --chat-glass-bg: rgba(24, 20, 35, 0.7);
+  --chat-glass-border: rgba(255, 255, 255, 0.08);
+  --chat-streaming-shimmer: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-error: #ef4444;
+  --color-info: #3b82f6;
+  --color-diff-add: #22c55e;
+  --color-diff-del: #ef4444;
+  --color-diff-hunk: #3b82f6;
+
+  /* App shell primitives (shared contract for TopBar + sidebar) */
+  --shell-header-height: 40px;
+  --shell-header-padding-start: 80px;
+  --shell-header-padding-end: 14px;
+  --shell-header-bg: rgba(14, 12, 20, 0.82);
+  --shell-header-fg: var(--color-fg);
+  --shell-header-border: rgba(255, 255, 255, 0.04);
+  --shell-header-divider: rgba(255, 255, 255, 0.04);
+
+  --shell-sidebar-collapsed-width: 52px;
+  --shell-sidebar-expanded-width: 168px;
+  --shell-sidebar-bg: linear-gradient(180deg, rgba(20, 17, 29, 0.88) 0%, rgba(9, 8, 12, 0.92) 100%);
+  --shell-sidebar-border: rgba(255, 255, 255, 0.04);
+  --shell-sidebar-item-height: 36px;
+  --shell-sidebar-item-fg: rgba(255, 255, 255, 0.45);
+  --shell-sidebar-item-hover-fg: rgba(255, 255, 255, 0.85);
+  --shell-sidebar-item-hover-bg: rgba(255, 255, 255, 0.05);
+  --shell-sidebar-item-active-fg: var(--color-accent);
+  --shell-sidebar-item-active-bg: rgba(167, 139, 250, 0.1);
+  --shell-sidebar-item-active-rail: var(--color-accent);
+  --shell-sidebar-separator: rgba(255, 255, 255, 0.04);
+
+  --shell-project-tab-bg: transparent;
+  --shell-project-tab-fg: rgba(255, 255, 255, 0.45);
+  --shell-project-tab-hover-bg: rgba(255, 255, 255, 0.06);
+  --shell-project-tab-hover-fg: rgba(255, 255, 255, 0.85);
+  --shell-project-tab-hover-border: rgba(255, 255, 255, 0.08);
+  --shell-project-tab-active-bg: rgba(167, 139, 250, 0.15);
+  --shell-project-tab-active-fg: #e0d4ff;
+  --shell-project-tab-active-border: rgba(167, 139, 250, 0.25);
+  --shell-project-tab-missing-bg: rgba(239, 68, 68, 0.08);
+  --shell-project-tab-missing-fg: color-mix(in srgb, var(--color-error) 82%, var(--color-fg) 18%);
+  --shell-project-tab-missing-border: rgba(239, 68, 68, 0.2);
+  --shell-project-tab-open-bg: rgba(167, 139, 250, 0.1);
+  --shell-project-tab-open-fg: rgba(255, 255, 255, 0.85);
+  --shell-project-tab-open-border: rgba(167, 139, 250, 0.2);
+  --shell-project-tab-focus-bg: rgba(167, 139, 250, 0.08);
+  --shell-project-tab-focus-fg: rgba(255, 255, 255, 0.85);
+  --shell-project-tab-focus-border: rgba(167, 139, 250, 0.2);
+  --shell-project-tab-focus-ring: rgba(167, 139, 250, 0.15);
+  --shell-project-tab-font-family: var(--font-sans);
+  --shell-project-tab-font-size: 11px;
+  --shell-project-tab-letter-spacing: 0;
+
+  --shell-control-bg: rgba(255, 255, 255, 0.03);
+  --shell-control-fg: rgba(255, 255, 255, 0.5);
+  --shell-control-border: rgba(255, 255, 255, 0.06);
+  --shell-control-hover-bg: rgba(255, 255, 255, 0.06);
+  --shell-control-hover-fg: rgba(255, 255, 255, 0.85);
+  --shell-control-hover-border: rgba(255, 255, 255, 0.1);
+  --shell-control-open-bg: rgba(167, 139, 250, 0.1);
+  --shell-control-open-fg: rgba(255, 255, 255, 0.9);
+  --shell-control-open-border: rgba(167, 139, 250, 0.2);
+  --shell-control-focus-bg: rgba(255, 255, 255, 0.06);
+  --shell-control-focus-fg: rgba(255, 255, 255, 0.85);
+  --shell-control-focus-border: rgba(167, 139, 250, 0.2);
+  --shell-control-focus-ring: rgba(167, 139, 250, 0.12);
+  --shell-control-kbd-bg: rgba(255, 255, 255, 0.04);
+  --shell-control-kbd-fg: rgba(255, 255, 255, 0.4);
+
+  --shell-status-running: #34d399;
+  --shell-status-attention: #fbbf24;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Light Theme
+   ═══════════════════════════════════════════════════════════ */
+
+[data-theme="light"] {
+  --color-bg: #f5f3f0;
+  --color-fg: #1a1a1e;
+  --color-surface: #faf8f5;
+  --color-card: #ffffff;
+  --color-card-fg: #1a1a1e;
+  --color-card-rgb: 255, 255, 255;
+  --color-secondary: #e8e5e0;
+  --color-secondary-fg: #52525b;
+  --color-muted: #ece9e4;
+  --color-muted-fg: #636370;
+  --color-border: #d6d3ce;
+  --color-accent: #049068;
+  --color-accent-fg: #ffffff;
+  --color-accent-muted: rgba(4, 144, 104, 0.10);
+  --color-surface-raised: #ffffff;
+  --color-surface-recessed: #eae7e2;
+  --color-surface-overlay: rgba(255, 255, 255, 0.92);
+  --shadow-inset: inset 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-separator: inset 0 0 4px 0 rgba(0, 0, 0, 0.06);
+  --shadow-panel: 0 4px 16px -4px rgba(0, 0, 0, 0.08), 0 1px 3px -1px rgba(0, 0, 0, 0.05);
+  --color-separator: #e8e5e0;
+  --color-separator-active: #049068;
+  --border-separator: #d6d3ce;
+  --gradient-surface: linear-gradient(180deg, #faf8f5, #f5f3f0);
+  --gradient-panel: linear-gradient(180deg, #ffffff 0%, #faf8f5 100%);
+  --color-glow: rgba(4, 144, 104, 0.12);
+  --pane-bg: rgba(255, 255, 255, 0.88);
+  --pane-border: rgba(212, 209, 204, 0.5);
+  --chat-shell-shadow: 0 18px 42px -28px rgba(15, 23, 42, 0.18), 0 0 0 1px rgba(4, 144, 104, 0.1);
+  --chat-card-shadow: 0 14px 28px -24px rgba(15, 23, 42, 0.14);
+  --chat-composer-shadow: 0 -12px 22px -24px rgba(15, 23, 42, 0.12);
+  --chat-glass-bg: rgba(255, 255, 255, 0.76);
+  --chat-glass-border: rgba(26, 26, 30, 0.08);
+  --chat-streaming-shimmer: linear-gradient(90deg, transparent, rgba(26,26,30,0.08), transparent);
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+  --color-error: #dc2626;
+  --color-info: #2563eb;
+  --color-diff-add: #16a34a;
+  --color-diff-del: #dc2626;
+  --color-diff-hunk: #2563eb;
+
+  --shell-header-bg: color-mix(in srgb, var(--color-surface-raised) 90%, var(--color-bg));
+  --shell-header-fg: var(--color-fg);
+  --shell-header-border: color-mix(in srgb, var(--color-border) 78%, transparent);
+  --shell-header-divider: color-mix(in srgb, var(--color-border) 60%, transparent);
+
+  --shell-sidebar-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(245, 243, 240, 0.98) 100%);
+  --shell-sidebar-border: color-mix(in srgb, var(--color-border) 72%, transparent);
+  --shell-sidebar-item-fg: color-mix(in srgb, var(--color-muted-fg) 86%, var(--color-fg) 14%);
+  --shell-sidebar-item-hover-fg: var(--color-fg);
+  --shell-sidebar-item-hover-bg: color-mix(in srgb, var(--color-muted) 86%, transparent);
+  --shell-sidebar-item-active-fg: var(--color-accent);
+  --shell-sidebar-item-active-bg: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  --shell-sidebar-item-active-rail: var(--color-accent);
+  --shell-sidebar-separator: color-mix(in srgb, var(--color-border) 62%, transparent);
+
+  --shell-project-tab-bg: transparent;
+  --shell-project-tab-fg: color-mix(in srgb, var(--color-muted-fg) 86%, var(--color-fg) 14%);
+  --shell-project-tab-hover-bg: color-mix(in srgb, var(--color-muted) 86%, transparent);
+  --shell-project-tab-hover-fg: var(--color-fg);
+  --shell-project-tab-hover-border: color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
+  --shell-project-tab-active-bg: var(--color-accent);
+  --shell-project-tab-active-fg: var(--color-accent-fg);
+  --shell-project-tab-active-border: color-mix(in srgb, var(--color-accent) 52%, transparent);
+  --shell-project-tab-missing-bg: color-mix(in srgb, var(--color-error) 9%, transparent);
+  --shell-project-tab-missing-fg: color-mix(in srgb, var(--color-error) 86%, var(--color-fg) 14%);
+  --shell-project-tab-missing-border: color-mix(in srgb, var(--color-error) 38%, transparent);
+  --shell-project-tab-open-bg: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  --shell-project-tab-open-fg: var(--color-fg);
+  --shell-project-tab-open-border: color-mix(in srgb, var(--color-accent) 44%, var(--color-border));
+  --shell-project-tab-focus-bg: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  --shell-project-tab-focus-fg: var(--color-fg);
+  --shell-project-tab-focus-border: color-mix(in srgb, var(--color-accent) 36%, var(--color-border));
+  --shell-project-tab-focus-ring: color-mix(in srgb, var(--color-accent) 26%, transparent);
+
+  --shell-control-bg: var(--color-surface-recessed);
+  --shell-control-fg: color-mix(in srgb, var(--color-muted-fg) 86%, var(--color-fg) 14%);
+  --shell-control-border: color-mix(in srgb, var(--color-border) 84%, var(--color-muted-fg) 16%);
+  --shell-control-hover-bg: var(--color-surface-recessed);
+  --shell-control-hover-fg: var(--color-fg);
+  --shell-control-hover-border: color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
+  --shell-control-open-bg: color-mix(in srgb, var(--color-accent) 10%, var(--shell-control-bg));
+  --shell-control-open-fg: var(--color-fg);
+  --shell-control-open-border: color-mix(in srgb, var(--color-accent) 40%, var(--shell-control-border));
+  --shell-control-focus-bg: var(--shell-control-hover-bg);
+  --shell-control-focus-fg: var(--shell-control-hover-fg);
+  --shell-control-focus-border: color-mix(in srgb, var(--color-accent) 32%, var(--shell-control-border));
+  --shell-control-focus-ring: color-mix(in srgb, var(--color-accent) 26%, transparent);
+  --shell-control-kbd-bg: color-mix(in srgb, var(--color-surface) 80%, var(--color-bg));
+  --shell-control-kbd-fg: color-mix(in srgb, var(--color-muted-fg) 84%, var(--color-fg) 16%);
+
+  --shell-status-running: #10b981;
+  --shell-status-attention: #d97706;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Per-Tab Tint System
+   ═══════════════════════════════════════════════════════════ */
+
+.tab-tint-project { --tab-tint-rgb: 167, 139, 250; }
+.tab-tint-lanes { --tab-tint-rgb: 245, 158, 11; }
+.tab-tint-files { --tab-tint-rgb: 113, 113, 122; }
+.tab-tint-work { --tab-tint-rgb: 34, 197, 94; }
+.tab-tint-conflicts { --tab-tint-rgb: 239, 68, 68; }
+.tab-tint-graph { --tab-tint-rgb: 99, 102, 241; }
+.tab-tint-prs { --tab-tint-rgb: 167, 139, 250; }
+.tab-tint-history { --tab-tint-rgb: 217, 119, 6; }
+.tab-tint-automations { --tab-tint-rgb: 249, 115, 22; }
+.tab-tint-missions { --tab-tint-rgb: 59, 130, 246; }
+.tab-tint-settings { --tab-tint-rgb: 113, 113, 122; }
+
+/* ═══════════════════════════════════════════════════════════
+   Base Styles
+   ═══════════════════════════════════════════════════════════ */
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--color-fg);
+  background-color: var(--color-bg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "ss01";
+  letter-spacing: 0;
+}
+
+/* Keep xterm glyph metrics isolated from global typography rules. */
+.xterm,
+.xterm .xterm-helper-textarea,
+.xterm .xterm-char-measure-element {
+  letter-spacing: 0 !important;
+  font-feature-settings: normal !important;
+  font-variant-ligatures: none !important;
+  font-kerning: none;
+}
+
+.ade-terminal-host,
+.ade-terminal-host .xterm {
+  width: 100%;
+  height: 100%;
+}
+
+.ade-terminal-host .xterm-viewport {
+  overscroll-behavior: contain;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+/* Theme-aware prose for agent chat markdown */
+.ade-prose-themed,
+.ade-prose-themed :is(p, h1, h2, h3, h4, h5, h6, li, strong, em, td, th, blockquote, dd, dt, figcaption) {
+  color: var(--color-fg);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   App Shell Primitive Utilities
+   ═══════════════════════════════════════════════════════════ */
+
+.ade-shell-header {
+  height: var(--shell-header-height);
+  padding-left: var(--shell-header-padding-start);
+  padding-right: var(--shell-header-padding-end);
+  color: var(--shell-header-fg);
+  background: var(--shell-header-bg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-bottom: 1px solid var(--shell-header-border);
+}
+
+.ade-shell-header-divider {
+  background: var(--shell-header-divider);
+}
+
+.ade-shell-project-tab {
+  font-family: var(--shell-project-tab-font-family);
+  font-size: var(--shell-project-tab-font-size);
+  letter-spacing: var(--shell-project-tab-letter-spacing);
+  color: var(--shell-project-tab-fg);
+  background: var(--shell-project-tab-bg);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  outline: none;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.ade-shell-project-tab:hover {
+  color: var(--shell-project-tab-hover-fg);
+  background: var(--shell-project-tab-hover-bg);
+  border-color: var(--shell-project-tab-hover-border);
+}
+
+.ade-shell-project-tab[data-state="active"] {
+  color: var(--shell-project-tab-active-fg);
+  background: var(--shell-project-tab-active-bg);
+  border-color: var(--shell-project-tab-active-border);
+}
+
+.ade-shell-project-tab[data-state="missing"] {
+  color: var(--shell-project-tab-missing-fg);
+  background: var(--shell-project-tab-missing-bg);
+  border-color: var(--shell-project-tab-missing-border);
+}
+
+.ade-shell-project-tab[data-state="open"] {
+  color: var(--shell-project-tab-open-fg);
+  background: var(--shell-project-tab-open-bg);
+  border-color: var(--shell-project-tab-open-border);
+}
+
+.ade-shell-project-tab:focus-visible {
+  color: var(--shell-project-tab-focus-fg);
+  background: var(--shell-project-tab-focus-bg);
+  border-color: var(--shell-project-tab-focus-border);
+  box-shadow: inset 0 0 0 1px var(--shell-project-tab-focus-ring);
+}
+
+.ade-shell-control {
+  color: var(--shell-control-fg);
+  background: var(--shell-control-bg);
+  border: 1px solid var(--shell-control-border);
+  border-radius: 8px;
+  outline: none;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.ade-shell-control:hover {
+  color: var(--shell-control-hover-fg);
+  background: var(--shell-control-hover-bg);
+  border-color: var(--shell-control-hover-border);
+}
+
+.ade-shell-control[data-state="open"] {
+  color: var(--shell-control-open-fg);
+  background: var(--shell-control-open-bg);
+  border-color: var(--shell-control-open-border);
+}
+
+.ade-shell-control:focus-visible {
+  color: var(--shell-control-focus-fg);
+  background: var(--shell-control-focus-bg);
+  border-color: var(--shell-control-focus-border);
+  box-shadow: inset 0 0 0 1px var(--shell-control-focus-ring);
+}
+
+.ade-shell-control[data-variant="ghost"] {
+  color: var(--shell-control-fg);
+  background: transparent;
+  border-color: transparent;
+}
+
+.ade-shell-control[data-variant="ghost"]:hover {
+  color: var(--shell-control-hover-fg);
+  background: color-mix(in srgb, var(--shell-control-hover-bg) 64%, transparent);
+  border-color: color-mix(in srgb, var(--shell-control-hover-border) 68%, transparent);
+}
+
+.ade-shell-control[data-variant="ghost"][data-state="open"] {
+  color: var(--shell-control-open-fg);
+  background: color-mix(in srgb, var(--shell-control-open-bg) 74%, transparent);
+  border-color: color-mix(in srgb, var(--shell-control-open-border) 72%, transparent);
+}
+
+.ade-shell-control[data-variant="ghost"]:focus-visible {
+  color: var(--shell-control-focus-fg);
+  background: color-mix(in srgb, var(--shell-control-focus-bg) 72%, transparent);
+  border-color: color-mix(in srgb, var(--shell-control-focus-border) 72%, transparent);
+  box-shadow: inset 0 0 0 1px var(--shell-control-focus-ring);
+}
+
+.ade-shell-control-kbd {
+  color: var(--shell-control-kbd-fg);
+  background: var(--shell-control-kbd-bg);
+  border: 1px solid var(--shell-control-border);
+}
+
+.ade-shell-sidebar-item {
+  min-height: var(--shell-sidebar-item-height);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--shell-sidebar-item-fg);
+  background: transparent;
+  border-radius: 8px;
+  outline: none;
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.ade-shell-sidebar-item:hover {
+  color: var(--shell-sidebar-item-hover-fg);
+  background: var(--shell-sidebar-item-hover-bg);
+}
+
+.ade-shell-sidebar-item[data-active="true"] {
+  color: var(--shell-sidebar-item-active-fg);
+  background: var(--shell-sidebar-item-active-bg);
+  font-weight: 600;
+}
+
+.ade-shell-sidebar-item:focus-visible {
+  color: var(--shell-sidebar-item-hover-fg);
+  background: color-mix(in srgb, var(--shell-sidebar-item-active-bg) 72%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--shell-sidebar-item-active-rail) 45%, transparent);
+}
+
+.ade-shell-sidebar-icon {
+  color: currentColor;
+}
+
+.ade-shell-sidebar-icon-slot {
+  width: var(--shell-sidebar-collapsed-width);
+}
+
+.ade-shell-sidebar-item[data-active="true"] .ade-shell-sidebar-icon {
+  color: var(--shell-sidebar-item-active-fg);
+}
+
+.ade-shell-sidebar-separator {
+  border-color: var(--shell-sidebar-separator);
+}
+
+.ade-shell-sidebar-active-rail {
+  background: var(--shell-sidebar-item-active-rail);
+}
+
+.ade-shell-sidebar-menu {
+  background: var(--shell-sidebar-bg);
+  border: 1px solid var(--shell-sidebar-border);
+  border-radius: 12px;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+.ade-shell-sidebar-menu-item {
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  color: var(--shell-sidebar-item-fg);
+  background: transparent;
+  border-radius: 8px;
+}
+
+.ade-shell-sidebar-menu-item:hover {
+  color: var(--shell-sidebar-item-hover-fg);
+  background: var(--shell-sidebar-item-hover-bg);
+}
+
+.ade-shell-sidebar-menu-item:focus-visible {
+  outline: none;
+  color: var(--shell-sidebar-item-hover-fg);
+  background: color-mix(in srgb, var(--shell-sidebar-item-active-bg) 72%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--shell-sidebar-item-active-rail) 45%, transparent);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Collapsible Sidebar
+   ═══════════════════════════════════════════════════════════ */
+
+/* Outer clip container — only width changes, icons never reflow */
+.ade-sidebar-clip {
+  width: var(--shell-sidebar-collapsed-width);
+  overflow: hidden;
+  border-right-color: rgba(255, 255, 255, 0.04);
+  transition: width 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.ade-sidebar-clip:hover {
+  width: var(--shell-sidebar-expanded-width);
+}
+
+/* Inner content — always full expanded width so icon positions are pixel-stable */
+.ade-sidebar {
+  width: var(--shell-sidebar-expanded-width);
+  background: var(--shell-sidebar-bg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+/* Phase-2 label animation: fade out immediately, fade in after width expands */
+.ade-tab-label {
+  opacity: 0;
+  transition: opacity 80ms ease 0ms;
+  will-change: opacity;
+}
+
+.ade-sidebar-clip:hover .ade-tab-label {
+  opacity: 1;
+  transition: opacity 80ms ease 140ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-sidebar-clip {
+    transition: width 0ms;
+  }
+  .ade-tab-label,
+  .ade-sidebar-clip:hover .ade-tab-label {
+    transition: opacity 0ms;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Resize Gutter
+   ═══════════════════════════════════════════════════════════ */
+
+.ade-gutter {
+  position: relative;
+  z-index: 10;
+  background: var(--color-separator);
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ade-gutter.vertical {
+  width: 8px;
+  cursor: col-resize;
+  border-left: 1px solid var(--border-separator);
+  border-right: 1px solid var(--border-separator);
+  box-shadow: var(--shadow-separator);
+}
+
+.ade-gutter.horizontal {
+  height: 8px;
+  cursor: row-resize;
+  border-top: 1px solid var(--border-separator);
+  border-bottom: 1px solid var(--border-separator);
+  box-shadow: var(--shadow-separator);
+}
+
+.ade-gutter::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  background-color: transparent;
+}
+
+.ade-gutter .ade-gutter-handle {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.ade-gutter .ade-gutter-pill {
+  border-radius: 4px;
+  background: var(--border-separator);
+  opacity: 0;
+  transition: opacity 0.1s ease, background-color 0.1s ease;
+}
+
+.ade-gutter.vertical .ade-gutter-pill {
+  width: 4px;
+  height: 28px;
+}
+
+.ade-gutter.horizontal .ade-gutter-pill {
+  width: 28px;
+  height: 4px;
+}
+
+.ade-gutter:hover .ade-gutter-pill {
+  opacity: 1;
+  background: var(--color-separator-active);
+}
+
+.ade-gutter[data-resize-handle-active] .ade-gutter-pill,
+.ade-gutter.dragging .ade-gutter-pill {
+  opacity: 1;
+  background: var(--color-separator-active);
+  box-shadow: 0 0 8px 2px var(--color-glow);
+}
+
+.ade-gutter:hover {
+  background: color-mix(in srgb, var(--color-separator-active) 12%, var(--color-separator));
+}
+
+.ade-gutter[data-resize-handle-active],
+.ade-gutter.dragging {
+  background: color-mix(in srgb, var(--color-separator-active) 18%, var(--color-separator));
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Floating Pane System
+   ═══════════════════════════════════════════════════════════ */
+
+.ade-pane-container {
+  display: flex;
+  gap: var(--pane-gap);
+  padding: var(--pane-gap);
+  height: 100%;
+  min-height: 0;
+}
+
+.ade-floating-pane {
+  background: var(--pane-bg);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-radius: var(--pane-radius);
+  border: 1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.2);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  transition: border-color 0.15s ease, box-shadow 0.2s ease, transform 0.15s ease;
+}
+
+.ade-floating-pane:hover {
+  border-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.25);
+  box-shadow:
+    var(--shadow-card-hover),
+    0 0 20px -8px rgba(var(--tab-tint-rgb, 113, 113, 122), 0.1);
+}
+
+.ade-floating-pane:focus-within {
+  border-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.3);
+  box-shadow:
+    var(--shadow-card-hover),
+    0 0 0 1px rgba(var(--tab-tint-rgb, 113, 113, 122), 0.12),
+    0 0 24px -8px rgba(var(--tab-tint-rgb, 113, 113, 122), 0.15);
+}
+
+.ade-floating-pane.dragging {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-accent);
+  opacity: 0.95;
+}
+
+.ade-floating-pane.drop-target {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-accent);
+}
+
+.ade-floating-pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  min-height: 30px;
+  background: linear-gradient(180deg, rgba(var(--tab-tint-rgb, 113, 113, 122), 0.04) 0%, transparent 100%);
+  border-bottom: 1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.08);
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.ade-floating-pane-header .ade-pane-title {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-muted-fg);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.ade-floating-pane.minimized {
+  max-height: var(--pane-minimized-height);
+  overflow: hidden;
+}
+
+/* Minimized pane header - accent left edge */
+.ade-floating-pane-header-minimized {
+  border-left: 2px solid var(--color-accent);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--color-accent) 8%, transparent) 0%, transparent 40%);
+  border-bottom: 1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.08);
+  min-height: 28px;
+}
+
+.ade-floating-pane-header-minimized .ade-pane-title {
+  color: var(--color-fg);
+  font-weight: 600;
+}
+
+/* Drop zone overlay for edge-split drag targets */
+.ade-drop-zone-overlay {
+  position: absolute;
+  pointer-events: none;
+  border-radius: var(--pane-radius);
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--color-accent) 30%, transparent);
+  z-index: 5;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Right Edge Floating Pane
+   ═══════════════════════════════════════════════════════════ */
+
+.ade-right-pane-launcher {
+  position: absolute;
+  right: 0;
+  transform: translateY(-50%);
+  width: 34px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 26%, var(--color-border));
+  border-right: none;
+  border-radius: 12px 0 0 12px;
+  color: color-mix(in srgb, var(--color-fg) 88%, var(--color-accent));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-surface-overlay) 96%, var(--color-accent) 4%),
+    color-mix(in srgb, var(--color-surface-recessed) 95%, var(--color-accent) 5%)
+  );
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow:
+    0 8px 20px -14px color-mix(in srgb, var(--color-accent) 44%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 10%, transparent);
+  transition: width 180ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 180ms ease, color 120ms ease, background 180ms ease;
+  cursor: pointer;
+  outline: none;
+}
+
+.ade-right-pane-launcher:hover {
+  color: var(--color-fg);
+  box-shadow:
+    0 12px 26px -14px color-mix(in srgb, var(--color-accent) 50%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 20%, transparent);
+}
+
+.ade-right-pane-launcher:focus-visible {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 36%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--color-accent) 18%, transparent),
+    0 12px 26px -14px color-mix(in srgb, var(--color-accent) 48%, transparent);
+}
+
+.ade-right-pane-launcher.dragging {
+  cursor: ns-resize;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 56%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--color-accent) 22%, transparent);
+}
+
+.ade-right-floating-pane {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 14%, var(--color-border));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-surface-overlay) 94%, var(--color-accent) 6%),
+    color-mix(in srgb, var(--color-surface) 96%, var(--color-bg) 4%)
+  );
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow:
+    0 18px 44px -26px color-mix(in srgb, black 68%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 8%, transparent);
+  overflow: hidden;
+}
+
+.ade-right-floating-pane.dragging {
+  box-shadow:
+    0 20px 50px -24px color-mix(in srgb, black 74%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 30%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+.ade-right-floating-pane-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 42px;
+  padding: 8px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-accent) 10%, var(--color-border));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-accent) 5%, var(--color-surface-raised)),
+    color-mix(in srgb, var(--color-surface-raised) 92%, transparent)
+  );
+  cursor: grab;
+  user-select: none;
+}
+
+.ade-right-floating-pane.dragging .ade-right-floating-pane-toolbar {
+  cursor: grabbing;
+}
+
+.ade-right-pane-toolbar-left {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.ade-right-pane-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.ade-right-pane-lane-select {
+  height: 28px;
+  min-width: 130px;
+  max-width: 190px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 14%, var(--color-border));
+  background: color-mix(in srgb, var(--color-surface-recessed) 80%, transparent);
+  color: var(--color-fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 0 8px;
+  outline: none;
+  appearance: none;
+}
+
+.ade-right-pane-view-tabs {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.ade-right-pane-view-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.ade-right-pane-view-tab {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: color-mix(in srgb, var(--color-muted-fg) 84%, var(--color-fg));
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.ade-right-pane-view-tab:hover {
+  color: var(--color-fg);
+  border-color: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+}
+
+.ade-right-pane-view-tab.active {
+  color: var(--color-fg);
+  border-color: color-mix(in srgb, var(--color-accent) 24%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 13%, transparent);
+}
+
+.ade-right-floating-pane-hide {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 12%, var(--color-border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-surface-recessed) 76%, transparent);
+  color: color-mix(in srgb, var(--color-muted-fg) 82%, var(--color-fg));
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.ade-right-floating-pane-hide:hover {
+  color: var(--color-fg);
+  border-color: color-mix(in srgb, var(--color-accent) 24%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+
+.ade-right-pane-workspace {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ade-right-pane-empty-state {
+  height: 100%;
+  min-height: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-top: 1px solid color-mix(in srgb, var(--color-accent) 8%, var(--color-border));
+  color: color-mix(in srgb, var(--color-muted-fg) 84%, var(--color-fg));
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  flex-shrink: 0;
+}
+
+.ade-right-pane-resize-handle {
+  position: absolute;
+  z-index: 6;
+}
+
+.ade-right-pane-resize-handle.dir-n {
+  top: -4px;
+  left: 10px;
+  right: 10px;
+  height: 8px;
+  cursor: n-resize;
+}
+
+.ade-right-pane-resize-handle.dir-s {
+  bottom: -4px;
+  left: 10px;
+  right: 10px;
+  height: 8px;
+  cursor: s-resize;
+}
+
+.ade-right-pane-resize-handle.dir-e {
+  right: -4px;
+  top: 10px;
+  bottom: 10px;
+  width: 8px;
+  cursor: e-resize;
+}
+
+.ade-right-pane-resize-handle.dir-w {
+  left: -4px;
+  top: 10px;
+  bottom: 10px;
+  width: 8px;
+  cursor: w-resize;
+}
+
+.ade-right-pane-resize-handle.dir-ne {
+  right: -5px;
+  top: -5px;
+  width: 12px;
+  height: 12px;
+  cursor: ne-resize;
+}
+
+.ade-right-pane-resize-handle.dir-nw {
+  left: -5px;
+  top: -5px;
+  width: 12px;
+  height: 12px;
+  cursor: nw-resize;
+}
+
+.ade-right-pane-resize-handle.dir-se {
+  right: -5px;
+  bottom: -5px;
+  width: 12px;
+  height: 12px;
+  cursor: se-resize;
+}
+
+.ade-right-pane-resize-handle.dir-sw {
+  left: -5px;
+  bottom: -5px;
+  width: 12px;
+  height: 12px;
+  cursor: sw-resize;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Pane Gutters (inside floating pane containers)
+   ═══════════════════════════════════════════════════════════ */
+
+.ade-pane-gutter.vertical {
+  width: 8px;
+  cursor: col-resize;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.ade-pane-gutter.horizontal {
+  height: 8px;
+  cursor: row-resize;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.ade-pane-gutter {
+  position: relative;
+  z-index: 10;
+}
+
+.ade-pane-gutter::after {
+  content: "";
+  position: absolute;
+  inset: -10px;
+}
+
+.ade-pane-gutter::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--color-separator) 72%, transparent);
+  opacity: 0.45;
+  transition: opacity 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ade-pane-gutter.vertical::before {
+  width: 2px;
+  height: 24px;
+}
+
+.ade-pane-gutter.horizontal::before {
+  width: 24px;
+  height: 2px;
+}
+
+.ade-pane-gutter:hover,
+.ade-pane-gutter[data-resize-handle-active] {
+  background: color-mix(in srgb, var(--color-separator-active) 8%, transparent);
+  border-radius: 4px;
+}
+
+.ade-pane-gutter:hover::before,
+.ade-pane-gutter[data-resize-handle-active]::before {
+  opacity: 1;
+  background: var(--color-separator-active);
+  box-shadow: 0 0 8px 1px var(--color-glow);
+}
+
+.ade-pane-gutter .ade-gutter-pill {
+  display: none;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Lane Divider
+   ═══════════════════════════════════════════════════════════ */
+
+.ade-lane-divider {
+  position: relative;
+  z-index: 12;
+  background: color-mix(in srgb, var(--color-separator-active) 15%, var(--color-surface-recessed));
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ade-lane-divider.vertical {
+  width: 14px;
+  cursor: col-resize;
+  border-left: 1px solid color-mix(in srgb, var(--color-separator-active) 30%, var(--border-separator));
+  border-right: 1px solid color-mix(in srgb, var(--color-separator-active) 30%, var(--border-separator));
+}
+
+.ade-lane-divider.horizontal {
+  height: 14px;
+  cursor: row-resize;
+  border-top: 1px solid color-mix(in srgb, var(--color-separator-active) 30%, var(--border-separator));
+  border-bottom: 1px solid color-mix(in srgb, var(--color-separator-active) 30%, var(--border-separator));
+}
+
+.ade-lane-divider::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+}
+
+/* Lane divider indicator dots */
+.ade-lane-divider::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  pointer-events: none;
+  background: var(--color-separator-active);
+  opacity: 0.5;
+  transition: opacity 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ade-lane-divider.vertical::before {
+  width: 3px;
+  height: 32px;
+}
+
+.ade-lane-divider.horizontal::before {
+  width: 32px;
+  height: 3px;
+}
+
+.ade-lane-divider:hover {
+  background: color-mix(in srgb, var(--color-separator-active) 25%, var(--color-surface-recessed));
+}
+
+.ade-lane-divider:hover::before {
+  opacity: 1;
+  box-shadow: 0 0 10px 2px var(--color-glow);
+}
+
+.ade-lane-divider[data-resize-handle-active] {
+  background: color-mix(in srgb, var(--color-separator-active) 30%, var(--color-surface-recessed));
+}
+
+.ade-lane-divider[data-resize-handle-active]::before {
+  opacity: 1;
+  box-shadow: 0 0 14px 3px var(--color-glow);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Tiling Surface & Panel Header
+   ═══════════════════════════════════════════════════════════ */
+
+.ade-tiling-surface {
+  background: var(--gradient-surface);
+  padding: var(--pane-gap);
+}
+
+.ade-panel-header {
+  background: linear-gradient(180deg, var(--color-surface-raised) 0%, var(--color-surface) 100%);
+  border-bottom: 1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.08);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Scrollbars
+   ═══════════════════════════════════════════════════════════ */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background-color: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.18);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.35);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Conflict Markers
+   ═══════════════════════════════════════════════════════════ */
+
+.ade-conflict-ours-line {
+  background: rgba(0, 200, 0, 0.1);
+}
+
+.ade-conflict-theirs-line {
+  background: rgba(200, 0, 0, 0.1);
+}
+
+.ade-conflict-marker-line {
+  background: rgba(220, 38, 38, 0.2);
+  font-weight: 700;
+}
+
+.ade-conflict-marker-glyph {
+  background: rgba(220, 38, 38, 0.55);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Refined Pane Treatment
+   ═══════════════════════════════════════════════════════════ */
+
+.ade-pane {
+  background: rgba(var(--color-card-rgb, 24, 20, 35), 0.8);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.15);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  transition: border-color 150ms ease, box-shadow 200ms ease, transform 150ms ease;
+}
+.ade-pane:hover {
+  border-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.22);
+  box-shadow: var(--shadow-card-hover);
+}
+.ade-pane:focus-within {
+  border-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.3);
+  box-shadow: var(--shadow-card-hover), 0 0 0 1px rgba(var(--tab-tint-rgb, 113, 113, 122), 0.1), 0 0 20px -8px rgba(var(--tab-tint-rgb, 113, 113, 122), 0.12);
+}
+
+/* Global input focus ring (ensures all inputs get consistent treatment) */
+input:not([type="checkbox"]):not([type="radio"]):not(.xterm-helper-textarea):focus,
+textarea:focus,
+select:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px var(--color-accent-muted);
+  outline: none;
+  transition: border-color 150ms, box-shadow 150ms;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Radix Dialog Animations
+   ═══════════════════════════════════════════════════════════ */
+
+@keyframes ade-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes ade-dialog-in {
+  from { opacity: 0; transform: translateX(-50%) scale(0.96); }
+  to { opacity: 1; transform: translateX(-50%) scale(1); }
+}
+
+[data-radix-dialog-overlay] {
+  animation: ade-overlay-in 150ms ease-out;
+}
+
+[data-radix-dialog-content] {
+  animation: ade-dialog-in 200ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Radix Popover / Dropdown / Select Animations */
+@keyframes ade-popover-in {
+  from { opacity: 0; transform: scaleY(0.96); }
+  to { opacity: 1; transform: scaleY(1); }
+}
+
+@keyframes ade-popover-out {
+  from { opacity: 1; transform: scaleY(1); }
+  to { opacity: 0; transform: scaleY(0.96); }
+}
+
+[data-radix-popper-content-wrapper] [data-state="open"],
+[data-radix-select-content][data-state="open"],
+[data-radix-dropdown-menu-content][data-state="open"] {
+  transform-origin: var(--radix-popper-transform-origin, top);
+  animation: ade-popover-in 150ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+[data-radix-popper-content-wrapper] [data-state="closed"],
+[data-radix-select-content][data-state="closed"],
+[data-radix-dropdown-menu-content][data-state="closed"] {
+  animation: ade-popover-out 100ms ease-in;
+}
+
+/* Dropdown item stagger */
+[data-radix-dropdown-menu-content] [role="menuitem"],
+[data-radix-select-content] [role="option"] {
+  animation: ade-dropdown-item-in 120ms ease-out both;
+}
+
+@keyframes ade-dropdown-item-in {
+  from { opacity: 0; transform: translateX(-4px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+/* Stagger delay for first 8 items */
+[data-radix-dropdown-menu-content] [role="menuitem"]:nth-child(1),
+[data-radix-select-content] [role="option"]:nth-child(1) { animation-delay: 0ms; }
+[data-radix-dropdown-menu-content] [role="menuitem"]:nth-child(2),
+[data-radix-select-content] [role="option"]:nth-child(2) { animation-delay: 20ms; }
+[data-radix-dropdown-menu-content] [role="menuitem"]:nth-child(3),
+[data-radix-select-content] [role="option"]:nth-child(3) { animation-delay: 40ms; }
+[data-radix-dropdown-menu-content] [role="menuitem"]:nth-child(4),
+[data-radix-select-content] [role="option"]:nth-child(4) { animation-delay: 60ms; }
+[data-radix-dropdown-menu-content] [role="menuitem"]:nth-child(5),
+[data-radix-select-content] [role="option"]:nth-child(5) { animation-delay: 80ms; }
+[data-radix-dropdown-menu-content] [role="menuitem"]:nth-child(6),
+[data-radix-select-content] [role="option"]:nth-child(6) { animation-delay: 100ms; }
+[data-radix-dropdown-menu-content] [role="menuitem"]:nth-child(7),
+[data-radix-select-content] [role="option"]:nth-child(7) { animation-delay: 120ms; }
+[data-radix-dropdown-menu-content] [role="menuitem"]:nth-child(8),
+[data-radix-select-content] [role="option"]:nth-child(8) { animation-delay: 140ms; }
+
+/* ═══════════════════════════════════════════════════════════
+   Button Micro-interactions
+   ═══════════════════════════════════════════════════════════ */
+
+button, [role="button"] {
+  transition: transform 60ms ease, box-shadow 150ms ease;
+}
+button:active, [role="button"]:active {
+  transform: scale(0.97) translateY(0.5px);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Risk & Conflict Animations
+   ═══════════════════════════════════════════════════════════ */
+
+@keyframes ade-shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.ade-risk-skeleton {
+  position: relative;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--color-muted) 80%, transparent);
+}
+
+.ade-risk-skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--color-bg) 55%, transparent), transparent);
+  animation: ade-shimmer 1.25s ease-in-out infinite;
+}
+
+@keyframes ade-risk-cell-enter {
+  0% {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.ade-risk-cell-enter {
+  animation: ade-risk-cell-enter 240ms ease-out;
+}
+
+@keyframes ade-risk-pulse-out {
+  0% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55);
+  }
+  100% {
+    box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
+  }
+}
+
+@keyframes ade-risk-pulse-in {
+  0% {
+    box-shadow: inset 0 0 0 0 rgba(16, 185, 129, 0.55);
+  }
+  100% {
+    box-shadow: inset 0 0 0 10px rgba(16, 185, 129, 0);
+  }
+}
+
+.ade-risk-cell-increase {
+  animation: ade-risk-pulse-out 380ms ease-out;
+}
+
+.ade-risk-cell-decrease {
+  animation: ade-risk-pulse-in 320ms ease-out;
+}
+
+@keyframes ade-conflict-badge-worse {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.3);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes ade-conflict-badge-better {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.55);
+  }
+  50% {
+    transform: scale(1.2);
+    box-shadow: 0 0 0 5px rgba(16, 185, 129, 0.28);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+  }
+}
+
+.ade-conflict-badge-worse {
+  animation: ade-conflict-badge-worse 600ms ease-in-out 3;
+  transform-origin: center;
+}
+
+.ade-conflict-badge-better {
+  animation: ade-conflict-badge-better 300ms ease-out 1;
+  transform-origin: center;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Tooltip Animations
+   ═══════════════════════════════════════════════════════════ */
+
+.ade-tooltip-motion {
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+
+.ade-tooltip-open {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.ade-tooltip-closed {
+  opacity: 0;
+  transform: translateY(3px) scale(0.98);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Edge Path & PR Animations
+   ═══════════════════════════════════════════════════════════ */
+
+.ade-edge-path {
+  transition: opacity 200ms ease, stroke-width 200ms ease, stroke 260ms ease;
+}
+
+@keyframes ade-pr-edge-active {
+  0% {
+    stroke-dashoffset: 0;
+    filter: drop-shadow(0 0 0 rgba(167, 139, 250, 0));
+  }
+  50% {
+    filter: drop-shadow(0 0 6px rgba(167, 139, 250, 0.35));
+  }
+  100% {
+    stroke-dashoffset: -18;
+    filter: drop-shadow(0 0 0 rgba(167, 139, 250, 0));
+  }
+}
+
+.ade-pr-edge-active {
+  stroke-dasharray: 8 6;
+  animation: ade-pr-edge-active 1200ms linear infinite;
+}
+
+@keyframes ade-pr-badge-pulse {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.ade-pr-badge-pulse {
+  animation: ade-pr-badge-pulse 900ms ease-in-out infinite;
+}
+
+@keyframes ade-pr-ci-pending {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.ade-pr-ci-pending {
+  animation: ade-pr-ci-pending 800ms ease-in-out infinite;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Node Animations
+   ═══════════════════════════════════════════════════════════ */
+
+@keyframes ade-node-merging-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.55);
+  }
+  100% {
+    box-shadow: 0 0 0 12px rgba(56, 189, 248, 0);
+  }
+}
+
+.ade-node-merging {
+  animation: ade-node-merging-pulse 1200ms ease-out infinite;
+}
+
+@keyframes ade-node-disappear {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+}
+
+.ade-node-disappear {
+  animation: ade-node-disappear 520ms ease-in forwards;
+}
+
+@keyframes ade-node-failed-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.7);
+  }
+  100% {
+    box-shadow: 0 0 0 10px rgba(220, 38, 38, 0);
+  }
+}
+
+.ade-node-failed-pulse {
+  animation: ade-node-failed-pulse 500ms ease-out 3;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Drop Preview & Status Pulse
+   ═══════════════════════════════════════════════════════════ */
+
+@keyframes ade-drop-preview-pop {
+  0% {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.ade-drop-preview-pop {
+  animation: ade-drop-preview-pop 160ms ease-out;
+}
+
+@keyframes ade-status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 currentColor;
+  }
+  50% {
+    opacity: 0.7;
+    box-shadow: 0 0 0 3px transparent;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Global Keyframes
+   ═══════════════════════════════════════════════════════════ */
+
+@keyframes ade-float {
+  0%,
+  100% {
+    transform: translateY(-4px);
+  }
+  50% {
+    transform: translateY(4px);
+  }
+}
+
+@keyframes ade-gradient-shift {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+@keyframes ade-particle-drift {
+  0% {
+    transform: translate(0, 0);
+  }
+  50% {
+    transform: translate(15px, -10px);
+  }
+  100% {
+    transform: translate(0, 0);
+  }
+}
+
+@keyframes ade-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.03);
+    opacity: 0.85;
+  }
+}
+
+@keyframes ade-slide-up {
+  0% {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes ade-glow-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 4px 1px var(--color-glow);
+  }
+  50% {
+    box-shadow: 0 0 12px 4px var(--color-glow);
+  }
+}
+
+
+@keyframes ade-radar-sweep {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes ade-code-rain {
+  0% {
+    transform: translateY(-100%);
+  }
+  100% {
+    transform: translateY(100%);
+  }
+}
+
+@keyframes ade-shimmer-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(200%);
+  }
+}
+
+@keyframes ade-timeline-arc {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes ade-gear-spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes ade-gear-spin-reverse {
+  0% {
+    transform: rotate(360deg);
+  }
+  100% {
+    transform: rotate(0deg);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Reduced Motion
+   ═══════════════════════════════════════════════════════════ */
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-tab-bg,
+  .ade-tab-bg::before,
+  .ade-tab-bg::after {
+    animation: none !important;
+  }
+  .ade-glow-pulse,
+  .ade-glow-pulse-blue,
+  .ade-glow-pulse-red,
+  .ade-glow-pulse-amber,
+  .ade-conflict-breathe,
+  .ade-float {
+    animation: none !important;
+  }
+  /* Dropdown item stagger — instant appearance under reduced motion */
+  [data-radix-dropdown-menu-content] [role="menuitem"],
+  [data-radix-select-content] [role="option"] {
+    animation: none !important;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Per-Tab Ambient Background System
+   ═══════════════════════════════════════════════════════════ */
+
+.ade-tab-bg {
+  opacity: 1;
+  contain: strict;
+  will-change: opacity;
+}
+
+[data-theme="dark"] .ade-tab-bg,
+:root .ade-tab-bg { opacity: 0.55; }
+[data-theme="light"] .ade-tab-bg { opacity: 0.3; }
+
+/* 1. Project — Organic Depth Field (purple #A78BFA) */
+.ade-tab-bg-project {
+  background:
+    radial-gradient(ellipse 130% 80% at 15% 50%, rgba(167, 139, 250, 0.06) 0%, transparent 70%),
+    radial-gradient(ellipse 100% 60% at 85% 25%, rgba(167, 139, 250, 0.04) 0%, transparent 60%),
+    radial-gradient(ellipse 90% 110% at 50% 85%, rgba(167, 139, 250, 0.035) 0%, transparent 50%);
+  background-size: 200% 200%;
+  animation: ade-gradient-shift 25s ease-in-out infinite;
+}
+
+.ade-tab-bg-project::before {
+  content: "";
+  position: absolute;
+  inset: -10%;
+  background:
+    radial-gradient(ellipse at 35% 40%, rgba(167, 139, 250, 0.05) 0%, transparent 35%),
+    radial-gradient(ellipse at 65% 65%, rgba(167, 139, 250, 0.035) 0%, transparent 30%);
+  animation: ade-float 16s ease-in-out infinite;
+  filter: blur(30px);
+}
+
+/* 2. Lanes — Horizontal Flow / Three-Layer Parallax (amber #f59e0b) */
+.ade-tab-bg-lanes {
+  background:
+    repeating-linear-gradient(0deg,
+      transparent,
+      transparent 99px,
+      rgba(245, 158, 11, 0.02) 99px,
+      rgba(245, 158, 11, 0.02) 100px);
+}
+
+.ade-tab-bg-lanes::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(0deg,
+      transparent,
+      transparent 59px,
+      rgba(245, 158, 11, 0.04) 59px,
+      rgba(245, 158, 11, 0.04) 60px);
+  animation: ade-particle-drift 25s ease-in-out infinite;
+}
+
+.ade-tab-bg-lanes::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(0deg,
+      transparent,
+      transparent 29px,
+      rgba(245, 158, 11, 0.025) 29px,
+      rgba(245, 158, 11, 0.025) 30px);
+  animation: ade-particle-drift 40s ease-in-out infinite reverse;
+  opacity: 0.6;
+}
+
+/* 3. Files — Explorer / Tree Wireframe (neutral) */
+.ade-tab-bg-files {
+  background:
+    linear-gradient(135deg,
+      rgba(113, 113, 122, 0.03) 0%,
+      transparent 30%);
+}
+
+.ade-tab-bg-files::before {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 200px;
+  height: 100%;
+  background:
+    linear-gradient(45deg, rgba(113, 113, 122, 0.04) 1px, transparent 1px),
+    linear-gradient(135deg, rgba(113, 113, 122, 0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+  opacity: 0.5;
+}
+
+/* 4. Terminals — Hacker Console / Code Rain + CRT Scanlines (green #22c55e) */
+.ade-tab-bg-terminals {
+  background: transparent;
+}
+
+.ade-tab-bg-terminals::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 60% 50% at 20% 50%, rgba(34, 197, 94, 0.03) 0%, transparent 70%),
+    radial-gradient(ellipse 40% 60% at 80% 40%, rgba(34, 197, 94, 0.02) 0%, transparent 70%);
+  opacity: 1;
+}
+
+/* 5. Conflicts — Battlefield / Diagonal Tension Lines (red #ef4444) */
+.ade-tab-bg-conflicts::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(45deg,
+      transparent,
+      transparent 29px,
+      rgba(239, 68, 68, 0.03) 29px,
+      rgba(239, 68, 68, 0.03) 30px),
+    repeating-linear-gradient(135deg,
+      transparent,
+      transparent 29px,
+      rgba(239, 68, 68, 0.03) 29px,
+      rgba(239, 68, 68, 0.03) 30px);
+  animation: ade-breathe 6s ease-in-out infinite;
+  opacity: 0.5;
+}
+
+/* 7. Graph — Constellation / Star-field (indigo #6366f1) */
+.ade-tab-bg-graph::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 15% 15%, rgba(99, 102, 241, 0.12) 0px, rgba(99, 102, 241, 0.12) 1px, transparent 1px),
+    radial-gradient(circle at 45% 25%, rgba(99, 102, 241, 0.08) 0px, rgba(99, 102, 241, 0.08) 1px, transparent 1px),
+    radial-gradient(circle at 75% 35%, rgba(99, 102, 241, 0.10) 0px, rgba(99, 102, 241, 0.10) 1px, transparent 1px),
+    radial-gradient(circle at 25% 55%, rgba(99, 102, 241, 0.07) 0px, rgba(99, 102, 241, 0.07) 1px, transparent 1px),
+    radial-gradient(circle at 85% 65%, rgba(99, 102, 241, 0.09) 0px, rgba(99, 102, 241, 0.09) 1px, transparent 1px),
+    radial-gradient(circle at 55% 75%, rgba(99, 102, 241, 0.06) 0px, rgba(99, 102, 241, 0.06) 1px, transparent 1px),
+    radial-gradient(circle at 35% 85%, rgba(99, 102, 241, 0.08) 0px, rgba(99, 102, 241, 0.08) 1px, transparent 1px),
+    radial-gradient(circle at 65% 90%, rgba(99, 102, 241, 0.11) 0px, rgba(99, 102, 241, 0.11) 1px, transparent 1px);
+  animation: ade-particle-drift 30s ease-in-out infinite;
+}
+
+/* 8. PRs — Launch Pad / Upward Purple Flow (purple #A78BFA) */
+.ade-tab-bg-prs {
+  background:
+    linear-gradient(0deg, rgba(167, 139, 250, 0.025) 0%, transparent 50%);
+}
+
+.ade-tab-bg-prs::before {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  width: 600px;
+  height: 100%;
+  margin-left: -300px;
+  background:
+    linear-gradient(0deg, rgba(167, 139, 250, 0.05) 0%, rgba(167, 139, 250, 0.02) 30%, transparent 65%);
+  border-radius: 50% 50% 0 0;
+  opacity: 0.7;
+  animation: ade-breathe 10s ease-in-out infinite;
+}
+
+/* 9. History — Concentric Arcs Chronicle (amber #d97706) */
+.ade-tab-bg-history {
+  background:
+    radial-gradient(circle at 85% 50%, rgba(217, 119, 6, 0.03) 0%, transparent 40%);
+}
+
+.ade-tab-bg-history::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: -80px;
+  width: 500px;
+  height: 500px;
+  margin-top: -250px;
+  background: none;
+  border: 1px solid rgba(217, 119, 6, 0.05);
+  border-radius: 50%;
+  opacity: 0.6;
+  animation: ade-timeline-arc 90s linear infinite;
+  box-shadow:
+    inset 0 0 0 60px transparent,
+    inset 0 0 0 61px rgba(217, 119, 6, 0.03),
+    inset 0 0 0 120px transparent,
+    inset 0 0 0 121px rgba(217, 119, 6, 0.025),
+    inset 0 0 0 180px transparent,
+    inset 0 0 0 181px rgba(217, 119, 6, 0.02);
+}
+
+.ade-tab-bg-history::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: -30px;
+  width: 350px;
+  height: 350px;
+  margin-top: -175px;
+  border: 1px solid rgba(217, 119, 6, 0.035);
+  border-radius: 50%;
+  opacity: 0.5;
+  animation: ade-timeline-arc 65s linear infinite reverse;
+}
+
+/* 10. Automations — Factory Floor / Rotating Gears + Heat Shimmer (orange #f97316) */
+.ade-tab-bg-automations {
+  background:
+    radial-gradient(ellipse at 80% 80%, rgba(249, 115, 22, 0.03) 0%, transparent 50%),
+    radial-gradient(ellipse at 20% 20%, rgba(249, 115, 22, 0.02) 0%, transparent 40%);
+}
+
+.ade-tab-bg-automations::before {
+  content: "";
+  position: absolute;
+  bottom: -60px;
+  right: -60px;
+  width: 200px;
+  height: 200px;
+  border: 2px dashed rgba(249, 115, 22, 0.06);
+  border-radius: 50%;
+  animation: ade-gear-spin 20s linear infinite;
+  opacity: 0.4;
+}
+
+.ade-tab-bg-automations::after {
+  content: "";
+  position: absolute;
+  bottom: -30px;
+  right: 80px;
+  width: 140px;
+  height: 140px;
+  border: 2px dashed rgba(249, 115, 22, 0.05);
+  border-radius: 50%;
+  animation: ade-gear-spin-reverse 15s linear infinite;
+  opacity: 0.35;
+}
+
+/* 11. Missions — Topographic Contour Map (blue #3b82f6) */
+.ade-tab-bg-missions {
+  background:
+    repeating-radial-gradient(circle at 50% 50%, transparent, transparent 40px, rgba(59, 130, 246, 0.025) 41px, transparent 43px),
+    repeating-radial-gradient(circle at 25% 65%, transparent, transparent 30px, rgba(59, 130, 246, 0.02) 31px, transparent 33px),
+    repeating-radial-gradient(circle at 75% 35%, transparent, transparent 35px, rgba(59, 130, 246, 0.018) 36px, transparent 38px);
+}
+
+.ade-tab-bg-missions::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-radial-gradient(ellipse 80% 60% at 40% 45%, transparent, transparent 22px, rgba(59, 130, 246, 0.015) 23px, transparent 25px),
+    repeating-radial-gradient(ellipse 60% 90% at 65% 55%, transparent, transparent 28px, rgba(59, 130, 246, 0.012) 29px, transparent 31px);
+  animation: ade-float 22s ease-in-out infinite;
+}
+
+/* 12. Settings — Workshop / Blueprint Grid (neutral) */
+.ade-tab-bg-settings {
+  background:
+    repeating-linear-gradient(0deg,
+      transparent,
+      transparent 47px,
+      rgba(113, 113, 122, 0.04) 47px,
+      rgba(113, 113, 122, 0.04) 48px),
+    repeating-linear-gradient(90deg,
+      transparent,
+      transparent 47px,
+      rgba(113, 113, 122, 0.04) 47px,
+      rgba(113, 113, 122, 0.04) 48px);
+}
+
+.ade-tab-bg-settings::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(0deg,
+      transparent,
+      transparent 7px,
+      rgba(113, 113, 122, 0.02) 7px,
+      rgba(113, 113, 122, 0.02) 8px),
+    repeating-linear-gradient(90deg,
+      transparent,
+      transparent 7px,
+      rgba(113, 113, 122, 0.02) 7px,
+      rgba(113, 113, 122, 0.02) 8px);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Utility Classes
+   ═══════════════════════════════════════════════════════════ */
+
+/* Primary button — flat, no shimmer */
+.ade-btn-shimmer {
+  position: relative;
+}
+
+/* Slide-up entrance for chips */
+.ade-chip-enter {
+  animation: ade-slide-up 200ms ease-out;
+}
+
+/* Status dot breathe */
+.ade-status-breathe {
+  animation: ade-breathe 4s ease-in-out infinite;
+}
+
+/* Float animation utility */
+.ade-float {
+  animation: ade-float 6s ease-in-out infinite;
+}
+
+/* Glow pulse utility */
+.ade-glow-pulse {
+  animation: ade-glow-pulse 2s ease-in-out infinite;
+}
+
+
+/* Blue glow pulse for active missions */
+.ade-glow-pulse-blue {
+  animation: ade-glow-pulse-blue 2s ease-in-out infinite;
+}
+
+@keyframes ade-glow-pulse-blue {
+  0%,
+  100% {
+    box-shadow: 0 0 4px 1px rgba(59, 130, 246, 0.15);
+  }
+  50% {
+    box-shadow: 0 0 12px 4px rgba(59, 130, 246, 0.3);
+  }
+}
+
+/* Red glow pulse for high-risk conflict badges */
+.ade-glow-pulse-red {
+  animation: ade-glow-pulse-red 2s ease-in-out infinite;
+}
+
+@keyframes ade-glow-pulse-red {
+  0%,
+  100% {
+    box-shadow: 0 0 4px 1px rgba(239, 68, 68, 0.15);
+  }
+  50% {
+    box-shadow: 0 0 10px 3px rgba(239, 68, 68, 0.3);
+  }
+}
+
+/* Green glow pulse for resolved/passing states */
+.ade-glow-pulse-green {
+  animation: ade-glow-pulse-green 2s ease-in-out infinite;
+}
+
+@keyframes ade-glow-pulse-green {
+  0%,
+  100% {
+    box-shadow: 0 0 4px 1px rgba(34, 197, 94, 0.15);
+  }
+  50% {
+    box-shadow: 0 0 10px 3px rgba(34, 197, 94, 0.3);
+  }
+}
+
+/* Amber glow pulse for lanes tint */
+.ade-glow-pulse-amber {
+  animation: ade-glow-pulse-amber 2s ease-in-out infinite;
+}
+
+@keyframes ade-glow-pulse-amber {
+  0%,
+  100% {
+    box-shadow: 0 0 4px 1px rgba(245, 158, 11, 0.12);
+  }
+  50% {
+    box-shadow: 0 0 12px 4px rgba(245, 158, 11, 0.25);
+  }
+}
+
+/* Emerald glow for commit HEAD node */
+.ade-glow-emerald {
+  box-shadow: 0 0 8px 2px rgba(16, 185, 129, 0.35), 0 0 3px 1px rgba(16, 185, 129, 0.2);
+}
+
+/* Sky glow for merge commit nodes */
+.ade-glow-sky {
+  box-shadow: 0 0 6px 2px rgba(56, 189, 248, 0.3), 0 0 2px 1px rgba(56, 189, 248, 0.15);
+}
+
+/* Risk matrix row/column highlight */
+.ade-risk-row-highlight {
+  background: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.04);
+}
+
+/* Glass card for conflict/PR panels */
+.ade-glass-card {
+  background: rgba(var(--color-card-rgb, 19, 16, 26), 0.5);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.1);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  transition: border-color 150ms ease, box-shadow 200ms ease, transform 150ms ease;
+}
+
+.ade-glass-card:hover {
+  border-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.22);
+  box-shadow: var(--shadow-card-hover);
+}
+
+/* Animated timeline connector */
+.ade-timeline-line {
+  background: linear-gradient(180deg,
+    rgba(245, 158, 11, 0.15) 0%,
+    rgba(245, 158, 11, 0.25) 50%,
+    rgba(16, 185, 129, 0.3) 100%);
+}
+
+/* ── Timeline Graph Redesign ─────────────────────────────────── */
+
+/* Pulsing animation for running operation nodes */
+.ade-timeline-node-pulse circle:last-child {
+  animation: ade-node-pulse 2s ease-in-out infinite;
+}
+
+@keyframes ade-node-pulse {
+  0%, 100% { opacity: 0.15; r: attr(r); }
+  50% { opacity: 0.4; }
+}
+
+/* Running status indicator spin */
+.ade-timeline-running-spin {
+  animation: ade-running-spin 1.2s linear infinite;
+}
+
+@keyframes ade-running-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Lane track hover glow */
+.ade-timeline-track-hover {
+  filter: drop-shadow(0 0 3px var(--track-color, rgba(167, 139, 250, 0.3)));
+}
+
+/* Event node hover scale */
+.ade-timeline-node-hover {
+  transition: transform 0.1s ease-out;
+}
+.ade-timeline-node-hover:hover {
+  transform: scale(1.3);
+}
+
+/* Selected event glow */
+.ade-timeline-node-selected {
+  filter: drop-shadow(0 0 6px var(--node-color, rgba(167, 139, 250, 0.35)));
+}
+
+/* Graph time separator fade */
+.ade-timeline-separator {
+  opacity: 0;
+  animation: ade-separator-fade 0.3s ease-out forwards;
+}
+
+@keyframes ade-separator-fade {
+  to { opacity: 1; }
+}
+
+/* Compact view row stripe */
+.ade-timeline-compact-row:nth-child(even) {
+  background: rgba(24, 20, 35, 0.3);
+}
+
+/* CI status glow animations */
+.ade-ci-passing {
+  animation: ade-ci-passing-glow 2.5s ease-in-out infinite;
+}
+
+@keyframes ade-ci-passing-glow {
+  0%, 100% { box-shadow: 0 0 4px 1px rgba(34, 197, 94, 0.2); }
+  50% { box-shadow: 0 0 10px 3px rgba(34, 197, 94, 0.35); }
+}
+
+.ade-ci-failing {
+  animation: ade-ci-failing-glow 1.5s ease-in-out infinite;
+}
+
+@keyframes ade-ci-failing-glow {
+  0%, 100% { box-shadow: 0 0 4px 1px rgba(239, 68, 68, 0.2); }
+  50% { box-shadow: 0 0 8px 2px rgba(239, 68, 68, 0.35); }
+}
+
+/* Subtle breathing opacity for medium-risk conflict badges */
+.ade-conflict-breathe {
+  animation: ade-conflict-breathe 2.5s ease-in-out infinite;
+}
+
+@keyframes ade-conflict-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Celebration & Micro-Interaction Animations
+   ═══════════════════════════════════════════════════════════ */
+
+@keyframes ade-flash-cyan {
+  0% { background-color: rgba(167, 139, 250, 0.25); }
+  100% { background-color: transparent; }
+}
+
+@keyframes ade-sweep-fill {
+  0% { transform: scaleX(0); }
+  100% { transform: scaleX(1); }
+}
+
+@keyframes ade-dissolve-up {
+  0% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-20px); }
+}
+
+@keyframes ade-ripple-out {
+  0% { transform: scale(0); opacity: 0.5; }
+  100% { transform: scale(2.5); opacity: 0; }
+}
+
+@keyframes ade-confetti-dot {
+  0% { transform: translate(0, 0) scale(1); opacity: 1; }
+  100% { transform: translate(var(--dx, 20px), var(--dy, -30px)) scale(0); opacity: 0; }
+}
+
+@keyframes ade-terminal-pulse {
+  0%, 100% { box-shadow: 0 0 4px 1px rgba(34, 197, 94, 0.08); }
+  50% { box-shadow: 0 0 10px 3px rgba(34, 197, 94, 0.18); }
+}
+
+/* Celebration utility classes */
+.ade-flash-cyan { animation: ade-flash-cyan 300ms ease-out; }
+.ade-sweep-fill { transform-origin: left; animation: ade-sweep-fill 500ms ease-out forwards; }
+.ade-dissolve-up { animation: ade-dissolve-up 800ms ease-out forwards; }
+.ade-ripple-out { animation: ade-ripple-out 1.5s ease-out forwards; }
+
+/* Active terminal green glow border */
+.ade-terminal-active-glow {
+  animation: ade-terminal-pulse 3s ease-in-out infinite;
+}
+
+/* Tab icon breathing glow for active missions */
+.ade-tab-icon-active {
+  position: relative;
+}
+.ade-tab-icon-active::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: 6px;
+  animation: ade-glow-pulse-blue 2.5s ease-in-out infinite;
+  pointer-events: none;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   DAG Mutation Animations
+   ═══════════════════════════════════════════════════════════ */
+
+@keyframes ade-dag-node-enter {
+  from { opacity: 0; transform: scale(0.8); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes ade-dag-node-glow {
+  0%, 100% { filter: drop-shadow(0 0 0 transparent); }
+  50% { filter: drop-shadow(0 0 8px rgba(34, 197, 94, 0.6)); }
+}
+
+@keyframes ade-dag-node-exit {
+  from { opacity: 1; }
+  to { opacity: 0.35; }
+}
+
+@keyframes ade-dag-node-split {
+  0%, 100% { filter: drop-shadow(0 0 0 transparent); }
+  50% { filter: drop-shadow(0 0 6px rgba(168, 85, 247, 0.5)); }
+}
+
+@keyframes ade-dag-edge-flash {
+  0% { stroke-opacity: 1; stroke-width: 3; }
+  100% { stroke-opacity: 0.4; stroke-width: 1.5; }
+}
+
+.ade-dag-entering {
+  animation: ade-dag-node-enter 400ms ease-out, ade-dag-node-glow 1s ease-in-out 400ms 2;
+}
+
+.ade-dag-exiting {
+  animation: ade-dag-node-exit 500ms ease-out forwards;
+}
+
+.ade-dag-splitting {
+  animation: ade-dag-node-split 800ms ease-in-out 2;
+}
+
+.ade-dag-edge-changed {
+  animation: ade-dag-edge-flash 600ms ease-out;
+}
+
+/* Spring-based status dot (replaces linear CSS pulse) */
+.ade-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  transition: opacity 300ms cubic-bezier(0.34, 1.56, 0.64, 1), transform 300ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.ade-status-dot-active {
+  background: var(--shell-status-running);
+  box-shadow: 0 0 6px 1px color-mix(in srgb, var(--shell-status-running) 30%, transparent);
+}
+.ade-status-dot-warning {
+  background: var(--shell-status-attention);
+  box-shadow: 0 0 6px 1px color-mix(in srgb, var(--shell-status-attention) 30%, transparent);
+}
+.ade-status-dot-error {
+  background: var(--color-error);
+  box-shadow: 0 0 6px 1px rgba(239, 68, 68, 0.3);
+}

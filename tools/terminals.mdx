@@ -1,0 +1,288 @@
+---
+title: "Terminals & Sessions"
+description: "Real PTY terminal sessions per lane — full xterm.js emulation, session transcripts, checkpoint integration, and agent-spawned sessions with complete audit trails."
+icon: "terminal"
+---
+
+<Info>**📸 Screenshot needed:** The Terminals panel showing 3 session tabs at the top of a terminal — one labeled "shell" (white), one labeled "npm dev" (purple, Managed), one labeled "Agent: claude-3-7" (blue tint, Agent session). The active terminal should show command output. The lane name should be visible in the panel header.</Info>
+
+## Overview
+
+ADE provides real **PTY (pseudo-terminal) sessions** for every lane. These are not simulated command runners or output capture panels — they are full terminal emulators backed by xterm.js, with complete VT100/ANSI support, interactive programs, color output, and all the keyboard controls you expect from a native terminal.
+
+Every lane has its own terminal environment. Sessions in a lane run with the lane's working directory set to its git worktree, inherit the lane's environment variable overlay, and are isolated from sessions in every other lane.
+
+<CardGroup cols={3}>
+  <Card title="Real PTY" icon="terminal">
+    Full pseudo-terminal emulation via xterm.js. Run `vim`, `top`, `ssh`, interactive REPLs — anything a real terminal supports.
+  </Card>
+  <Card title="Per-Lane Isolation" icon="code-branch">
+    Each lane's sessions run in that lane's worktree. Environment variables, port assignments, and working directory are all lane-scoped.
+  </Card>
+  <Card title="Full Audit Trail" icon="scroll">
+    Every session's complete scrollback is captured, searchable, and exportable. Session deltas feed into Lane Pack updates and Checkpoints.
+  </Card>
+</CardGroup>
+
+---
+
+## Creating and Managing Sessions
+
+### Creating a New Session
+
+- Press `Cmd+T` to open a new terminal session in the currently selected lane.
+- Or click **+ New Session** (the `+` button in the terminal tab strip).
+
+Each lane can have multiple terminal sessions running simultaneously, displayed as tabs at the top of the terminal panel.
+
+### Closing a Session
+
+- Press `Cmd+W` to close the focused session tab.
+- If a process is currently running in the session, ADE shows a confirmation dialog: **"Process running. Close anyway?"** This prevents accidentally killing a long-running build or test suite.
+- `Ctrl+D` sends an EOF signal, which closes most shells gracefully and ends the session without a confirmation prompt.
+
+### Switching Between Sessions
+
+- `Cmd+1` through `Cmd+9`: Jump directly to the session at that tab index.
+- Click any tab to focus it.
+- The tab label shows the session type, a short name (editable by double-clicking the tab), and a colored dot for status: green (idle), blue (running), red (exited with error).
+
+---
+
+## Session Types
+
+ADE categorizes terminal sessions into three types. The type determines how the session is created, how it appears visually, and how it interacts with ADE's checkpoint and pack systems.
+
+<AccordionGroup>
+  <Accordion title="Interactive Sessions" icon="terminal">
+    A standard user-created terminal session. Created via `Cmd+T` or the `+` button. The shell process (your configured shell — `zsh`, `bash`, `fish`) is launched in the lane's worktree with the lane's environment injected.
+
+    Interactive sessions have a white tab label and normal terminal appearance.
+
+    Use interactive sessions for manual development work: running commands, checking git log, editing files via CLI tools, debugging.
+  </Accordion>
+  <Accordion title="Managed Sessions" icon="play">
+    ADE can manage long-running processes like `npm run dev`, `rails server`, or `docker-compose up` as **Managed Sessions**. These are configured in [Project Home](/tools/project-home) and can be started, stopped, and restarted from the process management panel.
+
+    Managed sessions have a purple tab label. Their process output is captured in the session transcript and also fed into the Project Home logs panel. ADE monitors managed sessions for crash loops and alerts you if a process exits unexpectedly.
+
+    When you start a managed process from Project Home, ADE creates a managed session in the correct lane automatically — you do not need to manually create it.
+  </Accordion>
+  <Accordion title="Agent Sessions" icon="robot">
+    When an AI agent (running inside a Mission, Chat, or Automation) executes terminal commands as part of its task, those commands run in an **Agent Session**. Agent sessions are:
+
+    - **Visually distinct**: The terminal panel has a blue tint and the tab label shows the agent's name (e.g., "Agent: claude-3-7-sonnet")
+    - **Read-only for humans**: You can watch the agent's terminal in real time but cannot type into it while the agent is active. This prevents accidental interference.
+    - **Fully captured**: Every command and every line of output is captured in the session transcript and linked to the mission or chat turn that spawned it.
+    - **Attributable**: The session metadata records which agent model, which mission/chat ID, and which task step spawned this session.
+
+    <Warning>
+    Do not kill an agent session manually while a mission is running — this will cause the mission to fail with a terminal error. Use the mission's **Stop** button in the Mission Run panel instead, which handles cleanup gracefully.
+    </Warning>
+  </Accordion>
+</AccordionGroup>
+
+<Info>**📸 Screenshot needed:** Side-by-side comparison of the three session types in the tab strip — an Interactive session (white label, "shell"), a Managed session (purple label, "npm dev · running"), and an Agent session (blue tinted tab, "Agent: claude-3-7-sonnet · active") — with the agent session terminal showing a stream of tool call output.</Info>
+
+---
+
+## Session Tracking and Metadata
+
+Every session — regardless of type — has a complete metadata record:
+
+| Field | Description |
+|-------|-------------|
+| **Session ID** | Unique identifier (UUID) for the session |
+| **Lane ID** | Which lane this session belongs to |
+| **Type** | Interactive, Managed, or Agent |
+| **Start time** | When the session was created |
+| **End time** | When the session exited (null if still running) |
+| **Exit code** | The process exit code (0 = clean, non-zero = error) |
+| **Working directory** | The working directory at session start |
+| **Environment snapshot** | The environment variables at session start (sensitive values masked) |
+| **Command count** | Total number of commands run in this session |
+| **Agent ID** | For Agent sessions: the agent/mission that spawned it |
+
+View session metadata by clicking the **i** icon in the terminal tab header.
+
+---
+
+## Transcripts and Search
+
+ADE captures the complete scrollback buffer of every session — every character of input and output, preserved with timestamps.
+
+### Searching a Session Transcript
+
+Press `Cmd+F` in the terminal panel to open the in-terminal search bar. This searches the full scrollback, not just what is currently visible. Matches are highlighted in the terminal, and navigation arrows let you jump between matches.
+
+### Exporting Transcripts
+
+Right-click a session tab and select **Export Transcript** to save the full scrollback as a plain text or HTML file. The HTML export includes ANSI color rendering, making it easy to share colored output.
+
+### Session Delta Computation
+
+Beyond raw transcript capture, ADE computes a **session delta** at the end of each session (or at explicit commit boundaries). The delta captures:
+
+- **File changes**: Which files in the lane's worktree were modified during this session, and what changed
+- **Commands run**: A structured list of commands entered (extracted from shell history and PTY input parsing)
+- **Output summary**: A brief AI-generated summary of what the session accomplished
+
+Session deltas feed into two important downstream systems:
+- **Lane Pack updates**: The lane's context pack is refreshed to incorporate what happened in the session
+- **Checkpoints**: A Checkpoint snapshot is created at session end
+
+---
+
+## Checkpoints
+
+A **Checkpoint** is a point-in-time snapshot of a lane's full state, anchored to the end of a terminal session (or an explicit `Cmd+Shift+K` from within the terminal).
+
+Each checkpoint captures:
+- The session transcript up to that point
+- The git diff of all working-tree changes
+- A list of modified files and their deltas
+- Session metadata (start time, exit code, command count)
+
+Checkpoints are browsable in the [History view](/tools/history). You can restore a lane to any checkpoint, creating a new branch from that point in history.
+
+<Tip>
+For long-running agent sessions, ADE creates automatic mid-session checkpoints every 50 commands or every 10 minutes, whichever comes first. This means you always have intermediate restore points even if you never explicitly create one.
+</Tip>
+
+---
+
+## Session Recovery
+
+If ADE quits unexpectedly (crash, force-quit, machine restart) while a terminal session is running, the underlying PTY process may still be alive. On next startup, ADE:
+
+1. Checks which sessions were marked as "running" at shutdown
+2. For each, attempts to reconnect to the PTY process (using the saved PID and PTY device path)
+3. If the process is still alive, reconnects the xterm.js frontend to it — you can continue exactly where you left off
+4. If the process has exited, marks the session as "exited (recovered)" with whatever exit code was available
+
+<Note>
+Session recovery works best for shell sessions. Some applications that do complex terminal setup (like `tmux` or `screen`) may not reconnect cleanly. In those cases, ADE opens a new session in the same lane with the prior session's transcript still accessible in the History view.
+</Note>
+
+---
+
+## Lane Environment Injection
+
+Terminal sessions in a lane automatically receive ADE-injected environment variables before the shell starts. These are added on top of your normal shell environment and any project `.env` file (if configured):
+
+| Variable | Value | Description |
+|----------|-------|-------------|
+| `ADE_LANE_ID` | UUID | Unique ID of the current lane |
+| `ADE_LANE_NAME` | String | Human-readable lane name |
+| `ADE_PROJECT_ROOT` | Path | Absolute path to the project's root directory |
+| `ADE_WORKTREE_ROOT` | Path | Absolute path to this lane's worktree |
+| `ADE_PREVIEW_URL` | URL | Preview URL for this lane (e.g., `http://localhost:3001`) |
+| `PORT` | Number | The port assigned to this lane |
+
+### Custom Shell Profiles
+
+You can configure a custom shell profile per project in `.ade/local.yaml`. This lets you source project-specific `nvm` versions, activate virtual environments, or run other setup commands before the shell prompt appears.
+
+```yaml
+# .ade/local.yaml
+terminal:
+  profileScript: |
+    source ~/.nvm/nvm.sh
+    nvm use 20
+    export DATABASE_URL="postgres://localhost/myapp_dev"
+```
+
+<Warning>
+The profile script runs in every new terminal session in this project, including agent sessions. Keep it fast — slow profile scripts add latency to every agent terminal call.
+</Warning>
+
+---
+
+## Terminal Themes
+
+All terminal sessions inherit ADE's global terminal theme. Change it in `Settings → Appearance → Terminal Theme`. Available themes:
+
+| Theme | Description |
+|-------|-------------|
+| **Default** | ADE's custom dark theme |
+| **Dark** | Pure dark background, high-contrast text |
+| **Light** | Light background for bright environments |
+| **Monokai** | Classic Monokai color scheme |
+| **Solarized** | Ethan Schoonover's Solarized palette |
+| **One Dark** | Atom's One Dark theme |
+
+---
+
+## Copy, Paste, and Smart Paste
+
+Standard macOS copy/paste shortcuts work as expected (`Cmd+C`, `Cmd+V`). Additionally, ADE implements **Smart Paste**:
+
+When you paste clipboard content that contains a **multi-line command** (i.e., multiple lines terminated by newlines, not just a single command with line continuations), ADE intercepts the paste and shows a dialog:
+
+> **Multi-line paste detected (4 lines)**
+> Running multiple commands at once can have unintended effects. Preview and confirm before running.
+
+The dialog shows the full content to be pasted. You can confirm, edit it, or cancel. This prevents accidentally running a block of commands copied from a web page or documentation without reviewing them first.
+
+---
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Cmd+T` | New terminal session in current lane |
+| `Cmd+W` | Close current terminal session (with confirm if running) |
+| `Cmd+1` through `Cmd+9` | Switch to session tab at that index |
+| `Cmd+K` | Clear terminal output (does not kill the process) |
+| `Cmd+F` | Search terminal scrollback |
+| `Cmd+Shift+K` | Create a checkpoint at the current point |
+| `Ctrl+C` | Send SIGINT (interrupt) to the running process |
+| `Ctrl+D` | Send EOF / exit the shell |
+| `Ctrl+Z` | Suspend the running process to background (`SIGTSTP`) |
+| `Ctrl+L` | Clear screen (same as `Cmd+K` but sent to the shell) |
+
+---
+
+## Edge Cases
+
+<AccordionGroup>
+  <Accordion title="What happens to sessions when a lane is archived?" icon="box-archive">
+    When you archive a lane, all its running terminal sessions are **gracefully terminated** — ADE sends `SIGHUP` to each session's process group, waits 3 seconds, then sends `SIGKILL` if any processes are still running.
+
+    Session transcripts and metadata are preserved in the archive. You can browse them from the History view even after the lane is archived. Sessions cannot be resumed from an archived lane without first unarchiving it.
+  </Accordion>
+  <Accordion title="Maximum sessions per lane" icon="layer-group">
+    ADE enforces a soft limit of **20 concurrent sessions per lane** (configurable in `Settings → Advanced → Max Sessions Per Lane`). This prevents runaway automation from opening hundreds of PTYs and exhausting system file descriptors.
+
+    If you hit the limit, a warning banner appears at the top of the terminal panel and new session creation is blocked until existing sessions are closed.
+  </Accordion>
+  <Accordion title="Agent sessions and permission gates" icon="shield-check">
+    Agent sessions respect ADE's permission system. If an agent tries to run a command that requires explicit permission (e.g., running `sudo`, modifying files outside the worktree, or making network calls to non-whitelisted hosts), the command is held at a permission gate.
+
+    A prompt appears in the terminal panel and in the Mission Run panel asking you to approve or deny the command. The agent waits for your decision before proceeding.
+  </Accordion>
+  <Accordion title="Sessions in the Primary Lane" icon="house">
+    The Primary lane's terminal sessions run in the main repository root directory, not in a worktree. Changes made via Primary lane sessions affect the main working tree directly. If you have agents running in Worktree lanes simultaneously, their changes are invisible to the Primary lane until merged.
+  </Accordion>
+</AccordionGroup>
+
+<Info>**📸 Screenshot needed:** The terminal session Smart Paste dialog — a modal showing "Multi-line paste detected (5 lines)" with a preview of the pasted commands in a code block, and "Cancel", "Edit", and "Run" buttons at the bottom.</Info>
+
+---
+
+## Related Pages
+
+<CardGroup cols={2}>
+  <Card title="Files & Editor" icon="file-code" href="/tools/files-editor">
+    The Monaco-powered editor with lane-scoped file trees and conflict resolution.
+  </Card>
+  <Card title="History" icon="clock-rotate-left" href="/tools/history">
+    Browse session transcripts and checkpoints in the full history view.
+  </Card>
+  <Card title="Project Home" icon="house" href="/tools/project-home">
+    Managed process configuration — where you define the processes that create Managed Sessions.
+  </Card>
+  <Card title="Missions" icon="bullseye" href="/missions/overview">
+    Understand how missions spawn and manage Agent Sessions during execution.
+  </Card>
+</CardGroup>

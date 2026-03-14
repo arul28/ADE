@@ -1,0 +1,84 @@
+---
+title: "ADE Documentation"
+description: "The Agentic Development Environment — orchestrate parallel AI coding agents from a unified control plane."
+---
+
+## What is ADE?
+
+ADE (Agentic Development Environment) is a desktop application that serves as your **DevOps cockpit for agentic coding workflows**. While AI agents write code across multiple git branches simultaneously, ADE watches over them — tracking context, predicting conflicts, surfacing integration risks, and keeping everything synchronized.
+
+Think of ADE as the orchestration layer between you and your agents. You set the direction; ADE coordinates the execution.
+
+<CardGroup cols={2}>
+  <Card title="Get Started in 5 Minutes" icon="rocket" href="/quickstart">
+    Download ADE, connect your repository, and launch your first parallel lane.
+  </Card>
+  <Card title="Understand Key Concepts" icon="lightbulb" href="/key-concepts">
+    Learn about Lanes, Missions, the CTO agent, and how ADE thinks about parallel development.
+  </Card>
+  <Card title="Explore Features" icon="sparkles" href="/lanes/overview">
+    Deep dives into Lanes, Missions, CTO, Computer Use, Automations, and more.
+  </Card>
+  <Card title="Tools & Views" icon="grid-2" href="/tools/workspace-graph">
+    Workspace Graph, File Editor, Terminals, PR management, Conflict detection, and History.
+  </Card>
+</CardGroup>
+
+---
+
+## Core Philosophy
+
+ADE is built around a single insight: **agentic development is fundamentally parallel**. Modern AI coding agents are fast, but they work best when they aren't stepping on each other. ADE gives every agent its own isolated workspace (a **Lane**), keeps them all in sync, and surfaces conflicts before they become merge nightmares.
+
+<CardGroup cols={3}>
+  <Card title="Parallel by Default" icon="code-branch">
+    Every task gets its own git worktree. Agents never block each other.
+  </Card>
+  <Card title="Context-Aware Orchestration" icon="brain">
+    The CTO agent understands your entire project and routes work intelligently.
+  </Card>
+  <Card title="Local-First Security" icon="shield-check">
+    All data stays on your machine. API keys never leave the main process.
+  </Card>
+</CardGroup>
+
+---
+
+## Feature Overview
+
+<AccordionGroup>
+  <Accordion title="Lanes — Parallel Workspaces" icon="code-branch">
+    Lanes are isolated git worktrees, each with their own terminal sessions, agent context, and execution environment. Create dozens of lanes and run agents in all of them simultaneously. [Learn more](/lanes/overview)
+  </Accordion>
+  <Accordion title="CTO — Your Always-On Project Agent" icon="crown">
+    The CTO agent lives at the top of an org chart of worker agents. It understands your architecture, syncs with Linear, manages budgets, and delegates work to specialized employee agents. [Learn more](/cto/overview)
+  </Accordion>
+  <Accordion title="Missions — Structured AI Execution" icon="bullseye">
+    Missions are the formal execution unit for complex multi-step AI work. A mission goes through Planning, Approval, Execution, and Validation, with full audit trails and cost tracking. [Learn more](/missions/overview)
+  </Accordion>
+  <Accordion title="Automations — Background AI Workers" icon="bolt">
+    Trigger-driven rules that fire AI agents in response to git events, Linear updates, schedules, or file changes. Night Shift queues overnight work automatically. [Learn more](/automations/overview)
+  </Accordion>
+  <Accordion title="Computer Use — AI Browser & Desktop Control" icon="desktop">
+    ADE acts as the control plane for computer-use workflows. Connect Ghost OS or agent-browser backends, track proof artifacts, and route visual verification to missions, PRs, and Linear. [Learn more](/computer-use/overview)
+  </Accordion>
+  <Accordion title="Workspace Graph — Visual Topology" icon="diagram-project">
+    An infinite canvas showing every lane, branch, PR, and dependency relationship in your project. Run merge simulations visually and spot integration risks at a glance. [Learn more](/tools/workspace-graph)
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Configure ADE
+
+<CardGroup cols={3}>
+  <Card title="Project Config" icon="folder-tree" href="/configuration/overview">
+    Set up your `.ade/` directory, config layering, and trust model.
+  </Card>
+  <Card title="AI Providers" icon="microchip" href="/configuration/ai-providers">
+    Configure Anthropic, OpenAI, OpenRouter, and local models.
+  </Card>
+  <Card title="Permissions" icon="shield-check" href="/configuration/permissions">
+    Trust boundaries, per-agent permissions, and audit trails.
+  </Card>
+</CardGroup>

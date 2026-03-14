@@ -1,0 +1,336 @@
+---
+title: "Project Home"
+description: "The global process management center for your project — start your entire stack with one button, run test suites, manage environment variables, and launch AI tool CLIs."
+icon: "house"
+---
+
+<Info>**📸 Screenshot needed:** The Project Home (Run tab) view — showing a "Backend" process group with postgres (green, running), rails server (green, running), and sidekiq (green, running), a "Frontend" group with a Next.js dev server, the Stack button in the header (green "Stack Running" state), CPU/memory usage indicators next to each process, and a test suite panel on the right side.</Info>
+
+## Overview
+
+**Project Home** is ADE's global process management center. It is the first place you look when you sit down to start working on your project — and the place you return to when something is not running correctly.
+
+From Project Home you can:
+- Start your entire development stack with a single button
+- Define, start, stop, and monitor managed processes with CPU and memory visibility
+- Run and watch test suites from a built-in test runner panel
+- Edit environment variables with a visual `.env` editor
+- Monitor CI/CD status synced from GitHub Actions
+- Launch AI coding tool CLIs into your primary lane
+
+<Note>
+Project Home is **global to the project** — it is not scoped to a single lane. Managed processes belong to the project (though they can be configured to run in a specific lane's environment). Use the Lane Selector in the header to filter the view to a single lane's processes and environment.
+</Note>
+
+---
+
+## Setting Up Managed Processes
+
+A **Managed Process** is any command ADE starts, monitors, and can restart on your behalf. Common examples include dev servers, database processes, background workers, and Docker Compose stacks.
+
+### Adding a Process
+
+<Steps>
+  <Step title="Open Project Home">
+    Click the **Project Home** icon in the left sidebar (house icon), or press `Cmd+0`.
+  </Step>
+  <Step title="Click 'Add Process'">
+    Click the **+ Add Process** button in the top-right of the process list. A configuration drawer slides in from the right.
+  </Step>
+  <Step title="Configure the process">
+    Fill in the process configuration:
+
+    | Field | Description | Example |
+    |-------|-------------|---------|
+    | **Name** | Display name for this process | `Rails Server` |
+    | **Group** | Process group (optional) | `Backend` |
+    | **Command** | The command to run | `bundle exec rails server -p $PORT` |
+    | **Working Dir** | Directory to run the command in | `./apps/api` (relative to project root) |
+    | **Lane** | Which lane to run in (default: Primary) | `primary` |
+    | **Auto-restart** | Restart automatically on exit | On/Off |
+    | **Restart limit** | Max restart attempts before alerting | `5` |
+    | **Startup order** | Priority for Stack Button ordering | `2` |
+    | **Health check** | Optional URL or command to verify startup | `http://localhost:$PORT/health` |
+  </Step>
+  <Step title="Save and start">
+    Click **Save**. The process appears in the list in a stopped state. Click the **Start** button (▶) to launch it, or use the Stack Button to start all processes.
+  </Step>
+</Steps>
+
+### AI-Suggested Run Configurations
+
+When you open a project for the first time (or click **Detect Processes** in the toolbar), ADE analyzes your repository to suggest process configurations automatically:
+
+- Reads `package.json` scripts and detects common frameworks (Next.js, Vite, Create React App)
+- Detects `Procfile`, `docker-compose.yml`, `Makefile` targets, and common Gemfiles
+- Reads `.env.example` to infer environment variable requirements
+- Suggests a complete process list with startup ordering pre-configured
+
+Click **Adopt All** to add all suggestions at once, or **Review** to cherry-pick which ones to add. This takes about 5 seconds for most projects.
+
+---
+
+## The Stack Button
+
+The **Stack Button** is the large button at the top-right of Project Home. It starts or stops **all managed processes** in the correct dependency order based on their configured startup order.
+
+<CardGroup cols={2}>
+  <Card title="Stack Start" icon="play">
+    Processes launch in ascending startup order (order 1 first, then 2, etc.). ADE waits for each process's health check to pass before launching the next group. If a health check fails, the stack halts and shows which process blocked startup.
+  </Card>
+  <Card title="Stack Stop" icon="stop">
+    Processes are stopped in reverse startup order (frontend first, then API, then database). ADE sends `SIGTERM`, waits for graceful shutdown, then `SIGKILL` if a process does not exit within the configured timeout (default: 10 seconds).
+  </Card>
+</CardGroup>
+
+The Stack Button shows one of three states:
+- **Start Stack** (gray): No processes are running
+- **Stack Starting...** (yellow, animated): Stack is in the process of launching
+- **Stack Running** (green): All processes are running and healthy
+- **Stack Error** (red): One or more processes have crashed or failed health checks
+
+Press `Cmd+Shift+R` to toggle the Stack from the keyboard.
+
+<Tip>
+Configure startup ordering carefully — start database and message broker processes at order 1, backend APIs at order 2, and frontend servers at order 3. This ensures each process has its dependencies available when it starts.
+</Tip>
+
+---
+
+## Process Status and Monitoring
+
+Each managed process in the list displays live status information:
+
+| Indicator | Description |
+|-----------|-------------|
+| **Status dot** | Green (running), yellow (starting), red (error/crashed), gray (stopped) |
+| **PID** | The operating system process ID |
+| **CPU %** | Current CPU usage (sampled every 2 seconds) |
+| **Memory** | Current resident memory usage in MB |
+| **Start time** | When the process was last started |
+| **Restart count** | How many times this process has been auto-restarted |
+| **Last line** | The last line of stdout/stderr output (expandable) |
+
+### Process Groups
+
+Processes can be organized into **groups** (e.g., "Backend", "Frontend", "Database"). Group headers in the list show aggregate status and provide group-level controls:
+- **Start Group**: Start all processes in this group
+- **Stop Group**: Stop all processes in this group
+- **Restart Group**: Restart all processes in this group
+
+Drag process rows to reorder them within or across groups.
+
+### Viewing Process Logs
+
+Click any process row to expand its **log panel** inline, showing a live-streaming view of the process's stdout and stderr. The log panel is:
+- **Color-coded**: ADE detects log levels (INFO, WARN, ERROR) and colors accordingly
+- **Searchable**: Press `Cmd+F` inside the log panel to search the log buffer
+- **Buffered**: The last 10,000 lines are kept in memory; older lines are written to disk and still searchable
+
+<Info>**📸 Screenshot needed:** A single expanded process log panel — showing the Rails server log with color-coded entries (green INFO lines, yellow WARN lines, red ERROR line), the process metadata row above it (PID, CPU 2.1%, Memory 312 MB, Running for 4m 32s), and a search bar overlaid on the log.</Info>
+
+---
+
+## Port Conflict Detection
+
+If two managed processes are configured to bind to the same port, ADE detects this at startup (before either process launches) and shows a **Port Conflict** warning:
+
+> **Port conflict: Rails Server and API Gateway both use port 3000**
+> Change one process's port assignment before starting the stack.
+
+ADE also monitors for port conflicts that emerge at runtime (e.g., an external process has already bound to a port). If a managed process fails to bind to its configured port, the error is surfaced in the process's log panel with a "Port in use" diagnostic and suggestions for resolution.
+
+---
+
+## Test Suites
+
+Project Home includes a built-in test runner panel for running and monitoring test suites.
+
+### Configuring a Test Suite
+
+Click **+ Add Test Suite** in the Test Suites panel. Configure:
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| **Name** | Suite display name | `Unit Tests` |
+| **Run command** | Command to run tests once | `pnpm test --reporter=json` |
+| **Watch command** | Command to run in watch mode | `pnpm test --watch` |
+| **CI command** | Command used in CI (for comparison) | `pnpm test --ci --coverage` |
+| **Lane** | Which lane to run tests in | `primary` |
+| **Parse results** | Reporter format for structured results | `jest-json` / `tap` / `junit-xml` |
+
+### Running Tests
+
+<Steps>
+  <Step title="Select a suite">
+    Click the suite name in the Test Suites panel to select it. The right side of the panel shows the suite configuration and last run results.
+  </Step>
+  <Step title="Run once or enter watch mode">
+    Click **Run** (▶) to execute the test suite once, or **Watch** (👁) to start it in watch mode. Press `Cmd+Shift+T` to run the focused suite from the keyboard.
+  </Step>
+  <Step title="View results">
+    If a structured reporter is configured, results appear as a pass/fail/skip breakdown with individual test names, durations, and failure details expandable inline. If no structured reporter is configured, raw stdout is shown.
+  </Step>
+</Steps>
+
+The test suite panel shows:
+- **Pass / Fail / Skip counts** for the last run
+- **Duration** of the last run
+- **Coverage summary** (if the test command outputs coverage)
+- **Trend**: A small sparkline showing pass rates over the last 10 runs
+
+<Tip>
+ADE can automatically run your test suite when an agent finishes a task in a lane. Enable this in the lane's configuration under `Settings → Agents → Post-task test run`. This is particularly useful in Mission workflows where you want automatic validation after each execution phase.
+</Tip>
+
+---
+
+## Config Editor (Environment Variables)
+
+The **Config Editor** is a visual editor for your project's environment variables, built directly into Project Home.
+
+### Opening the Config Editor
+
+Click the **Config** tab at the top of Project Home (or press `Cmd+E` from within Project Home).
+
+### Editing Variables
+
+The Config Editor shows all variables from your project's `.env` file (and any `.env.local`, `.env.development`, etc. files you have configured ADE to manage). For each variable:
+
+- **Key**: The variable name (always visible)
+- **Value**: The current value — **secret masking** automatically hides values containing common secret patterns (keys, tokens, passwords) behind a `••••••` mask. Click the eye icon to reveal.
+- **Source**: Which `.env` file this variable comes from
+- **Override**: Lane-specific overrides appear in a separate column, showing that the lane's value differs from the project default
+
+### Adding and Removing Variables
+
+- Click **+ Add Variable** to insert a new key-value pair. ADE writes the change to the appropriate `.env` file immediately.
+- Click the trash icon next to any variable to remove it (with confirmation).
+- Drag variable rows to reorder them (order is preserved in the `.env` file for readability).
+
+<Warning>
+The Config Editor writes directly to your `.env` files on disk. If you have `.env` files checked into version control, these edits will appear as working-tree modifications in the Files view. ADE does not automatically commit `.env` changes — you decide when (and whether) to commit them.
+</Warning>
+
+---
+
+## CI/CD Workflow Sync
+
+ADE reads your GitHub Actions workflows and displays CI run status directly in Project Home.
+
+### Enabling CI Sync
+
+Connect your GitHub account in `Settings → Integrations → GitHub`. Once connected, ADE polls GitHub's API for the most recent workflow runs on your project's branches.
+
+### What You See
+
+The **CI/CD** panel in Project Home shows:
+- The last 5 workflow runs, with status icons (success, failure, in-progress, cancelled)
+- Which branch each run was triggered on
+- Duration and trigger event (push, pull_request, schedule)
+- A link to the full run on GitHub
+
+If a run is **failing**, ADE highlights it in red and surfaces it at the top of Project Home with a "CI Failing" badge. Clicking the badge opens the run details — including which step failed and a snippet of the failure log — without leaving ADE.
+
+<Note>
+CI status is polled every 60 seconds while Project Home is open, and whenever a new commit is pushed from any lane. You can force a refresh with `Cmd+R` in the CI/CD panel.
+</Note>
+
+---
+
+## AI Tool Launchers
+
+Project Home provides quick launchers for AI coding CLI tools. These launch the selected tool as a managed session in your primary lane.
+
+<CardGroup cols={2}>
+  <Card title="Claude Code" icon="robot">
+    Launches `claude` CLI in an interactive session in the primary lane. ADE injects the project's context pack as an initial system prompt if configured.
+  </Card>
+  <Card title="OpenAI Codex" icon="robot">
+    Launches `codex` in an interactive session. Requires `codex` to be installed globally (`npm i -g @openai/codex`).
+  </Card>
+  <Card title="Cursor" icon="cursor">
+    Opens the current project in Cursor (if installed). Cursor launches as a separate application window, but the session is linked back to ADE's primary lane for tracking.
+  </Card>
+  <Card title="Custom CLI" icon="terminal">
+    Configure a custom CLI tool in `Settings → Project Home → Custom CLI Launchers`. Any command-line tool can be registered with a name, launch command, and icon.
+  </Card>
+</CardGroup>
+
+<Tip>
+AI tool launchers are tracked as Managed Sessions in the lane. Their output is captured in the session transcript, so you can review what the external tool did even after it exits.
+</Tip>
+
+---
+
+## Lane Selector
+
+The **Lane Selector** dropdown in the Project Home header scopes the entire view to a specific lane:
+
+- **All Lanes** (default): Shows all managed processes, test suites, and environment configs for the project
+- **Specific Lane**: Filters to only show processes running in that lane, the lane's environment variable overlay, and test runs attributed to that lane
+
+Use the lane selector when you have per-lane process configurations (e.g., a staging lane running a different API server than the development lane) and need to see only that lane's state.
+
+---
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Cmd+0` | Open Project Home |
+| `Cmd+Shift+R` | Start/stop the full Stack |
+| `Cmd+R` | Restart the focused process |
+| `Cmd+.` or `Cmd+C` | Stop the focused process |
+| `Cmd+Shift+T` | Run the focused test suite |
+| `Cmd+E` | Open the Config Editor tab |
+| `Cmd+F` | Search in the focused log panel |
+
+---
+
+## Process Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Process crashes immediately on start" icon="circle-exclamation">
+    Check the process log panel — ADE captures all stdout/stderr even from very short-lived processes. Common causes:
+    - Missing environment variable (check Config Editor)
+    - Port already in use (check Port Conflict detection)
+    - Missing dependency (check that you have run `npm install` or equivalent)
+    - Wrong working directory (verify the `Working Dir` field in process config)
+  </Accordion>
+  <Accordion title="Process is running but health check is failing" icon="heart-pulse">
+    If the Stack halts because a health check is failing, the process log usually contains the clue. Common causes:
+    - The process is still starting up — try increasing the health check timeout in process config (`Settings → Process → Health Check Timeout`)
+    - The health check URL is wrong — verify the URL and port match the process's actual bind address
+    - The process requires a dependency (e.g., database) that has not started yet — check startup ordering
+  </Accordion>
+  <Accordion title="Restart loop — process keeps restarting" icon="rotate">
+    If `Auto-restart` is enabled and the process exits repeatedly, ADE will eventually hit the restart limit and stop trying. The process shows a "Restart limit reached" badge in red.
+
+    Click **Reset Restart Count** to clear the counter and try again. If the process is still crashing, disable auto-restart temporarily and investigate the log manually.
+  </Accordion>
+  <Accordion title="Stack Button is gray even though processes are configured" icon="circle-question">
+    The Stack Button is only active if at least one process has a `Startup order` value configured and is in a `stopped` state. If all processes are already running, the button shows "Stop Stack". If no processes have a startup order, ADE cannot determine a safe ordering and the Stack Button remains disabled — assign startup orders in each process's configuration.
+  </Accordion>
+</AccordionGroup>
+
+<Info>**📸 Screenshot needed:** The Project Home Config Editor tab — showing a table of environment variables with key names in the left column, masked values (••••••) in the middle column for sensitive entries like API keys, eye-toggle icons on the right of each row, a "+ Add Variable" button at the bottom, and a lane-specific override column showing one override in the active lane highlighted in blue.</Info>
+
+---
+
+## Related Pages
+
+<CardGroup cols={2}>
+  <Card title="Terminals" icon="terminal" href="/tools/terminals">
+    Understand how Managed Sessions in Project Home relate to the terminal session system.
+  </Card>
+  <Card title="Lanes" icon="code-branch" href="/lanes/overview">
+    Lane configuration, environment isolation, and port allocation.
+  </Card>
+  <Card title="Automations" icon="bolt" href="/automations/overview">
+    Trigger managed process restarts and test suite runs automatically from git events.
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration/overview">
+    Full `ade.yaml` reference including process and environment configuration schemas.
+  </Card>
+</CardGroup>

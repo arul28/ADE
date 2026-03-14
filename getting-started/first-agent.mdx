@@ -1,0 +1,49 @@
+---
+title: "Run your first agent"
+description: "Choose between a direct chat and a structured mission for your first ADE task."
+icon: "robot"
+---
+
+## Two good first paths
+
+<Tabs>
+  <Tab title="Agent chat">
+    Use this when the task is small and you want the fastest iteration loop.
+
+    <Steps>
+      <Step title="Open the lane chat">
+        Select your lane and open its chat surface.
+      </Step>
+      <Step title="Send one narrow task">
+        Start with something easy to review, like a small endpoint, a copy update, or a focused refactor.
+      </Step>
+      <Step title="Review the diff">
+        Check the file changes before you commit or continue.
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="Mission">
+    Use this when the task needs a plan, validation, or a stronger audit trail.
+
+    <Steps>
+      <Step title="Open Missions">
+        Create a mission and target the lane you just created.
+      </Step>
+      <Step title="Review preflight">
+        Confirm the provider, permissions, and lane state are ready.
+      </Step>
+      <Step title="Launch and monitor">
+        Follow the plan, execution, and validation phases from one place.
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+## First prompt to try
+
+```text
+Add a GET /health endpoint that returns { "status": "ok" } and add one test for it.
+```
+
+That prompt is small enough to inspect quickly and broad enough to exercise the ADE workflow end to end.
+

@@ -1,0 +1,57 @@
+---
+title: "Templates & Outputs"
+description: "Browse built-in automation templates for common workflows and configure how automation results are routed across your project."
+icon: "layer-group"
+---
+
+## Automation Templates
+
+ADE ships with the following built-in templates. Enable them from **Automations → Templates**.
+
+<CardGroup cols={2}>
+  <Card title="PR Reviewer" icon="code-pull-request">
+    **Trigger:** `git.pr_opened`
+    **Executor:** `automation-bot`
+
+    Automatically reviews every PR opened in ADE. Checks for missing error handling, untested code paths, and obvious logic bugs. Posts a structured review comment.
+  </Card>
+  <Card title="Test Guardian" icon="shield">
+    **Trigger:** `git.commit`
+    **Executor:** `automation-bot`
+
+    Runs your test suite on every commit. If tests fail, posts a comment on the associated PR with the failure summary and a suggested fix.
+  </Card>
+  <Card title="Linear Triager" icon="list-check">
+    **Trigger:** `linear.issue_created`
+    **Executor:** `cto-route`
+
+    Routes new Linear issues to the CTO agent for triage. The CTO assigns priority, estimates complexity, and optionally creates a new lane for the work.
+  </Card>
+  <Card title="Daily Standup" icon="sun">
+    **Trigger:** `schedule` — `0 9 * * 1-5`
+    **Executor:** `automation-bot`
+
+    Every weekday morning, generates a summary of all lane activity from the previous day: commits made, PRs opened/merged, missions completed, and any active conflicts.
+  </Card>
+  <Card title="Dependency Updater" icon="arrow-rotate-right">
+    **Trigger:** `schedule` — `0 2 * * 0` (weekly, Sunday 2am)
+    **Executor:** `night-shift`
+
+    Weekly check for outdated dependencies. Opens a draft PR with the proposed updates and a compatibility assessment for each changed package.
+  </Card>
+</CardGroup>
+
+---
+
+## Outputs and Routing
+
+Automations can produce the following output types. Configure output routing in the automation settings to control where results land.
+
+| Output Type | Description |
+|---|---|
+| Commits | Committed changes to a branch in a specific lane |
+| Pull Requests | New or updated PRs on GitHub |
+| Linear Updates | Issue status changes, comments, assignments |
+| Notifications | In-ADE toast notifications or macOS system notifications |
+| Lane Pack Updates | Triggers a refresh of a lane's context pack |
+| Chat Messages | Posts a message into a specific lane's chat |
