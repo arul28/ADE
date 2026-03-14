@@ -6,7 +6,7 @@ export const LINKS = {
   repo,
   github: `https://github.com/${repo}`,
   releases: `https://github.com/${repo}/releases/latest`,
-  docs: `https://github.com/${repo}/tree/main/docs`,
+  docs: "/docs",
   prd: `https://github.com/${repo}/blob/main/docs/PRD.md`
 } as const;
 
