@@ -500,7 +500,11 @@ export const IPC = {
   ctoClearLinearOAuthClient: "ade.cto.clearLinearOAuthClient",
   ctoStartLinearOAuth: "ade.cto.startLinearOAuth",
   ctoGetLinearOAuthSession: "ade.cto.getLinearOAuthSession",
-  ctoRunProjectScan: "ade.cto.runProjectScan"
+  ctoRunProjectScan: "ade.cto.runProjectScan",
+  updateCheckForUpdates: "ade.update.checkForUpdates",
+  updateGetStatus: "ade.update.getStatus",
+  updateQuitAndInstall: "ade.update.quitAndInstall",
+  updateEvent: "ade.update.event",
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];

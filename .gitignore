@@ -25,3 +25,11 @@ __pycache__/
 /apps/desktop/release/
 /apps/desktop/dist/
 /.ade
+
+# Release & local
+PRtab
+.sandbox_probe
+.pnpm-debug.log
+release/
+release-stable/
+.env.local

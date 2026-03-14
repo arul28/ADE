@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Folder, FolderOpen, Plus, Minus, Trash, X } from "@phosphor-icons/react";
+import { ArrowsClockwise, Folder, FolderOpen, Plus, Minus, Trash, X } from "@phosphor-icons/react";
 
 import { useAppStore } from "../../state/appStore";
 import {
@@ -23,6 +23,8 @@ export function TopBar() {
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>([]);
   const [relocatingPath, setRelocatingPath] = useState<string | null>(null);
   const [zoom, setZoom] = useState(getStoredZoomLevel);
+  const [updateReady, setUpdateReady] = useState(false);
+  const [updateVersion, setUpdateVersion] = useState<string>();
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dropIdx, setDropIdx] = useState<number | null>(null);
   const dragCounterRef = useRef(0);
@@ -60,6 +62,17 @@ export function TopBar() {
     const unsub = window.ade.project.onMissing(() => fetchRecent());
     return unsub;
   }, [fetchRecent]);
+
+  // Listen for auto-update events.
+  useEffect(() => {
+    const unsub = window.ade.onUpdateEvent((data) => {
+      if (data.type === "downloaded") {
+        setUpdateReady(true);
+        setUpdateVersion(data.version);
+      }
+    });
+    return unsub;
+  }, []);
 
   const checkForActiveWorkloads = useCallback(async (projectRootPath: string): Promise<boolean> => {
     if (project?.rootPath !== projectRootPath) return true;
@@ -368,6 +381,24 @@ export function TopBar() {
           <Plus size={12} weight="regular" />
         </button>
       </div>
+
+      {/* Update indicator */}
+      {updateReady && (
+        <button
+          type="button"
+          className={cn(
+            "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
+            "bg-purple-600/90 text-white text-[11px] font-medium",
+            "hover:bg-purple-500 transition-colors duration-150"
+          )}
+          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          onClick={() => window.ade.updateQuitAndInstall()}
+          title={`Update to ${updateVersion ? `v${updateVersion}` : "latest version"}`}
+        >
+          <ArrowsClockwise size={12} weight="bold" />
+          Update{updateVersion ? ` v${updateVersion}` : ""}
+        </button>
+      )}
 
       {/* Zoom controls */}
       <div

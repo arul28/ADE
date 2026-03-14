@@ -1,4 +1,5 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
+import { createAutoUpdateService } from "../updates/autoUpdateService";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -616,6 +617,7 @@ export type AppContext = {
   configReloadService?: ConfigReloadService | null;
   mcpSocketServer?: import("node:net").Server;
   mcpSocketPath?: string;
+  autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
 };
 
 function notifyLaneCreated(ctx: AppContext, lane: LaneSummary): void {
@@ -5620,5 +5622,13 @@ export function registerIpc({
       coreMemoryPatch,
       createdMemoryIds,
     };
+  });
+
+  ipcMain.handle(IPC.updateCheckForUpdates, () => {
+    getCtx().autoUpdateService?.checkForUpdates();
+  });
+
+  ipcMain.handle(IPC.updateQuitAndInstall, () => {
+    getCtx().autoUpdateService?.quitAndInstall();
   });
 }

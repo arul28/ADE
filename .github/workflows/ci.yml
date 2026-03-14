@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install desktop dependencies
+        run: cd apps/desktop && npm ci
+
+      - name: Typecheck
+        run: cd apps/desktop && npm run typecheck
+
+      - name: Test desktop
+        run: cd apps/desktop && npm test
+
+      - name: Install MCP server dependencies
+        run: cd apps/mcp-server && npm ci
+
+      - name: Test MCP server
+        run: cd apps/mcp-server && npm test

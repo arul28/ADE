@@ -101,6 +101,7 @@ import { createMissionBudgetService } from "./services/orchestrator/missionBudge
 import { transitionMissionStatus } from "./services/orchestrator/missionLifecycle";
 import { createExternalMcpService } from "./services/externalMcp/externalMcpService";
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
+import { createAutoUpdateService } from "./services/updates/autoUpdateService";
 import type { Logger } from "./services/logging/logger";
 
 /**
@@ -2418,8 +2419,23 @@ app.whenReady().then(async () => {
     });
   });
 
+  // --- Auto-update service (global, not per-project) ---
+  const updateLogger = createFileLogger(path.join(app.getPath("userData"), "ade-update.jsonl"));
+  const autoUpdateService = createAutoUpdateService(updateLogger);
+  autoUpdateService.onUpdateDownloaded((info) => {
+    BrowserWindow.getAllWindows().forEach((win) => {
+      win.webContents.send(IPC.updateEvent, { type: "downloaded", version: info.version });
+    });
+  });
+
   registerIpc({
-    getCtx: () => getActiveContext(),
+    getCtx: () => {
+      const ctx = getActiveContext();
+      if (!ctx.autoUpdateService) {
+        ctx.autoUpdateService = autoUpdateService;
+      }
+      return ctx;
+    },
     switchProjectFromDialog,
     closeCurrentProject,
     closeProjectByPath,

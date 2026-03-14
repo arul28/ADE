@@ -4,7 +4,7 @@ description: "An infinite-canvas visualization of your entire project topology �
 icon: "diagram-project"
 ---
 
-<Info>**📸 Screenshot needed:** Full Workspace Graph view — an infinite canvas showing 6-8 lane nodes in a hierarchical tree, color-coded by status (green idle, blue active, orange conflict), with PR nodes connected to their lanes and edge annotations showing merge simulation results. The mini-map should be visible in the bottom-right corner.</Info>
+<Info>Screenshot needed: Full Workspace Graph view showing lane nodes in a hierarchical tree, color-coded by status, with PR nodes and merge simulation edge annotations.</Info>
 
 ## Overview
 
@@ -87,7 +87,7 @@ Edges represent relationships between nodes.
 - **PR target edges**: A lane's PR targets the main branch (or another lane's branch). Shown as a dashed line connecting the PR node to its target.
 - **Merge simulation overlays**: After running a simulation, edges gain annotation badges showing predicted merge outcome, conflict count, and risk level.
 
-<Info>**📸 Screenshot needed:** Close-up of two lane nodes connected by an edge with a merge simulation annotation — show a "2 conflicts · High Risk" badge in red on the edge, and a clean "Clean merge" badge in green on another edge nearby.</Info>
+<Info>Screenshot needed: Close-up of lane nodes connected by edges with merge simulation annotations showing conflict counts and risk levels.</Info>
 
 ---
 
@@ -133,7 +133,7 @@ The toolbar at the top of the graph provides three view modes. Switch between th
 
 The merge simulation feature predicts what would happen if each lane's branch were merged into the base branch, in sequence. ADE uses `git merge-tree` under the hood — the same algorithm Git uses for real merges, but without touching any branch on disk.
 
-<Info>**📸 Screenshot needed:** The Workspace Graph after running merge simulation — show edge annotations with colored badges ("Clean", "2 conflicts", "Diverged"), a "Simulation complete" toast notification at the top, and the simulation timestamp in the toolbar.</Info>
+<Info>Screenshot needed: Workspace Graph after running merge simulation showing edge annotation badges and simulation timestamp in the toolbar.</Info>
 
 ### Running a Simulation
 

@@ -1658,5 +1658,12 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.ctoGetLinearOAuthSession, args),
     runProjectScan: async (): Promise<CtoRunProjectScanResult> =>
       ipcRenderer.invoke(IPC.ctoRunProjectScan),
-  }
+  },
+  updateCheckForUpdates: () => ipcRenderer.invoke(IPC.updateCheckForUpdates),
+  updateQuitAndInstall: () => ipcRenderer.invoke(IPC.updateQuitAndInstall),
+  onUpdateEvent: (cb: (data: { type: string; version?: string }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: { type: string; version?: string }) => cb(payload);
+    ipcRenderer.on(IPC.updateEvent, listener);
+    return () => ipcRenderer.removeListener(IPC.updateEvent, listener);
+  },
 });

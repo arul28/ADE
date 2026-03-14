@@ -1121,6 +1121,9 @@ declare global {
         getLinearOAuthSession: (args: CtoGetLinearOAuthSessionArgs) => Promise<CtoGetLinearOAuthSessionResult>;
         runProjectScan: () => Promise<CtoRunProjectScanResult>;
       };
+      updateCheckForUpdates: () => Promise<void>;
+      updateQuitAndInstall: () => Promise<void>;
+      onUpdateEvent: (cb: (data: { type: string; version?: string }) => void) => () => void;
     };
   }
 }

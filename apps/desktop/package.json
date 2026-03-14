@@ -4,8 +4,8 @@
   "version": "0.0.0",
   "type": "module",
   "main": "electron.cjs",
-  "author": "",
-  "license": "MIT",
+  "author": "Arul Sharma",
+  "license": "AGPL-3.0",
   "scripts": {
     "predev": "node ./scripts/clear-vite-cache.cjs",
     "dev": "node ./scripts/ensure-electron.cjs && node ./scripts/dev.cjs",
@@ -25,10 +25,10 @@
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^2.0.33",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.49",
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
     "@fontsource-variable/space-grotesk": "^5.2.10",
     "@huggingface/transformers": "^3.8.1",
-    "@anthropic-ai/claude-agent-sdk": "^0.2.49",
     "@modelcontextprotocol/sdk": "1.27.1",
     "@phosphor-icons/react": "^2.1.10",
     "@radix-ui/react-dialog": "^1.1.15",
@@ -44,6 +44,7 @@
     "chokidar": "^4.0.3",
     "clsx": "^2.1.1",
     "dagre": "^0.8.5",
+    "electron-updater": "^6.8.3",
     "framer-motion": "^12.34.2",
     "geist": "^1.7.0",
     "lucide-react": "^0.563.0",
@@ -107,6 +108,11 @@
     "asarUnpack": [
       "node_modules/onnxruntime-node/**"
     ],
+    "publish": {
+      "provider": "github",
+      "owner": "arul28",
+      "repo": "ADE"
+    },
     "mac": {
       "target": [
         "dmg",

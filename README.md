@@ -1,55 +1,67 @@
-# Mintlify Starter Kit
+<p align="center">
+  <img src="logo/dark.png" alt="ADE" width="200" />
+</p>
 
-Use the starter kit to get your docs deployed and ready to customize.
+<h1 align="center">ADE</h1>
+<p align="center"><strong>Agentic Development Environment</strong></p>
 
-Click the green **Use this template** button at the top of this repo to copy the Mintlify starter kit. The starter kit contains examples with
+<p align="center">
+  <a href="https://github.com/arul28/ADE/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-purple" alt="License" /></a>
+  <a href="https://github.com/arul28/ADE/releases"><img src="https://img.shields.io/github/v/release/arul28/ADE" alt="Release" /></a>
+</p>
 
-- Guide pages
-- Navigation
-- Customizations
-- API reference pages
-- Use of popular components
+---
 
-**[Follow the full quickstart guide](https://starter.mintlify.com/quickstart)**
+ADE is a desktop application for AI-native software development. It combines agent orchestration, persistent memory, multi-provider AI support, and deep git integration into a single local-first environment. Built with Electron, React, and TypeScript.
 
-## AI-assisted writing
+## Features
 
-Set up your AI coding tool to work with Mintlify:
+- **Lanes** -- Isolated git worktrees for parallel development with automatic conflict detection
+- **CTO Agent** -- Persistent AI team lead with identity, memory, and Linear integration
+- **Missions** -- Multi-step orchestrated execution with planning, workers, and approval gates
+- **Agent Chat** -- Interactive AI coding with multi-provider support (Claude, Codex, local models)
+- **Memory System** -- Persistent knowledge that survives across sessions with semantic search
+- **Linear Integration** -- Workflow automation triggered by Linear issues
+- **Automations** -- Event-driven background execution with triggers, guardrails, and templates
+- **Computer Use** -- Visual verification through screenshot-based proofs
+- **Context Packs** -- Structured, bounded context delivery for agents
+- **PR Management** -- GitHub PR workflows with stacking, conflict simulation, and queue landing
+
+## Download
+
+Download the latest release for macOS from [GitHub Releases](https://github.com/arul28/ADE/releases).
+
+1. Go to [Releases](https://github.com/arul28/ADE/releases) and download the `.dmg` file
+2. Open the `.dmg` and drag ADE to your Applications folder
+3. Launch ADE and open a project directory
+4. Configure your AI provider (Claude, OpenAI, or local models) in Settings
+5. ADE will detect your project stack and set up initial context automatically
+
+ADE auto-updates when new versions are published. You will see an update indicator in the app header when a new version is available.
+
+## Development Setup
 
 ```bash
-npx skills add https://mintlify.com/docs
+cd apps/desktop
+npm install
+npm run dev
 ```
 
-This command installs Mintlify's documentation skill for your configured AI tools like Claude Code, Cursor, Windsurf, and others. The skill includes component reference, writing standards, and workflow guidance.
+Run checks before submitting changes:
 
-See the [AI tools guides](/ai-tools) for tool-specific setup.
-
-## Development
-
-Install the [Mintlify CLI](https://www.npmjs.com/package/mint) to preview your documentation changes locally. To install, use the following command:
-
-```
-npm i -g mint
+```bash
+npm run typecheck
+npm test
 ```
 
-Run the following command at the root of your documentation, where your `docs.json` is located:
+## Documentation
 
-```
-mint dev
-```
+Full documentation is available at [ade-ac1c6011.mintlify.app](https://ade-ac1c6011.mintlify.app).
 
-View your local preview at `http://localhost:3000`.
+## Tech Stack
 
-## Publishing changes
+Electron, React, TypeScript, SQLite, Vite, Tailwind CSS
 
-Install our GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app) to propagate changes from your repo to your deployment. Changes are deployed to production automatically after pushing to the default branch.
+## License
 
-## Need help?
-
-### Troubleshooting
-
-- If your dev environment isn't running: Run `mint update` to ensure you have the most recent version of the CLI.
-- If a page loads as a 404: Make sure you are running in a folder with a valid `docs.json`.
-
-### Resources
-- [Mintlify documentation](https://mintlify.com/docs)
+[AGPL-3.0](LICENSE) -- Copyright (c) 2025 Arul Sharma

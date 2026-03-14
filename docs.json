@@ -3,9 +3,9 @@
   "theme": "maple",
   "name": "ADE",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#7C3AED",
+    "light": "#A78BFA",
+    "dark": "#5B21B6"
   },
   "background": {
     "decoration": "grid"
@@ -22,65 +22,33 @@
   "navigation": {
     "tabs": [
       {
-        "tab": "Getting Started",
-        "icon": "rocket",
+        "tab": "Documentation",
+        "icon": "book",
         "groups": [
           {
-            "group": "Welcome",
-            "icon": "hand-wave",
+            "group": "Getting Started",
+            "icon": "rocket",
             "expanded": true,
             "pages": [
               "introduction",
-              "quickstart"
-            ]
-          },
-          {
-            "group": "Learn",
-            "icon": "graduation-cap",
-            "pages": [
+              "quickstart",
               "key-concepts"
             ]
-          }
-        ]
-      },
-      {
-        "tab": "Lanes",
-        "icon": "code-branch",
-        "groups": [
-          {
-            "group": "Overview",
-            "icon": "circle-info",
-            "expanded": true,
-            "pages": [
-              "lanes/overview"
-            ]
           },
           {
-            "group": "Working with Lanes",
-            "icon": "hammer",
+            "group": "Lanes",
+            "icon": "code-branch",
             "pages": [
+              "lanes/overview",
               "lanes/creating",
               "lanes/stacks",
+              "lanes/packs",
               "lanes/environment"
             ]
           },
           {
-            "group": "Context",
-            "icon": "brain",
-            "pages": [
-              "lanes/packs"
-            ]
-          }
-        ]
-      },
-      {
-        "tab": "AI Agents",
-        "icon": "robot",
-        "groups": [
-          {
             "group": "CTO Agent",
             "icon": "crown",
-            "expanded": true,
             "pages": [
               "cto/overview",
               "cto/setup",
@@ -107,17 +75,10 @@
               "chat/capabilities",
               "chat/context"
             ]
-          }
-        ]
-      },
-      {
-        "tab": "Automation",
-        "icon": "bolt",
-        "groups": [
+          },
           {
             "group": "Automations",
-            "icon": "gears",
-            "expanded": true,
+            "icon": "bolt",
             "pages": [
               "automations/overview",
               "automations/executors",
@@ -151,7 +112,7 @@
         "icon": "grid-2",
         "groups": [
           {
-            "group": "Visualization",
+            "group": "Workspace",
             "icon": "chart-network",
             "expanded": true,
             "pages": [
@@ -213,29 +174,18 @@
       "anchors": [
         {
           "anchor": "GitHub",
-          "href": "https://github.com/ade-dev/ade",
+          "href": "https://github.com/arul28/ADE",
           "icon": "github"
-        },
-        {
-          "anchor": "Discord",
-          "href": "https://discord.gg/ade",
-          "icon": "discord"
         }
       ]
     }
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:support@ade.dev",
-        "icon": "envelope"
-      }
-    ],
+    "links": [],
     "primary": {
       "type": "button",
       "label": "Download ADE",
-      "href": "https://ade.dev/download"
+      "href": "https://github.com/arul28/ADE/releases"
     }
   },
   "contextual": {
@@ -253,8 +203,7 @@
   "footer": {
     "socials": {
       "x": "https://x.com/ade_dev",
-      "github": "https://github.com/ade-dev/ade",
-      "discord": "https://discord.gg/ade"
+      "github": "https://github.com/arul28/ADE"
     },
     "links": [
       {
@@ -276,8 +225,7 @@
       {
         "header": "Community",
         "items": [
-          { "label": "Discord", "href": "https://discord.gg/ade" },
-          { "label": "GitHub", "href": "https://github.com/ade-dev/ade" },
+          { "label": "GitHub", "href": "https://github.com/arul28/ADE" },
           { "label": "Twitter", "href": "https://x.com/ade_dev" }
         ]
       }
