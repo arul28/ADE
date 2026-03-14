@@ -238,26 +238,30 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Memory Consolidation | Phase 4 | Phase 3 | Complete (W6½) |
 | Episodic + Procedural Memory | Phase 4 | Phase 3 | Complete |
 | Play runtime isolation | Phase 5 | Phase 3 (parallel with Phase 4) | Complete |
-| cr-sqlite multi-device sync | Phase 6 | Phases 1-5 | Planned |
+| cr-sqlite multi-device sync (all 103 tables) | Phase 6 | Phases 1-5 | Planned |
 | Device registry & brain management | Phase 6 | Phases 1-5 | Planned |
 | Tailscale integration | Phase 6 | Phases 1-5 | Planned |
-| WebSocket sync server | Phase 6 | Phases 1-5 | Planned |
+| WebSocket sync server & protocol | Phase 6 | Phases 1-5 | Planned |
 | Device pairing & configuration | Phase 6 | Phases 1-5 | Planned |
-| File access protocol | Phase 6 | Phases 1-5 | Planned |
+| File access & terminal stream protocols | Phase 6 | Phases 1-5 | Planned |
 | VPS headless deployment | Phase 6 | Phases 1-5 | Planned |
-| iOS companion app (core) | Phase 6 | Phases 1-5 | Planned |
-| iOS agent chat | Phase 6 | Phases 1-5 | Planned |
-| iOS mission management | Phase 6 | Phases 1-5 | Planned |
-| Push notifications (basic) | Phase 6 | Phases 1-5 | Planned |
+| iOS app shell & navigation | Phase 6 | Phases 1-5 | Planned |
+| iOS Lanes tab (high parity) | Phase 6 | Phases 1-5 | Planned |
+| iOS Files tab (high parity) | Phase 6 | Phases 1-5 | Planned |
+| iOS Work tab (high parity) | Phase 6 | Phases 1-5 | Planned |
+| iOS PRs tab (high parity) | Phase 6 | Phases 1-5 | Planned |
 | Lane portability (desktop-to-desktop) | Phase 6 | Phases 1-5 | Planned |
-| Command routing | Phase 6 | Phases 1-5 | Planned |
-| iOS rich interactions & polish | Phase 7 | Phase 6 | Planned |
-| iOS file browser & diff viewer | Phase 7 | Phase 6 | Planned |
+| Command routing & connection status | Phase 6 | Phases 1-5 | Planned |
+| iOS Missions tab | Phase 7 | Phase 6 | Planned |
+| iOS CTO & Agent Chat tab | Phase 7 | Phase 6 | Planned |
+| iOS Automations, Graph, History tabs | Phase 7 | Phase 6 | Planned |
+| iOS full Settings tab | Phase 7 | Phase 6 | Planned |
+| Push notifications & notification routing | Phase 7 | Phase 6 | Planned |
 | VPS provider integrations (Hetzner, DO, SSH) | Phase 7 | Phase 6 | Planned |
 | Night Shift & mobile briefings | Phase 7 | Phase 6 | Planned |
 | Advanced offline resilience | Phase 7 | Phase 6 | Planned |
 | Computer-use artifact viewing (iOS) | Phase 7 | Phase 6 | Planned |
-| iPad support & iOS widgets | Phase 7 | Phase 6 | Planned |
+| iPad support, widgets, Spotlight, polish | Phase 7 | Phase 6 | Planned |
 | Core extraction + SpacetimeDB evaluation | Phase 8 | Phase 6 | Deferred (only if cr-sqlite fails) |
 
 ---
@@ -267,14 +271,16 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 Phases 4 and 5 are **fully independent** — they share no code, no database tables, and no runtime surfaces. Both depend only on Phase 3. Run them in parallel with separate agents.
 
 ```
-Phase 3 ──┬──→ Phase 4 (CTO + Ecosystem) ──→ Phase 6 (Sync + iOS) ──→ Phase 7 (Polish + Advanced Remote)
+Phase 3 ──┬──→ Phase 4 (CTO + Ecosystem) ──→ Phase 6 (Sync + iOS) ──→ Phase 7 (Full iOS + Advanced Remote)
            │
            └──→ Phase 5 (Play Runtime)  ← OFF CRITICAL PATH, completed
 ```
 
 **Critical path**: Phase 3 → 4 → 6 → 7. Phases 1-5 are complete.
 
-**Phase 6 combines the previous Phase 6 (sync) and Phase 7 (mobile)** into a single delivery. The sync protocol and iOS app are built together because they share the same cr-sqlite + WebSocket foundation and the primary use case (iPhone → Mac Studio) requires both.
+**Phase 6** builds the full sync infrastructure (all 103 tables, all device types) and ships 4 high-parity iOS tabs (Lanes, Files, Work, PRs) — complete project management from your phone.
+
+**Phase 7** adds the remaining iOS tabs (Missions, CTO/Chat, Automations, Graph, History, Settings), push notifications, VPS provider integrations, Night Shift, and iOS polish. Because Phase 6 syncs all tables to all devices, Phase 7 iOS tabs are pure SwiftUI work — zero sync layer changes needed.
 
 Each phase doc includes an **Execution Order** section showing which workstreams can run in parallel and which must be sequential.
 
