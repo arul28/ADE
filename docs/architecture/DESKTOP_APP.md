@@ -324,4 +324,4 @@ Current architecture guarantees:
 - main-process services remain the only authority for repo mutation and system access
 - UI components handle errors and loading states gracefully
 
-Future architecture work focuses on multi-device sync (Phase 6) and mobile access (Phase 7) rather than app-wide crash triage.
+Future architecture work focuses on multi-device sync and iOS companion (Phase 6) and mobile polish (Phase 7) rather than app-wide crash triage.

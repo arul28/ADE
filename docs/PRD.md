@@ -762,8 +762,8 @@ Current baseline:
 - Machine-specific credentials remain local-only, either in ignored files or encrypted local storage.
 
 Roadmap direction:
-- Phase 6 adds cr-sqlite state sync, device registry, and the brain/viewer model.
-- Phase 7 builds remote/mobile control on top of that sync foundation.
+- Phase 6 adds cr-sqlite state sync, device registry, brain/viewer model, iOS companion app, and push notifications.
+- Phase 7 adds mobile polish, VPS provider integrations, Night Shift briefings, and advanced offline resilience.
 
 ### 10.12 External Agent Bridge
 

@@ -1,6 +1,6 @@
-# ADE Cloud Infrastructure (Phase 6)
+# ADE Cloud Infrastructure (Legacy)
 
-This directory contains the SST deployment for ADE's Phase 6 cloud backend.
+This directory contains the SST deployment for ADE's cloud backend. This infrastructure predates the current Phase 6 plan and is not actively used — ADE is local-first with peer-to-peer sync.
 
 ## What Gets Deployed
 
@@ -30,7 +30,7 @@ Note: Some shared-account IAM setups block API Gateway stage tagging. If deploy 
 
 ## Clerk Setup (GitHub + Google Sign-In / Sign-Up)
 
-Phase 6 uses Clerk OAuth for desktop hosted auth. Social sign-in is supported through GitHub and Google.
+This stack uses Clerk OAuth for desktop hosted auth. Social sign-in is supported through GitHub and Google.
 
 1. Create a Clerk application.
 2. Enable social connections in Clerk:

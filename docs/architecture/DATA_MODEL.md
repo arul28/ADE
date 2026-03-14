@@ -140,7 +140,7 @@ This two-file structure ensures that adding a new model requires only a single e
 
 ### Database Schema
 
-The following 63 tables are created by the schema bootstrap in `kvDb.ts`:
+The following 103 tables are created by the schema bootstrap in `kvDb.ts`:
 
 #### Key-Value Store
 

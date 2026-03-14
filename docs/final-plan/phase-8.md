@@ -108,7 +108,7 @@ If cr-sqlite works well, this phase is skipped entirely.
 ### Migration Scope Reference
 
 For planning purposes, the current database footprint:
-- **63 tables**, 149 foreign keys, 137 indexes
+- **103 tables**, 149+ foreign keys, 137+ indexes
 - **~926 SQL operations** across 40 service files
 - **No ORM** — all raw SQL via `db.run()`, `db.get()`, `db.all()`
 - **Single access point**: `kvDb.ts` with `AdeDb` interface

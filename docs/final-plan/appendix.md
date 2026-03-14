@@ -10,8 +10,8 @@ Base build order:
 3. Phase 3 (AI Orchestrator + Missions Overhaul) — **Complete** (Overhaul Phases 1-7 shipped including reflection protocol closure; Task 8 soak is tracked as verification hardening)
 4. Phase 4 (CTO + Ecosystem)
 5. Phase 5 (Play Runtime Isolation)
-6. Phase 6 (Multi-Device Sync Foundation) — **NEW**
-7. Phase 7 (Mobile + Remote Access) — **NEW**
+6. Phase 6 (Multi-Device Sync & iOS Companion) — **NEW**
+7. Phase 7 (Mobile Polish & Advanced Remote) — **NEW**
 8. Phase 8 (Core Extraction + SpacetimeDB Evaluation) — **DEFERRED/OPTIONAL**
 
 Pull-forward rules:
@@ -22,7 +22,7 @@ Pull-forward rules:
 - Phase 3 mission phases UI work runs alongside the Phase 3 completion package since it depends on orchestrator runtime, not specific P3 workstreams.
 - Phase 3 remaining tasks (Tasks 1-8) are a hard prerequisite for full autonomous mission quality. Phase 4 CTO and ecosystem work should not bypass these runtime foundations.
 - Phase 6 cr-sqlite prototyping may begin during Phase 5 to derisk sync integration.
-- Phase 7 iOS app shell may begin during Phase 6 once the sync protocol stabilizes.
+- Phase 7 iOS polish work may begin during late Phase 6 once the core iOS app is functional.
 - Phase 8 activates ONLY if Phase 6 cr-sqlite reveals fundamental sync issues.
 
 ---
@@ -69,7 +69,7 @@ Each phase must satisfy:
 | Tailscale adoption friction | Users may resist installing a VPN tool for device sync | Tailscale is optional; LAN-only mode works without it; clear docs on privacy (peer-to-peer, no cloud relay) |
 | Brain single-point-of-failure | If brain machine goes offline, no agents run | Brain transfer protocol allows quick failover; VPS brain option for always-on; offline cached state on all devices |
 | WebSocket sync reliability | Sync connection drops may cause stale state on viewer devices | Version-based catch-up on reconnect; offline queue replay; cr-sqlite CRDTs handle eventual consistency |
-| SpacetimeDB migration scope | 63 tables, ~926 SQL operations across 40 files is a significant migration | Only triggered if cr-sqlite fails; agent swarm can accelerate; repository abstraction limits blast radius |
+| SpacetimeDB migration scope | 103 tables, ~926 SQL operations across 40+ files is a significant migration | Only triggered if cr-sqlite fails; agent swarm can accelerate; repository abstraction limits blast radius |
 | iOS App Store review | Apple may reject or delay the iOS app | Submit early; follow Apple guidelines strictly; plan for review cycles in timeline |
 | Push notification infrastructure | APNs requires some server-side infrastructure | Multiple options (self-hosted, FCM, no-push fallback); minimal infra requirements |
 
@@ -244,7 +244,7 @@ Protocols evaluated during research for inter-agent and agent-to-human communica
 
 **A2A Protocol (Google)**: Agent-to-agent discovery and communication protocol. Provides standardized agent capability advertisement and structured message exchange between agents from different platforms. Relevant for future scenarios where ADE agents need to discover and communicate with agents running on other platforms (not just via MCP tool calls, but via structured protocol). Not adopted in Phase 4 — MCP provides sufficient inter-platform communication for current needs. Candidate for Phase 8+ if multi-platform agent orchestration demand emerges.
 
-**A2H Protocol (Twilio)**: Agent-to-human communication across channels (SMS, voice, chat, email). Provides standardized patterns for agents to reach humans through their preferred channel. Relevant for Phase 7 (Mobile + Remote Access) and for agents that need to notify users when interventions are needed. Currently, ADE uses IPC push events and (Phase 7) APNs for human communication. A2H patterns could inform a future multi-channel notification system.
+**A2H Protocol (Twilio)**: Agent-to-human communication across channels (SMS, voice, chat, email). Provides standardized patterns for agents to reach humans through their preferred channel. Relevant for Phase 6 (Multi-Device Sync & iOS Companion) and for agents that need to notify users when interventions are needed. Currently, ADE uses IPC push events and (Phase 6) APNs for human communication. A2H patterns could inform a future multi-channel notification system.
 
 **MCP Async Tasks**: Experimental MCP primitive for long-running agent work. Allows an MCP tool call to return immediately with a task ID, and the caller polls or subscribes for completion. Relevant for ADE's MCP server when external agents launch missions — missions are long-running and the current MCP request/response model blocks until completion. When the MCP async task spec stabilizes, ADE should adopt it for mission-launch and task-agent-launch tools.
 

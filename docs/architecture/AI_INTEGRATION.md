@@ -1269,7 +1269,7 @@ Phases 1, 1.5, 2, 3, 4, and 5 are complete. The v1 closeout (2026-03-13) address
 - Computer use runtime: The `localComputerUse.ts` capability detection module exists, screenshot capture is available as a workflow tool (depends on agent runtime support), and mission validation models screenshot/browser-verification/video evidence requirements, but the full `screenshot_environment` / `interact_gui` / `record_environment` MCP tool loop is not exposed end-to-end. Automatic PR proof embedding from computer-use artifacts is not shipped.
 - Multi-device sync (cr-sqlite + WebSocket real-time replication) is Phase 6 work.
 - Remote brain deployment (user-owned VPS) is Phase 6 work.
-- iOS companion app is Phase 7 work.
+- iOS companion app (core functionality) is Phase 6 work; advanced mobile features are Phase 7.
 - Mission orchestration works end-to-end but complex multi-phase flows may benefit from human guidance via interventions.
 
 ### Compute Backends for Agent Execution

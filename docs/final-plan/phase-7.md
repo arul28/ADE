@@ -1,132 +1,159 @@
-# Phase 7: Mobile + Remote Access
+# Phase 7: Mobile Polish & Advanced Remote
 
-## Phase 7 -- Mobile + Remote Access (5-7 weeks)
+## Phase 7 -- Mobile Polish & Advanced Remote (5-7 weeks)
 
-Goal: Deliver an iOS companion app that provides full participation in ADE workflows — not just a dashboard, but a real client that can launch missions, chat with agents, and manage projects. Add built-in VPS provider integrations for users who want always-on brain machines.
+Goal: Elevate the iOS app from functional to polished and extend multi-device capabilities with advanced remote workflows. Phase 6 proved the architecture and shipped the core experience — Phase 7 makes it feel native, adds the features users will ask for after living with it, and closes the remaining UX gaps.
 
 ### Reference docs
 
-- [features/MISSIONS.md](../features/MISSIONS.md) — mission lifecycle, intervention flow, artifacts
-- [features/ONBOARDING_AND_SETTINGS.md](../features/ONBOARDING_AND_SETTINGS.md) — Device Management, VPS Provider settings
-- Phase 6 workstreams — cr-sqlite sync, WebSocket protocol, device pairing, brain model
+- Phase 6 workstreams — cr-sqlite sync, WebSocket protocol, iOS app shell, device registry
+- [architecture/AI_INTEGRATION.md](../architecture/AI_INTEGRATION.md) — orchestrator, agent runtimes, computer use
+- [features/CTO.md](../features/CTO.md) — CTO state, daily logs, Linear sync, org chart
+- [features/MISSIONS.md](../features/MISSIONS.md) — mission lifecycle, interventions, artifacts
 
 ### Dependencies
 
-- Phase 6 complete (multi-device sync foundation).
+- Phase 6 complete (multi-device sync and iOS companion working end-to-end).
+
+---
 
 ### Architecture Overview
 
-#### Phone as Full Participant
-- The phone is a real cr-sqlite peer — it maintains its own local SQLite database with full app state.
-- All database tables sync to the phone via the same cr-sqlite mechanism used between desktops.
-- Phone can read and write to any synced table — it's a full participant, not a "baby monitor."
-- Phone NEVER runs agents or the orchestrator — all compute happens on the brain machine.
-- Phone sends commands to the brain via the WebSocket connection; brain executes and state syncs back.
+Phase 7 does not introduce new sync infrastructure. It builds on Phase 6's cr-sqlite + WebSocket foundation and focuses on three areas:
 
-#### What the Phone Can Do
-- View and respond to agent chats in real-time (full message history synced via cr-sqlite).
-- Launch new missions on the brain machine.
-- Create lanes, assign agents, configure settings.
-- Approve/reject interventions.
-- View file contents (fetched on-demand from brain).
-- Browse mission history, activity feed, and agent output.
-- Receive push notifications for mission completion, interventions, and errors.
-- View morning briefings from Night Shift runs.
-- Chat with the CTO agent or any worker agent in the org (messages route to brain for processing).
-- View the org chart: CTO, workers, their status (idle/running/paused), budget utilization.
-- Receive push notifications from CTO: mission auto-dispatched from Linear, worker hit budget limit, escalation needed.
+1. **iOS app depth** — richer agent interaction, file browsing, diff viewing, offline resilience, and native feel
+2. **VPS provider integrations** — one-click brain provisioning on Hetzner, DigitalOcean, or any SSH-accessible machine
+3. **Advanced remote workflows** — Night Shift mobile briefings, CTO daily summaries on phone, computer-use artifact viewing, and cross-device notification routing
+
+---
 
 ### Workstreams
 
-#### W1: iOS App Shell (SwiftUI)
-- Native SwiftUI application targeting iOS 17+.
-- cr-sqlite embedded via SQLite Swift wrapper with cr-sqlite extension loaded.
-- WebSocket client for brain connection (reuses Phase 6 protocol).
-- Local SQLite database as cr-sqlite peer — full state available offline.
-- Pairing flow: scan QR code from desktop brain → stored in iOS Keychain → auto-reconnect.
+#### W1: iOS Agent Chat — Rich Interactions
 
-#### W2: Core Navigation & Dashboard
-- Tab-based navigation: Missions, Chat, Lanes, Activity, Settings.
-- Dashboard home: active missions summary, recent activity, brain connection status.
-- Pull-to-refresh triggers manual sync check.
-- Background app refresh for periodic state sync.
+Phase 6 shipped basic send/receive chat. This workstream adds the features that make mobile chat feel like a real development tool.
 
-#### W3: Mission Management
-- Mission list with status indicators (planning, running, paused, completed, failed).
-- Mission detail view: phase progress, step list, worker status.
-- Launch new mission: text input → sends to brain → brain plans and executes.
-- Intervention handling: push notification → tap → approve/reject with optional comment.
-- Mission history with full searchable archive.
+- **Streaming token display**: real-time character-by-character rendering of agent responses via WebSocket (not just final message sync via cr-sqlite).
+- **Inline diff viewer**: syntax-highlighted unified diffs embedded in chat messages. Tap to expand, pinch to zoom, swipe between files.
+- **Code block rendering**: syntax highlighting for all major languages in agent responses. Copy-to-clipboard support.
+- **Attachment viewing**: images and screenshots generated by agents rendered inline. Computer-use artifacts (screenshots, video frames) viewable in a gallery.
+- **Chat session management**: archive, rename, pin sessions. Session search across all conversations.
+- **Haptic feedback**: confirmation haptics on message send, intervention approval, and mission launch.
 
-#### W4: Agent Chat (Mobile)
-- Full agent chat interface — not a read-only view.
-- Chat message list with streaming updates (synced via cr-sqlite for history, WebSocket for real-time streaming tokens).
-- Send messages to active agent sessions on the brain.
-- View inline diffs, command output, and plan progress.
-- Start new agent chat sessions (brain spawns the agent, phone is the UI).
+#### W2: iOS File Browser & Diff Viewer
 
-#### W5: Activity Feed & Notifications
-- Activity feed showing all ADE events across missions, agents, and lanes.
-- Push notifications via APNs for:
-  - Mission completed / failed
-  - Intervention needed (approve/reject)
-  - Agent error requiring attention
-  - Night Shift morning briefing ready
-- Notification tap → deep link to relevant screen.
-- Notification preferences in Settings (per-event-type toggles).
+Phase 6 shipped read-only file viewing. This workstream makes it useful for real code review.
 
-#### W6: APNs Relay Service
-- Lightweight relay service for push notification delivery.
-- Options (user chooses):
-  - Self-hosted: tiny Node.js service on brain machine or VPS, forwards to APNs directly.
-  - Firebase Cloud Messaging: free tier, handles APNs delivery.
-  - No push: phone relies on background refresh and manual checks.
-- Brain sends notification payload to relay when events occur.
-- Relay forwards to APNs → iOS displays notification.
-- Minimal infrastructure — relay only handles notification routing, NOT state sync.
+- **File tree browser**: hierarchical project directory tree fetched from brain. Lazy-loaded — only expanded directories fetch contents.
+- **Syntax-highlighted file viewer**: full syntax highlighting for common languages (Swift, TypeScript, Python, Rust, Go, Java, HTML/CSS, JSON, YAML, Markdown). Line numbers, word wrap toggle.
+- **Diff viewer**: unified and side-by-side diff rendering. View changes by commit, by lane, or by agent session. Syntax-highlighted with line-level annotation.
+- **File search**: fuzzy filename search across the project. Search request routes to brain, results displayed on phone.
+- **Basic file editing**: simple text editor for quick fixes (typos, config tweaks). Edit routes to brain, brain writes to disk, git tracks the change. Not a full IDE — intentionally minimal.
+- **Git blame / history**: per-file blame view showing who (or which agent) changed each line. Tap a line to see the commit message.
 
-#### W7: VPS Provider Integrations
-- Built-in integrations for popular VPS providers to provision always-on brain machines:
-  - **Hetzner**: API integration for server creation, management, and teardown.
-  - **DigitalOcean**: Droplet provisioning via API.
-  - **Daytona**: Workspace creation for managed dev environments.
-  - **Generic SSH**: Connect to any machine with SSH access.
-- Provider setup in Settings → VPS Providers: add API key, select region/size.
-- One-click brain provisioning: "Create VPS Brain" → provisions server → installs ADE → configures as brain → pairs automatically.
-- VPS management: start/stop/restart, resource monitoring, cost estimates.
-- VPS brain runs ADE headlessly via `xvfb-run electron .` (from Phase 6 W9).
+#### W3: VPS Provider Integrations
 
-#### W8: Remote File Browsing (Mobile)
-- File browser: tree view of project directory structure (fetched from brain).
-- File viewer: syntax-highlighted source code viewing for common languages.
-- Basic file editing: simple text editor for quick fixes (sends edit command to brain).
-- Diff viewer: see changes made by agents with syntax-highlighted unified diffs.
-- File search: fuzzy search across project files (search request sent to brain).
+Built-in integrations for provisioning always-on brain machines with one click.
 
-#### W9: Offline Resilience
-- Phone maintains full database state locally — always viewable even without connection.
-- Offline state shows "Last synced: [timestamp]" indicator.
-- Queued commands: if user takes action while offline, commands queue locally.
-- On reconnect: queued commands replay in order, cr-sqlite merges any state changes.
-- Conflict resolution: cr-sqlite CRDTs handle concurrent changes automatically.
+- **Hetzner**: API integration for server creation (region, size), management, and teardown. Supports ARM and x86.
+- **DigitalOcean**: Droplet provisioning via API.
+- **Generic SSH**: Connect any machine with SSH access — user provides host, port, key. ADE installs itself and configures as brain.
+- Provider setup in Settings > Devices > VPS Providers: add API key, select provider, region, and size.
+- **One-click brain provisioning**: "Create VPS Brain" → provisions server → installs Node.js + ADE → runs headless → configures as brain → auto-pairs with your devices.
+- VPS management panel: start/stop/restart, resource monitoring (CPU, RAM, disk), uptime, estimated cost.
+- VPS brain runs ADE headlessly via `xvfb-run electron .` (from Phase 6 W4).
+- Auto-reconnect: if VPS reboots, systemd restarts ADE, devices reconnect automatically.
 
-#### W10: Validation
-- iOS app startup and cr-sqlite initialization tests.
-- Pairing flow tests: QR scan, token storage, auto-reconnect.
-- Mission launch from phone end-to-end tests.
-- Agent chat from phone: send message, receive streaming response, view results.
-- Push notification delivery tests: foreground, background, app-terminated states.
-- Offline queue tests: take actions offline, reconnect, verify replay.
-- VPS provisioning tests: create server, install ADE, pair, verify brain functionality.
-- Cross-device consistency tests: action on phone, verify on desktop, and vice versa.
+#### W4: Night Shift & Mobile Briefings
+
+- **Night Shift**: schedule agent work to run overnight on the brain. Define a list of missions or tasks to execute during a time window (e.g., 11pm-6am). Brain runs them sequentially. Results are ready in the morning.
+- **Morning briefing (iOS)**: on first app open after Night Shift completes, show a structured summary:
+  - Missions completed / failed
+  - Key changes per lane (diffstat, file summary)
+  - Interventions that need attention
+  - Budget consumed
+  - CTO recommendations for the day
+- Morning briefing is a single scrollable card — not a chat conversation. Tap any section to dive into the detail view.
+- **CTO daily summary (iOS)**: the CTO's daily log from the brain (`.ade/cto/daily-logs/`) rendered as a timeline view on the phone. Shows CTO decisions, dispatched work, Linear issue handling, and memory updates from the past 24 hours.
+- Push notification when Night Shift completes: "Night Shift finished — 3 missions completed, 1 needs attention."
+
+#### W5: Advanced Offline Resilience (iOS)
+
+Phase 6 shipped basic offline state and command queuing. This workstream hardens it.
+
+- **Optimistic UI**: when user takes an action offline (approve intervention, send chat message), the UI updates immediately with a "pending sync" indicator. On reconnect, the action replays and the indicator resolves.
+- **Conflict resolution UI**: if an offline action conflicts with state that changed on the brain while disconnected (e.g., user approved an intervention that was already auto-resolved), show a clear explanation and resolution options.
+- **Offline data budget**: iOS devices track local database size. If approaching device storage limits, older Extended-tier data is evicted (tombstoned locally, re-fetched on demand).
+- **Background sync**: when iOS app is backgrounded, periodic background fetch keeps Core tier state fresh (within iOS background execution limits — ~30 seconds per fetch window).
+- **Reconnection UX**: on reconnect after extended offline period, show a catch-up summary ("12 new events since you were last connected") before dumping the user into the live state.
+
+#### W6: Computer-Use Artifact Viewing (iOS)
+
+- **Screenshot gallery**: browse computer-use artifacts (screenshots, annotated captures) generated by agents. Organized by mission, lane, and timestamp.
+- **Proof chain viewer**: follow the sequence of screenshots an agent captured during a computer-use session. Swipe through the timeline.
+- **Artifact detail**: tap a screenshot to see full resolution with pinch-to-zoom. View associated metadata (agent, mission step, timestamp, annotation).
+- **Video frame scrubber**: for video-captured computer-use sessions, scrub through frames on the phone (frames fetched on demand from brain, not pre-synced).
+
+#### W7: Notification Routing & Do Not Disturb
+
+- **Cross-device notification routing**: if the user is actively using ADE on their Mac, suppress duplicate push notifications on iOS (brain tracks which device is "active" via WebSocket activity).
+- **Do Not Disturb schedule**: set quiet hours per device. Brain respects DND and queues non-critical notifications for later.
+- **Notification priority levels**:
+  - **Critical**: intervention needed, mission failed, brain went offline — always delivered.
+  - **Informational**: mission completed, agent finished, budget milestone — respects DND.
+  - **Digest**: batch low-priority events into a periodic summary (configurable: hourly, daily).
+- **Notification history**: scrollable list of all past notifications in the iOS Settings tab for events that were missed or dismissed.
+
+#### W8: iOS App Polish
+
+- **Animations and transitions**: smooth navigation transitions, list animations, pull-to-refresh spring physics, swipe gestures for common actions.
+- **Dark mode**: full dark mode support matching desktop ADE's visual language.
+- **iPad support**: adaptive layout for iPad — sidebar navigation, split-view for chat + lane list, larger diff viewer.
+- **Widget support**: iOS home screen widget showing brain status (online/offline), active mission count, and latest intervention. Tap to open relevant screen.
+- **Spotlight integration**: search missions, lanes, and agent chats from iOS Spotlight.
+- **Performance**: lazy loading for all list views, image caching for agent-generated screenshots, SQLite query optimization for mobile (smaller page size, aggressive WAL checkpointing).
+
+#### W9: Validation
+
+**iOS rich features:**
+- Streaming token display matches desktop output.
+- Diff viewer renders correctly for large diffs, binary files, renamed files.
+- File browser lazy-loads without stalling UI.
+- File editing round-trips: edit on phone → brain writes → verify in git.
+
+**VPS provisioning:**
+- Hetzner/DO: create → install → pair → verify agent execution → teardown.
+- Generic SSH: configure → install → pair → verify.
+- VPS reboot → ADE auto-restarts → devices auto-reconnect.
+
+**Night Shift:**
+- Schedule missions → brain executes overnight → morning briefing displays on phone.
+- Night Shift interrupted (brain crash/reboot) → partial results shown with clear status.
+
+**Offline resilience:**
+- Extended offline (hours) → reconnect → catch-up summary → all queued actions replay.
+- Offline conflict → clear resolution UI.
+- Background fetch keeps state fresh within iOS limits.
+
+**Cross-device notifications:**
+- Active-device suppression: using desktop → phone stays quiet.
+- DND schedule respected for informational notifications.
+- Critical notifications always delivered regardless of DND.
+
+---
 
 ### Exit criteria
 
-- iOS app provides full participation in ADE workflows (missions, chats, lanes, activity).
-- Phone is a real cr-sqlite peer with local state — works offline with cached data.
-- Agent chat from phone allows sending messages and viewing real-time responses.
-- Missions can be launched and managed entirely from the phone.
-- Push notifications reliably surface interventions and mission completions.
-- VPS provider integrations allow one-click brain provisioning.
-- Offline actions queue and replay correctly on reconnect.
-- Pairing is one-time (QR scan) with no re-auth required.
+1. iOS agent chat supports streaming tokens, inline diffs, code blocks, and attachment viewing.
+2. File browser provides hierarchical browsing, syntax-highlighted viewing, and basic editing from the phone.
+3. VPS provider integration allows one-click brain provisioning and management for at least two providers (Hetzner + Generic SSH).
+4. Night Shift allows scheduling overnight work with a structured morning briefing on iOS.
+5. CTO daily summary viewable as a timeline on the phone.
+6. Offline actions use optimistic UI with pending indicators that resolve on reconnect.
+7. Conflict resolution UI handles offline/online state divergence gracefully.
+8. Computer-use artifacts (screenshots, proof chains) browsable from the phone.
+9. Cross-device notification routing suppresses duplicates when desktop is active.
+10. Do Not Disturb schedule works with priority-based notification levels.
+11. iPad layout provides a meaningful improvement over phone layout.
+12. iOS home screen widget shows brain status and active mission count.
+13. iOS app feels native — smooth animations, dark mode, haptic feedback, Spotlight integration.
