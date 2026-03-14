@@ -102,7 +102,7 @@ import {
   type RunRow, type StepRow, type AttemptRow, type ClaimRow,
   type ContextSnapshotRow, type HandoffRow, type TimelineRow,
   type RuntimeEventRow, type GateReportRow, type ArtifactRow,
-  CONTEXT_PROFILES, DEFAULT_CONTEXT_PROFILE_ID,
+  DEFAULT_CONTEXT_POLICY, DEFAULT_CONTEXT_PROFILE_ID,
   TERMINAL_RUN_STATUSES, RETRYABLE_ERROR_CLASSES,
   MAX_TIMELINE_LIMIT, GATE_THRESHOLDS,
   normalizeIsoTimestamp, normalizeRunStatus,
@@ -2478,10 +2478,7 @@ export function createOrchestratorService({
       );
       return typeof missionStepKind?.kind === "string" && missionStepKind.kind.trim().length ? missionStepKind.kind.trim() : "manual";
     })();
-    const laneExportLevel =
-      (stepType === "integration" || stepType === "merge") && args.contextProfile.includeNarrative
-        ? "deep"
-        : args.contextProfile.laneExportLevel;
+    const laneExportLevel = args.contextProfile.laneExportLevel;
     const projectExportLevel = stepType === "analysis" ? "standard" : args.contextProfile.projectExportLevel;
     const lanePackKey = args.step.laneId ? `lane:${args.step.laneId}` : null;
     const laneExport = args.step.laneId
@@ -3942,12 +3939,8 @@ export function createOrchestratorService({
   };
 
   return {
-    getContextProfile(profileId: OrchestratorContextProfileId): OrchestratorContextPolicyProfile {
-      return CONTEXT_PROFILES[profileId] ?? CONTEXT_PROFILES[DEFAULT_CONTEXT_PROFILE_ID];
-    },
-
-    listContextProfiles(): OrchestratorContextPolicyProfile[] {
-      return [CONTEXT_PROFILES.orchestrator_deterministic_v1, CONTEXT_PROFILES.orchestrator_narrative_opt_in_v1];
+    getContextProfile(): OrchestratorContextPolicyProfile {
+      return DEFAULT_CONTEXT_POLICY;
     },
 
     registerExecutorAdapter(adapter: OrchestratorExecutorAdapter) {
@@ -5864,8 +5857,6 @@ export function createOrchestratorService({
 
       for (const { id, input, createdAt: created, stepKey } of stepRows) {
         const policy: Record<string, unknown> = {
-          includeNarrative: input.policy?.includeNarrative === true,
-          includeFullDocs: input.policy?.includeFullDocs === true,
           ...(typeof input.policy?.docsMaxBytes === "number" ? { docsMaxBytes: Math.floor(input.policy.docsMaxBytes) } : {}),
           claimScopes: Array.isArray(input.policy?.claimScopes)
             ? input.policy?.claimScopes?.map((scope) => ({
@@ -6275,7 +6266,7 @@ export function createOrchestratorService({
         }
       }
       const stepPolicy = resolveStepPolicy(step);
-      const contextPolicy = resolveContextPolicy({ runProfileId: run.contextProfile, stepPolicy });
+      const contextPolicy = resolveContextPolicy({ stepPolicy });
 
       // Insert the attempt row early so that all downstream tables with
       // foreign key(attempt_id) references orchestrator_attempts(id) —
@@ -8869,8 +8860,6 @@ export function createOrchestratorService({
         const explicitLaneId = toOptionalNonEmptyString(input.laneId);
         const effectiveLaneId = explicitLaneId ?? missionLaneId;
         const policy: Record<string, unknown> = {
-          includeNarrative: input.policy?.includeNarrative === true,
-          includeFullDocs: input.policy?.includeFullDocs === true,
           ...(typeof input.policy?.docsMaxBytes === "number" ? { docsMaxBytes: Math.floor(input.policy.docsMaxBytes) } : {}),
           claimScopes: Array.isArray(input.policy?.claimScopes)
             ? input.policy?.claimScopes?.map((scope) => ({

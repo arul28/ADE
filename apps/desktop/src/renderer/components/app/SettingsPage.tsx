@@ -1,23 +1,15 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Brain, GearSix, GitBranch, BookOpenText, Robot, Terminal, Keyboard, Lightning, Plugs, SquaresFour, Stack, Globe, Database, FolderSimple, Plus, X } from "@phosphor-icons/react";
+import { Brain, GearSix, Keyboard, Lightning, Stack, Database, FolderSimple, Plus, X, Plugs } from "@phosphor-icons/react";
 import { GeneralSection } from "../settings/GeneralSection";
-import { ProjectSection } from "../settings/ProjectSection";
-import { ProvidersSection } from "../settings/ProvidersSection";
-import { ComputerUseSection } from "../settings/ComputerUseSection";
-import { ExternalMcpSection } from "../settings/ExternalMcpSection";
-import { GitHubSection } from "../settings/GitHubSection";
-import { LinearSection } from "../settings/LinearSection";
-import { ContextSection } from "../settings/ContextSection";
-import { AutomationsSection } from "../settings/AutomationsSection";
-import { TerminalProfilesSection } from "../settings/TerminalProfilesSection";
 import { KeybindingsSection } from "../settings/KeybindingsSection";
 import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
-import { ProxyAndPreviewSection } from "../settings/ProxyAndPreviewSection";
-import { DiagnosticsDashboardSection } from "../settings/DiagnosticsDashboardSection";
+import { LaneBehaviorSection } from "../settings/LaneBehaviorSection";
 import { MemoryHealthTab } from "../settings/MemoryHealthTab";
-import { AiFeaturesSection } from "../settings/AiFeaturesSection";
+import { AiSettingsSection } from "../settings/AiSettingsSection";
 import { SettingsUsageSection } from "../settings/SettingsUsageSection";
+import { WorkspaceSettingsSection } from "../settings/WorkspaceSettingsSection";
+import { IntegrationsSettingsSection } from "../settings/IntegrationsSettingsSection";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton, dangerButton } from "../lanes/laneDesignTokens";
 import { ConfirmDialog, PromptDialog, useConfirmDialog, usePromptDialog } from "../shared/InlineDialogs";
 import type { PhaseProfile, PhaseCard } from "../../../shared/types";
@@ -25,25 +17,26 @@ import { PhaseCardEditor } from "../missions/PhaseCardEditor";
 
 const SECTIONS = [
   { id: "general", label: "General", icon: GearSix },
-  { id: "project", label: "Project", icon: FolderSimple },
-  { id: "providers", label: "Providers", icon: Plugs },
-  { id: "computer-use", label: "Computer Use", icon: Robot },
-  { id: "external-mcp", label: "External MCP", icon: Database },
+  { id: "workspace", label: "Workspace", icon: FolderSimple },
   { id: "ai", label: "AI", icon: Brain },
-  { id: "github", label: "GitHub", icon: GitBranch },
-  { id: "linear", label: "Linear", icon: Plugs },
+  { id: "integrations", label: "Integrations", icon: Plugs },
   { id: "memory", label: "Memory", icon: Database },
-  { id: "context", label: "Context & Docs", icon: BookOpenText },
-  { id: "automations", label: "Automations", icon: Robot },
-  { id: "terminals", label: "Terminals", icon: Terminal },
   { id: "lane-templates", label: "Lane Templates", icon: Stack },
-  { id: "proxy-preview", label: "Proxy & Preview", icon: Globe },
   { id: "keybindings", label: "Keybindings", icon: Keyboard },
-  { id: "phase-profiles", label: "Phase Profiles", icon: SquaresFour },
   { id: "usage", label: "Usage", icon: Lightning },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
+
+const TAB_ALIASES: Record<string, SectionId> = {
+  project: "workspace",
+  context: "workspace",
+  providers: "ai",
+  github: "integrations",
+  linear: "integrations",
+  "computer-use": "integrations",
+  "external-mcp": "integrations",
+};
 
 function padIndex(i: number): string {
   return String(i + 1).padStart(2, "0");
@@ -446,8 +439,13 @@ function PhaseProfilesSection() {
 
 export function SettingsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const tabParam = searchParams.get("tab") as SectionId | null;
-  const validTab = tabParam && SECTIONS.some((s) => s.id === tabParam) ? tabParam : null;
+  const tabParam = searchParams.get("tab");
+  const canonicalTab = tabParam && SECTIONS.some((s) => s.id === tabParam)
+    ? (tabParam as SectionId)
+    : tabParam && TAB_ALIASES[tabParam]
+      ? TAB_ALIASES[tabParam]
+      : null;
+  const validTab = canonicalTab;
   const [section, setSection] = useState<SectionId>(validTab ?? "general");
   const [hoveredId, setHoveredId] = useState<string | null>(null);
 
@@ -456,7 +454,14 @@ export function SettingsPage() {
     if (validTab && validTab !== section) {
       setSection(validTab);
     }
-  }, [validTab]);
+  }, [validTab, section]);
+
+  useEffect(() => {
+    if (!tabParam || !canonicalTab || tabParam === canonicalTab) return;
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.set("tab", canonicalTab);
+    setSearchParams(nextParams, { replace: true });
+  }, [canonicalTab, searchParams, setSearchParams, tabParam]);
 
   const navigateToSection = useCallback((next: SectionId) => {
     setSection(next);
@@ -540,26 +545,17 @@ export function SettingsPage() {
         }}
       >
         {section === "general" && <GeneralSection />}
-        {section === "project" && <ProjectSection />}
-        {section === "providers" && <ProvidersSection />}
-        {section === "computer-use" && <ComputerUseSection onOpenExternalMcp={() => navigateToSection("external-mcp")} />}
-        {section === "external-mcp" && <ExternalMcpSection />}
-        {section === "ai" && <AiFeaturesSection />}
-        {section === "github" && <GitHubSection />}
-        {section === "linear" && <LinearSection />}
+        {section === "workspace" && <WorkspaceSettingsSection />}
+        {section === "ai" && <AiSettingsSection />}
+        {section === "integrations" && <IntegrationsSettingsSection />}
         {section === "memory" && <MemoryHealthTab />}
-        {section === "context" && <ContextSection />}
-        {section === "automations" && <AutomationsSection />}
-        {section === "terminals" && <TerminalProfilesSection />}
-        {section === "lane-templates" && <LaneTemplatesSection />}
-        {section === "proxy-preview" && (
+        {section === "lane-templates" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-            <ProxyAndPreviewSection />
-            <DiagnosticsDashboardSection />
+            <LaneTemplatesSection />
+            <LaneBehaviorSection />
           </div>
         )}
         {section === "keybindings" && <KeybindingsSection />}
-        {section === "phase-profiles" && <PhaseProfilesSection />}
         {section === "usage" && <SettingsUsageSection />}
       </div>
     </div>

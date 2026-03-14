@@ -1,7 +1,9 @@
 import React from "react";
+import { useNavigate } from "react-router-dom";
 import type { ContextStatus, ContextRefreshEvents, ContextDocPrefs, SkillIndexEntry } from "../../../shared/types";
 import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
 import { EmptyState } from "../ui/EmptyState";
+import { relativeTime } from "../context/contextShared";
 import {
   COLORS,
   MONO_FONT,
@@ -20,17 +22,6 @@ const sectionLabelStyle: React.CSSProperties = {
   textTransform: "uppercase" as const,
   marginBottom: 10,
 };
-
-function relativeTime(value: string | null | undefined): string {
-  if (!value) return "never";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  const diffMs = Date.now() - date.getTime();
-  if (diffMs < 60_000) return "just now";
-  if (diffMs < 3_600_000) return `${Math.floor(diffMs / 60_000)}m ago`;
-  if (diffMs < 86_400_000) return `${Math.floor(diffMs / 3_600_000)}h ago`;
-  return `${Math.floor(diffMs / 86_400_000)}d ago`;
-}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    Event Toggles
@@ -59,6 +50,7 @@ const DEFAULT_EVENTS: ContextRefreshEvents = { onPrCreate: true, onMissionStart:
    ═══════════════════════════════════════════════════════════════════════════ */
 
 export function ContextSection() {
+  const navigate = useNavigate();
   const [docsStatus, setDocsStatus] = React.useState<ContextStatus | null>(null);
   const [docsLoading, setDocsLoading] = React.useState(false);
 
@@ -194,7 +186,7 @@ export function ContextSection() {
                   type="button"
                   style={outlineButton({ height: 26, padding: "0 10px", fontSize: 10, borderRadius: 8 })}
                   onClick={() => {
-                    void window.ade.context.openDoc({ docId: doc.id }).catch(() => {});
+                    navigate("/files", { state: { openFilePath: doc.preferredPath } });
                   }}
                 >
                   Open

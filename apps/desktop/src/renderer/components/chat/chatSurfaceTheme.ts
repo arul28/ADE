@@ -2,7 +2,7 @@ import type { CSSProperties } from "react";
 import type { ChatSurfaceChipTone, ChatSurfaceMode } from "../../../shared/types";
 
 export const CHAT_SURFACE_ACCENTS: Record<ChatSurfaceMode, string> = {
-  standard: "#A1A1AA",
+  standard: "#71717A",
   resolver: "#F97316",
   "mission-thread": "#38BDF8",
   "mission-feed": "#22C55E",
@@ -28,7 +28,7 @@ function normalizeHex(value: string): string {
   if (/^#[0-9a-f]{3}$/i.test(trimmed)) {
     return `#${trimmed[1]}${trimmed[1]}${trimmed[2]}${trimmed[2]}${trimmed[3]}${trimmed[3]}`;
   }
-  return "#A1A1AA";
+  return "#71717A";
 }
 
 export function colorToRgba(value: string, alpha: number): string {

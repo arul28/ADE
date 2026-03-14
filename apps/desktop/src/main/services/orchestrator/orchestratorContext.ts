@@ -8,6 +8,7 @@
 
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
+import { nowIso } from "../shared/utils";
 import type { GetModelCapabilitiesResult } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import type {
@@ -194,9 +195,7 @@ export type MissionRuntimeProfile = {
     interventionReasoningEffort: RuntimeReasoningEffort;
   };
   context: {
-    contextProfile: "orchestrator_deterministic_v1" | "orchestrator_narrative_opt_in_v1";
-    includeNarrative: boolean;
-    docsMode: "digest_refs" | "full_docs";
+    contextProfile: string;
   };
   provenance: {
     source: "policy";
@@ -440,9 +439,8 @@ export type OrchestratorContext = {
 
 // ── Utility Functions ───────────────────────────────────────────────
 
-export function nowIso(): string {
-  return new Date().toISOString();
-}
+// Re-exported from ../shared/utils (imported at top of file)
+export { nowIso };
 
 export function createDeferred<T>(): Deferred<T> {
   let settle: ((value: T) => void) | null = null;
@@ -1142,9 +1140,6 @@ export function deriveRuntimeProfileFromPolicy(
     stepTimeoutMs = 480_000;
   }
 
-  const includeNarrative = policy.planning.mode === "manual_review" || strictGates;
-  const contextProfile = includeNarrative ? "orchestrator_narrative_opt_in_v1" : "orchestrator_deterministic_v1";
-
   return {
     planning: {
       useAiPlanner: policy.planning.mode !== "off",
@@ -1170,9 +1165,7 @@ export function deriveRuntimeProfileFromPolicy(
       )
     },
     context: {
-      contextProfile,
-      includeNarrative,
-      docsMode: includeNarrative ? "full_docs" : "digest_refs"
+      contextProfile: "orchestrator_deterministic_v1",
     },
     provenance: {
       source: "policy"
@@ -1219,9 +1212,6 @@ export function deriveRuntimeProfileFromPhases(
     stepTimeoutMs = 480_000;
   }
 
-  const includeNarrative = hasManualReview || hasStrictGates;
-  const contextProfile = includeNarrative ? "orchestrator_narrative_opt_in_v1" : "orchestrator_deterministic_v1";
-
   // Derive reasoning effort from phase cards that have validation or review roles
   const reviewPhases = phases.filter(
     (p) => ["validation", "code_review", "codereview", "review", "test_review", "testreview"]
@@ -1252,9 +1242,7 @@ export function deriveRuntimeProfileFromPhases(
       )
     },
     context: {
-      contextProfile,
-      includeNarrative,
-      docsMode: includeNarrative ? "full_docs" : "digest_refs"
+      contextProfile: "orchestrator_deterministic_v1",
     },
     provenance: {
       source: "policy"

@@ -220,7 +220,8 @@ export function ProvidersSection() {
       const effectiveAiRaw = snapshot.effective?.ai;
       const effectiveAiConfig = effectiveAiRaw && typeof effectiveAiRaw === "object" ? (effectiveAiRaw as AiConfig) : null;
       setUtilityModel(
-        normalizeModelSetting(effectiveAiConfig?.featureModelOverrides?.terminal_summaries)
+        normalizeModelSetting(effectiveAiConfig?.sessionIntelligence?.summaries?.modelId)
+        || normalizeModelSetting(effectiveAiConfig?.featureModelOverrides?.terminal_summaries)
         || normalizeModelSetting(effectiveAiConfig?.chat?.autoTitleModelId)
         || "anthropic/claude-haiku-4-5",
       );
@@ -450,7 +451,7 @@ export function ProvidersSection() {
     <div style={{ display: "flex", flexDirection: "column", gap: 18, maxWidth: 980 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div>
-          <h2 style={{ margin: 0, fontSize: 20, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>Providers</h2>
+          <h2 style={{ margin: 0, fontSize: 20, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>AI connections</h2>
           <p style={{ marginTop: 6, marginBottom: 0, fontSize: 12, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
             Authenticate providers, confirm active connections, and configure execution permissions.
           </p>
@@ -888,19 +889,24 @@ export function ProvidersSection() {
 
       {/* ── AI Utilities ── */}
       <section style={{ marginTop: 24 }}>
-        <div style={{ ...LABEL_STYLE, fontSize: 11, marginBottom: 6 }}>AI UTILITIES</div>
+        <div style={{ ...LABEL_STYLE, fontSize: 11, marginBottom: 6 }}>LIGHTWEIGHT TASKS</div>
         <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: MONO_FONT, marginBottom: 10 }}>
-          Choose the model used for lightweight AI tasks — session summaries, auto-naming chat tabs, and generating short metadata.
+          Choose the model used for lightweight AI tasks like chat summaries, terminal summaries, and auto-naming chat tabs.
           A fast, inexpensive model (e.g. Haiku) is recommended.
         </div>
         <div style={cardStyle({ padding: 16, display: "grid", gap: 14 })}>
           <SelectField
-            label="UTILITY MODEL"
+            label="SUMMARY MODEL"
             value={utilityModel}
             onChange={(value) => {
               setUtilityModel(value);
               void window.ade.ai.updateConfig({
                 featureModelOverrides: { terminal_summaries: value } as AiConfig["featureModelOverrides"],
+                sessionIntelligence: {
+                  summaries: {
+                    modelId: value || undefined,
+                  },
+                } as AiConfig["sessionIntelligence"],
                 chat: {
                   autoTitleEnabled: chatAutoTitleEnabled,
                   autoTitleModelId: value || undefined,

@@ -1,8 +1,10 @@
+import { spawnSync } from "node:child_process";
 import type {
   ComputerUseArtifactKind,
   ComputerUseArtifactOwner,
   ComputerUseArtifactView,
   ComputerUseBackendStatus,
+  ExternalMcpServerSnapshot,
   ComputerUseOwnerSnapshot,
   ComputerUseOwnerSnapshotArgs,
   ComputerUsePolicy,
@@ -11,6 +13,7 @@ import type {
 } from "../../../shared/types";
 import { createDefaultComputerUsePolicy, isComputerUseModeEnabled } from "../../../shared/types";
 import type { ComputerUseArtifactBrokerService } from "./computerUseArtifactBrokerService";
+import { commandExists } from "../ai/utils";
 
 const COMPUTER_USE_KINDS: ComputerUseArtifactKind[] = [
   "screenshot",
@@ -22,6 +25,101 @@ const COMPUTER_USE_KINDS: ComputerUseArtifactKind[] = [
 
 export function getComputerUseArtifactKinds(): ComputerUseArtifactKind[] {
   return [...COMPUTER_USE_KINDS];
+}
+
+function isGhostOsServer(snapshot: ExternalMcpServerSnapshot): boolean {
+  const command = snapshot.config.command?.trim().toLowerCase() ?? "";
+  const args = Array.isArray(snapshot.config.args)
+    ? snapshot.config.args.map((entry) => entry.trim().toLowerCase())
+    : [];
+  return command === "ghost" && args.includes("mcp");
+}
+
+function buildGhostOsCheck(args: {
+  status: ComputerUseBackendStatus;
+  snapshots: ExternalMcpServerSnapshot[];
+}): ComputerUseSettingsSnapshot["ghostOsCheck"] {
+  const repoUrl = "https://github.com/ghostwright/ghost-os";
+  const cliInstalled = commandExists("ghost");
+  const matchingSnapshots = args.snapshots.filter(isGhostOsServer);
+  const adeConfigured = matchingSnapshots.length > 0;
+  const adeConnected = matchingSnapshots.some((snapshot) => snapshot.state === "connected");
+  const backendEntry = args.status.backends.find((backend) => backend.name === "Ghost OS") ?? null;
+
+  if (!cliInstalled) {
+    return {
+      repoUrl,
+      cliInstalled: false,
+      setupState: "not_installed",
+      adeConfigured,
+      adeConnected,
+      summary: "Ghost OS is not installed on this Mac.",
+      details: [
+        "Install the Ghost OS CLI first.",
+        "Then run `ghost setup` to grant permissions and install its local dependencies.",
+        adeConfigured
+          ? "ADE already has a Ghost OS MCP entry, but it cannot start until the `ghost` CLI exists."
+          : "After setup, add `ghost mcp` in ADE External MCP so ADE-launched sessions can use it.",
+      ],
+    };
+  }
+
+  const statusResult = spawnSync("ghost", ["status"], { encoding: "utf8", timeout: 5000 });
+  const combinedOutput = `${statusResult.stdout ?? ""}\n${statusResult.stderr ?? ""}`.trim();
+  const outputLines = combinedOutput
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .slice(0, 4);
+  const lower = combinedOutput.toLowerCase();
+  const setupState: ComputerUseSettingsSnapshot["ghostOsCheck"]["setupState"] =
+    /status:\s*ready/i.test(combinedOutput)
+      ? "ready"
+      : /ghost setup|run `ghost setup` first|not granted|not configured/i.test(lower)
+        ? "needs_setup"
+        : "unknown";
+
+  if (setupState === "ready") {
+    return {
+      repoUrl,
+      cliInstalled: true,
+      setupState,
+      adeConfigured,
+      adeConnected,
+      summary: adeConnected
+        ? "Ghost OS is ready on this Mac and connected through ADE."
+        : adeConfigured
+          ? "Ghost OS is ready on this Mac. Connect the ADE MCP server to make it active."
+          : "Ghost OS is ready on this Mac, but ADE is not configured to launch it yet.",
+      details: [
+        ...(outputLines.length > 0 ? outputLines : ["`ghost status` reports ready."]),
+        adeConfigured
+          ? adeConnected
+            ? "ADE has a matching `ghost mcp` server and it is currently connected."
+            : "ADE has a matching `ghost mcp` server but it is not currently connected."
+          : "Add a stdio External MCP server in ADE with command `ghost` and args `mcp`.",
+        backendEntry?.detail ?? "Ghost OS tools will appear to ADE as an external computer-use backend once connected.",
+      ],
+    };
+  }
+
+  return {
+    repoUrl,
+    cliInstalled: true,
+    setupState,
+    adeConfigured,
+    adeConnected,
+    summary: setupState === "needs_setup"
+      ? "Ghost OS is installed, but this Mac still needs `ghost setup`."
+      : "Ghost OS is installed, but ADE could not verify whether setup is complete.",
+    details: [
+      ...(outputLines.length > 0 ? outputLines : ["`ghost status` did not return a clear ready state."]),
+      "Run `ghost setup` in Terminal on this Mac.",
+      adeConfigured
+        ? "After setup completes, reconnect the Ghost OS MCP entry in ADE."
+        : "After setup completes, add `ghost mcp` in ADE External MCP.",
+    ],
+  };
 }
 
 export function collectRequiredComputerUseKindsFromPhases(phases: PhaseCard[] | null | undefined): ComputerUseArtifactKind[] {
@@ -96,14 +194,19 @@ function buildActivity(artifacts: ComputerUseArtifactView[], missingKinds: Compu
     .slice(0, 8);
 }
 
-export function buildComputerUseSettingsSnapshot(status: ComputerUseBackendStatus): ComputerUseSettingsSnapshot {
+export function buildComputerUseSettingsSnapshot(args: {
+  status: ComputerUseBackendStatus;
+  snapshots?: ExternalMcpServerSnapshot[];
+}): ComputerUseSettingsSnapshot {
+  const ghostOsCheck = buildGhostOsCheck({ status: args.status, snapshots: args.snapshots ?? [] });
   return {
-    backendStatus: status,
-    preferredBackend: selectPreferredBackend(status),
-    capabilityMatrix: buildCapabilityMatrix(status),
+    backendStatus: args.status,
+    preferredBackend: selectPreferredBackend(args.status),
+    capabilityMatrix: buildCapabilityMatrix(args.status),
+    ghostOsCheck,
     guidance: {
       overview: "External tools perform computer use. ADE discovers backends, ingests their artifacts, normalizes proof, links evidence to missions and chats, and helps operators decide what to do next.",
-      ghostOs: "Ghost OS connects as an external MCP backend for macOS accessibility and desktop automation. Configure it in External MCP, then verify the connection and discovered tools here.",
+      ghostOs: "Ghost OS is a local stdio MCP server. Run `ghost setup` on this Mac first, then add `ghost mcp` in ADE External MCP so ADE-launched sessions can use it.",
       agentBrowser: "agent-browser is a CLI-native browser automation backend, not an MCP server. Install the CLI locally, run it externally, and ingest its manifests or artifacts into ADE for proof tracking.",
       fallback: "ADE-local computer-use remains fallback-only compatibility support. It should only be used when approved external backends are unavailable for the required proof kind.",
     },

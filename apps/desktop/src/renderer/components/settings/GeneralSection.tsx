@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import type { AppInfo } from "../../../shared/types";
 import { useAppStore, ThemeId, THEME_IDS } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
@@ -8,6 +9,8 @@ import {
   MONO_FONT,
   cardStyle,
   LABEL_STYLE,
+  outlineButton,
+  primaryButton,
 } from "../lanes/laneDesignTokens";
 
 const THEME_META: Record<
@@ -126,7 +129,9 @@ function ThemeSwatch({
 }
 
 export function GeneralSection() {
+  const navigate = useNavigate();
   const [info, setInfo] = useState<AppInfo | null>(null);
+  const [onboardingStatus, setOnboardingStatus] = useState<{ completedAt: string | null; dismissedAt: string | null } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const providerMode = useAppStore((s) => s.providerMode);
   const theme = useAppStore((s) => s.theme);
@@ -142,6 +147,14 @@ export function GeneralSection() {
       .catch((error) => {
         if (!cancelled) setLoadError(String(error));
       });
+    window.ade.onboarding
+      .getStatus()
+      .then((value) => {
+        if (!cancelled) setOnboardingStatus(value);
+      })
+      .catch(() => {
+        if (!cancelled) setOnboardingStatus({ completedAt: null, dismissedAt: null });
+      });
     return () => {
       cancelled = true;
     };
@@ -155,8 +168,77 @@ export function GeneralSection() {
     return <EmptyState title="General" description="Loading..." />;
   }
 
+  const setupComplete = Boolean(onboardingStatus?.completedAt);
+  const reminderHidden = Boolean(onboardingStatus?.dismissedAt) && !setupComplete;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
+      <section>
+        <div style={sectionLabelStyle}>PROJECT SETUP</div>
+        <div style={{ ...cardStyle(), display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textPrimary }}>
+                {setupComplete ? "Project setup completed" : reminderHidden ? "Project setup reminder hidden" : "Project setup still needs attention"}
+              </div>
+              <div style={{ marginTop: 6, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.6 }}>
+                Run the guided setup flow to connect providers, pick starter AI defaults, and add GitHub or Linear access. You can reopen it whenever you want.
+              </div>
+            </div>
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                padding: "4px 8px",
+                fontSize: 10,
+                fontWeight: 700,
+                fontFamily: MONO_FONT,
+                textTransform: "uppercase",
+                letterSpacing: "1px",
+                color: setupComplete ? COLORS.success : reminderHidden ? COLORS.textMuted : COLORS.warning,
+                background: setupComplete ? `${COLORS.success}18` : reminderHidden ? `${COLORS.textDim}18` : `${COLORS.warning}18`,
+                border: setupComplete
+                  ? `1px solid ${COLORS.success}30`
+                  : reminderHidden
+                    ? `1px solid ${COLORS.textDim}30`
+                    : `1px solid ${COLORS.warning}30`,
+              }}
+            >
+              {setupComplete ? "Ready" : reminderHidden ? "Reminder hidden" : "Incomplete"}
+            </span>
+          </div>
+
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            <button type="button" style={primaryButton()} onClick={() => navigate("/onboarding")}>
+              {setupComplete ? "RUN SETUP AGAIN" : "OPEN PROJECT SETUP"}
+            </button>
+            {!setupComplete ? (
+              reminderHidden ? (
+                <button
+                  type="button"
+                  style={outlineButton()}
+                  onClick={() => {
+                    void window.ade.onboarding.setDismissed(false).then(setOnboardingStatus).catch(() => {});
+                  }}
+                >
+                  SHOW REMINDER AGAIN
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  style={outlineButton()}
+                  onClick={() => {
+                    void window.ade.onboarding.setDismissed(true).then(setOnboardingStatus).catch(() => {});
+                  }}
+                >
+                  HIDE REMINDER
+                </button>
+              )
+            ) : null}
+          </div>
+        </div>
+      </section>
+
       <section>
         <div style={sectionLabelStyle}>THEME</div>
         <div style={{ display: "flex", gap: 12 }}>
@@ -209,7 +291,7 @@ export function GeneralSection() {
                 color: COLORS.textMuted,
               }}
             >
-              Provider authentication, connection checks, API keys, and worker permissions are managed in the Providers tab.
+              Provider authentication, connection checks, API keys, and worker permissions are managed in the AI tab.
             </span>
           </div>
         </div>

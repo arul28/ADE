@@ -971,7 +971,7 @@ export function LanesPage() {
     }
   };
 
-  const openAutoRebaseSettings = useCallback(() => { navigate("/settings"); }, [navigate]);
+  const openAutoRebaseSettings = useCallback(() => { navigate("/settings?tab=lane-templates"); }, [navigate]);
   const openRebaseDetails = useCallback(() => { navigate("/prs?tab=rebase"); }, [navigate]);
 
   const openRebaseConflictResolver = useCallback((laneId: string, parentLaneId: string | null) => {
@@ -1873,6 +1873,7 @@ export function LanesPage() {
         templates={templates}
         selectedTemplateId={selectedTemplateId}
         setSelectedTemplateId={setSelectedTemplateId}
+        onNavigateToTemplates={() => navigate("/settings?tab=lane-templates")}
       />
 
       {/* Attach Lane dialog */}

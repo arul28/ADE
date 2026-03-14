@@ -9,7 +9,7 @@ import {
   resolveContextDocPath as resolveContextDocPathImpl,
   runContextDocGeneration as runContextDocGenerationImpl,
 } from "../packs/projectPackBuilder";
-import { getErrorMessage, toOptionalString } from "../shared/utils";
+import { getErrorMessage, nowIso, toOptionalString } from "../shared/utils";
 import type { AdeDb } from "../state/kvDb";
 import type {
   ContextDocPrefs,
@@ -76,10 +76,6 @@ function cadenceToEvents(cadence: ContextRefreshTrigger): ContextRefreshEvents {
     case "per_lane_refresh": return { onSessionEnd: true };
     default: return {};
   }
-}
-
-function nowIso(): string {
-  return new Date().toISOString();
 }
 
 function normalizeRefreshTrigger(value: unknown): ContextRefreshTrigger {

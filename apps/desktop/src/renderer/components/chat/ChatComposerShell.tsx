@@ -27,7 +27,7 @@ export function ChatComposerShell({
       )}
       data-chat-composer-mode={mode}
     >
-      <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[inherit] bg-[radial-gradient(ellipse_at_70%_0%,var(--chat-accent-faint),transparent_60%)] opacity-50" />
+      <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[inherit] bg-[radial-gradient(ellipse_at_70%_0%,rgba(255,255,255,0.015),transparent_60%)] opacity-50" />
       {pendingBanner ? <div className="relative border-b border-white/[0.04]">{pendingBanner}</div> : null}
       {trays ? <div className="relative border-b border-white/[0.04]">{trays}</div> : null}
       <div className="relative">

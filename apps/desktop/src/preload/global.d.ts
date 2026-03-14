@@ -176,6 +176,12 @@ import type {
   CtoListLinearIngressEventsArgs,
   LinearWorkflowConfig,
   OpenclawBridgeStatus,
+  ExternalConnectionAuthRecord,
+  ExternalConnectionAuthRecordInput,
+  ExternalConnectionAuthStatus,
+  ExternalConnectionOAuthSessionResult,
+  ExternalConnectionOAuthSessionStartResult,
+  ExternalMcpManagedAuthConfig,
   ExternalMcpServerConfig,
   ExternalMcpServerSnapshot,
   ExternalMcpEventPayload,
@@ -337,7 +343,6 @@ import type {
   StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
-  TerminalProfilesSnapshot,
   TerminalSessionSummary,
   ResolveMissionInterventionArgs,
   MissionArtifact,
@@ -466,6 +471,8 @@ import type {
   GetLaneTemplateArgs,
   SetDefaultLaneTemplateArgs,
   ApplyLaneTemplateArgs,
+  SaveLaneTemplateArgs,
+  DeleteLaneTemplateArgs,
   GetPortLeaseArgs,
   AcquirePortLeaseArgs,
   ReleasePortLeaseArgs,
@@ -557,24 +564,27 @@ declare global {
         listServers: () => Promise<ExternalMcpServerSnapshot[]>;
         listConfigs: () => Promise<ExternalMcpServerConfig[]>;
         getUsageEvents: (args?: { limit?: number }) => Promise<ExternalMcpUsageEvent[]>;
+        listAuthRecords: () => Promise<ExternalConnectionAuthRecord[]>;
         onEvent: (cb: (event: ExternalMcpEventPayload) => void) => () => void;
         connectServer: (serverName: string) => Promise<ExternalMcpServerSnapshot>;
         disconnectServer: (serverName: string) => Promise<ExternalMcpServerSnapshot | null>;
         testServer: (config: ExternalMcpServerConfig) => Promise<ExternalMcpServerSnapshot>;
         saveServer: (config: ExternalMcpServerConfig) => Promise<ExternalMcpServerConfig[]>;
         removeServer: (serverName: string) => Promise<ExternalMcpServerConfig[]>;
+        saveAuthRecord: (record: ExternalConnectionAuthRecordInput) => Promise<ExternalConnectionAuthRecord>;
+        removeAuthRecord: (authId: string) => Promise<ExternalConnectionAuthRecord[]>;
+        getAuthStatus: (binding?: ExternalMcpManagedAuthConfig | null) => Promise<ExternalConnectionAuthStatus>;
+        startOAuthSession: (authId: string) => Promise<ExternalConnectionOAuthSessionStartResult>;
+        getOAuthSession: (sessionId: string) => Promise<ExternalConnectionOAuthSessionResult>;
       };
       agentTools: {
         detect: () => Promise<AgentTool[]>;
-      };
-      terminalProfiles: {
-        get: () => Promise<TerminalProfilesSnapshot>;
-        set: (snapshot: TerminalProfilesSnapshot) => Promise<TerminalProfilesSnapshot>;
       };
       onboarding: {
         getStatus: () => Promise<OnboardingStatus>;
         detectDefaults: () => Promise<OnboardingDetectionResult>;
         detectExistingLanes: () => Promise<OnboardingExistingLaneCandidate[]>;
+        setDismissed: (dismissed: boolean) => Promise<OnboardingStatus>;
         complete: () => Promise<OnboardingStatus>;
       };
       automations: {
@@ -728,6 +738,8 @@ declare global {
         getDefaultTemplate: () => Promise<string | null>;
         setDefaultTemplate: (args: SetDefaultLaneTemplateArgs) => Promise<void>;
         applyTemplate: (args: ApplyLaneTemplateArgs) => Promise<LaneEnvInitProgress>;
+        saveTemplate: (args: SaveLaneTemplateArgs) => Promise<void>;
+        deleteTemplate: (args: DeleteLaneTemplateArgs) => Promise<void>;
         portGetLease: (args: GetPortLeaseArgs) => Promise<PortLease | null>;
         portListLeases: () => Promise<PortLease[]>;
         portAcquire: (args: AcquirePortLeaseArgs) => Promise<PortLease>;

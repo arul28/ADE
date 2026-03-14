@@ -4,7 +4,7 @@ description: "Complete reference for every setting in ADE — from AI provider m
 icon: "sliders"
 ---
 
-<Info>**📸 Screenshot needed:** The Settings page with the left navigation sidebar visible, showing all section categories listed (General, AI Routing, Budget & Usage, AI Providers, Integrations, Computer Use, CTO, Automations, Permissions, Notifications, Developer). The "General" section is active and its content is shown on the right.</Info>
+<Info>**📸 Screenshot needed:** The Settings page with the left navigation sidebar visible, showing all section categories listed (General, AI Routing, Context, Budget & Usage, AI Providers, Integrations, Computer Use, CTO, Automations, Permissions, Notifications, Developer). The "General" section is active and its content is shown on the right.</Info>
 
 ## Opening Settings
 
@@ -14,7 +14,7 @@ Access Settings from anywhere in ADE:
 - **Sidebar**: Click the gear icon (⚙) at the bottom of the left sidebar
 - **Menu bar**: ADE → Preferences
 
-Settings are organized into eleven sections in the left navigation panel. Changes in most sections take effect immediately — no restart required. Exceptions are noted in the relevant section below.
+Settings are organized into twelve sections in the left navigation panel. Changes in most sections take effect immediately — no restart required. Exceptions are noted in the relevant section below.
 
 ---
 
@@ -95,6 +95,32 @@ Routing automation runs to `claude-haiku-4-5` while keeping `claude-opus-4-6` fo
 |---------|-------------|---------|
 | Stream responses | Show tokens as they arrive (vs. waiting for full response) | On |
 | Streaming buffer delay | Milliseconds between UI render updates during streaming | 16ms |
+
+---
+
+## Context
+
+Settings for context doc generation and refresh behavior. Context docs (PRD, architecture overview) are synthesized from your codebase and injected into agent sessions as project-level context.
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Generation model | AI model used to generate context docs | `claude-sonnet-4-6` |
+| Reasoning effort | Depth of analysis during generation | Default (model decides) |
+| Auto-refresh events | Which project events trigger automatic doc regeneration | On PR create, On mission start |
+
+### Auto-Refresh Events
+
+Toggle individual events that trigger a context doc regeneration:
+
+- **On session end** — regenerate when a terminal/agent session ends
+- **On commit** — regenerate when a commit is created
+- **On PR create** — regenerate when a pull request is created or updated
+- **On PR land** — regenerate when a pull request is merged
+- **On mission start** — regenerate when a mission launches
+- **On mission end** — regenerate when a mission completes
+- **On lane create** — regenerate when a new lane is created
+
+Preferences are saved automatically and persist across sessions.
 
 ---
 

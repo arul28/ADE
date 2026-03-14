@@ -23,14 +23,9 @@ type FeatureInfo = {
 };
 
 const FEATURES: FeatureInfo[] = [
-  { key: "terminal_summaries", label: "Terminal Summaries", description: "Summarize terminal sessions when they close", defaultModel: "anthropic/claude-haiku-4-5" },
-  { key: "pr_descriptions", label: "PR Descriptions", description: "Auto-draft PR descriptions from lane changes", defaultModel: "anthropic/claude-haiku-4-5" },
+  { key: "terminal_summaries", label: "Chat & Terminal Summaries", description: "Summarize closed terminal sessions and keep chat session summaries updated", defaultModel: "anthropic/claude-haiku-4-5" },
+  { key: "pr_descriptions", label: "PR Description Drafting", description: "Draft PR descriptions when you trigger the action in the PR flows", defaultModel: "anthropic/claude-haiku-4-5" },
   { key: "commit_messages", label: "Commit Messages", description: "Generate a brief git commit subject when the field is empty", requiresExplicitModel: true },
-  { key: "narratives", label: "Narratives", description: "Generate work narratives for completed tasks", defaultModel: "anthropic/claude-haiku-4-5" },
-  { key: "conflict_proposals", label: "Conflict Proposals", description: "Suggest resolutions for merge conflicts", defaultModel: "anthropic/claude-sonnet-4-6" },
-  { key: "mission_planning", label: "Mission Planning", description: "AI-powered mission planning", defaultModel: "anthropic/claude-sonnet-4-6" },
-  { key: "orchestrator", label: "Orchestrator", description: "AI orchestrator for mission execution", defaultModel: "anthropic/claude-sonnet-4-6" },
-  { key: "initial_context", label: "Initial Context", description: "Generate initial project context", defaultModel: "anthropic/claude-sonnet-4-6" },
 ];
 
 const sectionLabelStyle: React.CSSProperties = {
@@ -77,6 +72,13 @@ function mergeFeatureModels(
     if (persistedModel.length > 0) {
       nextFeatureModels[feature.key] = persistedModel;
     }
+  }
+
+  const summaryModel = typeof effectiveAi?.sessionIntelligence?.summaries?.modelId === "string"
+    ? effectiveAi.sessionIntelligence.summaries.modelId.trim()
+    : "";
+  if (summaryModel.length > 0) {
+    nextFeatureModels.terminal_summaries = summaryModel;
   }
 
   return nextFeatureModels;
@@ -168,6 +170,15 @@ export function AiFeaturesSection() {
       currentFeatures[key] = enabled;
       await window.ade.ai.updateConfig({
         features: currentFeatures as AiConfig["features"],
+        ...(key === "terminal_summaries"
+          ? {
+              sessionIntelligence: {
+                summaries: {
+                  enabled,
+                },
+              } as AiConfig["sessionIntelligence"],
+            }
+          : {}),
       });
       await loadStatus();
     } finally {
@@ -183,6 +194,15 @@ export function AiFeaturesSection() {
       setFeatureModels(nextFeatureModels);
       await window.ade.ai.updateConfig({
         featureModelOverrides: toFeatureModelOverrides(nextFeatureModels),
+        ...(key === "terminal_summaries"
+          ? {
+              sessionIntelligence: {
+                summaries: {
+                  modelId: modelId || undefined,
+                },
+              } as AiConfig["sessionIntelligence"],
+            }
+          : {}),
       });
     } finally {
       setSaving(false);
@@ -229,7 +249,10 @@ export function AiFeaturesSection() {
 
   return (
     <div style={{ maxWidth: 720 }}>
-      <div style={sectionLabelStyle}>AI FEATURES</div>
+      <div style={sectionLabelStyle}>AI DEFAULTS</div>
+      <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: MONO_FONT, marginBottom: 8, lineHeight: 1.6 }}>
+        These are the lightweight helpers ADE can apply automatically while you work. Mission orchestration and conflict-resolution models are configured in their own surfaces.
+      </div>
 
       <div style={cardStyle({ padding: 0 })}>
         {/* Header row */}

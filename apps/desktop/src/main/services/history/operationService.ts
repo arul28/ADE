@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
 import type { ListOperationsArgs, OperationRecord } from "../../../shared/types";
-import { isRecord, safeJsonParse } from "../shared/utils";
+import { isRecord, nowIso, safeJsonParse } from "../shared/utils";
 
 type OperationStatus = "running" | "succeeded" | "failed" | "canceled";
 
@@ -23,8 +23,6 @@ export function createOperationService({
   db: AdeDb;
   projectId: string;
 }) {
-  const nowIso = () => new Date().toISOString();
-
   const start = (args: {
     laneId?: string | null;
     kind: string;

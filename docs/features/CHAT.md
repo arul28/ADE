@@ -12,7 +12,7 @@ Chat sessions are provider-agnostic. The `AgentChatProvider` type accepts:
 
 | Provider key | Runtime | Notes |
 |---|---|---|
-| `claude` | Claude Agent SDK V2 (`@anthropic-ai/claude-agent-sdk`) | Persistent session via `unstable_v2_createSession` — subprocess + MCP servers stay alive between turns |
+| `claude` | Claude Agent SDK V2 (`@anthropic-ai/claude-agent-sdk`) | Persistent session via `unstable_v2_createSession` — subprocess + MCP servers stay alive between turns. Supports inline image content blocks (base64) for image attachments. |
 | `codex` | OpenAI Codex CLI | Persistent subprocess, communicates over JSON-RPC |
 | `unified` | Vercel AI SDK (`ai` package) | Covers OpenRouter, local models, any provider with an `ai`-compatible adapter |
 
@@ -156,3 +156,26 @@ predefined option buttons.
 The composer (`AgentChatComposer`) supports file/image attachments,
 model switching, reasoning-effort control, context-pack injection, and
 slash commands sourced from the active SDK session.
+
+## Image Attachments
+
+Image attachments are supported across all providers, with
+provider-specific handling:
+
+- **Claude V2**: Images are sent as inline base64 content blocks
+  directly to the Anthropic API via `buildClaudeV2Message()`. Supported
+  MIME types: `image/jpeg`, `image/png`, `image/gif`, `image/webp`.
+- **Codex**: Images are sent via `localImage` path references.
+- **Unified**: Images are sent as Vercel AI SDK `ImagePart` content
+  blocks.
+
+The composer saves pasted or dropped images to a temporary location via
+the `saveTempAttachment` IPC handler. The service validates MIME types
+before sending to each provider.
+
+## Identity Session Filtering
+
+CTO and worker identity sessions (those with an `identityKey`) are
+excluded from the Work tab session list. These sessions are managed
+through their own dedicated surfaces (CTO tab, worker detail views)
+and do not appear alongside regular lane chat sessions.

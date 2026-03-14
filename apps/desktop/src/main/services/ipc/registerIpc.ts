@@ -249,7 +249,6 @@ import type {
   StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
-  TerminalProfilesSnapshot,
   TerminalSessionSummary,
   UpdateSessionMetaArgs,
   UpdateMissionArgs,
@@ -430,6 +429,12 @@ import type {
   LinearWorkflowRunDetail,
   LinearWorkflowConfig,
   NormalizedLinearIssue,
+  ExternalConnectionAuthRecord,
+  ExternalConnectionAuthRecordInput,
+  ExternalConnectionAuthStatus,
+  ExternalConnectionOAuthSessionResult,
+  ExternalConnectionOAuthSessionStartResult,
+  ExternalMcpManagedAuthConfig,
   ExternalMcpServerConfig,
   ExternalMcpServerSnapshot,
   ExternalMcpUsageEvent,
@@ -439,7 +444,7 @@ import type {
   BudgetCapProvider,
   BudgetCapConfig,
 } from "../../../shared/types";
-import type { LaneEnvInitConfig, LaneOverlayOverrides, PortLease } from "../../../shared/types";
+import type { LaneEnvInitConfig, LaneOverlayOverrides, LaneTemplate, PortLease } from "../../../shared/types";
 import type {
   ComputerUseArtifactListArgs,
   ComputerUseArtifactReviewArgs,
@@ -490,7 +495,6 @@ import {
 } from "../computerUse/controlPlane";
 import { readGlobalState, writeGlobalState, reorderRecentProjects } from "../state/globalState";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
-import type { createTerminalProfilesService } from "../terminalProfiles/terminalProfilesService";
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
 import type { createOnboardingService } from "../onboarding/onboardingService";
 import type { createAutomationService } from "../automations/automationService";
@@ -529,6 +533,7 @@ import type { createLinearIngressService } from "../cto/linearIngressService";
 import type { createLinearSyncService } from "../cto/linearSyncService";
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
 import type { createExternalMcpService } from "../externalMcp/externalMcpService";
+import type { createExternalConnectionAuthService } from "../externalMcp/externalConnectionAuthService";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
 import type { createBudgetCapService } from "../usage/budgetCapService";
 import type { AdeProjectService } from "../projects/adeProjectService";
@@ -544,7 +549,6 @@ export type AppContext = {
   adeDir: string;
   disposeHeadWatcher: () => void;
   keybindingsService: ReturnType<typeof createKeybindingsService>;
-  terminalProfilesService: ReturnType<typeof createTerminalProfilesService>;
   agentToolsService: ReturnType<typeof createAgentToolsService>;
   onboardingService: ReturnType<typeof createOnboardingService>;
   laneService: ReturnType<typeof createLaneService>;
@@ -611,6 +615,7 @@ export type AppContext = {
   linearRoutingService?: ReturnType<typeof createLinearRoutingService> | null;
   linearIngressService?: ReturnType<typeof createLinearIngressService> | null;
   linearSyncService?: ReturnType<typeof createLinearSyncService> | null;
+  externalConnectionAuthService?: ReturnType<typeof createExternalConnectionAuthService> | null;
   externalMcpService?: ReturnType<typeof createExternalMcpService> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
@@ -1933,6 +1938,9 @@ export function registerIpc({
   ipcMain.handle(IPC.externalMcpListConfigs, async (): Promise<ExternalMcpServerConfig[]> =>
     getCtx().externalMcpService?.getRawConfigs() ?? []
   );
+  ipcMain.handle(IPC.externalMcpListAuthRecords, async (): Promise<ExternalConnectionAuthRecord[]> =>
+    getCtx().externalConnectionAuthService?.listRecords() ?? []
+  );
   ipcMain.handle(IPC.externalMcpGetUsageEvents, async (_event, arg: { limit?: number } = {}): Promise<ExternalMcpUsageEvent[]> =>
     getCtx().externalMcpService?.getUsageEvents(arg.limit ?? 100) ?? []
   );
@@ -1971,26 +1979,57 @@ export function registerIpc({
     if (!service) throw new Error("External MCP service is unavailable.");
     return service.removeServer(arg.serverName);
   });
+  ipcMain.handle(IPC.externalMcpSaveAuthRecord, async (_event, arg: { record: ExternalConnectionAuthRecordInput }): Promise<ExternalConnectionAuthRecord> => {
+    const service = getCtx().externalConnectionAuthService;
+    if (!service) throw new Error("External auth service is unavailable.");
+    const record = service.saveRecord(arg.record);
+    getCtx().externalMcpService?.reload?.();
+    return record;
+  });
+  ipcMain.handle(IPC.externalMcpRemoveAuthRecord, async (_event, arg: { authId: string }): Promise<ExternalConnectionAuthRecord[]> => {
+    const service = getCtx().externalConnectionAuthService;
+    if (!service) throw new Error("External auth service is unavailable.");
+    const records = service.removeRecord(arg.authId);
+    getCtx().externalMcpService?.reload?.();
+    return records;
+  });
+  ipcMain.handle(IPC.externalMcpGetAuthStatus, async (_event, arg: { binding?: ExternalMcpManagedAuthConfig | null }): Promise<ExternalConnectionAuthStatus> => {
+    const service = getCtx().externalConnectionAuthService;
+    if (!service) {
+      return {
+        mode: arg.binding?.mode ?? "none",
+        state: arg.binding ? "missing" : "ready",
+        summary: arg.binding ? "External auth service is unavailable." : "No managed auth configured.",
+      };
+    }
+    return service.getStatusForBinding(arg.binding ?? null);
+  });
+  ipcMain.handle(IPC.externalMcpStartOAuthSession, async (_event, arg: { authId: string }): Promise<ExternalConnectionOAuthSessionStartResult> => {
+    const service = getCtx().externalConnectionAuthService;
+    if (!service) throw new Error("External auth service is unavailable.");
+    return service.startOAuthSession(arg.authId);
+  });
+  ipcMain.handle(IPC.externalMcpGetOAuthSession, async (_event, arg: { sessionId: string }): Promise<ExternalConnectionOAuthSessionResult> => {
+    const service = getCtx().externalConnectionAuthService;
+    if (!service) {
+      return {
+        authId: "",
+        status: "expired",
+        error: "External auth service is unavailable.",
+      };
+    }
+    return service.getOAuthSession(arg.sessionId);
+  });
 
   ipcMain.handle(IPC.agentToolsDetect, async (): Promise<AgentTool[]> => {
     const ctx = getCtx();
     return ctx.agentToolsService.detect();
   });
 
-  ipcMain.handle(IPC.terminalProfilesGet, async (): Promise<TerminalProfilesSnapshot> => {
-    const ctx = getCtx();
-    return ctx.terminalProfilesService.get();
-  });
-
-  ipcMain.handle(IPC.terminalProfilesSet, async (_event, arg: TerminalProfilesSnapshot): Promise<TerminalProfilesSnapshot> => {
-    const ctx = getCtx();
-    return ctx.terminalProfilesService.set(arg);
-  });
-
   ipcMain.handle(IPC.onboardingGetStatus, async (): Promise<OnboardingStatus> => {
     const ctx = getCtx();
     if (!ctx.onboardingService) {
-      return { completedAt: null };
+      return { completedAt: null, dismissedAt: null };
     }
     return ctx.onboardingService.getStatus();
   });
@@ -2021,10 +2060,18 @@ export function registerIpc({
     return await ctx.onboardingService.detectExistingLanes();
   });
 
+  ipcMain.handle(IPC.onboardingSetDismissed, async (_event, arg: { dismissed: boolean }): Promise<OnboardingStatus> => {
+    const ctx = getCtx();
+    if (!ctx.onboardingService) {
+      return { completedAt: null, dismissedAt: arg.dismissed ? new Date().toISOString() : null };
+    }
+    return ctx.onboardingService.setDismissed(arg.dismissed);
+  });
+
   ipcMain.handle(IPC.onboardingComplete, async (): Promise<OnboardingStatus> => {
     const ctx = getCtx();
     if (!ctx.onboardingService) {
-      return { completedAt: null };
+      return { completedAt: null, dismissedAt: null };
     }
     return ctx.onboardingService.complete();
   });
@@ -2492,6 +2539,7 @@ export function registerIpc({
     }
     const run = ctx.orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === arg.runId);
     if (!run) throw new Error(`Run not found after cancellation: ${arg.runId}`);
+    triggerAutoContextDocs(ctx, { event: "mission_end", reason: `orchestrator_cancel_run:${arg.runId}` });
     return run;
   });
 
@@ -2599,7 +2647,9 @@ export function registerIpc({
     IPC.orchestratorFinalizeRun,
     async (_event, arg: FinalizeRunArgs): Promise<FinalizeRunResult> => {
       const ctx = getCtx();
-      return ctx.orchestratorService.finalizeRun(arg);
+      const result = ctx.orchestratorService.finalizeRun(arg);
+      triggerAutoContextDocs(ctx, { event: "mission_end", reason: `orchestrator_finalize_run:${arg.runId}` });
+      return result;
     }
   );
 
@@ -3137,6 +3187,18 @@ export function registerIpc({
     return await ctx.laneEnvironmentService.initLaneEnvironment(lane, mergedEnvInitConfig, mergedOverrides);
   });
 
+  ipcMain.handle(IPC.lanesSaveTemplate, async (_event, args: { template: LaneTemplate }) => {
+    const ctx = getCtx();
+    if (!ctx.laneTemplateService) throw new Error("Lane template service not available");
+    ctx.laneTemplateService.saveTemplate(args.template);
+  });
+
+  ipcMain.handle(IPC.lanesDeleteTemplate, async (_event, args: { templateId: string }) => {
+    const ctx = getCtx();
+    if (!ctx.laneTemplateService) throw new Error("Lane template service not available");
+    ctx.laneTemplateService.deleteTemplate(args.templateId);
+  });
+
   // --- Port Allocation (Phase 5 W3) ---
 
   ipcMain.handle(IPC.lanesPortGetLease, async (_event, args: { laneId: string }) => {
@@ -3623,7 +3685,10 @@ export function registerIpc({
 
   ipcMain.handle(IPC.computerUseGetSettings, async (): Promise<ComputerUseSettingsSnapshot> => {
     const ctx = ensureComputerUseBroker();
-    return buildComputerUseSettingsSnapshot(ctx.computerUseArtifactBrokerService.getBackendStatus());
+    return buildComputerUseSettingsSnapshot({
+      status: ctx.computerUseArtifactBrokerService.getBackendStatus(),
+      snapshots: ctx.externalMcpService?.getSnapshots() ?? [],
+    });
   });
 
   ipcMain.handle(IPC.computerUseListArtifacts, async (_event, arg: ComputerUseArtifactListArgs = {}): Promise<ComputerUseArtifactView[]> => {
@@ -3819,7 +3884,9 @@ export function registerIpc({
 
   ipcMain.handle(IPC.gitCommit, async (_event, arg: GitCommitArgs): Promise<GitActionResult> => {
     const ctx = getCtx();
-    return ctx.gitService.commit(arg);
+    const result = ctx.gitService.commit(arg);
+    triggerAutoContextDocs(ctx, { event: "commit", reason: "git_commit" });
+    return result;
   });
 
   ipcMain.handle(

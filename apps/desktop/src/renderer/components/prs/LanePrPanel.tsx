@@ -432,7 +432,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <Button size="sm" variant="outline" className="h-7" onClick={() => void draftFromPack()}>
-                      Draft From Pack
+                      Draft Description
                     </Button>
                     <UnifiedModelSelector
                       value={prDescModel}
@@ -512,7 +512,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
           </div>
           <div className="flex gap-2 items-center">
             <Button size="sm" variant="outline" className="h-7" onClick={() => void updateDescription()} disabled={loading || descPreviewBusy}>
-              {descPreviewBusy ? "Drafting..." : "Update Description"}
+              {descPreviewBusy ? "Drafting..." : "Redraft Description"}
             </Button>
             <UnifiedModelSelector
               value={prDescModel}

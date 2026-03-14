@@ -1152,7 +1152,7 @@ In the Activity tab section of `MissionsPage.tsx`, add a "Run Progress" section 
 ## WS9: Documentation Updates (Final Step — Parallel Agents)
 
 **Goal:** Update all relevant documentation to reflect the orchestrator evolution changes.
-**Files:** Multiple docs in `/Users/arul/ADE/docs/`
+**Files:** Multiple docs in `docs/`
 **Execution:** Run in PARALLEL — one agent per doc file or doc group
 **IMPORTANT:** This workstream runs AFTER all other workstreams are complete.
 

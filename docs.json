@@ -14,7 +14,12 @@
   "logo": {
     "light": "/logo/light.svg",
     "dark": "/logo/dark.svg",
-    "href": "https://ade.dev"
+    "href": "https://ade-app.dev"
+  },
+  "seo": {
+    "metatags": {
+      "canonical": "https://docs.ade-app.dev"
+    }
   },
   "search": {
     "prompt": "Search ADE docs..."
@@ -212,7 +217,7 @@
     "primary": {
       "type": "button",
       "label": "Download ADE",
-      "href": "https://ade.dev/download"
+      "href": "https://ade-app.dev/download"
     }
   },
   "contextual": {
@@ -237,8 +242,8 @@
         "header": "Product",
         "items": [
           { "label": "Features", "href": "/lanes/overview" },
-          { "label": "Download", "href": "https://ade.dev/download" },
-          { "label": "Changelog", "href": "https://ade.dev/changelog" }
+          { "label": "Download", "href": "https://ade-app.dev/download" },
+          { "label": "Changelog", "href": "https://ade-app.dev/changelog" }
         ]
       },
       {

@@ -23,7 +23,7 @@ import type { AdeDb } from "../state/kvDb";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createLaneService } from "../lanes/laneService";
 import { matchLaneOverlayPolicies } from "../config/laneOverlayMatcher";
-import { isWithinDir, fileSizeOrZero } from "../shared/utils";
+import { isWithinDir, fileSizeOrZero, nowIso } from "../shared/utils";
 
 type ManagedTerminationReason = "stopped" | "killed" | "crashed" | "restart";
 
@@ -210,7 +210,6 @@ export function createProcessService({
   broadcastEvent: (ev: ProcessEvent) => void;
 }) {
   const entries = new Map<string, ManagedProcessEntry>();
-  const nowIso = () => new Date().toISOString();
 
   const processLogPath = (laneId: string, processId: string) =>
     resolveSafeProcessLogPath(processLogsDir, laneId, processId);

@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 >
-> Last updated: 2026-03-13
+> Last updated: 2026-03-14
 
 ADE is a local-first development control plane built around a trusted Electron main process, an untrusted renderer, and a provider-flexible AI/runtime layer. The current architecture is designed around three goals:
 
@@ -202,7 +202,7 @@ This logging model is now essential to the architecture because it exposes wheth
 
 ### CTO
 
-The CTO is now a chat-first, persistent project agent with optional Linear and OpenClaw integrations. First-run setup focuses on identity, project context, and optional Linear setup; it no longer front-loads OpenClaw or blocks completion on disconnected integrations.
+The CTO is now a chat-first, persistent project agent with optional Linear and OpenClaw integrations. First-run setup focuses on identity, project context, and optional Linear setup; it no longer front-loads OpenClaw or blocks completion on disconnected integrations. The CTO system prompt includes baked-in Memory Protocol, Daily Context, and Decision Framework sections that survive across sessions. Daily logs (append-only per-day markdown files) provide within-day continuity. Post-compaction identity re-injection ensures the CTO does not lose its persona or protocol instructions after context compaction.
 
 ### Missions
 

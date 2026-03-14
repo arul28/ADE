@@ -302,7 +302,7 @@ export function TopBar() {
                           : `${terminalAttention.runningCount} running terminal${terminalAttention.runningCount === 1 ? "" : "s"}`
                       }
                       className={cn(
-                        "ade-status-dot h-1.5 w-1.5 shrink-0 animate-spin",
+                        "ade-status-dot h-1.5 w-1.5 shrink-0 animate-pulse",
                         indicator === "running-needs-attention"
                           ? "ade-status-dot-warning"
                           : "ade-status-dot-active"
@@ -394,18 +394,26 @@ export function TopBar() {
             "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
             "bg-purple-600/90 text-white text-[11px] font-medium",
             "transition-colors duration-150",
-            updateState === "ready" ? "hover:bg-purple-500" : "cursor-default opacity-85"
+            updateState === "ready"
+              ? "hover:bg-purple-500 animate-pulse"
+              : "cursor-default opacity-85"
           )}
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
           disabled={updateState !== "ready"}
           onClick={() => {
             if (updateState === "ready") {
-              window.ade.updateQuitAndInstall();
+              const vLabel = updateVersion ? `v${updateVersion}` : "the latest version";
+              const confirmed = window.confirm(
+                `ADE will quit and restart automatically to install ${vLabel}.\n\nAny unsaved work may be lost. Continue?`
+              );
+              if (confirmed) {
+                window.ade.updateQuitAndInstall();
+              }
             }
           }}
           title={
             updateState === "ready"
-              ? `Update to ${updateVersion ? `v${updateVersion}` : "latest version"}`
+              ? `Restart ADE to install ${updateVersion ? `v${updateVersion}` : "latest version"} — the app will quit and relaunch automatically`
               : `Downloading ${updateVersion ? `v${updateVersion}` : "the latest update"}`
           }
         >
@@ -414,7 +422,7 @@ export function TopBar() {
             weight="bold"
             className={cn(updateState === "downloading" && "animate-spin")}
           />
-          {updateState === "ready" ? "Update" : "Downloading"}
+          {updateState === "ready" ? "Restart & Update" : "Downloading"}
           {updateVersion ? ` v${updateVersion}` : ""}
         </button>
       )}

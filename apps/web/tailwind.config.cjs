@@ -4,16 +4,17 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        bg: "hsl(var(--bg))",
-        fg: "hsl(var(--fg))",
-        card: "hsl(var(--card))",
-        "card-fg": "hsl(var(--card-fg))",
-        muted: "hsl(var(--muted))",
-        "muted-fg": "hsl(var(--muted-fg))",
-        border: "hsl(var(--border))",
-        accent: "hsl(var(--accent))",
-        "accent-2": "hsl(var(--accent-2))",
-        "accent-fg": "hsl(var(--accent-fg))"
+        bg: "var(--color-bg)",
+        fg: "var(--color-fg)",
+        card: "var(--color-card)",
+        "card-fg": "var(--color-card-fg)",
+        surface: "var(--color-surface)",
+        muted: "var(--color-muted)",
+        "muted-fg": "var(--color-muted-fg)",
+        border: "var(--color-border)",
+        accent: "var(--color-accent)",
+        "accent-fg": "var(--color-accent-fg)",
+        separator: "var(--color-separator)",
       },
       borderRadius: {
         xl: "var(--radius-xl)",

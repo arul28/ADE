@@ -34,6 +34,18 @@ Every chat session has a **context window** — the amount of conversation histo
 
 ---
 
+## Context Doc Preferences
+
+ADE generates context docs (PRD, architecture overview) from your codebase to seed agent sessions with project-level knowledge. You can configure how these docs are generated in **Settings > Context**:
+
+- **Model** — choose which AI model generates the docs
+- **Reasoning effort** — control the depth of analysis
+- **Auto-refresh events** — select which project events trigger a doc regeneration (e.g., on commit, on PR create, on mission start)
+
+Preferences are saved automatically and persist across sessions. Changes take effect the next time context docs are regenerated, either manually or via a configured event trigger.
+
+---
+
 ## MCP Tool Visibility and Control
 
 The chat header shows a badge indicating how many MCP tools are active for the current session. Click it to open the **MCP tool panel**:

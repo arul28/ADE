@@ -9,6 +9,9 @@ import type { createSessionService } from "../sessions/sessionService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import { runGit } from "../git/git";
+import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { buildCodexMcpConfigFlags, resolveAdeMcpServerLaunch, resolveUnifiedRuntimeRoot } from "../orchestrator/unifiedOrchestratorAdapter";
+import { shellEscapeArg } from "../orchestrator/baseOrchestratorAdapter";
 import type {
   PtyDataEvent,
   PtyExitEvent,
@@ -50,6 +53,7 @@ type PtyEntry = {
   lastRuntimeSignalPreview: string | null;
   disposed: boolean;
   createdAt: number;
+  cleanupPaths: string[];
 };
 
 type RuntimeStateEntry = {
@@ -116,6 +120,76 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
 
 const MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 const TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] transcript limit reached (8MB). Further output omitted.\n";
+
+function writeExternalClaudeMcpConfig(args: {
+  projectRoot: string;
+  workspaceRoot: string;
+  sessionId: string;
+}): string {
+  const runtimeRoot = resolveUnifiedRuntimeRoot();
+  const launch = resolveAdeMcpServerLaunch({
+    projectRoot: args.projectRoot,
+    workspaceRoot: args.workspaceRoot,
+    runtimeRoot,
+    runId: args.sessionId,
+    attemptId: args.sessionId,
+    defaultRole: "external",
+  });
+  const configDir = resolveAdeLayout(args.projectRoot).mcpConfigsDir;
+  fs.mkdirSync(configDir, { recursive: true });
+  const configPath = path.join(configDir, `terminal-${args.sessionId}.json`);
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      mcpServers: {
+        ade: {
+          command: launch.command,
+          args: launch.cmdArgs,
+          env: launch.env,
+        },
+      },
+    }, null, 2),
+    "utf8",
+  );
+  return configPath;
+}
+
+function enrichStartupCommandForAdeMcp(args: {
+  projectRoot: string;
+  workspaceRoot: string;
+  toolType: TerminalToolType | null;
+  sessionId: string;
+  startupCommand: string;
+}): { startupCommand: string; cleanupPaths: string[] } {
+  const trimmed = args.startupCommand.trim();
+  if (!trimmed.length) return { startupCommand: trimmed, cleanupPaths: [] };
+  if (args.toolType === "claude") {
+    const configPath = writeExternalClaudeMcpConfig({
+      projectRoot: args.projectRoot,
+      workspaceRoot: args.workspaceRoot,
+      sessionId: args.sessionId,
+    });
+    return {
+      startupCommand: `${trimmed} --mcp-config ${shellEscapeArg(configPath)}`,
+      cleanupPaths: [configPath],
+    };
+  }
+  if (args.toolType === "codex") {
+    const flags = buildCodexMcpConfigFlags({
+      projectRoot: args.projectRoot,
+      workspaceRoot: args.workspaceRoot,
+      runtimeRoot: resolveUnifiedRuntimeRoot(),
+      runId: args.sessionId,
+      attemptId: args.sessionId,
+      defaultRole: "external",
+    });
+    return {
+      startupCommand: `${trimmed} ${flags.join(" ")}`.trim(),
+      cleanupPaths: [],
+    };
+  }
+  return { startupCommand: trimmed, cleanupPaths: [] };
+}
 
 export function createPtyService({
   projectRoot,
@@ -293,6 +367,13 @@ export function createPtyService({
     } catch {
       // ignore
     }
+    for (const cleanupPath of entry.cleanupPaths) {
+      try {
+        fs.unlinkSync(cleanupPath);
+      } catch {
+        // best effort
+      }
+    }
     flushPreview(entry);
 
     const endedAt = new Date().toISOString();
@@ -425,9 +506,17 @@ export function createPtyService({
       const startedAt = new Date().toISOString();
       const tracked = args.tracked !== false;
       const toolTypeHint = normalizeToolType(args.toolType);
-      const startupCommand = typeof args.startupCommand === "string" ? args.startupCommand.trim() : "";
+      const requestedStartupCommand = typeof args.startupCommand === "string" ? args.startupCommand.trim() : "";
       const initialResumeCommand = defaultResumeCommandForTool(toolTypeHint);
       const transcriptPath = safeTranscriptPathFor(sessionId);
+      const enrichedLaunch = enrichStartupCommandForAdeMcp({
+        projectRoot,
+        workspaceRoot: cwd,
+        toolType: toolTypeHint,
+        sessionId,
+        startupCommand: requestedStartupCommand,
+      });
+      const startupCommand = enrichedLaunch.startupCommand;
 
       let transcriptStream: fs.WriteStream | null = null;
       let transcriptBytesWritten = 0;
@@ -492,6 +581,13 @@ export function createPtyService({
         pty = created;
       } catch (err) {
         logger.error("pty.spawn_failed", { ptyId, sessionId, err: String(err) });
+        for (const cleanupPath of enrichedLaunch.cleanupPaths) {
+          try {
+            fs.unlinkSync(cleanupPath);
+          } catch {
+            // best effort
+          }
+        }
         try {
           transcriptStream?.end();
         } catch {
@@ -527,7 +623,8 @@ export function createPtyService({
         lastRuntimeSignalState: "running",
         lastRuntimeSignalPreview: null,
         disposed: false,
-        createdAt: Date.now()
+        createdAt: Date.now(),
+        cleanupPaths: enrichedLaunch.cleanupPaths,
       };
       ptys.set(ptyId, entry);
 

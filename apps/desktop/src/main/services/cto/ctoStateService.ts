@@ -731,6 +731,21 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       }
     }
 
+    // Include pointers to project-level context docs if they exist
+    const projectRoot = path.dirname(args.adeDir);
+    const contextDocPaths = [".ade/context/PRD.ade.md", ".ade/context/ARCHITECTURE.ade.md"];
+    const existingContextDocs = contextDocPaths.filter((rel) => {
+      try { return fs.existsSync(path.join(projectRoot, rel)); } catch { return false; }
+    });
+    if (existingContextDocs.length > 0) {
+      sections.push("");
+      sections.push("Project Context Docs");
+      sections.push("Read these at session start for project-level context (generated from main branch, may not reflect in-progress lane work):");
+      for (const rel of existingContextDocs) {
+        sections.push(`- ${rel}`);
+      }
+    }
+
     // Include today's daily log for continuity
     const todayLog = readDailyLog();
     if (todayLog?.trim()) {

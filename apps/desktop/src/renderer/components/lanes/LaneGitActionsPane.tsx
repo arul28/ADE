@@ -1606,7 +1606,7 @@ export function LaneGitActionsPane({
             }}
           >
             <span style={{ flex: 1, minWidth: 220 }}>
-              Auto-rebase is off. Enable it in Settings if you want child lanes rebased automatically when their parent advances.
+              Auto-rebase is off. Enable it in Settings {" > "} Lane Templates if you want child lanes rebased automatically when their parent advances.
             </span>
             <button
               type="button"

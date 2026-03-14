@@ -266,11 +266,12 @@ export function buildCodexMcpConfigFlags(args: {
   projectRoot?: string;
   workspaceRoot: string;
   runtimeRoot: string;
-  missionId: string;
-  runId: string;
-  stepId: string;
-  attemptId: string;
+  missionId?: string;
+  runId?: string;
+  stepId?: string;
+  attemptId?: string;
   ownerId?: string | null;
+  defaultRole?: string;
 }): string[] {
   const launch = resolveAdeMcpServerLaunch({
     projectRoot: args.projectRoot,
@@ -280,7 +281,7 @@ export function buildCodexMcpConfigFlags(args: {
     runId: args.runId,
     stepId: args.stepId,
     attemptId: args.attemptId,
-    defaultRole: "agent",
+    defaultRole: args.defaultRole ?? "agent",
     ownerId: args.ownerId ?? undefined,
   });
 

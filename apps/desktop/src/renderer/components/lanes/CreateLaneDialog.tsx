@@ -29,7 +29,8 @@ export function CreateLaneDialog({
   envInitProgress,
   templates,
   selectedTemplateId,
-  setSelectedTemplateId
+  setSelectedTemplateId,
+  onNavigateToTemplates
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -50,6 +51,7 @@ export function CreateLaneDialog({
   templates: LaneTemplate[];
   selectedTemplateId: string;
   setSelectedTemplateId: (id: string) => void;
+  onNavigateToTemplates?: () => void;
 }) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -72,24 +74,45 @@ export function CreateLaneDialog({
                 disabled={busy}
               />
             </div>
-            {templates.length > 0 && (
-              <div className="space-y-1">
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
                 <div className="text-xs text-muted-fg">Template</div>
+                {onNavigateToTemplates && (
+                  <button
+                    type="button"
+                    className="text-[11px] text-accent hover:underline bg-transparent border-none cursor-pointer p-0"
+                    disabled={busy}
+                    onClick={() => {
+                      onOpenChange(false);
+                      onNavigateToTemplates();
+                    }}
+                  >
+                    {templates.length > 0 ? "Manage templates" : "+ New template"}
+                  </button>
+                )}
+              </div>
+              {templates.length > 0 ? (
                 <select
                   value={selectedTemplateId}
                   onChange={(e) => setSelectedTemplateId(e.target.value)}
                   className="h-10 w-full rounded border border-border/15 bg-surface-recessed shadow-card px-3 text-sm outline-none"
                   disabled={busy}
                 >
-                  <option value="">Use project defaults</option>
+                  <option value="">No template</option>
                   {templates.map((t) => (
                     <option key={t.id} value={t.id}>
                       {t.name}{t.description ? ` — ${t.description}` : ""}
                     </option>
                   ))}
                 </select>
-              </div>
-            )}
+              ) : (
+                <div className="flex items-center gap-3 rounded border border-border/10 bg-card/40 px-3 py-2.5">
+                  <span className="text-xs text-muted-fg/70">
+                    No templates yet — templates copy folders, install deps, and configure lanes automatically.
+                  </span>
+                </div>
+              )}
+            </div>
             <label className="flex items-center gap-2 rounded border border-border/10 bg-card/60 px-3 py-2 text-xs cursor-pointer">
               <input
                 type="checkbox"

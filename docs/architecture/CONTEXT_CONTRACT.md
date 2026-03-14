@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-13
+> Last updated: 2026-03-14
 
 This document is the contract for the **remaining pack/export compatibility artifacts** still used by:
 
@@ -533,7 +533,7 @@ The unified memory store (`unifiedMemoryService.ts`) uses 3 DB scopes matching `
 | `run` / shared team knowledge | `mission` | Run-scoped | `unified_memories` (mission scope), derived shared facts |
 | `project` | `project` | Durable | `unified_memories` (`status = promoted`) |
 | `agent` | `agent` | Durable | `unified_memories` + agent identity mapping |
-| `daily-log` | (derived) | Bounded durable | Briefings/checkpoint summaries |
+| `daily-log` | (derived) | Bounded durable | CTO daily logs (`.ade/cto/daily-logs/`), briefings/checkpoint summaries |
 
 ### Runtime Context Assembly Contract
 

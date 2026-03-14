@@ -13,7 +13,7 @@ import type {
   ProjectConfigFile
 } from "../../../shared/types";
 import { runGit, runGitOrThrow } from "../git/git";
-import { dirExists, fileExists, safeReadText } from "../shared/utils";
+import { dirExists, fileExists, nowIso, safeReadText } from "../shared/utils";
 
 const STATUS_KEY = "onboarding:status";
 
@@ -194,16 +194,25 @@ export function createOnboardingService(args: {
 }) {
   const { db, logger, projectRoot, baseRef, laneService, projectConfigService } = args;
 
-  const nowIso = () => new Date().toISOString();
-
   const getStatus = (): OnboardingStatus => {
     const stored = db.getJson<OnboardingStatus>(STATUS_KEY);
     const completedAt = typeof stored?.completedAt === "string" ? stored.completedAt : null;
-    return { completedAt };
+    const dismissedAt = typeof stored?.dismissedAt === "string" ? stored.dismissedAt : null;
+    return { completedAt, dismissedAt };
   };
 
   const complete = (): OnboardingStatus => {
-    const status: OnboardingStatus = { completedAt: nowIso() };
+    const status: OnboardingStatus = { completedAt: nowIso(), dismissedAt: null };
+    db.setJson(STATUS_KEY, status);
+    return status;
+  };
+
+  const setDismissed = (dismissed: boolean): OnboardingStatus => {
+    const current = getStatus();
+    const status: OnboardingStatus = {
+      completedAt: current.completedAt,
+      dismissedAt: dismissed ? nowIso() : null,
+    };
     db.setJson(STATUS_KEY, status);
     return status;
   };
@@ -315,6 +324,7 @@ export function createOnboardingService(args: {
   return {
     getStatus,
     complete,
+    setDismissed,
     detectDefaults,
     detectExistingLanes,
 

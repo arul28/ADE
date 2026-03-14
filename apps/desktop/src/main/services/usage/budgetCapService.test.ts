@@ -111,8 +111,9 @@ function createMockUsageTrackingService(snapshot: UsageSnapshot | null = null) {
 function makeUsageSnapshot(overrides: Partial<UsageSnapshot> = {}): UsageSnapshot {
   return {
     windows: [],
-    pacing: { status: "on-track", projectedWeeklyPercent: 50, weekElapsedPercent: 50 },
+    pacing: { status: "on-track", projectedWeeklyPercent: 50, weekElapsedPercent: 50, expectedPercent: 50, deltaPercent: 0, etaHours: null, willLastToReset: true, resetsInHours: 84 },
     costs: [],
+    extraUsage: [],
     lastPolledAt: new Date().toISOString(),
     errors: [],
     ...overrides

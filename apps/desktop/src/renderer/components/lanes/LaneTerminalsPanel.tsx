@@ -1,24 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
-import { ArrowSquareOut, GridFour, List, GearSix, X } from "@phosphor-icons/react";
+import { ArrowSquareOut, GridFour, List, X } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
-import type {
-  TerminalLaunchProfile,
-  TerminalProfilesSnapshot,
-  TerminalSessionSummary,
-} from "../../../shared/types";
+import type { TerminalSessionSummary } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
 import { TerminalView } from "../terminals/TerminalView";
-import { TerminalSettingsDialog, readLaunchTracked, persistLaunchTracked } from "../terminals/TerminalSettingsDialog";
 import { TilingLayout } from "./TilingLayout";
 import { useNavigate } from "react-router-dom";
 import { sessionIndicatorState } from "../../lib/terminalAttention";
-import { DEFAULT_PROFILE_IDS, isChatToolType, primarySessionLabel, secondarySessionLabel, toolTypeFromProfileId } from "../../lib/sessions";
+import { isChatToolType, primarySessionLabel, secondarySessionLabel } from "../../lib/sessions";
 import { listSessionsCached } from "../../lib/sessionListCache";
 import { ToolLogo } from "../terminals/ToolLogos";
+import { persistLaunchTracked, readLaunchTracked } from "../../lib/terminalLaunchPreferences";
 
 const tabTrigger =
   "flex items-center gap-2 rounded-md px-2.5 py-2 text-xs font-semibold text-muted-fg data-[state=active]:text-fg data-[state=active]:bg-accent/10 data-[state=active]:ring-1 data-[state=active]:ring-accent/50";
@@ -36,11 +32,17 @@ function sessionTabLabel(session: TerminalSessionSummary): string {
   return `${base} · ${secondary}`.slice(0, 180);
 }
 
-function profileButtonLabel(profile: TerminalLaunchProfile): string {
-  if ((DEFAULT_PROFILE_IDS as readonly string[]).includes(profile.id)) return "Launch session";
-  const name = String(profile.name ?? "").trim();
-  return name.length ? name : "Launch session";
-}
+const TOOL_BUTTONS = [
+  { id: "claude", label: "Launch Claude", variant: "primary" as const, style: { backgroundColor: "#f97316", borderColor: "#f97316", color: "#fff" } },
+  { id: "codex", label: "Launch Codex", variant: "primary" as const, style: { backgroundColor: "#3b82f6", borderColor: "#3b82f6", color: "#fff" } },
+  { id: "shell", label: "Launch shell", variant: "outline" as const, style: undefined },
+] as const;
+
+const SESSION_TOOL_COLORS: Record<string, string> = {
+  claude: "#f97316",
+  codex: "#3b82f6",
+  shell: "#22c55e",
+};
 
 export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string | null } = {}) {
   const navigate = useNavigate();
@@ -58,8 +60,6 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
   const [viewMode, setViewMode] = useState<"tabs" | "grid">("tabs");
   const [closingSessionIds, setClosingSessionIds] = useState<Set<string>>(new Set());
   const [localFocusedSessionId, setLocalFocusedSessionId] = useState<string | null>(null);
-  const [terminalProfiles, setTerminalProfiles] = useState<TerminalProfilesSnapshot | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [launchTracked, setLaunchTracked] = useState(readLaunchTracked());
   const laneSessionIdsRef = useRef<Set<string>>(new Set());
   const hasPollableSessionsRef = useRef(false);
@@ -114,20 +114,6 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
     if (overrideLaneId == null) return;
     setLocalFocusedSessionId((current) => current ?? globalFocusedSessionId ?? null);
   }, [overrideLaneId, globalFocusedSessionId]);
-
-  useEffect(() => {
-    let cancelled = false;
-    window.ade.terminalProfiles
-      .get()
-      .then((snapshot) => {
-        if (cancelled) return;
-        setTerminalProfiles(snapshot);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   useEffect(() => {
     if (!laneId) return;
@@ -196,29 +182,6 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
     return runningSessions.length ? runningSessions : sessions;
   }, [sessions, viewMode, runningSessions]);
 
-  const profileColorMap = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const p of terminalProfiles?.profiles ?? []) {
-      if (p.color) m.set(p.id, p.color);
-    }
-    return m;
-  }, [terminalProfiles]);
-
-  const orderedProfiles = useMemo(() => {
-    const profiles = terminalProfiles?.profiles ?? [];
-    const byId = new Map(profiles.map((p) => [p.id, p] as const));
-    const ordered: TerminalLaunchProfile[] = [];
-    for (const id of DEFAULT_PROFILE_IDS) {
-      const p = byId.get(id);
-      if (p) ordered.push(p);
-    }
-    for (const p of profiles) {
-      if ((DEFAULT_PROFILE_IDS as readonly string[]).includes(p.id)) continue;
-      ordered.push(p);
-    }
-    return ordered.slice(0, 10);
-  }, [terminalProfiles]);
-
   // Only keep polling while this lane still has live sessions to watch.
   useEffect(() => {
     if (!laneId) return;
@@ -229,13 +192,16 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
     return () => clearInterval(id);
   }, [laneId, refresh]);
 
-  const launchFromProfile = useCallback(
-    (profile: TerminalLaunchProfile) => {
+  const launchTool = useCallback(
+    (toolType: "claude" | "codex" | "shell") => {
       if (!laneId) return;
-      const title = profile.name || "Shell";
       const tracked = launchTracked;
-      const initialCommand = (profile.command ?? "").trim();
-      const toolType = toolTypeFromProfileId(profile.id);
+      const title = toolType === "shell"
+        ? "Shell"
+        : toolType === "claude"
+          ? "Claude Code"
+          : "Codex";
+      const startupCommand = toolType === "shell" ? undefined : toolType;
 
       window.ade.pty
         .create({
@@ -245,7 +211,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
           title,
           tracked,
           toolType,
-          startupCommand: initialCommand || undefined
+          startupCommand
         })
         .then(async ({ sessionId }) => {
           focusSession(sessionId);
@@ -255,10 +221,6 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
     },
     [laneId, launchTracked, focusSession, refresh]
   );
-
-  const openSettings = useCallback(() => {
-    setSettingsOpen(true);
-  }, []);
 
   if (!laneId) {
     return (
@@ -296,20 +258,18 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
         </div>
         <div className="flex items-center gap-2">
           <div className="flex flex-wrap items-center gap-1">
-            {orderedProfiles
-              .filter((p) => (DEFAULT_PROFILE_IDS as readonly string[]).includes(p.id))
-              .map((profile) => (
+            {TOOL_BUTTONS.map((tool) => (
                 <Button
-                  key={profile.id}
-                  variant={profile.id === "shell" ? "outline" : "primary"}
+                  key={tool.id}
+                  variant={tool.variant}
                   size="sm"
                   className="h-7 w-7 p-0"
-                  style={profile.color ? { backgroundColor: profile.color, borderColor: profile.color, color: "#fff" } : undefined}
-                  onClick={() => launchFromProfile(profile)}
-                  title={profile.command ? `${profileButtonLabel(profile)} (${profile.command})` : profileButtonLabel(profile)}
-                  aria-label={profileButtonLabel(profile)}
+                  style={tool.style}
+                  onClick={() => launchTool(tool.id)}
+                  title={tool.label}
+                  aria-label={tool.label}
                 >
-                  <ToolLogo toolType={toolTypeFromProfileId(profile.id)} size={14} className={profile.color ? "text-white" : undefined} />
+                  <ToolLogo toolType={tool.id} size={14} className={tool.style ? "text-white" : undefined} />
                 </Button>
               ))}
           </div>
@@ -324,8 +284,18 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
           >
             <ArrowSquareOut size={14} />
           </Button>
-          <Button variant="outline" size="sm" className="h-7 w-7 p-0" title="Session settings" onClick={openSettings}>
-            <GearSix size={16} />
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 px-2 text-[11px]"
+            title={launchTracked ? "Tracked launch mode" : "Untracked launch mode"}
+            onClick={() => {
+              const next = !launchTracked;
+              setLaunchTracked(next);
+              persistLaunchTracked(next);
+            }}
+          >
+            {launchTracked ? "tracked" : "no ctx"}
           </Button>
         </div>
       </div>
@@ -342,7 +312,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
         >
           <Tabs.List className="flex flex-wrap gap-1 rounded-lg border border-border bg-card/60 p-1">
             {tabSessions.map((s) => {
-              const profileColor = s.toolType ? profileColorMap.get(s.toolType) : undefined;
+              const profileColor = s.toolType ? SESSION_TOOL_COLORS[s.toolType] : undefined;
               const indicator = sessionIndicatorState({
                 status: s.status,
                 lastOutputPreview: s.lastOutputPreview,
@@ -451,20 +421,6 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
           />
         </div>
       )}
-
-      <TerminalSettingsDialog
-        open={settingsOpen}
-        onOpenChange={setSettingsOpen}
-        terminalProfiles={terminalProfiles}
-        onProfilesSaved={(next) => {
-          setTerminalProfiles(next);
-        }}
-        launchTracked={launchTracked}
-        onLaunchTrackedChange={(v) => {
-          setLaunchTracked(v);
-          persistLaunchTracked(v);
-        }}
-      />
     </div>
   );
 }

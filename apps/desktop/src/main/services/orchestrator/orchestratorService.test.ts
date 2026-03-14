@@ -1341,60 +1341,12 @@ describe("orchestratorService", () => {
     }
   });
 
-  it("uses deterministic-by-default profile and supports explicit narrative opt-in profile", async () => {
+  it("uses deterministic default context profile", async () => {
     const fixture = await createFixture();
     try {
-      const deterministic = fixture.service.getContextProfile("orchestrator_deterministic_v1");
-      const narrative = fixture.service.getContextProfile("orchestrator_narrative_opt_in_v1");
-      expect(deterministic.includeNarrative).toBe(false);
-      expect(narrative.includeNarrative).toBe(true);
-
-      const defaultRun = fixture.service.startRun({
-        missionId: fixture.missionId,
-        steps: [
-          {
-            stepKey: "default-step",
-            title: "Default step",
-            stepIndex: 0,
-            policy: {
-              includeFullDocs: true
-            }
-          }
-        ]
-      });
-      const defaultStep = fixture.service.listSteps(defaultRun.run.id)[0];
-      if (!defaultStep) throw new Error("Missing default step");
-      const defaultAttempt = await fixture.service.startAttempt({
-        runId: defaultRun.run.id,
-        stepId: defaultStep.id,
-        ownerId: "owner-default"
-      });
-      expect(defaultAttempt.contextProfile).toBe("orchestrator_deterministic_v1");
-
-      const defaultStartHandoff = fixture.service
-        .listHandoffs({ runId: defaultRun.run.id })
-        .find((entry) => entry.handoffType === "attempt_started" && entry.attemptId === defaultAttempt.id);
-      expect(defaultStartHandoff?.payload?.docsMode).toBe("full_docs");
-
-      const optInRun = fixture.service.startRun({
-        missionId: fixture.missionId,
-        contextProfile: "orchestrator_narrative_opt_in_v1",
-        steps: [
-          {
-            stepKey: "optin-step",
-            title: "Opt-in step",
-            stepIndex: 0
-          }
-        ]
-      });
-      const optInStep = fixture.service.listSteps(optInRun.run.id)[0];
-      if (!optInStep) throw new Error("Missing opt-in step");
-      const optInAttempt = await fixture.service.startAttempt({
-        runId: optInRun.run.id,
-        stepId: optInStep.id,
-        ownerId: "owner-optin"
-      });
-      expect(optInAttempt.contextProfile).toBe("orchestrator_narrative_opt_in_v1");
+      const profile = fixture.service.getContextProfile();
+      expect(profile.id).toBe("orchestrator_deterministic_v1");
+      expect(profile.docsMode).toBe("digest_refs");
     } finally {
       fixture.dispose();
     }
@@ -3324,7 +3276,6 @@ describe("orchestratorService", () => {
             title: "Docs",
             stepIndex: 0,
             policy: {
-              includeFullDocs: true,
               docsMaxBytes: 64
             }
           }
@@ -3341,9 +3292,8 @@ describe("orchestratorService", () => {
       const snapshot = fixture.service
         .listContextSnapshots({ runId: started.run.id })
         .find((entry) => entry.id === attempt.contextSnapshotId);
-      expect(snapshot?.cursor.docsMode).toBe("full_body");
-      expect((snapshot?.cursor.docsTruncatedCount ?? 0) >= 1).toBe(true);
-      expect((snapshot?.cursor.docsConsumedBytes ?? 0) <= 64).toBe(true);
+      expect(snapshot?.cursor.docsMode).toBe("digest_ref");
+      expect(snapshot?.cursor.docsBudgetBytes).toBe(64);
     } finally {
       fixture.dispose();
     }

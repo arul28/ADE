@@ -1,6 +1,6 @@
 # ADE (Agentic Development Environment) - Product Requirements Document
 
-Last updated: 2026-03-13
+Last updated: 2026-03-14
 
 Roadmap source of truth: `docs/final-plan/README.md` (this PRD captures product scope and core behavior; future sequencing lives in Final Plan).
 
@@ -489,7 +489,7 @@ The Settings tab provides application preferences including AI provider configur
 
 **Memory**: Settings hosts the consolidated **Memory** tab -- the single UI surface for all memory management across scopes (project, agent, mission). Users can review, edit, confirm, promote, and archive memory entries here. This replaces the previous split across CTO and Settings surfaces. The CTO's core memory (identity, project context) coexists as a separate system optimized for always-in-context pinned knowledge, but user-facing memory triage and browsing happen exclusively in Settings > Memory.
 
-**Context & Docs**: Settings includes a **Context & Docs** tab that surfaces Skill Files (`.ade/skills/`, `.claude/skills/`, `.claude/commands/`, `CLAUDE.md`, `agents.md`) alongside project context documents. This gives users a single place to manage both generated context artifacts and manually authored skill/command files.
+**Context & Docs**: Settings includes a **Context & Docs** tab that surfaces Skill Files (`.ade/skills/`, `.claude/skills/`, `.claude/commands/`, `CLAUDE.md`, `agents.md`) alongside project context documents. Context doc generation preferences (provider, model, reasoning effort, event-based refresh triggers) are configured inline in this section via `ContextDocPrefs`. This gives users a single place to manage both generated context artifacts and manually authored skill/command files.
 
 **Computer Use Settings**: `Settings > Computer Use` is the user-facing readiness surface for ADE's external-first computer-use model. It shows supported backend types, Ghost OS connection state, agent-browser installation state, which proof kinds are currently satisfiable, and whether ADE local fallback is available. The screen makes ADE's role explicit: external backends perform the automation, while ADE manages artifact ingestion, proof normalization, review, routing, and publication.
 

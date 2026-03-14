@@ -15,7 +15,7 @@ import {
 const Router = (window as any).__adeBrowserMock ? BrowserRouter : HashRouter;
 import { AppShell } from "./AppShell";
 import { RunPage } from "../run/RunPage";
-import { OnboardingPage } from "../onboarding/OnboardingPage";
+import { ProjectSetupPage } from "../onboarding/ProjectSetupPage";
 
 const LanesPage = React.lazy(() =>
   import("../lanes/LanesPage").then((m) => ({ default: m.LanesPage }))
@@ -179,7 +179,7 @@ export function App() {
           <Route element={<ShellLayout />}>
             <Route path="/" element={<Navigate to="/project" replace />} />
             <Route path="/project" element={guarded(<RunPage />)} />
-            <Route path="/onboarding" element={guarded(<OnboardingPage />)} />
+            <Route path="/onboarding" element={guarded(<ProjectSetupPage />)} />
             <Route path="/lanes" element={guardedLazy(<LanesPage />)} />
             <Route path="/files" element={guardedLazy(<FilesPage />)} />
             <Route path="/work" element={guardedLazy(<TerminalsPage />)} />

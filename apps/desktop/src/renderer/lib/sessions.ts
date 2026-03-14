@@ -1,20 +1,6 @@
 /** Shared session/terminal utilities for the renderer. */
 
-import type { TerminalSessionSummary, TerminalToolType } from "../../shared/types";
-
-export const DEFAULT_PROFILE_IDS = ["claude", "codex", "shell"] as const;
-
-/** Map a launch profile ID string to a TerminalToolType. */
-export function toolTypeFromProfileId(profileId: string): TerminalToolType | null {
-  const id = profileId.trim().toLowerCase();
-  if (id === "claude") return "claude";
-  if (id === "codex") return "codex";
-  if (id === "shell") return "shell";
-  if (id === "aider") return "aider";
-  if (id === "cursor") return "cursor";
-  if (id === "continue") return "continue";
-  return "other";
-}
+import type { TerminalSessionSummary } from "../../shared/types";
 
 /** Returns true if the tool type represents an AI chat session. */
 export function isChatToolType(toolType: string | null | undefined): boolean {

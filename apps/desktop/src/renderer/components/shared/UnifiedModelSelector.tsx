@@ -120,9 +120,8 @@ const MODEL_CALLOUTS: Record<string, { label: string; tone: string }> = {
 };
 
 const selectCls = cn(
-  "h-7 border border-border/40 bg-bg/70 px-2 text-xs",
-  "outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/30",
-  "font-mono text-[11px]",
+  "h-8 rounded-lg border border-white/[0.08] bg-white/[0.04] px-2 font-mono text-[11px] text-fg/70",
+  "outline-none focus:border-white/[0.14]",
 );
 
 function classifyBucket(model: ModelDescriptor): SelectorBucket {
@@ -406,7 +405,7 @@ export function UnifiedModelSelector({
         ref={panelRef}
         role="listbox"
         className={cn(
-          "fixed z-[80] overflow-hidden rounded-[22px] border border-border/16 bg-card/95 shadow-[var(--shadow-float)] backdrop-blur-xl",
+          "fixed z-[80] overflow-hidden rounded-xl border border-white/[0.08] bg-[#1a1a1e] shadow-[var(--shadow-float)] backdrop-blur-xl",
           layout.mode === "modal" ? "w-full" : "",
         )}
         style={{
@@ -416,7 +415,7 @@ export function UnifiedModelSelector({
           maxHeight: layout.maxHeight,
         }}
       >
-        <div className="border-b border-border/10 bg-[linear-gradient(90deg,rgba(167,139,250,0.08),transparent)] px-3 py-2.5">
+        <div className="border-b border-white/[0.06] bg-white/[0.02] px-3 py-2.5">
           <div className="mb-2 flex items-center justify-between gap-2">
             <div className="font-mono text-[9px] font-bold uppercase tracking-[0.2em] text-muted-fg/38">
               Model source
@@ -601,10 +600,10 @@ export function UnifiedModelSelector({
             setOpen((current) => !current);
           }}
           className={cn(
-            "inline-flex h-9 w-full min-w-[220px] max-w-full items-center gap-1.5 rounded-[14px] border border-border/40 bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.012))] px-3 font-mono text-[11px] text-fg/80",
-            "transition-colors hover:border-accent/30 hover:bg-surface-raised/50",
-            open && "border-accent/40 bg-surface-raised/50",
-            disabled && "cursor-not-allowed opacity-70 hover:border-border/40 hover:bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.012))]",
+            "inline-flex h-8 w-full min-w-[220px] max-w-full items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.04] px-2.5 font-mono text-[11px] text-fg/70",
+            "transition-colors hover:border-white/[0.12] hover:bg-white/[0.06]",
+            open && "border-white/[0.14] bg-white/[0.06]",
+            disabled && "cursor-not-allowed opacity-70 hover:border-white/[0.08] hover:bg-white/[0.04]",
           )}
           aria-label="Select model"
           aria-haspopup="dialog"
@@ -629,7 +628,7 @@ export function UnifiedModelSelector({
           value={reasoningEffort ?? ""}
           disabled={disabled}
           onChange={(event) => onReasoningEffortChange(event.target.value || null)}
-          className={cn(selectCls, "min-w-[120px] rounded-[12px]", disabled && "cursor-not-allowed opacity-70")}
+          className={cn(selectCls, "min-w-[120px]", disabled && "cursor-not-allowed opacity-70")}
           aria-label="Reasoning effort"
         >
           {reasoningTiers.map((tier) => (

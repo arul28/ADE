@@ -36,4 +36,40 @@ The **Memory sub-tab** in the CTO tab is an operator-facing memory browser. You 
 - Read the **Daily Log** — the CTO's rolling diary of project activity
 - Inspect **Raw Provenance** — see exactly where each memory entry came from and when it was captured
 
+---
+
+## Daily Logs
+
+The CTO keeps a **daily log** — a chronological, append-only diary of project events stored as one Markdown file per day in `.ade/cto/daily/YYYY-MM-DD.md`. Each entry is timestamped:
+
+```
+- [09:14:22] Reviewed PR #312 — approved with minor nits on error handling.
+- [10:02:45] Delegated test-writer to add coverage for the new auth flow.
+- [14:30:11] Lane feature/payments entered conflict status with main — triaging.
+```
+
+Today's log is automatically included in the CTO's system prompt (last 20 entries) so the CTO picks up where it left off at the start of every conversation. Older logs are accessible in the Memory sub-tab under **Daily Log**.
+
+The daily log serves three purposes:
+
+1. **Session continuity** — the CTO reads today's log at activation, so it knows what already happened today without re-deriving it from git history.
+2. **Audit trail** — you can review what the CTO did and when, day by day.
+3. **Memory promotion** — recurring patterns in daily logs feed into the CTO's persistent project memory over time.
+
+---
+
+## Baked-In Memory Protocol
+
+The CTO's system prompt includes a permanent **Memory Protocol** that governs how it uses persistent memory:
+
+- **Before starting non-trivial work**: search memory for relevant conventions, decisions, and known pitfalls
+- **When learning something important**: save it to memory immediately
+- **When corrected**: save the correction as a convention or gotcha
+- **When a decision is made**: save the decision AND the reasoning behind it
+- **When context is getting large**: save key findings before compaction
+
+The protocol also specifies what NOT to save: raw file paths, transient error messages, task status, or anything derivable from git log or the code itself.
+
+This protocol is always present in the CTO's context — it is not removed during compaction.
+
 <Tip>If the CTO gives you advice based on outdated information, open Memory > Project Knowledge, find the relevant entry, and either edit it or mark it stale. The CTO will update its behavior on the next run.</Tip>

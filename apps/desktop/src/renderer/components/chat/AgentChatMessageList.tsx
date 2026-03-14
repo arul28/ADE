@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-  Brain,
   CaretDown,
   CaretRight,
   Warning,
@@ -231,8 +230,9 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
           timestamp: envelope.timestamp,
           event: {
             ...existing.event,
-            text: `${existing.event.text}${sep}${event.text}`
-          }
+            text: `${existing.event.text}${sep}${event.text}`,
+            startTimestamp: (existing.event as any).startTimestamp ?? existing.timestamp,
+          } as any
         };
         return;
       }
@@ -541,15 +541,30 @@ const MarkdownBlock = React.memo(function MarkdownBlock({ markdown }: { markdown
 function CollapsibleCard({
   children,
   defaultOpen = false,
+  forceOpen,
   summary,
   className
 }: {
   children: React.ReactNode;
   defaultOpen?: boolean;
+  /** When set, overrides the open state. When it transitions from true→undefined, auto-collapses. */
+  forceOpen?: boolean;
   summary: React.ReactNode;
   className?: string;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  const prevForceOpen = useRef(forceOpen);
+
+  useEffect(() => {
+    // Auto-collapse when forceOpen transitions from true → falsy (turn finished)
+    if (prevForceOpen.current === true && !forceOpen) {
+      setOpen(false);
+    }
+    prevForceOpen.current = forceOpen;
+  }, [forceOpen]);
+
+  const isOpen = forceOpen === true ? true : open;
+
   return (
     <div className={cn(GLASS_CARD_CLASS, "transition-colors", className)} style={surfaceInlineCardStyle()}>
       <button
@@ -557,10 +572,10 @@ function CollapsibleCard({
         className="flex w-full items-center gap-2 px-3.5 py-3 text-left font-mono text-[11px]"
         onClick={() => setOpen((v) => !v)}
       >
-        {open ? <CaretDown size={10} weight="bold" className="text-muted-fg/60" /> : <CaretRight size={10} weight="bold" className="text-muted-fg/60" />}
+        {isOpen ? <CaretDown size={10} weight="bold" className="text-muted-fg/60" /> : <CaretRight size={10} weight="bold" className="text-muted-fg/60" />}
         <div className="flex flex-1 flex-wrap items-center gap-2">{summary}</div>
       </button>
-      {open ? <div className="border-t border-white/[0.04] px-3.5 pb-3.5 pt-2.5">{children}</div> : null}
+      {isOpen ? <div className="border-t border-white/[0.04] px-3.5 pb-3.5 pt-2.5">{children}</div> : null}
     </div>
   );
 }
@@ -605,31 +620,15 @@ const ACTIVITY_LABELS: Record<string, string> = {
   tool_calling: "Calling tool"
 };
 
-const ACTIVITY_COLORS: Record<string, { border: string; bg: string; icon: string; text: string }> = {
-  thinking: { border: "border-violet-400/10", bg: "bg-violet-400/[0.03]", icon: "text-violet-400/50", text: "text-violet-200/55" },
-  working: { border: "border-teal-400/10", bg: "bg-teal-400/[0.03]", icon: "text-teal-400/50", text: "text-teal-200/55" },
-  editing_file: { border: "border-amber-400/10", bg: "bg-amber-400/[0.03]", icon: "text-amber-400/50", text: "text-amber-200/55" },
-  running_command: { border: "border-orange-400/10", bg: "bg-orange-400/[0.03]", icon: "text-orange-400/50", text: "text-orange-200/55" },
-  searching: { border: "border-sky-400/10", bg: "bg-sky-400/[0.03]", icon: "text-sky-400/50", text: "text-sky-200/55" },
-  reading: { border: "border-emerald-400/10", bg: "bg-emerald-400/[0.03]", icon: "text-emerald-400/50", text: "text-emerald-200/55" },
-  tool_calling: { border: "border-indigo-400/10", bg: "bg-indigo-400/[0.03]", icon: "text-indigo-400/50", text: "text-indigo-200/55" },
-};
 
-const ACTIVITY_DEFAULT_COLOR = { border: "border-white/[0.04]", bg: "bg-white/[0.02]", icon: "text-fg/35", text: "text-fg/55" };
-
-function ActivityIndicator({ activity, detail, animate = true }: { activity: string; detail?: string; animate?: boolean }) {
+function ActivityIndicator({ activity, detail }: { activity: string; detail?: string; animate?: boolean }) {
   const label = ACTIVITY_LABELS[activity] ?? activity;
   const displayText = detail ? `${label}: ${replaceInternalToolNames(detail)}` : `${label}...`;
-  const isThinking = activity === "thinking";
-  const Icon = isThinking ? Brain : SpinnerGap;
-  const colors = ACTIVITY_COLORS[activity] ?? ACTIVITY_DEFAULT_COLOR;
 
   return (
-    <div className={cn("flex items-center gap-3 rounded-lg border px-4 py-2.5 font-sans text-[12px]", colors.border, colors.bg, colors.text)}>
-      <Icon size={12} weight="regular" className={cn("shrink-0", colors.icon, animate ? (isThinking ? "animate-pulse" : "animate-spin") : "")} />
-      <div className="min-w-0 flex-1">
-        <span className="block truncate">{displayText}</span>
-      </div>
+    <div className="flex items-center gap-2 py-1 font-mono text-[12px] text-fg/40">
+      <span className="ade-thinking-pulse inline-block h-1.5 w-1.5 rounded-full bg-fg/30" />
+      <span className="truncate">{displayText}</span>
     </div>
   );
 }
@@ -756,9 +755,8 @@ function renderEvent(
   }
 ) {
   const event = envelope.event;
-  const isResolverMode = options?.surfaceMode === "resolver";
-  const hideInternalExecution = options?.surfaceProfile === "persistent_identity";
-  const hideReasoning = hideInternalExecution;
+  const hideInternalExecution = false;
+  const hideReasoning = false;
 
   /* ── User message ── */
   if (event.type === "user_message") {
@@ -1187,26 +1185,36 @@ function renderEvent(
 
   /* ── Reasoning ── */
   if (event.type === "reasoning") {
-    if (hideReasoning) {
-      return null;
-    }
+    if (hideReasoning) return null;
     const reasoningText = event.text.trim();
-    const displayReasoning = reasoningText.length > 0 ? event.text : "Thinking...";
+    const isLive = Boolean(options?.turnActive);
+
+    // Compute duration if we have timestamps
+    const startTs = (event as any).startTimestamp ?? envelope.timestamp;
+    const endTs = envelope.timestamp;
+    const durationSec = Math.max(1, Math.round((new Date(endTs).getTime() - new Date(startTs).getTime()) / 1000));
+    const durationLabel = isLive ? null : `${durationSec}s`;
+
     return (
       <CollapsibleCard
-        defaultOpen={!isResolverMode}
+        defaultOpen={false}
+        forceOpen={isLive ? true : undefined}
         summary={
-          <div className="flex items-center gap-2 font-mono text-[11px]">
-            <span className="inline-flex h-5 w-5 items-center justify-center border border-violet-500/18 bg-violet-500/[0.08]">
-              <Brain size={10} weight="bold" className="text-violet-300/75" />
-            </span>
-            <span className="font-bold uppercase tracking-[0.16em] text-violet-300/75">Reasoning</span>
-          </div>
+          <span className="font-mono text-[12px] text-fg/40">
+            {isLive ? (
+              <span className="flex items-center gap-2">
+                <span className="ade-thinking-pulse inline-block h-1.5 w-1.5 rounded-full bg-fg/40" />
+                Thinking...
+              </span>
+            ) : (
+              `Thought for ${durationLabel}`
+            )}
+          </span>
         }
-        className="border-transparent"
+        className="border-transparent bg-transparent"
       >
-        <div className="text-fg/65">
-          <MarkdownBlock markdown={displayReasoning} />
+        <div className="text-fg/55 text-[12px] leading-relaxed">
+          <MarkdownBlock markdown={reasoningText.length ? event.text : "Thinking..."} />
         </div>
       </CollapsibleCard>
     );
@@ -1225,43 +1233,35 @@ function renderEvent(
     const meta = getToolMeta(event.tool);
     const ToolIcon = meta.icon;
     const toolDisplay = describeToolIdentifier(event.tool);
-    const sourceChip = toolSourceChip(event.tool);
     const args = readRecord(event.args) ?? {};
     const resultText = event.result === undefined ? null : formatStructuredValue(event.result);
     const targetLine = meta.getTarget ? meta.getTarget(args) : null;
-    const secondaryLabel = targetLine ?? toolDisplay.secondaryLabel;
+    const label = targetLine
+      ? `${meta.label} ${targetLine}`
+      : toolDisplay.secondaryLabel
+        ? `${meta.label} ${toolDisplay.secondaryLabel}`
+        : meta.label;
     const argCount = Object.keys(args).length;
 
     return (
       <CollapsibleCard
         defaultOpen={event.status === "failed"}
         summary={
-          <div className="flex items-center gap-2 font-mono text-[11px]">
-            <StatusIcon status={event.status} />
-            <span className={cn("inline-flex items-center gap-1 border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider", meta.badgeCls)}>
-              <ToolIcon size={11} weight="bold" />
-              {meta.label}
-            </span>
-            {sourceChip ? (
-              <span className={cn("inline-flex items-center border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.16em]", chatChipToneClass(sourceChip.tone))}>
-                {sourceChip.label}
-              </span>
-            ) : null}
-            {secondaryLabel ? <span className="flex-1 truncate text-[10px] text-fg/45">{secondaryLabel}</span> : null}
-            {event.parentItemId ? (
-              <span className="border border-violet-500/18 bg-violet-500/[0.08] px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.16em] text-violet-300/80">
-                subagent
-              </span>
-            ) : null}
-            <span className="text-[9px] uppercase tracking-[0.16em] text-muted-fg/30">
-              {event.status}
-              {argCount ? ` · ${argCount} arg${argCount === 1 ? "" : "s"}` : ""}
-            </span>
+          <div className="flex items-center gap-2 font-mono text-[12px] text-fg/50">
+            {event.status === "running" ? (
+              <span className="ade-thinking-pulse inline-block h-1.5 w-1.5 rounded-full bg-fg/30" />
+            ) : event.status === "failed" ? (
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-red-400/70" />
+            ) : (
+              <CaretRight size={10} weight="bold" className="text-fg/30" />
+            )}
+            <ToolIcon size={13} weight="regular" className="text-fg/40" />
+            <span className="truncate">{label}</span>
           </div>
         }
         className={cn(
-          "border-accent/10",
-          event.parentItemId ? "ml-5 border-violet-500/12" : null,
+          "border-transparent bg-transparent",
+          event.parentItemId ? "ml-5" : null,
         )}
       >
         <div className="space-y-3">
@@ -1297,13 +1297,15 @@ function renderEvent(
     const meta = getToolMeta(event.tool);
     const ToolIcon = meta.icon;
     const toolDisplay = describeToolIdentifier(event.tool);
-    const sourceChip = toolSourceChip(event.tool);
     const args = event.args as Record<string, unknown> | null;
     const safeArgs = args && typeof args === "object" ? args : {};
 
     const targetLine = meta.getTarget ? meta.getTarget(safeArgs) : null;
-    const secondaryLabel = targetLine ?? toolDisplay.secondaryLabel;
-    const argCount = Object.keys(safeArgs).length;
+    const label = targetLine
+      ? `${meta.label} ${targetLine}`
+      : toolDisplay.secondaryLabel
+        ? `${meta.label} ${toolDisplay.secondaryLabel}`
+        : meta.label;
 
     // Build expandable args display
     const kvPairs = Object.entries(safeArgs);
@@ -1330,38 +1332,17 @@ function renderEvent(
       </div>
     );
 
-    const cardBorderCls =
-      meta.category === "exec" || meta.category === "codex"
-        ? "border-amber-500/10"
-        : meta.category === "write"
-          ? "border-emerald-500/10"
-          : meta.category === "web"
-            ? "border-indigo-500/10"
-            : "border-accent/10";
-
     return (
       <CollapsibleCard
         defaultOpen={false}
         summary={
-          <div className="flex items-center gap-2 font-mono text-[11px]">
-            <span className={cn("inline-flex items-center gap-1 border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider", meta.badgeCls)}>
-              <ToolIcon size={11} weight="bold" />
-              {meta.label}
-            </span>
-            {sourceChip ? (
-              <span className={cn("inline-flex items-center border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.16em]", chatChipToneClass(sourceChip.tone))}>
-                {sourceChip.label}
-              </span>
-            ) : null}
-            {secondaryLabel ? (
-              <span className="flex-1 truncate text-[10px] text-fg/45">{secondaryLabel}</span>
-            ) : null}
-            <span className="text-[9px] uppercase tracking-[0.16em] text-muted-fg/30">
-              {argCount} arg{argCount === 1 ? "" : "s"}
-            </span>
+          <div className="flex items-center gap-2 font-mono text-[12px] text-fg/50">
+            <CaretRight size={10} weight="bold" className="text-fg/30" />
+            <ToolIcon size={13} weight="regular" className="text-fg/40" />
+            <span className="truncate">{label}</span>
           </div>
         }
-        className={cardBorderCls}
+        className="border-transparent bg-transparent"
       >
         {argsDisplay}
       </CollapsibleCard>
@@ -1530,9 +1511,6 @@ function renderEvent(
 
   /* ── Done ── */
   if (event.type === "done") {
-    if (options?.surfaceProfile === "persistent_identity" && event.status === "completed") {
-      return null;
-    }
     const { label: modelLabel } = resolveModelMeta(event.modelId, event.model);
     const inputTokens = formatTokenCount(event.usage?.inputTokens);
     const outputTokens = formatTokenCount(event.usage?.outputTokens);
@@ -1607,72 +1585,46 @@ function renderEvent(
 
 function ToolGroupCard({ group }: { group: ToolGroup }) {
   const [expanded, setExpanded] = useState(false);
-  const allCompleted = group.tools.every((t) => t.event.status !== "running");
   const runningCount = group.tools.filter((t) => t.event.status === "running").length;
-  const failedCount = group.tools.filter((t) => t.event.status === "failed").length;
-
-  // Get unique tool types for the summary
-  const toolTypes = new Map<string, number>();
-  for (const t of group.tools) {
-    const meta = getToolMeta(t.event.tool);
-    toolTypes.set(meta.label, (toolTypes.get(meta.label) ?? 0) + 1);
-  }
-  const toolSummary = Array.from(toolTypes.entries())
-    .map(([label, count]) => count > 1 ? `${count}x ${label}` : label)
-    .join(", ");
 
   return (
-    <div className="overflow-hidden rounded-[var(--chat-radius-card)] border border-white/[0.04] bg-white/[0.03] backdrop-blur-xl">
+    <div className="overflow-hidden">
       <button
         type="button"
-        className="flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left font-mono text-[11px] transition-colors hover:bg-white/[0.02]"
+        className="flex w-full items-center gap-2 py-1 text-left font-mono text-[12px] text-fg/50 transition-colors hover:text-fg/70"
         onClick={() => setExpanded((v) => !v)}
       >
-        {expanded ? <CaretDown size={10} weight="bold" className="text-muted-fg/50" /> : <CaretRight size={10} weight="bold" className="text-muted-fg/50" />}
-
-        <div className="flex items-center gap-1.5">
-          {allCompleted ? (
-            failedCount > 0 ? <XCircle size={13} weight="bold" className="text-red-400" /> : <CheckCircle size={13} weight="bold" className="text-emerald-400" />
-          ) : (
-            <SpinnerGap size={13} weight="bold" className="animate-spin text-accent" />
-          )}
-        </div>
-
-        <span className="text-fg/65">{group.tools.length} tool calls</span>
-        <span className="text-[10px] text-muted-fg/35">{toolSummary}</span>
-
-        {runningCount > 0 && (
-          <span className="ml-auto text-[9px] uppercase tracking-wider text-accent/60">{runningCount} running</span>
-        )}
-        {failedCount > 0 && (
-          <span className="text-[9px] uppercase tracking-wider text-red-400/60">{failedCount} failed</span>
-        )}
+        {expanded ? <CaretDown size={10} weight="bold" className="text-fg/30" /> : <CaretRight size={10} weight="bold" className="text-fg/30" />}
+        {runningCount > 0 ? (
+          <span className="ade-thinking-pulse inline-block h-1.5 w-1.5 rounded-full bg-fg/30" />
+        ) : null}
+        <span>{group.tools.length} tool calls</span>
       </button>
 
       {expanded && (
-        <div className="space-y-1.5 border-t border-white/[0.04] px-3 py-2.5">
+        <div className="space-y-1 pl-4 pt-1">
           {group.tools.map((tool) => {
             const meta = getToolMeta(tool.event.tool);
             const ToolIcon = meta.icon;
             const toolDisplay = describeToolIdentifier(tool.event.tool);
-            const sourceChip = toolSourceChip(tool.event.tool);
             const targetLine = meta.getTarget ? meta.getTarget(readRecord(tool.event.args) ?? {}) : null;
-            const secondaryLabel = targetLine ?? toolDisplay.secondaryLabel;
+            const label = targetLine
+              ? `${meta.label} ${targetLine}`
+              : toolDisplay.secondaryLabel
+                ? `${meta.label} ${toolDisplay.secondaryLabel}`
+                : meta.label;
 
             return (
-              <div key={tool.key} className="flex items-center gap-2 rounded-lg px-2 py-1.5 font-mono text-[10px] transition-colors hover:bg-white/[0.02]">
-                <StatusIcon status={tool.event.status} />
-                <span className={cn("inline-flex items-center gap-1 border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider", meta.badgeCls)}>
-                  <ToolIcon size={10} weight="bold" />
-                  {meta.label}
-                </span>
-                {sourceChip ? (
-                  <span className={cn("inline-flex items-center border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.14em]", chatChipToneClass(sourceChip.tone))}>
-                    {sourceChip.label}
-                  </span>
-                ) : null}
-                {secondaryLabel ? <span className="flex-1 truncate text-fg/40">{secondaryLabel}</span> : null}
-                <span className="text-[8px] uppercase tracking-wider text-muted-fg/25">{tool.event.status}</span>
+              <div key={tool.key} className="flex items-center gap-2 py-0.5 font-mono text-[12px] text-fg/50">
+                {tool.event.status === "running" ? (
+                  <span className="ade-thinking-pulse inline-block h-1.5 w-1.5 rounded-full bg-fg/30" />
+                ) : tool.event.status === "failed" ? (
+                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-red-400/70" />
+                ) : (
+                  <CaretRight size={10} weight="bold" className="text-fg/30" />
+                )}
+                <ToolIcon size={13} weight="regular" className="text-fg/40" />
+                <span className="truncate">{label}</span>
               </div>
             );
           })}
@@ -1721,11 +1673,11 @@ const EventRow = React.memo(function EventRow({
     <div className="space-y-3">
       {showTurnDivider && turnDividerLabel ? (
         <div className="flex items-center gap-3 py-2">
-          <div className="h-px flex-1 bg-violet-400/[0.06]" />
-          <span className="font-sans text-[10px] text-violet-300/25">
+          <div className="h-px flex-1 bg-white/[0.06]" />
+          <span className="font-sans text-[10px] text-fg/20">
             {turnDividerLabel}
           </span>
-          <div className="h-px flex-1 bg-violet-400/[0.06]" />
+          <div className="h-px flex-1 bg-white/[0.06]" />
         </div>
       ) : null}
       {renderEvent(envelope, { onApproval, turnModel, surfaceMode, surfaceProfile, turnActive })}
@@ -1790,7 +1742,6 @@ export function AgentChatMessageList({
     events: [],
     rows: [],
   });
-  const hideInternalExecution = surfaceProfile === "persistent_identity";
   const [stickToBottom, setStickToBottom] = useState(true);
   const stickToBottomRef = useRef(true);
   const onApprovalRef = useRef(onApproval);
@@ -2028,11 +1979,9 @@ export function AgentChatMessageList({
     latestActivity ? (
       <ActivityIndicator activity={latestActivity.activity} detail={latestActivity.detail} />
     ) : (
-      <div className="flex items-center gap-3 rounded-[var(--chat-radius-card)] border border-white/[0.04] bg-white/[0.03] px-4 py-2.5 font-mono text-[11px] text-fg/65 backdrop-blur-xl">
-        <div className="flex h-6 w-6 items-center justify-center rounded-full border border-[var(--chat-accent-faint)] bg-[var(--chat-accent-faint)]">
-          <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--chat-accent)]" />
-        </div>
-        <span className="font-medium">Working...</span>
+      <div className="flex items-center gap-2 py-1 font-mono text-[12px] text-fg/40">
+        <span className="ade-thinking-pulse inline-block h-1.5 w-1.5 rounded-full bg-fg/30" />
+        <span>Working...</span>
       </div>
     )
   ) : null;
@@ -2064,9 +2013,6 @@ export function AgentChatMessageList({
           <div className="space-y-3">
             {groupedRows.slice(startIndex, Math.min(endIndex, groupedRows.length)).map((envelope, i) => {
               if (envelope.event.type === "tool_group") {
-                if (hideInternalExecution) {
-                  return null;
-                }
                 return <ToolGroupCard key={envelope.key} group={envelope.event} />;
               }
               return renderRow(envelope as RenderEnvelope, startIndex + i, true);
@@ -2081,9 +2027,6 @@ export function AgentChatMessageList({
         <div className="space-y-3">
           {groupedRows.map((envelope, index) => {
             if (envelope.event.type === "tool_group") {
-              if (hideInternalExecution) {
-                return null;
-              }
               return <ToolGroupCard key={envelope.key} group={envelope.event} />;
             }
             return renderRow(envelope as RenderEnvelope, index, false);

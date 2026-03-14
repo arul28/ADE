@@ -46,7 +46,6 @@ import net from "node:net";
 import { createMcpRequestHandler } from "../../../mcp-server/src/mcpServer";
 import { createEventBuffer, type AdeMcpRuntime, type AdeMcpPaths } from "../../../mcp-server/src/bootstrap";
 import { createKeybindingsService } from "./services/keybindings/keybindingsService";
-import { createTerminalProfilesService } from "./services/terminalProfiles/terminalProfilesService";
 import { createAgentToolsService } from "./services/agentTools/agentToolsService";
 import { createOnboardingService } from "./services/onboarding/onboardingService";
 import { createAutomationService } from "./services/automations/automationService";
@@ -100,6 +99,7 @@ import { createAiOrchestratorService } from "./services/orchestrator/aiOrchestra
 import { createMissionBudgetService } from "./services/orchestrator/missionBudgetService";
 import { transitionMissionStatus } from "./services/orchestrator/missionLifecycle";
 import { createExternalMcpService } from "./services/externalMcp/externalMcpService";
+import { createExternalConnectionAuthService } from "./services/externalMcp/externalConnectionAuthService";
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
 import { createAutoUpdateService } from "./services/updates/autoUpdateService";
 import type { Logger } from "./services/logging/logger";
@@ -547,7 +547,6 @@ app.whenReady().then(async () => {
 
     const db = await openKvDb(adePaths.dbPath, logger);
     const keybindingsService = createKeybindingsService({ db });
-    const terminalProfilesService = createTerminalProfilesService({ db });
     const agentToolsService = createAgentToolsService({ logger });
 
     const project = toProjectInfo(projectRoot, baseRef);
@@ -1394,6 +1393,10 @@ app.whenReady().then(async () => {
         delayMs,
       );
     };
+    const externalConnectionAuthService = createExternalConnectionAuthService({
+      adeDir: adePaths.adeDir,
+      logger,
+    });
     const externalMcpService = createExternalMcpService({
       projectRoot,
       adeDir: adePaths.adeDir,
@@ -1405,6 +1408,7 @@ app.whenReady().then(async () => {
       missionService,
       workerBudgetService,
       missionBudgetService,
+      authService: externalConnectionAuthService,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.externalMcpEvent, event),
     });
     scheduleBackgroundProjectTask(
@@ -2032,7 +2036,6 @@ app.whenReady().then(async () => {
       hasUserSelectedProject: userSelectedProject,
       disposeHeadWatcher,
       keybindingsService,
-      terminalProfilesService,
       agentToolsService,
       onboardingService,
       laneService,
@@ -2101,6 +2104,7 @@ app.whenReady().then(async () => {
       linearRoutingService,
       linearIngressService,
       linearSyncService,
+      externalConnectionAuthService,
       externalMcpService,
       configReloadService,
       mcpSocketServer,
@@ -2126,7 +2130,6 @@ app.whenReady().then(async () => {
       adeDir: "",
       disposeHeadWatcher: () => {},
       keybindingsService: null,
-      terminalProfilesService: null,
       agentToolsService: null,
       onboardingService: null,
       laneService: null,
@@ -2191,6 +2194,7 @@ app.whenReady().then(async () => {
       linearRoutingService: null,
       linearIngressService: null,
       linearSyncService: null,
+      externalConnectionAuthService: null,
       externalMcpService: null,
       configReloadService: null
     } as unknown as AppContext);
@@ -2251,6 +2255,11 @@ app.whenReady().then(async () => {
     }
     try {
       await ctx.externalMcpService?.dispose?.();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.externalConnectionAuthService?.dispose?.();
     } catch {
       // ignore
     }

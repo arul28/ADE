@@ -10,6 +10,7 @@ import type {
   OrchestratorStep,
 } from "../../../shared/types";
 import { asRecord, TERMINAL_STEP_STATUSES } from "./orchestratorContext";
+import { nowIso } from "../shared/utils";
 
 type DelegationFailure = NonNullable<DelegationContract["failure"]>;
 type DelegationFailureCategory = DelegationFailure["category"];
@@ -47,10 +48,6 @@ export function normalizeCoordinatorToolName(toolName: string): string {
     return (parts[2] ?? trimmed).trim();
   }
   return trimmed;
-}
-
-function nowIso(): string {
-  return new Date().toISOString();
 }
 
 export function createDelegationScope(args: {

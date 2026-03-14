@@ -116,9 +116,19 @@ type CtoCoreMemory = {
 
 On startup, `ctoStateService.ts` reads both sources and reconciles by version number. The higher version wins. On write, both are updated atomically.
 
+### Daily Logs
+
+The CTO state service supports append-only daily logs stored as markdown files under `.ade/cto/daily-logs/<YYYY-MM-DD>.md`:
+
+- `appendDailyLog(entry, date?)` -- appends a timestamped `- [HH:MM:SS] entry` line
+- `readDailyLog(date?)` -- reads the full log for a given day
+- `listDailyLogs(limit?)` -- lists available daily log dates, most recent first (default: 7)
+
 ### Injection
 
-`buildReconstructionContext()` in `ctoStateService.ts` serializes the CTO snapshot (identity, core memory, recent session logs, recent subordinate activity) into a text block. This is injected as the first message in every CTO chat session.
+`buildReconstructionContext()` in `ctoStateService.ts` serializes the CTO snapshot (identity, core memory, recent session logs, recent subordinate activity, and today's daily log) into a text block. This is injected as the first message in every CTO chat session. The reconstruction context also includes three baked-in protocol sections (Memory Protocol, Daily Context, Decision Framework) that are part of the CTO identity and survive across sessions.
+
+When a CTO or worker identity session undergoes context compaction, `refreshReconstructionContext()` is called automatically to re-inject the full identity context into the harness system prompt. This prevents identity loss after compaction.
 
 ### Worker Agents
 

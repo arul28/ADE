@@ -7,6 +7,7 @@ import {
   type AgentChatFileRef,
   type AgentChatPermissionMode,
   type AgentChatSlashCommand,
+  type ComputerUseOwnerSnapshot,
   type ChatSurfaceProfile,
   type ChatSurfaceMode,
   type ComputerUsePolicy,
@@ -165,6 +166,166 @@ function PermissionHoverPane({ opt }: { opt: PermissionOption }) {
   );
 }
 
+function ComputerUseSettingsModal({
+  open,
+  policy,
+  snapshot,
+  onClose,
+  onChange,
+  onOpenProof,
+}: {
+  open: boolean;
+  policy: ComputerUsePolicy;
+  snapshot: ComputerUseOwnerSnapshot | null;
+  onClose: () => void;
+  onChange: (policy: ComputerUsePolicy) => void;
+  onOpenProof: () => void;
+}) {
+  if (!open) return null;
+
+  const computerUseAllowed = policy.mode !== "off";
+  const activeBackend = snapshot?.activeBackend?.name ?? (policy.allowLocalFallback ? "Fallback allowed" : "No fallback");
+  const artifactCount = snapshot?.artifacts.length ?? 0;
+
+  return (
+    <div
+      className="fixed inset-0 z-[9999] flex items-center justify-center bg-[radial-gradient(circle_at_top,rgba(56,189,248,0.1),rgba(7,10,18,0.88))] px-4 backdrop-blur-md"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div className="w-full max-w-2xl overflow-hidden rounded-[28px] border border-white/[0.08] bg-[linear-gradient(180deg,rgba(15,21,34,0.96),rgba(10,13,22,0.94))] shadow-[0_28px_110px_-36px_rgba(0,0,0,0.82)]">
+        <div className="border-b border-white/[0.05] bg-[linear-gradient(90deg,rgba(56,189,248,0.12),transparent)] px-5 py-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1">
+              <div className="font-sans text-[15px] font-semibold tracking-tight text-fg/88">Computer use</div>
+              <div className="max-w-[44rem] text-[12px] leading-6 text-fg/58">
+                Let the agent inspect or control a connected browser or desktop runtime for this chat. If you want it to keep checking a site while it edits, tell it to re-validate after each meaningful change.
+              </div>
+            </div>
+            <button
+              type="button"
+              className="rounded-[var(--chat-radius-pill)] border border-white/[0.08] bg-white/[0.03] px-3 py-1 font-sans text-[11px] font-medium text-fg/60 transition-colors hover:text-fg/85"
+              onClick={onClose}
+              title="Close computer-use settings"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+
+        <div className="space-y-4 px-5 py-5">
+          <div className="grid gap-3 md:grid-cols-[minmax(0,1.25fr)_minmax(0,0.9fr)]">
+            <div className="rounded-[22px] border border-white/[0.06] bg-white/[0.03] p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="font-sans text-[11px] font-medium uppercase tracking-[0.16em] text-sky-200/60">Access</div>
+                  <div className="mt-1 text-[13px] text-fg/82">
+                    {computerUseAllowed
+                      ? "Connected tools may be used when the task calls for them."
+                      : "The agent will stay text-only for this chat."}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className={cn(
+                    "rounded-[var(--chat-radius-pill)] border px-3 py-1.5 font-sans text-[11px] font-medium transition-colors",
+                    computerUseAllowed
+                      ? "border-sky-400/28 bg-sky-500/12 text-sky-200"
+                      : "border-white/[0.08] bg-white/[0.03] text-muted-fg/50 hover:text-fg/72",
+                  )}
+                  onClick={() => onChange({ ...policy, mode: computerUseAllowed ? "off" : "enabled" })}
+                  title="Allow the agent to use connected browser or desktop tooling in this chat"
+                >
+                  {computerUseAllowed ? "Allowed" : "Blocked"}
+                </button>
+              </div>
+
+              <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                <div className="rounded-[18px] border border-white/[0.05] bg-black/10 px-3 py-2">
+                  <div className="font-sans text-[10px] uppercase tracking-[0.16em] text-muted-fg/32">Backend</div>
+                  <div className="mt-1 text-[12px] text-fg/78">{activeBackend}</div>
+                </div>
+                <div className="rounded-[18px] border border-white/[0.05] bg-black/10 px-3 py-2">
+                  <div className="font-sans text-[10px] uppercase tracking-[0.16em] text-muted-fg/32">Proof</div>
+                  <div className="mt-1 text-[12px] text-fg/78">{policy.retainArtifacts ? "Retained" : "Not retained"}</div>
+                </div>
+                <div className="rounded-[18px] border border-white/[0.05] bg-black/10 px-3 py-2">
+                  <div className="font-sans text-[10px] uppercase tracking-[0.16em] text-muted-fg/32">Artifacts</div>
+                  <div className="mt-1 text-[12px] text-fg/78">{artifactCount}</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-[22px] border border-white/[0.06] bg-[linear-gradient(180deg,rgba(18,24,37,0.95),rgba(11,14,23,0.95))] p-4">
+              <div className="font-sans text-[11px] font-medium uppercase tracking-[0.16em] text-emerald-200/58">How to use it</div>
+              <div className="mt-3 space-y-2 text-[12px] leading-6 text-fg/62">
+                <div>Ask directly: “Open `http://localhost:3000`, check desktop and mobile, and keep proof.”</div>
+                <div>For ongoing validation, say “re-check after every major UI change.”</div>
+                <div>The proof drawer keeps screenshots, traces, logs, and verification output for this chat.</div>
+              </div>
+              <button
+                type="button"
+                className="mt-4 rounded-[var(--chat-radius-pill)] border border-emerald-400/20 bg-emerald-500/10 px-3 py-1.5 font-sans text-[11px] font-medium text-emerald-200/85 transition-colors hover:bg-emerald-500/14"
+                onClick={onOpenProof}
+                title="Open the proof drawer for this chat"
+              >
+                Open proof drawer
+              </button>
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <button
+              type="button"
+              className={cn(
+                "rounded-[22px] border px-4 py-3 text-left transition-colors",
+                policy.retainArtifacts
+                  ? "border-emerald-400/20 bg-emerald-500/10"
+                  : "border-white/[0.06] bg-white/[0.03] hover:border-white/[0.1]",
+              )}
+              onClick={() => onChange({ ...policy, retainArtifacts: !policy.retainArtifacts })}
+              title="Retain screenshots, traces, logs, and other proof artifacts for this chat"
+            >
+              <div className="font-sans text-[12px] font-medium text-fg/84">Retain proof</div>
+              <div className="mt-1 text-[11px] leading-5 text-fg/56">
+                {policy.retainArtifacts
+                  ? "Artifacts stay attached to this chat so you can inspect them in the proof drawer."
+                  : "Artifacts are not explicitly retained for review after the tool run finishes."}
+              </div>
+            </button>
+
+            <button
+              type="button"
+              className={cn(
+                "rounded-[22px] border px-4 py-3 text-left transition-colors",
+                policy.allowLocalFallback
+                  ? "border-amber-400/20 bg-amber-500/10"
+                  : "border-white/[0.06] bg-white/[0.03] hover:border-white/[0.1]",
+              )}
+              onClick={() => onChange({ ...policy, allowLocalFallback: !policy.allowLocalFallback })}
+              title="Allow ADE's local fallback tools if an external computer-use backend is unavailable"
+            >
+              <div className="font-sans text-[12px] font-medium text-fg/84">Allow local fallback</div>
+              <div className="mt-1 text-[11px] leading-5 text-fg/56">
+                {policy.allowLocalFallback
+                  ? "ADE may fall back to its local runtime when a connected backend is missing or unavailable."
+                  : "The chat must rely on connected external tooling only."}
+              </div>
+            </button>
+          </div>
+
+          {snapshot?.summary ? (
+            <div className="rounded-[20px] border border-white/[0.05] bg-black/10 px-4 py-3 text-[11px] leading-6 text-fg/56">
+              {snapshot.summary}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function AgentChatComposer({
   surfaceMode = "standard",
   surfaceProfile = "standard",
@@ -185,6 +346,9 @@ export function AgentChatComposer({
   sessionIsCliWrapped,
   executionMode,
   computerUsePolicy,
+  computerUseSnapshot,
+  proofOpen = false,
+  proofArtifactCount = 0,
   executionModeOptions = [],
   modelSelectionLocked = false,
   permissionModeLocked = false,
@@ -200,7 +364,10 @@ export function AgentChatComposer({
   onContextPacksChange,
   onExecutionModeChange,
   onPermissionModeChange,
+  includeProjectDocs,
+  onIncludeProjectDocsChange,
   onComputerUsePolicyChange,
+  onToggleProof,
   onClearEvents
 }: {
   surfaceMode?: ChatSurfaceMode;
@@ -226,6 +393,9 @@ export function AgentChatComposer({
   sessionIsCliWrapped?: boolean;
   executionMode?: AgentChatExecutionMode | null;
   computerUsePolicy: ComputerUsePolicy;
+  computerUseSnapshot?: ComputerUseOwnerSnapshot | null;
+  proofOpen?: boolean;
+  proofArtifactCount?: number;
   executionModeOptions?: ExecutionModeOption[];
   modelSelectionLocked?: boolean;
   permissionModeLocked?: boolean;
@@ -241,7 +411,10 @@ export function AgentChatComposer({
   onContextPacksChange: (packs: ContextPackOption[]) => void;
   onExecutionModeChange?: (mode: AgentChatExecutionMode) => void;
   onPermissionModeChange?: (mode: AgentChatPermissionMode) => void;
+  includeProjectDocs?: boolean;
+  onIncludeProjectDocsChange?: (checked: boolean) => void;
   onComputerUsePolicyChange: (policy: ComputerUsePolicy) => void;
+  onToggleProof?: () => void;
   onClearEvents?: () => void;
 }) {
   const isPersistentIdentitySurface = surfaceProfile === "persistent_identity";
@@ -261,6 +434,7 @@ export function AgentChatComposer({
 
   const [hoveredMode, setHoveredMode] = useState<AgentChatPermissionMode | null>(null);
   const [dragActive, setDragActive] = useState(false);
+  const [computerUseModalOpen, setComputerUseModalOpen] = useState(false);
 
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -269,6 +443,8 @@ export function AgentChatComposer({
 
   const attachedPaths = useMemo(() => new Set(attachments.map((a) => a.path)), [attachments]);
   const selectedModel = useMemo(() => getModelById(modelId), [modelId]);
+  const computerUseAllowed = computerUsePolicy.mode !== "off";
+  const proofButtonLabel = proofArtifactCount > 0 ? `Proof ${proofArtifactCount}` : "Proof";
 
   const effectiveSlashCommands = useMemo(
     () => buildSlashCommands(sdkSlashCommands, selectedModel?.family),
@@ -298,6 +474,18 @@ export function AgentChatComposer({
     const timeout = window.setTimeout(() => attachmentInputRef.current?.focus(), 0);
     return () => window.clearTimeout(timeout);
   }, [attachmentPickerOpen]);
+
+  useEffect(() => {
+    if (!computerUseModalOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        setComputerUseModalOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [computerUseModalOpen]);
 
   useEffect(() => {
     if (!attachmentPickerOpen) return;
@@ -399,8 +587,6 @@ export function AgentChatComposer({
     isCliWrapped: sessionIsCliWrapped ?? false,
     profile: surfaceProfile,
   });
-  const showAdvancedComputerUseControls = !isPersistentIdentitySurface;
-
   /* ── Keyboard handler for textarea ── */
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     const commandModified = event.metaKey || event.ctrlKey;
@@ -497,7 +683,8 @@ export function AgentChatComposer({
   };
 
   return (
-    <ChatComposerShell
+    <>
+      <ChatComposerShell
       mode={surfaceMode}
       className="m-3 mt-0 rounded-[var(--chat-radius-shell)]"
       pendingBanner={pendingApproval ? (
@@ -738,66 +925,66 @@ export function AgentChatComposer({
               </div>
             ) : null}
 
-            <div className="flex shrink-0 items-center gap-px rounded-md border border-white/[0.06] bg-white/[0.02] px-0.5 py-0.5">
-              {isPersistentIdentitySurface ? (
-                <span className="px-1.5 font-sans text-[10px] font-medium text-muted-fg/50">
-                  CU
-                </span>
-              ) : null}
-              {(["off", "auto", "enabled"] as const).map((mode) => {
-                const isActive = computerUsePolicy.mode === mode;
-                return (
-                  <button
-                    key={mode}
-                    type="button"
-                    className={cn(
-                      "rounded-md px-1.5 py-1 font-sans text-[10px] font-medium transition-colors",
-                      isActive
-                        ? "bg-sky-500/10 text-sky-300"
-                        : "text-muted-fg/25 hover:text-muted-fg/50",
-                    )}
-                    onClick={() => onComputerUsePolicyChange({ ...computerUsePolicy, mode })}
-                    title="Computer-use policy for this chat session"
-                  >
-                    {showAdvancedComputerUseControls
-                      ? (mode === "enabled" ? "CU On" : mode === "off" ? "CU Off" : "CU Auto")
-                      : (mode === "enabled" ? "On" : mode === "off" ? "Off" : "Auto")}
-                  </button>
-                );
-              })}
-              {showAdvancedComputerUseControls ? (
-                <>
-                  <button
-                    type="button"
-                    className={cn(
-                      "rounded-md px-1.5 py-1 font-sans text-[10px] font-medium transition-colors",
-                      computerUsePolicy.allowLocalFallback ? "text-amber-300" : "text-muted-fg/25 hover:text-muted-fg/50",
-                    )}
-                    onClick={() => onComputerUsePolicyChange({
-                      ...computerUsePolicy,
-                      allowLocalFallback: !computerUsePolicy.allowLocalFallback,
-                    })}
-                    title="Allow ADE local fallback"
-                  >
-                    Fallback
-                  </button>
-                  <button
-                    type="button"
-                    className={cn(
-                      "rounded-md px-1.5 py-1 font-sans text-[10px] font-medium transition-colors",
-                      computerUsePolicy.retainArtifacts ? "text-emerald-300" : "text-muted-fg/25 hover:text-muted-fg/50",
-                    )}
-                    onClick={() => onComputerUsePolicyChange({
-                      ...computerUsePolicy,
-                      retainArtifacts: !computerUsePolicy.retainArtifacts,
-                    })}
-                    title="Retain computer-use proof artifacts"
-                  >
-                    Proof
-                  </button>
-                </>
-              ) : null}
+            <div className="flex shrink-0 items-center gap-1.5">
+              <div className="flex items-center rounded-md border border-white/[0.06] bg-white/[0.02]">
+                <button
+                  type="button"
+                  className={cn(
+                    "rounded-l-md px-2.5 py-1 font-sans text-[10px] font-medium transition-colors",
+                    computerUseAllowed
+                      ? "bg-sky-500/12 text-sky-200"
+                      : "text-muted-fg/32 hover:text-fg/62",
+                  )}
+                  onClick={() => onComputerUsePolicyChange({
+                    ...computerUsePolicy,
+                    mode: computerUseAllowed ? "off" : "enabled",
+                  })}
+                  title="Allow the agent to use connected browser or desktop tools in this chat"
+                >
+                  {computerUseAllowed ? "Computer use on" : "Computer use off"}
+                </button>
+                <button
+                  type="button"
+                  className="rounded-r-md border-l border-white/[0.06] px-2 py-1 font-sans text-[10px] font-medium text-muted-fg/38 transition-colors hover:text-fg/70"
+                  onClick={() => setComputerUseModalOpen(true)}
+                  title="Open computer-use settings for this chat"
+                >
+                  Details
+                </button>
+              </div>
+
+              <button
+                type="button"
+                className={cn(
+                  "rounded-md border px-2.5 py-1 font-sans text-[10px] font-medium transition-colors",
+                  proofOpen
+                    ? "border-emerald-400/22 bg-emerald-500/12 text-emerald-200"
+                    : computerUsePolicy.retainArtifacts
+                      ? "border-white/[0.06] bg-white/[0.02] text-fg/64 hover:text-fg/82"
+                      : "border-white/[0.06] bg-white/[0.02] text-muted-fg/32 hover:text-fg/62",
+                )}
+                onClick={() => onToggleProof?.()}
+                title="Open the proof drawer to inspect retained screenshots, traces, logs, and other computer-use artifacts"
+              >
+                {proofButtonLabel}
+              </button>
             </div>
+
+            {!isPersistentIdentitySurface && onIncludeProjectDocsChange && !turnActive ? (
+              <button
+                type="button"
+                className={cn(
+                  "flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 font-sans text-[10px] font-medium transition-colors",
+                  includeProjectDocs
+                    ? "border-accent/25 bg-accent/10 text-accent"
+                    : "border-white/[0.06] bg-white/[0.02] text-muted-fg/28 hover:text-muted-fg/50",
+                )}
+                onClick={() => onIncludeProjectDocsChange(!includeProjectDocs)}
+                title="Include project-level context docs (PRD + Architecture) with first message"
+              >
+                Project Context
+              </button>
+            ) : null}
           </div>
 
           {/* Row 2: Model selector + actions */}
@@ -918,6 +1105,18 @@ export function AgentChatComposer({
           onPaste={handlePaste}
         />
       </div>
-    </ChatComposerShell>
+      </ChatComposerShell>
+      <ComputerUseSettingsModal
+        open={computerUseModalOpen}
+        policy={computerUsePolicy}
+        snapshot={computerUseSnapshot ?? null}
+        onClose={() => setComputerUseModalOpen(false)}
+        onChange={onComputerUsePolicyChange}
+        onOpenProof={() => {
+          if (!proofOpen) onToggleProof?.();
+          setComputerUseModalOpen(false);
+        }}
+      />
+    </>
   );
 }

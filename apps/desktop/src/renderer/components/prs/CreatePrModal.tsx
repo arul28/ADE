@@ -1420,7 +1420,7 @@ export function CreatePrModal({
                             ) : (
                               <Sparkle size={12} weight="fill" />
                             )}
-                            {drafting ? "DRAFTING..." : "GENERATE WITH AI"}
+                            {drafting ? "DRAFTING..." : "DRAFT DESCRIPTION"}
                           </button>
                         </div>
                       </div>

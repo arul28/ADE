@@ -53,6 +53,7 @@ export type DockLayout = Record<string, number>;
 
 export type OnboardingStatus = {
   completedAt: string | null;
+  dismissedAt: string | null;
 };
 
 export type OnboardingDetectionIndicator = {
@@ -100,18 +101,4 @@ export type AgentTool = {
   installed: boolean;
   detectedPath: string | null;
   detectedVersion: string | null;
-};
-
-export type TerminalLaunchProfile = {
-  id: string;
-  name: string;
-  command: string;
-  tracked: boolean;
-  description?: string | null;
-  color?: string | null;
-};
-
-export type TerminalProfilesSnapshot = {
-  profiles: TerminalLaunchProfile[];
-  defaultProfileId: string | null;
 };

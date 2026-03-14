@@ -67,7 +67,7 @@ export type GetAggregatedUsageArgs = {
 
 export type UsageProvider = "claude" | "codex";
 
-export type UsageWindowType = "five_hour" | "weekly";
+export type UsageWindowType = "five_hour" | "weekly" | "weekly_oauth_apps" | "weekly_cowork";
 
 export type UsageWindow = {
   provider: UsageProvider;
@@ -78,12 +78,31 @@ export type UsageWindow = {
   resetsInMs: number;
 };
 
-export type UsagePacingStatus = "on-track" | "ahead" | "behind";
+export type UsagePacingStatus =
+  | "far-behind"
+  | "behind"
+  | "slightly-behind"
+  | "on-track"
+  | "slightly-ahead"
+  | "ahead"
+  | "far-ahead";
 
 export type UsagePacing = {
   status: UsagePacingStatus;
+  /** Projected usage % at end of the weekly window */
   projectedWeeklyPercent: number;
+  /** % of the weekly window that has elapsed */
   weekElapsedPercent: number;
+  /** Expected usage % at this point if usage were perfectly linear */
+  expectedPercent: number;
+  /** Actual - expected (positive = using faster than pace) */
+  deltaPercent: number;
+  /** Hours until 100% at current rate, null if rate is ~0 */
+  etaHours: number | null;
+  /** Whether current rate will last until the weekly reset */
+  willLastToReset: boolean;
+  /** Hours until the weekly window resets */
+  resetsInHours: number;
 };
 
 export type CostSnapshot = {
@@ -93,10 +112,20 @@ export type CostSnapshot = {
   tokenBreakdown: Record<string, { input: number; output: number; cached: number }>;
 };
 
+export type ExtraUsage = {
+  provider: UsageProvider;
+  isEnabled: boolean;
+  usedCreditsUsd: number;
+  monthlyLimitUsd: number;
+  utilization: number | null;
+  currency: string;
+};
+
 export type UsageSnapshot = {
   windows: UsageWindow[];
   pacing: UsagePacing;
   costs: CostSnapshot[];
+  extraUsage: ExtraUsage[];
   lastPolledAt: string;
   errors: string[];
 };

@@ -80,6 +80,22 @@ The CTO agent has a separate, structured core memory document distinct from the 
 
 Core memory is persisted in two places: the file `.ade/cto/core-memory.json` and the SQLite `cto_core_memory_state` table. On startup, the system reconciles the two by version number, preferring the newer copy. Core memory is injected as the first message in every CTO session via `buildReconstructionContext()`.
 
+The CTO system prompt also includes three baked-in protocol sections as part of the identity:
+
+- **Memory Protocol** -- proactive memory search before work, save corrections and decisions, flush findings when context is large
+- **Daily Context** -- a startup self-orientation protocol (search focus areas, check subordinate activity, review conventions)
+- **Decision Framework** -- autonomous decisions when safe, escalate when risky, search before asking
+
+These protocols ensure consistent behavior across sessions and are re-injected after context compaction.
+
+### Daily Logs
+
+The CTO state service maintains append-only daily logs under `.ade/cto/daily-logs/<YYYY-MM-DD>.md`. These are automatically included in the CTO reconstruction context for the current day, providing within-day session-to-session continuity.
+
+### Post-Compaction Identity Re-injection
+
+When a CTO or worker identity session undergoes context compaction, the agent chat service automatically calls `refreshReconstructionContext()` to re-inject the full identity context (persona, core memory, protocols). This ensures the CTO does not lose its persona or behavioral instructions after compaction.
+
 Worker agents follow the same pattern through `AgentCoreMemory` (same five fields), persisted in `.ade/agents/<slug>/core-memory.json`.
 
 ## Memory Pipeline

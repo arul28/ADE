@@ -7,7 +7,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 // ── Type guards ─────────────────────────────────────────────────────
 
@@ -225,6 +225,20 @@ export function stableStringify(value: unknown): string {
     return input;
   };
   return JSON.stringify(normalize(value));
+}
+
+// ── Base64url / PKCE helpers ─────────────────────────────────────────
+
+/** Encode a Buffer to a base64url string (no padding). */
+export function toBase64Url(value: Buffer): string {
+  return value.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+/** Generate a PKCE verifier/challenge pair using SHA-256. */
+export function createPkcePair(): { verifier: string; challenge: string } {
+  const verifier = toBase64Url(randomBytes(48));
+  const challenge = toBase64Url(createHash("sha256").update(verifier).digest());
+  return { verifier, challenge };
 }
 
 // ── Glob / pattern matching ─────────────────────────────────────────

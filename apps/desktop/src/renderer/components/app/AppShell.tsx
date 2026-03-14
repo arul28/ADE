@@ -40,8 +40,6 @@ const EMPTY_TERMINAL_ATTENTION = {
   byLaneId: {}
 };
 
-const ONBOARDING_DISMISSED_KEY = "ade:onboarding:dismissed:v1";
-
 function shortId(id: string): string {
   const trimmed = (id ?? "").trim();
   if (!trimmed) return "";
@@ -78,13 +76,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [onboardingIncomplete, setOnboardingIncomplete] = useState(false);
   const [contextStatus, setContextStatus] = useState<ContextStatus | null>(null);
   const [projectMissing, setProjectMissing] = useState(false);
-  const [onboardingDismissed, setOnboardingDismissed] = useState(() => {
-    try {
-      return window.localStorage.getItem(ONBOARDING_DISMISSED_KEY) === "1";
-    } catch {
-      return false;
-    }
-  });
+  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
   const shouldTrackTerminalAttention =
     Boolean(project?.rootPath)
     && !showWelcome
@@ -214,6 +206,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     if (!project?.rootPath || showWelcome) {
       setOnboardingIncomplete(false);
+      setOnboardingDismissed(false);
       return () => {
         cancelled = true;
       };
@@ -224,10 +217,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         .then((status) => {
           if (cancelled) return;
           setOnboardingIncomplete(Boolean(status && !status.completedAt));
+          setOnboardingDismissed(Boolean(status?.dismissedAt) && !status?.completedAt);
         })
         .catch(() => {
           if (cancelled) return;
           setOnboardingIncomplete(false);
+          setOnboardingDismissed(false);
         });
     }, 1_200);
     return () => {
@@ -444,7 +439,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       {project?.rootPath && !showWelcome && providerMode === "guest" ? (
         <div className="shrink-0 mx-2 mt-1 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
-          Running in Guest Mode - AI details disabled. <Link to="/settings?tab=providers" className="underline">Set up provider</Link>
+          Running in Guest Mode - AI details disabled. <Link to="/settings?tab=ai" className="underline">Set up provider</Link>
         </div>
       ) : null}
 
@@ -452,13 +447,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
           Missing ADE context docs:
           {contextStatus.docs.filter((doc) => !doc.exists).map((doc) => ` ${doc.label}`).join(", ")}.
-          <Link to="/settings?tab=context" className="ml-2 underline">Generate Docs</Link>
+          <Link to="/settings?tab=workspace" className="ml-2 underline">Generate Docs</Link>
         </div>
       ) : null}
 
       {providerMode === "subscription" && aiMockProvider ? (
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
-          LLM provider is "mock" — AI will return placeholder content. <Link to="/settings?tab=providers" className="underline">Open Settings</Link>
+          LLM provider is "mock" — AI will return placeholder content. <Link to="/settings?tab=ai" className="underline">Open AI settings</Link>
         </div>
       ) : null}
 
@@ -498,19 +493,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       {onboardingIncomplete && !onboardingDismissed && location.pathname !== "/onboarding" ? (
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-card/50 px-3 py-1.5 text-[11px] font-mono text-fg">
-          <span className="font-semibold">Onboarding is incomplete.</span>{" "}
-          Set it up in{" "}
-          <Link to="/settings?tab=context" className="underline">Settings &gt; Context &amp; Docs</Link>.
+          <span className="font-semibold">Project setup is incomplete.</span>{" "}
+          Finish it in{" "}
+          <Link to="/onboarding" className="underline">Project Setup</Link>.
           <button
             type="button"
             className="ml-2 text-muted-fg hover:text-fg"
             onClick={() => {
-              setOnboardingDismissed(true);
-              try {
-                window.localStorage.setItem(ONBOARDING_DISMISSED_KEY, "1");
-              } catch {
-                // ignore
-              }
+              void window.ade.onboarding.setDismissed(true).then((status) => {
+                setOnboardingIncomplete(Boolean(status && !status.completedAt));
+                setOnboardingDismissed(Boolean(status.dismissedAt) && !status.completedAt);
+              }).catch(() => {});
             }}
             title="Dismiss"
           >

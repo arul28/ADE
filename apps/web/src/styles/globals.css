@@ -1,123 +1,127 @@
 @import "tailwindcss";
 
 @theme {
-  --radius-xl: 26px;
-  --radius-lg: 18px;
-  --radius-md: 14px;
+  --radius-xl: 16px;
+  --radius-lg: 12px;
+  --radius-md: 8px;
+  --radius-sm: 6px;
 
-  --font-sans: "Plus Jakarta Sans";
-  --font-mono: "JetBrains Mono";
+  --color-bg: var(--color-bg);
+  --color-fg: var(--color-fg);
+  --color-surface: var(--color-surface);
+  --color-card: var(--color-card);
+  --color-card-fg: var(--color-card-fg);
+  --color-muted: var(--color-muted);
+  --color-muted-fg: var(--color-muted-fg);
+  --color-border: var(--color-border);
+  --color-accent: var(--color-accent);
+  --color-accent-2: var(--color-accent-2);
+  --color-accent-fg: var(--color-accent-fg);
+
+  --font-sans: "Space Grotesk", "Geist", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: "JetBrains Mono", "Geist Mono", ui-monospace, monospace;
 }
 
 :root {
-  /* Enforced Dark Mode for "Slick" Aesthetic */
-  --bg: 240 10% 3.9%; /* Zin-950/Black */
-  --fg: 0 0% 98%;     /* White */
-
-  --card: 240 10% 6%;
-  --card-fg: 0 0% 98%;
-
-  --muted: 240 3.7% 15.9%;
-  --muted-fg: 240 5% 64.9%;
-
-  --border: 240 3.7% 15.9%;
-
-  --accent: 217 91% 60%; /* Vibrant Blue/Indigo */
-  --accent-2: 262 83% 58%; /* Purple */
-  --accent-fg: 0 0% 100%;
-
-  --radius-xl: 1rem;
-  --radius-lg: 0.75rem;
-  --radius-md: 0.5rem;
+  --color-bg: #09080C;
+  --color-fg: #FAFAFA;
+  --color-surface: #14111D;
+  --color-card: #181423;
+  --color-card-fg: #FAFAFA;
+  --color-card-rgb: 24, 20, 35;
+  --color-secondary: #231F30;
+  --color-secondary-fg: #A1A1AA;
+  --color-muted: #1C1828;
+  --color-muted-fg: #8B8B9A;
+  --color-border: #2D2840;
+  --color-accent: #A78BFA;
+  --color-accent-2: #818CF8;
+  --color-accent-fg: #09080C;
+  --color-separator: #2D2840;
 
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
 }
 
-html,
-body {
+html, body {
   height: 100%;
-}
-
-html {
-  scroll-behavior: smooth;
+  font-family: var(--font-sans);
 }
 
 body {
   margin: 0;
-  color: hsl(var(--fg));
-  background-color: hsl(var(--bg));
-  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  color: var(--color-fg);
+  background-color: var(--color-bg);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-
-  /* Soft, Apple-ish atmosphere without going full "neon SaaS". */
-  background-image:
-    radial-gradient(1200px 700px at 18% 0%, rgba(27, 118, 255, 0.12), transparent 58%),
-    radial-gradient(900px 600px at 86% 8%, rgba(85, 211, 255, 0.14), transparent 56%),
-    radial-gradient(900px 600px at 22% 82%, rgba(180, 255, 122, 0.10), transparent 58%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(255, 255, 255, 0.36));
-}
-
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  opacity: 0.14;
-  background-image: radial-gradient(circle at 1px 1px, rgba(27, 118, 255, 0.22) 1px, transparent 0);
-  background-size: 22px 22px;
-  mask-image: radial-gradient(780px 520px at 18% 0%, black, transparent 70%);
-  -webkit-mask-image: radial-gradient(780px 520px at 18% 0%, black, transparent 70%);
 }
 
 ::selection {
-  background: rgba(27, 118, 255, 0.18);
+  background: rgba(167, 139, 250, 0.2);
 }
 
-/* Respect reduced motion */
-@media (prefers-reduced-motion: reduce) {
-  html {
-    scroll-behavior: auto;
-  }
+/* ═══════════════════════════════════════════════════════════
+   ADE Desktop Primitives Ported to Web
+   ═══════════════════════════════════════════════════════════ */
 
-  .float-slow {
-    animation: none;
-  }
+.ade-floating-pane {
+  background: rgba(24, 20, 35, 0.94);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(45, 40, 64, 0.6);
+  box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(45, 40, 64, 0.2);
+  transition: border-color 0.15s ease, box-shadow 0.2s ease;
 }
 
-/* Utilities used across components */
-.glass {
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, white 74%, transparent),
-    color-mix(in srgb, white 62%, transparent)
-  );
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+.ade-floating-pane:hover {
+  border-color: rgba(167, 139, 250, 0.25);
+  box-shadow: 0 6px 20px -4px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(167, 139, 250, 0.2);
 }
 
-.focus-ring:focus-visible {
-  outline: 2px solid color-mix(in srgb, hsl(var(--accent)) 70%, white 30%);
-  outline-offset: 3px;
+.ade-floating-pane-header {
+  display: flex;
+  align-items: center;
+  padding: 4px 10px;
+  min-height: 30px;
+  background: linear-gradient(180deg, rgba(167, 139, 250, 0.04) 0%, transparent 100%);
+  border-bottom: 1px solid rgba(167, 139, 250, 0.08);
+  user-select: none;
+}
+
+.ade-pane-title {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-muted-fg);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+/* Custom Scrollbar for the workspace canvas area */
+.ade-scrollable-area::-webkit-scrollbar {
+  width: 10px;
+  background: transparent;
+}
+.ade-scrollable-area::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  border: 2px solid var(--color-bg);
+}
+.ade-scrollable-area::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
 }
 
 @keyframes ade-float {
-  0% {
-    transform: translate3d(0, 0, 0);
-  }
-  50% {
-    transform: translate3d(0, -10px, 0);
-  }
-  100% {
-    transform: translate3d(0, 0, 0);
-  }
+  0% { transform: translate3d(0, 0, 0); }
+  50% { transform: translate3d(0, -12px, 0); }
+  100% { transform: translate3d(0, 0, 0); }
 }
 
 .float-slow {
-  animation: ade-float 9s var(--ease-out) infinite;
+  animation: ade-float 8s var(--ease-in-out) infinite;
 }
 
-details[open] summary .ade-details-chevron {
-  transform: rotate(90deg);
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .float-slow { animation: none; }
 }
