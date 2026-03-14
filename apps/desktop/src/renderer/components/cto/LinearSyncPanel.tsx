@@ -786,7 +786,7 @@ export function LinearSyncPanel() {
                   variant="outline"
                   size="sm"
                   className="!text-[10px]"
-                  onClick={() => navigate("/settings?tab=linear")}
+                  onClick={() => navigate("/settings?tab=integrations")}
                 >
                   {connection?.connected ? "Manage in Settings" : "Connect in Settings"}
                 </Button>

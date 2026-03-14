@@ -22,7 +22,6 @@ export type SqlValue = string | number | null | Uint8Array;
  *   "dock:<projectId>"            -> DockLayout
  *   "file-tree:<projectId>"       -> unknown (file tree state)
  *   "graph-state:<projectId>"     -> GraphPersistedState
- *   "terminal-profiles:<projId>"  -> TerminalProfilesSnapshot
  *   "auto-rebase:<laneId>"        -> StoredStatus
  *   "rebase-suggestion:<laneId>"  -> StoredSuggestionState
  */

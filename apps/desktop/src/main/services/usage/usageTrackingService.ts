@@ -16,6 +16,7 @@ import type {
   UsageWindow,
   UsagePacing,
   CostSnapshot,
+  ExtraUsage,
   UsageSnapshot,
 } from "../../../shared/types";
 import { isRecord, nowIso, getErrorMessage, safeJsonParse } from "../shared/utils";
@@ -41,10 +42,18 @@ const TOKEN_PRICES: Record<string, { input: number; output: number }> = {
   "default":       { input: 3 / 1_000_000, output: 15 / 1_000_000 },
 };
 
+// ── Constants (OAuth) ────────────────────────────────────────────
+
+const CLAUDE_TOKEN_ENDPOINT = "https://platform.claude.com/v1/oauth/token";
+const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+const TOKEN_REFRESH_BUFFER_MS = 5 * 60_000; // Refresh 5 min before expiry
+
 // ── Credential Helpers ───────────────────────────────────────────
 
 type ClaudeCredentials = {
   accessToken: string;
+  refreshToken?: string;
+  expiresAt?: number;
   plan?: string;
 };
 
@@ -66,6 +75,8 @@ function parseClaudeCredentials(parsed: Record<string, unknown>): ClaudeCredenti
   if (!token) return null;
   return {
     accessToken: token,
+    refreshToken: extractStringField(oauth, "refreshToken", "refresh_token"),
+    expiresAt: extractNumberField(oauth, "expiresAt", "expires_at"),
     plan: extractStringField(oauth, "plan", "subscriptionType", "rateLimitTier", "rate_limit_tier"),
   };
 }
@@ -97,6 +108,92 @@ async function readClaudeCredentials(): Promise<ClaudeCredentials | null> {
   } catch {
     return null;
   }
+}
+
+function isTokenExpiredOrExpiring(creds: ClaudeCredentials): boolean {
+  if (!creds.expiresAt) return false;
+  return Date.now() + TOKEN_REFRESH_BUFFER_MS >= creds.expiresAt;
+}
+
+type TokenRefreshResponse = {
+  access_token?: string;
+  refresh_token?: string;
+  expires_in?: number;
+  error?: string;
+};
+
+async function refreshClaudeToken(refreshToken: string): Promise<ClaudeCredentials | null> {
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: refreshToken,
+    client_id: OAUTH_CLIENT_ID,
+  });
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const resp = await fetch(CLAUDE_TOKEN_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+      signal: controller.signal,
+    });
+
+    if (!resp.ok) return null;
+
+    const data = (await resp.json()) as TokenRefreshResponse;
+    if (!data.access_token) return null;
+
+    const expiresAt = data.expires_in
+      ? Date.now() + data.expires_in * 1000
+      : undefined;
+
+    return {
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token ?? refreshToken,
+      expiresAt,
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** In-memory cache for refreshed tokens so we don't hit keychain + refresh endpoint on every poll */
+let cachedClaudeCreds: ClaudeCredentials | null = null;
+
+async function readClaudeCredentialsWithRefresh(logger: Logger): Promise<ClaudeCredentials | null> {
+  // If we have a cached token that's still valid, use it
+  if (cachedClaudeCreds && !isTokenExpiredOrExpiring(cachedClaudeCreds)) {
+    return cachedClaudeCreds;
+  }
+
+  // Read fresh from keychain/file
+  const creds = await readClaudeCredentials();
+  if (!creds) return null;
+
+  // If token is still valid, cache and return
+  if (!isTokenExpiredOrExpiring(creds)) {
+    cachedClaudeCreds = creds;
+    return creds;
+  }
+
+  // Token expired or about to expire — try to refresh
+  if (creds.refreshToken) {
+    logger.info("usage.token_refresh.attempting", { expiresAt: creds.expiresAt });
+    const refreshed = await refreshClaudeToken(creds.refreshToken);
+    if (refreshed) {
+      logger.info("usage.token_refresh.success", { expiresIn: refreshed.expiresAt ? Math.round((refreshed.expiresAt - Date.now()) / 1000) : "unknown" });
+      cachedClaudeCreds = refreshed;
+      return refreshed;
+    }
+    logger.warn("usage.token_refresh.failed", { message: "refresh endpoint returned no token" });
+  }
+
+  // Refresh failed — return the (possibly expired) token and let the API call fail with 401
+  cachedClaudeCreds = creds;
+  return creds;
 }
 
 function extractNumberField(obj: Record<string, unknown>, ...keys: string[]): number | undefined {
@@ -219,21 +316,41 @@ interface ClaudeUsageResponse {
   sevenDaySonnet?: ClaudeUsageBucket;
   seven_day_opus?: ClaudeUsageBucket | null;
   sevenDayOpus?: ClaudeUsageBucket | null;
+  seven_day_oauth_apps?: ClaudeUsageBucket | null;
+  sevenDayOAuthApps?: ClaudeUsageBucket | null;
+  seven_day_cowork?: ClaudeUsageBucket | null;
+  sevenDayCowork?: ClaudeUsageBucket | null;
+  extra_usage?: ClaudeExtraUsage | null;
+  extraUsage?: ClaudeExtraUsage | null;
   rate_limit_tier?: string;
 }
 
 type ClaudeUsageBucket = {
   percent_used?: number;
   used_percent?: number;
+  percentUsed?: number;
+  usedPercent?: number;
   utilization?: number;
   resets_at?: string;
   resetsAt?: string;
+};
+
+type ClaudeExtraUsage = {
+  is_enabled?: boolean;
+  isEnabled?: boolean;
+  monthly_limit?: number;
+  monthlyLimit?: number;
+  used_credits?: number;
+  usedCredits?: number;
+  utilization?: number | null;
+  currency?: string;
 };
 
 function usagePercent(bucket: Record<string, unknown> | null | undefined): number {
   if (!bucket) return 0;
   if (typeof bucket.percent_used === "number") return bucket.percent_used;
   if (typeof bucket.used_percent === "number") return bucket.used_percent;
+  if (typeof bucket.percentUsed === "number") return bucket.percentUsed;
   if (typeof bucket.usedPercent === "number") return bucket.usedPercent;
   if (typeof bucket.utilization === "number") return bucket.utilization;
   return 0;
@@ -248,12 +365,14 @@ function codexResetAt(value: unknown): string {
   return "";
 }
 
-function parseClaudeWindows(data: ClaudeUsageResponse): UsageWindow[] {
+function parseClaudeWindows(data: ClaudeUsageResponse): { windows: UsageWindow[]; extraUsage: ExtraUsage | null } {
   const windows: UsageWindow[] = [];
   const fiveHour = data.five_hour ?? data.fiveHour;
   const sevenDay = data.seven_day ?? data.sevenDay;
   const sevenDaySonnet = data.seven_day_sonnet ?? data.sevenDaySonnet;
   const sevenDayOpus = data.seven_day_opus ?? data.sevenDayOpus;
+  const sevenDayOAuthApps = data.seven_day_oauth_apps ?? data.sevenDayOAuthApps;
+  const sevenDayCowork = data.seven_day_cowork ?? data.sevenDayCowork;
 
   if (fiveHour) {
     const resetsAt = fiveHour.resets_at ?? fiveHour.resetsAt ?? "";
@@ -281,7 +400,46 @@ function parseClaudeWindows(data: ClaudeUsageResponse): UsageWindow[] {
     });
   }
 
-  return windows;
+  if (sevenDayOAuthApps) {
+    const resetsAt = sevenDayOAuthApps.resets_at ?? sevenDayOAuthApps.resetsAt ?? "";
+    windows.push({
+      provider: "claude",
+      windowType: "weekly_oauth_apps",
+      percentUsed: usagePercent(sevenDayOAuthApps),
+      resetsAt,
+      resetsInMs: computeResetsInMs(resetsAt),
+    });
+  }
+
+  if (sevenDayCowork) {
+    const resetsAt = sevenDayCowork.resets_at ?? sevenDayCowork.resetsAt ?? "";
+    windows.push({
+      provider: "claude",
+      windowType: "weekly_cowork",
+      percentUsed: usagePercent(sevenDayCowork),
+      resetsAt,
+      resetsInMs: computeResetsInMs(resetsAt),
+    });
+  }
+
+  // Parse extra usage (monthly spend vs limit) — values come in cents from the API
+  const extra = data.extra_usage ?? data.extraUsage;
+  let extraUsage: ExtraUsage | null = null;
+  if (extra) {
+    const isEnabled = extra.is_enabled ?? extra.isEnabled ?? false;
+    const usedCents = extra.used_credits ?? extra.usedCredits ?? 0;
+    const limitCents = extra.monthly_limit ?? extra.monthlyLimit ?? 0;
+    extraUsage = {
+      provider: "claude",
+      isEnabled,
+      usedCreditsUsd: usedCents / 100,
+      monthlyLimitUsd: limitCents / 100,
+      utilization: typeof extra.utilization === "number" ? extra.utilization : null,
+      currency: extra.currency ?? "usd",
+    };
+  }
+
+  return { windows, extraUsage };
 }
 
 function parseCodexRateLimitWindows(data: Record<string, unknown>): UsageWindow[] {
@@ -309,14 +467,14 @@ function parseCodexRateLimitWindows(data: Record<string, unknown>): UsageWindow[
   return windows;
 }
 
-async function pollClaudeUsage(logger: Logger): Promise<{ windows: UsageWindow[]; errors: string[] }> {
+async function pollClaudeUsage(logger: Logger): Promise<{ windows: UsageWindow[]; extraUsage: ExtraUsage | null; errors: string[] }> {
   const windows: UsageWindow[] = [];
   const errors: string[] = [];
 
-  const creds = await readClaudeCredentials();
+  const creds = await readClaudeCredentialsWithRefresh(logger);
   if (!creds) {
     errors.push("claude: no credentials found");
-    return { windows, errors };
+    return { windows, extraUsage: null, errors };
   }
 
   try {
@@ -326,23 +484,41 @@ async function pollClaudeUsage(logger: Logger): Promise<{ windows: UsageWindow[]
     });
 
     if (!result.ok) {
+      // On 401, try one refresh cycle and retry
+      if (result.status === 401 && creds.refreshToken) {
+        logger.info("usage.token_refresh.401_retry");
+        cachedClaudeCreds = null;
+        const refreshed = await refreshClaudeToken(creds.refreshToken);
+        if (refreshed) {
+          cachedClaudeCreds = refreshed;
+          const retry = await fetchJson(CLAUDE_USAGE_URL, {
+            Authorization: `Bearer ${refreshed.accessToken}`,
+            "anthropic-beta": "oauth-2025-04-20",
+          });
+          if (retry.ok) {
+            const parsed = parseClaudeWindows(retry.data as ClaudeUsageResponse);
+            return { windows: parsed.windows, extraUsage: parsed.extraUsage, errors };
+          }
+        }
+      }
       errors.push(`claude: API returned ${result.status}`);
-      return { windows, errors };
+      return { windows, extraUsage: null, errors };
     }
 
     const parsed = parseClaudeWindows(result.data as ClaudeUsageResponse);
-    windows.push(...parsed);
-    if (parsed.length === 0) {
+    windows.push(...parsed.windows);
+    if (parsed.windows.length === 0) {
       errors.push("claude: usage response contained no recognized windows");
       logger.warn("usage.poll.claude_unrecognized_shape", {
         keys: isRecord(result.data) ? Object.keys(result.data).slice(0, 12) : [],
       });
     }
+    return { windows, extraUsage: parsed.extraUsage, errors };
   } catch (err) {
     errors.push(`claude: ${getErrorMessage(err)}`);
   }
 
-  return { windows, errors };
+  return { windows, extraUsage: null, errors };
 }
 
 // ── Codex Usage Polling ──────────────────────────────────────────
@@ -682,41 +858,87 @@ function aggregateCosts(
 // ── Pacing Calculation ───────────────────────────────────────────
 
 function calculatePacing(windows: UsageWindow[]): UsagePacing {
+  const empty: UsagePacing = {
+    status: "on-track",
+    projectedWeeklyPercent: 0,
+    weekElapsedPercent: 0,
+    expectedPercent: 0,
+    deltaPercent: 0,
+    etaHours: null,
+    willLastToReset: true,
+    resetsInHours: 0,
+  };
+
   // Find the weekly window (prefer Claude, then Codex)
   const weeklyWindow =
     windows.find((w) => w.windowType === "weekly" && w.provider === "claude") ??
     windows.find((w) => w.windowType === "weekly");
 
-  if (!weeklyWindow) {
-    return { status: "on-track", projectedWeeklyPercent: 0, weekElapsedPercent: 0 };
-  }
+  if (!weeklyWindow) return empty;
 
   const totalWindowMs = 7 * 24 * 60 * 60 * 1000;
   const elapsedMs = totalWindowMs - weeklyWindow.resetsInMs;
   const weekElapsedPercent = Math.min(100, Math.max(0, (elapsedMs / totalWindowMs) * 100));
+  const resetsInHours = weeklyWindow.resetsInMs / 3_600_000;
+
+  // Expected usage if consumption were perfectly linear over the week
+  const expectedPercent = weekElapsedPercent; // 100% budget / 100% time = linear
+
+  // Delta: positive = consuming faster than pace, negative = under pace
+  const deltaPercent = weeklyWindow.percentUsed - expectedPercent;
 
   // Project usage to end of week
   let projectedWeeklyPercent: number;
+  let etaHours: number | null = null;
+  let willLastToReset = true;
+
   if (weekElapsedPercent < 1) {
     projectedWeeklyPercent = weeklyWindow.percentUsed;
   } else {
-    const rate = weeklyWindow.percentUsed / weekElapsedPercent;
-    projectedWeeklyPercent = Math.min(200, rate * 100);
+    const ratePerMs = weeklyWindow.percentUsed / elapsedMs;
+    projectedWeeklyPercent = Math.min(300, ratePerMs * totalWindowMs);
+
+    // ETA to 100% at current rate
+    if (ratePerMs > 0) {
+      const remainingPercent = 100 - weeklyWindow.percentUsed;
+      if (remainingPercent <= 0) {
+        etaHours = 0; // Already exhausted
+        willLastToReset = false;
+      } else {
+        const msTo100 = remainingPercent / ratePerMs;
+        etaHours = Math.round((msTo100 / 3_600_000) * 10) / 10;
+        willLastToReset = msTo100 >= weeklyWindow.resetsInMs;
+      }
+    }
   }
 
+  // Status with more granularity (based on delta)
   let status: UsagePacing["status"];
-  if (projectedWeeklyPercent > 90) {
-    status = "ahead";
-  } else if (weekElapsedPercent > 50 && projectedWeeklyPercent < 50) {
+  if (deltaPercent <= -20) {
+    status = "far-behind";
+  } else if (deltaPercent <= -10) {
     status = "behind";
-  } else {
+  } else if (deltaPercent <= -4) {
+    status = "slightly-behind";
+  } else if (deltaPercent <= 4) {
     status = "on-track";
+  } else if (deltaPercent <= 10) {
+    status = "slightly-ahead";
+  } else if (deltaPercent <= 20) {
+    status = "ahead";
+  } else {
+    status = "far-ahead";
   }
 
   return {
     status,
     projectedWeeklyPercent: Math.round(projectedWeeklyPercent * 10) / 10,
     weekElapsedPercent: Math.round(weekElapsedPercent * 10) / 10,
+    expectedPercent: Math.round(expectedPercent * 10) / 10,
+    deltaPercent: Math.round(deltaPercent * 10) / 10,
+    etaHours,
+    willLastToReset,
+    resetsInHours: Math.round(resetsInHours * 10) / 10,
   };
 }
 
@@ -725,7 +947,7 @@ function calculatePacing(windows: UsageWindow[]): UsagePacing {
 export type UsageTrackingService = ReturnType<typeof createUsageTrackingService>;
 
 type UsageTrackingDependencies = {
-  pollClaudeUsage?: () => Promise<{ windows: UsageWindow[]; errors: string[] }>;
+  pollClaudeUsage?: () => Promise<{ windows: UsageWindow[]; extraUsage: ExtraUsage | null; errors: string[] }>;
   pollCodexUsage?: () => Promise<{ windows: UsageWindow[]; errors: string[] }>;
   scanClaudeLogs?: () => Promise<TokenEntry[]>;
   scanCodexLogs?: () => Promise<TokenEntry[]>;
@@ -759,8 +981,9 @@ export function createUsageTrackingService({
 
   const emptySnapshot = (): UsageSnapshot => ({
     windows: [],
-    pacing: { status: "on-track", projectedWeeklyPercent: 0, weekElapsedPercent: 0 },
+    pacing: { status: "on-track", projectedWeeklyPercent: 0, weekElapsedPercent: 0, expectedPercent: 0, deltaPercent: 0, etaHours: null, willLastToReset: true, resetsInHours: 0 },
     costs: [],
+    extraUsage: [],
     lastPolledAt: nowIso(),
     errors: [],
   });
@@ -805,7 +1028,7 @@ export function createUsageTrackingService({
           runClaudeUsagePoll().catch((err) => {
             const msg = `claude: poll failed: ${getErrorMessage(err)}`;
             logger.warn("usage.poll.claude_failed", { error: msg });
-            return { windows: [] as UsageWindow[], errors: [msg] };
+            return { windows: [] as UsageWindow[], extraUsage: null as ExtraUsage | null, errors: [msg] };
           }),
           runCodexUsagePoll().catch((err) => {
             const msg = `codex: poll failed: ${getErrorMessage(err)}`;
@@ -819,11 +1042,14 @@ export function createUsageTrackingService({
         errors.push(...claudeResult.errors, ...codexResult.errors);
 
         const pacing = calculatePacing(allWindows);
+        const extraUsage: ExtraUsage[] = [];
+        if (claudeResult.extraUsage) extraUsage.push(claudeResult.extraUsage);
 
         const snapshot: UsageSnapshot = {
           windows: allWindows,
           pacing,
           costs,
+          extraUsage,
           lastPolledAt: nowIso(),
           errors,
         };
@@ -901,6 +1127,8 @@ export const _testing = {
   readClaudeCredentials,
   readCodexCredentials,
   isCodexTokenStale,
+  isTokenExpiredOrExpiring,
+  refreshClaudeToken,
   parseClaudeWindows,
   parseCodexRateLimitWindows,
   pollClaudeUsage,

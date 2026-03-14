@@ -6,6 +6,7 @@ import { RunSidebar } from "./RunSidebar";
 import { CommandCard } from "./CommandCard";
 import { ProcessMonitor } from "./ProcessMonitor";
 import { LaneRuntimeBar } from "./LaneRuntimeBar";
+import { RunNetworkPanel } from "./RunNetworkPanel";
 import { AddCommandDialog, type AddCommandInitialValues } from "./AddCommandDialog";
 import { commandArrayToLine, parseCommandLine } from "../../lib/shell";
 import type {
@@ -646,161 +647,166 @@ export function RunPage() {
           onDeleteStack={handleDeleteStack}
         />
 
-        {/* Main content */}
-        <div
-          style={{
-            flex: 1,
-            display: "flex",
-            flexDirection: "column",
-            overflow: "hidden",
-          }}
-        >
-          {/* Stack actions bar */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "10px 20px",
-              borderBottom: `1px solid ${COLORS.border}`,
-              flexShrink: 0,
-            }}
-          >
-            <span
-              style={{
-                fontFamily: MONO_FONT,
-                fontSize: 12,
-                fontWeight: 700,
-                color: COLORS.textPrimary,
-              }}
-            >
-              {selectedStackId
-                ? stacks.find((s) => s.id === selectedStackId)?.name ?? "Stack"
-                : "All Commands"}
-            </span>
-            <span
-              style={{
-                fontFamily: MONO_FONT,
-                fontSize: 10,
-                color: COLORS.textDim,
-              }}
-            >
-              ({filteredDefinitions.length})
-            </span>
-            <div style={{ flex: 1 }} />
-            <button type="button" onClick={handleStartAll} style={primaryButton({ height: 28, fontSize: 10 })}>
-              <Play size={12} weight="fill" />
-              Start All
-            </button>
-            <button
-              type="button"
-              onClick={handleStopAll}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 6,
-                height: 28,
-                padding: "0 12px",
-                fontSize: 10,
-                fontWeight: 700,
-                fontFamily: MONO_FONT,
-                textTransform: "uppercase",
-                letterSpacing: "1px",
-                color: COLORS.danger,
-                background: `${COLORS.danger}18`,
-                border: `1px solid ${COLORS.danger}30`,
-                borderRadius: 0,
-                cursor: "pointer",
-              }}
-            >
-              <Stop size={12} weight="fill" />
-              Stop All
-            </button>
-          </div>
-
-          {/* Command cards grid */}
+        <div style={{ flex: 1, display: "flex", minWidth: 0, overflow: "hidden" }}>
+          {/* Main content */}
           <div
             style={{
               flex: 1,
-              overflowY: "auto",
-              padding: 20,
+              minWidth: 0,
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
             }}
           >
-            {loading && filteredDefinitions.length === 0 ? (
-              <div
+            {/* Stack actions bar */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "10px 20px",
+                borderBottom: `1px solid ${COLORS.border}`,
+                flexShrink: 0,
+              }}
+            >
+              <span
                 style={{
                   fontFamily: MONO_FONT,
-                  fontSize: 11,
-                  color: COLORS.textDim,
-                  textAlign: "center",
-                  padding: "40px 0",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  color: COLORS.textPrimary,
                 }}
               >
-                Loading...
-              </div>
-            ) : filteredDefinitions.length === 0 ? (
-              <div
+                {selectedStackId
+                  ? stacks.find((s) => s.id === selectedStackId)?.name ?? "Stack"
+                  : "All Commands"}
+              </span>
+              <span
                 style={{
-                  display: "flex",
-                  flexDirection: "column",
+                  fontFamily: MONO_FONT,
+                  fontSize: 10,
+                  color: COLORS.textDim,
+                }}
+              >
+                ({filteredDefinitions.length})
+              </span>
+              <div style={{ flex: 1 }} />
+              <button type="button" onClick={handleStartAll} style={primaryButton({ height: 28, fontSize: 10 })}>
+                <Play size={12} weight="fill" />
+                Start All
+              </button>
+              <button
+                type="button"
+                onClick={handleStopAll}
+                style={{
+                  display: "inline-flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  gap: 12,
-                  padding: "60px 20px",
+                  gap: 6,
+                  height: 28,
+                  padding: "0 12px",
+                  fontSize: 10,
+                  fontWeight: 700,
+                  fontFamily: MONO_FONT,
+                  textTransform: "uppercase",
+                  letterSpacing: "1px",
+                  color: COLORS.danger,
+                  background: `${COLORS.danger}18`,
+                  border: `1px solid ${COLORS.danger}30`,
+                  borderRadius: 0,
+                  cursor: "pointer",
                 }}
               >
-                <div
-                  style={{
-                    fontFamily: MONO_FONT,
-                    fontSize: 12,
-                    color: COLORS.textMuted,
-                    textAlign: "center",
-                  }}
-                >
-                  No commands configured
-                </div>
+                <Stop size={12} weight="fill" />
+                Stop All
+              </button>
+            </div>
+
+            {/* Command cards grid */}
+            <div
+              style={{
+                flex: 1,
+                overflowY: "auto",
+                padding: 20,
+              }}
+            >
+              {loading && filteredDefinitions.length === 0 ? (
                 <div
                   style={{
                     fontFamily: MONO_FONT,
                     fontSize: 11,
                     color: COLORS.textDim,
                     textAlign: "center",
-                    maxWidth: 300,
+                    padding: "40px 0",
                   }}
                 >
-                  Add a command for the lane you want to run, then start it here to get runtime state and preview routing.
+                  Loading...
                 </div>
-                <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-                  <button type="button" onClick={() => setAddDialogOpen(true)} style={primaryButton()}>
-                    <Plus size={14} weight="bold" />
-                    Add Command
-                  </button>
+              ) : filteredDefinitions.length === 0 ? (
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 12,
+                    padding: "60px 20px",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontFamily: MONO_FONT,
+                      fontSize: 12,
+                      color: COLORS.textMuted,
+                      textAlign: "center",
+                    }}
+                  >
+                    No commands configured
+                  </div>
+                  <div
+                    style={{
+                      fontFamily: MONO_FONT,
+                      fontSize: 11,
+                      color: COLORS.textDim,
+                      textAlign: "center",
+                      maxWidth: 300,
+                    }}
+                  >
+                    Add a command for the lane you want to run, then start it here to get runtime state and preview routing.
+                  </div>
+                  <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                    <button type="button" onClick={() => setAddDialogOpen(true)} style={primaryButton()}>
+                      <Plus size={14} weight="bold" />
+                      Add Command
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ) : (
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
-                  gap: 12,
-                }}
-              >
-                {filteredDefinitions.map((def) => (
-                  <CommandCard
-                    key={def.id}
-                    definition={def}
-                    runtime={runtimeMap[def.id] ?? null}
-                    onRun={handleRun}
-                    onStop={handleStop}
-                    onEdit={handleEditProcess}
-                    onDelete={handleDeleteProcess}
-                    onMoveToStack={handleMoveToStack}
-                  />
-                ))}
-              </div>
-            )}
+              ) : (
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+                    gap: 12,
+                  }}
+                >
+                  {filteredDefinitions.map((def) => (
+                    <CommandCard
+                      key={def.id}
+                      definition={def}
+                      runtime={runtimeMap[def.id] ?? null}
+                      onRun={handleRun}
+                      onStop={handleStop}
+                      onEdit={handleEditProcess}
+                      onDelete={handleDeleteProcess}
+                      onMoveToStack={handleMoveToStack}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
+
+          <RunNetworkPanel />
         </div>
       </div>
 

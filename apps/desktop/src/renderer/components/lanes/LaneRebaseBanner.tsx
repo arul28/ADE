@@ -52,7 +52,7 @@ export function LaneRebaseBanner({
               className="flex flex-wrap items-center justify-between gap-2"
             >
               <span style={{ fontSize: 12, color: COLORS.info }}>
-                Auto-rebase is off. Enable it in Settings to auto-rebase child lanes after parent updates.
+                Auto-rebase is off. Enable it in Settings {" > "} Lane Templates to auto-rebase child lanes after parent updates.
               </span>
               <button type="button" style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })} onClick={onOpenAutoRebaseSettings}>
                 SETTINGS
@@ -145,7 +145,7 @@ export function LaneRebaseBanner({
             style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.info}30`, padding: "8px 10px" }}
           >
             <span style={{ fontSize: 12, color: COLORS.info }}>
-              Auto-rebase is off. Enable it in Settings to auto-rebase child lanes after parent updates.
+              Auto-rebase is off. Enable it in Settings {" > "} Lane Templates to auto-rebase child lanes after parent updates.
             </span>
             <button type="button" style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })} onClick={onOpenAutoRebaseSettings}>
               SETTINGS

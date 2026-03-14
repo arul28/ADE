@@ -86,6 +86,12 @@ The CTO's heartbeat is its core activation mechanism. On each heartbeat, the CTO
   </Tab>
 </Tabs>
 
+### Identity Restoration After Compaction
+
+When a CTO chat session hits the compaction threshold, ADE automatically **re-injects the CTO's identity context** after compaction completes. This means the CTO's persona, core memory, memory protocol, and daily context instructions survive compaction — the CTO never loses its sense of self mid-conversation, even during very long sessions.
+
+This also applies to worker agents that have an identity key assigned.
+
 ### Manual activation
 
 You can trigger the CTO immediately from the UI:

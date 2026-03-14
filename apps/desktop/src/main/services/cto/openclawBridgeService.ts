@@ -26,7 +26,7 @@ import type {
   TestEvent,
   OrchestratorRuntimeEvent,
 } from "../../../shared/types";
-import { getErrorMessage, nowIso, parseIsoToEpoch, stableStringify, writeTextAtomic } from "../shared/utils";
+import { getErrorMessage, nowIso, parseIsoToEpoch, stableStringify, toBase64Url, writeTextAtomic } from "../shared/utils";
 
 const DEFAULT_BRIDGE_PORT = 18791;
 const HTTP_BODY_LIMIT_BYTES = 1_000_000;
@@ -138,9 +138,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function base64UrlEncode(buf: Buffer): string {
-  return buf.toString("base64").replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/g, "");
-}
 
 function trimToNull(value: unknown): string | null {
   const trimmed = typeof value === "string" ? value.trim() : "";
@@ -244,11 +241,11 @@ function loadOrCreateDeviceIdentity(filePath: string): DeviceIdentity {
 }
 
 function signDevicePayload(privateKeyPem: string, payload: string): string {
-  return base64UrlEncode(crypto.sign(null, Buffer.from(payload, "utf8"), crypto.createPrivateKey(privateKeyPem)));
+  return toBase64Url(crypto.sign(null, Buffer.from(payload, "utf8"), crypto.createPrivateKey(privateKeyPem)));
 }
 
 function publicKeyRawBase64UrlFromPem(publicKeyPem: string): string {
-  return base64UrlEncode(derivePublicKeyRaw(publicKeyPem));
+  return toBase64Url(derivePublicKeyRaw(publicKeyPem));
 }
 
 function defaultConfig(): OpenclawBridgeConfig {

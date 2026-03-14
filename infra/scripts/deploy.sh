@@ -7,7 +7,7 @@ if [[ $# -lt 1 ]]; then
 fi
 
 STAGE="$1"
-export AWS_PROFILE="${AWS_PROFILE:-arulsharma}"
+export AWS_PROFILE="${AWS_PROFILE:-default}"
 
 echo "Deploying ADE infra"
 echo "  stage:   ${STAGE}"

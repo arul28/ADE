@@ -14,14 +14,15 @@ import {
   type UserContent,
 } from "ai";
 import { query as claudeQuery, unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
-import type { Query as ClaudeSDKQuery, SDKMessage, Options as ClaudeSDKOptions, PermissionResult as ClaudePermissionResult } from "@anthropic-ai/claude-agent-sdk";
+import type { Query as ClaudeSDKQuery, SDKMessage, SDKUserMessage, Options as ClaudeSDKOptions, PermissionResult as ClaudePermissionResult } from "@anthropic-ai/claude-agent-sdk";
 
 type ClaudeV2Session = {
-  send: (msg: string) => Promise<void>;
+  send: (msg: string | Partial<SDKUserMessage>) => Promise<void>;
   stream: () => AsyncGenerator<SDKMessage, void>;
   close: () => void;
   readonly sessionId: string;
 };
+import { buildClaudeV2Message, inferAttachmentMediaType } from "./buildClaudeV2Message";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createSessionService } from "../sessions/sessionService";
@@ -267,41 +268,6 @@ type SessionTurnCollector = {
   };
   lastError: string | null;
   timeout: NodeJS.Timeout;
-};
-
-const ATTACHMENT_MEDIA_TYPES: Record<string, string> = {
-  ".c": "text/x-c",
-  ".cc": "text/x-c++src",
-  ".cpp": "text/x-c++src",
-  ".css": "text/css",
-  ".csv": "text/csv",
-  ".gif": "image/gif",
-  ".go": "text/x-go",
-  ".html": "text/html",
-  ".ico": "image/x-icon",
-  ".jpeg": "image/jpeg",
-  ".jpg": "image/jpeg",
-  ".js": "text/javascript",
-  ".json": "application/json",
-  ".jsx": "text/jsx",
-  ".md": "text/markdown",
-  ".mjs": "text/javascript",
-  ".pdf": "application/pdf",
-  ".png": "image/png",
-  ".py": "text/x-python",
-  ".rb": "text/x-ruby",
-  ".rs": "text/x-rustsrc",
-  ".sh": "text/x-shellscript",
-  ".sql": "application/sql",
-  ".svg": "image/svg+xml",
-  ".toml": "application/toml",
-  ".ts": "text/typescript",
-  ".tsx": "text/tsx",
-  ".txt": "text/plain",
-  ".webp": "image/webp",
-  ".xml": "application/xml",
-  ".yaml": "application/yaml",
-  ".yml": "application/yaml",
 };
 
 type ResolvedChatConfig = {
@@ -655,12 +621,6 @@ function fallbackModelForProvider(provider: AgentChatProvider): string {
   if (provider === "codex") return DEFAULT_CODEX_MODEL;
   if (provider === "claude") return DEFAULT_CLAUDE_MODEL;
   return DEFAULT_UNIFIED_MODEL_ID;
-}
-
-function inferAttachmentMediaType(attachment: AgentChatFileRef): string {
-  const ext = path.extname(attachment.path).toLowerCase();
-  return ATTACHMENT_MEDIA_TYPES[ext]
-    ?? (attachment.type === "image" ? "image/png" : "application/octet-stream");
 }
 
 function readProviderParentItemId(value: unknown): string | undefined {
@@ -2221,18 +2181,15 @@ export function createAgentChatService(args: {
     const attachments = args.attachments ?? [];
     const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
 
-    const attachmentHint = attachments.length
-      ? `\n\nAttached context:\n${attachments.map((file) => `- ${file.type}: ${file.path}`).join("\n")}`
-      : "";
     const reconstructionContext = managed.pendingReconstructionContext?.trim() ?? "";
-    const promptText = [
+    const basePromptText = [
       reconstructionContext.length
         ? [
             "System context (identity reconstruction, do not echo verbatim):",
             reconstructionContext,
           ].join("\n")
         : null,
-      `${args.promptText}${attachmentHint}`,
+      args.promptText,
     ].filter((section): section is string => Boolean(section)).join("\n\n");
     if (reconstructionContext.length) {
       managed.pendingReconstructionContext = null;
@@ -2268,8 +2225,12 @@ export function createAgentChatService(args: {
         }
       }
 
+      // Build the message — plain string for text-only, or SDKUserMessage with
+      // image content blocks (streaming input format per SDK docs).
+      const messageToSend = buildClaudeV2Message(basePromptText, attachments);
+
       // V2 pattern: send() then stream() per turn. Session stays alive between turns.
-      await runtime.v2Session.send(promptText);
+      await runtime.v2Session.send(messageToSend);
 
       // Don't emit a pre-emptive "thinking" activity — wait for actual content from the stream.
       // The renderer will show the turn as "started" (from the status event above) which is sufficient.
@@ -2333,6 +2294,11 @@ export function createAgentChatService(args: {
             preTokens: typeof compactMsg.compact_metadata?.pre_tokens === "number" ? compactMsg.compact_metadata.pre_tokens : undefined,
             turnId,
           });
+          // Re-inject identity context after compaction so the CTO doesn't lose
+          // its persona, core memory, or memory protocol instructions.
+          if (managed.session.identityKey) {
+            refreshReconstructionContext(managed);
+          }
           continue;
         }
 
@@ -2937,7 +2903,7 @@ export function createAgentChatService(args: {
 
       const thinkingLevel = mapReasoningEffortToThinking(managed.session.reasoningEffort);
       const providerOptions = providerResolver.buildProviderOptions(runtime.modelDescriptor, thinkingLevel);
-      const harnessPrompt = lightweight
+      const baseHarnessPrompt = lightweight
         ? undefined
         : buildCodingAgentSystemPrompt({
             cwd: managed.laneWorktreePath,
@@ -2945,6 +2911,16 @@ export function createAgentChatService(args: {
             permissionMode: runtime.permissionMode,
             toolNames: Object.keys(tools),
           });
+      // For CTO sessions, compose the CTO's identity prompt into the system
+      // prompt so it survives compaction (system prompt is never compacted).
+      const harnessPrompt = (() => {
+        if (!baseHarnessPrompt) return undefined;
+        if (managed.session.identityKey === "cto" && ctoStateService) {
+          const ctoPrompt = ctoStateService.previewSystemPrompt().prompt;
+          return `${baseHarnessPrompt}\n\n## CTO Identity\n${ctoPrompt}`;
+        }
+        return baseHarnessPrompt;
+      })();
 
       const stream = streamText({
         model: runtime.resolvedModel,
@@ -4755,7 +4731,8 @@ export function createAgentChatService(args: {
         summary: row.summary ?? persisted?.completion?.summary ?? null,
         ...(persisted?.threadId ? { threadId: persisted.threadId } : {})
       } satisfies AgentChatSessionSummary;
-    });
+    // CTO and worker identity sessions are managed separately — exclude from Work tab
+    }).filter((summary) => !summary.identityKey);
   };
 
   const ensureIdentitySession = async (args: {
@@ -5388,6 +5365,25 @@ export function createAgentChatService(args: {
     listContextPacks,
     fetchContextPack,
     changePermissionMode,
+    /** Clean up temp attachment files older than 7 days. Call on app startup. */
+    cleanupStaleAttachments() {
+      try {
+        const projectRoot = args.projectRoot;
+        if (!projectRoot) return;
+        const attachDir = path.join(projectRoot, ".ade", "attachments");
+        if (!fs.existsSync(attachDir)) return;
+        const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000; // 7 days
+        for (const entry of fs.readdirSync(attachDir)) {
+          try {
+            const filePath = path.join(attachDir, entry);
+            const stat = fs.statSync(filePath);
+            if (stat.isFile() && stat.mtimeMs < cutoff) {
+              fs.unlinkSync(filePath);
+            }
+          } catch { /* skip */ }
+        }
+      } catch { /* ignore */ }
+    },
     setComputerUseArtifactBrokerService(svc: ComputerUseArtifactBrokerService) {
       computerUseArtifactBrokerRef = svc;
     },

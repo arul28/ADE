@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 >
-> Last updated: 2026-03-13
+> Last updated: 2026-03-14
 
 This document describes the Electron runtime in `apps/desktop`, with emphasis on the current startup contract, background-service model, and the safeguards that keep the app responsive while project services come online.
 
@@ -64,7 +64,7 @@ The renderer in `apps/desktop/src/renderer` renders feature surfaces and delegat
 Before ADE creates services or child processes, the main process normalizes the shell `PATH` and applies Electron runtime switches:
 
 - `fixElectronShellPath()` repairs shell resolution on macOS and dev machines.
-- Hardware acceleration is disabled in desktop dev by default (`ADE_DISABLE_HARDWARE_ACCEL=1` or `VITE_DEV_SERVER_URL`) to reduce dev-only GPU instability.
+- Hardware acceleration is disabled only when `ADE_DISABLE_HARDWARE_ACCEL=1` is explicitly set. Dev mode no longer automatically disables hardware acceleration -- this reduces GPU-related dev instability reports while keeping acceleration available for normal development.
 - Dev builds disable the renderer HTTP cache to avoid stale Vite optimized-dependency artifacts.
 
 ### Minimal project open

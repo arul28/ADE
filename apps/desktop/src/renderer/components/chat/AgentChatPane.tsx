@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Database, Plus } from "@phosphor-icons/react";
+import { Plus } from "@phosphor-icons/react";
 import {
   createDefaultComputerUsePolicy,
   inferAttachmentType,
   type AgentChatApprovalDecision,
   type AgentChatExecutionMode,
-  type AgentChatEvent,
   type AgentChatEventEnvelope,
   type AgentChatFileRef,
   type AgentChatPermissionMode,
@@ -18,7 +17,7 @@ import {
   type ContextPackOption,
 } from "../../../shared/types";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
-import { getDefaultModelDescriptor, MODEL_REGISTRY, getModelById, type ModelDescriptor } from "../../../shared/modelRegistry";
+import { MODEL_REGISTRY, getModelById, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { filterChatModelIdsForSession } from "../../../shared/chatModelSwitching";
 import { cn } from "../ui/cn";
 import { AgentChatComposer } from "./AgentChatComposer";
@@ -29,8 +28,7 @@ import { ToolLogo } from "../terminals/ToolLogos";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { ChatSurfaceShell } from "./ChatSurfaceShell";
 import { chatChipToneClass } from "./chatSurfaceTheme";
-import { useChatMcpSummary } from "./useChatMcpSummary";
-import { openExternalMcpSettings } from "./chatNavigation";
+import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { normalizePermissionModeForProfile } from "../shared/permissionOptions";
 
 type PendingApproval = {
@@ -46,11 +44,6 @@ const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
 const LEGACY_PROVIDER_KEY = "ade.chat.lastProvider";
 const LEGACY_MODEL_KEY_PREFIX = "ade.chat.lastModel";
 
-const DEFAULT_MODEL_ID = getDefaultModelDescriptor("unified")?.id
-  ?? getDefaultModelDescriptor("claude")?.id
-  ?? MODEL_REGISTRY.find((model) => model.family === "anthropic" && model.isCliWrapped)?.id
-  ?? MODEL_REGISTRY[0]?.id
-  ?? "openai/gpt-5.4";
 const COMPUTER_USE_SNAPSHOT_COOLDOWN_MS = 750;
 
 type ExecutionModeOption = {
@@ -393,6 +386,7 @@ export function AgentChatPane({
   const [computerUsePolicy, setComputerUsePolicy] = useState<ComputerUsePolicy>(createDefaultComputerUsePolicy());
   const [attachments, setAttachments] = useState<AgentChatFileRef[]>([]);
   const [selectedContextPacks, setSelectedContextPacks] = useState<ContextPackOption[]>([]);
+  const [includeProjectDocs, setIncludeProjectDocs] = useState(false);
   const [sdkSlashCommands, setSdkSlashCommands] = useState<import("../../../shared/types").AgentChatSlashCommand[]>([]);
   const [sendOnEnter, setSendOnEnter] = useState(true);
   const [draft, setDraft] = useState("");
@@ -401,6 +395,8 @@ export function AgentChatPane({
   const [preferencesReady, setPreferencesReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [computerUseSnapshot, setComputerUseSnapshot] = useState<ComputerUseOwnerSnapshot | null>(null);
+  const [proofDrawerOpen, setProofDrawerOpen] = useState(false);
+  const [sessionDelta, setSessionDelta] = useState<{ insertions: number; deletions: number } | null>(null);
   const [sessionMutationKind, setSessionMutationKind] = useState<"model" | "permission" | "computer-use" | null>(null);
 
   const appliedInitialSessionIdRef = useRef<string | null>(initialSessionId ?? null);
@@ -417,9 +413,6 @@ export function AgentChatPane({
   const computerUseSnapshotInFlightRef = useRef<{ sessionId: string; promise: Promise<void> } | null>(null);
   const lastComputerUseSnapshotRef = useRef<{ sessionId: string; fetchedAt: number } | null>(null);
   const knownSessionIdsRef = useRef<Set<string>>(new Set());
-  const showMcpStatus = presentation?.showMcpStatus ?? true;
-  const mcpSummary = useChatMcpSummary(showMcpStatus);
-
   const selectedSession = useMemo(
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
@@ -506,26 +499,8 @@ export function AgentChatPane({
   const launchModeEditable = !selectedSessionId || selectedEvents.length === 0;
   const resolvedTitle = presentation?.title?.trim()
     || (surfaceMode === "resolver" ? "AI Resolver" : laneDisplayLabel?.trim() || "Chat");
-  const resolvedSubtitle = presentation?.subtitle?.trim()
-    || (surfaceMode === "resolver"
-      ? "Model and permission stay locked after launch, but the transcript and follow-ups stay in one smooth surface."
-      : "Same chat core, tuned for the current workflow.");
   const chipsJson = JSON.stringify(presentation?.chips ?? []);
   const resolvedChips = useMemo(() => JSON.parse(chipsJson) as ChatSurfaceChip[], [chipsJson]);
-  const mcpChip: ChatSurfaceChip | null = showMcpStatus && mcpSummary
-    ? {
-        label: mcpSummary.connectedCount > 0
-          ? `MCP ${mcpSummary.connectedCount}/${mcpSummary.configuredCount}`
-          : mcpSummary.configuredCount > 0
-            ? `MCP ${mcpSummary.configuredCount} configured`
-            : "MCP not configured",
-        tone: mcpSummary.connectedCount > 0
-          ? "success"
-          : mcpSummary.configuredCount > 0
-            ? "info"
-            : "muted",
-      }
-    : null;
 
   // Keep all configured models selectable, and always include the active session model.
   // Most launched chats stay in the same family; special surfaces such as CTO
@@ -882,6 +857,26 @@ export function AgentChatPane({
     return () => { cancelled = true; };
   }, [selectedSessionId]);
 
+  // Fetch git diff stats when the session changes or a turn completes
+  useEffect(() => {
+    if (!selectedSessionId) { setSessionDelta(null); return; }
+    let cancelled = false;
+    const fetchDelta = () => {
+      window.ade.sessions.getDelta(selectedSessionId)
+        .then((delta) => {
+          if (cancelled) return;
+          if (delta && (delta.insertions > 0 || delta.deletions > 0)) {
+            setSessionDelta({ insertions: delta.insertions, deletions: delta.deletions });
+          } else {
+            setSessionDelta(null);
+          }
+        })
+        .catch(() => { if (!cancelled) setSessionDelta(null); });
+    };
+    fetchDelta();
+    return () => { cancelled = true; };
+  }, [selectedSessionId, turnActive]);
+
   const flushQueuedEvents = useCallback(() => {
     const queued = pendingEventQueueRef.current;
     if (!queued.length) return;
@@ -984,11 +979,18 @@ export function AgentChatPane({
     const unsubscribe = window.ade.computerUse.onEvent((event) => {
       if (!selectedSessionId) return;
       if (event.owner?.kind === "chat_session" && event.owner.id === selectedSessionId) {
+        setProofDrawerOpen(true);
         void refreshComputerUseSnapshot(selectedSessionId, { force: true });
       }
     });
     return unsubscribe;
   }, [refreshComputerUseSnapshot, selectedSessionId]);
+
+  useEffect(() => {
+    if (!selectedSessionId) {
+      setProofDrawerOpen(false);
+    }
+  }, [selectedSessionId]);
 
   useEffect(() => () => {
     if (eventFlushTimerRef.current != null) {
@@ -1186,6 +1188,18 @@ export function AgentChatPane({
         }
       }
 
+      // Prepend project context docs if the user toggled the checkbox
+      if (includeProjectDocs) {
+        const docPaths = [".ade/context/PRD.ade.md", ".ade/context/ARCHITECTURE.ade.md"];
+        const docNote = [
+          "[Project Context — generated from main branch, may not reflect in-progress lane work]",
+          "The following project-level docs are available for reference. Read them with read_file if you need project context:",
+          ...docPaths.map((p) => `- ${p}`),
+        ].join("\n");
+        finalText = `${docNote}\n\n---\n\n${finalText}`;
+        setIncludeProjectDocs(false);
+      }
+
       let sessionId = selectedSessionId;
       const selectedModelChanged =
         Boolean(selectedSessionId)
@@ -1243,6 +1257,7 @@ export function AgentChatPane({
     draft,
     executionMode,
     hasComputerUseSelectionChanged,
+    includeProjectDocs,
     laneId,
     launchModeEditable,
     modelId,
@@ -1351,14 +1366,9 @@ export function AgentChatPane({
     <div className="space-y-3 px-4 py-3">
       <div className="flex flex-wrap items-start gap-4">
         <div className="min-w-0 flex-1">
-          <div className="font-sans text-[12px] font-medium text-[var(--chat-accent)]" style={{ opacity: 0.7 }}>
+          <div className="font-sans text-[13px] font-semibold text-fg/50">
             {resolvedTitle}
           </div>
-          {resolvedSubtitle ? (
-            <div className="mt-0.5 max-w-3xl font-sans text-[12px] leading-[1.55] text-fg/45">
-              {resolvedSubtitle}
-            </div>
-          ) : null}
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1.5">
           {isPersistentIdentitySurface && selectedSessionId ? (
@@ -1384,28 +1394,6 @@ export function AgentChatPane({
               {chip.label}
             </span>
           ))}
-          {mcpChip ? (
-            <button
-              type="button"
-              className={cn(
-                "inline-flex items-center gap-1 rounded-md border px-2 py-1 font-sans text-[10px] font-medium transition-colors hover:opacity-90",
-                chatChipToneClass(mcpChip.tone),
-              )}
-              onClick={openExternalMcpSettings}
-              title="Open External MCP settings"
-            >
-              <Database size={11} weight="regular" />
-              {mcpChip.label}
-            </button>
-          ) : null}
-          {!isPersistentIdentitySurface ? (
-            <span
-              className="inline-flex items-center rounded-md border px-2 py-1 font-sans text-[10px] font-medium"
-              style={{ borderColor: "rgba(125, 211, 252, 0.18)", color: "rgba(186, 230, 253, 0.75)", background: "rgba(14, 165, 233, 0.06)" }}
-            >
-              CU {computerUsePolicy.mode}
-            </span>
-          ) : null}
         </div>
       </div>
 
@@ -1500,12 +1488,16 @@ export function AgentChatPane({
             sessionIsCliWrapped={sessionIsCliWrapped}
             executionMode={selectedExecutionMode?.value ?? "focused"}
             computerUsePolicy={computerUsePolicy}
+            computerUseSnapshot={computerUseSnapshot}
+            proofOpen={proofDrawerOpen}
+            proofArtifactCount={computerUseSnapshot?.artifacts.length ?? 0}
             executionModeOptions={launchModeEditable ? executionModeOptions : []}
             modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model"}
             permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy}
             onExecutionModeChange={setExecutionMode}
             onPermissionModeChange={handlePermissionModeChange}
             onComputerUsePolicyChange={handleComputerUsePolicyChange}
+            onToggleProof={() => setProofDrawerOpen((current) => !current)}
             onModelChange={(nextModelId) => {
               if (selectedSessionModelId && effectiveAvailableModelIds.length && !effectiveAvailableModelIds.includes(nextModelId)) {
                 return;
@@ -1580,6 +1572,8 @@ export function AgentChatPane({
             onRemoveAttachment={removeAttachment}
             onSearchAttachments={searchAttachments}
             onContextPacksChange={setSelectedContextPacks}
+            includeProjectDocs={includeProjectDocs}
+            onIncludeProjectDocsChange={setIncludeProjectDocs}
             onClearEvents={() => {
               if (selectedSessionId) {
                 eventsBySessionRef.current = { ...eventsBySessionRef.current, [selectedSessionId]: [] };
@@ -1610,7 +1604,35 @@ export function AgentChatPane({
             </div>
           ) : selectedSessionId ? (
             <div className="flex h-full min-h-0 flex-col overflow-hidden">
-              {/* Computer Use panel hidden -- policy is still configurable from the composer */}
+              {proofDrawerOpen ? (
+                <div className="border-b border-white/[0.05] bg-[linear-gradient(180deg,rgba(12,17,28,0.92),rgba(9,12,20,0.88))]">
+                  <div className="flex items-center justify-between gap-3 px-4 py-3">
+                    <div>
+                      <div className="font-sans text-[12px] font-medium text-fg/82">Proof drawer</div>
+                      <div className="mt-1 text-[11px] text-fg/54">
+                        Inspect retained screenshots, traces, logs, and verification output for this chat.
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="rounded-[var(--chat-radius-pill)] border border-white/[0.08] bg-white/[0.03] px-3 py-1 font-sans text-[11px] font-medium text-fg/58 transition-colors hover:text-fg/82"
+                      onClick={() => setProofDrawerOpen(false)}
+                      title="Hide proof drawer"
+                    >
+                      Hide proof
+                    </button>
+                  </div>
+                  <div className="max-h-[48vh] overflow-auto px-4 pb-4">
+                    <ChatComputerUsePanel
+                      laneId={laneId}
+                      sessionId={selectedSessionId}
+                      policy={computerUsePolicy}
+                      snapshot={computerUseSnapshot}
+                      onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
+                    />
+                  </div>
+                </div>
+              ) : null}
               <AgentChatMessageList
                 events={selectedEvents}
                 showStreamingIndicator={turnActive}
@@ -1629,6 +1651,12 @@ export function AgentChatPane({
                   });
                 }}
               />
+              {sessionDelta ? (
+                <div className="flex items-center gap-3 border-t border-white/[0.04] px-4 py-1.5 font-mono text-[11px]">
+                  <span className="text-emerald-400/70">+{sessionDelta.insertions}</span>
+                  <span className="text-red-400/70">-{sessionDelta.deletions}</span>
+                </div>
+              ) : null}
             </div>
           ) : (
             <div className="flex h-full flex-col items-center justify-center px-6">

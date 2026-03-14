@@ -115,7 +115,7 @@ export type LaneOverlayOverrides = {
 
 // --- Lane Environment Init types (Phase 5 W1) ---
 
-export type LaneEnvInitStepKind = "env-files" | "docker" | "dependencies" | "mount-points";
+export type LaneEnvInitStepKind = "env-files" | "docker" | "dependencies" | "mount-points" | "copy-paths";
 
 export type LaneEnvInitStepStatus = "pending" | "running" | "completed" | "failed" | "skipped";
 
@@ -172,6 +172,13 @@ export type LaneMountPointConfig = {
   dest: string;
 };
 
+export type LaneCopyPathConfig = {
+  /** Source path relative to project root (e.g. ".claude", ".vscode/settings.json") */
+  source: string;
+  /** Destination path relative to worktree root (defaults to same as source if omitted) */
+  dest?: string;
+};
+
 export type LaneEnvInitConfig = {
   /** Environment files to copy/template */
   envFiles?: LaneEnvFileConfig[];
@@ -181,6 +188,8 @@ export type LaneEnvInitConfig = {
   dependencies?: LaneDependencyInstallConfig[];
   /** Runtime mount points for agent profiles/context */
   mountPoints?: LaneMountPointConfig[];
+  /** Files and directories to copy from project root into the worktree */
+  copyPaths?: LaneCopyPathConfig[];
 };
 
 export type LaneOverlayPolicy = {
@@ -214,6 +223,8 @@ export type LaneTemplate = {
   dependencies?: LaneDependencyInstallConfig[];
   /** Runtime mount points for agent profiles/context */
   mountPoints?: LaneMountPointConfig[];
+  /** Files and directories to copy from project root into the worktree */
+  copyPaths?: LaneCopyPathConfig[];
   /** Port range for lanes created with this template */
   portRange?: { start: number; end: number };
   /** Extra environment variables to set */
@@ -229,6 +240,7 @@ export type ConfigLaneTemplate = {
   docker?: LaneDockerConfig;
   dependencies?: LaneDependencyInstallConfig[];
   mountPoints?: LaneMountPointConfig[];
+  copyPaths?: LaneCopyPathConfig[];
   portRange?: { start: number; end: number };
   envVars?: Record<string, string>;
 };
@@ -251,6 +263,12 @@ export type SetDefaultLaneTemplateArgs = { templateId: string | null };
 
 /** IPC args for applying a template to lane env init */
 export type ApplyLaneTemplateArgs = { laneId: string; templateId: string };
+
+/** IPC args for saving (create/update) a template */
+export type SaveLaneTemplateArgs = { template: LaneTemplate };
+
+/** IPC args for deleting a template */
+export type DeleteLaneTemplateArgs = { templateId: string };
 
 // --- Port Allocation & Lease types (Phase 5 W3) ---
 

@@ -828,15 +828,12 @@ if (typeof window !== "undefined" && !(window as any).ade) {
     agentTools: {
       detect: resolved([]),
     },
-    terminalProfiles: {
-      get: resolved({ profiles: [], defaultProfileId: null }),
-      set: resolvedArg({ profiles: [], defaultProfileId: null }),
-    },
     onboarding: {
-      getStatus: resolved({ completedAt: new Date().toISOString() }),
+      getStatus: resolved({ completedAt: new Date().toISOString(), dismissedAt: null }),
       detectDefaults: resolved({}),
       detectExistingLanes: resolved([]),
-      complete: resolved({ completedAt: new Date().toISOString() }),
+      setDismissed: resolvedArg({ completedAt: null, dismissedAt: new Date().toISOString() }),
+      complete: resolved({ completedAt: new Date().toISOString(), dismissedAt: null }),
     },
     automations: {
       list: resolved([
@@ -1616,6 +1613,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       listServers: resolved([]),
       listConfigs: resolved([]),
       getUsageEvents: resolvedArg([]),
+      listAuthRecords: resolved([]),
       connectServer: resolvedArg({
         config: { name: "mock-server", transport: "stdio", command: "mock" },
         state: "connected",
@@ -1641,6 +1639,34 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       }),
       saveServer: resolvedArg([]),
       removeServer: resolvedArg([]),
+      saveAuthRecord: resolvedArg({
+        id: "mock-auth",
+        displayName: "Mock auth",
+        mode: "bearer",
+        secretId: "mock-secret",
+        createdAt: now,
+        updatedAt: now,
+      }),
+      removeAuthRecord: resolvedArg([]),
+      getAuthStatus: resolvedArg({
+        authId: "mock-auth",
+        mode: "bearer",
+        state: "ready",
+        summary: "Stored credential is ready.",
+        materializationPreview: ["Authorization: Bearer [stored credential]"],
+        updatedAt: now,
+      }),
+      startOAuthSession: resolvedArg({
+        sessionId: "mock-oauth-session",
+        authId: "mock-auth",
+        authUrl: "https://example.com/oauth",
+        redirectUri: "http://127.0.0.1:9999/oauth/external-mcp/callback",
+      }),
+      getOAuthSession: resolvedArg({
+        authId: "mock-auth",
+        status: "completed",
+        error: null,
+      }),
     },
     memory: {
       pin: resolvedArg(undefined),

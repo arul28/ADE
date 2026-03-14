@@ -42,7 +42,7 @@ export function ChatAttachmentTray({
           )}
         >
           {attachment.type === "image" ? <Image size={12} weight="bold" /> : <File size={12} weight="bold" />}
-          <span className="max-w-[260px] truncate">{attachment.path}</span>
+          <span className="max-w-[260px] truncate">{attachment.path.split("/").pop() ?? attachment.path}</span>
           {onRemove ? (
             <button
               type="button"

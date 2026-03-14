@@ -101,6 +101,11 @@ import type {
   CtoListLinearIngressEventsArgs,
   LinearWorkflowConfig,
   OpenclawBridgeStatus,
+  ExternalConnectionAuthRecord,
+  ExternalConnectionAuthRecordInput,
+  ExternalConnectionAuthStatus,
+  ExternalConnectionOAuthSessionResult,
+  ExternalConnectionOAuthSessionStartResult,
   ExternalMcpServerConfig,
   ExternalMcpServerSnapshot,
   ExternalMcpUsageEvent,
@@ -352,6 +357,8 @@ import type {
   GetLaneTemplateArgs,
   SetDefaultLaneTemplateArgs,
   ApplyLaneTemplateArgs,
+  SaveLaneTemplateArgs,
+  DeleteLaneTemplateArgs,
   GetPortLeaseArgs,
   AcquirePortLeaseArgs,
   ReleasePortLeaseArgs,
@@ -381,7 +388,6 @@ import type {
   StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
-  TerminalProfilesSnapshot,
   TerminalSessionSummary,
   ResolveMissionInterventionArgs,
   PhaseCard,
@@ -595,6 +601,8 @@ contextBridge.exposeInMainWorld("ade", {
     listConfigs: async (): Promise<ExternalMcpServerConfig[]> => ipcRenderer.invoke(IPC.externalMcpListConfigs),
     getUsageEvents: async (args: { limit?: number } = {}): Promise<ExternalMcpUsageEvent[]> =>
       ipcRenderer.invoke(IPC.externalMcpGetUsageEvents, args),
+    listAuthRecords: async (): Promise<ExternalConnectionAuthRecord[]> =>
+      ipcRenderer.invoke(IPC.externalMcpListAuthRecords),
     onEvent: (cb: (event: import("../shared/types").ExternalMcpEventPayload) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: import("../shared/types").ExternalMcpEventPayload) => cb(payload);
       ipcRenderer.on(IPC.externalMcpEvent, listener);
@@ -610,20 +618,27 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.externalMcpSaveServer, { config }),
     removeServer: async (serverName: string): Promise<ExternalMcpServerConfig[]> =>
       ipcRenderer.invoke(IPC.externalMcpRemoveServer, { serverName }),
+    saveAuthRecord: async (record: ExternalConnectionAuthRecordInput): Promise<ExternalConnectionAuthRecord> =>
+      ipcRenderer.invoke(IPC.externalMcpSaveAuthRecord, { record }),
+    removeAuthRecord: async (authId: string): Promise<ExternalConnectionAuthRecord[]> =>
+      ipcRenderer.invoke(IPC.externalMcpRemoveAuthRecord, { authId }),
+    getAuthStatus: async (binding?: import("../shared/types").ExternalMcpManagedAuthConfig | null): Promise<ExternalConnectionAuthStatus> =>
+      ipcRenderer.invoke(IPC.externalMcpGetAuthStatus, { binding: binding ?? null }),
+    startOAuthSession: async (authId: string): Promise<ExternalConnectionOAuthSessionStartResult> =>
+      ipcRenderer.invoke(IPC.externalMcpStartOAuthSession, { authId }),
+    getOAuthSession: async (sessionId: string): Promise<ExternalConnectionOAuthSessionResult> =>
+      ipcRenderer.invoke(IPC.externalMcpGetOAuthSession, { sessionId }),
   },
   agentTools: {
     detect: async (): Promise<AgentTool[]> => ipcRenderer.invoke(IPC.agentToolsDetect)
-  },
-  terminalProfiles: {
-    get: async (): Promise<TerminalProfilesSnapshot> => ipcRenderer.invoke(IPC.terminalProfilesGet),
-    set: async (snapshot: TerminalProfilesSnapshot): Promise<TerminalProfilesSnapshot> =>
-      ipcRenderer.invoke(IPC.terminalProfilesSet, snapshot)
   },
   onboarding: {
     getStatus: async (): Promise<OnboardingStatus> => ipcRenderer.invoke(IPC.onboardingGetStatus),
     detectDefaults: async (): Promise<OnboardingDetectionResult> => ipcRenderer.invoke(IPC.onboardingDetectDefaults),
     detectExistingLanes: async (): Promise<OnboardingExistingLaneCandidate[]> =>
       ipcRenderer.invoke(IPC.onboardingDetectExistingLanes),
+    setDismissed: async (dismissed: boolean): Promise<OnboardingStatus> =>
+      ipcRenderer.invoke(IPC.onboardingSetDismissed, { dismissed }),
     complete: async (): Promise<OnboardingStatus> => ipcRenderer.invoke(IPC.onboardingComplete)
   },
   automations: {
@@ -983,6 +998,10 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.lanesSetDefaultTemplate, args),
     applyTemplate: async (args: ApplyLaneTemplateArgs): Promise<LaneEnvInitProgress> =>
       ipcRenderer.invoke(IPC.lanesApplyTemplate, args),
+    saveTemplate: async (args: SaveLaneTemplateArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.lanesSaveTemplate, args),
+    deleteTemplate: async (args: DeleteLaneTemplateArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.lanesDeleteTemplate, args),
     portGetLease: async (args: GetPortLeaseArgs): Promise<PortLease | null> =>
       ipcRenderer.invoke(IPC.lanesPortGetLease, args),
     portListLeases: async (): Promise<PortLease[]> =>
@@ -1104,6 +1123,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.agentChatSlashCommands, args),
     fileSearch: async (args: import("../shared/types").AgentChatFileSearchArgs): Promise<import("../shared/types").AgentChatFileSearchResult[]> =>
       ipcRenderer.invoke(IPC.agentChatFileSearch, args),
+    saveTempAttachment: async (args: { data: string; filename: string }): Promise<{ path: string }> =>
+      ipcRenderer.invoke(IPC.agentChatSaveTempAttachment, args),
   },
   computerUse: {
     getSettings: async (): Promise<ComputerUseSettingsSnapshot> =>
@@ -1258,7 +1279,10 @@ contextBridge.exposeInMainWorld("ade", {
     getStatus: async (): Promise<ContextStatus> => ipcRenderer.invoke(IPC.contextGetStatus),
     generateDocs: async (args: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> =>
       ipcRenderer.invoke(IPC.contextGenerateDocs, args),
-    openDoc: async (args: ContextOpenDocArgs): Promise<void> => ipcRenderer.invoke(IPC.contextOpenDoc, args)
+    openDoc: async (args: ContextOpenDocArgs): Promise<void> => ipcRenderer.invoke(IPC.contextOpenDoc, args),
+    getPrefs: async (): Promise<import("../shared/types").ContextDocPrefs> => ipcRenderer.invoke(IPC.contextGetPrefs),
+    savePrefs: async (prefs: import("../shared/types").ContextDocPrefs): Promise<import("../shared/types").ContextDocPrefs> =>
+      ipcRenderer.invoke(IPC.contextSavePrefs, prefs),
   },
   github: {
     getStatus: async (): Promise<GitHubStatus> => ipcRenderer.invoke(IPC.githubGetStatus),

@@ -25,7 +25,7 @@ The following phase files are superseded by the new roadmap and should be consid
 
 ---
 
-Last updated: 2026-03-13
+Last updated: 2026-03-14
 Owner: ADE
 Status: Active
 
@@ -51,6 +51,16 @@ Phases 1-5 are complete for single-device operation. The v1 closeout addresses t
 - **Embedding health monitoring**: Structured logging for embedding service state, queue depth, and error rates.
 - **UI polish**: Error/loading states on mission and CTO components, dynamic delegation UI in LinearSyncPanel, IDE deep-linking per lane, IPC handler coverage verification.
 - **System prompt boundaries**: Agent system prompts now describe tool tiers and guide agents on when to use each capability.
+
+### Post-v1 incremental improvements (2026-03-14)
+
+- **Image attachments in Claude V2 sessions**: `buildClaudeV2Message()` sends inline base64 image content blocks to the Anthropic API. MIME type validation for jpeg, png, gif, webp. `saveTempAttachment` IPC for composer-side image handling.
+- **CTO identity enhancement**: Rich multi-line persona, baked-in Memory Protocol, Daily Context, and Decision Framework in the CTO system prompt. Identity injected into the harness system prompt for compaction survival.
+- **CTO daily logs**: `appendDailyLog`, `readDailyLog`, `listDailyLogs` in `ctoStateService`. Today's log included in reconstruction context.
+- **Context doc preferences**: `ContextDocPrefs` type with provider, model, reasoning effort, and event-based refresh triggers. Inline editing in Settings > Context & Docs (GenerateDocsModal removed).
+- **Dev stability mode**: Hardware acceleration no longer auto-disabled in dev (only via explicit `ADE_DISABLE_HARDWARE_ACCEL=1`).
+- **Identity session filtering**: CTO/worker identity sessions excluded from Work tab session list.
+- **Post-compaction identity re-injection**: After compaction, `refreshReconstructionContext()` re-injects persona, core memory, and protocol instructions.
 
 ### Known v1 limitations
 
@@ -129,6 +139,7 @@ Baseline derived from code in `apps/desktop`.
 - **Codebase Refactoring & Modularization (shipped 2026-03-02):** AI orchestrator decomposed (`aiOrchestratorService.ts` 13.2K -> 7.7K lines + 9 extracted modules). Pack service decomposed (`packService.ts` 5.7K -> 3.2K lines + 4 builder modules). Type system modernized (monolithic `types.ts` replaced by `src/shared/types/` with 17 domain modules). Frontend decomposed (`MissionsPage.tsx` 60% reduction, `WorkspaceGraphPage.tsx` 11 extracted files). Shared backend/frontend utilities consolidated. Net -14,370 lines, 0 TypeScript errors.
 - **Memory Consolidation Overhaul (shipped 2026-03-13):** Unified memory system fully operational. Single UI surface (Settings > Memory) replaces the previous split across CTO and Settings tabs. Improved agent prompt guidance for memory writes. Quality controls on write sources (garbage-source filtering). 3-scope model (project/agent/mission) with CTO core memory coexisting as a separate always-in-context system. Feature docs (`features/MEMORY.md`, `features/CHAT.md`, `features/LINEAR.md`) and architecture doc (`architecture/MEMORY.md`) added to PRD.
 - **V1 Closeout (shipped 2026-03-13):** Final integration pass making Phases 1-5 tester-ready. Workflow tools for chat agents (lane/PR/screenshot/completion). Coordinator finalization awareness (check_finalization_status tool + queue landing events). Memory pipeline fully wired (compaction flush, human work digest, failure knowledge capture, procedural export). Linear dispatcher hardening (snapshot refresh, employee fallback, PR null-check, closure notifications). Embedding health monitoring. UI error states and IDE deep-linking. System prompt agent capability boundaries.
+- **Post-v1 Incremental (2026-03-14):** Claude V2 inline image attachments (`buildClaudeV2Message`, MIME validation, `saveTempAttachment` IPC). CTO identity enhancement (rich persona, baked-in Memory Protocol / Daily Context / Decision Framework, post-compaction identity re-injection). CTO daily logs (`appendDailyLog`/`readDailyLog`/`listDailyLogs`). Context doc preferences (`ContextDocPrefs` type, inline settings, GenerateDocsModal removed). Dev stability (hardware accel no longer auto-disabled in dev). Identity session filtering (CTO/worker sessions excluded from Work tab).
 
 ### 2.3 Architectural leverage and constraints
 

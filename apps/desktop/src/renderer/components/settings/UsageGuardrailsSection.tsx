@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowClockwise as RefreshCw, Lightning, Moon } from "@phosphor-icons/react";
-import type { AiDetectedAuth, BudgetCapConfig, UsageSnapshot, UsageWindow } from "../../../shared/types";
+import type { AiDetectedAuth, BudgetCapConfig, ExtraUsage, UsageSnapshot, UsageWindow } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { BudgetCapEditor } from "../automations/components/BudgetCapEditor";
@@ -167,6 +167,7 @@ export function UsageGuardrailsSection({
               <UsagePacingBadge
                 status={snapshot.pacing.status}
                 projectedPercent={snapshot.pacing.projectedWeeklyPercent}
+                pacing={snapshot.pacing}
               />
             ) : null}
             <span className="font-mono text-[10px] text-muted-fg">
@@ -206,6 +207,10 @@ export function UsageGuardrailsSection({
         <ProviderUsageCard provider="Claude" windows={claudeWindows} nowMs={nowMs} />
         <ProviderUsageCard provider="Codex" windows={codexWindows} nowMs={nowMs} />
       </div>
+
+      {(snapshot?.extraUsage ?? []).map((extra) => (
+        <ExtraUsageCard key={extra.provider} extra={extra} />
+      ))}
 
       {nightShiftReserve > 0 ? (
         <div
@@ -318,6 +323,61 @@ function ProviderUsageCard({
       ) : (
         <div className="font-mono text-[10px] text-[#71717A]">No weekly data available.</div>
       )}
+    </div>
+  );
+}
+
+function ExtraUsageCard({ extra }: { extra: ExtraUsage }) {
+  if (!extra.isEnabled) return null;
+
+  const usedUsd = extra.usedCreditsUsd;
+  const limitUsd = extra.monthlyLimitUsd;
+  const percent = limitUsd > 0 ? Math.min(100, (usedUsd / limitUsd) * 100) : 0;
+  const fillColor = percent > 90 ? "#EF4444" : percent > 70 ? "#F59E0B" : "#A78BFA";
+
+  const formatUsd = (v: number) => v.toLocaleString("en-US", { style: "currency", currency: extra.currency.toUpperCase() });
+
+  return (
+    <div
+      className="mt-4 rounded-lg p-4"
+      style={CARD_SHADOW_STYLE}
+    >
+      <div className="flex items-center gap-2">
+        <Lightning size={14} weight="regular" className="text-[#A78BFA]" />
+        <span
+          className="text-[12px] font-bold tracking-[-0.2px] text-[#FAFAFA]"
+          style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+        >
+          {extra.provider === "claude" ? "Claude" : "Codex"} Extra Usage
+        </span>
+      </div>
+
+      <div className="mt-3 space-y-1.5">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="font-mono text-[10px] font-bold uppercase tracking-[1px] text-[#A1A1AA]">
+            Monthly spend
+          </span>
+          <span className="font-mono text-[10px] font-bold text-[#FAFAFA]">
+            {formatUsd(usedUsd)}{limitUsd > 0 ? ` / ${formatUsd(limitUsd)}` : ""}
+          </span>
+        </div>
+
+        {limitUsd > 0 ? (
+          <div
+            className="relative h-2 w-full overflow-hidden"
+            style={{ background: "#1A1720", border: "1px solid #1E1B26" }}
+          >
+            <div
+              className="absolute inset-y-0 left-0 transition-all duration-500 ease-out"
+              style={{ width: `${percent}%`, background: fillColor }}
+            />
+          </div>
+        ) : (
+          <div className="font-mono text-[9px] text-[#71717A]">
+            No monthly limit configured
+          </div>
+        )}
+      </div>
     </div>
   );
 }

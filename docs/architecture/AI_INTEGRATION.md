@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-13
+> Last updated: 2026-03-14
 
 The AI integration layer replaces the previous hosted agent with a local-first, provider-flexible approach. Instead of a cloud backend with remote job queues, ADE routes work to configured runtimes (CLI subscriptions, API-key/OpenRouter providers, and local endpoints such as LM Studio/Ollama/vLLM), coordinates tooling through MCP, and manages multi-step workflows via an AI orchestrator.
 
@@ -1138,7 +1138,18 @@ External MCP Request           User (CTO Tab)
 - The CTO can proactively create missions, spin up lanes, and orchestrate work based on project context without explicit user direction
 - It maintains awareness of all active missions, lane states, and recent agent outputs
 
-**CTO State**: The CTO maintains its state in `.ade/cto/` (core memory files), separate from unified memory tables in `.ade/ade.db`. This includes persistent project context, learned routing patterns, decision history, and user corrections. Both systems are visible in **Settings > Memory**. Over time, the CTO becomes more effective at anticipating project needs and dispatching work autonomously.
+**CTO Identity and System Prompt**: The CTO system prompt is built by `buildReconstructionContext()` and includes the rich multi-line persona, core memory, recent session logs, subordinate activity, and today's daily log. Three protocol sections are baked into every CTO system prompt:
+- **Memory Protocol**: instructs the CTO to proactively search memory before non-trivial work, save corrections and decisions immediately, and flush key findings before context gets large.
+- **Daily Context**: a startup self-orientation protocol (search memory for focus areas, check subordinate activity, review conventions).
+- **Decision Framework**: make autonomous decisions when safe/reversible, escalate when risky, search before asking, state reasoning concisely.
+
+These protocol sections are part of the CTO identity — they are injected into the harness system prompt so they survive across sessions and are re-injected after context compaction.
+
+**CTO Daily Logs**: The CTO state service supports append-only daily logs stored as markdown files under `.ade/cto/daily-logs/<YYYY-MM-DD>.md`. The `appendDailyLog`, `readDailyLog`, and `listDailyLogs` methods manage these logs. Today's daily log is automatically included in the CTO reconstruction context, providing within-day continuity.
+
+**Post-Compaction Identity Re-injection**: When a CTO or worker identity session undergoes SDK-level context compaction, the agent chat service detects the compaction event and calls `refreshReconstructionContext()` to re-inject the full identity context (persona, core memory, memory protocol, decision framework). This prevents identity loss after compaction.
+
+**CTO State**: The CTO maintains its state in `.ade/cto/` (core memory files, daily logs), separate from unified memory tables in `.ade/ade.db`. This includes persistent project context, learned routing patterns, decision history, and user corrections. Both systems are visible in **Settings > Memory**. Over time, the CTO becomes more effective at anticipating project needs and dispatching work autonomously.
 
 **Approval gate interaction** (M4/M5): When a mission phase has `requiresApproval: true`, the CTO is notified of pending `phase_approval` interventions through the same mission event stream it uses for general mission awareness. The CTO can surface these approval requests to the user in the CTO chat interface, providing context about the planning output and recommending whether to approve or request revisions. The CTO does not resolve approval gates autonomously — it always routes them to the human user for final decision.
 
@@ -1158,7 +1169,7 @@ ADE now ships a canonical `.ade` contract. The tracked/shareable subset lives al
 
 **Tracked/shareable state**:
 - `ade.yaml` — shared baseline config
-- `cto/` — CTO identity/core-memory/session-log files
+- `cto/` — CTO identity/core-memory/session-log/daily-log files
 - `agents/` — worker identity/core-memory/session-log files
 - `templates/`, `context/`, `memory/`, `history/`, `reflections/`, `skills/`
 
@@ -1626,6 +1637,8 @@ async function* sendMessage(text: string): AsyncIterable<ChatEvent> {
 | Resume | `thread/resume` (native) | Reload `messages[]` and continue |
 
 **Session persistence**: Chat session metadata is stored at `.ade/cache/chat-sessions/<sessionId>.json`, and structured chat events are logged to `.ade/transcripts/<session-id>.chat.jsonl` with a mirrored JSONL copy under `.ade/transcripts/chat/<session-id>.jsonl`. This enables resume after app restart while keeping chat-specific runtime files in the canonical W10 layout.
+
+**Image attachments**: Claude V2 sessions now support inline image content blocks. The `buildClaudeV2Message()` helper checks attached files against the Anthropic-accepted MIME types (`image/jpeg`, `image/png`, `image/gif`, `image/webp`), reads them as base64, and builds an `SDKUserMessage` with interleaved text and image content blocks. When no image attachments are present, the message is sent as a plain string. Images are saved to a temporary location via the `saveTempAttachment` IPC handler before being read by the service.
 
 **Limitations**: The Claude backend may not support all UI features that Codex provides (plans, reasoning blocks). The chat UI gracefully handles missing features — items that Claude doesn't produce simply don't appear in the UI.
 

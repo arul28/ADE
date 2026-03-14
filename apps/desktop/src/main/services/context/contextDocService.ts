@@ -9,9 +9,10 @@ import {
   resolveContextDocPath as resolveContextDocPathImpl,
   runContextDocGeneration as runContextDocGenerationImpl,
 } from "../packs/projectPackBuilder";
-import { getErrorMessage, toOptionalString } from "../shared/utils";
+import { getErrorMessage, nowIso, toOptionalString } from "../shared/utils";
 import type { AdeDb } from "../state/kvDb";
 import type {
+  ContextDocPrefs,
   ContextDocStatus,
   ContextGenerateDocsArgs,
   ContextGenerateDocsResult,
@@ -75,10 +76,6 @@ function cadenceToEvents(cadence: ContextRefreshTrigger): ContextRefreshEvents {
     case "per_lane_refresh": return { onSessionEnd: true };
     default: return {};
   }
-}
-
-function nowIso(): string {
-  return new Date().toISOString();
 }
 
 function normalizeRefreshTrigger(value: unknown): ContextRefreshTrigger {
@@ -271,6 +268,30 @@ export function createContextDocService(args: {
     },
     getStatus(): ContextStatus {
       return readContextStatusImpl({ db, projectId, projectRoot, packsDir });
+    },
+    getPrefs(): ContextDocPrefs {
+      const stored = readContextDocRefreshPrefs();
+      return {
+        provider: stored?.provider ?? "unified",
+        modelId: stored?.modelId ?? null,
+        reasoningEffort: stored?.reasoningEffort ?? null,
+        events: stored?.events ?? DEFAULT_EVENTS,
+      };
+    },
+    savePrefs(prefs: ContextDocPrefs): ContextDocPrefs {
+      const args: ContextGenerateDocsArgs = {
+        provider: prefs.provider ?? "unified",
+        modelId: prefs.modelId ?? undefined,
+        reasoningEffort: prefs.reasoningEffort,
+        events: prefs.events,
+      };
+      const saved = persistContextDocRefreshPrefs(args);
+      return {
+        provider: saved.provider,
+        modelId: saved.modelId,
+        reasoningEffort: saved.reasoningEffort,
+        events: saved.events,
+      };
     },
     generateDocs,
     maybeAutoRefreshDocs,

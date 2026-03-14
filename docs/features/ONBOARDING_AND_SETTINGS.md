@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 >
-> Last updated: 2026-03-13
+> Last updated: 2026-03-14
 
 ADE now treats onboarding and settings as two different jobs:
 
@@ -74,7 +74,7 @@ The setup flow now favors completion over forced integration ceremony.
 Settings owns durable configuration and infrastructure concerns, organized into tabs:
 
 - **General** — AI mode, task routing, provider-specific permission policy, config reload, local/shared config boundaries
-- **Context & Docs** — context doc management, skill files, deterministic context health
+- **Context & Docs** — context doc management, skill files, deterministic context health, and context doc generation preferences (`ContextDocPrefs`: provider, model, reasoning effort, refresh event triggers). Generation controls are inline in the Context section rather than a separate modal.
 - **Memory** — consolidated memory management with two sub-tabs:
   - *Overview* — memory health, scope summaries, promotion status, embedding progress and health monitoring (service state, queue depth, error rates)
   - *Browse All* — full memory browser across all scopes (project, agent, mission) and tiers (Tier 1 Pinned, Tier 2 Active, Tier 3 Fading)

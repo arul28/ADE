@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   check:
@@ -46,39 +46,3 @@ jobs:
 
       - name: Validate docs
         run: node scripts/validate-docs.mjs
-
-  release:
-    needs: check
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: macos-latest
-    concurrency:
-      group: release-main
-      cancel-in-progress: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            apps/desktop/package-lock.json
-            apps/mcp-server/package-lock.json
-
-      - name: Install desktop dependencies
-        run: cd apps/desktop && npm ci
-
-      - name: Install MCP server dependencies
-        run: cd apps/mcp-server && npm ci
-
-      - name: Stamp CI version
-        env:
-          ADE_BUILD_NUMBER: ${{ github.run_number }}
-        run: cd apps/desktop && npm run version:ci
-
-      - name: Build and publish macOS release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ELECTRON_CACHE: ${{ runner.temp }}/electron
-          ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/electron-builder
-        run: cd apps/desktop && npm run release:mac

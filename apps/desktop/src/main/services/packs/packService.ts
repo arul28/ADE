@@ -10,7 +10,7 @@ import type { createSessionService } from "../sessions/sessionService";
 import { createSessionDeltaService } from "../sessions/sessionDeltaService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createOperationService } from "../history/operationService";
-import { uniqueSorted } from "../shared/utils";
+import { nowIso, uniqueSorted } from "../shared/utils";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type {
   Checkpoint,
@@ -159,8 +159,6 @@ export function createPackService({
   const historyDir = path.join(path.dirname(packsDir), "history");
   const checkpointsDir = path.join(historyDir, "checkpoints");
   const eventsDir = path.join(historyDir, "events");
-
-  const nowIso = () => new Date().toISOString();
 
   const sha256 = (input: string): string => createHash("sha256").update(input).digest("hex");
 

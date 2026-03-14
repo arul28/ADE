@@ -8,6 +8,7 @@ const {
   aggregateCosts,
   calculatePacing,
   isCodexTokenStale,
+  isTokenExpiredOrExpiring,
   parseClaudeWindows,
   parseCodexRateLimitWindows,
   resolveTokenPrice,
@@ -36,11 +37,12 @@ describe("calculatePacing", () => {
     expect(result.status).toBe("on-track");
     expect(result.projectedWeeklyPercent).toBe(0);
     expect(result.weekElapsedPercent).toBe(0);
+    expect(result.willLastToReset).toBe(true);
   });
 
-  it("returns ahead when projected usage exceeds 90%", () => {
+  it("returns ahead status when usage outpaces time", () => {
     const totalWindowMs = 7 * 24 * 60 * 60 * 1000;
-    // 50% used with only 40% of the week elapsed -> projects to 125%
+    // 50% used with only 40% of the week elapsed -> delta = +10%
     const resetsInMs = totalWindowMs * 0.6;
     const result = calculatePacing([
       {
@@ -51,13 +53,14 @@ describe("calculatePacing", () => {
         resetsInMs,
       },
     ]);
-    expect(result.status).toBe("ahead");
+    expect(result.deltaPercent).toBeGreaterThan(0);
     expect(result.projectedWeeklyPercent).toBeGreaterThan(90);
+    expect(["slightly-ahead", "ahead", "far-ahead"]).toContain(result.status);
   });
 
-  it("returns behind when more than 50% time elapsed but projected under 50%", () => {
+  it("returns behind status when usage lags time", () => {
     const totalWindowMs = 7 * 24 * 60 * 60 * 1000;
-    // 20% used with 40% of week remaining (60% elapsed) -> projects to ~33%
+    // 20% used with 60% of week elapsed -> delta = -40%
     const resetsInMs = totalWindowMs * 0.4;
     const result = calculatePacing([
       {
@@ -68,26 +71,45 @@ describe("calculatePacing", () => {
         resetsInMs,
       },
     ]);
-    expect(result.status).toBe("behind");
-    expect(result.projectedWeeklyPercent).toBeLessThan(50);
+    expect(result.deltaPercent).toBeLessThan(0);
+    expect(result.willLastToReset).toBe(true);
+    expect(["slightly-behind", "behind", "far-behind"]).toContain(result.status);
   });
 
   it("returns on-track for moderate usage", () => {
     const totalWindowMs = 7 * 24 * 60 * 60 * 1000;
-    // 40% used with 50% of the week elapsed -> projects to 80% (under 90%)
+    // 48% used with 50% of the week elapsed -> delta = -2%
     const resetsInMs = totalWindowMs * 0.5;
     const result = calculatePacing([
       {
         provider: "claude",
         windowType: "weekly",
-        percentUsed: 40,
+        percentUsed: 48,
         resetsAt: new Date(Date.now() + resetsInMs).toISOString(),
         resetsInMs,
       },
     ]);
     expect(result.status).toBe("on-track");
-    expect(result.projectedWeeklyPercent).toBeGreaterThan(50);
-    expect(result.projectedWeeklyPercent).toBeLessThanOrEqual(90);
+    expect(Math.abs(result.deltaPercent)).toBeLessThan(4);
+  });
+
+  it("computes eta and willLastToReset correctly", () => {
+    const totalWindowMs = 7 * 24 * 60 * 60 * 1000;
+    // 80% used with 50% of the week elapsed -> will NOT last
+    const resetsInMs = totalWindowMs * 0.5;
+    const result = calculatePacing([
+      {
+        provider: "claude",
+        windowType: "weekly",
+        percentUsed: 80,
+        resetsAt: new Date(Date.now() + resetsInMs).toISOString(),
+        resetsInMs,
+      },
+    ]);
+    expect(result.etaHours).not.toBeNull();
+    expect(result.etaHours!).toBeGreaterThan(0);
+    expect(result.willLastToReset).toBe(false);
+    expect(result.resetsInHours).toBeGreaterThan(0);
   });
 
   it("prefers Claude weekly window over Codex", () => {
@@ -109,8 +131,9 @@ describe("calculatePacing", () => {
         resetsInMs,
       },
     ]);
-    // Should use Claude (80% used, projected ~160%) => ahead
-    expect(result.status).toBe("ahead");
+    // Should use Claude (80% used, 50% elapsed → delta +30 → far-ahead)
+    expect(result.deltaPercent).toBeGreaterThan(20);
+    expect(result.status).toBe("far-ahead");
   });
 });
 
@@ -250,6 +273,26 @@ describe("isCodexTokenStale", () => {
   });
 });
 
+// ── isTokenExpiredOrExpiring ──────────────────────────────────────
+
+describe("isTokenExpiredOrExpiring", () => {
+  it("returns false when no expiresAt", () => {
+    expect(isTokenExpiredOrExpiring({ accessToken: "tok" })).toBe(false);
+  });
+
+  it("returns false when token is fresh", () => {
+    expect(isTokenExpiredOrExpiring({ accessToken: "tok", expiresAt: Date.now() + 3_600_000 })).toBe(false);
+  });
+
+  it("returns true when token is expired", () => {
+    expect(isTokenExpiredOrExpiring({ accessToken: "tok", expiresAt: Date.now() - 1000 })).toBe(true);
+  });
+
+  it("returns true when token expires within 5 minutes", () => {
+    expect(isTokenExpiredOrExpiring({ accessToken: "tok", expiresAt: Date.now() + 2 * 60_000 })).toBe(true);
+  });
+});
+
 describe("parseClaudeWindows", () => {
   it("accepts the oauth snake_case response shape", () => {
     const result = parseClaudeWindows({
@@ -258,10 +301,10 @@ describe("parseClaudeWindows", () => {
       seven_day_sonnet: { utilization: 0, resets_at: "2026-03-20T21:00:00.263794+00:00" },
     });
 
-    expect(result).toHaveLength(2);
-    expect(result.find((window) => window.windowType === "five_hour")?.percentUsed).toBe(35);
-    expect(result.find((window) => window.windowType === "weekly")?.percentUsed).toBe(17);
-    expect(result.find((window) => window.windowType === "weekly")?.modelBreakdown?.sonnet).toBe(0);
+    expect(result.windows).toHaveLength(2);
+    expect(result.windows.find((window) => window.windowType === "five_hour")?.percentUsed).toBe(35);
+    expect(result.windows.find((window) => window.windowType === "weekly")?.percentUsed).toBe(17);
+    expect(result.windows.find((window) => window.windowType === "weekly")?.modelBreakdown?.sonnet).toBe(0);
   });
 
   it("also accepts camelCase response keys", () => {
@@ -271,9 +314,35 @@ describe("parseClaudeWindows", () => {
       sevenDayOpus: { used_percent: 5, resetsAt: "2026-03-20T21:00:00.263794+00:00" },
     });
 
-    expect(result).toHaveLength(2);
-    expect(result.find((window) => window.windowType === "five_hour")?.percentUsed).toBe(22);
-    expect(result.find((window) => window.windowType === "weekly")?.modelBreakdown?.opus).toBe(5);
+    expect(result.windows).toHaveLength(2);
+    expect(result.windows.find((window) => window.windowType === "five_hour")?.percentUsed).toBe(22);
+    expect(result.windows.find((window) => window.windowType === "weekly")?.modelBreakdown?.opus).toBe(5);
+  });
+
+  it("parses extra_usage when present", () => {
+    const result = parseClaudeWindows({
+      five_hour: { utilization: 15, resets_at: "2026-03-14T21:00:00+00:00" },
+      seven_day: { utilization: 22, resets_at: "2026-03-20T03:00:00+00:00" },
+      extra_usage: { is_enabled: true, monthly_limit: 10000, used_credits: 1500, currency: "usd" },
+    });
+
+    expect(result.extraUsage).toBeDefined();
+    expect(result.extraUsage!.isEnabled).toBe(true);
+    expect(result.extraUsage!.usedCreditsUsd).toBe(15); // 1500 cents / 100
+    expect(result.extraUsage!.monthlyLimitUsd).toBe(100); // 10000 cents / 100
+    expect(result.extraUsage!.currency).toBe("usd");
+  });
+
+  it("handles extra_usage with zero limit", () => {
+    const result = parseClaudeWindows({
+      five_hour: { utilization: 15, resets_at: "2026-03-14T21:00:00+00:00" },
+      seven_day: { utilization: 22, resets_at: "2026-03-20T03:00:00+00:00" },
+      extra_usage: { is_enabled: true, monthly_limit: 0, used_credits: 0, utilization: null },
+    });
+
+    expect(result.extraUsage).toBeDefined();
+    expect(result.extraUsage!.usedCreditsUsd).toBe(0);
+    expect(result.extraUsage!.monthlyLimitUsd).toBe(0);
   });
 });
 
@@ -309,10 +378,10 @@ describe("parseCodexRateLimitWindows", () => {
 
 describe("createUsageTrackingService", () => {
   const createFastDependencies = () => ({
-    pollClaudeUsage: vi.fn(async () => ({ windows: [], errors: [] })),
-    pollCodexUsage: vi.fn(async () => ({ windows: [], errors: [] })),
-    scanClaudeLogs: vi.fn(async () => []),
-    scanCodexLogs: vi.fn(async () => []),
+    pollClaudeUsage: vi.fn(async () => ({ windows: [] as never[], extraUsage: null, errors: [] as never[] })),
+    pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
+    scanClaudeLogs: vi.fn(async () => [] as never[]),
+    scanCodexLogs: vi.fn(async () => [] as never[]),
   });
 
   it("returns an empty snapshot before polling", () => {

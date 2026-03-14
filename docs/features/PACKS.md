@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 >
-> Last updated: 2026-03-13
+> Last updated: 2026-03-14
 
 ---
 
@@ -81,12 +81,15 @@ Conflict external-resolver runs now consume generated per-run context files plus
 
 ## Refresh Triggers and Cadence
 
-Context doc refresh preferences support these triggers:
+Context doc refresh preferences are now managed through `ContextDocPrefs`, which stores provider, model, reasoning effort, and event-based triggers. The preferences are editable inline in the Settings > Context & Docs section (the earlier `GenerateDocsModal` has been removed) and exposed via `getPrefs`/`savePrefs` IPC handlers.
 
-- `manual`
-- `per_mission`
-- `per_pr`
-- `per_lane_refresh`
+Supported event triggers (`ContextRefreshEvents`):
+
+- `onPrCreate`
+- `onPrLand`
+- `onMissionStart`
+- `onMissionEnd`
+- `onLaneCreate`
 
 Automatic refresh throttles are enforced in service-level cadence windows to avoid over-refreshing while still keeping mission/PR context current.
 

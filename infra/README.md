@@ -17,7 +17,7 @@ This directory contains the SST deployment for ADE's Phase 6 cloud backend.
 This stack is configured for the shared ADE AWS account and enforces ADE ownership:
 
 - AWS profile: `default` by default (override with `AWS_PROFILE`)
-- Allowed account ID: `695094375923` (override with `ADE_ALLOWED_AWS_ACCOUNT_ID`)
+- Allowed account ID: set via `ADE_ALLOWED_AWS_ACCOUNT_ID` environment variable
 - Optional global tags on all taggable resources (enable with `ADE_ENABLE_AWS_DEFAULT_TAGS=true`):
   - `project=ade`
   - `environment=<stage>`
@@ -56,7 +56,7 @@ Important:
 1. Install dependencies:
 
 ```bash
-cd /Users/arul/ADE/infra
+cd infra
 npm install
 ```
 
@@ -98,7 +98,7 @@ Expected JSON value:
 ## Deploy
 
 ```bash
-cd /Users/arul/ADE/infra
+cd infra
 ./scripts/deploy.sh dev
 ```
 
@@ -115,7 +115,7 @@ npx sst deploy --stage prod
 After each deploy, write a desktop bootstrap file from SST outputs:
 
 ```bash
-cd /Users/arul/ADE/infra
+cd infra
 bash ./scripts/write-desktop-bootstrap.sh dev
 ```
 

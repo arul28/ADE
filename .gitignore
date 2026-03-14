@@ -1,11 +1,7 @@
 .DS_Store
 *.pem
 node_modules/
-infra/.sst/
-infra/.pulumi/
-infra/.tools/
-/infra/.home
-/infra/.env
+infra/
 /.npm-cache
 /apps/desktop/release-stable
 /apps/desktop/.cache
@@ -37,11 +33,14 @@ release-stable/
 /.electron-cache
 
 # Secrets & env
-.env.local
-.env
+.env*
+!.env.example
+*.key
 
 # Tool configs (personal)
 .claude/
 .factory/
 .codex/
 .pnpm-store/
+/apps/desktop/.ade
+/.playwright-mcp

@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 >
-> Last updated: 2026-03-13
+> Last updated: 2026-03-14
 
 The CTO is ADE's always-on, project-aware agent. It owns persistent identity, shared project understanding, worker management, Linear workflow coordination, and the operator-facing chat surface for project-level requests.
 
@@ -181,6 +181,31 @@ Current system behavior separates:
 - shared project knowledge (unified memory with project/agent/mission scopes)
 - worker-specific core memory
 - recent subordinate activity and session logs
+- daily logs (append-only per-day markdown logs under `.ade/cto/daily-logs/`)
+
+### Identity system prompt
+
+The CTO system prompt now includes a rich, multi-line persona and three baked-in protocol sections that survive across sessions:
+
+- **Memory Protocol** -- instructs the CTO to search memory before non-trivial work, save corrections and decisions immediately, and flush key findings when context is large. Includes explicit DO-NOT-SAVE guidance (no file paths, raw errors, task status, or git-derivable information).
+- **Daily Context** -- a startup self-orientation protocol: search memory for active focus areas, check subordinate activity, review relevant conventions and gotchas. This gives the CTO continuity without starting fresh.
+- **Decision Framework** -- make autonomous decisions when safe and reversible, escalate when risky or ambiguous, search before asking, state reasoning concisely.
+
+These protocol sections are part of the CTO's identity and are injected into the system prompt via `buildReconstructionContext()`.
+
+### Daily logs
+
+The CTO state service supports append-only daily logs:
+
+- `appendDailyLog(entry, date?)` -- appends a timestamped line to that day's log file
+- `readDailyLog(date?)` -- reads the full log for a given day
+- `listDailyLogs(limit?)` -- lists available daily log dates (most recent first)
+
+Daily logs are stored as markdown files under `.ade/cto/daily-logs/<YYYY-MM-DD>.md`. Today's daily log is automatically included in the CTO's reconstruction context, providing session-to-session continuity about what happened earlier in the day.
+
+### Post-compaction identity re-injection
+
+When a CTO or worker identity session undergoes context compaction, the service automatically re-injects the identity context (persona, core memory, memory protocol instructions) via `refreshReconstructionContext()`. This prevents identity loss after compaction -- the CTO does not lose its persona, memory protocol, or decision framework just because the context window was compressed.
 
 Memory browsing and management are consolidated in Settings > Memory tab. The CTO tab no longer has its own Memory surface. CTO core memory (identity, persona, project context) is edited in CTO Settings; all other memory scopes are managed through the unified Settings > Memory tab.
 

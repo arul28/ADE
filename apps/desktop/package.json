@@ -1,7 +1,7 @@
 {
   "name": "ade-desktop",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.0-beta.1",
   "type": "module",
   "main": "electron.cjs",
   "author": "Arul Sharma",
@@ -23,7 +23,8 @@
     "verify:ai-sdks": "node ./scripts/verify-ai-sdks.cjs",
     "lint": "node ./node_modules/eslint/bin/eslint.js \"src/**/*.{ts,tsx}\"",
     "rebuild:native": "node ./scripts/rebuild-native.mjs",
-    "version:ci": "node ./scripts/set-ci-version.mjs"
+    "version:ci": "node ./scripts/set-ci-version.mjs",
+    "version:release": "node ./scripts/set-release-version.mjs"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^2.0.33",

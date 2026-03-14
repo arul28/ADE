@@ -22,6 +22,97 @@ export type ExternalMcpCostHints = {
   perToolCostCents?: Record<string, number>;
 };
 
+export type ExternalConnectionAuthMode = "none" | "api_key" | "bearer" | "oauth";
+
+export type ExternalConnectionAuthPlacement = {
+  target: "header" | "env";
+  key: string;
+  prefix?: string;
+};
+
+export type ExternalConnectionOAuthConfig = {
+  authorizeUrl: string;
+  tokenUrl: string;
+  clientId: string;
+  scope?: string | null;
+  audience?: string | null;
+  extraAuthorizeParams?: Record<string, string>;
+  extraTokenParams?: Record<string, string>;
+  clientSecretId?: string | null;
+  accessTokenId?: string | null;
+  refreshTokenId?: string | null;
+  expiresAt?: string | null;
+  lastAuthenticatedAt?: string | null;
+};
+
+export type ExternalConnectionAuthRecord = {
+  id: string;
+  displayName: string;
+  mode: ExternalConnectionAuthMode;
+  secretId?: string | null;
+  oauth?: ExternalConnectionOAuthConfig;
+  createdAt: string;
+  updatedAt: string;
+  lastError?: string | null;
+};
+
+export type ExternalConnectionAuthRecordInput = {
+  id?: string;
+  displayName: string;
+  mode: ExternalConnectionAuthMode;
+  secret?: string | null;
+  oauth?: {
+    authorizeUrl: string;
+    tokenUrl: string;
+    clientId: string;
+    clientSecret?: string | null;
+    scope?: string | null;
+    audience?: string | null;
+    extraAuthorizeParams?: Record<string, string>;
+    extraTokenParams?: Record<string, string>;
+  };
+};
+
+export type ExternalConnectionAuthState =
+  | "ready"
+  | "missing"
+  | "needs_auth"
+  | "expired"
+  | "refreshing"
+  | "authorizing"
+  | "error";
+
+export type ExternalConnectionAuthStatus = {
+  authId?: string | null;
+  mode: ExternalConnectionAuthMode;
+  state: ExternalConnectionAuthState;
+  summary: string;
+  materializationPreview?: string[];
+  lastAuthenticatedAt?: string | null;
+  expiresAt?: string | null;
+  lastError?: string | null;
+  updatedAt?: string | null;
+};
+
+export type ExternalConnectionOAuthSessionStartResult = {
+  sessionId: string;
+  authId: string;
+  authUrl: string;
+  redirectUri: string;
+};
+
+export type ExternalConnectionOAuthSessionResult = {
+  authId: string;
+  status: "pending" | "completed" | "failed" | "expired";
+  error?: string | null;
+};
+
+export type ExternalMcpManagedAuthConfig = {
+  authId: string;
+  mode: ExternalConnectionAuthMode;
+  placement: ExternalConnectionAuthPlacement;
+};
+
 export type ExternalMcpServerConfig = {
   name: string;
   transport: ExternalMcpTransport;
@@ -35,6 +126,7 @@ export type ExternalMcpServerConfig = {
   healthCheckIntervalSec?: number;
   permissions?: ExternalMcpToolPermissionConfig;
   costHints?: ExternalMcpCostHints;
+  auth?: ExternalMcpManagedAuthConfig;
 };
 
 export type ExternalMcpResolvedServerConfig = Omit<ExternalMcpServerConfig, "transport"> & {
@@ -78,6 +170,7 @@ export type ExternalMcpServerSnapshot = {
   consecutivePingFailures: number;
   lastError?: string | null;
   autoStart: boolean;
+  authStatus?: ExternalConnectionAuthStatus;
 };
 
 export type ExternalMcpUsageEvent = {

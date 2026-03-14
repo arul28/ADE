@@ -11,9 +11,9 @@ export type PackType = "project" | "lane" | "feature" | "conflict" | "plan" | "m
 
 export type ContextExportLevel = "lite" | "standard" | "deep";
 
-export type OrchestratorContextProfileId = "orchestrator_deterministic_v1" | "orchestrator_narrative_opt_in_v1";
+export type OrchestratorContextProfileId = string;
 
-export type OrchestratorContextDocsMode = "digest_refs" | "full_docs";
+export type OrchestratorContextDocsMode = string;
 
 // Event metadata (standardized keys embedded into PackEvent.payload for selection/digests).
 export type PackEventImportance = "low" | "medium" | "high";
@@ -260,9 +260,8 @@ export type RefreshMissionPackArgs = {
 };
 
 export type OrchestratorContextPolicyProfile = {
-  id: OrchestratorContextProfileId;
-  includeNarrative: boolean;
-  docsMode: OrchestratorContextDocsMode;
+  id: string;
+  docsMode: string;
   laneExportLevel: ContextExportLevel;
   projectExportLevel: ContextExportLevel;
   maxDocBytes: number;
@@ -423,6 +422,14 @@ export type ContextRefreshEvents = {
   onMissionStart?: boolean;
   onMissionEnd?: boolean;
   onLaneCreate?: boolean;
+};
+
+/** Saved preferences for context doc generation (model, effort, events). */
+export type ContextDocPrefs = {
+  provider: ContextDocProvider;
+  modelId: string | null;
+  reasoningEffort: string | null;
+  events: ContextRefreshEvents;
 };
 
 export type ContextGenerateDocsArgs = {

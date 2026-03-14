@@ -1,5 +1,5 @@
 import http from "node:http";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { URL } from "node:url";
 import type {
   CtoGetLinearOAuthSessionResult,
@@ -7,10 +7,12 @@ import type {
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { LinearCredentialService } from "./linearCredentialService";
+import { createPkcePair } from "../shared/utils";
 
 const LINEAR_AUTHORIZE_URL = "https://linear.app/oauth/authorize";
 const LINEAR_TOKEN_URL = "https://api.linear.app/oauth/token";
 const CALLBACK_PATH = "/oauth/callback";
+const OAUTH_PORT = 19836;
 const SESSION_TTL_MS = 10 * 60 * 1000;
 
 type LinearOAuthSessionState = {
@@ -25,15 +27,6 @@ type LinearOAuthSessionState = {
   server: http.Server;
 };
 
-function toBase64Url(value: Buffer): string {
-  return value.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
-
-function createPkcePair(): { verifier: string; challenge: string } {
-  const verifier = toBase64Url(randomBytes(48));
-  const challenge = toBase64Url(createHash("sha256").update(verifier).digest());
-  return { verifier, challenge };
-}
 
 export function createLinearOAuthService(args: {
   credentials: LinearCredentialService;
@@ -124,6 +117,14 @@ export function createLinearOAuthService(args: {
 
   const startSession = async (): Promise<CtoStartLinearOAuthResult> => {
     pruneExpiredSessions();
+    // Close any leftover pending sessions so the fixed port is available.
+    // This handles the case where the user closed the browser tab without
+    // completing or cancelling the previous OAuth flow.
+    for (const prev of sessions.values()) {
+      if (prev.status === "pending") {
+        finalizeSession(prev, { status: "expired", error: "Superseded by a new OAuth attempt." });
+      }
+    }
     const oauthClient = args.credentials.getOAuthClientCredentials();
     if (!oauthClient) {
       throw new Error("Linear OAuth is not configured. Configure it in Settings > Linear.");
@@ -195,7 +196,7 @@ export function createLinearOAuthService(args: {
 
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => {
+      server.listen(OAUTH_PORT, "127.0.0.1", () => {
         server.off("error", reject);
         resolve();
       });
@@ -214,6 +215,8 @@ export function createLinearOAuthService(args: {
     authUrl.searchParams.set("response_type", "code");
     authUrl.searchParams.set("state", state);
     authUrl.searchParams.set("scope", "read,write");
+    // Always show consent screen so users can pick which workspace to connect.
+    authUrl.searchParams.set("prompt", "consent");
     if (pkce) {
       authUrl.searchParams.set("code_challenge_method", "S256");
       authUrl.searchParams.set("code_challenge", pkce.challenge);

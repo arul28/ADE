@@ -21,6 +21,7 @@ import type { AdeDb } from "../state/kvDb";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createLaneService } from "../lanes/laneService";
 import { matchLaneOverlayPolicies } from "../config/laneOverlayMatcher";
+import { nowIso } from "../shared/utils";
 
 type ActiveRunEntry = {
   laneId: string;
@@ -82,7 +83,6 @@ export function createTestService({
   broadcastEvent: (ev: TestEvent) => void;
 }) {
   const activeRuns = new Map<string, ActiveRunEntry>();
-  const nowIso = () => new Date().toISOString();
 
   const writeRunLogChunk = (entry: ActiveRunEntry, chunk: string | Buffer) => {
     if (entry.logLimitReached) return;

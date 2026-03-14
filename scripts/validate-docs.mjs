@@ -8,7 +8,6 @@ const ignoredTopLevel = new Set([
   ".ade",
   "apps",
   "docs",
-  "infra",
   "node_modules",
   "plans",
   "dist",

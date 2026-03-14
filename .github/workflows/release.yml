@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure tag points to main
+        run: |
+          git fetch origin main --depth=1
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+  release:
+    needs: verify
+    runs-on: macos-latest
+    concurrency:
+      group: release-${{ github.ref_name }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            apps/desktop/package-lock.json
+            apps/mcp-server/package-lock.json
+
+      - name: Install desktop dependencies
+        run: cd apps/desktop && npm ci
+
+      - name: Install MCP server dependencies
+        run: cd apps/mcp-server && npm ci
+
+      - name: Stamp release version
+        env:
+          ADE_RELEASE_TAG: ${{ github.ref_name }}
+        run: cd apps/desktop && npm run version:release
+
+      - name: Create draft GitHub release with generated notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG_NAME" >/dev/null 2>&1 || \
+            gh release create "$TAG_NAME" --draft --title "$TAG_NAME" --generate-notes
+
+      - name: Build and publish macOS release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ELECTRON_CACHE: ${{ runner.temp }}/electron
+          ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/electron-builder
+        run: cd apps/desktop && npm run release:mac

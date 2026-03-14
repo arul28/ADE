@@ -8,9 +8,12 @@ import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type {
   CtoIdentity,
+  ExternalConnectionAuthPlacement,
+  ExternalConnectionAuthStatus,
   ExternalMcpAccessPolicy,
   ExternalMcpConnectionState,
   ExternalMcpEventPayload,
+  ExternalMcpManagedAuthConfig,
   ExternalMcpMissionSelection,
   ExternalMcpResolvedServerConfig,
   ExternalMcpServerConfig,
@@ -20,6 +23,7 @@ import type {
   ExternalMcpUsageEvent,
 } from "../../../shared/types";
 import { nowIso, stableStringify, writeTextAtomic } from "../shared/utils";
+import type { ExternalConnectionAuthService } from "./externalConnectionAuthService";
 import type { WorkerAgentService } from "../cto/workerAgentService";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { createMissionService } from "../missions/missionService";
@@ -56,6 +60,7 @@ type ExternalMcpServiceArgs = {
   missionService?: ReturnType<typeof createMissionService> | null;
   workerBudgetService?: ReturnType<typeof createWorkerBudgetService> | null;
   missionBudgetService?: MissionBudgetService | null;
+  authService?: ExternalConnectionAuthService | null;
   onEvent?: ((event: ExternalMcpEventPayload) => void) | null;
 };
 
@@ -77,6 +82,7 @@ type RuntimeServerState = {
   healthTimer: ReturnType<typeof setInterval> | null;
   signature: string;
   autoStart: boolean;
+  authStatus: ExternalConnectionAuthStatus | null;
 };
 
 type PersistedUsageRow = {
@@ -123,6 +129,32 @@ function asStringArray(value: unknown): string[] | undefined {
     .map((entry) => String(entry ?? "").trim())
     .filter((entry) => entry.length > 0);
   return out.length > 0 ? out : undefined;
+}
+
+function normalizeAuthPlacement(value: unknown): ExternalConnectionAuthPlacement | undefined {
+  if (!isRecord(value)) return undefined;
+  const target = asTrimmedString(value.target).toLowerCase();
+  const key = asTrimmedString(value.key);
+  if ((target !== "header" && target !== "env") || !key.length) return undefined;
+  return {
+    target,
+    key,
+    ...(asTrimmedString(value.prefix) ? { prefix: asTrimmedString(value.prefix) } : {}),
+  };
+}
+
+function normalizeManagedAuth(value: unknown): ExternalMcpManagedAuthConfig | undefined {
+  if (!isRecord(value)) return undefined;
+  const authId = asTrimmedString(value.authId);
+  const mode = asTrimmedString(value.mode).toLowerCase();
+  const placement = normalizeAuthPlacement(value.placement);
+  if (!authId.length || !placement) return undefined;
+  if (mode !== "none" && mode !== "api_key" && mode !== "bearer" && mode !== "oauth") return undefined;
+  return {
+    authId,
+    mode,
+    placement,
+  };
 }
 
 function parseDurationSeconds(value: unknown, fallback = DEFAULT_HEALTH_CHECK_INTERVAL_SEC): number {
@@ -236,6 +268,7 @@ function normalizeServerConfig(raw: unknown): ExternalMcpServerConfig | null {
       raw.healthCheckIntervalSec ?? raw.healthCheckInterval ?? raw.healthIntervalSec,
       DEFAULT_HEALTH_CHECK_INTERVAL_SEC,
     ),
+    ...(normalizeManagedAuth(raw.auth) ? { auth: normalizeManagedAuth(raw.auth) } : {}),
   };
 
   if (transport === "stdio") {
@@ -309,7 +342,15 @@ function resolveRuntimeConfig(config: ExternalMcpServerConfig): ExternalMcpResol
   };
 }
 
-function toSignature(config: ExternalMcpResolvedServerConfig): string {
+function mergeRecordMaps(
+  base?: Record<string, string>,
+  extra?: Record<string, string>,
+): Record<string, string> | undefined {
+  const next = { ...(base ?? {}), ...(extra ?? {}) };
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
+function toSignature(config: ExternalMcpResolvedServerConfig, authSignature = ""): string {
   return stableStringify({
     name: config.name,
     transport: config.transport,
@@ -320,6 +361,8 @@ function toSignature(config: ExternalMcpResolvedServerConfig): string {
     url: config.url,
     headers: config.headers,
     healthCheckIntervalSec: config.healthCheckIntervalSec,
+    auth: config.auth,
+    authSignature,
   });
 }
 
@@ -349,6 +392,7 @@ function toManifest(serverName: string, tool: {
 
 export function createExternalMcpService(args: ExternalMcpServiceArgs) {
   const secretPath = path.join(args.adeDir, "local.secret.yaml");
+  const authService = args.authService ?? null;
   const runtimes = new Map<string, RuntimeServerState>();
   const usageEvents: ExternalMcpUsageEvent[] = [];
   const listeners = new Set<(event: ExternalMcpEventPayload) => void>();
@@ -451,6 +495,37 @@ export function createExternalMcpService(args: ExternalMcpServiceArgs) {
       out.push(normalized);
     }
     return out.sort((a, b) => a.name.localeCompare(b.name));
+  };
+
+  const resolveAuthSignature = async (config: ExternalMcpServerConfig): Promise<string> => {
+    if (!authService) return "";
+    try {
+      return await authService.getBindingSignature(config.auth);
+    } catch (error) {
+      args.logger?.warn("external_mcp.auth_signature_failed", {
+        serverName: config.name,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return "auth:error";
+    }
+  };
+
+  const resolveAuthBinding = async (config: ExternalMcpServerConfig): Promise<{
+    headers?: Record<string, string>;
+    env?: Record<string, string>;
+    status: ExternalConnectionAuthStatus;
+  }> => {
+    if (!authService) {
+      return {
+        status: {
+          mode: config.auth?.mode ?? "none",
+          state: config.auth ? "missing" : "ready",
+          summary: config.auth ? "Managed auth service is unavailable." : "No managed auth configured.",
+          materializationPreview: [],
+        },
+      };
+    }
+    return authService.materializeBinding(config.auth);
   };
 
   const getAgentAccessPolicy = (identity: ExternalMcpSessionIdentity): ExternalMcpAccessPolicy => {
@@ -653,12 +728,45 @@ export function createExternalMcpService(args: ExternalMcpServiceArgs) {
     });
   };
 
+  const resolveConnectedRuntimeConfig = async (
+    config: ExternalMcpServerConfig,
+  ): Promise<{
+    resolved: ExternalMcpResolvedServerConfig;
+    authStatus: ExternalConnectionAuthStatus;
+  }> => {
+    const base = resolveRuntimeConfig(config);
+    const auth = await resolveAuthBinding(config);
+    if (auth.status.state !== "ready") {
+      throw new Error(auth.status.lastError ?? auth.status.summary);
+    }
+    const resolved: ExternalMcpResolvedServerConfig = base.transport === "stdio"
+      ? {
+          ...base,
+          env: mergeRecordMaps(base.env, auth.env),
+        }
+      : {
+          ...base,
+          headers: mergeRecordMaps(base.headers, auth.headers),
+        };
+    return {
+      resolved,
+      authStatus: auth.status,
+    };
+  };
+
   const connectRuntime = async (runtime: RuntimeServerState): Promise<void> => {
     clearReconnectTimer(runtime);
     clearHealthTimer(runtime);
     runtime.state = runtime.lastConnectedAt ? "reconnecting" : "connecting";
     emitServerState(runtime);
     try {
+      const resolvedConfig = await resolveConnectedRuntimeConfig(runtime.rawConfig);
+      runtime.resolvedConfig = resolvedConfig.resolved;
+      runtime.authStatus = resolvedConfig.authStatus;
+      runtime.signature = toSignature(
+        resolvedConfig.resolved,
+        await resolveAuthSignature(runtime.rawConfig),
+      );
       const client = new Client(
         { name: "ade", version: "0.0.0" },
         {
@@ -698,24 +806,34 @@ export function createExternalMcpService(args: ExternalMcpServiceArgs) {
       startHealthChecks(runtime);
     } catch (error) {
       runtime.lastError = error instanceof Error ? error.message : String(error);
+      runtime.authStatus = await resolveAuthBinding(runtime.rawConfig).then((result) => result.status).catch(() => runtime.authStatus ?? null);
       runtime.state = "failed";
       emitServerState(runtime);
-      runtime.reconnectAttempt += 1;
-      scheduleReconnect(runtime);
+      const authBlocked =
+        runtime.authStatus?.state === "missing"
+        || runtime.authStatus?.state === "needs_auth"
+        || runtime.authStatus?.state === "expired"
+        || runtime.authStatus?.state === "error";
+      if (!authBlocked) {
+        runtime.reconnectAttempt += 1;
+        scheduleReconnect(runtime);
+      }
       throw error;
     }
   };
 
   const createRuntimeState = (
     config: ExternalMcpServerConfig,
+    signature: string,
+    authStatus: ExternalConnectionAuthStatus | null,
     existing?: RuntimeServerState | null,
   ): RuntimeServerState => {
     const resolvedConfig = resolveRuntimeConfig(config);
-    const signature = toSignature(resolvedConfig);
     if (existing && existing.signature === signature) {
       existing.rawConfig = config;
       existing.resolvedConfig = resolvedConfig;
       existing.autoStart = config.autoStart !== false;
+      existing.authStatus = authStatus;
       return existing;
     }
 
@@ -735,17 +853,23 @@ export function createExternalMcpService(args: ExternalMcpServiceArgs) {
       healthTimer: null,
       signature,
       autoStart: config.autoStart !== false,
+      authStatus,
     };
 
     runtime.rawConfig = config;
     runtime.resolvedConfig = resolvedConfig;
     runtime.signature = signature;
     runtime.autoStart = config.autoStart !== false;
+    runtime.authStatus = authStatus;
     return runtime;
   };
 
-  const getOrCreateRuntime = (config: ExternalMcpServerConfig): RuntimeServerState => {
-    const runtime = createRuntimeState(config, runtimes.get(config.name));
+  const getOrCreateRuntime = (
+    config: ExternalMcpServerConfig,
+    signature: string,
+    authStatus: ExternalConnectionAuthStatus | null,
+  ): RuntimeServerState => {
+    const runtime = createRuntimeState(config, signature, authStatus, runtimes.get(config.name));
     runtimes.set(config.name, runtime);
     return runtime;
   };
@@ -756,9 +880,12 @@ export function createExternalMcpService(args: ExternalMcpServiceArgs) {
     for (const config of configs) {
       seen.add(config.name);
       const existing = runtimes.get(config.name);
-      const nextSignature = toSignature(resolveRuntimeConfig(config));
+      const baseResolved = resolveRuntimeConfig(config);
+      const authSignature = await resolveAuthSignature(config);
+      const authStatus = await resolveAuthBinding(config).then((result) => result.status).catch(() => null);
+      const nextSignature = toSignature(baseResolved, authSignature);
       const signatureChanged = existing ? existing.signature !== nextSignature : false;
-      const runtime = getOrCreateRuntime(config);
+      const runtime = getOrCreateRuntime(config, nextSignature, authStatus);
       runtime.toolMap = new Map(
         applyServerToolPermissions(runtime, [...runtime.toolMap.values()]).map((tool) => [tool.namespacedName, tool] as const),
       );
@@ -1011,6 +1138,7 @@ export function createExternalMcpService(args: ExternalMcpServiceArgs) {
           consecutivePingFailures: runtime.consecutivePingFailures,
           lastError: runtime.lastError,
           autoStart: runtime.autoStart,
+          authStatus: runtime.authStatus ?? undefined,
         })),
       );
     },
@@ -1046,9 +1174,17 @@ export function createExternalMcpService(args: ExternalMcpServiceArgs) {
       const normalized = normalizeServerConfig(config);
       if (!normalized) throw new Error("Invalid external MCP server config.");
       const existing = runtimes.get(normalized.name) ?? null;
-      const nextSignature = toSignature(resolveRuntimeConfig(normalized));
+      const nextSignature = toSignature(
+        resolveRuntimeConfig(normalized),
+        await resolveAuthSignature(normalized),
+      );
       const reuseExisting = existing != null && existing.signature === nextSignature;
-      const runtime = createRuntimeState(normalized, reuseExisting ? existing : null);
+      const runtime = createRuntimeState(
+        normalized,
+        nextSignature,
+        await resolveAuthBinding(normalized).then((result) => result.status).catch(() => null),
+        reuseExisting ? existing : null,
+      );
       try {
         await connectRuntime(runtime);
         return {
@@ -1061,6 +1197,7 @@ export function createExternalMcpService(args: ExternalMcpServiceArgs) {
           consecutivePingFailures: runtime.consecutivePingFailures,
           lastError: runtime.lastError,
           autoStart: runtime.autoStart,
+          authStatus: runtime.authStatus ?? undefined,
         };
       } finally {
         if (!reuseExisting) {

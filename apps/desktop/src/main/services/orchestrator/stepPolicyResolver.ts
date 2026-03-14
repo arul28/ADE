@@ -9,7 +9,6 @@ import path from "node:path";
 import type {
   OrchestratorClaimScope,
   OrchestratorContextPolicyProfile,
-  OrchestratorContextProfileId,
   OrchestratorExecutorKind,
   OrchestratorStep,
   StartOrchestratorRunStepInput,
@@ -18,15 +17,12 @@ import {
   normalizeClaimScope,
   normalizeExecutorKind,
   asIntInRange,
-  CONTEXT_PROFILES,
-  DEFAULT_CONTEXT_PROFILE_ID,
+  DEFAULT_CONTEXT_POLICY,
 } from "./orchestratorQueries";
 
 // ── Step Policy Types ──────────────────────────────────────────────
 
 export type StepPolicy = {
-  includeNarrative?: boolean;
-  includeFullDocs?: boolean;
   docsMaxBytes?: number;
   claimScopes?: Array<{
     scopeKind: OrchestratorClaimScope;
@@ -110,28 +106,20 @@ export function resolveStepPolicy(step: OrchestratorStep): StepPolicy {
     ? parseClaimScopes(record.claimScopes)
     : undefined;
   return {
-    includeNarrative: record.includeNarrative === true,
-    includeFullDocs: record.includeFullDocs === true,
     docsMaxBytes: Number.isFinite(Number(record.docsMaxBytes)) ? Number(record.docsMaxBytes) : undefined,
     claimScopes
   };
 }
 
 export function resolveContextPolicy(args: {
-  runProfileId: OrchestratorContextProfileId;
   stepPolicy: StepPolicy;
 }): OrchestratorContextPolicyProfile {
-  const base = CONTEXT_PROFILES[args.runProfileId] ?? CONTEXT_PROFILES[DEFAULT_CONTEXT_PROFILE_ID];
-  const includeNarrative = args.stepPolicy.includeNarrative === true ? true : base.includeNarrative;
   return {
-    ...base,
-    includeNarrative,
-    laneExportLevel: includeNarrative ? "deep" : base.laneExportLevel,
-    docsMode: args.stepPolicy.includeFullDocs ? "full_docs" : base.docsMode,
+    ...DEFAULT_CONTEXT_POLICY,
     maxDocBytes:
       typeof args.stepPolicy.docsMaxBytes === "number" && Number.isFinite(args.stepPolicy.docsMaxBytes) && args.stepPolicy.docsMaxBytes > 0
         ? Math.floor(args.stepPolicy.docsMaxBytes)
-        : base.maxDocBytes
+        : DEFAULT_CONTEXT_POLICY.maxDocBytes
   };
 }
 

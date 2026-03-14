@@ -46,7 +46,6 @@ import net from "node:net";
 import { createMcpRequestHandler } from "../../../mcp-server/src/mcpServer";
 import { createEventBuffer, type AdeMcpRuntime, type AdeMcpPaths } from "../../../mcp-server/src/bootstrap";
 import { createKeybindingsService } from "./services/keybindings/keybindingsService";
-import { createTerminalProfilesService } from "./services/terminalProfiles/terminalProfilesService";
 import { createAgentToolsService } from "./services/agentTools/agentToolsService";
 import { createOnboardingService } from "./services/onboarding/onboardingService";
 import { createAutomationService } from "./services/automations/automationService";
@@ -100,6 +99,7 @@ import { createAiOrchestratorService } from "./services/orchestrator/aiOrchestra
 import { createMissionBudgetService } from "./services/orchestrator/missionBudgetService";
 import { transitionMissionStatus } from "./services/orchestrator/missionLifecycle";
 import { createExternalMcpService } from "./services/externalMcp/externalMcpService";
+import { createExternalConnectionAuthService } from "./services/externalMcp/externalConnectionAuthService";
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
 import { createAutoUpdateService } from "./services/updates/autoUpdateService";
 import type { Logger } from "./services/logging/logger";
@@ -148,8 +148,7 @@ function fixElectronShellPath(): void {
 fixElectronShellPath();
 
 const disableHardwareAcceleration =
-  process.env.ADE_DISABLE_HARDWARE_ACCEL === "1"
-  || !!process.env.VITE_DEV_SERVER_URL;
+  process.env.ADE_DISABLE_HARDWARE_ACCEL === "1";
 if (disableHardwareAcceleration) {
   app.disableHardwareAcceleration();
 }
@@ -159,24 +158,14 @@ const devStabilityMode =
   || !!process.env.VITE_DEV_SERVER_URL;
 const enableAllBackgroundTasks =
   process.env.ADE_ENABLE_ALL_BACKGROUND_TASKS === "1";
+// In dev stability mode, only enable essential background tasks by default.
+// Use ADE_ENABLE_ALL_BACKGROUND_TASKS=1 or individual flags to enable others.
 const defaultEnabledBackgroundTaskFlags = new Set<string>([
   "ADE_ENABLE_CONFIG_RELOAD",
   "ADE_ENABLE_USAGE_TRACKING",
-  "ADE_ENABLE_AUTOMATION_INGRESS",
-  "ADE_ENABLE_EXTERNAL_MCP",
-  "ADE_ENABLE_OPENCLAW",
   "ADE_ENABLE_MISSION_QUEUE",
   "ADE_ENABLE_TEAM_RUNTIME_RECOVERY",
-  "ADE_ENABLE_LINEAR_SYNC",
-  "ADE_ENABLE_LINEAR_INGRESS",
-  "ADE_ENABLE_MEMORY_STARTUP_SWEEP",
-  "ADE_ENABLE_MEMORY_CONSOLIDATION",
-  "ADE_ENABLE_EMBEDDING_WORKER",
-  "ADE_ENABLE_HUMAN_DIGEST",
-  "ADE_ENABLE_CONFLICT_PREDICTION",
-  "ADE_ENABLE_EPISODIC_SUMMARY",
   "ADE_ENABLE_HEAD_WATCHER",
-  "ADE_ENABLE_SKILL_REGISTRY",
   "ADE_ENABLE_PORT_ALLOCATION_RECOVERY",
 ]);
 
@@ -558,7 +547,6 @@ app.whenReady().then(async () => {
 
     const db = await openKvDb(adePaths.dbPath, logger);
     const keybindingsService = createKeybindingsService({ db });
-    const terminalProfilesService = createTerminalProfilesService({ db });
     const agentToolsService = createAgentToolsService({ logger });
 
     const project = toProjectInfo(projectRoot, baseRef);
@@ -1405,6 +1393,10 @@ app.whenReady().then(async () => {
         delayMs,
       );
     };
+    const externalConnectionAuthService = createExternalConnectionAuthService({
+      adeDir: adePaths.adeDir,
+      logger,
+    });
     const externalMcpService = createExternalMcpService({
       projectRoot,
       adeDir: adePaths.adeDir,
@@ -1416,6 +1408,7 @@ app.whenReady().then(async () => {
       missionService,
       workerBudgetService,
       missionBudgetService,
+      authService: externalConnectionAuthService,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.externalMcpEvent, event),
     });
     scheduleBackgroundProjectTask(
@@ -2043,7 +2036,6 @@ app.whenReady().then(async () => {
       hasUserSelectedProject: userSelectedProject,
       disposeHeadWatcher,
       keybindingsService,
-      terminalProfilesService,
       agentToolsService,
       onboardingService,
       laneService,
@@ -2112,6 +2104,7 @@ app.whenReady().then(async () => {
       linearRoutingService,
       linearIngressService,
       linearSyncService,
+      externalConnectionAuthService,
       externalMcpService,
       configReloadService,
       mcpSocketServer,
@@ -2137,7 +2130,6 @@ app.whenReady().then(async () => {
       adeDir: "",
       disposeHeadWatcher: () => {},
       keybindingsService: null,
-      terminalProfilesService: null,
       agentToolsService: null,
       onboardingService: null,
       laneService: null,
@@ -2202,6 +2194,7 @@ app.whenReady().then(async () => {
       linearRoutingService: null,
       linearIngressService: null,
       linearSyncService: null,
+      externalConnectionAuthService: null,
       externalMcpService: null,
       configReloadService: null
     } as unknown as AppContext);
@@ -2262,6 +2255,11 @@ app.whenReady().then(async () => {
     }
     try {
       await ctx.externalMcpService?.dispose?.();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.externalConnectionAuthService?.dispose?.();
     } catch {
       // ignore
     }

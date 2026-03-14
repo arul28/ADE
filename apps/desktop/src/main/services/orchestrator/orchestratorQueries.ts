@@ -185,25 +185,14 @@ export type ArtifactRow = {
 
 // ── Constants ──────────────────────────────────────────────────────
 
-export const DEFAULT_CONTEXT_PROFILE_ID: OrchestratorContextProfileId = "orchestrator_deterministic_v1";
+export const DEFAULT_CONTEXT_PROFILE_ID = "orchestrator_deterministic_v1";
 
-export const CONTEXT_PROFILES: Record<OrchestratorContextProfileId, OrchestratorContextPolicyProfile> = {
-  orchestrator_deterministic_v1: {
-    id: "orchestrator_deterministic_v1",
-    includeNarrative: false,
-    docsMode: "digest_refs",
-    laneExportLevel: "standard",
-    projectExportLevel: "lite",
-    maxDocBytes: 120_000
-  },
-  orchestrator_narrative_opt_in_v1: {
-    id: "orchestrator_narrative_opt_in_v1",
-    includeNarrative: true,
-    docsMode: "digest_refs",
-    laneExportLevel: "deep",
-    projectExportLevel: "standard",
-    maxDocBytes: 200_000
-  }
+export const DEFAULT_CONTEXT_POLICY: OrchestratorContextPolicyProfile = {
+  id: DEFAULT_CONTEXT_PROFILE_ID,
+  docsMode: "digest_refs",
+  laneExportLevel: "standard",
+  projectExportLevel: "lite",
+  maxDocBytes: 120_000,
 };
 
 export const TERMINAL_RUN_STATUSES = new Set<OrchestratorRunStatus>(["succeeded", "failed", "canceled"]);
@@ -375,9 +364,8 @@ export function normalizeRuntimeEventType(value: string): OrchestratorRuntimeEve
   return "progress";
 }
 
-export function normalizeProfileId(value: string | null | undefined): OrchestratorContextProfileId {
-  if (value === "orchestrator_narrative_opt_in_v1") return value;
-  return DEFAULT_CONTEXT_PROFILE_ID;
+export function normalizeProfileId(value: string | null | undefined): string {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : DEFAULT_CONTEXT_PROFILE_ID;
 }
 
 export function normalizeTerminalSessionStatus(value: unknown): "running" | "completed" | "failed" | "disposed" | "unknown" {

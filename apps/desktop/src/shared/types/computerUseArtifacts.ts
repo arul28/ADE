@@ -171,6 +171,15 @@ export type ComputerUseSettingsSnapshot = {
   backendStatus: ComputerUseBackendStatus;
   preferredBackend: string | null;
   capabilityMatrix: ComputerUseCapabilityMatrixRow[];
+  ghostOsCheck: {
+    repoUrl: string;
+    cliInstalled: boolean;
+    setupState: "ready" | "needs_setup" | "not_installed" | "unknown";
+    adeConfigured: boolean;
+    adeConnected: boolean;
+    summary: string;
+    details: string[];
+  };
   guidance: {
     overview: string;
     ghostOs: string;

@@ -8,6 +8,7 @@
 
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
+import { nowIso } from "../shared/utils";
 import type { GetModelCapabilitiesResult } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import type {
@@ -194,9 +195,7 @@ export type MissionRuntimeProfile = {
     interventionReasoningEffort: RuntimeReasoningEffort;
   };
   context: {
-    contextProfile: "orchestrator_deterministic_v1" | "orchestrator_narrative_opt_in_v1";
-    includeNarrative: boolean;
-    docsMode: "digest_refs" | "full_docs";
+    contextProfile: string;
   };
   provenance: {
     source: "policy";
@@ -315,7 +314,7 @@ export const ORCHESTRATOR_CHAT_METADATA_KEY = "orchestratorChat";
 export const ORCHESTRATOR_CHAT_SESSION_METADATA_KEY = "orchestratorChatSession";
 export const MAX_PERSISTED_STEERING_DIRECTIVES = 200;
 export const MAX_PERSISTED_CHAT_MESSAGES = 200;
-export const HEALTH_SWEEP_INTERVAL_MS = 5_000;
+export const HEALTH_SWEEP_INTERVAL_MS = 30_000;
 export const HEALTH_SWEEP_ACTIVE_RUN_SCAN_LIMIT = 200;
 export const STALE_ATTEMPT_GRACE_MS = 10_000;
 export const WORKER_WAITING_INPUT_INTERVENTION_COOLDOWN_MS = 120_000;
@@ -324,7 +323,7 @@ export const MAX_CHAT_CONTEXT_CHARS = 4_000;
 export const MAX_CHAT_CONTEXT_MESSAGES = 8;
 export const MAX_CHAT_LINE_CHARS = 420;
 export const MAX_LATEST_CHAT_MESSAGE_CHARS = 1_500;
-export const SESSION_SIGNAL_RETENTION_MS = 20 * 60_000;
+export const SESSION_SIGNAL_RETENTION_MS = 5 * 60_000;
 export const GRACEFUL_CANCEL_NOTIFY_TIMEOUT_MS = 1_200;
 export const GRACEFUL_CANCEL_INTERRUPT_TIMEOUT_MS = 1_500;
 export const GRACEFUL_CANCEL_DISPOSE_TIMEOUT_MS = 2_500;
@@ -440,9 +439,8 @@ export type OrchestratorContext = {
 
 // ── Utility Functions ───────────────────────────────────────────────
 
-export function nowIso(): string {
-  return new Date().toISOString();
-}
+// Re-exported from ../shared/utils (imported at top of file)
+export { nowIso };
 
 export function createDeferred<T>(): Deferred<T> {
   let settle: ((value: T) => void) | null = null;
@@ -1142,9 +1140,6 @@ export function deriveRuntimeProfileFromPolicy(
     stepTimeoutMs = 480_000;
   }
 
-  const includeNarrative = policy.planning.mode === "manual_review" || strictGates;
-  const contextProfile = includeNarrative ? "orchestrator_narrative_opt_in_v1" : "orchestrator_deterministic_v1";
-
   return {
     planning: {
       useAiPlanner: policy.planning.mode !== "off",
@@ -1170,9 +1165,7 @@ export function deriveRuntimeProfileFromPolicy(
       )
     },
     context: {
-      contextProfile,
-      includeNarrative,
-      docsMode: includeNarrative ? "full_docs" : "digest_refs"
+      contextProfile: "orchestrator_deterministic_v1",
     },
     provenance: {
       source: "policy"
@@ -1219,9 +1212,6 @@ export function deriveRuntimeProfileFromPhases(
     stepTimeoutMs = 480_000;
   }
 
-  const includeNarrative = hasManualReview || hasStrictGates;
-  const contextProfile = includeNarrative ? "orchestrator_narrative_opt_in_v1" : "orchestrator_deterministic_v1";
-
   // Derive reasoning effort from phase cards that have validation or review roles
   const reviewPhases = phases.filter(
     (p) => ["validation", "code_review", "codereview", "review", "test_review", "testreview"]
@@ -1252,9 +1242,7 @@ export function deriveRuntimeProfileFromPhases(
       )
     },
     context: {
-      contextProfile,
-      includeNarrative,
-      docsMode: includeNarrative ? "full_docs" : "digest_refs"
+      contextProfile: "orchestrator_deterministic_v1",
     },
     provenance: {
       source: "policy"

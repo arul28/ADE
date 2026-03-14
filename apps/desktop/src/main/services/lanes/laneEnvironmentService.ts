@@ -10,6 +10,7 @@ import type {
   LaneEnvFileConfig,
   LaneDependencyInstallConfig,
   LaneMountPointConfig,
+  LaneCopyPathConfig,
   LaneDockerConfig,
   LaneOverlayOverrides,
   LaneSummary
@@ -44,7 +45,8 @@ function cloneEnvInitConfig(config: LaneEnvInitConfig): LaneEnvInitConfig {
     ...(config.envFiles ? { envFiles: [...config.envFiles] } : {}),
     ...(docker ? { docker } : {}),
     ...(config.dependencies ? { dependencies: [...config.dependencies] } : {}),
-    ...(config.mountPoints ? { mountPoints: [...config.mountPoints] } : {})
+    ...(config.mountPoints ? { mountPoints: [...config.mountPoints] } : {}),
+    ...(config.copyPaths ? { copyPaths: [...config.copyPaths] } : {})
   };
 }
 
@@ -60,7 +62,8 @@ function mergeLaneEnvInitConfig(
     envFiles: [...(current.envFiles ?? []), ...(next.envFiles ?? [])],
     ...(docker ? { docker } : {}),
     dependencies: [...(current.dependencies ?? []), ...(next.dependencies ?? [])],
-    mountPoints: [...(current.mountPoints ?? []), ...(next.mountPoints ?? [])]
+    mountPoints: [...(current.mountPoints ?? []), ...(next.mountPoints ?? [])],
+    copyPaths: [...(current.copyPaths ?? []), ...(next.copyPaths ?? [])]
   };
 }
 
@@ -271,6 +274,37 @@ export function createLaneEnvironmentService({
     }
   }
 
+  function setupCopyPaths(
+    worktreePath: string,
+    copyPaths: LaneCopyPathConfig[]
+  ): void {
+    for (const cp of copyPaths) {
+      const sourcePath = path.resolve(projectRoot, cp.source);
+      const dest = cp.dest ?? cp.source;
+      const destPath = path.resolve(worktreePath, dest);
+
+      if (!fs.existsSync(sourcePath)) {
+        logger.warn("lane_env_init.copy_path_missing", { source: cp.source });
+        continue;
+      }
+
+      const stat = fs.statSync(sourcePath);
+      if (stat.isDirectory()) {
+        // Recursive directory copy
+        fs.cpSync(sourcePath, destPath, { recursive: true, force: true });
+        logger.debug("lane_env_init.copy_path_dir", { source: cp.source, dest });
+      } else {
+        // Single file copy
+        const destDir = path.dirname(destPath);
+        if (!fs.existsSync(destDir)) {
+          fs.mkdirSync(destDir, { recursive: true });
+        }
+        fs.copyFileSync(sourcePath, destPath);
+        logger.debug("lane_env_init.copy_path_file", { source: cp.source, dest });
+      }
+    }
+  }
+
   function buildLaneVars(lane: LaneSummary, overrides: LaneOverlayOverrides): Record<string, string> {
     const slug = lane.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "lane";
     const portStart = overrides.portRange?.start ?? 3000;
@@ -297,7 +331,8 @@ export function createLaneEnvironmentService({
       ...(config.envFiles?.length ? { envFiles: config.envFiles } : {}),
       ...(config.docker ? { docker: config.docker } : {}),
       ...(config.dependencies?.length ? { dependencies: config.dependencies } : {}),
-      ...(config.mountPoints?.length ? { mountPoints: config.mountPoints } : {})
+      ...(config.mountPoints?.length ? { mountPoints: config.mountPoints } : {}),
+      ...(config.copyPaths?.length ? { copyPaths: config.copyPaths } : {})
     };
 
     return Object.keys(normalized).length > 0 ? normalized : undefined;
@@ -325,6 +360,9 @@ export function createLaneEnvironmentService({
       }
       if (config.mountPoints && config.mountPoints.length > 0) {
         steps.push(makeStep("mount-points", `Setup ${config.mountPoints.length} mount point(s)`));
+      }
+      if (config.copyPaths && config.copyPaths.length > 0) {
+        steps.push(makeStep("copy-paths", `Copy ${config.copyPaths.length} path(s)`));
       }
 
       if (steps.length === 0) {
@@ -384,6 +422,16 @@ export function createLaneEnvironmentService({
         const mounts = config.mountPoints;
         const ok = await runStep(progress, lane.id, "mount-points", async () => {
           setupMountPoints(lane.worktreePath, mounts);
+          return null;
+        });
+        if (!ok) return progress;
+      }
+
+      // Step 5: Copy paths (files and directories from project root)
+      if (config.copyPaths && config.copyPaths.length > 0) {
+        const paths = config.copyPaths;
+        const ok = await runStep(progress, lane.id, "copy-paths", async () => {
+          setupCopyPaths(lane.worktreePath, paths);
           return null;
         });
         if (!ok) return progress;

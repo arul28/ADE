@@ -639,7 +639,7 @@ export function RightEdgeFloatingPane() {
         <LaneGitActionsPane
           laneId={activeLaneId}
           autoRebaseEnabled={false}
-          onOpenSettings={() => navigate("/settings?tab=automations")}
+          onOpenSettings={() => navigate("/settings?tab=lane-templates")}
           onSelectFile={handleSelectFile}
           onSelectCommit={handleSelectCommit}
           selectedPath={selectedPath}

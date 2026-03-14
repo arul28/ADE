@@ -69,7 +69,7 @@ export default $config({
   app(input: any) {
     const stage = sanitizeStage(input.stage ?? "dev");
     const region = process.env.ADE_AWS_REGION ?? "us-east-1";
-    const accountId = process.env.ADE_ALLOWED_AWS_ACCOUNT_ID ?? "695094375923";
+    const accountId = process.env.ADE_ALLOWED_AWS_ACCOUNT_ID ?? "";
     const enableAwsDefaultTags = isTruthy(process.env.ADE_ENABLE_AWS_DEFAULT_TAGS);
     const defaultTags = enableAwsDefaultTags
       ? {

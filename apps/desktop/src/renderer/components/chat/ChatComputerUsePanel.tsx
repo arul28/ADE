@@ -22,6 +22,17 @@ function openArtifactUri(uri: string | null) {
   void window.ade.app.revealPath(uri);
 }
 
+function resolveArtifactPreviewUri(uri: string | null, projectRoot: string | null): string | null {
+  if (!uri) return null;
+  if (isExternalUri(uri)) return uri;
+  const absolutePath = uri.startsWith("/")
+    ? uri
+    : projectRoot
+      ? `${projectRoot.replace(/\/$/, "")}/${uri.replace(/^\.\//, "")}`
+      : null;
+  return absolutePath ? encodeURI(`file://${absolutePath}`) : null;
+}
+
 export function ChatComputerUsePanel({
   laneId,
   sessionId,
@@ -40,6 +51,7 @@ export function ChatComputerUsePanel({
   const [error, setError] = useState<string | null>(null);
   const [routeKind, setRouteKind] = useState<ComputerUseArtifactOwnerKind>("mission");
   const [routeTargetId, setRouteTargetId] = useState("");
+  const [projectRoot, setProjectRoot] = useState<string | null>(null);
 
   const selectedArtifact = useMemo(
     () => snapshot?.artifacts.find((artifact) => artifact.id === selectedArtifactId) ?? snapshot?.artifacts[0] ?? null,
@@ -56,6 +68,20 @@ export function ChatComputerUsePanel({
       : snapshot?.artifacts[0]?.id ?? null);
   }, [snapshot]);
 
+  useEffect(() => {
+    let cancelled = false;
+    window.ade.project.getSnapshot()
+      .then((project) => {
+        if (!cancelled) setProjectRoot(project.rootPath);
+      })
+      .catch(() => {
+        if (!cancelled) setProjectRoot(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   if (!snapshot) {
     return (
       <div className="rounded-[var(--chat-radius-card)] border border-white/[0.06] bg-black/10 px-3 py-2 font-sans text-[11px] text-muted-fg/35">
@@ -63,6 +89,18 @@ export function ChatComputerUsePanel({
       </div>
     );
   }
+
+  const previewUri = resolveArtifactPreviewUri(selectedArtifact?.uri ?? null, projectRoot);
+  const showImagePreview = Boolean(
+    selectedArtifact
+      && previewUri
+      && (selectedArtifact.kind === "screenshot" || selectedArtifact.mimeType?.startsWith("image/")),
+  );
+  const showVideoPreview = Boolean(
+    selectedArtifact
+      && previewUri
+      && (selectedArtifact.kind === "video_recording" || selectedArtifact.mimeType?.startsWith("video/")),
+  );
 
   const updateReview = async (artifactId: string, reviewState: "accepted" | "needs_more" | "dismissed", workflowState?: "promoted" | "published" | "dismissed") => {
     setBusy(true);
@@ -203,6 +241,28 @@ export function ChatComputerUsePanel({
                 <span>{describeComputerUseLinks(selectedArtifact.links)}</span>
               </div>
             </div>
+
+            {showImagePreview ? (
+              <div className="overflow-hidden rounded-[var(--chat-radius-card)] border border-white/[0.05] bg-black/20">
+                <img
+                  src={previewUri!}
+                  alt={selectedArtifact.title}
+                  className="block max-h-[420px] w-full object-contain"
+                />
+              </div>
+            ) : null}
+
+            {showVideoPreview ? (
+              <div className="overflow-hidden rounded-[var(--chat-radius-card)] border border-white/[0.05] bg-black/20 p-2">
+                <video src={previewUri!} controls className="block max-h-[420px] w-full rounded-[calc(var(--chat-radius-card)-8px)] bg-black" />
+              </div>
+            ) : null}
+
+            {!showImagePreview && !showVideoPreview && selectedArtifact.uri ? (
+              <div className="rounded-[var(--chat-radius-card)] border border-white/[0.05] bg-black/10 px-3 py-2 font-sans text-[11px] text-muted-fg/34">
+                Inline preview is available for screenshots and recordings. Use open or reveal for this artifact type.
+              </div>
+            ) : null}
 
             <div className="flex flex-wrap gap-2">
               <button type="button" className="rounded-[var(--chat-radius-pill)] border border-emerald-400/18 bg-emerald-500/8 px-2.5 py-1 font-sans text-[10px] font-medium text-emerald-200/80" onClick={() => void updateReview(selectedArtifact.id, "accepted", "promoted")} disabled={busy}>Accept</button>

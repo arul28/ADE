@@ -52,12 +52,16 @@ function BackendCard({
   tone,
   detail,
   helper,
+  diagnostics,
+  badges,
   actions,
 }: {
   title: string;
   tone: "success" | "warning" | "muted" | "info";
   detail: string;
   helper: string;
+  diagnostics?: string[];
+  badges?: Array<{ label: string; tone: "success" | "warning" | "muted" | "info" }>;
   actions?: Array<{ label: string; onClick: () => void }>;
 }) {
   return (
@@ -83,6 +87,23 @@ function BackendCard({
           tone={tone}
         />
       </div>
+      {badges?.length ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {badges.map((badge) => (
+            <StatusPill key={badge.label} label={badge.label} tone={badge.tone} />
+          ))}
+        </div>
+      ) : null}
+      {diagnostics?.length ? (
+        <div
+          className="mt-3 grid gap-1 text-[10px]"
+          style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT, lineHeight: 1.5 }}
+        >
+          {diagnostics.map((line) => (
+            <div key={line}>{line}</div>
+          ))}
+        </div>
+      ) : null}
       {actions?.length ? (
         <div className="mt-3 flex flex-wrap gap-2">
           {actions.map((action) => (
@@ -159,6 +180,7 @@ export function ComputerUseSection({
 
   const ghostOs = snapshot.backendStatus.backends.find((backend) => backend.name === "Ghost OS") ?? null;
   const agentBrowser = snapshot.backendStatus.backends.find((backend) => backend.name === "agent-browser") ?? null;
+  const ghostCheck = snapshot.ghostOsCheck;
 
   return (
     <div style={{ maxWidth: 980, display: "flex", flexDirection: "column", gap: 16 }}>
@@ -180,12 +202,43 @@ export function ComputerUseSection({
       <div className="grid gap-4 lg:grid-cols-3">
         <BackendCard
           title="Ghost OS (External MCP)"
-          tone={ghostOs?.available ? "success" : "warning"}
-          detail={ghostOs?.detail ?? "Connect Ghost OS through External MCP to expose macOS accessibility/computer-use tools."}
+          tone={ghostCheck.adeConnected ? "success" : ghostCheck.cliInstalled ? "warning" : "muted"}
+          detail={ghostCheck.summary}
           helper={snapshot.guidance.ghostOs}
+          badges={[
+            {
+              label: ghostCheck.cliInstalled ? "ghost installed" : "ghost missing",
+              tone: ghostCheck.cliInstalled ? "success" : "muted",
+            },
+            {
+              label:
+                ghostCheck.setupState === "ready"
+                  ? "setup ready"
+                  : ghostCheck.setupState === "needs_setup"
+                    ? "needs ghost setup"
+                    : ghostCheck.setupState === "not_installed"
+                      ? "setup blocked"
+                      : "setup unknown",
+              tone:
+                ghostCheck.setupState === "ready"
+                  ? "success"
+                  : ghostCheck.setupState === "unknown"
+                    ? "info"
+                    : "warning",
+            },
+            {
+              label: ghostCheck.adeConfigured ? "ade configured" : "not in ade",
+              tone: ghostCheck.adeConfigured ? "info" : "warning",
+            },
+            {
+              label: ghostCheck.adeConnected ? "ade connected" : "not connected",
+              tone: ghostCheck.adeConnected ? "success" : "warning",
+            },
+          ]}
+          diagnostics={ghostCheck.details}
           actions={[
             { label: "Open External MCP", onClick: onOpenExternalMcp },
-            { label: "Ghost OS Docs", onClick: () => void window.ade.app.openExternal("https://github.com/ghostwright/ghost-os") },
+            { label: "Ghost OS Repo", onClick: () => void window.ade.app.openExternal(ghostCheck.repoUrl) },
           ]}
         />
         <BackendCard

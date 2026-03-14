@@ -306,6 +306,116 @@ describe("ctoStateService", () => {
     fixture.db.close();
   });
 
+  it("appendDailyLog creates the directory and file with timestamped entry", async () => {
+    const fixture = await createFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    service.appendDailyLog("Reviewed PR #42 and approved.", "2026-03-14");
+
+    const dailyDir = path.join(fixture.adeDir, "cto", "daily");
+    expect(fs.existsSync(dailyDir)).toBe(true);
+
+    const logFile = path.join(dailyDir, "2026-03-14.md");
+    expect(fs.existsSync(logFile)).toBe(true);
+
+    const content = fs.readFileSync(logFile, "utf8");
+    expect(content).toMatch(/^- \[\d{2}:\d{2}:\d{2}\] Reviewed PR #42 and approved\.\n$/);
+
+    fixture.db.close();
+  });
+
+  it("appendDailyLog appends to existing log", async () => {
+    const fixture = await createFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    service.appendDailyLog("First entry", "2026-03-14");
+    service.appendDailyLog("Second entry", "2026-03-14");
+
+    const logFile = path.join(fixture.adeDir, "cto", "daily", "2026-03-14.md");
+    const content = fs.readFileSync(logFile, "utf8");
+    const lines = content.trim().split("\n");
+    expect(lines.length).toBe(2);
+    expect(lines[0]).toMatch(/- \[\d{2}:\d{2}:\d{2}\] First entry/);
+    expect(lines[1]).toMatch(/- \[\d{2}:\d{2}:\d{2}\] Second entry/);
+
+    fixture.db.close();
+  });
+
+  it("readDailyLog returns null for non-existent date", async () => {
+    const fixture = await createFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    expect(service.readDailyLog("1999-01-01")).toBeNull();
+
+    fixture.db.close();
+  });
+
+  it("readDailyLog reads back what was written", async () => {
+    const fixture = await createFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    service.appendDailyLog("Deployed v2.1.0 to staging.", "2026-03-13");
+    const content = service.readDailyLog("2026-03-13");
+    expect(content).not.toBeNull();
+    expect(content).toMatch(/Deployed v2\.1\.0 to staging\./);
+
+    fixture.db.close();
+  });
+
+  it("listDailyLogs returns dates in reverse chronological order", async () => {
+    const fixture = await createFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    service.appendDailyLog("entry", "2026-03-10");
+    service.appendDailyLog("entry", "2026-03-12");
+    service.appendDailyLog("entry", "2026-03-11");
+
+    const dates = service.listDailyLogs();
+    expect(dates).toEqual(["2026-03-12", "2026-03-11", "2026-03-10"]);
+
+    fixture.db.close();
+  });
+
+  it("listDailyLogs respects the limit parameter", async () => {
+    const fixture = await createFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    service.appendDailyLog("entry", "2026-03-08");
+    service.appendDailyLog("entry", "2026-03-09");
+    service.appendDailyLog("entry", "2026-03-10");
+    service.appendDailyLog("entry", "2026-03-11");
+    service.appendDailyLog("entry", "2026-03-12");
+
+    const dates = service.listDailyLogs(2);
+    expect(dates).toEqual(["2026-03-12", "2026-03-11"]);
+
+    fixture.db.close();
+  });
+
   it("preserves onboarding state and extended identity fields across reloads", async () => {
     const fixture = await createFixture();
     const service = createCtoStateService({

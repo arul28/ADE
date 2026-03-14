@@ -88,14 +88,14 @@ These notes reflect the current Missions/orchestrator UX and runtime behavior be
 ## Verification (Executed, 2026-03-04)
 
 ### Desktop tests
-- `npm --prefix /Users/arul/ADE/apps/desktop run test -- src/main/services/orchestrator/coordinatorTools.test.ts src/main/services/orchestrator/executionPolicy.test.ts src/main/services/orchestrator/orchestratorService.test.ts src/main/services/orchestrator/aiOrchestratorService.test.ts src/main/services/missions/missionService.test.ts src/renderer/components/missions/MissionsPage.test.ts src/renderer/components/missions/missionHelpers.test.ts` ✅
+- `npm --prefix apps/desktop run test -- src/main/services/orchestrator/coordinatorTools.test.ts src/main/services/orchestrator/executionPolicy.test.ts src/main/services/orchestrator/orchestratorService.test.ts src/main/services/orchestrator/aiOrchestratorService.test.ts src/main/services/missions/missionService.test.ts src/renderer/components/missions/MissionsPage.test.ts src/renderer/components/missions/missionHelpers.test.ts` ✅
 
 ### MCP tests
-- `npm --prefix /Users/arul/ADE/apps/mcp-server run test -- src/mcpServer.test.ts` ✅
+- `npm --prefix apps/mcp-server run test -- src/mcpServer.test.ts` ✅
 
 ### Typecheck
-- `npm --prefix /Users/arul/ADE/apps/desktop run typecheck` ✅
-- `npm --prefix /Users/arul/ADE/apps/mcp-server run typecheck` ✅
+- `npm --prefix apps/desktop run typecheck` ✅
+- `npm --prefix apps/mcp-server run typecheck` ✅
 
 ### Repo assertions (source/docs scope)
 - No active `succeeded_with_risk` in `apps/desktop/src` or `apps/mcp-server/src`.
