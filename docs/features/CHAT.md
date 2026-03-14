@@ -12,8 +12,8 @@ Chat sessions are provider-agnostic. The `AgentChatProvider` type accepts:
 
 | Provider key | Runtime | Notes |
 |---|---|---|
-| `claude` | Claude CLI (`@anthropic-ai/claude-agent-sdk`) | Spawns a child process, communicates over JSON-RPC |
-| `codex` | OpenAI Codex CLI | Similar spawn model |
+| `claude` | Claude Agent SDK V2 (`@anthropic-ai/claude-agent-sdk`) | Persistent session via `unstable_v2_createSession` — subprocess + MCP servers stay alive between turns |
+| `codex` | OpenAI Codex CLI | Persistent subprocess, communicates over JSON-RPC |
 | `unified` | Vercel AI SDK (`ai` package) | Covers OpenRouter, local models, any provider with an `ai`-compatible adapter |
 
 Model selection is driven by `modelRegistry.ts`. The user picks a model
@@ -37,6 +37,11 @@ Every chat creates an `AgentChatSession`:
 Sessions persist their transcript and metadata to disk so they survive
 app restarts. The `AgentChatSessionSummary` exposes title, goal,
 cost/token usage, and a preview of the last output for the session list.
+
+Individual agent turns are subject to a 5-minute timeout enforced via
+the abort infrastructure. When a turn exceeds this limit, an error event
+is emitted and the turn is terminated, preventing a single stalled
+provider call from blocking the session indefinitely.
 
 ## CTO Chat vs. Regular Chat
 
@@ -78,6 +83,32 @@ CTO and named-employee sessions additionally receive:
 
 Memory tool names are detected during system-prompt composition so the
 prompt can include usage guidance only when the tools are actually present.
+
+### Compaction Flush
+
+When a chat session approaches its context window limit, the compaction
+flush service injects a hidden system message prompting the agent to
+persist important observations via `memoryAdd` before context is
+compacted. This ensures durable discoveries are not lost to compaction.
+The flush prompt includes explicit SAVE/DO-NOT-SAVE guidance to keep
+memory quality high.
+
+## Workflow Tools
+
+Chat agents (CTO, employees, and regular chat sessions) have access to
+workflow tools that enable them to take actions beyond conversation:
+
+| Tool | Purpose |
+|---|---|
+| `createLane` | Create a new lane with a worktree for implementation work |
+| `createPR` | Create a pull request from a lane's changes |
+| `captureScreenshot` | Capture a screenshot of the current environment (when runtime supports it) |
+| `reportCompletion` | Signal that the agent's assigned work is complete |
+
+These tools form the `workflowTools` tier, sitting between
+`universalTools` (available to all agents) and `coordinatorTools`
+(restricted to the mission orchestrator). The system prompt tells agents
+what tools they have and guides them on when to use each capability.
 
 ## Permission Modes
 

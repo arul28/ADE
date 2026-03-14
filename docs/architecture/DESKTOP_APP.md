@@ -114,6 +114,7 @@ The current default dev-enabled background set includes:
 - OpenClaw bridge startup
 - mission queue bootstrap
 - team runtime recovery
+- port allocation recovery
 - Linear sync
 - Linear ingress
 - memory startup sweep
@@ -149,7 +150,9 @@ Lane status computation is optional during initial project open. This prevents l
 
 Renderer polling now lives closer to the surfaces that need it:
 
-- terminal attention only runs on terminal-adjacent routes
+- terminal attention only runs on `/work` and `/lanes`
+- graph activity uses session-only refresh during live PTY churn and reserves history-backed recompute for slower timers, focus/visibility return, and PTY exit
+- history only polls while running operations exist, using silent visibility-aware refreshes
 - session-list lookups are deduplicated through a shared renderer cache
 - lane-scoped terminal panels only keep polling while they still have live sessions to watch
 
@@ -157,8 +160,9 @@ Renderer polling now lives closer to the surfaces that need it:
 
 Several heavy surfaces now load in phases:
 
+- Run loads project config/process definitions first and lane runtime second
 - CTO loads summary state first and defers team/settings-specific work
-- Missions loads the list first and defers dashboard/settings/model metadata
+- Missions loads the list first and defers dashboard/settings/model metadata; live orchestrator events coalesce into selected-mission refreshes instead of reloading the whole dashboard
 - Graph loads topology first and then stages risk, activity, sync, and PR overlays
 - PR workflows load queue/rehearsal state lazily instead of on every visit
 
@@ -180,6 +184,10 @@ Network- or config-dependent services now short-circuit instead of spinning:
 IPC channel constants live in `apps/desktop/src/shared/ipc.ts` and are registered in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 
 The preload bridge mirrors those channels into typed methods plus event subscription helpers.
+
+### Handler timeouts
+
+All IPC handlers are wrapped with a 30-second timeout. If a handler does not resolve within that window, the call rejects with a timeout error rather than hanging the renderer indefinitely. This prevents a single slow service from freezing the UI.
 
 ### Structured tracing
 
@@ -227,7 +235,8 @@ Shutdown continues to be defensive and best-effort:
 - dispose pollers and ingress services
 - stop file watchers, tests, and managed processes
 - dispose PTYs and agent chat sessions
-- flush and close SQLite
+- **flush SQLite before service disposal begins** (ensures durable state is persisted even if a disposal step crashes)
+- flush and close SQLite again at the end of the sequence
 
 Every cleanup step remains isolated by `try/catch` so one failing service does not block application exit.
 
@@ -283,16 +292,36 @@ These rules codify the patterns that eliminated ADE's earlier crash-prone startu
 
 ---
 
+## IDE Deep-Linking
+
+Each lane in the `LaneInspectorPane` can open its worktree directory directly in the system's default application or file manager via the `open` command on macOS. This enables quick navigation from the ADE lane view to the IDE workspace.
+
+---
+
+## UI Error States
+
+Mission and CTO UI components now include structured error handling:
+
+- Try/catch wrappers around async data loading operations
+- `isLoading` and `error` state variables for conditional rendering
+- Error UI with retry actions surfaced to the user
+- Graceful degradation when services are unavailable
+
+This follows the error handling patterns established in `CtoSettingsPanel.tsx`.
+
+---
+
 ## Current runtime status
 
-The desktop runtime is now shaped around predictable startup and bounded background work instead of hidden deferred bursts.
+The desktop runtime is now shaped around predictable startup and bounded background work instead of hidden deferred bursts. Phases 1-5 are complete for single-device operation.
 
 Current architecture guarantees:
 
 - the renderer becomes usable before all background services finish booting
 - background services declare when they start, how long they took, and why they were skipped
 - optional integrations stay dormant when not configured
-- renderer polling is scoped and deduplicated instead of globally eager
+- renderer polling is scoped, quiet, and deduplicated instead of globally eager
 - main-process services remain the only authority for repo mutation and system access
+- UI components handle errors and loading states gracefully
 
-Future architecture work can now focus on product features and localized performance issues rather than app-wide crash triage.
+Future architecture work focuses on multi-device sync (Phase 6) and mobile access (Phase 7) rather than app-wide crash triage.

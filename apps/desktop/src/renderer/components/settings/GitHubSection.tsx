@@ -331,6 +331,26 @@ export function GitHubSection() {
         ) : (
           /* ---- Not Connected State ---- */
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            {/* Token decryption failure warning */}
+            {githubStatus?.tokenDecryptionFailed && (
+              <div
+                style={{
+                  background: `${COLORS.warning}12`,
+                  border: `1px solid ${COLORS.warning}30`,
+                  borderRadius: 0,
+                  padding: "10px 14px",
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: 10,
+                }}
+              >
+                <Warning size={16} weight="fill" style={{ color: COLORS.warning, flexShrink: 0, marginTop: 1 }} />
+                <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.warning, lineHeight: "18px" }}>
+                  GitHub token exists but could not be decrypted. It may be corrupted. Please re-authenticate by saving a new token below.
+                </div>
+              </div>
+            )}
+
             {/* Prompt */}
             <div style={{ fontSize: 13, fontFamily: MONO_FONT, color: COLORS.textSecondary, lineHeight: "20px" }}>
               Connect a GitHub Personal Access Token to enable PR management, branch operations, and repository integrations.

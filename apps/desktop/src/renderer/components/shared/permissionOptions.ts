@@ -76,7 +76,7 @@ export function getPermissionOptions(opts: {
         label: "Full Access",
         shortDesc: "Persistent session with full tool access",
         detail: "Run this long-lived identity with full access. This is the OpenClaw-style operating mode for a trusted project operator that can work continuously without per-action permission prompts.",
-        allows: ["All configured tools for this session", "Cross-provider model swaps while keeping the same identity"],
+        allows: ["All configured tools for this session", "Model switches that follow the surface's chat policy while keeping the same identity"],
         warning: "Use this when you want the agent to operate as a trusted persistent teammate.",
         safety: "danger",
       },

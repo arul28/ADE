@@ -5,7 +5,7 @@ import { sessionStatusDot } from "../../lib/terminalAttention";
 import { primarySessionLabel, secondarySessionLabel } from "../../lib/sessions";
 import { useSessionDelta } from "./useSessionDelta";
 import { cn } from "../ui/cn";
-import { MONO_FONT } from "../lanes/laneDesignTokens";
+import { MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 import { ToolLogo } from "./ToolLogos";
 
 /** Tool-type accent gradient for left bar — more vibrant, colorful palette */
@@ -29,22 +29,21 @@ function truncateSummary(text: string | null, maxWords = 8): string {
 
 const DELTA_CHIP_STYLE: React.CSSProperties = {
   fontSize: 10,
-  fontWeight: 700,
+  fontWeight: 500,
   fontFamily: MONO_FONT,
-  textTransform: "uppercase",
-  letterSpacing: "0.14em",
-  borderRadius: 999,
+  letterSpacing: "0",
+  borderRadius: 4,
 };
 
 const SELECTED_CARD_BASE: React.CSSProperties = {
-  background: "linear-gradient(135deg, rgba(var(--tab-tint-rgb, 113, 113, 122), 0.12) 0%, rgba(var(--tab-tint-rgb, 113, 113, 122), 0.04) 100%)",
-  border: "1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.18)",
-  boxShadow: "0 0 20px -8px rgba(var(--tab-tint-rgb, 113, 113, 122), 0.25), inset 0 1px 0 rgba(255,255,255,0.03)",
+  background: "rgba(255,255,255, 0.05)",
+  border: "1px solid rgba(255,255,255, 0.08)",
+  boxShadow: "none",
 };
 
 const UNSELECTED_CARD_BASE: React.CSSProperties = {
   background: "rgba(255,255,255, 0.02)",
-  border: "1px solid rgba(255,255,255, 0.04)",
+  border: "1px solid rgba(255,255,255, 0.03)",
   boxShadow: "none",
 };
 
@@ -55,14 +54,13 @@ const INFO_BUTTON_STYLE: React.CSSProperties = {
 };
 
 const RESUME_BUTTON_STYLE: React.CSSProperties = {
-  borderRadius: 999,
+  borderRadius: 6,
   border: "1px solid rgba(255,255,255, 0.06)",
   background: "rgba(255,255,255, 0.04)",
-  fontSize: 11,
-  fontWeight: 700,
-  fontFamily: MONO_FONT,
-  textTransform: "uppercase",
-  letterSpacing: "1px",
+  fontSize: 10,
+  fontWeight: 500,
+  fontFamily: SANS_FONT,
+  letterSpacing: "0",
 };
 
 export const SessionCard = React.memo(function SessionCard({
@@ -98,8 +96,8 @@ export const SessionCard = React.memo(function SessionCard({
           isSelected ? "hover:bg-white/[0.02]" : "hover:bg-white/[0.03]",
         )}
         style={{
-          fontFamily: MONO_FONT,
-          borderRadius: 20,
+          fontFamily: SANS_FONT,
+          borderRadius: 10,
           ...(isSelected ? SELECTED_CARD_BASE : UNSELECTED_CARD_BASE),
         }}
         onClick={() => onSelect(session.id)}
@@ -113,9 +111,10 @@ export const SessionCard = React.memo(function SessionCard({
             />
             <ToolLogo toolType={session.toolType} size={12} />
             <span
-              className="min-w-0 flex-1 truncate text-xs font-semibold"
+              className="min-w-0 flex-1 truncate text-xs"
               style={{
-                fontFamily: MONO_FONT,
+                fontFamily: SANS_FONT,
+                fontWeight: 500,
                 color: isSelected ? "var(--color-fg)" : undefined,
               }}
             >
@@ -127,14 +126,14 @@ export const SessionCard = React.memo(function SessionCard({
           <div className="mt-1 flex items-center gap-1.5 pl-[14px] min-w-0">
             <span
               className="shrink-0"
-              style={{ fontSize: 10, fontFamily: MONO_FONT, color: "rgba(var(--tab-tint-rgb, 113, 113, 122), 0.95)" }}
+              style={{ fontSize: 10, fontFamily: SANS_FONT, fontWeight: 400, color: "var(--color-muted-fg)", opacity: 0.7 }}
             >
               {session.laneName}
             </span>
             {secondaryText ? (
               <span
                 className="truncate"
-                style={{ fontSize: 11, fontFamily: MONO_FONT, color: "var(--color-muted-fg)" }}
+                style={{ fontSize: 11, fontFamily: SANS_FONT, fontWeight: 400, color: "var(--color-muted-fg)" }}
               >
                 {secondaryText}
               </span>

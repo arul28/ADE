@@ -258,7 +258,7 @@ export function createDefaultLinearWorkflowConfig(): LinearWorkflowConfig {
       ctoLinearAssigneeName: "CTO",
       ctoLinearAssigneeAliases: ["cto"],
     },
-    workflows: [createWorkflowPreset("employee_session")],
+    workflows: [createWorkflowPreset("pr_resolution")],
     files: [],
     migration: { hasLegacyConfig: false, needsSave: true },
     legacyConfig: null,

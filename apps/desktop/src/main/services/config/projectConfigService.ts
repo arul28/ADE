@@ -231,8 +231,21 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
   const type: AutomationTriggerType | null =
     typeRaw === "session-end" ||
     typeRaw === "commit" ||
+    typeRaw === "git.commit" ||
+    typeRaw === "git.push" ||
+    typeRaw === "git.pr_opened" ||
+    typeRaw === "git.pr_updated" ||
+    typeRaw === "git.pr_merged" ||
+    typeRaw === "git.pr_closed" ||
+    typeRaw === "file.change" ||
+    typeRaw === "lane.created" ||
+    typeRaw === "lane.archived" ||
     typeRaw === "schedule" ||
     typeRaw === "manual" ||
+    typeRaw === "linear.issue_created" ||
+    typeRaw === "linear.issue_updated" ||
+    typeRaw === "linear.issue_assigned" ||
+    typeRaw === "linear.issue_status_changed" ||
     typeRaw === "github-webhook" ||
     typeRaw === "webhook"
       ? (typeRaw as AutomationTriggerType)
@@ -242,21 +255,35 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
   const out: AutomationTrigger = { type };
   const cron = asString(value.cron);
   const branch = asString(value.branch);
+  const targetBranch = asString(value.targetBranch);
   const event = asString(value.event);
   const author = asString(value.author);
   const labels = asStringArray(value.labels);
   const paths = asStringArray(value.paths);
   const keywords = asStringArray(value.keywords);
+  const namePattern = asString(value.namePattern);
+  const project = asString(value.project);
+  const team = asString(value.team);
+  const assignee = asString(value.assignee);
+  const stateTransition = asString(value.stateTransition);
+  const changedFields = asStringArray(value.changedFields);
   const secretRef = asString(value.secretRef);
   const draftStateRaw = asString(value.draftState)?.trim();
   const activeHours = coerceAutomationActiveHours(value.activeHours);
   if (cron != null) out.cron = cron;
   if (branch != null) out.branch = branch;
+  if (targetBranch != null) out.targetBranch = targetBranch;
   if (event != null) out.event = event;
   if (author != null) out.author = author;
   if (labels != null) out.labels = labels;
   if (paths != null) out.paths = paths;
   if (keywords != null) out.keywords = keywords;
+  if (namePattern != null) out.namePattern = namePattern;
+  if (project != null) out.project = project;
+  if (team != null) out.team = team;
+  if (assignee != null) out.assignee = assignee;
+  if (stateTransition != null) out.stateTransition = stateTransition;
+  if (changedFields != null) out.changedFields = changedFields;
   if (secretRef != null) out.secretRef = secretRef;
   if (draftStateRaw === "draft" || draftStateRaw === "ready" || draftStateRaw === "any") out.draftState = draftStateRaw;
   if (activeHours) out.activeHours = activeHours;
@@ -1797,11 +1824,18 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
         type: trigger.type,
         ...(trigger.cron ? { cron: trigger.cron.trim() } : {}),
         ...(trigger.branch ? { branch: trigger.branch.trim() } : {}),
+        ...(trigger.targetBranch ? { targetBranch: trigger.targetBranch.trim() } : {}),
         ...(trigger.event ? { event: trigger.event.trim() } : {}),
         ...(trigger.author ? { author: trigger.author.trim() } : {}),
         ...(trigger.labels?.length ? { labels: trigger.labels.map((value) => value.trim()).filter(Boolean) } : {}),
         ...(trigger.paths?.length ? { paths: trigger.paths.map((value) => value.trim()).filter(Boolean) } : {}),
         ...(trigger.keywords?.length ? { keywords: trigger.keywords.map((value) => value.trim()).filter(Boolean) } : {}),
+        ...(trigger.namePattern ? { namePattern: trigger.namePattern.trim() } : {}),
+        ...(trigger.project ? { project: trigger.project.trim() } : {}),
+        ...(trigger.team ? { team: trigger.team.trim() } : {}),
+        ...(trigger.assignee ? { assignee: trigger.assignee.trim() } : {}),
+        ...(trigger.stateTransition ? { stateTransition: trigger.stateTransition.trim() } : {}),
+        ...(trigger.changedFields?.length ? { changedFields: trigger.changedFields.map((value) => value.trim()).filter(Boolean) } : {}),
         ...(trigger.draftState ? { draftState: trigger.draftState } : {}),
         ...(trigger.secretRef ? { secretRef: trigger.secretRef.trim() } : {}),
         ...(trigger.activeHours ? { activeHours: trigger.activeHours } : {}),
@@ -2315,8 +2349,21 @@ function validateEffectiveConfig(
       if (
         trigger.type !== "session-end" &&
         trigger.type !== "commit" &&
+        trigger.type !== "git.commit" &&
+        trigger.type !== "git.push" &&
+        trigger.type !== "git.pr_opened" &&
+        trigger.type !== "git.pr_updated" &&
+        trigger.type !== "git.pr_merged" &&
+        trigger.type !== "git.pr_closed" &&
+        trigger.type !== "file.change" &&
+        trigger.type !== "lane.created" &&
+        trigger.type !== "lane.archived" &&
         trigger.type !== "schedule" &&
         trigger.type !== "manual" &&
+        trigger.type !== "linear.issue_created" &&
+        trigger.type !== "linear.issue_updated" &&
+        trigger.type !== "linear.issue_assigned" &&
+        trigger.type !== "linear.issue_status_changed" &&
         trigger.type !== "github-webhook" &&
         trigger.type !== "webhook"
       ) {

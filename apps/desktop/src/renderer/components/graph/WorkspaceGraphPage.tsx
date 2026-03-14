@@ -134,6 +134,7 @@ function GraphInner() {
   const autoRebaseRefreshQueuedRef = React.useRef(false);
   const activityRefreshInFlightRef = React.useRef(false);
   const activityRefreshQueuedRef = React.useRef(false);
+  const activityRefreshNeedsOperationsRef = React.useRef(true);
   const activityRefreshTimerRef = React.useRef<number | null>(null);
   const prRefreshTimerRef = React.useRef<number | null>(null);
   const graphConfirm = useConfirmDialog();
@@ -289,6 +290,7 @@ function GraphInner() {
   } | null>(null);
   const [activityScoreByLaneId, setActivityScoreByLaneId] = React.useState<Record<string, number>>({});
   const [activeSessionsByLaneId, setActiveSessionsByLaneId] = React.useState<Record<string, number>>({});
+  const activeGraphSessionsRef = React.useRef(0);
   const [lastActivityByLaneId, setLastActivityByLaneId] = React.useState<Record<string, string>>({});
   const [mergeInProgressByLaneId, setMergeInProgressByLaneId] = React.useState<Record<string, boolean>>({});
   const [mergeDisappearingAtByLaneId, setMergeDisappearingAtByLaneId] = React.useState<Record<string, number>>({});
@@ -301,6 +303,10 @@ function GraphInner() {
   const [focusLaneId, setFocusLaneId] = React.useState<string | null>(null);
   const [edgeHover, setEdgeHover] = React.useState<{ x: number; y: number; label: string } | null>(null);
   const [dragTrail, setDragTrail] = React.useState<{ laneId: string; from: { x: number; y: number }; to: { x: number; y: number } } | null>(null);
+
+  React.useEffect(() => {
+    activeGraphSessionsRef.current = Object.values(activeSessionsByLaneId).reduce((sum, count) => sum + count, 0);
+  }, [activeSessionsByLaneId]);
   const [dropPreview, setDropPreview] = React.useState<{
     draggedLaneIds: string[];
     targetLaneId: string;
@@ -634,7 +640,7 @@ function GraphInner() {
     }
   }, []);
 
-  const refreshActivity = React.useCallback(async () => {
+  const refreshActivity = React.useCallback(async (options?: { includeOperations?: boolean }) => {
     try {
       if (lanesRef.current.length === 0) {
         setActiveSessionsByLaneId({});
@@ -642,9 +648,12 @@ function GraphInner() {
         setLastActivityByLaneId({});
         return;
       }
+      const includeOperations = options?.includeOperations ?? true;
       const [sessions, operations] = await Promise.all([
         listSessionsCached({ limit: GRAPH_ACTIVITY_SESSION_LIMIT }),
-        window.ade.history.listOperations({ limit: GRAPH_ACTIVITY_OPERATION_LIMIT })
+        includeOperations
+          ? window.ade.history.listOperations({ limit: GRAPH_ACTIVITY_OPERATION_LIMIT })
+          : Promise.resolve([])
       ]);
       const now = Date.now();
       const activeByLane: Record<string, number> = {};
@@ -692,22 +701,28 @@ function GraphInner() {
     }
   }, []);
 
-  const scheduleRefreshActivity = React.useCallback((delayMs = 700) => {
+  const scheduleRefreshActivity = React.useCallback((delayMs = 700, options?: { includeOperations?: boolean }) => {
+    if (options?.includeOperations !== false) {
+      activityRefreshNeedsOperationsRef.current = true;
+    }
     if (activityRefreshTimerRef.current != null) return;
     activityRefreshTimerRef.current = window.setTimeout(() => {
       activityRefreshTimerRef.current = null;
+      if (document.visibilityState !== "visible") return;
       if (activityRefreshInFlightRef.current) {
         activityRefreshQueuedRef.current = true;
         return;
       }
       activityRefreshInFlightRef.current = true;
-      void refreshActivity()
+      const includeOperations = activityRefreshNeedsOperationsRef.current;
+      activityRefreshNeedsOperationsRef.current = false;
+      void refreshActivity({ includeOperations })
         .catch(() => {})
         .finally(() => {
           activityRefreshInFlightRef.current = false;
           if (activityRefreshQueuedRef.current) {
             activityRefreshQueuedRef.current = false;
-            scheduleRefreshActivity(220);
+            scheduleRefreshActivity(220, { includeOperations: activityRefreshNeedsOperationsRef.current });
           }
         });
     }, delayMs);
@@ -742,7 +757,7 @@ function GraphInner() {
     }, 1_500);
     activityTimer = window.setTimeout(() => {
       if (cancelled || document.visibilityState !== "visible") return;
-      scheduleRefreshActivity(250);
+      scheduleRefreshActivity(250, { includeOperations: true });
     }, 800);
     syncTimer = window.setTimeout(() => {
       if (cancelled || document.visibilityState !== "visible") return;
@@ -1036,10 +1051,11 @@ function GraphInner() {
     }
     try {
       unsubPtyData = window.ade.pty.onData(() => {
-        scheduleRefreshActivity(650);
+        if (activeGraphSessionsRef.current === 0) return;
+        scheduleRefreshActivity(1_200, { includeOperations: false });
       });
       unsubPtyExit = window.ade.pty.onExit(() => {
-        scheduleRefreshActivity(220);
+        scheduleRefreshActivity(220, { includeOperations: true });
       });
     } catch (error) {
       reportGraphIssue("Activity updates are unavailable in the graph.", error);
@@ -1058,7 +1074,7 @@ function GraphInner() {
     const interval = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       void refreshLanes().catch((err) => console.warn("[Graph] periodic refreshLanes failed:", err));
-      scheduleRefreshActivity(320);
+      scheduleRefreshActivity(320, { includeOperations: true });
     }, 60_000);
     const syncInterval = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
@@ -1068,13 +1084,13 @@ function GraphInner() {
     const onFocus = () => {
       void refreshLaneSyncStatuses();
       void refreshAutoRebaseStatuses();
-      scheduleRefreshActivity(0);
+      scheduleRefreshActivity(0, { includeOperations: true });
     };
     const onVisibilityChange = () => {
       if (document.visibilityState !== "visible") return;
       void refreshLaneSyncStatuses();
       void refreshAutoRebaseStatuses();
-      scheduleRefreshActivity(0);
+      scheduleRefreshActivity(0, { includeOperations: true });
     };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibilityChange);

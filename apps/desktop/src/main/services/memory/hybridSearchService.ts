@@ -46,6 +46,7 @@ export type HybridSearchService = ReturnType<typeof createHybridSearchService>;
 type CreateHybridSearchServiceOpts = {
   db: AdeDb;
   embeddingService: Pick<ReturnType<typeof createEmbeddingService>, "embed" | "getModelId">;
+  logger?: Pick<import("../logging/logger").Logger, "warn"> | null;
   now?: () => Date;
 };
 
@@ -431,6 +432,10 @@ export function createHybridSearchService(opts: CreateHybridSearchServiceOpts) {
       queryVector = await embeddingService.embed(searchOpts.query);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      opts.logger?.warn?.("memory.hybrid_search.fallback_to_lexical", {
+        reason: message,
+        query: searchOpts.query.slice(0, 100),
+      });
       throw new HybridSearchUnavailableError(message);
     }
 

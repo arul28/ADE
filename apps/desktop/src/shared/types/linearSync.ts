@@ -277,6 +277,7 @@ export type LinearWorkflowRunStatus =
   | "waiting_for_target"
   | "waiting_for_pr"
   | "awaiting_human_review"
+  | "awaiting_delegation"
   | "retry_wait"
   | "completed"
   | "failed"
@@ -650,6 +651,7 @@ export type CtoResolveLinearSyncQueueItemArgs = {
   queueItemId: string;
   action: "approve" | "reject" | "retry" | "complete";
   note?: string;
+  employeeOverride?: string;
 };
 
 export type LinearSyncDashboard = {

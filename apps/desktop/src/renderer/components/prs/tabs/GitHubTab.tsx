@@ -213,6 +213,8 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
   const [showExternal, setShowExternal] = React.useState(false);
   const [linkLaneId, setLinkLaneId] = React.useState("");
   const [linkingItemId, setLinkingItemId] = React.useState<string | null>(null);
+  const lastHandledSelectedPrIdRef = React.useRef<string | null | undefined>(undefined);
+  const pendingSelectedItemIdRef = React.useRef<string | null>(null);
 
   const loadSnapshot = React.useCallback(async (options?: { force?: boolean; silent?: boolean }) => {
     if (!options?.silent) {
@@ -254,16 +256,37 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
 
   React.useEffect(() => {
     if (!snapshot) return;
-    if (selectedPrId) {
-      const linkedItem = snapshot.repoPullRequests.find((item) => item.linkedPrId === selectedPrId);
-      if (linkedItem) {
-        if (!matchesFilter(linkedItem, filter)) {
-          setFilter(linkedItem.state === "merged" ? "merged" : linkedItem.state === "closed" ? "closed" : "open");
-        }
-        setSelectedItemId(linkedItem.id);
+    if (selectedPrId === lastHandledSelectedPrIdRef.current) return;
+    lastHandledSelectedPrIdRef.current = selectedPrId;
+
+    if (!selectedPrId) {
+      pendingSelectedItemIdRef.current = null;
+      return;
+    }
+
+    const linkedItem = snapshot.repoPullRequests.find((item) => item.linkedPrId === selectedPrId);
+    if (!linkedItem) {
+      pendingSelectedItemIdRef.current = null;
+      return;
+    }
+
+    pendingSelectedItemIdRef.current = linkedItem.id;
+    if (!matchesFilter(linkedItem, filter)) {
+      setFilter(linkedItem.state === "merged" ? "merged" : linkedItem.state === "closed" ? "closed" : "open");
+    }
+    setSelectedItemId(linkedItem.id);
+  }, [snapshot, selectedPrId, filter]);
+
+  React.useEffect(() => {
+    if (!snapshot) return;
+    if (pendingSelectedItemIdRef.current) {
+      if (selectedItemId === pendingSelectedItemIdRef.current) {
+        pendingSelectedItemIdRef.current = null;
+      } else {
         return;
       }
     }
+
     const visibleItems = [...repoItems, ...externalItems];
     if (selectedItemId && visibleItems.some((item) => item.id === selectedItemId)) return;
     const next = visibleItems[0] ?? null;
@@ -331,7 +354,13 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
               <button
                 key={state}
                 type="button"
-                onClick={() => setFilter(state)}
+                onClick={() => {
+                  pendingSelectedItemIdRef.current = null;
+                  setFilter(state);
+                  setSelectedItemId(null);
+                  onSelectPr(null);
+                  setLinkLaneId("");
+                }}
                 style={active ? primaryButton({ height: 28, padding: "0 10px" }) : outlineButton({ height: 28, padding: "0 10px" })}
               >
                 {state}

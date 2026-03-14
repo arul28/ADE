@@ -47,8 +47,9 @@ Global terminal-attention state is no longer treated as an always-on cross-app p
 
 Current behavior:
 
-- attention tracking only runs on terminal-adjacent routes
+- attention tracking only runs on `/work` and `/lanes`
 - the session list used for attention is bounded
+- agent chat events no longer force a terminal-attention refresh
 - hidden or unrelated routes do not keep polling just to maintain a badge
 
 ### Lane terminal polling

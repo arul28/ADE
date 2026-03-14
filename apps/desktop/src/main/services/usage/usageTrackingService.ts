@@ -18,7 +18,7 @@ import type {
   CostSnapshot,
   UsageSnapshot,
 } from "../../../shared/types";
-import { nowIso, getErrorMessage, safeJsonParse } from "../shared/utils";
+import { isRecord, nowIso, getErrorMessage, safeJsonParse } from "../shared/utils";
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -61,11 +61,12 @@ function extractStringField(obj: Record<string, unknown>, ...keys: string[]): st
 }
 
 function parseClaudeCredentials(parsed: Record<string, unknown>): ClaudeCredentials | null {
-  const token = extractStringField(parsed, "accessToken", "access_token");
+  const oauth = isRecord(parsed.claudeAiOauth) ? parsed.claudeAiOauth : parsed;
+  const token = extractStringField(oauth, "accessToken", "access_token");
   if (!token) return null;
   return {
     accessToken: token,
-    plan: extractStringField(parsed, "plan", "rate_limit_tier"),
+    plan: extractStringField(oauth, "plan", "subscriptionType", "rateLimitTier", "rate_limit_tier"),
   };
 }
 
@@ -105,17 +106,30 @@ function extractNumberField(obj: Record<string, unknown>, ...keys: string[]): nu
   return undefined;
 }
 
+function extractTimestampField(obj: Record<string, unknown>, ...keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = obj[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Date.parse(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return undefined;
+}
+
 async function readCodexCredentials(): Promise<CodexCredentials | null> {
   const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
   const authPath = path.join(codexHome, "auth.json");
   try {
     const raw = await fs.promises.readFile(authPath, "utf8");
     const parsed = safeJsonParse<Record<string, unknown>>(raw, {});
-    const token = extractStringField(parsed, "access_token", "accessToken");
+    const tokens = isRecord(parsed.tokens) ? parsed.tokens : parsed;
+    const token = extractStringField(tokens, "access_token", "accessToken");
     if (!token) return null;
     return {
       accessToken: token,
-      lastRefresh: extractNumberField(parsed, "last_refresh", "lastRefresh"),
+      lastRefresh: extractTimestampField(parsed, "last_refresh", "lastRefresh"),
     };
   } catch {
     return null;
@@ -197,11 +211,102 @@ function computeResetsInMs(resetsAt: string): number {
 // ── Claude Usage Polling ─────────────────────────────────────────
 
 interface ClaudeUsageResponse {
-  five_hour?: { percent_used?: number; resets_at?: string };
-  seven_day?: { percent_used?: number; resets_at?: string };
-  seven_day_sonnet?: { percent_used?: number; resets_at?: string };
-  seven_day_opus?: { percent_used?: number; resets_at?: string };
+  five_hour?: ClaudeUsageBucket;
+  fiveHour?: ClaudeUsageBucket;
+  seven_day?: ClaudeUsageBucket;
+  sevenDay?: ClaudeUsageBucket;
+  seven_day_sonnet?: ClaudeUsageBucket;
+  sevenDaySonnet?: ClaudeUsageBucket;
+  seven_day_opus?: ClaudeUsageBucket | null;
+  sevenDayOpus?: ClaudeUsageBucket | null;
   rate_limit_tier?: string;
+}
+
+type ClaudeUsageBucket = {
+  percent_used?: number;
+  used_percent?: number;
+  utilization?: number;
+  resets_at?: string;
+  resetsAt?: string;
+};
+
+function usagePercent(bucket: Record<string, unknown> | null | undefined): number {
+  if (!bucket) return 0;
+  if (typeof bucket.percent_used === "number") return bucket.percent_used;
+  if (typeof bucket.used_percent === "number") return bucket.used_percent;
+  if (typeof bucket.usedPercent === "number") return bucket.usedPercent;
+  if (typeof bucket.utilization === "number") return bucket.utilization;
+  return 0;
+}
+
+function codexResetAt(value: unknown): string {
+  if (typeof value === "string" && value.trim()) return value;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const ms = value > 1_000_000_000_000 ? value : value * 1_000;
+    return new Date(ms).toISOString();
+  }
+  return "";
+}
+
+function parseClaudeWindows(data: ClaudeUsageResponse): UsageWindow[] {
+  const windows: UsageWindow[] = [];
+  const fiveHour = data.five_hour ?? data.fiveHour;
+  const sevenDay = data.seven_day ?? data.sevenDay;
+  const sevenDaySonnet = data.seven_day_sonnet ?? data.sevenDaySonnet;
+  const sevenDayOpus = data.seven_day_opus ?? data.sevenDayOpus;
+
+  if (fiveHour) {
+    const resetsAt = fiveHour.resets_at ?? fiveHour.resetsAt ?? "";
+    windows.push({
+      provider: "claude",
+      windowType: "five_hour",
+      percentUsed: usagePercent(fiveHour),
+      resetsAt,
+      resetsInMs: computeResetsInMs(resetsAt),
+    });
+  }
+
+  if (sevenDay) {
+    const resetsAt = sevenDay.resets_at ?? sevenDay.resetsAt ?? "";
+    const modelBreakdown: Record<string, number> = {};
+    if (sevenDaySonnet) modelBreakdown.sonnet = usagePercent(sevenDaySonnet);
+    if (sevenDayOpus) modelBreakdown.opus = usagePercent(sevenDayOpus);
+    windows.push({
+      provider: "claude",
+      windowType: "weekly",
+      percentUsed: usagePercent(sevenDay),
+      resetsAt,
+      resetsInMs: computeResetsInMs(resetsAt),
+      modelBreakdown: Object.keys(modelBreakdown).length > 0 ? modelBreakdown : undefined,
+    });
+  }
+
+  return windows;
+}
+
+function parseCodexRateLimitWindows(data: Record<string, unknown>): UsageWindow[] {
+  const windows: UsageWindow[] = [];
+  const snakeRateLimit = isRecord(data.rate_limit) ? data.rate_limit : null;
+  const camelRateLimits = isRecord(data.rateLimits) ? data.rateLimits : null;
+
+  for (const [key, windowType] of [["primary", "five_hour"], ["secondary", "weekly"]] as const) {
+    const snakeKey = key === "primary" ? "primary_window" : "secondary_window";
+    const snakeBucket = snakeRateLimit && isRecord(snakeRateLimit[snakeKey]) ? snakeRateLimit[snakeKey] : null;
+    const camelBucket = camelRateLimits && isRecord(camelRateLimits[key]) ? camelRateLimits[key] : null;
+    const directBucket = isRecord(data[snakeKey]) ? data[snakeKey] : isRecord(data[key]) ? data[key] : null;
+    const bucket = snakeBucket ?? camelBucket ?? directBucket;
+    if (!bucket) continue;
+    const resetsAt = codexResetAt(bucket.reset_at ?? bucket.resets_at ?? bucket.resetsAt);
+    windows.push({
+      provider: "codex",
+      windowType,
+      percentUsed: usagePercent(bucket),
+      resetsAt,
+      resetsInMs: computeResetsInMs(resetsAt),
+    });
+  }
+
+  return windows;
 }
 
 async function pollClaudeUsage(logger: Logger): Promise<{ windows: UsageWindow[]; errors: string[] }> {
@@ -225,35 +330,12 @@ async function pollClaudeUsage(logger: Logger): Promise<{ windows: UsageWindow[]
       return { windows, errors };
     }
 
-    const data = result.data as ClaudeUsageResponse;
-
-    if (data.five_hour) {
-      const resetsAt = data.five_hour.resets_at ?? "";
-      windows.push({
-        provider: "claude",
-        windowType: "five_hour",
-        percentUsed: data.five_hour.percent_used ?? 0,
-        resetsAt,
-        resetsInMs: computeResetsInMs(resetsAt),
-      });
-    }
-
-    if (data.seven_day) {
-      const resetsAt = data.seven_day.resets_at ?? "";
-      const modelBreakdown: Record<string, number> = {};
-      if (data.seven_day_sonnet?.percent_used != null) {
-        modelBreakdown.sonnet = data.seven_day_sonnet.percent_used;
-      }
-      if (data.seven_day_opus?.percent_used != null) {
-        modelBreakdown.opus = data.seven_day_opus.percent_used;
-      }
-      windows.push({
-        provider: "claude",
-        windowType: "weekly",
-        percentUsed: data.seven_day.percent_used ?? 0,
-        resetsAt,
-        resetsInMs: computeResetsInMs(resetsAt),
-        modelBreakdown: Object.keys(modelBreakdown).length > 0 ? modelBreakdown : undefined,
+    const parsed = parseClaudeWindows(result.data as ClaudeUsageResponse);
+    windows.push(...parsed);
+    if (parsed.length === 0) {
+      errors.push("claude: usage response contained no recognized windows");
+      logger.warn("usage.poll.claude_unrecognized_shape", {
+        keys: isRecord(result.data) ? Object.keys(result.data).slice(0, 12) : [],
       });
     }
   } catch (err) {
@@ -287,24 +369,7 @@ async function pollCodexUsage(logger: Logger): Promise<{ windows: UsageWindow[];
     });
 
     if (result.ok && result.data && typeof result.data === "object") {
-      const data = result.data as Record<string, unknown>;
-      const usage = (data.usage ?? data) as Record<string, unknown>;
-
-      // Parse primary and secondary windows
-      for (const [key, windowType] of [["primary", "weekly"], ["secondary", "five_hour"]] as const) {
-        const bucket = usage[key] as Record<string, unknown> | undefined;
-        if (bucket) {
-          const resetsAt = typeof bucket.resets_at === "string" ? bucket.resets_at : "";
-          windows.push({
-            provider: "codex",
-            windowType,
-            percentUsed: typeof bucket.percent_used === "number" ? bucket.percent_used : 0,
-            resetsAt,
-            resetsInMs: computeResetsInMs(resetsAt),
-          });
-        }
-      }
-
+      windows.push(...parseCodexRateLimitWindows(result.data as Record<string, unknown>));
       if (windows.length > 0) return { windows, errors };
     }
   } catch {
@@ -320,6 +385,10 @@ async function pollCodexUsage(logger: Logger): Promise<{ windows: UsageWindow[];
     errors.push(`codex: CLI RPC failed: ${getErrorMessage(err)}`);
   }
 
+  if (windows.length === 0 && errors.length === 0) {
+    errors.push("codex: usage response contained no recognized windows");
+  }
+
   return { windows, errors };
 }
 
@@ -331,19 +400,33 @@ async function pollCodexViaCliRpc(logger: Logger): Promise<{ windows: UsageWindo
     // Initialize RPC connection
     const initPayload = JSON.stringify({
       jsonrpc: "2.0",
-      id: 1,
+      id: 0,
       method: "initialize",
+      params: {
+        protocolVersion: "2025-06-18",
+        capabilities: { elicitation: {} },
+        clientInfo: {
+          name: "codex-mcp-client",
+          title: "Codex",
+          version: "0.47.0",
+        },
+      },
+    });
+
+    const initializedPayload = JSON.stringify({
+      jsonrpc: "2.0",
+      method: "notifications/initialized",
       params: {},
     });
 
     const rateLimitsPayload = JSON.stringify({
       jsonrpc: "2.0",
-      id: 2,
+      id: 1,
       method: "account/rateLimits/read",
       params: {},
     });
 
-    const combined = `${initPayload}\n${rateLimitsPayload}\n`;
+    const combined = `${initPayload}\n${initializedPayload}\n${rateLimitsPayload}\n`;
 
     const result = await runShellCommand(
       `echo '${combined.replace(/'/g, "'\\''")}' | codex -s read-only -a untrusted app-server 2>/dev/null`,
@@ -362,22 +445,9 @@ async function pollCodexViaCliRpc(logger: Logger): Promise<{ windows: UsageWindo
       if (!parsed.result || typeof parsed.result !== "object") continue;
       const res = parsed.result as Record<string, unknown>;
 
-      // Look for rate limit windows
-      const limits = (res.rateLimits ?? res.rate_limits) as Array<Record<string, unknown>> | undefined;
-      if (Array.isArray(limits)) {
-        for (const limit of limits) {
-          const resetsAt = typeof limit.resets_at === "string" ? limit.resets_at : "";
-          const windowType = typeof limit.window === "string" && limit.window.includes("hour")
-            ? "five_hour" as const
-            : "weekly" as const;
-          windows.push({
-            provider: "codex",
-            windowType,
-            percentUsed: typeof limit.percent_used === "number" ? limit.percent_used : 0,
-            resetsAt,
-            resetsInMs: computeResetsInMs(resetsAt),
-          });
-        }
+      const parsedWindows = parseCodexRateLimitWindows(res);
+      if (parsedWindows.length > 0) {
+        windows.push(...parsedWindows);
       }
     }
   } catch (err) {
@@ -672,7 +742,7 @@ export function createUsageTrackingService({
   let costCacheTimestamp = 0;
   let cachedCosts: CostSnapshot[] = [];
   let pollTimer: ReturnType<typeof setInterval> | null = null;
-  let polling = false;
+  let inFlightPoll: Promise<UsageSnapshot> | null = null;
 
   const emptySnapshot = (): UsageSnapshot => ({
     windows: [],
@@ -709,71 +779,73 @@ export function createUsageTrackingService({
   }
 
   async function poll(): Promise<UsageSnapshot> {
-    if (polling) {
-      return lastSnapshot ?? emptySnapshot();
+    if (inFlightPoll) {
+      return await inFlightPoll;
     }
-    polling = true;
 
-    const errors: string[] = [];
-    let allWindows: UsageWindow[] = [];
-
-    try {
-      const [claudeResult, codexResult, costs] = await Promise.all([
-        pollClaudeUsage(logger).catch((err) => {
-          const msg = `claude: poll failed: ${getErrorMessage(err)}`;
-          logger.warn("usage.poll.claude_failed", { error: msg });
-          return { windows: [] as UsageWindow[], errors: [msg] };
-        }),
-        pollCodexUsage(logger).catch((err) => {
-          const msg = `codex: poll failed: ${getErrorMessage(err)}`;
-          logger.warn("usage.poll.codex_failed", { error: msg });
-          return { windows: [] as UsageWindow[], errors: [msg] };
-        }),
-        pollCosts(),
-      ]);
-
-      allWindows = [...claudeResult.windows, ...codexResult.windows];
-      errors.push(...claudeResult.errors, ...codexResult.errors);
-
-      const pacing = calculatePacing(allWindows);
-
-      const snapshot: UsageSnapshot = {
-        windows: allWindows,
-        pacing,
-        costs,
-        lastPolledAt: nowIso(),
-        errors,
-      };
-
-      lastSnapshot = snapshot;
+    inFlightPoll = (async () => {
+      const errors: string[] = [];
+      let allWindows: UsageWindow[] = [];
 
       try {
-        onUpdate?.(snapshot);
-      } catch {
-        // Never crash on callback error
+        const [claudeResult, codexResult, costs] = await Promise.all([
+          pollClaudeUsage(logger).catch((err) => {
+            const msg = `claude: poll failed: ${getErrorMessage(err)}`;
+            logger.warn("usage.poll.claude_failed", { error: msg });
+            return { windows: [] as UsageWindow[], errors: [msg] };
+          }),
+          pollCodexUsage(logger).catch((err) => {
+            const msg = `codex: poll failed: ${getErrorMessage(err)}`;
+            logger.warn("usage.poll.codex_failed", { error: msg });
+            return { windows: [] as UsageWindow[], errors: [msg] };
+          }),
+          pollCosts(),
+        ]);
+
+        allWindows = [...claudeResult.windows, ...codexResult.windows];
+        errors.push(...claudeResult.errors, ...codexResult.errors);
+
+        const pacing = calculatePacing(allWindows);
+
+        const snapshot: UsageSnapshot = {
+          windows: allWindows,
+          pacing,
+          costs,
+          lastPolledAt: nowIso(),
+          errors,
+        };
+
+        lastSnapshot = snapshot;
+
+        try {
+          onUpdate?.(snapshot);
+        } catch {
+          // Never crash on callback error
+        }
+
+        logger.debug("usage.poll.complete", {
+          windowCount: allWindows.length,
+          errorCount: errors.length,
+          pacing: pacing.status,
+        });
+
+        return snapshot;
+      } catch (err) {
+        const msg = getErrorMessage(err);
+        logger.error("usage.poll.unexpected_error", { error: msg });
+        errors.push(`unexpected: ${msg}`);
+
+        if (lastSnapshot) {
+          return { ...lastSnapshot, errors, lastPolledAt: nowIso() };
+        }
+
+        return { ...emptySnapshot(), errors };
+      } finally {
+        inFlightPoll = null;
       }
+    })();
 
-      logger.debug("usage.poll.complete", {
-        windowCount: allWindows.length,
-        errorCount: errors.length,
-        pacing: pacing.status,
-      });
-
-      return snapshot;
-    } catch (err) {
-      const msg = getErrorMessage(err);
-      logger.error("usage.poll.unexpected_error", { error: msg });
-      errors.push(`unexpected: ${msg}`);
-
-      // Return stale data with errors if we have it
-      if (lastSnapshot) {
-        return { ...lastSnapshot, errors, lastPolledAt: nowIso() };
-      }
-
-      return { ...emptySnapshot(), errors };
-    } finally {
-      polling = false;
-    }
+    return await inFlightPoll;
   }
 
   function start() {
@@ -816,6 +888,8 @@ export const _testing = {
   readClaudeCredentials,
   readCodexCredentials,
   isCodexTokenStale,
+  parseClaudeWindows,
+  parseCodexRateLimitWindows,
   pollClaudeUsage,
   pollCodexUsage,
   scanClaudeLogs,

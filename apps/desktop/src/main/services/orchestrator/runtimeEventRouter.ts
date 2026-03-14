@@ -241,6 +241,7 @@ const COORDINATOR_IMPORTANT_RUNTIME_REASONS = new Set([
   "validation_self_check_reminder",
   "worker_result_report",
   "worker_status_report",
+  "finalization_queue_landed",
 ]);
 
 type CoordinatorRouteGuardState = {

@@ -43,7 +43,6 @@ export function StepWizard({
   const activeIndex = steps.findIndex((s) => s.id === activeStep);
   const isLast = activeIndex === steps.length - 1;
   const isFirst = activeIndex === 0;
-  const progressPercent = steps.length > 1 ? ((Math.max(activeIndex, 0) + 1) / steps.length) * 100 : 100;
 
   const handleNext = async () => {
     if (onNext) {
@@ -66,28 +65,13 @@ export function StepWizard({
   };
 
   return (
-    <div className="flex h-full min-h-0">
-      {/* Left rail — step indicators */}
+    <div className="flex h-full min-h-0 flex-col lg:flex-row">
+      {/* Left rail */}
       <div
-        className="shrink-0 flex flex-col border-r border-border/20 py-6 px-4"
-        style={{ width: 236, background: "linear-gradient(180deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%)" }}
+        className="shrink-0 border-b lg:border-b-0 lg:border-r px-4 py-4 lg:w-[200px] lg:px-4 lg:py-5"
+        style={{ borderColor: "rgba(167, 139, 250, 0.06)", background: "rgba(12, 10, 20, 0.5)" }}
       >
-        <div className="mb-6">
-          <div className="font-mono text-[10px] font-bold uppercase tracking-[1px] text-muted-fg/40">
-            Setup
-          </div>
-          <div className="mt-2 text-sm font-semibold text-fg">
-            Step {Math.max(activeIndex, 0) + 1} of {steps.length}
-          </div>
-          <div className="mt-3 h-1 overflow-hidden rounded-full bg-white/[0.05]">
-            <div
-              className="h-full rounded-full bg-[color:color-mix(in_srgb,var(--color-accent)_75%,white_25%)] transition-all duration-300"
-              style={{ width: `${progressPercent}%` }}
-            />
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-2">
+        <div className="flex gap-1.5 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible lg:pb-0 lg:gap-1">
           {steps.map((step, i) => {
             const isActive = step.id === activeStep;
             const isDone = step.completed || i < activeIndex;
@@ -100,94 +84,68 @@ export function StepWizard({
                 disabled={!onStepChange}
                 onClick={() => onStepChange?.(step.id)}
                 className={cn(
-                  "group flex items-start gap-3 rounded-2xl border px-3 py-3 text-left transition-all",
+                  "flex items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-all duration-200 lg:w-full",
                   isActive
-                    ? "border-accent/30 bg-accent/8 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]"
-                    : isDone
-                      ? "border-white/[0.08] bg-white/[0.03]"
-                      : "border-transparent bg-transparent hover:border-white/[0.06] hover:bg-white/[0.02]",
+                    ? "bg-[rgba(167,139,250,0.08)]"
+                    : "hover:bg-white/[0.02]",
                 )}
+                style={isActive ? { border: "1px solid rgba(167, 139, 250, 0.15)" } : { border: "1px solid transparent" }}
               >
-                <div className="flex flex-col items-center">
-                  <div
-                    className={cn(
-                      "flex h-7 w-7 items-center justify-center rounded-full border transition-all",
-                      isDone
-                        ? "border-accent/40 bg-accent/18 text-accent"
-                        : isActive
-                          ? "border-accent/30 bg-accent/10 text-accent"
-                          : "border-border/20 bg-white/[0.02] text-muted-fg/35",
-                    )}
-                  >
-                    {isDone ? (
-                      <Check size={10} weight="bold" />
-                    ) : (
-                      <Icon size={11} weight={isActive ? "bold" : "regular"} />
-                    )}
-                  </div>
-                  {i < steps.length - 1 ? (
-                    <div className={cn("mt-2 h-6 w-px", isDone ? "bg-accent/30" : "bg-border/20")} />
-                  ) : null}
+                <div
+                  className={cn(
+                    "flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-all",
+                    isDone
+                      ? "text-fg"
+                      : isActive
+                        ? "text-fg"
+                        : "text-muted-fg/25",
+                  )}
+                  style={
+                    isDone
+                      ? { background: "rgba(52, 211, 153, 0.12)", border: "1px solid rgba(52, 211, 153, 0.2)" }
+                      : isActive
+                        ? { background: "rgba(167, 139, 250, 0.12)", border: "1px solid rgba(167, 139, 250, 0.2)" }
+                        : { background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.05)" }
+                  }
+                >
+                  {isDone ? (
+                    <Check size={10} weight="bold" style={{ color: "#34D399" }} />
+                  ) : (
+                    <Icon size={10} weight={isActive ? "bold" : "regular"} style={isActive ? { color: "#A78BFA" } : undefined} />
+                  )}
                 </div>
 
-                <div className="min-w-0">
-                  <div
-                    className={cn(
-                      "font-mono text-[10px] uppercase tracking-[0.18em] transition-colors",
-                      isActive
-                        ? "font-bold text-fg"
-                        : isDone
-                          ? "text-fg/78"
-                          : "text-muted-fg/48",
-                    )}
-                  >
-                    {step.label}
-                  </div>
-                  {step.description ? (
-                    <div
-                      className={cn(
-                        "mt-1 text-xs leading-5 transition-colors",
-                        isActive
-                          ? "text-fg/70"
-                          : isDone
-                            ? "text-muted-fg/62"
-                            : "text-muted-fg/40",
-                      )}
-                    >
-                      {step.description}
-                    </div>
-                  ) : null}
-                </div>
+                <span
+                  className={cn(
+                    "text-xs font-medium whitespace-nowrap",
+                    isActive ? "text-fg" : isDone ? "text-fg/60" : "text-muted-fg/35",
+                  )}
+                >
+                  {step.label}
+                </span>
               </button>
             );
           })}
         </div>
-
-        <div className="mt-auto rounded-2xl border border-white/[0.05] bg-black/15 p-3">
-          <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-fg/45">
-            Workflow
-          </div>
-          <div className="mt-2 text-xs leading-5 text-fg/68">
-            Move step by step, go back when needed, and use the rail to revisit any section before you finish.
-          </div>
-        </div>
       </div>
 
-      {/* Right — content area */}
-      <div className="flex-1 flex flex-col min-w-0 min-h-0">
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto p-5">
+      {/* Content area */}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="flex-1 overflow-y-auto p-4 lg:p-5">
           {children}
         </div>
 
         {/* Bottom bar */}
-        <div className="shrink-0 flex items-center justify-between border-t border-border/20 bg-bg/95 px-5 py-3 backdrop-blur">
+        <div
+          className="shrink-0 flex items-center justify-between gap-3 px-4 py-3 lg:px-5"
+          style={{ borderTop: "1px solid rgba(167, 139, 250, 0.06)", background: "rgba(12, 10, 20, 0.5)" }}
+        >
           <div>
             {showSkip && onSkip && (
               <button
                 type="button"
                 onClick={onSkip}
-                className="font-mono text-[10px] text-muted-fg/50 hover:text-fg transition-colors"
+                className="text-[11px] text-muted-fg/40 transition-colors hover:text-fg/60"
               >
                 {skipLabel}
               </button>
@@ -205,7 +163,7 @@ export function StepWizard({
               disabled={completing}
             >
               {completing
-                ? "Working..."
+                ? "Saving..."
                 : isLast
                   ? completeLabel
                   : nextLabel}

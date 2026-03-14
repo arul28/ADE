@@ -43,6 +43,7 @@ export function createLinearSyncService(args: {
   reconciliationIntervalSec?: number;
   autoStart?: boolean;
   hasCredentials?: () => boolean;
+  onIssueUpdated?: (args: { issue: NormalizedLinearIssue; previousIssue: Partial<NormalizedLinearIssue> | null }) => void | Promise<void>;
 }) {
   let disposed = false;
   let timer: NodeJS.Timeout | null = null;
@@ -128,13 +129,29 @@ export function createLinearSyncService(args: {
   const dispatchNewRuns = async (policy: LinearWorkflowConfig) => {
     const candidates = await args.intakeService.fetchCandidates(policy);
     for (const issue of candidates) {
+      // Enforce per-workflow concurrency caps before each dispatch
+      const maxActive = policy.workflows.reduce<number | undefined>((cap, wf) => {
+        const limit = wf.concurrency?.maxActiveRuns;
+        if (limit == null) return cap;
+        return cap == null ? limit : Math.max(cap, limit);
+      }, undefined);
+      if (maxActive != null) {
+        const activeCount = args.dispatcherService.listActiveRuns().length;
+        if (activeCount >= maxActive) break;
+      }
       await processIssueSnapshot(issue, policy);
     }
   };
 
   const processIssueSnapshot = async (issue: NormalizedLinearIssue, policy: LinearWorkflowConfig): Promise<void> => {
     args.intakeService.persistSnapshot(issue);
-    if (!isIssueOpen(issue)) return;
+    if (!isIssueOpen(issue)) {
+      const activeRun = args.dispatcherService.findActiveRunForIssue(issue.id);
+      if (activeRun) {
+        await args.dispatcherService.cancelRun(activeRun.id, `Issue externally ${issue.stateType}`, policy);
+      }
+      return;
+    }
     const activeRun = args.dispatcherService.findActiveRunForIssue(issue.id);
     if (!activeRun && !snapshotChanged(issue)) return;
     if (!activeRun) {
@@ -230,6 +247,25 @@ export function createLinearSyncService(args: {
     }
     const issue = await args.issueTracker.fetchIssueById(issueId);
     if (!issue) return;
+    const previousSnapshotRow = args.db.get<{ payload_json: string | null }>(
+      `
+        select payload_json
+        from linear_issue_snapshots
+        where project_id = ?
+          and issue_id = ?
+        limit 1
+      `,
+      [args.projectId, issueId]
+    );
+    const previousIssue = previousSnapshotRow?.payload_json
+      ? JSON.parse(previousSnapshotRow.payload_json) as Partial<NormalizedLinearIssue>
+      : null;
+    const issueWithHistory: NormalizedLinearIssue = {
+      ...issue,
+      previousStateId: previousIssue?.stateId ?? null,
+      previousStateName: previousIssue?.stateName ?? null,
+      previousStateType: previousIssue?.stateType ?? null,
+    };
     const policy = args.flowPolicyService.getPolicy();
     const workflowsEnabled = workflowEnabled(policy);
     setSyncState({
@@ -241,9 +277,10 @@ export function createLinearSyncService(args: {
     try {
       releaseDueRetries();
       if (workflowsEnabled) {
-        await processIssueSnapshot(issue, policy);
+        await processIssueSnapshot(issueWithHistory, policy);
       }
       await advanceRuns(policy);
+      await args.onIssueUpdated?.({ issue: issueWithHistory, previousIssue });
       setSyncState({
         running: false,
         lastSuccessAt: nowIso(),

@@ -45,6 +45,12 @@ export function createPrPollingService({
   onPullRequestsChanged?: (args: {
     prs: PrSummary[];
     changedPrs: PrSummary[];
+    changes: Array<{
+      pr: PrSummary;
+      previousState: PrSummary["state"] | null;
+      previousChecksStatus: PrSummary["checksStatus"] | null;
+      previousReviewStatus: PrSummary["reviewStatus"] | null;
+    }>;
     polledAt: string;
   }) => void | Promise<void>;
 }) {
@@ -140,6 +146,12 @@ export function createPrPollingService({
       }
 
       const changedPrs: PrSummary[] = [];
+      const changes: Array<{
+        pr: PrSummary;
+        previousState: PrSummary["state"] | null;
+        previousChecksStatus: PrSummary["checksStatus"] | null;
+        previousReviewStatus: PrSummary["reviewStatus"] | null;
+      }> = [];
       for (const pr of prs) {
         const prev = lastByPrId.get(pr.id) ?? null;
         const mergeReady = pr.state === "open" && pr.checksStatus === "passing" && pr.reviewStatus === "approved";
@@ -148,7 +160,15 @@ export function createPrPollingService({
           || prev.checksStatus !== pr.checksStatus
           || prev.reviewStatus !== pr.reviewStatus
           || prev.state !== pr.state;
-        if (changed) changedPrs.push(pr);
+        if (changed) {
+          changedPrs.push(pr);
+          changes.push({
+            pr,
+            previousState: prev?.state ?? null,
+            previousChecksStatus: prev?.checksStatus ?? null,
+            previousReviewStatus: prev?.reviewStatus ?? null,
+          });
+        }
 
         const shouldNotify = (kind: PrNotificationKind): boolean => {
           if (pr.state !== "open" && pr.state !== "draft") return false;
@@ -193,6 +213,7 @@ export function createPrPollingService({
           await onPullRequestsChanged?.({
             prs,
             changedPrs,
+            changes,
             polledAt,
           });
         } catch (error) {

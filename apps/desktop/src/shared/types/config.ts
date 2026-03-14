@@ -461,13 +461,28 @@ export type RunHealthCheckArgs = { laneId: string };
 export type ActivateFallbackArgs = { laneId: string };
 export type DeactivateFallbackArgs = { laneId: string };
 
-export type AutomationTriggerType =
-  | "session-end"
-  | "commit"
-  | "schedule"
-  | "manual"
-  | "github-webhook"
-  | "webhook";
+export const AUTOMATION_TRIGGER_TYPES = [
+  "session-end",
+  "commit",
+  "git.commit",
+  "git.push",
+  "git.pr_opened",
+  "git.pr_updated",
+  "git.pr_merged",
+  "git.pr_closed",
+  "file.change",
+  "lane.created",
+  "lane.archived",
+  "schedule",
+  "manual",
+  "linear.issue_created",
+  "linear.issue_updated",
+  "linear.issue_assigned",
+  "linear.issue_status_changed",
+  "github-webhook",
+  "webhook",
+] as const;
+export type AutomationTriggerType = (typeof AUTOMATION_TRIGGER_TYPES)[number];
 export type AutomationActionType =
   | "update-packs"
   | "predict-conflicts"
@@ -538,11 +553,18 @@ export type AutomationTrigger = {
   type: AutomationTriggerType;
   cron?: string;
   branch?: string;
+  targetBranch?: string;
   event?: string;
   author?: string;
   labels?: string[];
   paths?: string[];
   keywords?: string[];
+  namePattern?: string;
+  project?: string;
+  team?: string;
+  assignee?: string;
+  stateTransition?: string;
+  changedFields?: string[];
   draftState?: "draft" | "ready" | "any";
   secretRef?: string;
   activeHours?: AutomationActiveHours;
@@ -1108,67 +1130,4 @@ export type ListTestRunsArgs = {
 export type GetTestLogTailArgs = {
   runId: string;
   maxBytes?: number;
-};
-
-// --------------------------------
-// CI Import Types
-// --------------------------------
-
-export type CiProvider = "github-actions" | "gitlab-ci" | "circleci" | "jenkins";
-export type CiJobSafety = "local-safe" | "ci-only" | "unknown";
-
-export type CiJobCandidate = {
-  id: string;
-  provider: CiProvider;
-  filePath: string; // repo-relative
-  jobName: string;
-  commands: string[];
-  suggestedCommandLine: string | null;
-  suggestedCommand: string[] | null;
-  safety: CiJobSafety;
-  warnings: string[];
-};
-
-export type CiScanDiff = {
-  added: number;
-  removed: number;
-  changed: number;
-  unchanged: number;
-};
-
-export type CiImportMode = "import" | "sync";
-
-export type CiImportSelection = {
-  jobId: string;
-  kind: "process" | "testSuite";
-};
-
-export type CiImportState = {
-  fingerprint: string;
-  jobDigests: Record<string, string>;
-  importedAt: string;
-  importedJobs: Array<{
-    jobId: string;
-    kind: "process" | "testSuite";
-    targetId: string;
-  }>;
-};
-
-export type CiScanResult = {
-  providers: CiProvider[];
-  jobs: CiJobCandidate[];
-  fingerprint: string;
-  scannedAt: string;
-  lastImport: CiImportState | null;
-  diff: CiScanDiff | null;
-};
-
-export type CiImportRequest = {
-  selections: CiImportSelection[];
-  mode?: CiImportMode;
-};
-
-export type CiImportResult = {
-  snapshot: ProjectConfigSnapshot;
-  importState: CiImportState;
 };

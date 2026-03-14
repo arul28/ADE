@@ -9,7 +9,7 @@ import type { TerminalLaunchProfile, TerminalProfilesSnapshot } from "../../../s
 import { DEFAULT_PROFILE_IDS, toolTypeFromProfileId } from "../../lib/sessions";
 import { ToolLogo } from "./ToolLogos";
 import { TerminalSettingsDialog, readLaunchTracked, persistLaunchTracked } from "./TerminalSettingsDialog";
-import { COLORS, MONO_FONT, LABEL_STYLE, inlineBadge } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, LABEL_STYLE, inlineBadge } from "../lanes/laneDesignTokens";
 
 export function LaunchPanel({
   lanes,
@@ -76,7 +76,7 @@ export function LaunchPanel({
           borderBottom: '1px solid ' + COLORS.border,
           borderLeft: '2px solid #A78BFA30',
           padding: '12px 16px',
-          fontFamily: MONO_FONT,
+          fontFamily: SANS_FONT,
           display: 'flex',
           flexDirection: 'column',
           gap: 10,
@@ -94,7 +94,7 @@ export function LaunchPanel({
                 background: COLORS.recessedBg,
                 border: '1px solid ' + COLORS.outlineBorder,
                 borderRadius: 0,
-                fontFamily: MONO_FONT,
+                fontFamily: SANS_FONT,
                 fontSize: 12,
                 color: COLORS.textPrimary,
                 paddingLeft: 8,

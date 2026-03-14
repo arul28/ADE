@@ -150,6 +150,13 @@ export type CtoLinearProject = {
 
 export type CtoStartLinearOAuthArgs = Record<string, never>;
 
+export type CtoSetLinearOAuthClientArgs = {
+  clientId: string;
+  clientSecret?: string | null;
+};
+
+export type CtoClearLinearOAuthClientArgs = Record<string, never>;
+
 export type CtoStartLinearOAuthResult = {
   sessionId: string;
   authUrl: string;

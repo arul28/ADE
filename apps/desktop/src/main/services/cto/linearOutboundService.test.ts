@@ -159,7 +159,7 @@ describe("linearOutboundService", () => {
     db.close();
   });
 
-  it("filters artifact links outside project root while preserving remote links for generic workflow closeout", async () => {
+  it("preserves local artifact links even when the file lives outside the project root", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-artifacts-"));
     const db = await openKvDb(path.join(root, "ade.db"), createLogger());
     const insideArtifact = path.join(root, "build.log");
@@ -204,7 +204,69 @@ describe("linearOutboundService", () => {
     const latest = updateBodies[updateBodies.length - 1] ?? "";
     expect(latest).toContain(`file://${insideArtifact}`);
     expect(latest).toContain("https://example.com/artifact.txt");
-    expect(latest).not.toContain(`file://${outsideArtifact}`);
+    expect(latest).toContain(`file://${outsideArtifact}`);
+    db.close();
+  });
+
+  it("uploads attachment-mode artifacts even when the file lives outside the project root", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-attachment-upload-"));
+    const db = await openKvDb(path.join(root, "ade.db"), createLogger());
+    const insideArtifact = path.join(root, "inside.png");
+    const outsideArtifact = path.join(os.tmpdir(), `ade-outside-${Date.now()}.png`);
+    fs.writeFileSync(insideArtifact, "inside", "utf8");
+    fs.writeFileSync(outsideArtifact, "outside", "utf8");
+
+    const uploadAttachment = vi.fn(async ({ filePath }: { filePath: string }) => ({
+      url: `https://linear.example/${path.basename(filePath)}`,
+    }));
+    const updateBodies: string[] = [];
+    const service = createLinearOutboundService({
+      db,
+      projectId: "project-1",
+      projectRoot: root,
+      issueTracker: {
+        createComment: vi.fn(async () => ({ commentId: "comment-1" })),
+        updateComment: vi.fn(async (_commentId: string, body: string) => {
+          updateBodies.push(body);
+        }),
+        uploadAttachment,
+      } as any,
+      logger: createLogger(),
+    });
+
+    await service.publishMissionStart({
+      issue: issueFixture,
+      missionId: "mission-1",
+      missionTitle: "Auth mission",
+      templateId: "bug-fix",
+      routeReason: "Matched bug",
+    });
+
+    await service.publishWorkflowCloseout({
+      issue: issueFixture,
+      status: "completed",
+      summary: "Uploaded proof artifacts.",
+      targetLabel: "employee session",
+      targetId: "session-1",
+      artifactMode: "attachments",
+      artifactPaths: [insideArtifact, outsideArtifact],
+    });
+
+    expect(uploadAttachment).toHaveBeenCalledTimes(2);
+    expect(uploadAttachment).toHaveBeenCalledWith({
+      issueId: issueFixture.id,
+      filePath: insideArtifact,
+      title: path.basename(insideArtifact),
+    });
+    expect(uploadAttachment).toHaveBeenCalledWith({
+      issueId: issueFixture.id,
+      filePath: outsideArtifact,
+      title: path.basename(outsideArtifact),
+    });
+
+    const latest = updateBodies[updateBodies.length - 1] ?? "";
+    expect(latest).toContain(`https://linear.example/${path.basename(insideArtifact)}`);
+    expect(latest).toContain(`https://linear.example/${path.basename(outsideArtifact)}`);
     db.close();
   });
 

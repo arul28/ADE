@@ -1,5 +1,5 @@
 import http from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { URL } from "node:url";
 import type {
   CtoGetLinearOAuthSessionResult,
@@ -18,11 +18,22 @@ type LinearOAuthSessionState = {
   state: string;
   redirectUri: string;
   authUrl: string;
+  codeVerifier: string | null;
   createdAt: number;
   status: CtoGetLinearOAuthSessionResult["status"];
   error: string | null;
   server: http.Server;
 };
+
+function toBase64Url(value: Buffer): string {
+  return value.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function createPkcePair(): { verifier: string; challenge: string } {
+  const verifier = toBase64Url(randomBytes(48));
+  const challenge = toBase64Url(createHash("sha256").update(verifier).digest());
+  return { verifier, challenge };
+}
 
 export function createLinearOAuthService(args: {
   credentials: LinearCredentialService;
@@ -63,21 +74,28 @@ export function createLinearOAuthService(args: {
   const exchangeCode = async (session: LinearOAuthSessionState, code: string): Promise<void> => {
     const oauthClient = args.credentials.getOAuthClientCredentials();
     if (!oauthClient) {
-      throw new Error("Linear OAuth client credentials are missing. Add them under .ade/secrets/linear-oauth.v1.json.");
+      throw new Error("Linear OAuth is not configured. Configure it in Settings > Linear.");
+    }
+
+    const body = new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: session.redirectUri,
+      client_id: oauthClient.clientId,
+    });
+    if (oauthClient.clientSecret?.trim()) {
+      body.set("client_secret", oauthClient.clientSecret.trim());
+    }
+    if (session.codeVerifier) {
+      body.set("code_verifier", session.codeVerifier);
     }
 
     const response = await fetchImpl(LINEAR_TOKEN_URL, {
       method: "POST",
       headers: {
-        "content-type": "application/json",
+        "content-type": "application/x-www-form-urlencoded",
       },
-      body: JSON.stringify({
-        grant_type: "authorization_code",
-        code,
-        redirect_uri: session.redirectUri,
-        client_id: oauthClient.clientId,
-        client_secret: oauthClient.clientSecret,
-      }),
+      body: body.toString(),
     });
 
     const payload = await response.json().catch(() => ({})) as {
@@ -108,11 +126,12 @@ export function createLinearOAuthService(args: {
     pruneExpiredSessions();
     const oauthClient = args.credentials.getOAuthClientCredentials();
     if (!oauthClient) {
-      throw new Error("Linear OAuth client credentials are missing. Add .ade/secrets/linear-oauth.v1.json with clientId and clientSecret.");
+      throw new Error("Linear OAuth is not configured. Configure it in Settings > Linear.");
     }
 
     const sessionId = `linear-oauth-${randomUUID()}`;
     const state = randomUUID();
+    const pkce = oauthClient.clientSecret?.trim().length ? null : createPkcePair();
 
     let session: LinearOAuthSessionState | null = null;
     const server = http.createServer(async (req, res) => {
@@ -195,12 +214,17 @@ export function createLinearOAuthService(args: {
     authUrl.searchParams.set("response_type", "code");
     authUrl.searchParams.set("state", state);
     authUrl.searchParams.set("scope", "read,write");
+    if (pkce) {
+      authUrl.searchParams.set("code_challenge_method", "S256");
+      authUrl.searchParams.set("code_challenge", pkce.challenge);
+    }
 
     session = {
       id: sessionId,
       state,
       redirectUri,
       authUrl: authUrl.toString(),
+      codeVerifier: pkce?.verifier ?? null,
       createdAt: Date.now(),
       status: "pending",
       error: null,

@@ -10,6 +10,7 @@ import type {
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
   ArchiveLaneArgs,
+  AutomationDeleteRuleRequest,
   AutomationIngressEventRecord,
   AutomationIngressStatus,
   ConflictProposal,
@@ -143,6 +144,7 @@ import type {
   CtoOnboardingState,
   CtoSystemPromptPreview,
   CtoLinearProject,
+  CtoSetLinearOAuthClientArgs,
   CtoStartLinearOAuthResult,
   CtoGetLinearOAuthSessionArgs,
   CtoGetLinearOAuthSessionResult,
@@ -184,9 +186,6 @@ import type {
   OnboardingDetectionResult,
   OnboardingExistingLaneCandidate,
   OnboardingStatus,
-  CiScanResult,
-  CiImportRequest,
-  CiImportResult,
   GitActionResult,
   GitCherryPickArgs,
   GitCommitArgs,
@@ -527,6 +526,7 @@ declare global {
       };
       project: {
         openRepo: () => Promise<ProjectInfo | null>;
+        chooseDirectory: (args?: { title?: string; defaultPath?: string }) => Promise<string | null>;
         openAdeFolder: () => Promise<void>;
       clearLocalData: (args?: ClearLocalAdeDataArgs) => Promise<ClearLocalAdeDataResult>;
       listRecent: () => Promise<RecentProjectSummary[]>;
@@ -575,13 +575,10 @@ declare global {
         detectExistingLanes: () => Promise<OnboardingExistingLaneCandidate[]>;
         complete: () => Promise<OnboardingStatus>;
       };
-      ci: {
-        scan: () => Promise<CiScanResult>;
-        import: (req: CiImportRequest) => Promise<CiImportResult>;
-      };
       automations: {
         list: () => Promise<AutomationRuleSummary[]>;
         toggle: (args: { id: string; enabled: boolean }) => Promise<AutomationRuleSummary[]>;
+        deleteRule: (args: AutomationDeleteRuleRequest) => Promise<AutomationRuleSummary[]>;
         triggerManually: (args: AutomationManualTriggerRequest) => Promise<AutomationRun>;
         getHistory: (args: { id: string; limit?: number }) => Promise<AutomationRun[]>;
         listRuns: (args?: AutomationRunListArgs) => Promise<AutomationRun[]>;
@@ -777,6 +774,7 @@ declare global {
         models: (args: AgentChatModelsArgs) => Promise<AgentChatModelInfo[]>;
         dispose: (args: AgentChatDisposeArgs) => Promise<void>;
         updateSession: (args: AgentChatUpdateSessionArgs) => Promise<AgentChatSession>;
+        warmupModel: (args: { sessionId: string; modelId: string }) => Promise<void>;
         onEvent: (cb: (ev: AgentChatEventEnvelope) => void) => () => void;
         listContextPacks: (args?: import("../shared/types").ContextPackListArgs) => Promise<import("../shared/types").ContextPackOption[]>;
         fetchContextPack: (args: import("../shared/types").ContextPackFetchArgs) => Promise<import("../shared/types").ContextPackFetchResult>;
@@ -1117,6 +1115,8 @@ declare global {
         resetOnboarding: () => Promise<CtoOnboardingState>;
         previewSystemPrompt: (args?: { identityOverride?: Record<string, unknown> }) => Promise<CtoSystemPromptPreview>;
         getLinearProjects: () => Promise<CtoLinearProject[]>;
+        setLinearOAuthClient: (args: CtoSetLinearOAuthClientArgs) => Promise<LinearConnectionStatus>;
+        clearLinearOAuthClient: () => Promise<LinearConnectionStatus>;
         startLinearOAuth: () => Promise<CtoStartLinearOAuthResult>;
         getLinearOAuthSession: (args: CtoGetLinearOAuthSessionArgs) => Promise<CtoGetLinearOAuthSessionResult>;
         runProjectScan: () => Promise<CtoRunProjectScanResult>;

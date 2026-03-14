@@ -5,7 +5,6 @@ import {
   ListBullets,
   BookOpen,
   ClockCounterClockwise,
-  ChartBar,
   Moon,
   CheckCircle,
 } from "@phosphor-icons/react";
@@ -16,18 +15,16 @@ import { Chip } from "../ui/Chip";
 import { RulesTab } from "./RulesTab";
 import { TemplatesTab } from "./TemplatesTab";
 import { HistoryTab } from "./HistoryTab";
-import { UsageTab } from "./UsageTab";
 import { NightShiftTab } from "./NightShiftTab";
 
 /* ── Tab types ── */
 
-type TabId = "rules" | "templates" | "history" | "usage" | "nightshift";
+type TabId = "rules" | "templates" | "history" | "nightshift";
 
 const TABS: { id: TabId; label: string; icon: ElementType }[] = [
   { id: "rules", label: "Rules", icon: ListBullets },
   { id: "templates", label: "Templates", icon: BookOpen },
   { id: "history", label: "History", icon: ClockCounterClockwise },
-  { id: "usage", label: "Usage", icon: ChartBar },
   { id: "nightshift", label: "Night Shift", icon: Moon },
 ];
 
@@ -120,7 +117,6 @@ export function AutomationsPage() {
         {activeTab === "rules" && <RulesTab pendingDraft={pendingDraft} onDraftConsumed={() => setPendingDraft(null)} />}
         {activeTab === "templates" && <TemplatesTab onUseTemplate={handleUseTemplate} />}
         {activeTab === "history" && <HistoryTab />}
-        {activeTab === "usage" && <UsageTab />}
         {activeTab === "nightshift" && <NightShiftTab />}
       </div>
 

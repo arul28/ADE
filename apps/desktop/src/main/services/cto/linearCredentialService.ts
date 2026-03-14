@@ -6,6 +6,7 @@ import type { Logger } from "../logging/logger";
 import { isRecord, getErrorMessage, isEnoentError } from "../shared/utils";
 
 const TOKEN_FILE = "linear-token.v1.bin";
+const OAUTH_CLIENT_FILE = "linear-oauth-client.v1.bin";
 const IMPORT_SENTINEL = "linear-token.imported.v1";
 const OAUTH_CONFIG_FILES = [
   "linear-oauth.v1.json",
@@ -29,7 +30,7 @@ type StoredLinearToken = {
 
 type LinearOAuthClientCredentials = {
   clientId: string;
-  clientSecret: string;
+  clientSecret?: string | null;
 };
 
 function extractLegacyToken(raw: string): string | null {
@@ -53,6 +54,7 @@ function extractLegacyToken(raw: string): string | null {
 export function createLinearCredentialService(args: LinearCredentialServiceArgs) {
   const secretsDir = path.join(args.adeDir, "secrets");
   const tokenPath = path.join(secretsDir, TOKEN_FILE);
+  const oauthClientPath = path.join(secretsDir, OAUTH_CLIENT_FILE);
   const importSentinelPath = path.join(secretsDir, IMPORT_SENTINEL);
 
   const normalizeStoredToken = (value: unknown): StoredLinearToken | null => {
@@ -94,6 +96,45 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     }
   };
 
+  const normalizeOAuthClientCredentials = (value: unknown): LinearOAuthClientCredentials | null => {
+    if (!isRecord(value)) return null;
+    const clientId = typeof value.clientId === "string"
+      ? value.clientId.trim()
+      : typeof value.client_id === "string"
+        ? value.client_id.trim()
+        : "";
+    if (!clientId.length) return null;
+    const clientSecret = typeof value.clientSecret === "string"
+      ? value.clientSecret.trim()
+      : typeof value.client_secret === "string"
+        ? value.client_secret.trim()
+        : "";
+    return {
+      clientId,
+      clientSecret: clientSecret.length ? clientSecret : null,
+    };
+  };
+
+  const readStoredOAuthClientCredentials = (): LinearOAuthClientCredentials | null => {
+    try {
+      if (!safeStorage.isEncryptionAvailable()) {
+        args.logger?.warn("linear_sync.oauth_client_store_unavailable", {
+          message: "OS secure storage unavailable; cannot decrypt Linear OAuth client config."
+        });
+        return null;
+      }
+      const encrypted = fs.readFileSync(oauthClientPath);
+      const decrypted = safeStorage.decryptString(encrypted);
+      return normalizeOAuthClientCredentials(JSON.parse(decrypted));
+    } catch (error: unknown) {
+      if (isEnoentError(error)) return null;
+      args.logger?.warn("linear_sync.oauth_client_store_read_failed", {
+        error: getErrorMessage(error)
+      });
+      return null;
+    }
+  };
+
   const persistToken = (record: StoredLinearToken | null): void => {
     const token = record?.token?.trim() ?? "";
     if (!token.length) {
@@ -119,6 +160,34 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     fs.writeFileSync(tokenPath, encrypted);
     try {
       fs.chmodSync(tokenPath, 0o600);
+    } catch {
+      // best effort
+    }
+  };
+
+  const persistOAuthClientCredentials = (record: LinearOAuthClientCredentials | null): void => {
+    const clientId = record?.clientId?.trim() ?? "";
+    if (!clientId.length) {
+      try {
+        fs.unlinkSync(oauthClientPath);
+      } catch {
+        // best effort — file may not exist
+      }
+      return;
+    }
+
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error("OS secure storage is unavailable. Cannot store Linear OAuth client settings.");
+    }
+
+    fs.mkdirSync(secretsDir, { recursive: true });
+    const encrypted = safeStorage.encryptString(JSON.stringify({
+      clientId,
+      clientSecret: record?.clientSecret?.trim() || null,
+    }));
+    fs.writeFileSync(oauthClientPath, encrypted);
+    try {
+      fs.chmodSync(oauthClientPath, 0o600);
     } catch {
       // best effort
     }
@@ -181,26 +250,19 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
 
   const readOAuthClientCredentials = (): LinearOAuthClientCredentials | null => {
     if (cachedOAuthCreds !== undefined) return cachedOAuthCreds;
+    const stored = readStoredOAuthClientCredentials();
+    if (stored) {
+      cachedOAuthCreds = stored;
+      return cachedOAuthCreds;
+    }
     for (const filename of OAUTH_CONFIG_FILES) {
       const configPath = path.join(secretsDir, filename);
       try {
         const raw = fs.readFileSync(configPath, "utf8");
         const parsed = filename.endsWith(".json") ? JSON.parse(raw) : YAML.parse(raw);
-        if (!isRecord(parsed)) continue;
-        const clientId =
-          typeof parsed.clientId === "string"
-            ? parsed.clientId.trim()
-            : typeof parsed.client_id === "string"
-              ? parsed.client_id.trim()
-              : "";
-        const clientSecret =
-          typeof parsed.clientSecret === "string"
-            ? parsed.clientSecret.trim()
-            : typeof parsed.client_secret === "string"
-              ? parsed.client_secret.trim()
-              : "";
-        if (clientId.length && clientSecret.length) {
-          cachedOAuthCreds = { clientId, clientSecret };
+        const credentials = normalizeOAuthClientCredentials(parsed);
+        if (credentials) {
+          cachedOAuthCreds = credentials;
           return cachedOAuthCreds;
         }
       } catch (error: unknown) {
@@ -224,7 +286,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
 
     getTokenOrThrow(): string {
       const token = getStoredToken()?.token ?? null;
-      if (!token) throw new Error("Linear token missing. Set it in CTO > Linear Sync.");
+      if (!token) throw new Error("Linear token missing. Set it in Settings > Linear.");
       return token;
     },
 
@@ -249,6 +311,26 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
 
     clearToken(): void {
       persistToken(null);
+      invalidateCache();
+    },
+
+    setOAuthClientCredentials(args: {
+      clientId: string;
+      clientSecret?: string | null;
+    }): void {
+      const clientId = args.clientId.trim();
+      if (!clientId.length) {
+        throw new Error("A Linear OAuth client ID is required.");
+      }
+      persistOAuthClientCredentials({
+        clientId,
+        clientSecret: args.clientSecret?.trim() || null,
+      });
+      invalidateCache();
+    },
+
+    clearOAuthClientCredentials(): void {
+      persistOAuthClientCredentials(null);
       invalidateCache();
     },
 

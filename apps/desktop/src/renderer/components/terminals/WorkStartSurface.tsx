@@ -10,7 +10,7 @@ import type { LaneSummary, AgentChatPermissionMode } from "../../../shared/types
 import type { WorkDraftKind } from "../../state/appStore";
 import { AgentChatPane } from "../chat/AgentChatPane";
 import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
-import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { ClaudeLogo, CodexLogo } from "./ToolLogos";
 
 type WorkStartSurfaceProps = {
@@ -76,35 +76,19 @@ function LaunchModeHero({
   return (
     <div className="flex items-center gap-3 px-5 py-3.5" style={{ borderBottom: "1px solid rgba(255,255,255, 0.04)" }}>
       <div
-        className="flex h-9 w-9 shrink-0 items-center justify-center"
+        className="flex h-8 w-8 shrink-0 items-center justify-center"
         style={{
-          background: `${config.color}18`,
-          border: `1px solid ${config.color}30`,
-          borderRadius: 12,
+          background: `${config.color}0C`,
+          borderRadius: 8,
         }}
       >
-        <Icon size={16} weight="bold" style={{ color: config.color }} />
+        <Icon size={15} weight="regular" style={{ color: config.color }} />
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span style={{ fontSize: 14, fontWeight: 700, color: COLORS.textPrimary, fontFamily: SANS_FONT }}>{title}</span>
-          <span
-            style={{
-              fontSize: 9,
-              fontWeight: 700,
-              fontFamily: MONO_FONT,
-              textTransform: "uppercase",
-              letterSpacing: "1px",
-              padding: "2px 8px",
-              color: config.color,
-              background: `${config.color}18`,
-              border: `1px solid ${config.color}30`,
-            }}
-          >
-            {kind}
-          </span>
+          <span style={{ fontSize: 13, fontWeight: 600, color: COLORS.textPrimary, fontFamily: SANS_FONT, letterSpacing: "-0.01em" }}>{title}</span>
         </div>
-        <div className="mt-1 max-w-2xl" style={{ fontSize: 11, lineHeight: 1.5, color: COLORS.textMuted, fontFamily: MONO_FONT }}>{body}</div>
+        <div className="mt-0.5 max-w-2xl" style={{ fontSize: 12, lineHeight: 1.5, color: COLORS.textMuted, fontFamily: SANS_FONT }}>{body}</div>
       </div>
     </div>
   );
@@ -121,10 +105,10 @@ function LanePicker({
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <span style={{ fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", color: COLORS.textMuted }}>
+      <span style={{ fontSize: 11, fontWeight: 500, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
         Lane
       </span>
-      <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto scrollbar-none pb-0.5">
+      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scrollbar-none pb-0.5">
         {lanes.map((lane) => {
           const isActive = lane.id === value;
           const laneColor = lane.color ?? COLORS.accent;
@@ -132,20 +116,19 @@ function LanePicker({
             <button
               key={lane.id}
               type="button"
-              className="inline-flex shrink-0 items-center gap-2 px-3 py-1.5 text-[10px] font-bold uppercase transition-colors"
+              className="inline-flex shrink-0 items-center gap-2 px-3 py-1.5 transition-colors"
               style={{
-                fontFamily: MONO_FONT,
-                letterSpacing: "0.5px",
-                border: isActive
-                  ? `1px solid ${laneColor}30`
-                  : "1px solid rgba(255,255,255, 0.04)",
-                background: isActive ? `${laneColor}08` : "rgba(255,255,255, 0.02)",
+                fontFamily: SANS_FONT,
+                fontSize: 12,
+                fontWeight: isActive ? 500 : 400,
+                border: "1px solid transparent",
+                background: isActive ? "rgba(255,255,255, 0.06)" : "transparent",
                 color: isActive ? COLORS.textPrimary : COLORS.textMuted,
-                borderRadius: 12,
+                borderRadius: 6,
               }}
               onClick={() => onChange(lane.id)}
             >
-              <span className="h-2 w-2" style={{ background: laneColor }} />
+              <span className="h-1.5 w-1.5 rounded-full" style={{ background: laneColor }} />
               <span className="truncate">{lane.name}</span>
             </button>
           );
@@ -228,11 +211,11 @@ export function WorkStartSurface({
 
   if (!lanes.length) {
     return (
-      <div className="flex h-full items-center justify-center px-6" style={{ background: COLORS.cardBg }}>
-        <div style={{ background: COLORS.cardBg, border: "1px solid rgba(255,255,255, 0.04)", padding: "20px 24px", textAlign: "center", borderRadius: 16 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textPrimary, fontFamily: SANS_FONT }}>No lanes available</div>
-          <div className="mt-2" style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-            Create or reopen a lane before starting chat, CLI, or shell work.
+      <div className="flex h-full items-center justify-center px-6" style={{ background: "var(--color-bg)" }}>
+        <div style={{ background: "rgba(255,255,255, 0.03)", padding: "20px 24px", textAlign: "center", borderRadius: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 500, color: COLORS.textPrimary, fontFamily: SANS_FONT }}>No lanes available</div>
+          <div className="mt-2" style={{ fontSize: 12, color: COLORS.textMuted, fontFamily: SANS_FONT }}>
+            Create or reopen a lane before starting work.
           </div>
         </div>
       </div>
@@ -241,8 +224,8 @@ export function WorkStartSurface({
 
   if (draftKind === "chat") {
     return (
-      <div className="flex h-full min-h-0 flex-col" style={{ background: COLORS.cardBg }}>
-        <div style={{ background: COLORS.cardBg, borderBottom: "1px solid rgba(255,255,255, 0.04)" }}>
+      <div className="flex h-full min-h-0 flex-col" style={{ background: "var(--color-bg)" }}>
+        <div style={{ background: "var(--color-bg)", borderBottom: "1px solid rgba(255,255,255, 0.04)" }}>
           <LaunchModeHero
             kind="chat"
             title="New chat"
@@ -267,8 +250,8 @@ export function WorkStartSurface({
 
   if (draftKind === "cli") {
     return (
-      <div className="flex h-full min-h-0 flex-col" style={{ background: COLORS.cardBg }}>
-        <div style={{ background: COLORS.cardBg }}>
+      <div className="flex h-full min-h-0 flex-col" style={{ background: "var(--color-bg)" }}>
+        <div style={{ background: "var(--color-bg)" }}>
           <LaunchModeHero
             kind="cli"
             title="New CLI Tool"
@@ -276,7 +259,7 @@ export function WorkStartSurface({
           />
         </div>
         <div className="flex min-h-0 flex-1 flex-col gap-4 px-5 py-5">
-          <div style={{ background: COLORS.cardBg, border: "1px solid rgba(255,255,255, 0.04)", padding: 16, borderRadius: 16 }}>
+          <div style={{ padding: 16 }}>
             <LanePicker lanes={lanes} value={selectedLaneId} onChange={setSelectedLaneId} />
 
             <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -289,14 +272,15 @@ export function WorkStartSurface({
                   <button
                     key={option.id}
                     type="button"
-                    className="inline-flex items-center gap-2 px-3 py-2 text-[10px] font-bold uppercase transition-colors"
+                    className="inline-flex items-center gap-2 px-3 py-2 transition-colors"
                     style={{
-                      fontFamily: MONO_FONT,
-                      letterSpacing: "1px",
-                      border: active ? `1px solid ${option.color}30` : "1px solid rgba(255,255,255, 0.04)",
-                      background: active ? `${option.color}08` : "rgba(255,255,255, 0.02)",
+                      fontFamily: SANS_FONT,
+                      fontSize: 12,
+                      fontWeight: active ? 500 : 400,
+                      border: "1px solid transparent",
+                      background: active ? "rgba(255,255,255, 0.06)" : "transparent",
                       color: active ? COLORS.textPrimary : COLORS.textMuted,
-                      borderRadius: 12,
+                      borderRadius: 8,
                     }}
                     onClick={() => setCliProvider(option.id)}
                   >
@@ -317,19 +301,20 @@ export function WorkStartSurface({
                   <button
                     key={option.value}
                     type="button"
-                    className={`inline-flex items-center gap-2 px-3 py-2 text-[10px] font-bold uppercase transition-colors ${active ? colors.activeBg : ""}`}
+                    className={`inline-flex items-center gap-2 px-3 py-2 transition-colors ${active ? colors.activeBg : ""}`}
                     style={{
-                      fontFamily: MONO_FONT,
-                      letterSpacing: "0.5px",
-                      border: active ? `1px solid ${COLORS.accent}30` : "1px solid rgba(255,255,255, 0.04)",
-                      background: active ? undefined : "rgba(255,255,255, 0.02)",
+                      fontFamily: SANS_FONT,
+                      fontSize: 12,
+                      fontWeight: active ? 500 : 400,
+                      border: "1px solid transparent",
+                      background: active ? "rgba(255,255,255, 0.06)" : "transparent",
                       color: active ? COLORS.textPrimary : COLORS.textMuted,
-                      borderRadius: 12,
+                      borderRadius: 8,
                     }}
                     onClick={() => setCliPermissionMode(option.value)}
                     title={option.detail}
                   >
-                    <Lightning size={11} weight="fill" />
+                    <Lightning size={11} weight="regular" />
                     {option.label}
                   </button>
                 );
@@ -337,13 +322,13 @@ export function WorkStartSurface({
             </div>
           </div>
 
-          <div className="mt-auto flex items-center justify-between gap-3" style={{ background: COLORS.cardBg, border: "1px solid rgba(255,255,255, 0.04)", padding: "12px 16px", borderRadius: 16 }}>
+          <div className="mt-auto flex items-center justify-between gap-3" style={{ padding: "12px 16px", borderTop: "1px solid rgba(255,255,255, 0.04)" }}>
             <div className="min-w-0">
-              <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
+              <div style={{ fontSize: 13, fontWeight: 500, color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
                 {cliProvider === "claude" ? "Claude Code" : "Codex CLI"}
               </div>
-              <div className="mt-0.5" style={{ fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", color: COLORS.textMuted }}>
-                Lane {lanes.find((lane) => lane.id === selectedLaneId)?.name ?? selectedLaneId}
+              <div className="mt-0.5" style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+                {lanes.find((lane) => lane.id === selectedLaneId)?.name ?? selectedLaneId}
               </div>
             </div>
             <button
@@ -354,23 +339,21 @@ export function WorkStartSurface({
                 gap: 6,
                 height: 32,
                 padding: "0 16px",
-                fontSize: 11,
-                fontWeight: 700,
-                fontFamily: MONO_FONT,
-                textTransform: "uppercase",
-                letterSpacing: "1px",
+                fontSize: 12,
+                fontWeight: 500,
+                fontFamily: SANS_FONT,
                 color: COLORS.pageBg,
-                background: COLORS.accent,
-                border: `1px solid ${COLORS.accent}`,
+                background: "var(--color-fg)",
+                border: "none",
                 cursor: selectedLaneId && !launchBusy ? "pointer" : "not-allowed",
                 opacity: selectedLaneId && !launchBusy ? 1 : 0.5,
-                borderRadius: 999,
+                borderRadius: 8,
               }}
               disabled={!selectedLaneId || launchBusy}
               onClick={() => void launchCli()}
             >
               Open CLI
-              <ArrowRight size={12} weight="bold" />
+              <ArrowRight size={12} weight="regular" />
             </button>
           </div>
         </div>
@@ -379,8 +362,8 @@ export function WorkStartSurface({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col" style={{ background: COLORS.cardBg }}>
-      <div style={{ background: COLORS.cardBg }}>
+    <div className="flex h-full min-h-0 flex-col" style={{ background: "var(--color-bg)" }}>
+      <div style={{ background: "var(--color-bg)" }}>
         <LaunchModeHero
           kind="shell"
           title="New shell"
@@ -388,19 +371,19 @@ export function WorkStartSurface({
         />
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-4 px-5 py-5">
-        <div style={{ background: COLORS.cardBg, border: "1px solid rgba(255,255,255, 0.04)", padding: 16, borderRadius: 16 }}>
+        <div style={{ padding: 16 }}>
           <LanePicker lanes={lanes} value={selectedLaneId} onChange={setSelectedLaneId} />
-          <div className="mt-4" style={{ background: COLORS.cardBg, border: "1px solid rgba(255,255,255, 0.04)", padding: "12px 16px", borderRadius: 16 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textPrimary, fontFamily: SANS_FONT }}>Blank shell session</div>
-            <div className="mt-1" style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+          <div className="mt-4" style={{ background: "rgba(255,255,255, 0.02)", padding: "12px 16px", borderRadius: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 500, color: COLORS.textPrimary, fontFamily: SANS_FONT }}>Blank shell session</div>
+            <div className="mt-1" style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
               Starts a regular terminal with lane context for manual commands, scripts, or debugging.
             </div>
           </div>
         </div>
 
-        <div className="mt-auto flex items-center justify-between gap-3" style={{ background: COLORS.cardBg, border: "1px solid rgba(255,255,255, 0.04)", padding: "12px 16px", borderRadius: 16 }}>
-          <div style={{ fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", color: COLORS.textMuted }}>
-            Lane {lanes.find((lane) => lane.id === selectedLaneId)?.name ?? selectedLaneId}
+        <div className="mt-auto flex items-center justify-between gap-3" style={{ padding: "12px 16px", borderTop: "1px solid rgba(255,255,255, 0.04)" }}>
+          <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+            {lanes.find((lane) => lane.id === selectedLaneId)?.name ?? selectedLaneId}
           </div>
           <button
             type="button"
@@ -410,23 +393,21 @@ export function WorkStartSurface({
               gap: 6,
               height: 32,
               padding: "0 16px",
-              fontSize: 11,
-              fontWeight: 700,
-              fontFamily: MONO_FONT,
-              textTransform: "uppercase",
-              letterSpacing: "1px",
+              fontSize: 12,
+              fontWeight: 500,
+              fontFamily: SANS_FONT,
               color: COLORS.pageBg,
-              background: COLORS.accent,
-              border: `1px solid ${COLORS.accent}`,
+              background: "var(--color-fg)",
+              border: "none",
               cursor: selectedLaneId && !launchBusy ? "pointer" : "not-allowed",
               opacity: selectedLaneId && !launchBusy ? 1 : 0.5,
-              borderRadius: 999,
+              borderRadius: 8,
             }}
             disabled={!selectedLaneId || launchBusy}
             onClick={() => void launchShell()}
           >
             Open Shell
-            <ArrowRight size={12} weight="bold" />
+            <ArrowRight size={12} weight="regular" />
           </button>
         </div>
       </div>

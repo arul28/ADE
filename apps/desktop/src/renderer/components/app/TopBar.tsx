@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Folder, FolderOpen, Plus, Minus, MagnifyingGlass, Trash, X } from "@phosphor-icons/react";
+import { Folder, FolderOpen, Plus, Minus, Trash, X } from "@phosphor-icons/react";
 
 import { useAppStore } from "../../state/appStore";
 import {
@@ -14,15 +14,7 @@ import type { ProcessRuntime, RecentProjectSummary } from "../../../shared/types
 
 const RUNNING_LANE_PROCESS_STATES: ProcessRuntime["status"][] = ["starting", "running", "degraded"];
 
-export function TopBar({
-  onOpenCommandPalette,
-  commandHint,
-  commandPaletteOpen
-}: {
-  onOpenCommandPalette: () => void;
-  commandHint: React.ReactNode;
-  commandPaletteOpen: boolean;
-}) {
+export function TopBar() {
   const project = useAppStore((s) => s.project);
   const closeProject = useAppStore((s) => s.closeProject);
   const terminalAttention = useAppStore((s) => s.terminalAttention);
@@ -414,32 +406,6 @@ export function TopBar({
           <Plus size={12} weight="bold" />
         </button>
       </div>
-
-      {/* Command palette / search */}
-      <button
-        type="button"
-        style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-        data-state={commandPaletteOpen ? "open" : undefined}
-        aria-pressed={commandPaletteOpen}
-        className={cn(
-          "ade-shell-control shrink-0 inline-flex items-center gap-2",
-          "h-[26px] px-2.5",
-          "outline-none transition-[background-color,color,border-color,box-shadow] duration-150"
-        )}
-        onClick={onOpenCommandPalette}
-        title="Command palette"
-      >
-        <MagnifyingGlass size={13} weight="regular" className="shrink-0 opacity-50" />
-        <span className="hidden sm:inline text-[11px] font-mono opacity-75">Search...</span>
-        <span
-          className={cn(
-            "ade-shell-control-kbd hidden md:inline font-mono text-[10px]",
-            "px-1.5 py-px"
-          )}
-        >
-          {commandHint}
-        </span>
-      </button>
     </header>
   );
 }

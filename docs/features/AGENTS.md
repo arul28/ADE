@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 >
-> Last updated: 2026-03-05
+> Last updated: 2026-03-13
 
 ---
 
@@ -47,6 +47,20 @@ For mission detail:
 
 - Global chat is the high-signal summary/broadcast surface.
 - Worker and orchestrator channels are the detailed inspection surface and now reuse the shared chat message renderer patterns used by normal agent chat.
+
+---
+
+## Agent Tool Tiers
+
+Agent tools are organized into three tiers, each scoped to the appropriate agent role:
+
+| Tier | Surface | Available To | Contents |
+|---|---|---|---|
+| **universalTools** | All agents | CTO, workers, chat sessions, coordinator | Memory tools (memorySearch, memoryAdd, memoryPin, memoryUpdateCore), context reading |
+| **workflowTools** | Chat agents | CTO chat, employee chat, regular chat sessions | Lane creation, PR creation, screenshot capture, completion reporting |
+| **coordinatorTools** | Orchestrator only | Mission coordinator agent | spawn_worker, skip_step, complete_mission, fail_mission, check_finalization_status, set_current_phase, etc. |
+
+This tiering ensures agents have the tools appropriate to their role without exposing orchestrator-level control to regular chat sessions, or workflow actions to headless workers.
 
 ---
 

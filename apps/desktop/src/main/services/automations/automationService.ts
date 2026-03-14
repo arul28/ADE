@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import cron from "node-cron";
+import chokidar, { type FSWatcher } from "chokidar";
 import type {
   AutomationAction,
   AutomationActionResult,
@@ -31,6 +32,8 @@ import type {
   NightShiftQueueItem,
   NightShiftSettings,
   NightShiftState,
+  NormalizedLinearIssue,
+  PrSummary,
   UpdateNightShiftSettingsRequest,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
@@ -46,7 +49,7 @@ import type { createProceduralLearningService } from "../memory/proceduralLearni
 import type { createBudgetCapService } from "../usage/budgetCapService";
 import { buildClaudeReadOnlyWorkerAllowedTools } from "../orchestrator/unifiedOrchestratorAdapter";
 import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService";
-import { isRecord, isWithinDir, nowIso, safeJsonParse } from "../shared/utils";
+import { escapeRegExp, globToRegExp, isRecord, isWithinDir, matchesGlob, normalizeSet, nowIso, safeJsonParse } from "../shared/utils";
 import type { AutomationRoutingService } from "./automationRoutingService";
 
 type CronTask = {
@@ -56,6 +59,7 @@ type CronTask = {
 type TriggerContext = {
   triggerType: AutomationTriggerType;
   laneId?: string;
+  laneName?: string;
   sessionId?: string;
   commitSha?: string;
   reason?: string;
@@ -71,8 +75,23 @@ type TriggerContext = {
   labels?: string[];
   paths?: string[];
   keywords?: string[];
+  branch?: string;
+  targetBranch?: string;
+  project?: string;
+  team?: string;
+  assignee?: string;
+  stateTransition?: string;
+  changedFields?: string[];
   draftState?: "draft" | "ready" | "any";
   summary?: string;
+};
+
+type WatchedFileRoot = {
+  key: string;
+  laneId?: string;
+  laneName?: string;
+  rootPath: string;
+  branchRef?: string;
 };
 
 type AutomationRunRow = {
@@ -265,6 +284,75 @@ function dedupeStrings(values: Array<string | null | undefined>): string[] {
   return out;
 }
 
+
+function normalizeTriggerType(type: AutomationTriggerType): AutomationTriggerType {
+  if (type === "commit") return "git.commit";
+  return type;
+}
+
+function triggerTypesMatch(ruleType: AutomationTriggerType, runtimeType: AutomationTriggerType): boolean {
+  return normalizeTriggerType(ruleType) === normalizeTriggerType(runtimeType);
+}
+
+
+function listMatches(expected: string[] | undefined, actual: string[] | undefined): boolean {
+  if (!expected?.length) return true;
+  const actualSet = normalizeSet(actual);
+  return expected.some((entry) => actualSet.has(entry.trim().toLowerCase()));
+}
+
+function parseCronPart(field: string, value: number, min: number, max: number): boolean {
+  const trimmed = field.trim();
+  if (!trimmed.length) return false;
+  const segments = trimmed.split(",");
+  return segments.some((segment) => {
+    const part = segment.trim();
+    if (!part) return false;
+    const [baseRaw, stepRaw] = part.split("/");
+    const step = stepRaw ? Number(stepRaw) : 1;
+    if (!Number.isFinite(step) || step <= 0) return false;
+    const base = baseRaw.trim();
+    if (base === "*") {
+      return (value - min) % step === 0;
+    }
+    const rangeMatch = /^(\d+)-(\d+)$/.exec(base);
+    if (rangeMatch) {
+      const start = Number(rangeMatch[1]);
+      const end = Number(rangeMatch[2]);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || value < start || value > end) return false;
+      return (value - start) % step === 0;
+    }
+    const exact = Number(base);
+    if (!Number.isFinite(exact)) return false;
+    if (max === 7 && exact === 7) {
+      return value === 0;
+    }
+    return value === exact;
+  });
+}
+
+function computeNextScheduleAt(cronExpr: string, from = new Date()): string | null {
+  const expr = cronExpr.trim();
+  if (!expr || !cron.validate(expr)) return null;
+  const fields = expr.split(/\s+/);
+  if (fields.length !== 5) return null;
+  const [minute, hour, dayOfMonth, month, dayOfWeek] = fields;
+  const cursor = new Date(from.getTime());
+  cursor.setSeconds(0, 0);
+  cursor.setMinutes(cursor.getMinutes() + 1);
+  for (let i = 0; i < 60 * 24 * 366; i += 1) {
+    const matches =
+      parseCronPart(minute, cursor.getMinutes(), 0, 59) &&
+      parseCronPart(hour, cursor.getHours(), 0, 23) &&
+      parseCronPart(dayOfMonth, cursor.getDate(), 1, 31) &&
+      parseCronPart(month, cursor.getMonth() + 1, 1, 12) &&
+      parseCronPart(dayOfWeek, cursor.getDay(), 0, 7);
+    if (matches) return cursor.toISOString();
+    cursor.setMinutes(cursor.getMinutes() + 1);
+  }
+  return null;
+}
+
 function normalizeRunStatus(value: string, fallback: AutomationRunStatus): AutomationRunStatus {
   if (
     value === "queued" ||
@@ -379,7 +467,24 @@ function normalizeRuntimeRule(rule: AutomationRule): AutomationRule {
 
 function summarizeTrigger(trigger: AutomationTrigger): string {
   if (trigger.type === "schedule" && trigger.cron) return `schedule ${trigger.cron}`;
-  if (trigger.type === "commit" && trigger.branch) return `commit:${trigger.branch}`;
+  if ((trigger.type === "commit" || trigger.type === "git.commit" || trigger.type === "git.push") && trigger.branch) {
+    return `${normalizeTriggerType(trigger.type)}:${trigger.branch}`;
+  }
+  if ((trigger.type === "git.pr_opened" || trigger.type === "git.pr_updated" || trigger.type === "git.pr_closed") && trigger.branch) {
+    return `${trigger.type}:${trigger.branch}`;
+  }
+  if (trigger.type === "git.pr_merged" && (trigger.targetBranch || trigger.branch)) {
+    return `git.pr_merged:${trigger.targetBranch ?? trigger.branch}`;
+  }
+  if ((trigger.type === "lane.created" || trigger.type === "lane.archived") && trigger.namePattern) {
+    return `${trigger.type}:${trigger.namePattern}`;
+  }
+  if (trigger.type === "file.change" && trigger.paths?.length) {
+    return `file.change:${trigger.paths.join(",")}`;
+  }
+  if (trigger.type.startsWith("linear.") && (trigger.project || trigger.team || trigger.assignee)) {
+    return `${trigger.type}:${[trigger.project, trigger.team, trigger.assignee].filter(Boolean).join("/")}`;
+  }
   if (trigger.type === "github-webhook" && trigger.event) return `github:${trigger.event}`;
   if (trigger.type === "webhook" && trigger.event) return `webhook:${trigger.event}`;
   return trigger.type;
@@ -643,8 +748,14 @@ export function createAutomationService({
       lastError: null,
     },
   };
+  const resolveLaneBranch = (laneId: string): string | undefined => {
+    try { return laneService.getLaneBaseAndBranch(laneId).branchRef; }
+    catch { return undefined; }
+  };
+
   const inFlightByAutomationId = new Set<string>();
   const scheduleTasks = new Map<string, CronTask>();
+  const fileWatchers = new Map<string, FSWatcher>();
   const nightShiftTimer = setInterval(() => {
     void processNightShiftQueue().catch((error) => {
       logger.warn("automations.night_shift.process_failed", {
@@ -966,6 +1077,7 @@ export function createAutomationService({
 
   const buildTriggerMetadata = (trigger: TriggerContext): Record<string, unknown> => ({
     ...(trigger.laneId ? { laneId: trigger.laneId } : {}),
+    ...(trigger.laneName ? { laneName: trigger.laneName } : {}),
     ...(trigger.sessionId ? { sessionId: trigger.sessionId } : {}),
     ...(trigger.commitSha ? { commitSha: trigger.commitSha } : {}),
     ...(trigger.reason ? { reason: trigger.reason } : {}),
@@ -981,6 +1093,13 @@ export function createAutomationService({
     ...(trigger.labels?.length ? { labels: trigger.labels } : {}),
     ...(trigger.paths?.length ? { paths: trigger.paths } : {}),
     ...(trigger.keywords?.length ? { keywords: trigger.keywords } : {}),
+    ...(trigger.branch ? { branch: trigger.branch } : {}),
+    ...(trigger.targetBranch ? { targetBranch: trigger.targetBranch } : {}),
+    ...(trigger.project ? { project: trigger.project } : {}),
+    ...(trigger.team ? { team: trigger.team } : {}),
+    ...(trigger.assignee ? { assignee: trigger.assignee } : {}),
+    ...(trigger.stateTransition ? { stateTransition: trigger.stateTransition } : {}),
+    ...(trigger.changedFields?.length ? { changedFields: trigger.changedFields } : {}),
     ...(trigger.draftState ? { draftState: trigger.draftState } : {}),
     ...(trigger.summary ? { summary: trigger.summary } : {}),
   });
@@ -2022,33 +2141,63 @@ export function createAutomationService({
     }
   };
 
-  const triggerMatches = async (ruleTrigger: AutomationTrigger, trigger: TriggerContext): Promise<boolean> => {
-    if (ruleTrigger.type !== trigger.triggerType) return false;
-    if (ruleTrigger.branch && trigger.laneId) {
+  const resolveTriggerLaneInfo = async (trigger: TriggerContext): Promise<{ laneBranch: string | undefined; laneName: string | undefined }> => {
+    let laneBranch = trigger.branch;
+    let laneName = trigger.laneName;
+    if (trigger.laneId && (!laneBranch || !laneName)) {
       try {
         const lane = laneService.getLaneBaseAndBranch(trigger.laneId);
-        if (lane.branchRef !== ruleTrigger.branch) return false;
+        laneBranch = laneBranch ?? lane.branchRef;
       } catch {
-        return false;
+        // ignore
       }
+      if (!laneName) {
+        try {
+          const lanes = await laneService.list({ includeArchived: true, includeStatus: false });
+          const found = lanes.find((entry) => entry.id === trigger.laneId);
+          laneName = found?.name ?? undefined;
+        } catch {
+          // ignore
+        }
+      }
+    }
+    return { laneBranch, laneName };
+  };
+
+  const triggerMatches = (ruleTrigger: AutomationTrigger, trigger: TriggerContext, laneBranch: string | undefined, laneName: string | undefined): boolean => {
+    if (!triggerTypesMatch(ruleTrigger.type, trigger.triggerType)) return false;
+
+    const canonicalType = normalizeTriggerType(ruleTrigger.type);
+    if (canonicalType === "git.pr_merged") {
+      const expectedTarget = (ruleTrigger.targetBranch ?? ruleTrigger.branch ?? "").trim();
+      if (expectedTarget && !matchesGlob(expectedTarget, trigger.targetBranch)) return false;
+    } else if (ruleTrigger.branch?.trim()) {
+      const branchToMatch =
+        canonicalType === "git.pr_opened" || canonicalType === "git.pr_updated" || canonicalType === "git.pr_closed"
+          ? trigger.branch
+          : laneBranch;
+      if (!matchesGlob(ruleTrigger.branch, branchToMatch)) return false;
     }
     if (ruleTrigger.event?.trim() && ruleTrigger.event.trim() !== (trigger.eventName ?? "").trim()) return false;
     if (ruleTrigger.author?.trim()) {
       const author = (trigger.author ?? "").trim().toLowerCase();
       if (!author || author !== ruleTrigger.author.trim().toLowerCase()) return false;
     }
-    if (ruleTrigger.labels?.length) {
-      const labels = new Set((trigger.labels ?? []).map((entry) => entry.trim().toLowerCase()).filter(Boolean));
-      if (!ruleTrigger.labels.some((entry) => labels.has(entry.trim().toLowerCase()))) return false;
-    }
+    if (!listMatches(ruleTrigger.labels, trigger.labels)) return false;
     if (ruleTrigger.paths?.length) {
       const paths = trigger.paths ?? [];
-      if (!paths.some((entry) => ruleTrigger.paths?.some((expected) => entry.includes(expected)))) return false;
+      if (!paths.some((entry) => ruleTrigger.paths?.some((expected) => matchesGlob(expected, entry)))) return false;
     }
     if (ruleTrigger.keywords?.length) {
       const haystack = `${trigger.summary ?? ""} ${(trigger.keywords ?? []).join(" ")}`.toLowerCase();
       if (!ruleTrigger.keywords.some((entry) => haystack.includes(entry.trim().toLowerCase()))) return false;
     }
+    if (ruleTrigger.namePattern?.trim() && !matchesGlob(ruleTrigger.namePattern, laneName)) return false;
+    if (ruleTrigger.project?.trim() && !matchesGlob(ruleTrigger.project, trigger.project)) return false;
+    if (ruleTrigger.team?.trim() && !matchesGlob(ruleTrigger.team, trigger.team)) return false;
+    if (ruleTrigger.assignee?.trim() && !matchesGlob(ruleTrigger.assignee, trigger.assignee)) return false;
+    if (ruleTrigger.stateTransition?.trim() && (trigger.stateTransition ?? "").trim() !== ruleTrigger.stateTransition.trim()) return false;
+    if (!listMatches(ruleTrigger.changedFields, trigger.changedFields)) return false;
     if (ruleTrigger.draftState && ruleTrigger.draftState !== "any" && trigger.draftState && ruleTrigger.draftState !== trigger.draftState) {
       return false;
     }
@@ -2058,8 +2207,9 @@ export function createAutomationService({
 
   const dispatchTrigger = async (trigger: TriggerContext) => {
     const rules = listRules().filter((rule) => rule.enabled);
+    const { laneBranch, laneName } = await resolveTriggerLaneInfo(trigger);
     for (const rule of rules) {
-      const matches = await Promise.all(rule.triggers.map((candidate) => triggerMatches(candidate, trigger)));
+      const matches = rule.triggers.map((candidate) => triggerMatches(candidate, trigger, laneBranch, laneName));
       if (!matches.some(Boolean)) continue;
       void runRule(rule, trigger).catch((error) => {
         logger.warn("automations.run.failed", {
@@ -2068,6 +2218,87 @@ export function createAutomationService({
           error: error instanceof Error ? error.message : String(error)
         });
       });
+    }
+  };
+
+  const listWatchedFileRoots = async (): Promise<WatchedFileRoot[]> => {
+    const normalizedProjectRoot = path.resolve(projectRoot);
+    const lanes = await laneService.list({ includeArchived: false, includeStatus: false }).catch(() => []);
+    const seen = new Set<string>();
+    const roots: WatchedFileRoot[] = [];
+    for (const lane of lanes) {
+      const rootPath = path.resolve(lane.worktreePath);
+      if (!rootPath || seen.has(rootPath)) continue;
+      seen.add(rootPath);
+      roots.push({
+        key: lane.id,
+        laneId: lane.id,
+        laneName: lane.name,
+        rootPath,
+        branchRef: lane.branchRef,
+      });
+    }
+    if (!seen.has(normalizedProjectRoot)) {
+      roots.push({ key: "project-root", rootPath: normalizedProjectRoot });
+    }
+    return roots;
+  };
+
+  const syncFileWatchers = async () => {
+    const hasFileTriggers = listRules().some((rule) =>
+      rule.enabled && rule.triggers.some((trigger) => normalizeTriggerType(trigger.type) === "file.change")
+    );
+    if (!hasFileTriggers) {
+      for (const [key, watcher] of fileWatchers.entries()) {
+        void watcher.close().catch(() => {});
+        fileWatchers.delete(key);
+      }
+      return;
+    }
+
+    const desired = await listWatchedFileRoots();
+    const desiredKeys = new Set(desired.map((entry) => entry.key));
+    for (const [key, watcher] of fileWatchers.entries()) {
+      if (desiredKeys.has(key)) continue;
+      void watcher.close().catch(() => {});
+      fileWatchers.delete(key);
+    }
+
+    for (const root of desired) {
+      if (fileWatchers.has(root.key)) continue;
+      const watcher = chokidar.watch(root.rootPath, {
+        ignoreInitial: true,
+        awaitWriteFinish: {
+          stabilityThreshold: 120,
+          pollInterval: 50,
+        },
+        ignored: [
+          /(^|[/\\])\.git($|[/\\])/,
+          /(^|[/\\])node_modules($|[/\\])/,
+          /(^|[/\\])\.ade($|[/\\])/,
+        ],
+      });
+      const onFileEvent = (kind: "add" | "change" | "unlink" | "addDir" | "unlinkDir", absPath: string) => {
+        const relPath = path.relative(root.rootPath, absPath).split(path.sep).join("/");
+        if (!relPath || relPath.startsWith(".git/") || relPath.startsWith("node_modules/") || relPath.startsWith(".ade/")) return;
+        void dispatchTrigger({
+          triggerType: "file.change",
+          laneId: root.laneId,
+          laneName: root.laneName,
+          branch: root.branchRef,
+          paths: [relPath],
+          keywords: [kind],
+          summary: `${kind} ${relPath}`,
+          reason: kind,
+          scheduledAt: nowIso(),
+        });
+      };
+      watcher.on("add", (absPath) => onFileEvent("add", absPath));
+      watcher.on("change", (absPath) => onFileEvent("change", absPath));
+      watcher.on("unlink", (absPath) => onFileEvent("unlink", absPath));
+      watcher.on("addDir", (absPath) => onFileEvent("addDir", absPath));
+      watcher.on("unlinkDir", (absPath) => onFileEvent("unlinkDir", absPath));
+      fileWatchers.set(root.key, watcher);
     }
   };
 
@@ -2101,6 +2332,11 @@ export function createAutomationService({
       }
       scheduleTasks.delete(key);
     }
+    void syncFileWatchers().catch((error) => {
+      logger.warn("automations.file_watch.sync_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   };
 
   const persistProcedureFeedback = async (runRow: AutomationRunRow, missionStatus: string, summary: string | null) => {
@@ -2476,9 +2712,10 @@ export function createAutomationService({
     const candidateRules = listRules()
       .filter((rule) => rule.enabled)
       .filter((rule) => !args.automationId || rule.id === args.automationId);
+    const { laneBranch: ingressLaneBranch, laneName: ingressLaneName } = await resolveTriggerLaneInfo(trigger);
     const matched: AutomationRule[] = [];
     for (const rule of candidateRules) {
-      const matches = await Promise.all(rule.triggers.map((candidate) => triggerMatches(candidate, trigger)));
+      const matches = rule.triggers.map((candidate) => triggerMatches(candidate, trigger, ingressLaneBranch, ingressLaneName));
       if (matches.some(Boolean)) matched.push(rule);
     }
     if (!matched.length) {
@@ -2540,6 +2777,9 @@ export function createAutomationService({
 
     list(): AutomationRuleSummary[] {
       const rules = listRules();
+      const snapshot = projectConfigService.get();
+      const localRuleIds = new Set((snapshot.local?.automations ?? []).map((rule) => rule?.id).filter((id): id is string => typeof id === "string" && id.trim().length > 0));
+      const sharedRuleIds = new Set((snapshot.shared?.automations ?? []).map((rule) => rule?.id).filter((id): id is string => typeof id === "string" && id.trim().length > 0));
       for (const row of db.all<{ mission_id: string | null }>(
         `select distinct mission_id from automation_runs where project_id = ? and mission_id is not null`,
         [projectId]
@@ -2581,12 +2821,21 @@ export function createAutomationService({
         return {
           ...rule,
           lastRunAt: runRow?.started_at ?? null,
+          nextRunAt: (() => {
+            const scheduleTrigger = rule.triggers.find((trigger) => trigger.type === "schedule" && trigger.cron);
+            return scheduleTrigger?.cron ? computeNextScheduleAt(scheduleTrigger.cron) : null;
+          })(),
           lastRunStatus: runRow ? normalizeRunStatus(runRow.status, "failed") : null,
           running: (runningRow?.cnt ?? 0) > 0,
           queueCount: queueRow?.cnt ?? 0,
           paused: rule.executor.mode === "night-shift" && readNightShiftSettings().paused,
           ignoredRunCount: ignoredRow?.cnt ?? 0,
           confidence: runRow ? normalizeConfidence(safeJsonParse(runRow.confidence_json ?? "null", null)) : null,
+          source: localRuleIds.has(rule.id) && sharedRuleIds.has(rule.id)
+            ? "merged"
+            : localRuleIds.has(rule.id)
+              ? "local"
+              : "shared",
         };
       });
     },
@@ -2601,6 +2850,27 @@ export function createAutomationService({
       if (index >= 0) automations[index] = { ...automations[index], id, enabled: Boolean(args.enabled) };
       else automations.push({ id, enabled: Boolean(args.enabled) });
       local.automations = automations;
+      projectConfigService.save({ shared: snapshot.shared, local });
+      syncFromConfig();
+      emit({ type: "runs-updated", automationId: id });
+      return this.list();
+    },
+
+    deleteRule(args: { id: string }): AutomationRuleSummary[] {
+      const id = args.id.trim();
+      if (!id) return this.list();
+      const snapshot = projectConfigService.get();
+      const local = { ...(snapshot.local ?? {}) };
+      const localAutomations = Array.isArray(local.automations) ? [...local.automations] : [];
+      const sharedAutomations = Array.isArray(snapshot.shared?.automations) ? snapshot.shared.automations : [];
+      if (sharedAutomations.some((rule) => rule?.id === id)) {
+        throw new Error("Shared automations must be removed from the shared project config.");
+      }
+      const nextAutomations = localAutomations.filter((rule) => rule?.id !== id);
+      if (nextAutomations.length === localAutomations.length) {
+        throw new Error(`Automation not found in local config: ${id}`);
+      }
+      local.automations = nextAutomations;
       projectConfigService.save({ shared: snapshot.shared, local });
       syncFromConfig();
       emit({ type: "runs-updated", automationId: id });
@@ -2976,12 +3246,171 @@ export function createAutomationService({
     },
 
     onSessionEnded(args: { laneId: string; sessionId: string }) {
-      void dispatchTrigger({ triggerType: "session-end", laneId: args.laneId, sessionId: args.sessionId, reason: "session_end" });
+      void dispatchTrigger({
+        triggerType: "session-end",
+        laneId: args.laneId,
+        sessionId: args.sessionId,
+        branch: resolveLaneBranch(args.laneId),
+        reason: "session_end",
+      });
     },
 
     onHeadChanged(args: { laneId: string; preHeadSha: string | null; postHeadSha: string | null; reason: string }) {
       if (!args.postHeadSha || args.postHeadSha === args.preHeadSha) return;
-      void dispatchTrigger({ triggerType: "commit", laneId: args.laneId, commitSha: args.postHeadSha, reason: args.reason });
+      void dispatchTrigger({
+        triggerType: "git.commit",
+        laneId: args.laneId,
+        commitSha: args.postHeadSha,
+        branch: resolveLaneBranch(args.laneId),
+        reason: args.reason,
+      });
+    },
+
+    onGitPushed(args: { laneId: string; branchRef?: string | null; summary?: string | null }) {
+      const branch = (args.branchRef ?? "").trim() || resolveLaneBranch(args.laneId) || "";
+      void dispatchTrigger({
+        triggerType: "git.push",
+        laneId: args.laneId,
+        branch: branch || undefined,
+        reason: "git_push",
+        scheduledAt: nowIso(),
+        summary: args.summary ?? undefined,
+      });
+    },
+
+    onLaneCreated(args: { laneId: string; laneName: string; branchRef?: string | null; folder?: string | null }) {
+      const keywords = dedupeStrings([args.folder]);
+      void dispatchTrigger({
+        triggerType: "lane.created",
+        laneId: args.laneId,
+        laneName: args.laneName,
+        branch: args.branchRef ?? undefined,
+        keywords,
+        summary: `Lane created: ${args.laneName}`,
+        reason: "lane_created",
+        scheduledAt: nowIso(),
+      });
+    },
+
+    onLaneArchived(args: { laneId: string; laneName: string; branchRef?: string | null; folder?: string | null }) {
+      const keywords = dedupeStrings([args.folder, "archived"]);
+      void dispatchTrigger({
+        triggerType: "lane.archived",
+        laneId: args.laneId,
+        laneName: args.laneName,
+        branch: args.branchRef ?? undefined,
+        keywords,
+        summary: `Lane archived: ${args.laneName}`,
+        reason: "lane_archived",
+        scheduledAt: nowIso(),
+      });
+    },
+
+    onPullRequestChanged(args: {
+      pr: PrSummary;
+      previousState?: PrSummary["state"] | null;
+      previousChecksStatus?: PrSummary["checksStatus"] | null;
+      previousReviewStatus?: PrSummary["reviewStatus"] | null;
+    }) {
+      const stateTransition =
+        args.previousState && args.previousState !== args.pr.state
+          ? `${args.previousState}->${args.pr.state}`
+          : undefined;
+      const changedFields = dedupeStrings([
+        args.previousState !== args.pr.state ? "state" : null,
+        args.previousChecksStatus !== args.pr.checksStatus ? "checksStatus" : null,
+        args.previousReviewStatus !== args.pr.reviewStatus ? "reviewStatus" : null,
+      ]);
+      const baseContext = {
+        laneId: args.pr.laneId,
+        branch: args.pr.headBranch,
+        targetBranch: args.pr.baseBranch,
+        labels: [args.pr.state, args.pr.reviewStatus, args.pr.checksStatus],
+        summary: args.pr.title,
+        keywords: dedupeStrings([
+          args.pr.title,
+          args.pr.state,
+          args.pr.reviewStatus,
+          args.pr.checksStatus,
+          args.pr.githubPrNumber ? `#${args.pr.githubPrNumber}` : null,
+        ]),
+        draftState: args.pr.state === "draft" ? "draft" as const : "ready" as const,
+        reason: args.pr.id,
+        scheduledAt: nowIso(),
+      };
+      if (!args.previousState) {
+        void dispatchTrigger({ triggerType: "git.pr_opened", ...baseContext });
+        return;
+      }
+      if (args.pr.state === "merged" && args.previousState !== "merged") {
+        void dispatchTrigger({
+          triggerType: "git.pr_merged",
+          ...baseContext,
+          stateTransition,
+        });
+        return;
+      }
+      if (args.pr.state === "closed" && args.previousState !== "closed") {
+        void dispatchTrigger({
+          triggerType: "git.pr_closed",
+          ...baseContext,
+          stateTransition,
+        });
+        return;
+      }
+      void dispatchTrigger({
+        triggerType: "git.pr_updated",
+        ...baseContext,
+        stateTransition,
+        changedFields,
+      });
+    },
+
+    onLinearIssueChanged(args: {
+      issue: NormalizedLinearIssue;
+      previousAssigneeId?: string | null;
+      previousAssigneeName?: string | null;
+    }) {
+      const issue = args.issue;
+      const changedFields: string[] = [];
+      if (!issue.previousStateId) changedFields.push("created");
+      if ((issue.previousStateId ?? null) !== issue.stateId) changedFields.push("state");
+      if ((args.previousAssigneeId ?? null) !== issue.assigneeId) changedFields.push("assignee");
+      const stateTransition =
+        issue.previousStateName && issue.previousStateName !== issue.stateName
+          ? `${issue.previousStateName}->${issue.stateName}`
+          : undefined;
+      const common = {
+        project: issue.projectSlug,
+        team: issue.teamKey,
+        assignee: issue.assigneeName ?? undefined,
+        labels: issue.labels,
+        keywords: dedupeStrings([
+          issue.identifier,
+          issue.title,
+          issue.priorityLabel,
+          issue.stateName,
+          issue.assigneeName,
+          args.previousAssigneeName,
+        ]),
+        summary: `${issue.identifier}: ${issue.title}`,
+        stateTransition,
+        changedFields,
+        scheduledAt: nowIso(),
+        reason: issue.identifier,
+      };
+      if (!issue.previousStateId) {
+        void dispatchTrigger({ triggerType: "linear.issue_created", ...common });
+      }
+      if ((args.previousAssigneeId ?? null) !== issue.assigneeId && issue.assigneeId) {
+        void dispatchTrigger({ triggerType: "linear.issue_assigned", ...common });
+      }
+      if (changedFields.includes("state")) {
+        void dispatchTrigger({ triggerType: "linear.issue_status_changed", ...common });
+      }
+      if (changedFields.length > 0) {
+        void dispatchTrigger({ triggerType: "linear.issue_updated", ...common });
+      }
     },
 
     onMissionUpdated(args: { missionId: string }) {
@@ -3009,6 +3438,10 @@ export function createAutomationService({
         }
       }
       scheduleTasks.clear();
+      for (const watcher of fileWatchers.values()) {
+        void watcher.close().catch(() => {});
+      }
+      fileWatchers.clear();
     }
   };
 }

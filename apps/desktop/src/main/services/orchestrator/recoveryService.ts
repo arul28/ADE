@@ -58,10 +58,17 @@ export function updateAttemptStagnationTracker(
   const now = Date.now();
   const digest = digestSignalText(preview);
   if (!digest) {
-    tracker.lastPreviewDigest = null;
-    tracker.repeatCount = 0;
-    tracker.digestSinceMs = now;
-    return { digest: null, stagnantMs: 0 };
+    // No output — track how long we've had no meaningful output.
+    // A hung agent producing nothing should be flagged as potentially stagnant.
+    if (tracker.lastPreviewDigest !== null) {
+      // Transition from having output to no output — start tracking silence.
+      tracker.lastPreviewDigest = null;
+      tracker.repeatCount = 0;
+      tracker.digestSinceMs = now;
+      return { digest: null, stagnantMs: 0 };
+    }
+    // Already had no output — report elapsed silence time.
+    return { digest: null, stagnantMs: Math.max(0, now - tracker.digestSinceMs) };
   }
   if (tracker.lastPreviewDigest !== digest) {
     tracker.lastPreviewDigest = digest;

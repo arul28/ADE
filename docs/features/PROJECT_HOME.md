@@ -2,13 +2,14 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-16
+> Last updated: 2026-03-13
 
 ---
 
 ## Table of Contents
 
 - [Overview](#overview)
+- [Current Loading Model](#current-loading-model)
 - [Core Concepts](#core-concepts)
   - [Managed Process](#managed-process)
   - [Stack Button](#stack-button)
@@ -42,11 +43,11 @@
 
 ## Overview
 
-The **Run tab** (denoted by a ▶ play/pause icon in the nav rail) serves as the global command center for running everything related to your project. It functions as a SoloTerm-style process manager combined with a test runner, CI/CD sync engine, agent CLI tool registry, and configuration editor. The core idea: any command your development stack needs — from starting services to running tests to executing agent skills — should be one button press away.
+The **Run tab** (denoted by a ▶ play/pause icon in the nav rail) serves as the global command center for running everything related to your project. It functions as a SoloTerm-style process manager combined with a test runner, agent CLI tool registry, and configuration editor. The core idea: any command your development stack needs — from starting services to running tests to executing agent skills — should be one button press away.
 
 This feature matters because modern projects depend on a constellation of background services — dev servers, databases, API gateways, watchers, compilers — that must be started, monitored, and stopped in concert. Without a centralized control plane, developers resort to scattered terminal tabs, manual startup scripts, and guesswork about which services are running. Project Home eliminates this friction by making every managed process, test suite, and configuration knob visible and controllable from one surface.
 
-**Current status**: Core process management (Phases 1-4) is **fully implemented** — process spawning, lifecycle management, readiness checks, dependency resolution, stack buttons, test suites, config editor, keyboard shortcuts, and real-time streaming. Phase 5 (Advanced Features) is **partially complete** — restart policies, health monitoring, test suite tags, and config diff/export are done; environment variable editor and test result diff remain. Phase 6 (Run Tab Enhancements) is **partially complete** — the Run tab rename, lane selector, CI/CD scan/import/sync, and agent tools detection are done; AI-suggested run prompts, agent commands viewer/editor, and quick-launch are still TODO.
+**Current status**: Core process management (Phases 1-4) is **fully implemented** — process spawning, lifecycle management, readiness checks, dependency resolution, stack buttons, test suites, config editor, keyboard shortcuts, and real-time streaming. Phase 5 (Advanced Features) is **partially complete** — restart policies, health monitoring, test suite tags, and config diff/export are done; environment variable editor and test result diff remain. Phase 6 (Run Tab Enhancements) is **partially complete** — the Run tab rename, lane selector, and agent tools detection are done; AI-suggested run prompts, agent commands viewer/editor, and quick-launch are still TODO. The current page shell is also lighter than earlier builds: lane-independent config metadata hydrates separately from selected-lane runtime state, so first load and lane switching no longer refetch the entire surface.
 
 ### Roadmap Alignment (Final Plan)
 
@@ -58,6 +59,17 @@ Per `docs/final-plan/README.md`, the Run/Play surface is the owner for execution
 - Execution entry points used by Missions/Orchestrator flows.
 
 PR orchestration and stack landing remain owned by `PULL_REQUESTS.md`; conflict analysis and merge plans remain owned by `CONFLICTS.md`. Run owns the runtime/test execution substrate those flows depend on.
+
+## Current loading model
+
+The Run page now hydrates in phases rather than treating every lane switch like a cold boot.
+
+Current behavior:
+
+- project config and process/test definitions load independently of runtime state
+- selected-lane runtime refreshes when the lane changes without reloading lane-independent metadata
+- initial runtime hydration is deferred slightly behind first render
+- config saves refresh only the dependent slices instead of remounting the full page
 
 ---
 
@@ -404,13 +416,6 @@ stopped ──► starting ──► running ──► stopping ──► exited
 | `ade.projectConfig.diffAgainstDisk` | `() => ConfigDiff` | Show unsaved changes vs disk |
 | `ade.projectConfig.confirmTrust` | `() => void` | Confirm trust for shared config changes |
 
-**CI/CD sync**:
-
-| Channel | Signature | Description |
-|---------|-----------|-------------|
-| `ade.ci.scan` | `() => CiScanResult` | Scan for CI/CD workflow files (GitHub Actions, GitLab CI, CircleCI, Jenkins) and parse jobs with safety classification |
-| `ade.ci.import` | `(args: { jobs: CiJobImport[], mode: 'import' \| 'sync' }) => void` | Import or sync selected CI jobs as process/test definitions. Sync mode updates existing definitions. |
-
 **Agent tools**:
 
 | Channel | Signature | Description |
@@ -536,8 +541,6 @@ test_runs (
 | PROJ-033 | Tab rename to "Run" with play/pause nav icon | DONE |
 | PROJ-034 | Lane selector for command execution context | DONE |
 | PROJ-035 | AI-suggested run prompts (detect new suites/apps/services on merge) | TODO |
-| PROJ-036 | CI/CD workflow scan and import (GitHub Actions, GitLab CI, CircleCI, Jenkins) | DONE |
-| PROJ-037 | CI/CD sync mode (computeCiScanDiff for detecting workflow changes, import vs sync modes) | DONE |
 | PROJ-038 | Agent CLI tools detection (agentToolsDetect IPC) | DONE |
 | PROJ-039 | Agent commands and skills viewer (read .claude/commands/, etc.) | TODO |
 | PROJ-040 | Agent command editing (add/edit/delete commands and skills in-app) | TODO |

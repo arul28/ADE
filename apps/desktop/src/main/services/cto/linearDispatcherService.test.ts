@@ -297,6 +297,7 @@ describe("linearDispatcherService", () => {
       db,
       projectId: "project-1",
       issueTracker: {
+        fetchIssueById: vi.fn(async () => issueFixture),
         fetchWorkflowStates: vi.fn(async () => [{ id: "done", name: "Done", type: "completed", teamId: "team-1", teamKey: "ACME" }]),
         updateIssueState: vi.fn(async () => {}),
         addLabel: vi.fn(async () => {}),
@@ -306,8 +307,12 @@ describe("linearDispatcherService", () => {
       workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
       missionService: { create: missionCreate, get: vi.fn(() => ({ id: "mission-1", status: "completed", artifacts: [] })) } as any,
       aiOrchestratorService: { startMissionRun: vi.fn(async () => ({ runId: "run-1" })) } as any,
-      agentChatService: { ensureIdentitySession: vi.fn(), listSessions: vi.fn(async () => []) } as any,
-      laneService: { listLanes: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      agentChatService: {
+        ensureIdentitySession: vi.fn(async () => ({ id: "session-1" })),
+        sendMessage: vi.fn(async () => {}),
+        listSessions: vi.fn(async () => []),
+      } as any,
+      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Fix it." })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
       outboundService: createOutboundServiceMocks(),
@@ -337,6 +342,7 @@ describe("linearDispatcherService", () => {
       db,
       projectId: "project-1",
       issueTracker: {
+        fetchIssueById: vi.fn(async () => issueFixture),
         fetchWorkflowStates: vi.fn(async () => []),
         updateIssueState: vi.fn(async () => {}),
         addLabel: vi.fn(async () => {}),
@@ -346,8 +352,12 @@ describe("linearDispatcherService", () => {
       workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
       missionService: { create: vi.fn(), get: vi.fn() } as any,
       aiOrchestratorService: { startMissionRun: vi.fn() } as any,
-      agentChatService: { ensureIdentitySession: vi.fn(), listSessions: vi.fn(async () => []) } as any,
-      laneService: { listLanes: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      agentChatService: {
+        ensureIdentitySession: vi.fn(async () => ({ id: "session-1" })),
+        sendMessage: vi.fn(async () => {}),
+        listSessions: vi.fn(async () => []),
+      } as any,
+      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "noop" })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
       outboundService: createOutboundServiceMocks(),
@@ -373,11 +383,13 @@ describe("linearDispatcherService", () => {
     const policy = buildEmployeeSessionPolicy();
     const sendMessage = vi.fn(async () => ({ id: "message-1" }));
     const ensureTaskSession = vi.fn(() => ({ id: "task-session-1" }));
+    const employeeIssue = { ...issueFixture, assigneeId: "user-1", assigneeName: "Alex", labels: ["workflow:backend"] };
 
     const dispatcher = createLinearDispatcherService({
       db,
       projectId: "project-1",
       issueTracker: {
+        fetchIssueById: vi.fn(async () => employeeIssue),
         fetchWorkflowStates: vi.fn(async () => [{ id: "state-progress", name: "In Progress", type: "started", teamId: "team-1", teamKey: "ACME" }]),
         updateIssueState: vi.fn(async () => {}),
         addLabel: vi.fn(async () => {}),
@@ -421,6 +433,54 @@ describe("linearDispatcherService", () => {
     db.close();
   });
 
+  it("keeps employee_session runs visible as queued when manual delegation is required", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-awaiting-delegation-"));
+    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const policy = buildEmployeeSessionPolicy();
+    const employeeIssue = { ...issueFixture, assigneeId: "user-missing", assigneeName: "Missing Person", labels: ["workflow:backend"] };
+
+    const dispatcher = createLinearDispatcherService({
+      db,
+      projectId: "project-1",
+      issueTracker: {
+        fetchIssueById: vi.fn(async () => employeeIssue),
+        fetchWorkflowStates: vi.fn(async () => []),
+        updateIssueState: vi.fn(async () => {}),
+        addLabel: vi.fn(async () => {}),
+        createComment: vi.fn(async () => ({ commentId: "comment-1" })),
+      } as any,
+      workerAgentService: { listAgents: vi.fn(() => []) } as any,
+      workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
+      missionService: { create: vi.fn(), get: vi.fn() } as any,
+      aiOrchestratorService: { startMissionRun: vi.fn() } as any,
+      agentChatService: {
+        ensureIdentitySession: vi.fn(async () => ({ id: "session-1" })),
+        sendMessage: vi.fn(async () => {}),
+        listSessions: vi.fn(async () => []),
+      } as any,
+      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      templateService: { renderTemplate: vi.fn(() => ({ prompt: "Fix it." })) } as any,
+      closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
+      outboundService: createOutboundServiceMocks(),
+      workerTaskSessionService: {
+        deriveTaskKey: vi.fn(() => "task-1"),
+        ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
+      } as any,
+      prService: {
+        getForLane: vi.fn(() => null),
+        createFromLane: vi.fn(async () => ({ id: "pr-1", githubPrNumber: 101 })),
+      } as any,
+    });
+
+    const run = dispatcher.createRun(employeeIssue, buildMatch(policy));
+    await dispatcher.advanceRun(run.id, policy);
+
+    expect(dispatcher.listQueue()[0]?.status).toBe("queued");
+    const detail = await dispatcher.getRunDetail(run.id, policy);
+    expect(detail?.run.status).toBe("awaiting_delegation");
+    db.close();
+  });
+
   it("launches a direct CTO employee session when the workflow targets CTO", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-cto-session-"));
     const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
@@ -431,6 +491,7 @@ describe("linearDispatcherService", () => {
       db,
       projectId: "project-1",
       issueTracker: {
+        fetchIssueById: vi.fn(async () => issueFixture),
         fetchWorkflowStates: vi.fn(async () => []),
         updateIssueState: vi.fn(async () => {}),
         addLabel: vi.fn(async () => {}),
@@ -488,6 +549,7 @@ describe("linearDispatcherService", () => {
       db,
       projectId: "project-1",
       issueTracker: {
+        fetchIssueById: vi.fn(async () => issueFixture),
         fetchWorkflowStates: vi.fn(async () => []),
         updateIssueState: vi.fn(async () => {}),
         addLabel: vi.fn(async () => {}),
@@ -563,6 +625,7 @@ describe("linearDispatcherService", () => {
       db,
       projectId: "project-1",
       issueTracker: {
+        fetchIssueById: vi.fn(async () => issueFixture),
         fetchWorkflowStates: vi.fn(async () => []),
         updateIssueState: vi.fn(async () => {}),
         addLabel: vi.fn(async () => {}),
@@ -617,6 +680,7 @@ describe("linearDispatcherService", () => {
       db,
       projectId: "project-1",
       issueTracker: {
+        fetchIssueById: vi.fn(async () => issueFixture),
         fetchWorkflowStates: vi.fn(async () => []),
         updateIssueState: vi.fn(async () => {}),
         addLabel: vi.fn(async () => {}),
@@ -631,7 +695,7 @@ describe("linearDispatcherService", () => {
       } as any,
       missionService: { create: vi.fn(), get: vi.fn() } as any,
       aiOrchestratorService: { startMissionRun: vi.fn() } as any,
-      agentChatService: { ensureIdentitySession: vi.fn(), listSessions: vi.fn(async () => []) } as any,
+      agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
       laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Implement the issue." })) } as any,
       closeoutService: { applyOutcome: closeout } as any,
@@ -675,6 +739,7 @@ describe("linearDispatcherService", () => {
       db,
       projectId: "project-1",
       issueTracker: {
+        fetchIssueById: vi.fn(async () => issueFixture),
         fetchWorkflowStates: vi.fn(async () => []),
         updateIssueState: vi.fn(async () => {}),
         addLabel: vi.fn(async () => {}),
@@ -729,6 +794,7 @@ describe("linearDispatcherService", () => {
       updateBodies.push(body);
     });
     const issueTracker = {
+      fetchIssueById: vi.fn(async () => issueFixture),
       fetchWorkflowStates: vi.fn(async () => [{ id: "state-review", name: "In Review", type: "started", teamId: "team-1", teamKey: "ACME" }]),
       updateIssueState: vi.fn(async () => {}),
       addLabel: vi.fn(async () => {}),
@@ -781,7 +847,7 @@ describe("linearDispatcherService", () => {
       } as any,
       missionService: { create: vi.fn(), get: vi.fn() } as any,
       aiOrchestratorService: { startMissionRun: vi.fn() } as any,
-      agentChatService: { ensureIdentitySession: vi.fn(), listSessions: vi.fn(async () => []) } as any,
+      agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
       laneService: {
         list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]),
         create: vi.fn(async () => ({ id: "lane-2", name: "ABC-42 fresh lane" })),
@@ -824,6 +890,7 @@ describe("linearDispatcherService", () => {
       db,
       projectId: "project-1",
       issueTracker: {
+        fetchIssueById: vi.fn(async () => issueFixture),
         fetchWorkflowStates: vi.fn(async () => []),
         updateIssueState: vi.fn(async () => {}),
         addLabel: vi.fn(async () => {}),
@@ -838,7 +905,7 @@ describe("linearDispatcherService", () => {
       } as any,
       missionService: { create: vi.fn(), get: vi.fn() } as any,
       aiOrchestratorService: { startMissionRun: vi.fn() } as any,
-      agentChatService: { ensureIdentitySession: vi.fn(), listSessions: vi.fn(async () => []) } as any,
+      agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
       laneService: {
         list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]),
         create: createLane,
@@ -878,6 +945,7 @@ describe("linearDispatcherService", () => {
       db,
       projectId: "project-1",
       issueTracker: {
+        fetchIssueById: vi.fn(async () => issueFixture),
         fetchWorkflowStates: vi.fn(async () => []),
         updateIssueState: vi.fn(async () => {}),
         addLabel: vi.fn(async () => {}),
@@ -892,7 +960,7 @@ describe("linearDispatcherService", () => {
       } as any,
       missionService: { create: vi.fn(), get: vi.fn() } as any,
       aiOrchestratorService: { startMissionRun: vi.fn() } as any,
-      agentChatService: { ensureIdentitySession: vi.fn(), listSessions: vi.fn(async () => []) } as any,
+      agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
       laneService: {
         list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]),
         create: vi.fn(async () => ({ id: "lane-2", name: "Fresh lane" })),
@@ -934,6 +1002,7 @@ describe("linearDispatcherService", () => {
       db,
       projectId: "project-1",
       issueTracker: {
+        fetchIssueById: vi.fn(async () => issueFixture),
         fetchWorkflowStates: vi.fn(async () => [{ id: "state-review", name: "In Review", type: "started", teamId: "team-1", teamKey: "ACME" }]),
         updateIssueState: vi.fn(async () => {}),
         addLabel: vi.fn(async () => {}),
@@ -946,7 +1015,7 @@ describe("linearDispatcherService", () => {
       } as any,
       missionService: { create: vi.fn(), get: vi.fn() } as any,
       aiOrchestratorService: { startMissionRun: vi.fn() } as any,
-      agentChatService: { ensureIdentitySession: vi.fn(), listSessions: vi.fn(async () => []) } as any,
+      agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
       laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Open a PR." })) } as any,
       closeoutService: { applyOutcome: closeout } as any,
@@ -1022,6 +1091,7 @@ describe("linearDispatcherService", () => {
       db,
       projectId: "project-1",
       issueTracker: {
+        fetchIssueById: vi.fn(async () => issueFixture),
         fetchWorkflowStates: vi.fn(async () => []),
         updateIssueState: vi.fn(async () => {}),
         addLabel: vi.fn(async () => {}),
@@ -1034,7 +1104,7 @@ describe("linearDispatcherService", () => {
       } as any,
       missionService: { create: vi.fn(), get: vi.fn() } as any,
       aiOrchestratorService: { startMissionRun: vi.fn() } as any,
-      agentChatService: { ensureIdentitySession: vi.fn(), listSessions: vi.fn(async () => []) } as any,
+      agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
       laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Open a review-ready PR." })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,

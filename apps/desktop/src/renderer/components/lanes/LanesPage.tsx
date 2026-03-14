@@ -9,6 +9,7 @@ import { EmptyState } from "../ui/EmptyState";
 import { Button } from "../ui/Button";
 import { PaneTilingLayout } from "../ui/PaneTilingLayout";
 import { listSessionsCached } from "../../lib/sessionListCache";
+import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton, conflictDotColor } from "./laneDesignTokens";
 import { ResizeGutter } from "../ui/ResizeGutter";
 import { LaneStackPane } from "./LaneStackPane";
@@ -489,6 +490,7 @@ export function LanesPage() {
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const scheduleRefresh = () => {
+      if (document.visibilityState !== "visible") return;
       if (timer) return; // already scheduled
       timer = setTimeout(() => {
         timer = null;
@@ -497,7 +499,10 @@ export function LanesPage() {
     };
     const unsubPtyData = window.ade.pty.onData(scheduleRefresh);
     const unsubPtyExit = window.ade.pty.onExit(scheduleRefresh);
-    const unsubChat = window.ade.agentChat.onEvent(scheduleRefresh);
+    const unsubChat = window.ade.agentChat.onEvent((payload) => {
+      if (!shouldRefreshSessionListForChatEvent(payload)) return;
+      scheduleRefresh();
+    });
     const intervalId = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       if (!hasActiveLaneSessionsRef.current) return;

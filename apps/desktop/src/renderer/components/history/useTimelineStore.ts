@@ -162,7 +162,7 @@ type TimelineStore = {
   toggleColumn: (columnId: string) => void;
 
   // Data actions
-  fetchEvents: (opts?: { laneId?: string; kind?: string; limit?: number }) => Promise<void>;
+  fetchEvents: (opts?: { laneId?: string; kind?: string; limit?: number; silent?: boolean }) => Promise<void>;
   setRawEvents: (events: OperationRecord[]) => void;
 };
 
@@ -310,12 +310,16 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
 
     // ── Data actions ────────────────────────────────────────
     fetchEvents: async (opts) => {
-      set({ loading: true, error: null });
+      if (!opts?.silent) {
+        set({ loading: true, error: null });
+      } else {
+        set({ error: null });
+      }
       try {
         const raw = await window.ade.history.listOperations({
           laneId: opts?.laneId,
           kind: opts?.kind,
-          limit: opts?.limit ?? 500,
+          limit: opts?.limit ?? 350,
         });
         set({ rawEvents: raw, loading: false });
         refilter();

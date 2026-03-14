@@ -209,6 +209,7 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
     file = null;
     lastError = null;
     emitStatus();
+    const loadStartMs = Date.now();
 
     extractorPromise = (async () => {
       const runtime = await loadRuntime();
@@ -229,6 +230,8 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
       logger.info("memory.embedding.ready", {
         modelId,
         cacheDir,
+        dimensions: EXPECTED_EMBEDDING_DIMENSIONS,
+        loadTimeMs: Date.now() - loadStartMs,
       });
 
       return nextExtractor;
@@ -292,13 +295,49 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
     await ensureExtractor(opts.forceRetry === true);
   }
 
+  let embeddingsProcessed = 0;
+  const originalEmbed = embed;
+  async function trackedEmbed(text: string): Promise<Float32Array> {
+    const result = await originalEmbed(text);
+    embeddingsProcessed += 1;
+    return result;
+  }
+
+  let healthCheckTimer: ReturnType<typeof setInterval> | null = null;
+  function startHealthCheck(intervalMs = 300_000) {
+    if (healthCheckTimer) return;
+    healthCheckTimer = setInterval(() => {
+      const totalRequests = cacheHits + cacheMisses;
+      const hitRate = totalRequests > 0 ? ((cacheHits / totalRequests) * 100).toFixed(1) : "0.0";
+      logger.info("memory.embedding.health", {
+        state,
+        modelId,
+        cacheEntries: cache.size,
+        cacheHits,
+        cacheMisses,
+        cacheHitRate: `${hitRate}%`,
+        embeddingsProcessed,
+        error: lastError,
+      });
+    }, intervalMs);
+  }
+
+  function stopHealthCheck() {
+    if (healthCheckTimer) {
+      clearInterval(healthCheckTimer);
+      healthCheckTimer = null;
+    }
+  }
+
   return {
-    embed,
+    embed: trackedEmbed,
     dispose,
     preload,
     getModelId: () => modelId,
     getStatus,
     hashContent: hashEmbeddingContent,
     isAvailable: () => state === "ready",
+    startHealthCheck,
+    stopHealthCheck,
   };
 }

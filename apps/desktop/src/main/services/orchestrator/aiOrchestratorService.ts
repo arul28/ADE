@@ -2971,6 +2971,37 @@ Check all worker statuses and continue managing the mission from here. Read work
         finalization,
       });
     }
+
+    // Notify the coordinator agent when queue landing reaches a terminal state
+    if (queueState.state === "completed" || queueState.state === "cancelled") {
+      try {
+        orchestratorService.appendRuntimeEvent({
+          runId,
+          eventType: "finalization_queue_landed",
+          payload: {
+            queueState: queueState.state,
+            contractSatisfied,
+            summary,
+            detail,
+            queueGroupId: queueState.groupId,
+            prUrls,
+          },
+        });
+      } catch (eventError) {
+        logger.debug("ai_orchestrator.finalization_queue_landed_event_failed", {
+          runId,
+          error: eventError instanceof Error ? eventError.message : String(eventError),
+        });
+      }
+
+      const coordAgent = coordinatorAgents.get(runId);
+      if (coordAgent?.isAlive) {
+        const eventMessage = queueState.state === "completed"
+          ? `[finalization.queue_landed] Queue landing completed successfully. ${detail ?? ""} Call check_finalization_status for full details before deciding next steps.`
+          : `[finalization.queue_landed] Queue landing was cancelled. ${detail ?? ""} Call check_finalization_status to review the current state.`;
+        coordAgent.injectMessage(eventMessage);
+      }
+    }
   };
 
   const onQueueRehearsalStateChanged = async (rehearsalState: import("../../../shared/types").QueueRehearsalState): Promise<void> => {
@@ -5024,6 +5055,9 @@ Check all worker statuses and continue managing the mission from here. Read work
       blockerCount: finalized.blockers.length,
       retrospectiveGenerated: Boolean(retrospective)
     });
+
+    bestEffortCascadeCleanup(missionId, runId, "run_finalize");
+
     return finalized;
   };
 
@@ -7869,7 +7903,32 @@ Check all worker statuses and continue managing the mission from here. Read work
       drainedBeforeForceCancel: drained
     });
 
+    bestEffortCascadeCleanup(missionId, runId, "run_cancel");
+
     return run;
+  };
+
+  const bestEffortCascadeCleanup = (missionId: string | null | undefined, runId: string, logPrefix: string): void => {
+    if (!missionId) return;
+    try {
+      void cleanupTeamResources({ missionId, runId, cleanupLanes: true }).then((result) => {
+        logger.info(`ai_orchestrator.${logPrefix}_cascade_cleanup_complete`, {
+          runId,
+          missionId,
+          lanesArchived: result.lanesArchived.length,
+          lanesSkipped: result.lanesSkipped.length,
+          laneErrors: result.laneErrors.length
+        });
+      }).catch((err) => {
+        logger.debug(`ai_orchestrator.${logPrefix}_cascade_cleanup_failed`, {
+          runId,
+          missionId,
+          error: err instanceof Error ? err.message : String(err)
+        });
+      });
+    } catch {
+      // Cleanup must never break the caller
+    }
   };
 
   const cleanupTeamResources = async (

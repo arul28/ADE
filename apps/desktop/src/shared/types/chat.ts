@@ -14,6 +14,7 @@ export type AgentChatSessionProfile = "light" | "workflow";
 
 export type ChatSurfaceMode = "standard" | "resolver" | "mission-thread" | "mission-feed";
 export type ChatSurfaceProfile = "standard" | "persistent_identity";
+export type ChatModelSwitchPolicy = "same-family-after-launch" | "any-after-launch";
 
 export type ChatSurfaceChipTone = "accent" | "success" | "warning" | "danger" | "info" | "muted";
 
@@ -25,6 +26,7 @@ export type ChatSurfaceChip = {
 export type ChatSurfacePresentation = {
   mode: ChatSurfaceMode;
   profile?: ChatSurfaceProfile;
+  modelSwitchPolicy?: ChatModelSwitchPolicy;
   title?: string | null;
   subtitle?: string | null;
   accentColor?: string | null;

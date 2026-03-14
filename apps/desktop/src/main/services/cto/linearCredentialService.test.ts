@@ -100,4 +100,25 @@ describe("linearCredentialService", () => {
     });
     expect(service.getStatus().oauthConfigured).toBe(true);
   });
+
+  it("stores Linear OAuth client credentials without requiring a secret", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-oauth-store-"));
+    const adeDir = path.join(root, ".ade");
+    const service = createLinearCredentialService({
+      adeDir,
+      logger: createLogger(),
+    });
+
+    service.setOAuthClientCredentials({ clientId: "client-public" });
+
+    expect(service.getOAuthClientCredentials()).toEqual({
+      clientId: "client-public",
+      clientSecret: null,
+    });
+    expect(service.getStatus().oauthConfigured).toBe(true);
+
+    const clientPath = path.join(adeDir, "secrets", "linear-oauth-client.v1.bin");
+    expect(fs.existsSync(clientPath)).toBe(true);
+    expect(fs.readFileSync(clientPath).toString("utf8")).toMatch(/^enc:/);
+  });
 });

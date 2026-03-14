@@ -15,6 +15,7 @@ export type AddCommandDialogProps = {
   stacks: StackButtonDefinition[];
   open: boolean;
   onClose: () => void;
+  laneRootPath?: string | null;
   onSubmit: (cmd: {
     name: string;
     command: string;
@@ -34,6 +35,7 @@ export function AddCommandDialog({
   stacks,
   open,
   onClose,
+  laneRootPath,
   onSubmit,
   initialValues,
   title,
@@ -48,6 +50,7 @@ export function AddCommandDialog({
 
   const dialogTitle = title ?? "Add Command";
   const dialogSubmitLabel = submitLabel ?? "Add";
+  const normalizedLaneRoot = React.useMemo(() => normalizePath(laneRootPath), [laneRootPath]);
   const commandError = React.useMemo(() => {
     const trimmed = command.trim();
     if (!trimmed) return null;
@@ -76,6 +79,15 @@ export function AddCommandDialog({
       setTimeout(() => nameRef.current?.focus(), 50);
     }
   }, [open, initialValues]);
+
+  const handleBrowseCwd = React.useCallback(async () => {
+    const selected = await window.ade.project.chooseDirectory({
+      title: "Choose working directory",
+      defaultPath: cwd.trim() ? resolveBrowseDefault(cwd, normalizedLaneRoot) : normalizedLaneRoot ?? undefined,
+    });
+    if (!selected) return;
+    setCwd(normalizeSelectedCwd(selected, normalizedLaneRoot));
+  }, [cwd, normalizedLaneRoot]);
 
   if (!open) return null;
 
@@ -244,12 +256,38 @@ export function AddCommandDialog({
 
           <div>
             <label style={labelStyle}>Working Directory</label>
-            <input
-              value={cwd}
-              onChange={(e) => setCwd(e.target.value)}
-              placeholder="."
-              style={inputStyle}
-            />
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                value={cwd}
+                onChange={(e) => setCwd(e.target.value)}
+                placeholder="."
+                style={{ ...inputStyle, flex: 1 }}
+              />
+              <button type="button" onClick={handleBrowseCwd} style={outlineButton({ height: 32, padding: "0 10px" })}>
+                Browse
+              </button>
+            </div>
+            <div
+              style={{
+                marginTop: 6,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                flexWrap: "wrap",
+                fontFamily: MONO_FONT,
+                fontSize: 10,
+                color: COLORS.textDim,
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setCwd(".")}
+                style={outlineButton({ height: 22, padding: "0 8px", fontSize: 9 })}
+              >
+                Lane root
+              </button>
+              {normalizedLaneRoot ? <span>{normalizedLaneRoot}</span> : null}
+            </div>
           </div>
 
           {/* Actions */}
@@ -269,4 +307,27 @@ export function AddCommandDialog({
       </div>
     </div>
   );
+}
+
+function normalizePath(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  return trimmed.length ? trimmed : null;
+}
+
+function resolveBrowseDefault(cwd: string, laneRootPath: string | null): string | undefined {
+  const normalizedCwd = normalizePath(cwd);
+  if (!normalizedCwd) return laneRootPath ?? undefined;
+  if (normalizedCwd.startsWith("/")) return normalizedCwd;
+  if (!laneRootPath) return undefined;
+  return normalizedCwd === "." ? laneRootPath : `${laneRootPath}/${normalizedCwd}`;
+}
+
+function normalizeSelectedCwd(selectedPath: string, laneRootPath: string | null): string {
+  const normalizedSelected = normalizePath(selectedPath) ?? selectedPath;
+  if (!laneRootPath) return normalizedSelected;
+  if (normalizedSelected === laneRootPath) return ".";
+  const prefix = `${laneRootPath}/`;
+  if (normalizedSelected.startsWith(prefix)) return normalizedSelected.slice(prefix.length) || ".";
+  return normalizedSelected;
 }

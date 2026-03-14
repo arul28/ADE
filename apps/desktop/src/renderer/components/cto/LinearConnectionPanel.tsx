@@ -13,14 +13,16 @@ import type { CtoLinearProject, LinearConnectionStatus } from "../../../shared/t
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { ConnectionStatusDot } from "./shared/ConnectionStatusDot";
-import { cardCls, inputCls, labelCls } from "./shared/designTokens";
+import { inputCls, ACCENT } from "./shared/designTokens";
 
 export function LinearConnectionPanel({
   compact = false,
+  reloadToken = 0,
   onStatusChange,
   onProjectsChange,
 }: {
   compact?: boolean;
+  reloadToken?: number;
   onStatusChange?: (status: LinearConnectionStatus | null) => void;
   onProjectsChange?: (projects: CtoLinearProject[]) => void;
 }) {
@@ -80,7 +82,7 @@ export function LinearConnectionPanel({
 
   useEffect(() => {
     void loadStatus();
-  }, [loadStatus]);
+  }, [loadStatus, reloadToken]);
 
   useEffect(() => {
     const ctoBridge = window.ade?.cto;
@@ -104,12 +106,12 @@ export function LinearConnectionPanel({
         }
         if (session.status === "failed" || session.status === "expired") {
           resetOAuth();
-          setError(session.error ?? "Linear OAuth failed.");
+          setError(session.error ?? "OAuth failed.");
         }
       } catch (err) {
         if (!active) return;
         resetOAuth();
-        setError(err instanceof Error ? err.message : "Linear OAuth failed.");
+        setError(err instanceof Error ? err.message : "OAuth failed.");
       }
     };
 
@@ -120,7 +122,7 @@ export function LinearConnectionPanel({
     const timeout = window.setTimeout(() => {
       if (!active) return;
       resetOAuth();
-      setError("OAuth timed out after 5 minutes. Please try again.");
+      setError("OAuth timed out. Please try again.");
     }, 5 * 60 * 1000);
 
     return () => {
@@ -175,7 +177,7 @@ export function LinearConnectionPanel({
       }
     } catch (err) {
       setOauthStarting(false);
-      setError(err instanceof Error ? err.message : "Unable to start Linear OAuth.");
+      setError(err instanceof Error ? err.message : "Unable to start OAuth.");
     }
   }, []);
 
@@ -184,199 +186,141 @@ export function LinearConnectionPanel({
 
   const disconnectedMessage = useMemo(() => {
     if (oauthSessionId) {
-      return "Waiting for the Linear authorization callback.";
+      return "Waiting for Linear authorization...";
     }
     if (connection?.tokenStored && !connection.connected) {
-      return connection.message ?? "Linear connection lost.";
+      return connection.message ?? "Connection lost.";
     }
     return null;
   }, [connection?.connected, connection?.message, connection?.tokenStored, oauthSessionId]);
 
-  const renderManualTokenCard = () => (
-    <div className={cn(cardCls, compact ? "p-3" : "p-4")}>
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="font-sans text-xs font-bold text-fg">
-            {compact ? "Connect with an API key" : "Manual Token Fallback"}
-          </div>
-          <div className="mt-1 font-mono text-[10px] text-muted-fg/55">
-            {compact
-              ? "Fastest path during setup. Personal API keys are the simplest way to connect Linear."
-              : "Keep this path for personal API keys or when OAuth credentials are not configured."}
-          </div>
-        </div>
-        <Key size={14} className="text-muted-fg/60" />
-      </div>
-
-      <div className="mt-3 space-y-2">
-        <div className={labelCls}>API Token</div>
-        <div className="flex gap-2">
-          <input
-            className={cn(inputCls, "flex-1")}
-            type="password"
-            placeholder="lin_api_..."
-            value={tokenInput}
-            onChange={(event) => setTokenInput(event.target.value)}
+  return (
+    <div
+      className={cn("space-y-3", compact && "space-y-2")}
+      data-testid="linear-connection-panel"
+    >
+      {/* Status row */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <ConnectionStatusDot
+            status={connectionStatus}
+            label={connectionStatus === "connected" ? "Connected" : connectionStatus === "degraded" ? "Degraded" : "Disconnected"}
           />
-          <Button
-            variant="outline"
-            onClick={() => void handleValidate()}
-            disabled={validating || !tokenInput.trim()}
-          >
-            {validating ? <CircleNotch size={10} className="animate-spin" /> : "Connect"}
-          </Button>
         </div>
-        <div className="font-mono text-[9px] text-muted-fg/30">
-          Generate a personal API key at linear.app/settings/api
-        </div>
-      </div>
-    </div>
-  );
-
-  const renderOAuthCard = () => (
-    <div className={cn(cardCls, compact ? "p-3" : "p-4")}>
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="font-sans text-xs font-bold text-fg">
-            {compact ? "Use OAuth instead" : "OAuth Connection"}
+        {connection?.connected && (
+          <div className="flex items-center gap-1.5">
+            <Button variant="ghost" size="sm" className="!h-5 !px-1.5 !text-[9px]" onClick={() => void loadProjects()}>
+              <ArrowCounterClockwise size={9} />
+            </Button>
+            <button
+              type="button"
+              onClick={() => void handleDisconnect()}
+              className="text-[10px] text-muted-fg/35 hover:text-error transition-colors"
+            >
+              Disconnect
+            </button>
           </div>
-          <div className="mt-1 font-mono text-[10px] text-muted-fg/55">
-            {compact
-              ? "Use this when you are installing a shared app with configured OAuth credentials."
-              : "Recommended when `.ade/secrets/linear-oauth.v1.json` is configured with your Linear OAuth client credentials."}
-          </div>
-        </div>
-        <Plugs size={14} className="text-accent" />
-      </div>
-
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <Button
-          variant="primary"
-          onClick={() => void handleStartOAuth()}
-          disabled={oauthStarting || connection?.oauthAvailable === false}
-        >
-          {oauthStarting ? <CircleNotch size={10} className="animate-spin" /> : <ArrowSquareOut size={10} />}
-          Connect with Linear
-        </Button>
-        {connection?.oauthAvailable === false && (
-          <span className="font-mono text-[10px] text-muted-fg/50">
-            Add OAuth client credentials to enable this path.
-          </span>
         )}
       </div>
 
-      {oauthRedirectUri && !compact && (
-        <div className="mt-3 border border-border/10 bg-surface-recessed px-3 py-2">
-          <div className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted-fg/40">
-            Loopback Redirect URI
-          </div>
-          <div className="mt-1 break-all font-mono text-[10px] text-fg/80">
-            {oauthRedirectUri}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-
-  return (
-    <div
-      className={cn("space-y-4", compact && "space-y-3")}
-      data-testid="linear-connection-panel"
-    >
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <span className={cn(labelCls)}>Connection Status</span>
-          <ConnectionStatusDot
-            status={connectionStatus}
-            label={
-              connectionStatus === "connected"
-                ? "Connected"
-                : connectionStatus === "degraded"
-                  ? "Degraded"
-                  : "Disconnected"
-            }
-          />
-        </div>
-        <div className="flex items-center gap-2">
-          {connection?.connected && (
-            <Button variant="outline" size="sm" onClick={() => void loadProjects()}>
-              <ArrowCounterClockwise size={10} />
-              Refresh Projects
-            </Button>
-          )}
-          {connection?.connected && (
-            <Button variant="ghost" size="sm" onClick={() => void handleDisconnect()}>
-              Disconnect
-            </Button>
-          )}
-        </div>
-      </div>
-
-      {disconnectedMessage && (
-        <div className="flex items-center gap-3 border border-error/20 bg-error/5 px-3 py-2">
-          <WarningCircle size={14} className="shrink-0 text-error" />
-          <span className="flex-1 font-mono text-[10px] text-fg/80">
-            {disconnectedMessage}
-          </span>
-          {!oauthSessionId && (
-            <Button variant="outline" size="sm" onClick={() => void loadStatus()}>
-              <ArrowCounterClockwise size={10} />
-              Retry
-            </Button>
-          )}
-        </div>
-      )}
-
+      {/* Connected state */}
       {connection?.connected && connection.viewerName && (
-        <div className={cn(cardCls, compact ? "p-2.5" : "p-3")}>
-          <div className="flex items-center gap-2">
-            <CheckCircle size={14} weight="fill" className="text-success" />
-            <span className="font-mono text-[10px] text-fg">
-              Connected as <span className="font-bold">{connection.viewerName}</span>
-              {connection.authMode ? ` via ${connection.authMode}` : ""}
-            </span>
-          </div>
-          {connection.checkedAt && (
-            <div className="mt-1 font-mono text-[9px] text-muted-fg/40">
-              Last checked: {new Date(connection.checkedAt).toLocaleString()}
-            </div>
-          )}
-          {connection.tokenExpiresAt && (
-            <div className="mt-1 font-mono text-[9px] text-muted-fg/40">
-              Token expires: {new Date(connection.tokenExpiresAt).toLocaleString()}
-            </div>
+        <div className="flex items-center gap-2 rounded-lg px-2.5 py-2" style={{ background: `${ACCENT.green}08`, border: `1px solid ${ACCENT.green}15` }}>
+          <CheckCircle size={12} weight="fill" style={{ color: ACCENT.green }} />
+          <span className="text-[11px] text-fg/70">
+            {connection.viewerName}
+            {connection.authMode ? ` (${connection.authMode})` : ""}
+          </span>
+        </div>
+      )}
+
+      {/* Error / warning */}
+      {disconnectedMessage && (
+        <div className="flex items-center gap-2 rounded-lg px-2.5 py-2" style={{ background: "rgba(251,191,36,0.04)", border: "1px solid rgba(251,191,36,0.1)" }}>
+          <WarningCircle size={11} style={{ color: ACCENT.amber }} />
+          <span className="text-[10px] text-fg/60 flex-1">{disconnectedMessage}</span>
+          {!oauthSessionId && (
+            <button type="button" onClick={() => void loadStatus()} className="text-[10px] font-medium" style={{ color: ACCENT.amber }}>Retry</button>
           )}
         </div>
       )}
 
+      {/* Auth methods */}
       {!connection?.connected && (
-        <div className="space-y-3">
-          {compact ? renderManualTokenCard() : renderOAuthCard()}
-          {compact ? renderOAuthCard() : renderManualTokenCard()}
+        <div className="space-y-2">
+          {/* API Key */}
+          <div className="rounded-lg p-3" style={{ background: "rgba(96,165,250,0.03)", border: "1px solid rgba(96,165,250,0.08)" }}>
+            <div className="flex items-center gap-1.5 mb-2">
+              <Key size={11} style={{ color: ACCENT.blue }} />
+              <span className="text-[11px] font-medium text-fg/70">API Key</span>
+            </div>
+            <div className="flex gap-2">
+              <input
+                className={cn(inputCls, "flex-1 !h-8 !text-xs")}
+                type="password"
+                placeholder="lin_api_..."
+                value={tokenInput}
+                onChange={(event) => setTokenInput(event.target.value)}
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void handleValidate()}
+                disabled={validating || !tokenInput.trim()}
+              >
+                {validating ? <CircleNotch size={9} className="animate-spin" /> : "Connect"}
+              </Button>
+            </div>
+            <div className="mt-1.5 text-[10px] text-muted-fg/30">
+              Get one at linear.app/settings/api
+            </div>
+          </div>
+
+          {/* OAuth */}
+          <div className="rounded-lg p-3" style={{ background: "rgba(167,139,250,0.03)", border: "1px solid rgba(167,139,250,0.08)" }}>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <Plugs size={11} style={{ color: ACCENT.purple }} />
+                <span className="text-[11px] font-medium text-fg/70">OAuth</span>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void handleStartOAuth()}
+                disabled={oauthStarting || connection?.oauthAvailable === false}
+              >
+                {oauthStarting ? <CircleNotch size={9} className="animate-spin" /> : <ArrowSquareOut size={9} />}
+                Sign in with Linear
+              </Button>
+            </div>
+            {connection?.oauthAvailable === false && (
+              <div className="mt-1.5 text-[10px] text-muted-fg/30">
+                Browser sign-in is not configured yet for this ADE build.
+              </div>
+            )}
+          </div>
         </div>
       )}
 
       {error && (
-        <div className="flex items-center gap-1.5 font-mono text-[10px] text-error">
+        <div className="flex items-center gap-1.5 text-[11px] text-error">
           <XCircle size={10} />
           {error}
         </div>
       )}
 
-      {projects.length > 0 && (
+      {projects.length > 0 && !compact && (
         <div>
-          <div className={cn(labelCls, "mb-1")}>Projects ({projects.length})</div>
-          <div className={cn("space-y-1 overflow-y-auto", compact ? "max-h-32" : "max-h-48")}>
+          <div className="mb-1 text-[10px] font-medium text-muted-fg/35 uppercase tracking-wider">Projects ({projects.length})</div>
+          <div className="space-y-0.5 overflow-y-auto max-h-32">
             {projects.map((project) => (
               <div
                 key={project.id}
-                className="flex items-center justify-between border border-border/10 bg-surface-recessed px-2.5 py-1.5"
+                className="flex items-center justify-between rounded-md px-2 py-1"
+                style={{ background: "rgba(24,20,35,0.3)" }}
               >
-                <div className="min-w-0">
-                  <div className="font-mono text-[10px] text-fg">{project.name}</div>
-                  <div className="font-mono text-[9px] text-muted-fg/40">{project.slug}</div>
-                </div>
-                <span className="font-mono text-[9px] text-muted-fg/40">{project.teamName}</span>
+                <span className="text-[11px] text-fg/60">{project.name}</span>
+                <span className="text-[10px] text-muted-fg/30">{project.teamName}</span>
               </div>
             ))}
           </div>

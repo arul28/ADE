@@ -34,7 +34,10 @@ Key current behaviors:
 
 - project open loads lanes without expensive status first
 - provider mode and full lane status hydrate later
-- terminal attention only polls on terminal-adjacent routes
+- terminal attention only polls on `/work` and `/lanes`
+- Run loads config and process/test definitions independently from lane runtime
+- graph activity uses session-only live refresh during PTY churn and reserves history-backed recompute for slower timers and visibility/focus return
+- history uses silent visibility-aware polling only while running operations exist
 - shared session-list caching deduplicates repeated `ade.sessions.list` calls
 - feature pages stage heavy data instead of hydrating everything on mount
 
@@ -81,6 +84,18 @@ The orchestrator now emits structured lifecycle status updates at each coordinat
 
 Worker root propagation ensures tools resolve DB state from the canonical repo root while file operations stay in the lane workspace, for both desktop and headless workers.
 
+The coordinator has finalization awareness: a `check_finalization_status` tool reads the mission state doc, and queue landing completion events are routed to the coordinator event loop. This gives the coordinator informed decision-making about mission completion without bypassing runtime validation gates.
+
+### 6. Agent tool tiers
+
+Agent tools are organized into three tiers:
+
+- **universalTools** — available to all agents (memory search/add/pin, context reading)
+- **workflowTools** — available to chat agents (lane creation, PR creation, screenshot capture, completion reporting)
+- **coordinatorTools** — restricted to the mission orchestrator (spawn_worker, skip_step, complete_mission, check_finalization_status, etc.)
+
+This tiering ensures appropriate capability boundaries between agent roles.
+
 ---
 
 ## Responsiveness architecture
@@ -111,6 +126,7 @@ That includes:
 - OpenClaw bridge
 - mission queue bootstrap
 - team runtime recovery
+- port allocation recovery
 - Linear sync and ingress
 - memory lifecycle tasks
 - skill registry
@@ -129,8 +145,9 @@ Integrations that depend on external configuration now stay dormant instead of s
 
 Heavy surfaces now load in phases:
 
+- **Run**: config/process definitions first, selected-lane runtime second
 - **CTO**: summary first, team/settings/chat-specific work later
-- **Missions**: list first, dashboard/settings/model capabilities later
+- **Missions**: list first, dashboard/settings/model capabilities later, with selected-mission live refresh coalesced instead of dashboard-wide reloads on every orchestrator event
 - **Graph**: topology first, then risk/activity/sync/PR overlays
 - **PRs**: workflow state and merge contexts only when needed
 
@@ -197,7 +214,7 @@ The PR system still supports local simulation, stacked workflows, and integratio
 
 ### Workspace Graph
 
-The graph still provides topology, risk, PR, and activity overlays, but it now stages those layers instead of mounting everything at once.
+The graph still provides topology, risk, PR, and activity overlays, but it now stages those layers instead of mounting everything at once. During active PTY output, the graph refreshes session-derived activity without pulling full history-backed activity on every chunk.
 
 ### Memory
 
@@ -213,13 +230,21 @@ The prescriptive rules for maintaining ADE's responsiveness live in `docs/archit
 
 ## Current status
 
-ADE's architecture is no longer "everything eventually starts and hopefully it settles." The current runtime has explicit control points for startup, bounded integration behavior, scoped renderer hydration, and enough tracing to explain failures quickly.
+Phases 1-5 are complete for single-device operation. ADE's architecture has explicit control points for startup, bounded integration behavior, scoped renderer hydration, and enough tracing to explain failures quickly.
 
-That gives the project a more stable foundation for future feature work, including:
+The v1 closeout completed the final integration gaps:
 
-- additional realtime integrations
-- richer CTO and worker tooling
-- deeper mission automation
-- more computer-use workflows
+- Memory pipeline fully wired (compaction flush -> episodic -> procedural -> skill export, human work digest connected to head watcher, failure knowledge capture connected to error handlers)
+- Linear dispatcher hardened (snapshot refresh, employee fallback, PR null-check, closure notifications, outbound comment error handling, review wait timeout)
+- Coordinator finalization awareness (check_finalization_status tool + queue landing events)
+- Chat agents have workflow tools (lane/PR/screenshot/completion)
+- Embedding health monitoring with structured logging; embedding worker queues items when model unavailable
+- UI error states, IDE deep-linking, and GitHub token decryption error surfacing
+- Runtime hardening: PR merge 3-tier fallback, stagnation detection, turn-level and autopilot timeouts, IPC handler timeouts, DB flush ordering, mission step bidirectional sync, cascade cleanup of team resources
 
-without reintroducing the earlier crash-prone startup behavior.
+Future architecture work focuses on:
+
+- Multi-device sync via cr-sqlite (Phase 6)
+- iOS companion app (Phase 7)
+- Full computer-use MCP tool loop
+- Provider usage telemetry refinements

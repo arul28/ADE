@@ -19,6 +19,7 @@ import {
 } from "../../../shared/types";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { getDefaultModelDescriptor, MODEL_REGISTRY, getModelById, type ModelDescriptor } from "../../../shared/modelRegistry";
+import { filterChatModelIdsForSession } from "../../../shared/chatModelSwitching";
 import { cn } from "../ui/cn";
 import { AgentChatComposer } from "./AgentChatComposer";
 import { AgentChatMessageList } from "./AgentChatMessageList";
@@ -30,7 +31,6 @@ import { ChatSurfaceShell } from "./ChatSurfaceShell";
 import { chatChipToneClass } from "./chatSurfaceTheme";
 import { useChatMcpSummary } from "./useChatMcpSummary";
 import { openExternalMcpSettings } from "./chatNavigation";
-import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { normalizePermissionModeForProfile } from "../shared/permissionOptions";
 
 type PendingApproval = {
@@ -364,12 +364,13 @@ export function AgentChatPane({
   const preferDraftStart = !lockSessionId && !initialSessionId && !forceNewSession;
   const surfaceProfile: ChatSurfaceProfile = presentation?.profile ?? "standard";
   const isPersistentIdentitySurface = surfaceProfile === "persistent_identity";
+  const modelSwitchPolicy = presentation?.modelSwitchPolicy ?? "same-family-after-launch";
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(lockSessionId ?? initialSessionId ?? null);
   const [eventsBySession, setEventsBySession] = useState<Record<string, AgentChatEventEnvelope[]>>({});
   const [turnActiveBySession, setTurnActiveBySession] = useState<Record<string, boolean>>({});
   const [approvalsBySession, setApprovalsBySession] = useState<Record<string, PendingApproval[]>>({});
-  const [modelId, setModelId] = useState<string>(DEFAULT_MODEL_ID);
+  const [modelId, setModelId] = useState<string>("");
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [executionMode, setExecutionMode] = useState<AgentChatExecutionMode>("focused");
   const [availableModelIds, setAvailableModelIds] = useState<string[]>([]);
@@ -387,6 +388,7 @@ export function AgentChatPane({
   const [preferencesReady, setPreferencesReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [computerUseSnapshot, setComputerUseSnapshot] = useState<ComputerUseOwnerSnapshot | null>(null);
+  const [sessionMutationKind, setSessionMutationKind] = useState<"model" | "permission" | "computer-use" | null>(null);
 
   const appliedInitialSessionIdRef = useRef<string | null>(initialSessionId ?? null);
   const loadedHistoryRef = useRef<Set<string>>(new Set());
@@ -395,11 +397,13 @@ export function AgentChatPane({
   const submitInFlightRef = useRef(false);
   const createSessionPromiseRef = useRef<Promise<string | null> | null>(null);
   const pendingEventQueueRef = useRef<AgentChatEventEnvelope[]>([]);
+  const eventsBySessionRef = useRef<Record<string, AgentChatEventEnvelope[]>>({});
   const eventFlushTimerRef = useRef<number | null>(null);
   const refreshSessionsTimerRef = useRef<number | null>(null);
   const selectedSessionIdRef = useRef<string | null>(selectedSessionId);
   const computerUseSnapshotInFlightRef = useRef<{ sessionId: string; promise: Promise<void> } | null>(null);
   const lastComputerUseSnapshotRef = useRef<{ sessionId: string; fetchedAt: number } | null>(null);
+  const knownSessionIdsRef = useRef<Set<string>>(new Set());
   const showMcpStatus = presentation?.showMcpStatus ?? true;
   const mcpSummary = useChatMcpSummary(showMcpStatus);
 
@@ -423,6 +427,7 @@ export function AgentChatPane({
   const selectedModelDesc = getModelById(modelId);
   const reasoningTiers = selectedModelDesc?.reasoningTiers ?? [];
   const surfaceMode = presentation?.mode ?? "standard";
+  const identitySessionSettingsBusy = isPersistentIdentitySurface && sessionMutationKind !== null;
 
   const modelSelectionDiffersFromSession = Boolean(selectedSession && selectedSessionModelId && selectedSessionModelId !== modelId);
 
@@ -510,25 +515,16 @@ export function AgentChatPane({
     : null;
 
   // Keep all configured models selectable, and always include the active session model.
-  // When a session has messages, lock to the same family (e.g. Claude→Claude only).
+  // Most launched chats stay in the same family; special surfaces such as CTO
+  // can opt into cross-family switching after the conversation has started.
   const effectiveAvailableModelIds = useMemo(() => {
-    let ids = (availableModelIdsOverride?.length ? availableModelIdsOverride : availableModelIds).filter(Boolean);
-    if (selectedSessionModelId && !ids.includes(selectedSessionModelId)) {
-      ids = [selectedSessionModelId, ...ids];
-    }
-    // Generic chat sessions stay within one family after launch. Persistent
-    // identity surfaces keep the same "person" and can swap the active model.
-    if (surfaceProfile !== "persistent_identity" && selectedSessionModelId && selectedEvents.length > 0) {
-      const sessionDesc = getModelById(selectedSessionModelId);
-      if (sessionDesc) {
-        ids = ids.filter((id) => {
-          const desc = getModelById(id);
-          return desc?.family === sessionDesc.family;
-        });
-      }
-    }
-    return ids;
-  }, [availableModelIds, availableModelIdsOverride, selectedSessionModelId, selectedEvents.length, surfaceProfile]);
+    return filterChatModelIdsForSession({
+      availableModelIds: availableModelIdsOverride?.length ? availableModelIdsOverride : availableModelIds,
+      activeSessionModelId: selectedSessionModelId,
+      hasConversation: selectedEvents.length > 0,
+      policy: modelSwitchPolicy,
+    });
+  }, [availableModelIds, availableModelIdsOverride, modelSwitchPolicy, selectedSessionModelId, selectedEvents.length]);
 
   const refreshAvailableModels = useCallback(async () => {
     try {
@@ -662,8 +658,28 @@ export function AgentChatPane({
         raw: true
       });
       const parsed = parseAgentChatTranscript(raw).filter((entry) => entry.sessionId === sessionId);
-      const derived = deriveRuntimeState(parsed);
-      setEventsBySession((prev) => ({ ...prev, [sessionId]: parsed }));
+
+      // If real-time events have already been received for this session
+      // (via flushQueuedEvents), the on-disk transcript may be stale.
+      // Merge: use the loaded history as a base but keep any real-time
+      // events that arrived after the last event in the transcript.
+      const existing = eventsBySessionRef.current[sessionId] ?? [];
+      let merged: AgentChatEventEnvelope[];
+      if (existing.length && parsed.length) {
+        // Find real-time events that are newer than the last transcript entry.
+        const lastParsedTs = parsed[parsed.length - 1]!.timestamp;
+        const tail = existing.filter((e) => e.timestamp > lastParsedTs);
+        merged = tail.length ? [...parsed, ...tail] : parsed;
+      } else if (existing.length) {
+        // No transcript on disk — keep the real-time events as-is.
+        merged = existing;
+      } else {
+        merged = parsed;
+      }
+
+      const derived = deriveRuntimeState(merged);
+      eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: merged };
+      setEventsBySession((prev) => ({ ...prev, [sessionId]: merged }));
       setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: derived.turnActive }));
       setApprovalsBySession((prev) => ({ ...prev, [sessionId]: derived.pendingApprovals }));
     } catch {
@@ -727,9 +743,8 @@ export function AgentChatPane({
       try {
         const snapshot = await window.ade.projectConfig.get();
         const chat = snapshot.effective.ai?.chat;
-        const savedModelId = readLastUsedModelId();
         if (!cancelled) {
-          setModelId(savedModelId ?? DEFAULT_MODEL_ID);
+          // Don't auto-restore model — user must pick one explicitly each session
           setSendOnEnter(chat?.sendOnEnter ?? true);
         }
       } catch {
@@ -762,6 +777,8 @@ export function AgentChatPane({
 
   useEffect(() => {
     if (loading || !availableModelIds.length) return;
+    // If the user hasn't picked a model yet, don't auto-select one.
+    if (!modelId) return;
     if (availableModelIds.includes(modelId)) return;
     if (selectedSessionModelId) {
       setModelId(selectedSessionModelId);
@@ -798,14 +815,22 @@ export function AgentChatPane({
     const nextMode = selectedSession
       ? coercePermissionMode(selectedSession.permissionMode)
       : coercePermissionMode(undefined);
-    if (nextMode !== permissionMode) {
-      setPermissionMode(nextMode);
-    }
-  }, [coercePermissionMode, permissionMode, selectedSession]);
+    setPermissionMode((current) => (current === nextMode ? current : nextMode));
+  }, [coercePermissionMode, selectedSession]);
 
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;
   }, [selectedSessionId]);
+
+  useEffect(() => {
+    const next = new Set<string>();
+    for (const session of sessions) next.add(session.sessionId);
+    if (selectedSessionId) next.add(selectedSessionId);
+    if (lockSessionId) next.add(lockSessionId);
+    if (initialSessionId) next.add(initialSessionId);
+    for (const sessionId of optimisticSessionIdsRef.current) next.add(sessionId);
+    knownSessionIdsRef.current = next;
+  }, [initialSessionId, lockSessionId, selectedSessionId, sessions]);
 
   useEffect(() => {
     if (!selectedSessionId) return;
@@ -849,36 +874,46 @@ export function AgentChatPane({
     if (!queued.length) return;
     pendingEventQueueRef.current = [];
 
-    setEventsBySession((prev) => {
-      let next = prev;
-      const touchedSessionIds = new Set<string>();
+    // Build the next events map from the ref (latest committed state) so
+    // that derived state (turnActive, approvals) can be computed and applied
+    // as sibling setState calls in the same synchronous scope.  React 18
+    // batches all three updates into a single render, ensuring turnActive
+    // never lags behind the events — which previously left the spinner stuck
+    // after a "done" event.
+    let next = eventsBySessionRef.current;
+    const touchedSessionIds = new Set<string>();
 
-      for (const envelope of queued) {
-        const sessionId = envelope.sessionId;
-        const sessionEvents = next === prev ? (prev[sessionId] ?? []) : (next[sessionId] ?? []);
-        const updated = [...sessionEvents, envelope];
-        if (next === prev) {
-          next = { ...prev };
-        }
-        next[sessionId] = updated;
-        touchedSessionIds.add(sessionId);
+    for (const envelope of queued) {
+      const sessionId = envelope.sessionId;
+      const sessionEvents = next === eventsBySessionRef.current
+        ? (eventsBySessionRef.current[sessionId] ?? [])
+        : (next[sessionId] ?? []);
+      const updated = [...sessionEvents, envelope];
+      if (next === eventsBySessionRef.current) {
+        next = { ...eventsBySessionRef.current };
       }
+      next[sessionId] = updated;
+      touchedSessionIds.add(sessionId);
+    }
 
-      if (!touchedSessionIds.size) return prev;
+    if (!touchedSessionIds.size) return;
 
-      const activePatch: Record<string, boolean> = {};
-      const approvalPatch: Record<string, PendingApproval[]> = {};
-      for (const sessionId of touchedSessionIds) {
-        const derived = deriveRuntimeState(next[sessionId] ?? []);
-        activePatch[sessionId] = derived.turnActive;
-        approvalPatch[sessionId] = derived.pendingApprovals;
-      }
+    // Commit the ref immediately so subsequent flushes see the latest events.
+    eventsBySessionRef.current = next;
 
-      setTurnActiveBySession((activePrev) => ({ ...activePrev, ...activePatch }));
-      setApprovalsBySession((approvalPrev) => ({ ...approvalPrev, ...approvalPatch }));
+    // Derive turnActive and approvals from the fully-updated event lists.
+    const activePatch: Record<string, boolean> = {};
+    const approvalPatch: Record<string, PendingApproval[]> = {};
+    for (const sessionId of touchedSessionIds) {
+      const derived = deriveRuntimeState(next[sessionId] ?? []);
+      activePatch[sessionId] = derived.turnActive;
+      approvalPatch[sessionId] = derived.pendingApprovals;
+    }
 
-      return next;
-    });
+    // All three setters fire synchronously — React 18 batches them into one render.
+    setEventsBySession(next);
+    setTurnActiveBySession((activePrev) => ({ ...activePrev, ...activePatch }));
+    setApprovalsBySession((approvalPrev) => ({ ...approvalPrev, ...approvalPatch }));
   }, []);
 
   const scheduleQueuedEventFlush = useCallback(() => {
@@ -899,8 +934,20 @@ export function AgentChatPane({
 
   useEffect(() => {
     const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
+      if (!knownSessionIdsRef.current.has(envelope.sessionId)) return;
       pendingEventQueueRef.current.push(envelope);
-      scheduleQueuedEventFlush();
+
+      // "done" events must flush immediately so turnActive clears and the
+      // spinner stops.  Other events can use the debounced 16ms schedule.
+      if (envelope.event.type === "done") {
+        if (eventFlushTimerRef.current != null) {
+          window.clearTimeout(eventFlushTimerRef.current);
+          eventFlushTimerRef.current = null;
+        }
+        flushQueuedEvents();
+      } else {
+        scheduleQueuedEventFlush();
+      }
 
       if (lockSessionId && envelope.sessionId === lockSessionId) {
         draftSelectionLockedRef.current = false;
@@ -910,7 +957,7 @@ export function AgentChatPane({
       if (envelope.event.type === "done") {
         scheduleSessionsRefresh();
         // Refresh slash commands — SDK may have reported them during this turn's init
-        if (envelope.sessionId) {
+        if (envelope.sessionId === selectedSessionIdRef.current) {
           window.ade.agentChat.slashCommands({ sessionId: envelope.sessionId })
             .then(setSdkSlashCommands)
             .catch(() => {});
@@ -918,7 +965,7 @@ export function AgentChatPane({
       }
     });
     return unsubscribe;
-  }, [lockSessionId, scheduleQueuedEventFlush, scheduleSessionsRefresh]);
+  }, [lockSessionId, flushQueuedEvents, scheduleQueuedEventFlush, scheduleSessionsRefresh]);
 
   useEffect(() => {
     const unsubscribe = window.ade.computerUse.onEvent((event) => {
@@ -997,6 +1044,12 @@ export function AgentChatPane({
     setAttachments((prev) => prev.filter((entry) => entry.path !== attachmentPath));
   }, []);
 
+  const patchSessionSummary = useCallback((sessionId: string, patch: Partial<AgentChatSessionSummary>) => {
+    setSessions((prev) => prev.map((session) => (
+      session.sessionId === sessionId ? { ...session, ...patch } : session
+    )));
+  }, []);
+
   const createSession = useCallback(async (): Promise<string | null> => {
     if (createSessionPromiseRef.current) {
       return createSessionPromiseRef.current;
@@ -1061,6 +1114,7 @@ export function AgentChatPane({
   useEffect(() => {
     if (!userChangedModelRef.current) return;
     userChangedModelRef.current = false;
+    if (isPersistentIdentitySurface) return;
     if (!selectedSessionId || selectedEvents.length > 0 || turnActive) return;
     void (async () => {
       try {
@@ -1078,10 +1132,11 @@ export function AgentChatPane({
         eagerCreateFiredRef.current = false; // allow eager effect to re-fire
       }
     })();
-  }, [modelId, selectedSessionId, selectedEvents.length, turnActive, refreshSessions]);
+  }, [isPersistentIdentitySurface, modelId, selectedSessionId, selectedEvents.length, turnActive, refreshSessions]);
 
   const submit = useCallback(async () => {
     if (submitInFlightRef.current || busy) return;
+    if (!modelId) return;
     const text = draft.trim();
     if (!text.length || !laneId) return;
     const draftSnapshot = draft;
@@ -1220,22 +1275,39 @@ export function AgentChatPane({
 
   const handlePermissionModeChange = useCallback(async (mode: AgentChatPermissionMode) => {
     const nextMode = coercePermissionMode(mode);
+    if (nextMode === permissionMode) return;
+    if (isPersistentIdentitySurface && sessionMutationKind) return;
     setPermissionMode(nextMode);
     if (selectedSessionId) {
+      patchSessionSummary(selectedSessionId, { permissionMode: nextMode });
+      if (isPersistentIdentitySurface) {
+        setSessionMutationKind("permission");
+      }
       try {
         await window.ade.agentChat.changePermissionMode({
           sessionId: selectedSessionId,
           permissionMode: nextMode
         });
+        void refreshSessions().catch(() => {});
       } catch (err) {
+        void refreshSessions().catch(() => {});
         setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (isPersistentIdentitySurface) {
+          setSessionMutationKind(null);
+        }
       }
     }
-  }, [coercePermissionMode, selectedSessionId]);
+  }, [coercePermissionMode, isPersistentIdentitySurface, patchSessionSummary, permissionMode, refreshSessions, selectedSessionId, sessionMutationKind]);
 
   const handleComputerUsePolicyChange = useCallback(async (nextPolicy: ComputerUsePolicy) => {
+    if (isPersistentIdentitySurface && sessionMutationKind) return;
     setComputerUsePolicy(nextPolicy);
     if (!selectedSessionId) return;
+    patchSessionSummary(selectedSessionId, { computerUse: nextPolicy });
+    if (isPersistentIdentitySurface) {
+      setSessionMutationKind("computer-use");
+    }
     try {
       await window.ade.agentChat.updateSession({
         sessionId: selectedSessionId,
@@ -1245,38 +1317,54 @@ export function AgentChatPane({
       await refreshComputerUseSnapshot(selectedSessionId, { force: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (isPersistentIdentitySurface) {
+        setSessionMutationKind(null);
+      }
     }
-  }, [refreshComputerUseSnapshot, refreshSessions, selectedSessionId]);
+  }, [isPersistentIdentitySurface, patchSessionSummary, refreshComputerUseSnapshot, refreshSessions, selectedSessionId, sessionMutationKind]);
 
   if (!laneId) {
     return (
       <ChatSurfaceShell mode={surfaceMode} accentColor={presentation?.accentColor}>
         <div className="flex h-full items-center justify-center">
-          <span className="font-mono text-[11px] text-muted-fg/30">Select a lane to start chatting</span>
+          <span className="font-sans text-[12px] text-muted-fg/30">Select a lane to start chatting</span>
         </div>
       </ChatSurfaceShell>
     );
   }
-  const draftAccent = selectedModelDesc?.color ?? "#A78BFA";
+  const draftAccent = selectedModelDesc?.color ?? "#A1A1AA";
   const shellHeader = (
-    <div className="space-y-4 px-4 py-4">
+    <div className="space-y-3 px-4 py-3">
       <div className="flex flex-wrap items-start gap-4">
         <div className="min-w-0 flex-1">
-          <div className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-[var(--chat-accent)]">
+          <div className="font-sans text-[12px] font-medium text-[var(--chat-accent)]" style={{ opacity: 0.7 }}>
             {resolvedTitle}
           </div>
           {resolvedSubtitle ? (
-            <div className="mt-1 max-w-3xl text-[12px] leading-[1.55] text-fg/60">
+            <div className="mt-0.5 max-w-3xl font-sans text-[12px] leading-[1.55] text-fg/45">
               {resolvedSubtitle}
             </div>
           ) : null}
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
+          {isPersistentIdentitySurface && selectedSessionId ? (
+            <button
+              type="button"
+              className="inline-flex items-center rounded-md border border-white/[0.06] px-2.5 py-1 font-sans text-[11px] font-medium text-muted-fg/60 transition-colors hover:border-white/[0.1] hover:text-fg"
+              onClick={() => {
+                eventsBySessionRef.current = { ...eventsBySessionRef.current, [selectedSessionId]: [] };
+                setEventsBySession((prev) => ({ ...prev, [selectedSessionId]: [] }));
+              }}
+            >
+              Clear view
+            </button>
+          ) : null}
           {resolvedChips.map((chip) => (
             <span
               key={`${chip.label}:${chip.tone ?? "accent"}`}
               className={cn(
-                "inline-flex items-center rounded-[var(--chat-radius-pill)] border px-2.5 py-1 font-mono text-[9px] font-bold uppercase tracking-[0.16em]",
+                "inline-flex items-center rounded-md border px-2 py-1 font-sans text-[10px] font-medium",
                 chatChipToneClass(chip.tone),
               )}
             >
@@ -1287,20 +1375,20 @@ export function AgentChatPane({
             <button
               type="button"
               className={cn(
-                "inline-flex items-center gap-1 rounded-[var(--chat-radius-pill)] border px-2.5 py-1 font-mono text-[9px] font-bold uppercase tracking-[0.16em] transition-colors hover:opacity-90",
+                "inline-flex items-center gap-1 rounded-md border px-2 py-1 font-sans text-[10px] font-medium transition-colors hover:opacity-90",
                 chatChipToneClass(mcpChip.tone),
               )}
               onClick={openExternalMcpSettings}
               title="Open External MCP settings"
             >
-              <Database size={11} weight="bold" />
+              <Database size={11} weight="regular" />
               {mcpChip.label}
             </button>
           ) : null}
           {!isPersistentIdentitySurface ? (
             <span
-              className="inline-flex items-center rounded-[var(--chat-radius-pill)] border px-2.5 py-1 font-mono text-[9px] font-bold uppercase tracking-[0.16em]"
-              style={{ borderColor: "rgba(125, 211, 252, 0.18)", color: "rgba(186, 230, 253, 0.88)", background: "rgba(14, 165, 233, 0.08)" }}
+              className="inline-flex items-center rounded-md border px-2 py-1 font-sans text-[10px] font-medium"
+              style={{ borderColor: "rgba(125, 211, 252, 0.18)", color: "rgba(186, 230, 253, 0.75)", background: "rgba(14, 165, 233, 0.06)" }}
             >
               CU {computerUsePolicy.mode}
             </span>
@@ -1321,10 +1409,10 @@ export function AgentChatPane({
                   key={session.sessionId}
                   type="button"
                   className={cn(
-                    "inline-flex shrink-0 items-center gap-2 rounded-[var(--chat-radius-pill)] border px-3 py-2 font-mono text-[9px] transition-colors",
+                    "inline-flex shrink-0 items-center gap-2 rounded-md border px-3 py-1.5 font-sans text-[11px] transition-colors",
                     isActive
-                      ? "border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)] text-fg/82"
-                      : "border-white/8 bg-black/10 text-muted-fg/38 hover:text-fg/62",
+                      ? "border-white/[0.08] bg-white/[0.05] font-medium text-fg/80"
+                      : "border-transparent text-muted-fg/40 hover:text-fg/60",
                   )}
                   onClick={() => {
                     draftSelectionLockedRef.current = false;
@@ -1343,7 +1431,7 @@ export function AgentChatPane({
           </div>
           <button
             type="button"
-            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--chat-radius-pill)] border border-white/8 bg-black/10 text-muted-fg/28 transition-colors hover:text-[var(--chat-accent)]"
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-white/[0.06] text-muted-fg/30 transition-colors hover:text-fg/60"
             title="New chat"
             onClick={() => {
               draftSelectionLockedRef.current = true;
@@ -1390,8 +1478,8 @@ export function AgentChatPane({
             executionMode={selectedExecutionMode?.value ?? "focused"}
             computerUsePolicy={computerUsePolicy}
             executionModeOptions={launchModeEditable ? executionModeOptions : []}
-            modelSelectionLocked={modelSelectionLocked}
-            permissionModeLocked={permissionModeLocked}
+            modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model"}
+            permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy}
             onExecutionModeChange={setExecutionMode}
             onPermissionModeChange={handlePermissionModeChange}
             onComputerUsePolicyChange={handleComputerUsePolicyChange}
@@ -1399,12 +1487,60 @@ export function AgentChatPane({
               if (selectedSessionModelId && effectiveAvailableModelIds.length && !effectiveAvailableModelIds.includes(nextModelId)) {
                 return;
               }
+              if (isPersistentIdentitySurface && sessionMutationKind) {
+                return;
+              }
               userChangedModelRef.current = true;
+              const previousModelId = modelId;
+              const previousReasoningEffort = reasoningEffort;
               setModelId(nextModelId);
               const nextDesc = getModelById(nextModelId);
               const tiers = nextDesc?.reasoningTiers ?? [];
               const preferred = readLastUsedReasoningEffort({ laneId, modelId: nextModelId });
-              setReasoningEffort(selectReasoningEffort({ tiers, preferred }));
+              const nextReasoningEffort = selectReasoningEffort({ tiers, preferred });
+              setReasoningEffort(nextReasoningEffort);
+
+              if (selectedSessionId && isPersistentIdentitySurface && !turnActive) {
+                const nextProvider = nextDesc?.isCliWrapped
+                  ? (nextDesc.family === "openai" ? "codex" : "claude")
+                  : "unified";
+                const nextModel = nextProvider === "unified" ? nextModelId : (nextDesc?.shortId ?? nextModelId);
+                setSessionMutationKind("model");
+                patchSessionSummary(selectedSessionId, {
+                  provider: nextProvider,
+                  model: nextModel,
+                  modelId: nextModelId,
+                  reasoningEffort: nextReasoningEffort,
+                });
+                void window.ade.agentChat.updateSession({
+                  sessionId: selectedSessionId,
+                  modelId: nextModelId,
+                  reasoningEffort: nextReasoningEffort,
+                  permissionMode,
+                  computerUse: computerUsePolicy,
+                }).then(() => {
+                  window.ade.agentChat.slashCommands({ sessionId: selectedSessionId })
+                    .then(setSdkSlashCommands)
+                    .catch(() => {});
+                  void refreshSessions().catch(() => {});
+                }).catch((err) => {
+                  setModelId(previousModelId);
+                  setReasoningEffort(previousReasoningEffort);
+                  void refreshSessions().catch(() => {});
+                  setError(err instanceof Error ? err.message : String(err));
+                }).finally(() => {
+                  setSessionMutationKind(null);
+                });
+              }
+
+              // Trigger early warmup when the user selects a Claude/Anthropic
+              // model so the ~30s subprocess cold-start happens while they type.
+              if (selectedSessionId && nextDesc?.family === "anthropic" && nextDesc?.isCliWrapped) {
+                window.ade.agentChat.warmupModel({
+                  sessionId: selectedSessionId,
+                  modelId: nextModelId,
+                }).catch(() => { /* warmup is best-effort */ });
+              }
             }}
             onReasoningEffortChange={setReasoningEffort}
             onDraftChange={setDraft}
@@ -1423,6 +1559,7 @@ export function AgentChatPane({
             onContextPacksChange={setSelectedContextPacks}
             onClearEvents={() => {
               if (selectedSessionId) {
+                eventsBySessionRef.current = { ...eventsBySessionRef.current, [selectedSessionId]: [] };
                 setEventsBySession((prev) => ({ ...prev, [selectedSessionId]: [] }));
               }
             }}
@@ -1450,17 +1587,7 @@ export function AgentChatPane({
             </div>
           ) : selectedSessionId ? (
             <div className="flex h-full min-h-0 flex-col overflow-hidden">
-              {!isPersistentIdentitySurface ? (
-                <div className="border-b border-white/[0.04] p-3">
-                  <ChatComputerUsePanel
-                    laneId={laneId}
-                    sessionId={selectedSessionId}
-                    policy={computerUsePolicy}
-                    snapshot={computerUseSnapshot}
-                    onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
-                  />
-                </div>
-              ) : null}
+              {/* Computer Use panel hidden -- policy is still configurable from the composer */}
               <AgentChatMessageList
                 events={selectedEvents}
                 showStreamingIndicator={turnActive}

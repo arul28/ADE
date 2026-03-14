@@ -5,7 +5,7 @@ import type { LinearArtifactMode, NormalizedLinearIssue } from "../../../shared/
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { IssueTracker } from "./issueTracker";
-import { isWithinDir, nowIso, uniqueStrings, getErrorMessage } from "../shared/utils";
+import { nowIso, uniqueStrings, getErrorMessage } from "../shared/utils";
 
 function bodyHash(body: string): string {
   return createHash("sha256").update(body).digest("hex");
@@ -69,13 +69,31 @@ export function createLinearOutboundService(args: {
     const existing = getRow(params.issueId);
     if (existing?.comment_id) {
       if (existing.last_body_hash !== bodyHash(body)) {
-        await args.issueTracker.updateComment(existing.comment_id, body);
+        try {
+          await args.issueTracker.updateComment(existing.comment_id, body);
+        } catch (error) {
+          args.logger?.warn("linear_outbound.update_comment_failed", {
+            issueId: params.issueId,
+            commentId: existing.comment_id,
+            error: getErrorMessage(error),
+          });
+          return { commentId: existing.comment_id };
+        }
         upsertRow({ issueId: params.issueId, commentId: existing.comment_id, body });
       }
       return { commentId: existing.comment_id };
     }
 
-    const created = await args.issueTracker.createComment(params.issueId, body);
+    let created: { commentId: string };
+    try {
+      created = await args.issueTracker.createComment(params.issueId, body);
+    } catch (error) {
+      args.logger?.warn("linear_outbound.create_comment_failed", {
+        issueId: params.issueId,
+        error: getErrorMessage(error),
+      });
+      return { commentId: "" };
+    }
     upsertRow({ issueId: params.issueId, commentId: created.commentId, body });
     return { commentId: created.commentId };
   };
@@ -91,7 +109,16 @@ export function createLinearOutboundService(args: {
       return { commentId: existing.comment_id };
     }
 
-    await args.issueTracker.updateComment(existing.comment_id, body);
+    try {
+      await args.issueTracker.updateComment(existing.comment_id, body);
+    } catch (error) {
+      args.logger?.warn("linear_outbound.update_comment_failed", {
+        issueId: params.issueId,
+        commentId: existing.comment_id,
+        error: getErrorMessage(error),
+      });
+      return { commentId: existing.comment_id };
+    }
     upsertRow({ issueId: params.issueId, commentId: existing.comment_id, body });
     return { commentId: existing.comment_id };
   };
@@ -209,14 +236,6 @@ export function createLinearOutboundService(args: {
       }
 
       const artifactPath = path.resolve(entry);
-      if (!isWithinDir(args.projectRoot, artifactPath)) {
-        args.logger?.warn("linear_sync.attachment_path_outside_project", {
-          issueId: params.issueId,
-          artifactPath,
-          projectRoot: args.projectRoot,
-        });
-        continue;
-      }
       let stat: fs.Stats;
       try {
         stat = fs.statSync(artifactPath);

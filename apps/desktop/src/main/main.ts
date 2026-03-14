@@ -56,7 +56,6 @@ import { createAutomationRoutingService } from "./services/automations/automatio
 import { createAutomationIngressService } from "./services/automations/automationIngressService";
 import { createUsageTrackingService } from "./services/usage/usageTrackingService";
 import { createBudgetCapService } from "./services/usage/budgetCapService";
-import { createCiService } from "./services/ci/ciService";
 import { createRebaseSuggestionService } from "./services/lanes/rebaseSuggestionService";
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createMissionService } from "./services/missions/missionService";
@@ -177,6 +176,7 @@ const defaultEnabledBackgroundTaskFlags = new Set<string>([
   "ADE_ENABLE_EPISODIC_SUMMARY",
   "ADE_ENABLE_HEAD_WATCHER",
   "ADE_ENABLE_SKILL_REGISTRY",
+  "ADE_ENABLE_PORT_ALLOCATION_RECOVERY",
 ]);
 
 function isBackgroundTaskEnabled(enableFlag?: string): boolean {
@@ -661,8 +661,7 @@ app.whenReady().then(async () => {
     });
     portAllocationService.restore();
 
-    // Recover orphaned leases on startup
-    (async () => {
+    const recoverPortAllocations = async () => {
       try {
         const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
         const validIds = new Set(lanes.map((l) => l.id));
@@ -683,7 +682,7 @@ app.whenReady().then(async () => {
       } catch (err: any) {
         logger.warn("port_allocation.startup_recovery_failed", { error: err?.message });
       }
-    })();
+    };
 
     const laneProxyService = createLaneProxyService({
       logger,
@@ -717,13 +716,6 @@ app.whenReady().then(async () => {
     const aiIntegrationService = createAiIntegrationService({
       db,
       logger,
-      projectConfigService
-    });
-
-    const ciService = createCiService({
-      db,
-      logger,
-      projectRoot,
       projectConfigService
     });
 
@@ -833,14 +825,23 @@ app.whenReady().then(async () => {
       prService,
       projectConfigService,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.prsEvent, event),
-      onPullRequestsChanged: ({ changedPrs }) => Promise.all(
-        changedPrs.map((pr) =>
+      onPullRequestsChanged: ({ changedPrs, changes }) => Promise.all([
+        ...changedPrs.map((pr) =>
           knowledgeCaptureServiceRef?.capturePrFeedback({
             prId: pr.id,
             prNumber: pr.githubPrNumber ?? null,
           }) ?? Promise.resolve()
         ),
-      ).then(() => undefined),
+        ...changes.map(({ pr, previousState, previousChecksStatus, previousReviewStatus }) => {
+          automationService?.onPullRequestChanged?.({
+            pr,
+            previousState,
+            previousChecksStatus,
+            previousReviewStatus,
+          });
+          return Promise.resolve();
+        }),
+      ]).then(() => undefined),
     });
 
     let orchestratorServiceRef: ReturnType<typeof createOrchestratorService> | null = null;
@@ -930,6 +931,7 @@ app.whenReady().then(async () => {
     const hybridSearchService = createHybridSearchService({
       db,
       embeddingService,
+      logger,
     });
     const memoryService = createUnifiedMemoryService(db, {
       hybridSearchService,
@@ -975,11 +977,15 @@ app.whenReady().then(async () => {
       logger,
       memoryService,
     });
+    let skillRegistryServiceRef: ReturnType<typeof createSkillRegistryService> | null = null;
     const proceduralLearningService = createProceduralLearningService({
       db,
       logger,
       projectId,
       memoryService,
+      onProcedurePromoted: (memoryId) => {
+        void skillRegistryServiceRef?.exportProcedureSkill({ id: memoryId }).catch(() => {});
+      },
     });
     const episodicSummaryService = createEpisodicSummaryService({
       projectId,
@@ -1013,6 +1019,7 @@ app.whenReady().then(async () => {
       memoryService,
       proceduralLearningService,
     });
+    skillRegistryServiceRef = skillRegistryService;
     const contextDocService = createContextDocService({
       db,
       logger,
@@ -1150,6 +1157,7 @@ app.whenReady().then(async () => {
       memoryService,
       packService,
       workerAgentService,
+      prService,
       episodicSummaryService,
       laneService,
       sessionService,
@@ -1161,6 +1169,41 @@ app.whenReady().then(async () => {
         aiOrchestratorServiceRef?.onAgentChatEvent(event);
         openclawBridgeServiceRef?.onAgentChatEvent(event);
         emitProjectEvent(projectRoot, IPC.agentChatEvent, event);
+
+        // Compaction flush: when context compaction occurs, trigger a flush steer
+        // so the agent can save durable discoveries to memory before they are lost.
+        if (event.event.type === "context_compact") {
+          const sid = event.sessionId;
+          const compactEvt = event.event as { preTokens?: number };
+          void compactionFlushService.beforeCompaction({
+            sessionId: sid,
+            boundaryId: `chat:${sid}:${Date.now()}`,
+            conversationTokenCount: compactEvt.preTokens ?? 200_000,
+            maxTokens: 200_000,
+            flushTurn: async ({ prompt }) => {
+              try {
+                await agentChatService.steer({ sessionId: sid, text: prompt });
+                return { status: "flushed" };
+              } catch {
+                return { status: "budget_exceeded" };
+              }
+            },
+          }).catch(() => {});
+        }
+
+        // Capture agent session errors as failure gotchas for the memory system
+        if (event.event.type === "error" && event.provenance?.runId) {
+          const prov = event.provenance;
+          void knowledgeCaptureServiceRef?.captureFailureGotcha({
+            missionId: prov.runId!,
+            runId: prov.runId!,
+            stepId: null,
+            attemptId: prov.attemptId ?? null,
+            stepKey: prov.stepKey ?? null,
+            summary: `Agent session error in ${prov.role ?? "agent"} session`,
+            errorMessage: event.event.message,
+          }).catch(() => {});
+        }
       },
       onSessionEnded: onTrackedSessionEnded
     });
@@ -1372,6 +1415,18 @@ app.whenReady().then(async () => {
       missionBudgetService,
     });
     scheduleBackgroundProjectTask(
+      "lanes.port_allocation_recovery",
+      () => recoverPortAllocations(),
+      (error) => {
+        logger.warn("port_allocation.startup_recovery_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+      8_000,
+      "ADE_ENABLE_PORT_ALLOCATION_RECOVERY",
+    );
+
+    scheduleBackgroundProjectTask(
       "external_mcp.start",
       () => externalMcpService.start(),
       (error) => {
@@ -1443,6 +1498,7 @@ app.whenReady().then(async () => {
       logger,
       onEvent: (payload) => emitProjectEvent(projectRoot, IPC.computerUseEvent, payload),
     });
+    agentChatService.setComputerUseArtifactBrokerService(computerUseArtifactBrokerService);
     missionPreflightService = createMissionPreflightService({
       logger,
       projectRoot,
@@ -1515,7 +1571,19 @@ app.whenReady().then(async () => {
       outboundService: linearOutboundService,
       workerTaskSessionService,
       prService,
-      onEvent: (event) => emitProjectEvent(projectRoot, IPC.ctoLinearWorkflowEvent, event),
+      onEvent: (event) => {
+        emitProjectEvent(projectRoot, IPC.ctoLinearWorkflowEvent, event);
+
+        // Capture linear workflow failures as gotchas for the memory system
+        if (event.type === "linear-workflow-run" && event.milestone === "failed") {
+          void knowledgeCaptureServiceRef?.captureFailureGotcha({
+            missionId: event.runId,
+            runId: event.runId,
+            summary: `Linear workflow failed for ${event.issueIdentifier}: ${event.message}`,
+            errorMessage: event.message,
+          }).catch(() => {});
+        }
+      },
     });
 
     logger.info("project.init_stage", { projectRoot, stage: "linear_sync_init" });
@@ -1530,6 +1598,13 @@ app.whenReady().then(async () => {
       dispatcherService: linearDispatcherService,
       hasCredentials: () => linearCredentialService.getStatus().tokenStored,
       autoStart: false,
+      onIssueUpdated: ({ issue, previousIssue }) => {
+        automationService?.onLinearIssueChanged?.({
+          issue,
+          previousAssigneeId: typeof previousIssue?.assigneeId === "string" ? previousIssue.assigneeId : null,
+          previousAssigneeName: typeof previousIssue?.assigneeName === "string" ? previousIssue.assigneeName : null,
+        });
+      },
     });
     linearSyncServiceRef = linearSyncService;
     scheduleBackgroundProjectTask(
@@ -1708,7 +1783,16 @@ app.whenReady().then(async () => {
     );
     scheduleBackgroundProjectTask(
       "memory.embedding_worker.start",
-      () => embeddingWorkerService.start(),
+      async () => {
+        const status = await embeddingWorkerService.start();
+        if (status.queueDepth > 0) {
+          logger.info("memory.embedding_worker.backlog_sweep", {
+            projectId,
+            queueDepth: status.queueDepth,
+          });
+        }
+        embeddingService.startHealthCheck();
+      },
       (error) => {
         logger.warn("memory.embedding_worker.start_failed", {
           projectId,
@@ -1983,7 +2067,6 @@ app.whenReady().then(async () => {
       orchestratorService,
       missionBudgetService,
       aiOrchestratorService,
-      ciService,
       agentChatService,
       packService,
       contextDocService,
@@ -2044,7 +2127,6 @@ app.whenReady().then(async () => {
       terminalProfilesService: null,
       agentToolsService: null,
       onboardingService: null,
-      ciService: null,
       laneService: null,
       laneEnvironmentService: null,
       laneTemplateService: null,
@@ -2113,6 +2195,13 @@ app.whenReady().then(async () => {
   };
 
   const disposeContextResources = async (ctx: AppContext): Promise<void> => {
+    // Flush DB before disposing services so that any pending writes are persisted.
+    // Services may write during disposal, so we flush again at the end as a safety net.
+    try {
+      ctx.db.flushNow();
+    } catch {
+      // ignore
+    }
     try {
       ctx.disposeHeadWatcher();
     } catch {
@@ -2300,7 +2389,7 @@ app.whenReady().then(async () => {
 
   const closeCurrentProject = async () => {
     const current = getActiveContext();
-    const previousRoot = current.project?.rootPath;
+    const previousRoot = current.project?.rootPath ?? "";
     if (activeProjectRoot) {
       await closeProjectContext(activeProjectRoot);
     }
@@ -2363,7 +2452,11 @@ app.whenReady().then(async () => {
     if (quitAfterCleanup) return;
     quitAfterCleanup = true;
     event.preventDefault();
-    getActiveContext().logger.info("app.before_quit");
+    const current = getActiveContext();
+    const previousRoot = current.project?.rootPath;
+    current.logger.info("app.before_quit");
+    setActiveProject(null);
+    dormantContext = createDormantProjectContext(previousRoot);
     void closeAllProjectContexts()
       .catch(() => {
         // ignore

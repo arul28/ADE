@@ -11,7 +11,7 @@ This document is the contract for the **remaining pack/export compatibility arti
 - AI integration service consuming bounded exports via Vercel AI SDK
 - Guest-mode, deterministic-only workflows (no AI providers)
 
-It is **not** the authoritative current renderer/preload contract. The current user-facing runtime is memory-first (`window.ade.memory`, `MemoryInspector`, `unifiedMemoryService.ts`). Pack-shaped exports remain live only where internal orchestrator/MCP/compatibility flows still depend on them.
+It is **not** the authoritative current renderer/preload contract. The current user-facing runtime is memory-first (`window.ade.memory`, Settings > Memory tab, `unifiedMemoryService.ts`). Pack-shaped exports remain live only where internal orchestrator/MCP/compatibility flows still depend on them.
 
 The contract prioritizes **reviewability** (diffable, structured artifacts) and **bounded context** (token-budgeted exports), rather than raw "dump everything" prompts.
 

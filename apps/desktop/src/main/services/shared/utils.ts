@@ -227,6 +227,31 @@ export function stableStringify(value: unknown): string {
   return JSON.stringify(normalize(value));
 }
 
+// ── Glob / pattern matching ─────────────────────────────────────────
+
+export function escapeRegExp(value: string): string {
+  return value.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
+}
+
+export function globToRegExp(pattern: string): RegExp {
+  const normalized = pattern.trim();
+  if (!normalized.length) return /^$/;
+  const parts = normalized.split("*").map((chunk) => escapeRegExp(chunk));
+  return new RegExp(`^${parts.join(".*")}$`, "i");
+}
+
+export function matchesGlob(pattern: string | null | undefined, value: string | null | undefined): boolean {
+  const expected = (pattern ?? "").trim();
+  if (!expected) return true;
+  const actual = (value ?? "").trim();
+  if (!actual) return false;
+  return globToRegExp(expected).test(actual);
+}
+
+export function normalizeSet(values: string[] | undefined): Set<string> {
+  return new Set((values ?? []).map((value) => value.trim().toLowerCase()).filter(Boolean));
+}
+
 // ── Secret detection helpers ────────────────────────────────────────
 
 const ENV_REF_PATTERN = /^\$\{env:[A-Z0-9_]+\}$/;

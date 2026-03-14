@@ -7,7 +7,7 @@ import { WorkViewArea } from "./WorkViewArea";
 import { SessionContextMenu, type SessionContextMenuState } from "./SessionContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
 import type { TerminalSessionSummary } from "../../../shared/types";
-import { COLORS, MONO_FONT, SANS_FONT, inlineBadge } from "../lanes/laneDesignTokens";
+import { SANS_FONT } from "../lanes/laneDesignTokens";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 
 /* ---- Layout (2-pane: sessions | view) ---- */
@@ -131,57 +131,60 @@ export function TerminalsPage() {
   );
 
   return (
-    <div className="flex h-full min-w-0 flex-col" style={{ background: "var(--color-bg)", fontFamily: MONO_FONT }}>
+    <div className="flex h-full min-w-0 flex-col" style={{ background: "var(--color-bg)", fontFamily: SANS_FONT }}>
       {/* Header */}
       <div
         style={{
-          height: 48,
+          height: 44,
           display: "flex",
           alignItems: "center",
           padding: "0 18px",
-          background: "linear-gradient(90deg, color-mix(in srgb, var(--color-surface-recessed) 94%, transparent), color-mix(in srgb, var(--color-surface) 86%, transparent))",
-          borderBottom: `1px solid ${COLORS.border}`,
+          background: "var(--color-bg)",
+          borderBottom: "1px solid rgba(255,255,255, 0.04)",
           flexShrink: 0,
         }}
       >
-        {/* Left side */}
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span
             style={{
               fontFamily: SANS_FONT,
-              fontSize: 15,
-              fontWeight: 700,
-              color: COLORS.textPrimary,
-              letterSpacing: "-0.03em",
+              fontSize: 14,
+              fontWeight: 600,
+              color: "var(--color-fg)",
+              letterSpacing: "-0.02em",
             }}
           >
             Work
           </span>
           {work.runningSessions.length > 0 ? (
-            <span style={inlineBadge(COLORS.success)}>
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "3px 10px",
+                fontSize: 11,
+                fontWeight: 500,
+                fontFamily: SANS_FONT,
+                color: "var(--color-success)",
+                background: "rgba(34, 197, 94, 0.08)",
+                borderRadius: 999,
+              }}
+            >
               <span
                 style={{
-                  width: 6,
-                  height: 6,
+                  width: 5,
+                  height: 5,
                   borderRadius: "50%",
-                  background: COLORS.success,
-                  marginRight: 6,
+                  background: "var(--color-success)",
                   animation: "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite",
                 }}
               />
-              {work.runningSessions.length} RUNNING
+              {work.runningSessions.length} running
             </span>
           ) : null}
         </div>
       </div>
-      {/* Accent line */}
-      <div
-        style={{
-          height: 2,
-          background: `linear-gradient(90deg, ${COLORS.accent}, transparent)`,
-          flexShrink: 0,
-        }}
-      />
 
       <PaneTilingLayout
         layoutId="work:tiling:v3"

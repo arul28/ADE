@@ -32,40 +32,38 @@ const AgentRow = React.memo(function AgentRow({
       onClick={() => onSelectAgent(agent.id)}
       data-testid={`worker-row-${agent.id}`}
       className={cn(
-        "group w-full text-left px-3 py-2.5 transition-all duration-150",
-        "border-l-2",
+        "group w-full text-left px-3 py-2 transition-all duration-200",
         isSelected
-          ? "border-l-accent bg-accent/12 backdrop-blur-sm"
-          : "border-l-transparent hover:bg-white/[0.04]",
+          ? "bg-[rgba(167,139,250,0.08)]"
+          : "hover:bg-white/[0.03]",
       )}
-      style={{ paddingLeft: `${12 + depth * 16}px` }}
+      style={{
+        paddingLeft: `${12 + depth * 16}px`,
+        ...(isSelected ? { borderLeft: "2px solid #A78BFA" } : { borderLeft: "2px solid transparent" }),
+      }}
     >
       <div className="flex items-center gap-2.5 min-w-0">
         <AgentStatusDot status={agent.status} />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className={cn(
-              "truncate font-mono text-xs font-semibold",
-              isSelected ? "text-fg" : "text-fg/80 group-hover:text-fg",
+              "truncate text-xs font-medium",
+              isSelected ? "text-fg" : "text-fg/70 group-hover:text-fg",
             )}>
               {agent.name}
             </span>
             {budgetBreached && (
-              <span className="text-[10px] text-warning font-mono font-bold">$</span>
+              <span className="text-[10px] text-warning font-medium">$</span>
             )}
           </div>
           <div className="flex items-center gap-1.5 mt-0.5">
-            <span className="font-mono text-[10px] text-muted-fg">
+            <span className="text-[10px] text-muted-fg/40">
               {agent.role}
-            </span>
-            <span className="text-white/[0.1]">·</span>
-            <span className="font-mono text-[10px] text-muted-fg/60">
-              {agent.adapterType.replace("-local", "").replace("-webhook", "")}
             </span>
             {budgetInfo && (
               <>
-                <span className="text-white/[0.1]">·</span>
-                <span className="font-mono text-[10px] text-muted-fg/60">
+                <span className="text-white/[0.08]">&middot;</span>
+                <span className="text-[10px] text-muted-fg/35">
                   {dollars(budgetInfo.spentMonthlyCents)}
                 </span>
               </>
@@ -73,7 +71,7 @@ const AgentRow = React.memo(function AgentRow({
           </div>
         </div>
         {isSelected && (
-          <CaretRight size={10} weight="bold" className="shrink-0 text-accent" />
+          <CaretRight size={9} weight="bold" className="shrink-0" style={{ color: "#A78BFA" }} />
         )}
       </div>
     </button>
@@ -91,10 +89,10 @@ const AgentSidebarBudgetFooter = React.memo(function AgentSidebarBudgetFooter({
   budgetSnapshot: AgentBudgetSnapshot | null;
 }) {
   return (
-    <div className="shrink-0 border-t border-white/[0.06] px-3 py-2.5" data-testid="budget-company-row">
+    <div className="shrink-0 border-t border-white/[0.05] px-3 py-2" data-testid="budget-company-row">
       <div className="flex items-center justify-between">
-        <span className="font-mono text-[10px] text-muted-fg/60 uppercase tracking-wide">Budget</span>
-        <span className="font-mono text-[10px] text-muted-fg">
+        <span className="text-[10px] text-muted-fg/35 uppercase tracking-wider font-medium">Budget</span>
+        <span className="text-[10px] text-muted-fg/50">
           {dollars(budgetSnapshot?.companySpentMonthlyCents ?? 0)}
           {(budgetSnapshot?.companyBudgetMonthlyCents ?? 0) > 0
             ? ` / ${dollars(budgetSnapshot!.companyBudgetMonthlyCents)}`
@@ -158,36 +156,29 @@ export const AgentSidebar = React.memo(function AgentSidebar({
 
   return (
     <aside
-      className="flex flex-col h-full border-r border-border/60 select-none"
-      style={{ width: 240, minWidth: 240, background: "var(--gradient-surface)" }}
+      className="flex flex-col h-full select-none"
+      style={{ width: 220, minWidth: 220, borderRight: "1px solid rgba(167, 139, 250, 0.06)", background: "rgba(12, 10, 20, 0.5)" }}
     >
-      {/* Header */}
-      <div className="shrink-0 px-3 pt-3 pb-1.5">
-        <div className="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-fg/50">
-          Department
-        </div>
-      </div>
-
       {/* CTO entry */}
       <button
         type="button"
         onClick={onSelectCto}
         className={cn(
-          "w-full text-left px-3 py-2.5 transition-all duration-150",
-          "border-l-2",
+          "w-full text-left px-3 py-3 transition-all duration-200",
           isCtoSelected
-            ? "border-l-accent bg-accent/12 backdrop-blur-sm"
-            : "border-l-transparent hover:bg-white/[0.04]",
+            ? "bg-[rgba(167,139,250,0.08)]"
+            : "hover:bg-white/[0.03]",
         )}
+        style={isCtoSelected ? { borderLeft: "2px solid #A78BFA" } : { borderLeft: "2px solid transparent" }}
       >
         <div className="flex items-center gap-2.5">
-          <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-accent/12 border border-accent/20">
-            <Brain size={14} weight="duotone" className="text-accent" />
+          <div className="flex items-center justify-center w-7 h-7 rounded-lg" style={{ background: "rgba(167, 139, 250, 0.1)", border: "1px solid rgba(167, 139, 250, 0.18)" }}>
+            <Brain size={13} weight="duotone" style={{ color: "#A78BFA" }} />
           </div>
           <div className="min-w-0 flex-1">
-            <div className="font-sans text-xs font-bold text-fg">CTO</div>
+            <div className="text-xs font-semibold text-fg">CTO</div>
             {ctoModelInfo && (
-              <div className="font-mono text-[10px] text-muted-fg/60 mt-0.5 truncate">
+              <div className="text-[10px] text-muted-fg/35 mt-0.5 truncate">
                 {ctoModelInfo.provider}/{ctoModelInfo.model}
               </div>
             )}
@@ -196,11 +187,11 @@ export const AgentSidebar = React.memo(function AgentSidebar({
       </button>
 
       {/* Separator */}
-      <div className="mx-3 my-1.5 border-t border-white/[0.06]" />
+      <div className="mx-3 my-1" style={{ borderTop: "1px solid rgba(167, 139, 250, 0.06)" }} />
 
       {/* Workers header */}
       <div className="flex items-center justify-between px-3 py-1.5">
-        <span className="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-fg/50">
+        <span className="text-[10px] font-medium uppercase tracking-wider text-muted-fg/35">
           Workers
         </span>
         <Button
@@ -218,12 +209,13 @@ export const AgentSidebar = React.memo(function AgentSidebar({
       <div className="flex-1 overflow-y-auto min-h-0" data-testid="worker-tree">
         {workerTree.length === 0 ? (
           <div className="px-3 py-8 text-center">
-            <Robot size={28} className="mx-auto text-muted-fg/20 mb-3" />
-            <div className="font-sans text-xs text-muted-fg/50">No workers yet</div>
+            <Robot size={24} className="mx-auto mb-3" style={{ color: "rgba(167, 139, 250, 0.15)" }} />
+            <div className="text-xs text-muted-fg/40">No workers yet</div>
             <button
               type="button"
               onClick={onHireWorker}
-              className="mt-2 font-mono text-xs text-accent hover:text-accent/80 transition-colors"
+              className="mt-2 text-[11px] font-medium transition-colors hover:text-fg/70"
+              style={{ color: "#A78BFA" }}
             >
               Hire your first worker
             </button>

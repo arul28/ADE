@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import YAML from "yaml";
 import { ArrowClockwise, FloppyDisk, Lightning, Plus, Shuffle } from "@phosphor-icons/react";
 import type {
@@ -29,7 +30,6 @@ import {
   type LinearWorkflowSupervisorMode as SupervisorMode,
   type LinearWorkflowVisualPlan as VisualPlan,
 } from "../../../shared/linearWorkflowPresets";
-import { LinearConnectionPanel } from "./LinearConnectionPanel";
 import { TimelineEntry } from "./shared/TimelineEntry";
 import { Button } from "../ui/Button";
 import { PaneHeader } from "../ui/PaneHeader";
@@ -214,6 +214,10 @@ function formatPrStatus(item: LinearSyncQueueItem): string {
   return [item.prState ?? "unknown", item.prChecksStatus ?? "none", item.prReviewStatus ?? "none"].join(" · ");
 }
 
+export function shouldShowDelegationOverride(status: LinearSyncQueueItem["status"]): boolean {
+  return status === "queued" || status === "retry_wait" || status === "escalated";
+}
+
 function buildRunTimeline(detail: LinearWorkflowRunDetail): Array<{
   id: string;
   timestamp: string;
@@ -279,6 +283,7 @@ function buildRunTimeline(detail: LinearWorkflowRunDetail): Array<{
 }
 
 export function LinearSyncPanel() {
+  const navigate = useNavigate();
   const [connection, setConnection] = useState<LinearConnectionStatus | null>(null);
   const [dashboard, setDashboard] = useState<LinearSyncDashboard | null>(null);
   const [policy, setPolicy] = useState<LinearWorkflowConfig>(createDefaultLinearWorkflowConfig());
@@ -314,6 +319,8 @@ export function LinearSyncPanel() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statusNote, setStatusNote] = useState<string | null>(null);
+  const [delegationOverrides, setDelegationOverrides] = useState<Record<string, string>>({});
+  const runtimeRefreshTimerRef = useRef<number | null>(null);
 
   const selectedWorkflow = useMemo(
     () => policy.workflows.find((workflow) => workflow.id === selectedWorkflowId) ?? policy.workflows[0] ?? null,
@@ -430,23 +437,29 @@ export function LinearSyncPanel() {
   }, []);
 
   const loadAll = useCallback(async () => {
-    if (!window.ade?.cto) return;
+    const cto = window.ade?.cto;
+    if (!cto) return;
     setLoading(true);
     setError(null);
     try {
-      const [conn, pol, revs, nextCatalog, nextAgents] = await Promise.all([
-        window.ade.cto.getLinearConnectionStatus(),
-        window.ade.cto.getFlowPolicy(),
-        window.ade.cto.listFlowPolicyRevisions(),
-        window.ade.cto.getLinearWorkflowCatalog().catch(async (): Promise<LinearWorkflowCatalog> => ({ users: [], labels: [], states: [] })),
-        window.ade.cto.listAgents().catch(async (): Promise<AgentIdentity[]> => []),
+      const [conn, pol] = await Promise.all([
+        cto.getLinearConnectionStatus(),
+        cto.getFlowPolicy(),
       ]);
       setConnection(conn);
-      setRevisions(revs);
-      setCatalog(nextCatalog);
-      setAgents(nextAgents);
       hydrate(pol);
-      await loadRuntimeState();
+      window.setTimeout(() => {
+        void Promise.allSettled([
+          cto.listFlowPolicyRevisions().then(setRevisions),
+          cto.getLinearWorkflowCatalog()
+            .then(setCatalog)
+            .catch(async (): Promise<void> => setCatalog({ users: [], labels: [], states: [] })),
+          cto.listAgents()
+            .then(setAgents)
+            .catch(async (): Promise<void> => setAgents([])),
+          loadRuntimeState(),
+        ]);
+      }, 120);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load workflow data.");
     } finally {
@@ -470,12 +483,24 @@ export function LinearSyncPanel() {
 
   useEffect(() => {
     const unsubscribe = window.ade?.cto?.onLinearWorkflowEvent?.(() => {
-      void loadRuntimeState();
-      if (selectedRunId) {
-        void loadRunDetail(selectedRunId);
+      if (runtimeRefreshTimerRef.current !== null) {
+        window.clearTimeout(runtimeRefreshTimerRef.current);
       }
+      runtimeRefreshTimerRef.current = window.setTimeout(() => {
+        runtimeRefreshTimerRef.current = null;
+        void loadRuntimeState();
+        if (selectedRunId) {
+          void loadRunDetail(selectedRunId);
+        }
+      }, 150);
     });
-    return () => unsubscribe?.();
+    return () => {
+      unsubscribe?.();
+      if (runtimeRefreshTimerRef.current !== null) {
+        window.clearTimeout(runtimeRefreshTimerRef.current);
+        runtimeRefreshTimerRef.current = null;
+      }
+    };
   }, [loadRunDetail, loadRuntimeState, selectedRunId]);
 
   const updateSelectedWorkflow = useCallback(
@@ -515,10 +540,18 @@ export function LinearSyncPanel() {
       setQueueActionLoading(action);
       setError(null);
       try {
+        const override = delegationOverrides[selectedRunId];
         await window.ade.cto.resolveLinearSyncQueueItem({
           queueItemId: selectedRunId,
           action,
           note: reviewNote.trim() || undefined,
+          employeeOverride: override || undefined,
+        });
+        setDelegationOverrides((prev) => {
+          if (!prev[selectedRunId]) return prev;
+          const next = { ...prev };
+          delete next[selectedRunId];
+          return next;
         });
         await loadRuntimeState();
         await loadRunDetail(selectedRunId);
@@ -537,7 +570,7 @@ export function LinearSyncPanel() {
         setQueueActionLoading(null);
       }
     },
-    [loadRunDetail, loadRuntimeState, reviewNote, selectedRunId]
+    [delegationOverrides, loadRunDetail, loadRuntimeState, reviewNote, selectedRunId]
   );
 
   const savePolicy = useCallback(async () => {
@@ -644,7 +677,7 @@ export function LinearSyncPanel() {
       {
         id: "connect",
         title: "Connect Linear",
-        description: connection?.connected ? `Connected as ${connection.viewerName ?? "your account"}.` : "Use the Linear connection card on the left to authenticate first.",
+        description: connection?.connected ? `Connected as ${connection.viewerName ?? "your account"}.` : "Connect Linear in Settings before using workflow routing here.",
         done: Boolean(connection?.connected),
       },
       {
@@ -717,87 +750,115 @@ export function LinearSyncPanel() {
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="linear-sync-panel">
-      <PaneHeader
-        title="Linear Workflows"
-        meta="Webhook-first workflow orchestration with visual authoring, simulation, and observable runs."
-        right={(
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => void runSyncNow()} disabled={loading}>
-              <Lightning size={10} />
-              Reconcile now
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => void loadAll()}>
-              <ArrowClockwise size={10} />
-            </Button>
-          </div>
-        )}
-      />
-
       {(statusNote || error) && (
-        <div className="border-b border-white/[0.06] px-4 py-2.5">
-          {statusNote ? <div className="font-mono text-xs text-success">{statusNote}</div> : null}
-          {error ? <div className="font-mono text-xs text-error">{error}</div> : null}
+        <div className="px-4 py-2">
+          {statusNote ? <div className="text-[11px] text-success">{statusNote}</div> : null}
+          {error ? <div className="text-[11px] text-error">{error}</div> : null}
         </div>
       )}
 
-      <div className="grid min-h-0 flex-1 grid-cols-[260px_minmax(0,1fr)_360px]">
-        <aside className={cn("border-r border-white/[0.06] p-3", recessedPanelCls)}>
+      <div className="grid min-h-0 flex-1 grid-cols-[240px_minmax(0,1fr)_340px]">
+        <aside className="border-r p-3 overflow-y-auto" style={{ borderColor: "rgba(167,139,250,0.06)", background: "rgba(12,10,20,0.4)" }}>
           <div className="space-y-3">
-            <LinearConnectionPanel compact onStatusChange={setConnection} />
-
-            <div className={cn(cardCls, "p-3")}>
-              <div className="mb-2.5 flex items-center justify-between">
-                <span className={labelCls}>Workflows</span>
-                <Chip>{policy.workflows.length}</Chip>
+            <div className={cn(cardCls, "space-y-3 p-3")}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-[10px] font-medium uppercase tracking-wider text-muted-fg/40">Linear connection</div>
+                  <div className="mt-1 text-xs text-fg/70">
+                    {connection?.connected
+                      ? `Connected${connection.viewerName ? ` as ${connection.viewerName}` : ""}.`
+                      : "Not connected. Connect Linear in Settings, then come back here to manage workflows."}
+                  </div>
+                </div>
+                <span
+                  className="rounded-full px-2 py-1 text-[9px] font-medium uppercase tracking-wider"
+                  style={{
+                    color: connection?.connected ? "#34D399" : "#F59E0B",
+                    background: connection?.connected ? "rgba(52, 211, 153, 0.08)" : "rgba(245, 158, 11, 0.08)",
+                    border: `1px solid ${connection?.connected ? "rgba(52, 211, 153, 0.15)" : "rgba(245, 158, 11, 0.15)"}`,
+                  }}
+                >
+                  {connection?.connected ? "Connected" : "Needs setup"}
+                </span>
               </div>
-              <div className="space-y-2">
-                {policy.workflows.map((workflow) => (
-                  <button
-                    key={workflow.id}
-                    type="button"
-                    onClick={() => setSelectedWorkflowId(workflow.id)}
-                    className={cn(
-                      "w-full rounded-lg border px-3 py-2.5 text-left transition-all duration-150",
-                      selectedWorkflowId === workflow.id
-                        ? "border-accent/30 bg-accent/10 shadow-[0_0_0_1px_rgba(167,139,250,0.15)]"
-                        : "border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/[0.10]",
-                    )}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="truncate font-sans text-xs font-semibold text-fg">{workflow.name}</div>
-                      <Chip>{workflow.priority}</Chip>
-                    </div>
-                    <div className="mt-1 font-mono text-[10px] text-muted-fg">
-                      {workflow.target.type} · {workflow.enabled ? "enabled" : "disabled"}
-                    </div>
-                  </button>
-                ))}
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="!text-[10px]"
+                  onClick={() => navigate("/settings?tab=linear")}
+                >
+                  {connection?.connected ? "Manage in Settings" : "Connect in Settings"}
+                </Button>
+                <Button variant="ghost" size="sm" className="!h-7 !text-[10px]" onClick={() => void loadAll()}>
+                  <ArrowClockwise size={10} />
+                  Refresh
+                </Button>
               </div>
             </div>
 
-            <div className={cn(cardCls, "p-3")}>
-              <div className="mb-2 font-mono text-xs text-muted-fg/60 uppercase tracking-wide">Starter presets</div>
-              <div className="grid gap-2">
-                <Button variant="outline" size="sm" onClick={() => addPreset("employee_session")}>
-                  <Plus size={10} />
-                  Assigned Employee
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => addPreset("mission")}>
-                  <Plus size={10} />
-                  Mission
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => addPreset("worker_run")}>
-                  <Plus size={10} />
-                  Worker Run
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => addPreset("pr_resolution")}>
-                  <Plus size={10} />
-                  PR Resolution
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => addPreset("review_gate")}>
-                  <Plus size={10} />
-                  Review Gate
-                </Button>
+            <div>
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-[10px] font-medium text-muted-fg/40 uppercase tracking-wider">Workflows</span>
+                <div className="flex items-center gap-1.5">
+                  <Button variant="ghost" size="sm" className="!h-5 !px-1.5" onClick={() => void runSyncNow()} disabled={loading} title="Sync now">
+                    <Lightning size={9} />
+                  </Button>
+                  <Button variant="ghost" size="sm" className="!h-5 !px-1.5" onClick={() => void loadAll()} title="Refresh">
+                    <ArrowClockwise size={9} />
+                  </Button>
+                </div>
+              </div>
+              <div className="space-y-1">
+                {policy.workflows.map((workflow) => {
+                  const isSelected = selectedWorkflowId === workflow.id;
+                  return (
+                    <button
+                      key={workflow.id}
+                      type="button"
+                      onClick={() => setSelectedWorkflowId(workflow.id)}
+                      className={cn(
+                        "w-full rounded-lg px-3 py-2 text-left transition-all duration-200",
+                        isSelected
+                          ? "bg-[rgba(167,139,250,0.08)]"
+                          : "hover:bg-white/[0.03]",
+                      )}
+                      style={isSelected ? { border: "1px solid rgba(167,139,250,0.15)" } : { border: "1px solid transparent" }}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="truncate text-xs font-medium text-fg">{workflow.name}</div>
+                        <div className="h-1.5 w-1.5 rounded-full shrink-0" style={{ background: workflow.enabled ? "#34D399" : "#6B7280" }} />
+                      </div>
+                      <div className="mt-0.5 text-[10px] text-muted-fg/35">
+                        {workflow.target.type}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div>
+              <div className="mb-2 text-[10px] font-medium text-muted-fg/40 uppercase tracking-wider">Add from template</div>
+              <div className="grid gap-1">
+                {([
+                  { type: "employee_session" as const, label: "Employee", color: "#A78BFA" },
+                  { type: "mission" as const, label: "Mission", color: "#60A5FA" },
+                  { type: "worker_run" as const, label: "Worker Run", color: "#34D399" },
+                  { type: "pr_resolution" as const, label: "PR Resolution", color: "#F472B6" },
+                  { type: "review_gate" as const, label: "Review Gate", color: "#FBBF24" },
+                ] as const).map(({ type, label, color }) => (
+                  <button
+                    key={type}
+                    type="button"
+                    onClick={() => addPreset(type)}
+                    className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-left transition-all duration-200 hover:bg-white/[0.03]"
+                    style={{ border: "1px solid transparent" }}
+                  >
+                    <Plus size={9} style={{ color }} />
+                    <span className="text-[11px] text-muted-fg/50">{label}</span>
+                  </button>
+                ))}
               </div>
             </div>
           </div>
@@ -805,74 +866,26 @@ export function LinearSyncPanel() {
 
         <main className="min-h-0 overflow-auto p-4">
           {!selectedWorkflow ? (
-            <div className={cardCls}>No workflow selected.</div>
+            <div className="flex items-center justify-center h-full text-xs text-muted-fg/35">Select or create a workflow</div>
           ) : (
-            <div className="space-y-4">
-              <div className={cardCls}>
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <div className="font-sans text-sm font-semibold text-fg">Where Linear workflows fit</div>
-                    <div className="mt-1.5 max-w-3xl font-mono text-xs text-muted-fg/60 leading-relaxed">
-                      CTO &gt; Linear is for issue-driven automation that starts when a Linear assignee match AND a workflow label match happen together. Automations is ADE&apos;s broader rule system for repo, session, briefing, and non-Linear workflows.
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <Button variant="outline" size="sm" onClick={() => openPath("/cto#team-setup")}>
-                      Open Team Setup
-                    </Button>
-                    <Button variant="outline" size="sm" onClick={() => openPath("/automations")}>
-                      Open Automations
-                    </Button>
-                  </div>
-                </div>
-              </div>
-
-              <div className={cardCls} data-testid="linear-first-run-guide">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <div className="font-sans text-sm font-semibold text-fg">Create your first real-time Linear workflow</div>
-                    <div className="mt-1.5 max-w-3xl font-mono text-xs text-muted-fg/60 leading-relaxed">
-                      The normal setup is: connect Linear, confirm CTO or your ADE employees are mapped in CTO &gt; Team, pick who the issue must be assigned to, pick the workflow label from Linear, choose how ADE should execute the work, then save and test it end to end.
-                    </div>
-                  </div>
-                  <Chip>{completedChecklistCount}/{checklistItems.length} ready</Chip>
-                </div>
-                <div className="mt-4 grid gap-3 lg:grid-cols-5">
-                  {checklistItems.map((item, index) => (
-                    <div
-                      key={item.id}
-                      className={cn(
-                        "rounded-lg border px-3.5 py-3.5 transition-colors duration-150",
-                        item.done
-                          ? "border-success/25 bg-success/[0.06]"
-                          : "border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.03]",
-                      )}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="font-mono text-[10px] text-muted-fg/50">Step {index + 1}</div>
-                        <Chip>{item.done ? "ready" : "todo"}</Chip>
-                      </div>
-                      <div className="mt-2 font-sans text-xs font-semibold text-fg">{item.title}</div>
-                      <div className="mt-1.5 font-mono text-[10px] text-muted-fg leading-relaxed">{item.description}</div>
-                    </div>
+            <div className="space-y-3">
+              {/* Setup progress - compact */}
+              <div className="flex items-center gap-3 rounded-lg px-3 py-2" style={{ background: "rgba(24,20,35,0.4)", border: "1px solid rgba(167,139,250,0.06)" }} data-testid="linear-first-run-guide">
+                <div className="flex items-center gap-1">
+                  {checklistItems.map((item) => (
+                    <div key={item.id} className="h-1.5 w-6 rounded-full" style={{ background: item.done ? "#34D399" : "rgba(255,255,255,0.06)" }} />
                   ))}
                 </div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <Button variant="outline" size="sm" onClick={() => openPath("/cto#team-setup")}>
-                    Open CTO Team
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => void ensureWebhook()} disabled={!connection?.connected}>
-                    <Lightning size={10} />
-                    Ensure real-time webhook
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => void simulate()}>
-                    <Shuffle size={10} />
-                    Test this workflow
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => openPath("/automations")}>
-                    See broader Automations
-                  </Button>
-                </div>
+                <span className="text-[10px] text-muted-fg/40">{completedChecklistCount}/{checklistItems.length} ready</span>
+                <div className="flex-1" />
+                <Button variant="ghost" size="sm" className="!h-5 !text-[10px]" onClick={() => void ensureWebhook()} disabled={!connection?.connected}>
+                  <Lightning size={9} />
+                  Webhook
+                </Button>
+                <Button variant="ghost" size="sm" className="!h-5 !text-[10px]" onClick={() => void simulate()}>
+                  <Shuffle size={9} />
+                  Test
+                </Button>
               </div>
 
               <div className={cardCls}>
@@ -903,7 +916,7 @@ export function LinearSyncPanel() {
                       onChange={(e) => updateSelectedWorkflow((workflow) => ({ ...workflow, description: e.target.value }))}
                     />
                   </div>
-                  <label className="flex items-center gap-2 font-mono text-[10px] text-fg">
+                  <label className="flex items-center gap-2 text-xs text-fg">
                     <input
                       type="checkbox"
                       checked={selectedWorkflow.enabled}
@@ -915,32 +928,30 @@ export function LinearSyncPanel() {
               </div>
 
               <div className={cardCls}>
-                <div className="mb-2 font-sans text-sm font-semibold text-fg">Trigger Conditions</div>
-                <div className="mb-3 font-mono text-xs text-muted-fg/60 leading-relaxed">
-                  This workflow fires only when both cards below match: the issue is assigned to one of the selected ADE employees, and the issue has one of the selected workflow labels.
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="h-1.5 w-1.5 rounded-full" style={{ background: "#60A5FA" }} />
+                  <div className="text-xs font-semibold text-fg">Triggers</div>
+                  <span className="text-[10px] text-muted-fg/30">Both must match</span>
                 </div>
                 <div className="grid gap-3 xl:grid-cols-2">
-                  <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-4">
+                  <div className="rounded-lg p-3" style={{ background: "rgba(96,165,250,0.04)", border: "1px solid rgba(96,165,250,0.1)" }}>
                     <div className="flex items-center justify-between gap-2">
-                      <div className="font-sans text-sm font-semibold text-fg">Assigned to employee</div>
-                      <Chip>{selectedWorkflow.triggers.assignees?.length ?? 0}</Chip>
-                    </div>
-                    <div className="mt-1.5 font-mono text-xs text-muted-fg/60 leading-relaxed">
-                      OR within this card. Match CTO or any selected ADE employee identity. Employees come from CTO &gt; Team, where each ADE employee can map to one or more Linear identities.
+                      <div className="text-xs font-medium text-fg">Assignee</div>
+                      <span className="text-[10px] font-medium" style={{ color: "#60A5FA" }}>{selectedWorkflow.triggers.assignees?.length ?? 0}</span>
                     </div>
                     <div className="mt-3 flex flex-wrap gap-2">
                       {(selectedWorkflow.triggers.assignees ?? []).map((value) => (
                         <button
                           key={value}
                           type="button"
-                          className="rounded-md border border-white/[0.08] bg-white/[0.04] px-2.5 py-1 font-mono text-xs text-fg hover:bg-white/[0.06] transition-colors"
+                          className="rounded-md border border-white/[0.08] bg-white/[0.04] px-2.5 py-1 text-xs text-fg hover:bg-white/[0.06] transition-colors"
                           onClick={() => updateTriggerValues("assignees", removeValue(selectedWorkflow.triggers.assignees, value))}
                         >
                           {describeAssignee(value, availableEmployees)} ×
                         </button>
                       ))}
                       {!selectedWorkflow.triggers.assignees?.length ? (
-                        <div className="font-mono text-xs text-warning">Pick at least one employee. Without it, the workflow will not start.</div>
+                        <div className="text-xs text-warning">Pick at least one employee. Without it, the workflow will not start.</div>
                       ) : null}
                     </div>
                     <div className="mt-3 flex gap-2">
@@ -963,37 +974,34 @@ export function LinearSyncPanel() {
                       </Button>
                     </div>
                     {!employeeSetupReady ? (
-                      <div className="mt-2 font-mono text-xs text-warning">
+                      <div className="mt-2 text-xs text-warning">
                         No ADE employees are configured yet. Open CTO &gt; Team first, then come back here to match Linear assignees.
                       </div>
                     ) : availableEmployees.length === 0 ? (
-                      <div className="mt-2 font-mono text-[10px] text-muted-fg">
+                      <div className="mt-2 text-[10px] text-muted-fg">
                         CTO is available now. Open CTO &gt; Team only if you want additional ADE employees to match Linear assignees too.
                       </div>
                     ) : null}
                   </div>
 
-                  <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-4">
+                  <div className="rounded-lg p-3" style={{ background: "rgba(52,211,153,0.04)", border: "1px solid rgba(52,211,153,0.1)" }}>
                     <div className="flex items-center justify-between gap-2">
-                      <div className="font-sans text-sm font-semibold text-fg">Has workflow label</div>
-                      <Chip>{selectedWorkflow.triggers.labels?.length ?? 0}</Chip>
-                    </div>
-                    <div className="mt-1.5 font-mono text-xs text-muted-fg/60 leading-relaxed">
-                      OR within this card. Use a normal Linear label to choose the workflow. ADE watches for that label in real time and only starts after both the assignee and label match.
+                      <div className="text-xs font-medium text-fg">Label</div>
+                      <span className="text-[10px] font-medium" style={{ color: "#34D399" }}>{selectedWorkflow.triggers.labels?.length ?? 0}</span>
                     </div>
                     <div className="mt-3 flex flex-wrap gap-2">
                       {(selectedWorkflow.triggers.labels ?? []).map((value) => (
                         <button
                           key={value}
                           type="button"
-                          className="rounded-md border border-white/[0.08] bg-white/[0.04] px-2.5 py-1 font-mono text-xs text-fg hover:bg-white/[0.06] transition-colors"
+                          className="rounded-md border border-white/[0.08] bg-white/[0.04] px-2.5 py-1 text-xs text-fg hover:bg-white/[0.06] transition-colors"
                           onClick={() => updateTriggerValues("labels", removeValue(selectedWorkflow.triggers.labels, value))}
                         >
                           {describeLabel(value, catalog)} ×
                         </button>
                       ))}
                       {!selectedWorkflow.triggers.labels?.length ? (
-                        <div className="font-mono text-xs text-warning">Pick at least one workflow label. Without it, the workflow will not start.</div>
+                        <div className="text-xs text-warning">Pick at least one workflow label. Without it, the workflow will not start.</div>
                       ) : null}
                     </div>
                     <div className="mt-3 flex gap-2">
@@ -1016,7 +1024,7 @@ export function LinearSyncPanel() {
                       </Button>
                     </div>
                     {!availableLabelOptions.length ? (
-                      <div className="mt-2 font-mono text-xs text-warning">
+                      <div className="mt-2 text-xs text-warning">
                         No Linear labels are available yet. Create the workflow label in Linear first, then select it here.
                       </div>
                     ) : null}
@@ -1045,21 +1053,21 @@ export function LinearSyncPanel() {
 
               <div className={cardCls}>
                 <div className="mb-3 font-sans text-sm font-semibold text-fg">Execution Target</div>
-                <div className="mb-3 font-mono text-xs text-muted-fg/60 leading-relaxed">
+                <div className="mb-3 text-xs text-muted-fg/60 leading-relaxed">
                   Pick how ADE should execute the matched issue. Employee session is the direct handoff path, worker run is the delegated isolated worker path, and mission is best when you want a broader multi-step mission.
                 </div>
                 <div className="mb-3 grid gap-2.5 md:grid-cols-3">
                   <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3.5 hover:bg-white/[0.03] transition-colors">
                     <div className="font-sans text-xs font-semibold text-fg">Direct CTO session</div>
-                    <div className="mt-1.5 font-mono text-[10px] text-muted-fg/60 leading-relaxed">Assign to CTO + add a workflow label. ADE opens the CTO chat and sends the issue context immediately.</div>
+                    <div className="mt-1.5 text-[10px] text-muted-fg/60 leading-relaxed">Assign to CTO + add a workflow label. ADE opens the CTO chat and sends the issue context immediately.</div>
                   </div>
                   <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3.5 hover:bg-white/[0.03] transition-colors">
                     <div className="font-sans text-xs font-semibold text-fg">Fresh worker lane</div>
-                    <div className="mt-1.5 font-mono text-[10px] text-muted-fg/60 leading-relaxed">Use worker_run with a fresh issue lane when you want isolated delegated implementation before review.</div>
+                    <div className="mt-1.5 text-[10px] text-muted-fg/60 leading-relaxed">Use worker_run with a fresh issue lane when you want isolated delegated implementation before review.</div>
                   </div>
                   <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3.5 hover:bg-white/[0.03] transition-colors">
                     <div className="font-sans text-xs font-semibold text-fg">Mission workflow</div>
-                    <div className="mt-1.5 font-mono text-[10px] text-muted-fg/60 leading-relaxed">Use mission when the issue should become a broader ADE mission instead of a single employee-owned chat.</div>
+                    <div className="mt-1.5 text-[10px] text-muted-fg/60 leading-relaxed">Use mission when the issue should become a broader ADE mission instead of a single employee-owned chat.</div>
                   </div>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
@@ -1247,9 +1255,9 @@ export function LinearSyncPanel() {
                     />
                   </div>
                 </div>
-                <div className="mt-3 font-mono text-[10px] text-muted-fg">
+                <div className="mt-3 text-[10px] text-muted-fg">
                   {selectedWorkflow.target.type === "employee_session"
-                    ? "Direct employee sessions can reuse the person’s ongoing chat, create a fresh session in the same lane, or create a fresh issue lane for fully isolated execution."
+                    ? "Direct employee sessions can reuse the person's ongoing chat, create a fresh session in the same lane, or create a fresh issue lane for fully isolated execution."
                     : selectedWorkflow.target.type === "worker_run"
                       ? "Worker runs are ideal when you want a delegated implementation path that can still hand back to a supervisor later."
                       : selectedWorkflow.target.type === "review_gate"
@@ -1260,7 +1268,7 @@ export function LinearSyncPanel() {
 
               <div className={cardCls}>
                 <div className="mb-3 font-sans text-sm font-semibold text-fg">Execution Plan</div>
-                <div className="mb-3 font-mono text-xs text-muted-fg/60 leading-relaxed">
+                <div className="mb-3 text-xs text-muted-fg/60 leading-relaxed">
                   Common path: move the issue to In Progress, launch delegated work, optionally create or wait for a PR, optionally route to a supervisor, then hand off to In Review and notify you in ADE.
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
@@ -1467,7 +1475,7 @@ export function LinearSyncPanel() {
                   <div className="md:col-span-2 grid gap-3 md:grid-cols-[180px_minmax(0,1fr)]">
                     <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3.5">
                       <div className="font-sans text-sm font-semibold text-fg">Notify in ADE</div>
-                      <label className="mt-2 flex items-center gap-2 font-mono text-xs text-fg cursor-pointer">
+                      <label className="mt-2 flex items-center gap-2 text-xs text-fg cursor-pointer">
                         <input
                           type="checkbox"
                           checked={visualPlan?.notificationEnabled ?? false}
@@ -1495,7 +1503,7 @@ export function LinearSyncPanel() {
                   </div>
                 </div>
 
-                <div className="mt-3 font-mono text-xs text-muted-fg/50 leading-relaxed">
+                <div className="mt-3 text-xs text-muted-fg/50 leading-relaxed">
                   Direct workflows hand off to review-ready as soon as the configured work/PR milestone is met. Supervised workflows insert a real approval step so CTO or another ADE employee can approve, reject, or loop the issue back before closeout continues.
                 </div>
 
@@ -1507,7 +1515,7 @@ export function LinearSyncPanel() {
                         <Chip>{index + 1}</Chip>
                         <div className="min-w-0">
                           <div className="font-sans text-xs font-semibold text-fg">{step.name ?? step.type}</div>
-                          <div className="font-mono text-[10px] text-muted-fg/60 mt-0.5">
+                          <div className="text-[10px] text-muted-fg/60 mt-0.5">
                             {step.type}
                             {step.type === "set_linear_state" && step.state ? ` -> ${step.state}` : ""}
                             {step.type === "wait_for_pr" && selectedWorkflow.target.prStrategy ? ` -> ${selectedWorkflow.target.prStrategy.kind}` : ""}
@@ -1555,7 +1563,7 @@ export function LinearSyncPanel() {
                     <textarea className={textareaCls} rows={18} value={advancedYaml} onChange={(e) => setAdvancedYaml(e.target.value)} spellCheck={false} />
                   </div>
                 ) : (
-                  <div className="mt-3 font-mono text-xs text-muted-fg/50">
+                  <div className="mt-3 text-xs text-muted-fg/50">
                     Visual editing handles the common workflow path. Use YAML only when you need custom steps or unsupported advanced fields.
                   </div>
                 )}
@@ -1601,29 +1609,29 @@ export function LinearSyncPanel() {
                 </div>
                 {simulationResult ? (
                   <div className="mt-3 space-y-2 rounded-lg border border-white/[0.06] bg-white/[0.02] p-4" data-testid="linear-simulation-result">
-                    <div className="font-mono text-xs text-fg">
+                    <div className="text-xs text-fg">
                       Winner: {simulationResult.workflowName ?? "No match"} {simulationResult.target ? `-> ${simulationResult.target.type}` : ""}
                     </div>
-                    <div className="font-mono text-xs text-muted-fg/60">{simulationResult.reason}</div>
+                    <div className="text-xs text-muted-fg/60">{simulationResult.reason}</div>
                     {simulationResult.simulation?.explainsAndAcrossFields ? (
-                      <div className="font-mono text-xs text-muted-fg/60">
+                      <div className="text-xs text-muted-fg/60">
                         Match semantics: at least one assignee match AND at least one workflow label match.
                       </div>
                     ) : null}
                     <div className="space-y-1.5">
                       {simulationResult.candidates.map((candidate) => (
                         <div key={candidate.workflowId} className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5">
-                          <div className="flex items-center justify-between gap-2 font-mono text-xs text-fg">
+                          <div className="flex items-center justify-between gap-2 text-xs text-fg">
                             <span>{candidate.workflowName}</span>
                             <Chip>{candidate.matched ? "fires" : "blocked"}</Chip>
                           </div>
                           {candidate.matchedSignals?.length ? (
-                            <div className="mt-1 font-mono text-[10px] text-success">Matched: {candidate.matchedSignals.join(" · ")}</div>
+                            <div className="mt-1 text-[10px] text-success">Matched: {candidate.matchedSignals.join(" · ")}</div>
                           ) : null}
                           {candidate.missingSignals?.length ? (
-                            <div className="mt-1 font-mono text-[10px] text-warning">Missing: {candidate.missingSignals.join(" · ")}</div>
+                            <div className="mt-1 text-[10px] text-warning">Missing: {candidate.missingSignals.join(" · ")}</div>
                           ) : null}
-                          <div className="mt-1 font-mono text-[10px] text-muted-fg/60">{candidate.reasons.join(" · ")}</div>
+                          <div className="mt-1 text-[10px] text-muted-fg/60">{candidate.reasons.join(" · ")}</div>
                         </div>
                       ))}
                     </div>
@@ -1635,16 +1643,16 @@ export function LinearSyncPanel() {
                 <div className="mb-3 font-sans text-sm font-semibold text-fg">Save Preview</div>
                 <div className="grid gap-3 md:grid-cols-2">
                   <div>
-                    <div className="mb-1 font-mono text-[10px] text-muted-fg uppercase">Current</div>
+                    <div className="mb-1 text-[10px] text-muted-fg uppercase">Current</div>
                     <textarea className={textareaCls} rows={14} value={diffPreview.before} readOnly spellCheck={false} />
                   </div>
                   <div>
-                    <div className="mb-1 font-mono text-[10px] text-muted-fg uppercase">Next</div>
+                    <div className="mb-1 text-[10px] text-muted-fg uppercase">Next</div>
                     <textarea className={textareaCls} rows={14} value={diffPreview.after} readOnly spellCheck={false} />
                   </div>
                 </div>
                 <div className="mt-3 flex items-center justify-between">
-                  <div className="font-mono text-xs text-muted-fg/50">
+                  <div className="text-xs text-muted-fg/50">
                     {policy.files.length ? `${policy.files.length} repo workflow file(s)` : "No repo workflow files yet"}
                   </div>
                   <Button variant="primary" size="sm" onClick={() => void savePolicy()} disabled={saving} data-testid="linear-save-policy-btn">
@@ -1657,283 +1665,212 @@ export function LinearSyncPanel() {
           )}
         </main>
 
-        <aside className="min-h-0 overflow-auto border-l border-white/[0.06] p-4">
-          <div className="space-y-4">
-            <div className={cardCls}>
-              <div className="mb-2 font-sans text-sm font-semibold text-fg">Watch It Live</div>
-              <div className="mb-3 font-mono text-xs text-muted-fg/60 leading-relaxed">
-                Monitor the workflow in action. Work flows from top to bottom as ADE receives the issue, matches the workflow, delegates work, links a PR, and closes out to review.
+        <aside className="min-h-0 overflow-auto p-3" style={{ borderLeft: "1px solid rgba(167,139,250,0.06)", background: "rgba(12,10,20,0.3)" }}>
+          <div className="space-y-3">
+            {/* Pipeline — colored stage cards */}
+            <div className="rounded-xl p-3" style={{ background: "rgba(24,20,35,0.5)", border: "1px solid rgba(96,165,250,0.08)" }}>
+              <div className="flex items-center gap-2 mb-2.5">
+                <div className="h-1.5 w-1.5 rounded-full" style={{ background: "#60A5FA" }} />
+                <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: "#60A5FA" }}>Pipeline</span>
               </div>
-              <div className="space-y-2">
-                {monitorStory.map((item, index) => (
-                  <div key={item.title} className={cn(
-                    "rounded-lg border px-3.5 py-2.5 transition-colors duration-150",
-                    item.done
-                      ? "border-success/20 bg-success/[0.04]"
-                      : "border-white/[0.06] bg-white/[0.02]",
-                  )}>
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="font-mono text-[10px] text-muted-fg/50">Stage {index + 1}</div>
-                      <Chip>{item.done ? "seen" : "waiting"}</Chip>
+              <div className="space-y-1.5">
+                {monitorStory.map((item, index) => {
+                  const stageColors = ["#A78BFA", "#60A5FA", "#34D399", "#F472B6"];
+                  const color = stageColors[index] ?? "#A78BFA";
+                  return (
+                    <div key={item.title} className="flex items-center gap-2.5 rounded-lg px-2.5 py-2" style={{
+                      background: item.done ? `${color}0A` : "transparent",
+                      borderLeft: `2px solid ${item.done ? color : "rgba(255,255,255,0.04)"}`,
+                    }}>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[11px] font-medium" style={{ color: item.done ? color : "rgba(255,255,255,0.35)" }}>{item.title}</div>
+                      </div>
+                      <div className="h-2 w-2 rounded-full shrink-0" style={{ background: item.done ? color : "rgba(255,255,255,0.06)" }} />
                     </div>
-                    <div className="mt-1 font-sans text-xs font-semibold text-fg">{item.title}</div>
-                    <div className="mt-1.5 font-mono text-[10px] text-muted-fg leading-relaxed">{item.detail}</div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
 
-            <div className={cardCls}>
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <div className="font-sans text-sm font-semibold text-fg">Optional Real-Time Ingress</div>
-                <Button variant="outline" size="sm" onClick={() => void ensureWebhook()} data-testid="linear-ensure-webhook-btn">
-                  <Lightning size={10} />
-                  Ensure webhook
+            {/* Ingress status — compact */}
+            <div className="rounded-xl p-3" style={{ background: "rgba(24,20,35,0.5)", border: "1px solid rgba(251,191,36,0.08)" }}>
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="flex items-center gap-2">
+                  <div className="h-1.5 w-1.5 rounded-full" style={{ background: "#FBBF24" }} />
+                  <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: "#FBBF24" }}>Ingress</span>
+                </div>
+                <Button variant="ghost" size="sm" className="!h-5 !px-1.5 !text-[11px]" onClick={() => void ensureWebhook()} data-testid="linear-ensure-webhook-btn">
+                  <Lightning size={9} />
                 </Button>
               </div>
-              <div className="mb-3 font-mono text-xs text-muted-fg/60 leading-relaxed">
-                Sync polling is enough for the normal Linear workflow. Turn this on only when you want lower-latency webhook delivery.
-              </div>
-              <div className="space-y-2 font-mono text-xs text-muted-fg/60">
-                <div>Relay: {ingressStatus ? formatEndpoint(ingressStatus.relay) : "loading"}</div>
-                {ingressStatus?.relay.webhookUrl ? <div className="truncate text-fg/80">{ingressStatus.relay.webhookUrl}</div> : null}
-                <div>Local receiver: {ingressStatus ? formatEndpoint(ingressStatus.localWebhook) : "loading"}</div>
-                {ingressStatus?.localWebhook.url ? <div className="truncate text-fg/80">{ingressStatus.localWebhook.url}</div> : null}
-                <div>
-                  Reconciliation: {ingressStatus?.reconciliation.enabled ? `every ${ingressStatus.reconciliation.intervalSec}s` : "disabled"}
-                  {dashboard?.reconciliationIntervalSec ? ` · dashboard ${dashboard.reconciliationIntervalSec}s` : ""}
+              <div className="space-y-1 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-fg/35">Relay</span>
+                  <span className="text-muted-fg/55">{ingressStatus ? formatEndpoint(ingressStatus.relay) : "..."}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-fg/35">Local</span>
+                  <span className="text-muted-fg/55">{ingressStatus ? formatEndpoint(ingressStatus.localWebhook) : "..."}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-fg/35">Reconcile</span>
+                  <span className="text-muted-fg/55">{ingressStatus?.reconciliation.enabled ? `${ingressStatus.reconciliation.intervalSec}s` : "off"}</span>
                 </div>
               </div>
             </div>
 
-            <div className={cardCls}>
-              <div className="mb-2 font-sans text-sm font-semibold text-fg">Recent Ingress Events</div>
-              {ingressEvents.length ? (
-                <div className="space-y-2">
-                  {ingressEvents.map((event) => (
-                    <div key={event.id} className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3.5 py-2.5">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="min-w-0 truncate font-sans text-xs font-semibold text-fg">
-                          {event.issueIdentifier ?? event.issueId ?? "Issue update"}
-                        </div>
-                        <Chip>{event.source}</Chip>
-                      </div>
-                      <div className="mt-1 font-mono text-[10px] text-muted-fg">
-                        {event.summary}
-                      </div>
-                      <div className="mt-1 font-mono text-[10px] text-muted-fg/50">
-                        {new Date(event.createdAt).toLocaleString()}
-                      </div>
-                    </div>
-                  ))}
+            {/* Runs — colored */}
+            <div className="rounded-xl p-3" style={{ background: "rgba(24,20,35,0.5)", border: "1px solid rgba(52,211,153,0.08)" }}>
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="flex items-center gap-2">
+                  <div className="h-1.5 w-1.5 rounded-full" style={{ background: "#34D399" }} />
+                  <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: "#34D399" }}>Runs</span>
                 </div>
-              ) : (
-                <div className="font-mono text-xs text-muted-fg/40">No ingress events observed yet.</div>
-              )}
-            </div>
-
-            <div className={cardCls}>
-              <div className="mb-2 font-sans text-sm font-semibold text-fg">Run Observability</div>
-              <div className="font-mono text-xs text-muted-fg/60">
-                {dashboard
-                  ? `queued=${dashboard.queue.queued} · waiting=${dashboard.queue.dispatched} · review=${dashboard.queue.escalated} · failed=${dashboard.queue.failed}`
-                  : "Loading dashboard…"}
-              </div>
-              {queue.length ? (
-                <div className="mt-3 space-y-2">
-                  {queue.slice(0, 10).map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => setSelectedRunId(item.id)}
-                      className={cn(
-                        "w-full rounded-lg border px-3.5 py-2.5 text-left transition-all duration-150",
-                        selectedRunId === item.id
-                          ? "border-accent/30 bg-accent/10 shadow-[0_0_0_1px_rgba(167,139,250,0.15)]"
-                          : "border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04]",
-                      )}
-                      data-testid={`linear-run-row-${item.id}`}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="min-w-0 truncate font-sans text-xs font-semibold text-fg">{item.identifier}</div>
-                        <Chip>{item.status}</Chip>
-                      </div>
-                      <div className="mt-1 font-mono text-[10px] text-muted-fg">
-                        {item.workflowName} {"->"} {item.targetType}
-                      </div>
-                      <div className="mt-1 font-mono text-[10px] text-muted-fg/60">
-                        current={item.currentStepId ?? "none"} {item.reviewState ? `· review=${item.reviewState}` : ""}
-                      </div>
-                      <div className="mt-1 font-mono text-[10px] text-muted-fg/60">
-                        lane={item.laneId ?? "none"} · pr={formatPrStatus(item)}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <div className="mt-3 font-mono text-xs text-muted-fg/40">No workflow runs yet.</div>
-              )}
-            </div>
-
-            <div className={cardCls} data-testid="linear-run-timeline-card">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <div className="font-sans text-sm font-semibold text-fg">Run Timeline</div>
-                {selectedRunQueueItem ? <Chip>{formatQueueRunStatus(selectedRunQueueItem)}</Chip> : null}
-              </div>
-              {!selectedRunId ? (
-                <div className="font-mono text-xs text-muted-fg/40">Select a workflow run above to inspect its exact timeline, PR state, and supervisor handoff.</div>
-              ) : runDetailLoading ? (
-                <div className="font-mono text-xs text-muted-fg/40">Loading run detail…</div>
-              ) : !selectedRunDetail ? (
-                <div className="font-mono text-xs text-muted-fg/40">Run detail is unavailable.</div>
-              ) : (
-                <div className="space-y-3">
-                  <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3.5">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Chip>{selectedRunDetail.run.identifier}</Chip>
-                      <Chip>{selectedRunDetail.run.workflowName}</Chip>
-                      <Chip>{selectedRunDetail.run.targetType}</Chip>
-                    </div>
-                    <div className="mt-2 font-mono text-[10px] text-muted-fg/60">
-                      lane={selectedRunDetail.run.executionLaneId ?? "none"} · session={selectedRunDetail.run.linkedSessionId ?? "none"} · workerRun={selectedRunDetail.run.linkedWorkerRunId ?? "none"}
-                    </div>
-                    <div className="mt-1 font-mono text-[10px] text-muted-fg/60">
-                      pr={selectedRunDetail.run.linkedPrId ?? "none"} · state={selectedRunDetail.run.prState ?? "none"} · checks={selectedRunDetail.run.prChecksStatus ?? "none"} · reviews={selectedRunDetail.run.prReviewStatus ?? "none"}
-                    </div>
-                    <div className="mt-1 font-mono text-[10px] text-muted-fg/60">
-                      supervisor={formatIdentityLabel(selectedRunDetail.run.supervisorIdentityKey, availableEmployees)} · review-ready={selectedRunDetail.run.reviewReadyReason ?? "pending"}
-                    </div>
-                  </div>
-
-                  {selectedRunDetail.reviewContext && selectedRunDetail.run.status === "awaiting_human_review" ? (
-                    <div className="rounded-lg border border-warning/25 bg-warning/[0.06] p-4">
-                      <div className="font-sans text-sm font-semibold text-fg">Supervisor action required</div>
-                      <div className="mt-1.5 font-mono text-xs text-muted-fg/60">
-                        Routed to {formatIdentityLabel(selectedRunDetail.reviewContext.reviewerIdentityKey, availableEmployees)}. Reject behavior: {selectedRunDetail.reviewContext.rejectAction ?? "cancel"}.
-                      </div>
-                      {selectedRunDetail.reviewContext.instructions ? (
-                        <div className="mt-2 font-mono text-[10px] text-muted-fg">{selectedRunDetail.reviewContext.instructions}</div>
-                      ) : null}
-                      <div className="mt-3">
-                        <label className={labelCls}>Supervisor Note</label>
-                        <textarea
-                          className={textareaCls}
-                          rows={3}
-                          value={reviewNote}
-                          onChange={(e) => setReviewNote(e.target.value)}
-                          placeholder="Approve, reject, or request changes with context for the delegated worker."
-                        />
-                      </div>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <Button variant="primary" size="sm" onClick={() => void actOnRun("approve")} disabled={queueActionLoading !== null}>
-                          Approve handoff
-                        </Button>
-                        <Button variant="outline" size="sm" onClick={() => void actOnRun("reject")} disabled={queueActionLoading !== null}>
-                          {selectedRunDetail.reviewContext.rejectAction === "loop_back"
-                            ? "Request changes"
-                            : selectedRunDetail.reviewContext.rejectAction === "reopen_issue"
-                              ? "Reject + reopen"
-                              : "Reject"}
-                        </Button>
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {canMarkRunComplete ? (
-                    <div className="rounded-lg border border-accent/25 bg-accent/[0.06] p-4">
-                      <div className="font-sans text-sm font-semibold text-fg">Explicit completion required</div>
-                      <div className="mt-1.5 font-mono text-xs text-muted-fg/60">
-                        This workflow is waiting for ADE to confirm the delegated work met its configured completion contract.
-                      </div>
-                      <div className="mt-3">
-                        <label className={labelCls}>Completion Note</label>
-                        <textarea
-                          className={textareaCls}
-                          rows={3}
-                          value={reviewNote}
-                          onChange={(e) => setReviewNote(e.target.value)}
-                          placeholder="Record the proof or summary that makes this delegated work complete."
-                        />
-                      </div>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <Button variant="primary" size="sm" onClick={() => void actOnRun("complete")} disabled={queueActionLoading !== null}>
-                          Mark complete
-                        </Button>
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {(selectedRunDetail.run.status === "failed" || selectedRunDetail.run.status === "cancelled" || selectedRunDetail.run.status === "retry_wait") ? (
-                    <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-4">
-                      <div className="font-sans text-xs font-semibold text-fg">Retry / rerun</div>
-                      <div className="mt-1.5 font-mono text-xs text-muted-fg/60">
-                        Requeue this workflow from ADE if you want to try the run again with the current workflow definition.
-                      </div>
-                      <div className="mt-3 flex items-center gap-2">
-                        <Button variant="outline" size="sm" onClick={() => void actOnRun("retry")} disabled={queueActionLoading !== null}>
-                          Retry run
-                        </Button>
-                        {selectedRunDetail.run.lastError ? <span className="font-mono text-xs text-warning">{selectedRunDetail.run.lastError}</span> : null}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  <div className="space-y-2" data-testid="linear-run-timeline">
-                    {selectedRunTimeline.map((entry) => (
-                      <TimelineEntry
-                        key={entry.id}
-                        timestamp={entry.timestamp}
-                        title={entry.title}
-                        subtitle={entry.subtitle}
-                        status={entry.status}
-                        statusVariant={entry.statusVariant}
-                        defaultExpanded={false}
-                      >
-                        {entry.payload ? (
-                          <pre className="overflow-auto font-mono text-[10px] text-muted-fg whitespace-pre-wrap">
-                            {JSON.stringify(entry.payload, null, 2)}
-                          </pre>
-                        ) : (
-                          <div className="font-mono text-[10px] text-muted-fg">No extra payload captured for this event.</div>
-                        )}
-                      </TimelineEntry>
+                {dashboard && (
+                  <div className="flex items-center gap-1.5">
+                    {[
+                      { n: dashboard.queue.queued, color: "#60A5FA", label: "Q" },
+                      { n: dashboard.queue.dispatched, color: "#FBBF24", label: "W" },
+                      { n: dashboard.queue.escalated, color: "#F472B6", label: "R" },
+                      { n: dashboard.queue.failed, color: "#EF4444", label: "F" },
+                    ].map((s) => (
+                      <span key={s.label} className="text-[11px] font-medium" style={{ color: s.n > 0 ? s.color : "rgba(255,255,255,0.12)" }} title={s.label}>
+                        {s.n}
+                      </span>
                     ))}
                   </div>
+                )}
+              </div>
+              {queue.length ? (
+                <div className="space-y-1">
+                  {queue.slice(0, 6).map((item) => {
+                    const statusColor = item.status === "resolved" ? "#34D399" : item.status === "escalated" ? "#F472B6" : item.status === "failed" ? "#EF4444" : "#60A5FA";
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => setSelectedRunId(item.id)}
+                        className={cn(
+                          "w-full rounded-lg px-2.5 py-2 text-left transition-all duration-200",
+                          selectedRunId === item.id ? "bg-white/[0.04]" : "hover:bg-white/[0.02]",
+                        )}
+                        style={{ borderLeft: `2px solid ${selectedRunId === item.id ? statusColor : "transparent"}` }}
+                        data-testid={`linear-run-row-${item.id}`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[11px] font-medium text-fg/70 truncate">{item.identifier}</span>
+                          <span className="text-[11px] font-medium shrink-0" style={{ color: statusColor }}>{formatQueueRunStatus(item)}</span>
+                        </div>
+                        <div className="text-xs text-muted-fg/30 truncate">{item.workflowName}</div>
+                      </button>
+                    );
+                  })}
                 </div>
+              ) : (
+                <div className="text-xs text-muted-fg/25">No runs yet</div>
               )}
             </div>
 
-            <div className={cardCls}>
-              <div className="mb-2 font-sans text-sm font-semibold text-fg">Revision History</div>
-              <div className="space-y-2">
-                {revisions.slice(0, 8).map((revision) => (
-                  <div key={revision.id} className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3.5 py-2.5">
-                    <div className="font-mono text-xs text-fg">{revision.actor}</div>
-                    <div className="font-mono text-[10px] text-muted-fg/50">{new Date(revision.createdAt).toLocaleString()}</div>
-                  </div>
-                ))}
-                {!revisions.length ? <div className="font-mono text-xs text-muted-fg/40">No saved revisions yet.</div> : null}
-              </div>
-            </div>
+            {/* Run detail — only if selected */}
+            {selectedRunId && (
+              <div className="rounded-xl p-3" style={{ background: "rgba(24,20,35,0.5)", border: "1px solid rgba(167,139,250,0.08)" }} data-testid="linear-run-timeline-card">
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="h-1.5 w-1.5 rounded-full" style={{ background: "#A78BFA" }} />
+                  <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: "#A78BFA" }}>Run Detail</span>
+                  {selectedRunQueueItem && <Chip>{formatQueueRunStatus(selectedRunQueueItem)}</Chip>}
+                </div>
+                {runDetailLoading ? (
+                  <div className="text-xs text-muted-fg/30">Loading...</div>
+                ) : !selectedRunDetail ? (
+                  <div className="text-xs text-muted-fg/30">Unavailable</div>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap gap-1">
+                      <Chip>{selectedRunDetail.run.identifier}</Chip>
+                      <Chip>{selectedRunDetail.run.targetType}</Chip>
+                    </div>
 
-            <div className={cardCls}>
-              <div className="mb-2 font-sans text-sm font-semibold text-fg">Source of Truth</div>
-              <div className="font-mono text-xs text-muted-fg/60">
-                {policy.source === "repo" ? "Using repo workflow YAML." : "Using generated starter workflows until you save."}
+                    {selectedRunDetail.reviewContext && selectedRunDetail.run.status === "awaiting_human_review" ? (
+                      <div className="rounded-lg p-3" style={{ background: "rgba(251,191,36,0.04)", border: "1px solid rgba(251,191,36,0.12)" }}>
+                        <div className="text-[11px] font-medium" style={{ color: "#FBBF24" }}>Supervisor action needed</div>
+                        <div className="mt-2">
+                          <textarea className={textareaCls} rows={2} value={reviewNote} onChange={(e) => setReviewNote(e.target.value)} placeholder="Note..." />
+                        </div>
+                        <div className="mt-2 flex gap-1.5">
+                          <Button variant="primary" size="sm" onClick={() => void actOnRun("approve")} disabled={queueActionLoading !== null}>Approve</Button>
+                          <Button variant="outline" size="sm" onClick={() => void actOnRun("reject")} disabled={queueActionLoading !== null}>Reject</Button>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {canMarkRunComplete ? (
+                      <div className="rounded-lg p-3" style={{ background: "rgba(167,139,250,0.04)", border: "1px solid rgba(167,139,250,0.12)" }}>
+                        <div className="text-[11px] font-medium" style={{ color: "#A78BFA" }}>Awaiting completion</div>
+                        <div className="mt-2">
+                          <textarea className={textareaCls} rows={2} value={reviewNote} onChange={(e) => setReviewNote(e.target.value)} placeholder="Completion note..." />
+                        </div>
+                        <div className="mt-2">
+                          <Button variant="primary" size="sm" onClick={() => void actOnRun("complete")} disabled={queueActionLoading !== null}>Complete</Button>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {(selectedRunDetail.run.status === "failed" || selectedRunDetail.run.status === "cancelled" || selectedRunDetail.run.status === "retry_wait") ? (
+                      <div className="flex items-center gap-2">
+                        <Button variant="outline" size="sm" onClick={() => void actOnRun("retry")} disabled={queueActionLoading !== null}>Retry</Button>
+                        {selectedRunDetail.run.lastError ? <span className="text-xs text-warning truncate">{selectedRunDetail.run.lastError}</span> : null}
+                      </div>
+                    ) : null}
+
+                    <div className="space-y-1" data-testid="linear-run-timeline">
+                      {selectedRunTimeline.map((entry) => (
+                        <TimelineEntry key={entry.id} timestamp={entry.timestamp} title={entry.title} subtitle={entry.subtitle} status={entry.status} statusVariant={entry.statusVariant} defaultExpanded={false}>
+                          {entry.payload ? (
+                            <pre className="overflow-auto text-xs text-muted-fg whitespace-pre-wrap">{JSON.stringify(entry.payload, null, 2)}</pre>
+                          ) : null}
+                        </TimelineEntry>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
-              {policy.migration?.needsSave ? (
-                <div className="mt-2 font-mono text-xs text-warning">
-                  A save will materialize editable YAML under `.ade/workflows/linear/`.
+            )}
+
+            {/* Events — compact */}
+            {ingressEvents.length > 0 && (
+              <div className="rounded-xl p-3" style={{ background: "rgba(24,20,35,0.5)", border: "1px solid rgba(244,114,182,0.08)" }}>
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="h-1.5 w-1.5 rounded-full" style={{ background: "#F472B6" }} />
+                  <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: "#F472B6" }}>Events</span>
+                  <span className="text-[11px] text-muted-fg/25">{ingressEvents.length}</span>
                 </div>
-              ) : null}
-              {connection ? (
-                <div className="mt-2 font-mono text-xs text-muted-fg/60">
-                  Linear: {connection.connected ? "connected" : "disconnected"}
+                <div className="space-y-1">
+                  {ingressEvents.slice(0, 5).map((event) => (
+                    <div key={event.id} className="flex items-center justify-between gap-2 py-1">
+                      <span className="text-xs text-fg/50 truncate">{event.issueIdentifier ?? "update"}</span>
+                      <span className="text-[11px] text-muted-fg/25 shrink-0">{event.source}</span>
+                    </div>
+                  ))}
                 </div>
-              ) : null}
-              <div className="mt-2 font-mono text-xs text-muted-fg/60">
-                Trigger ready: {assigneeRequirementReady ? "assignee selected" : "missing employee"} · {labelRequirementReady ? "label selected" : "missing label"}
               </div>
+            )}
+
+            {/* Footer info */}
+            <div className="space-y-1 px-1">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-muted-fg/25">Source</span>
+                <span className="text-muted-fg/40">{policy.source === "repo" ? "Repo YAML" : "Generated"}</span>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-muted-fg/25">Linear</span>
+                <span style={{ color: connection?.connected ? "#34D399" : "#EF4444" }}>{connection?.connected ? "Connected" : "Disconnected"}</span>
+              </div>
+              {revisions.length > 0 && (
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-muted-fg/25">Last save</span>
+                  <span className="text-muted-fg/40">{new Date(revisions[0].createdAt).toLocaleDateString()}</span>
+                </div>
+              )}
             </div>
           </div>
         </aside>

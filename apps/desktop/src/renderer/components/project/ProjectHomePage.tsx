@@ -35,7 +35,6 @@ import type {
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
-import { CiImportPanel } from "./CiImportPanel";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
 import { cn } from "../ui/cn";
 import { formatDate, formatDurationMs } from "../../lib/format";
@@ -1284,12 +1283,6 @@ export function ProjectHomePage() {
       bodyClassName: "overflow-auto",
       children: (
         <div className="space-y-3 p-3">
-          <CiImportPanel
-            onImported={() => {
-              refreshAll().catch(() => { });
-            }}
-          />
-
           <div ref={configEditorRef}>
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div>

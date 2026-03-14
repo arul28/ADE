@@ -1,19 +1,5 @@
 import type { LaneEnvInitConfig, LaneOverlayOverrides, LaneOverlayPolicy, LaneSummary } from "../../../shared/types";
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
-}
-
-function globToRegExp(pattern: string): RegExp {
-  const normalized = pattern.trim();
-  if (!normalized.length) return /^$/;
-  const parts = normalized.split("*").map((chunk) => escapeRegExp(chunk));
-  return new RegExp(`^${parts.join(".*")}$`, "i");
-}
-
-function normalizeSet(values: string[] | undefined): Set<string> {
-  return new Set((values ?? []).map((value) => value.trim().toLowerCase()).filter(Boolean));
-}
+import { globToRegExp, normalizeSet } from "../shared/utils";
 
 function intersectOrAdopt(current: string[] | undefined, next: string[] | undefined): string[] | undefined {
   if (!next || next.length === 0) return current;

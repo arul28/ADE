@@ -99,7 +99,7 @@ describe("automationService integration", () => {
     const rule = {
       id: "on-commit",
       name: "On commit",
-      trigger: { type: "commit" as const, branch: "main" },
+      trigger: { type: "git.commit" as const, branch: "main" },
       actions: [{ type: "run-command" as const, command: "echo commit", timeoutMs: 10_000 }],
       enabled: true
     };
@@ -187,6 +187,124 @@ describe("automationService integration", () => {
     expect(mapped.length).toBe(1);
     expect(String(mapped[0]?.status)).toBe("succeeded");
     expect(String(mapped[0]?.output ?? "")).toContain("hello");
+  });
+
+  it("computes nextRunAt for scheduled rules", async () => {
+    const { db } = createInMemoryAdeDb();
+    const logger = createLogger();
+    const projectId = "proj";
+    const projectRoot = "/tmp";
+
+    const rule = {
+      id: "daily",
+      name: "Daily summary",
+      triggers: [{ type: "schedule" as const, cron: "0 9 * * 1-5" }],
+      trigger: { type: "schedule" as const, cron: "0 9 * * 1-5" },
+      actions: [],
+      enabled: true,
+    };
+
+    const projectConfigService = {
+      get: () => ({
+        trust: { requiresSharedTrust: false },
+        shared: {},
+        local: { automations: [rule] },
+        effective: { automations: [rule], providerMode: "guest" }
+      })
+    } as any;
+
+    const laneService = {
+      list: async () => [],
+      getLaneWorktreePath: () => projectRoot,
+      getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
+    } as any;
+
+    const service = createAutomationService({
+      db: db as any,
+      logger,
+      projectId,
+      projectRoot,
+      laneService,
+      projectConfigService
+    });
+
+    const listed = service.list();
+    expect(listed[0]?.nextRunAt).toBeTruthy();
+  });
+
+  it("dispatches git.pr_merged automations on merge transitions", async () => {
+    const { db, raw } = createInMemoryAdeDb();
+    const logger = createLogger();
+    const projectId = "proj";
+    const projectRoot = "/tmp";
+
+    const rule = {
+      id: "on-pr-merge",
+      name: "On PR merge",
+      triggers: [{ type: "git.pr_merged" as const, targetBranch: "main" }],
+      trigger: { type: "git.pr_merged" as const, targetBranch: "main" },
+      actions: [{ type: "run-command" as const, command: "echo merged", timeoutMs: 10_000 }],
+      enabled: true
+    };
+
+    const projectConfigService = {
+      get: () => ({
+        trust: { requiresSharedTrust: false },
+        effective: { automations: [rule], providerMode: "guest" }
+      })
+    } as any;
+
+    const laneService = {
+      list: async () => [],
+      getLaneWorktreePath: () => projectRoot,
+      getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "feat/demo", worktreePath: projectRoot })
+    } as any;
+
+    const service = createAutomationService({
+      db: db as any,
+      logger,
+      projectId,
+      projectRoot,
+      laneService,
+      projectConfigService
+    });
+
+    service.onPullRequestChanged({
+      pr: {
+        id: "pr-1",
+        laneId: "lane1",
+        projectId: "proj",
+        repoOwner: "acme",
+        repoName: "ade",
+        githubPrNumber: 42,
+        githubUrl: "https://github.com/acme/ade/pull/42",
+        githubNodeId: null,
+        title: "Ship automation upgrades",
+        state: "merged",
+        baseBranch: "main",
+        headBranch: "feat/demo",
+        checksStatus: "passing",
+        reviewStatus: "approved",
+        additions: 10,
+        deletions: 2,
+        lastSyncedAt: null,
+        createdAt: "2026-03-01T00:00:00.000Z",
+        updatedAt: "2026-03-01T00:00:00.000Z",
+      },
+      previousState: "open",
+    });
+
+    const start = Date.now();
+    while (Date.now() - start < 3_000) {
+      const rows = mapExecRows(raw.exec("select status from automation_runs where automation_id = 'on-pr-merge'"));
+      if (rows.length) {
+        expect(String(rows[0]?.status)).toMatch(/succeeded|failed|running/);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
+    throw new Error("Timed out waiting for PR merge automation run");
   });
 
   it("blocks execution when shared config trust is required", async () => {

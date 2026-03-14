@@ -20,7 +20,7 @@ The CTO onboarding flow is now a complete first-run experience with resilient lo
 
 - **Onboarding wizard** (3 steps, skippable):
   1. **Identity Setup**: Name the CTO (default: "CTO"), choose personality preset (Professional / Casual / Minimal), set primary model. Preview card shows how the CTO will introduce itself.
-  2. **Project Context**: Auto-detect project type from `package.json`/`Cargo.toml`/`go.mod`/etc. Offer to scan repo and bootstrap project memory (creates Tier 1 entries for project stack, structure, key patterns). Progress indicator during scan.
+  2. **Project Context**: Auto-detect project type from `package.json`/`Cargo.toml`/`go.mod`/etc. Offer to bootstrap project memory (creates Tier 1 entries for project stack, structure, key patterns). Show progress while context is being assembled.
   3. **Integrations**: Connect Linear (guided OAuth or token paste with validation), configure automations (on/off with simple presets: "Auto-dispatch bugs", "Night shift enabled"), connect OpenClaw (if installed).
 
 - **Skip behavior**: User can skip any step. CTO activates with defaults. A "Complete Setup" banner persists in the CTO tab until all steps are done or explicitly dismissed.

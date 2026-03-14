@@ -27,10 +27,11 @@ Each memory entry has a tier that determines how aggressively it is surfaced:
 Memory enters the system through multiple paths:
 
 - **Agent tools** -- Any AI agent can call the `memoryAdd` tool to save a durable insight during a conversation. The tool enforces quality guidance: good memories capture conventions, patterns, gotchas, and decisions. Bad memories (status updates, task-specific details, obvious facts) are rejected by prompt guidance.
+- **Compaction flush** -- When a chat session approaches its context window limit, the compaction flush service injects a hidden prompt asking the agent to persist important observations via `memoryAdd` before context is compacted. This is fully wired into `agentChatService` so no durable discoveries are lost to compaction.
 - **Episodic summaries** -- After agent work sessions complete, the episodic summary service extracts a structured record of what was attempted, what worked, and what failed.
-- **Knowledge capture** -- The knowledge capture service monitors interventions, error clusters, and PR feedback, then extracts conventions, patterns, and gotchas into memory entries.
-- **Human work digest** -- When you make commits outside of ADE, the digest service detects the new HEAD, generates a change summary, and stores it as a digest memory so agents stay aware of manual changes.
-- **Procedural learning** -- The procedural learning service identifies repeatable workflows from episodic memories and distills them into step-by-step procedures with confidence tracking.
+- **Knowledge capture** -- The knowledge capture service monitors interventions, error clusters, and PR feedback, then extracts conventions, patterns, and gotchas into memory entries. It also fires on mission failures and agent session errors to capture failure-related gotchas.
+- **Human work digest** -- When you make commits outside of ADE, the digest service detects the new HEAD via the git head watcher, generates a change summary, and stores it as a digest memory so agents stay aware of manual changes. The digest service is connected to the head watcher's `handleHeadChanged` callback.
+- **Procedural learning** -- The procedural learning service identifies repeatable workflows from episodic memories and distills them into step-by-step procedures with confidence tracking. High-confidence procedures are exported as `.ade/skills/` files for reuse.
 - **Consolidation** -- The batch consolidation service merges clusters of similar entries into single, higher-quality memories using AI.
 
 ## How Memory Gets Maintained
@@ -50,6 +51,18 @@ ADE includes an optional local embedding model (`Xenova/all-MiniLM-L6-v2`, 384-d
 - Searches use a hybrid BM25 + cosine similarity approach with MMR (Maximal Marginal Relevance) re-ranking to balance relevance and diversity.
 - The model runs locally -- no data is sent externally for embedding.
 - Without the embedding model loaded, search falls back to lexical FTS (full-text search) only.
+- Items that arrive while the model is unavailable are queued rather than dropped. The queue is drained automatically when the model finishes loading, so no embeddings are lost to startup timing or transient model unavailability.
+
+### Embedding Health Monitoring
+
+The embedding service emits structured health logs covering:
+
+- Service state transitions (`idle -> loading -> ready` or `unavailable`)
+- Queue depth and processing rates
+- Error rates and failure categories
+- Cache hit/miss ratios
+
+These are visible in the Settings > Memory health tab, which shows embedding progress and status at 10-second polling intervals.
 
 ## Change Tracking
 
@@ -68,6 +81,26 @@ The CTO agent has a separate, structured core memory document distinct from the 
 Core memory is persisted in two places: the file `.ade/cto/core-memory.json` and the SQLite `cto_core_memory_state` table. On startup, the system reconciles the two by version number, preferring the newer copy. Core memory is injected as the first message in every CTO session via `buildReconstructionContext()`.
 
 Worker agents follow the same pattern through `AgentCoreMemory` (same five fields), persisted in `.ade/agents/<slug>/core-memory.json`.
+
+## Memory Pipeline
+
+The full memory pipeline is now wired end-to-end:
+
+```
+Agent conversations
+  → compaction flush (pre-compaction memoryAdd)
+  → episodic summary (post-session extraction)
+  → procedural learning (multi-episode pattern distillation)
+  → skill export (.ade/skills/ materialization)
+
+External changes
+  → git head watcher detects new commits
+  → human work digest (change summary → digest memory)
+
+Failures & feedback
+  → mission/agent failures trigger captureFailureGotcha
+  → knowledge capture extracts gotchas, conventions, patterns
+```
 
 ## Where to Manage Memory
 

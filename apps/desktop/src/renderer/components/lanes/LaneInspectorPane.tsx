@@ -1,13 +1,21 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { LanePrPanel } from "../prs/LanePrPanel";
 import { LaneConflictsPanel } from "./LaneConflictsPanel";
 import { COLORS, MONO_FONT } from "./laneDesignTokens";
+import { useAppStore } from "../../state/appStore";
 
 type InspectorTab = "pr" | "conflicts";
+type EditorTarget = "vscode" | "cursor" | "zed";
 
 const TAB_DEFS: Array<{ id: InspectorTab; num: string; label: string }> = [
   { id: "pr", num: "01", label: "PR" },
   { id: "conflicts", num: "02", label: "CONFLICTS" },
+];
+
+const EDITOR_OPTIONS: Array<{ target: EditorTarget; label: string }> = [
+  { target: "vscode", label: "VS Code" },
+  { target: "cursor", label: "Cursor" },
+  { target: "zed", label: "Zed" },
 ];
 
 export function LaneInspectorPane({
@@ -18,6 +26,16 @@ export function LaneInspectorPane({
   defaultTab?: InspectorTab;
 }) {
   const [tab, setTab] = useState<InspectorTab>(defaultTab ?? "pr");
+  const lanes = useAppStore((s) => s.lanes);
+  const lane = laneId ? lanes.find((l) => l.id === laneId) : null;
+
+  const openInEditor = useCallback(
+    (target: EditorTarget) => {
+      if (!lane?.worktreePath) return;
+      void window.ade.app.openPathInEditor({ rootPath: lane.worktreePath, target });
+    },
+    [lane?.worktreePath],
+  );
 
   return (
     <div className="flex h-full flex-col" style={{ background: COLORS.pageBg }}>
@@ -69,6 +87,41 @@ export function LaneInspectorPane({
             </button>
           );
         })}
+        {lane?.worktreePath ? (
+          <div className="ml-auto flex items-center" style={{ gap: 4, paddingRight: 8 }}>
+            {EDITOR_OPTIONS.map((editor) => (
+              <button
+                key={editor.target}
+                type="button"
+                title={`Open in ${editor.label}`}
+                data-testid={`lane-open-${editor.target}`}
+                className="transition-colors duration-150"
+                style={{
+                  fontFamily: MONO_FONT,
+                  fontSize: 9,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.5px",
+                  padding: "4px 8px",
+                  background: "transparent",
+                  border: `1px solid ${COLORS.border}`,
+                  color: COLORS.textMuted,
+                  cursor: "pointer",
+                }}
+                onClick={() => openInEditor(editor.target)}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.color = COLORS.textPrimary;
+                  e.currentTarget.style.borderColor = COLORS.accent;
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.color = COLORS.textMuted;
+                  e.currentTarget.style.borderColor = COLORS.border;
+                }}
+              >
+                {editor.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
       </div>
       <div className="flex-1 min-h-0" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
         {tab === "pr" && (

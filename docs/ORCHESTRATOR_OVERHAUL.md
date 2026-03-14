@@ -245,8 +245,44 @@ Delivered:
 | `apps/desktop/src/renderer/components/missions/missionHelpers.ts` | Pure helpers — `collapseFeedMessages`, `computeProgress`, `NOISY_EVENT_TYPES`, `classifyErrorSource` |
 | `apps/desktop/src/shared/ipc.ts` | `missionsGetFullMissionView` IPC channel definition |
 
+## V1 Closeout Additions (2026-03-13)
+
+The v1 closeout added two coordinator capabilities that complete the mission lifecycle awareness gap:
+
+### Coordinator Finalization Awareness
+
+- **`check_finalization_status` tool**: A new coordinator tool that reads the mission state doc and returns the current finalization state (contractSatisfied, executionComplete, queue landing state, etc.). This gives the coordinator awareness of downstream completion without auto-completing missions.
+- **Queue landing events**: When queue landing completes (`onQueueLandingStateChanged`), a runtime event is now routed to the coordinator's event loop so it can observe completion and make informed decisions.
+- **Coordinator hint update**: The coordinator system prompt references the new tool and advises using it before attempting `complete_mission`.
+
+These changes follow the existing design principle: the coordinator is informed, not automated. It can check status and decide, but completion still routes through runtime validation gates.
+
+## Runtime Hardening (2026-03-13)
+
+Applied during v1 closeout to close remaining runtime reliability gaps.
+
+### PR Merge Step Fallback
+- PR merge steps now use a 3-tier retry strategy: attempt merge, retry on transient failure, fall back to opening a draft PR, then request user intervention.
+- A failed merge returns `blocked` status rather than `failed`, keeping the run recoverable without coordinator escalation to a terminal state.
+
+### Stagnation Detection
+- Agents that produce no output are tracked as potentially stagnant.
+- The runtime reports elapsed silence duration to the coordinator, enabling timely intervention before a run goes permanently idle.
+
+### Autopilot Timeout
+- Autopilot polling interval increased from 5 seconds to 15 seconds.
+- The value is a single configurable constant (`AUTOPILOT_TIMEOUT_MS`) rather than scattered literals.
+
+### Mission Step Bidirectional Sync
+- `syncRunStepsFromMission()` propagates user-initiated step mutations (cancel, skip) from the mission state doc back into the orchestrator's active run state.
+- This closes the gap where a user could cancel or skip a step in the UI but the orchestrator would continue executing the outdated step until its next full reconciliation pass.
+
+### Cascade Cleanup
+- `cleanupTeamResources()` is called on a best-effort basis during both finalization and cancellation.
+- Tears down worker sessions, temporary worktrees, and other team-scoped resources so they do not leak across runs.
+
 ## Historical Doc Policy
-- This file is authoritative for orchestrator Phases 5-9.
+- This file is authoritative for orchestrator Phases 5-9 and v1 closeout additions.
 - `docs/final-plan/phase-3.md` is historical/superseded context only.
 - `docs/architecture/AI_INTEGRATION.md` is architecture reference and must mirror active runtime contracts listed above.
 

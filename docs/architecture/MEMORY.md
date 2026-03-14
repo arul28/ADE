@@ -46,7 +46,7 @@ Memory enters the system through these services:
 4. **Human work digest service** -- `humanWorkDigestService.ts`. Detects new git commits, builds a `ChangeDigest` (commit summaries, diffstat, file clusters), writes a `digest` category memory.
 5. **Procedural learning service** -- `proceduralLearningService.ts`. Identifies repeatable workflows from episode memories. Creates `procedure` category entries with trigger descriptions, step-by-step markdown, and confidence tracking in `memory_procedure_details` / `memory_procedure_history`.
 6. **Batch consolidation service** -- `batchConsolidationService.ts`. Clusters similar memories by scope, category, and lexical similarity (default threshold 0.7). Uses AI to merge clusters into single improved entries. Originals are archived.
-7. **Compaction flush service** -- `compactionFlushService.ts`. When a conversation approaches its token limit, this service injects a hidden system message prompting the agent to flush important observations to memory before compaction occurs.
+7. **Compaction flush service** -- `compactionFlushService.ts`. When a conversation approaches its token limit, this service injects a hidden system message prompting the agent to flush important observations to memory before compaction occurs. The flush is wired into `agentChatService` via callbacks (`appendHiddenMessage` and `flushTurn`) that inject messages into the active chat session.
 
 ### Write Quality Controls
 
@@ -80,6 +80,7 @@ Defined in `embeddingService.ts`.
 - Storage: `unified_memory_embeddings` table, one row per (memory_id, model) pair
 - Background worker: `embeddingWorkerService.ts` processes a queue of unembedded entries in batches
 - States: `idle -> loading -> ready` (or `unavailable` on error)
+- Health monitoring: structured logging for state transitions, queue depth, processing rates, error rates, and cache hit/miss ratios. Health data is surfaced in Settings > Memory health tab at 10-second polling intervals.
 
 ### Hybrid Search
 

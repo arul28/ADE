@@ -3472,14 +3472,73 @@ export function createOrchestratorService({
             typeof metadata.integrationLaneName === "string" && metadata.integrationLaneName.trim().length
               ? metadata.integrationLaneName.trim()
               : `orchestrator-${args.run.id.slice(0, 8)}-${args.step.stepKey.slice(0, 24)}`;
-          const created = await prService.createIntegrationPr({
+          const createPrArgs = {
             sourceLaneIds,
             integrationLaneName,
             baseBranch,
             title: prTitleBase,
             body: prBodyBase,
             draft: false
-          });
+          };
+          let created: Awaited<ReturnType<typeof prService.createIntegrationPr>>;
+          try {
+            created = await prService.createIntegrationPr(createPrArgs);
+          } catch (firstError) {
+            // Retry once after a short delay
+            await new Promise((resolve) => setTimeout(resolve, 2_000));
+            try {
+              created = await prService.createIntegrationPr(createPrArgs);
+            } catch (retryError) {
+              // Fallback: attempt to create as a draft PR
+              try {
+                created = await prService.createIntegrationPr({ ...createPrArgs, draft: true });
+                appendTimelineEvent({
+                  runId: args.run.id,
+                  stepId: args.step.id,
+                  attemptId: args.attempt.id,
+                  eventType: "integration_chain_stage",
+                  reason: "integration_pr_created_as_draft_fallback",
+                  detail: {
+                    originalError: firstError instanceof Error ? firstError.message : String(firstError),
+                    retryError: retryError instanceof Error ? retryError.message : String(retryError),
+                    sourceLaneIds
+                  }
+                });
+              } catch (draftError) {
+                // Both retry and draft fallback failed — request user intervention
+                const errorDetail = {
+                  originalError: firstError instanceof Error ? firstError.message : String(firstError),
+                  retryError: retryError instanceof Error ? retryError.message : String(retryError),
+                  draftError: draftError instanceof Error ? draftError.message : String(draftError)
+                };
+                appendTimelineEvent({
+                  runId: args.run.id,
+                  stepId: args.step.id,
+                  attemptId: args.attempt.id,
+                  eventType: "intervention_opened",
+                  reason: "integration_pr_creation_failed",
+                  detail: {
+                    ...errorDetail,
+                    sourceLaneIds,
+                    integrationLaneName,
+                    baseBranch,
+                    message: "Integration PR creation failed after retry and draft fallback. Manual intervention required."
+                  }
+                });
+                return {
+                  status: "blocked",
+                  errorClass: "transient",
+                  errorMessage: `Integration PR creation failed after retry and draft fallback. Please create the PR manually. Errors: ${JSON.stringify(errorDetail)}`,
+                  metadata: {
+                    mergeMode,
+                    sourceLaneIds,
+                    targetLaneId,
+                    requiresUserIntervention: true
+                  }
+                };
+              }
+            }
+          }
           prSummary = created.pr;
           integrationLaneId = created.integrationLaneId;
           persistStepMergeMetadata({
@@ -3667,16 +3726,20 @@ export function createOrchestratorService({
         runId: args.run.id,
         stepId: args.step.id,
         attemptId: args.attempt.id,
-        eventType: "integration_chain_stage",
+        eventType: "intervention_opened",
         reason: "merge_pr_automation_failed",
         detail: {
-          error: message
+          error: message,
+          message: "Merge PR automation failed. User intervention is required to resolve this step."
         }
       });
       return {
-        status: "failed",
+        status: "blocked",
         errorClass: "transient",
-        errorMessage: `Merge PR automation failed: ${message}`
+        errorMessage: `Merge PR automation failed: ${message}. User intervention required.`,
+        metadata: {
+          requiresUserIntervention: true
+        }
       };
     }
   };

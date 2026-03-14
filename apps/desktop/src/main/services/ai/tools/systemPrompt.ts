@@ -41,6 +41,11 @@ export function buildCodingAgentSystemPrompt(args: {
     || name === "memoryUpdateCore"
     || name.startsWith("memory_"),
   );
+  const hasCreateLane = toolNames.includes("createLane");
+  const hasCreatePr = toolNames.includes("createPrFromLane");
+  const hasCaptureScreenshot = toolNames.includes("captureScreenshot");
+  const hasReportCompletion = toolNames.includes("reportCompletion");
+  const hasWorkflowTools = hasCreateLane || hasCreatePr || hasCaptureScreenshot || hasReportCompletion;
 
   return [
     `You are ADE's software engineering agent working in ${args.cwd}.`,
@@ -83,6 +88,28 @@ export function buildCodingAgentSystemPrompt(args: {
           "GOOD memories: \"Convention: always use snake_case for DB columns — ORM breaks with camelCase\", \"Decision: chose Postgres over Mongo for ACID transactions in payments\", \"Pitfall: CI silently skips tests if file doesn't match *.test.ts\"",
           "DO NOT save: file paths or directory listings, raw error messages without lessons, task progress updates, information derivable from git log or the code itself, obvious patterns already visible in the codebase.",
           "Format: lead with the concrete rule or fact, then a brief WHY if the reasoning is non-obvious.",
+        ]
+      : []),
+    ...(hasWorkflowTools
+      ? [
+          "",
+          "## Workflow Tools",
+          "You have workflow tools for managing development lifecycle:",
+          ...(hasCreateLane
+            ? ["- **createLane**: Create an isolated development lane (git worktree + branch) before starting work. Use this to keep changes separate from the main branch."]
+            : []),
+          ...(hasCreatePr
+            ? ["- **createPrFromLane**: Open a GitHub pull request from a lane. Use this when your changes are committed and pushed. Prefer draft PRs for work-in-progress."]
+            : []),
+          ...(hasCaptureScreenshot
+            ? ["- **captureScreenshot**: Take a screenshot for visual verification. Use this to document UI changes or provide evidence of completed work."]
+            : []),
+          ...(hasReportCompletion
+            ? ["- **reportCompletion**: Submit a structured completion report when done. Always include a summary, status, and list of artifacts produced."]
+            : []),
+          "",
+          "**Recommended workflow:** Create a lane, make changes, verify with tests and screenshots, create a PR, then report completion.",
+          "**Do not** create infrastructure (CI configs, deployment scripts) or modify settings outside your lane without explicit user approval.",
         ]
       : []),
     "",

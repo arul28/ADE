@@ -58,6 +58,8 @@ Current behavior:
 - activity uses the shared renderer session-list cache
 - the graph only inspects a bounded recent session set
 - activity emphasizes recent ended and active sessions instead of scanning everything forever
+- live PTY output refreshes session-derived activity without re-querying history on every chunk
+- history-backed activity refresh is reserved for slower timers, focus/visibility return, and PTY exit
 
 Periodic refresh is also calmer:
 
@@ -102,6 +104,7 @@ The graph now follows these rules:
 - make topology visible first
 - stage non-essential overlays after first interaction
 - bound activity and polling work
+- avoid history-backed activity recompute on every terminal event
 - keep risk, PR, and sync overlays fresh enough without constant churn
 
 That keeps the graph valuable as a rich coordination surface without letting the canvas become one of the renderer's heaviest mount paths.

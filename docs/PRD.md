@@ -521,8 +521,8 @@ Each feature area is specified in detail in the following documents. These are t
 | 12 | Onboarding and Settings | [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md) | Repository initialization and user preferences. Covers onboarding flow (repo selection, `.ade/` setup, CLI tool detection), trust surfaces, operation previews, escape hatches, AI provider and per-task-type routing configuration, automation defaults/integration setup, and theme/keybinding settings. |
 | 13 | CTO | [features/CTO.md](features/CTO.md) | Always-on project-aware agent. Covers the CTO's persistent chat interface, three-tier memory model with project-scoped core memory, MCP tool access for mission creation and lane management, external request routing, and relationship to the mission orchestrator. Persistent employees can own and execute automations created in the Automations tab. |
 | 14 | Memory | [features/MEMORY.md](features/MEMORY.md) | Unified memory system. Covers the 3-scope model (project/agent/mission), consolidated Settings > Memory UI surface, quality controls on writes, agent prompt guidance, garbage-source filtering, CTO core memory coexistence, and the memory consolidation lifecycle. |
-| 15 | Chat | [features/CHAT.md](features/CHAT.md) | Agent chat integration. Covers provider-agnostic chat service, multi-turn sessions, agent question/answer flows, mission thread rendering, and chat composer interactions. |
-| 16 | Linear | [features/LINEAR.md](features/LINEAR.md) | Bidirectional Linear sync. Covers API-key-first configuration, polling-baseline sync, issue dispatch, workflow presets, closeout flows, and the Linear sync panel UI. |
+| 15 | Chat | [features/CHAT.md](features/CHAT.md) | Agent chat integration. Covers provider-agnostic chat service, multi-turn sessions, workflow tools (lane/PR/screenshot/completion), compaction flush, agent question/answer flows, mission thread rendering, and chat composer interactions. |
+| 16 | Linear | [features/LINEAR.md](features/LINEAR.md) | Bidirectional Linear sync. Covers API-key-first configuration, polling-baseline sync, issue dispatch, workflow presets, dispatcher hardening (snapshot refresh, employee fallback, closure notifications, dynamic delegation), closeout flows, and the Linear sync panel UI. |
 
 ---
 
@@ -939,7 +939,18 @@ Implementation sequencing, future phases, and dependency ordering are now mainta
 
 - `docs/final-plan/README.md`
 
-Current status: Phases 1, 1.5, 2, 3, 4, and 5 are complete. Phase 4 is closed at baseline or better: `W1-W10` are shipped, including the W7c skills/learning follow-through, CTO memory review surfaces, and advanced knowledge capture validation.
+Current status: Phases 1, 1.5, 2, 3, 4, and 5 are complete for single-device operation. Phase 4 is closed at baseline or better: `W1-W10` are shipped, including the W7c skills/learning follow-through, CTO memory review surfaces, and advanced knowledge capture validation.
+
+The v1 closeout (2026-03-13) addressed remaining integration gaps:
+- Workflow tools for chat agents (lane creation, PR creation, screenshot capture, completion reporting)
+- Coordinator finalization awareness (check_finalization_status tool + queue landing events)
+- Memory pipeline fully wired (compaction flush, human work digest, failure knowledge capture, procedural export)
+- Linear dispatcher hardening (snapshot refresh, employee fallback, PR null-check, closure notifications)
+- Embedding health monitoring
+- UI error states and IDE deep-linking
+- System prompt agent capability boundaries (three-tier tool architecture)
+
+Phase 6 (multi-device sync) is the next major milestone.
 
 This PRD intentionally focuses on product scope and behavior, while roadmap execution detail is centralized in the Final Plan to avoid drift.
 

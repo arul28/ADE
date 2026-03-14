@@ -5,6 +5,7 @@ import { useAppStore, type WorkDraftKind, type WorkProjectViewState, type WorkSt
 import { listSessionsCached } from "../../lib/sessionListCache";
 import { sessionMatchesStatusFilter, sessionStatusBucket } from "../../lib/terminalAttention";
 import { isChatToolType } from "../../lib/sessions";
+import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 
 const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
   openItemIds: [],
@@ -320,9 +321,9 @@ export function useWorkSessions() {
 
   useEffect(() => {
     const unsubscribe = window.ade.agentChat.onEvent((payload) => {
-      const event = payload.event;
-      if (event.type === "done") scheduleBackgroundRefresh(200);
-      if (event.type === "status" && event.turnStatus !== "started") scheduleBackgroundRefresh(200);
+      if (document.visibilityState !== "visible") return;
+      if (!shouldRefreshSessionListForChatEvent(payload)) return;
+      scheduleBackgroundRefresh(220);
     });
     return unsubscribe;
   }, [scheduleBackgroundRefresh]);

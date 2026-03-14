@@ -8,6 +8,8 @@ const {
   aggregateCosts,
   calculatePacing,
   isCodexTokenStale,
+  parseClaudeWindows,
+  parseCodexRateLimitWindows,
   resolveTokenPrice,
 } = _testing;
 
@@ -245,6 +247,61 @@ describe("isCodexTokenStale", () => {
     expect(
       isCodexTokenStale({ accessToken: "tok", lastRefresh: nineDaysAgo })
     ).toBe(true);
+  });
+});
+
+describe("parseClaudeWindows", () => {
+  it("accepts the oauth snake_case response shape", () => {
+    const result = parseClaudeWindows({
+      five_hour: { utilization: 35, resets_at: "2026-03-14T02:00:01.263755+00:00" },
+      seven_day: { utilization: 17, resets_at: "2026-03-20T03:00:00.263780+00:00" },
+      seven_day_sonnet: { utilization: 0, resets_at: "2026-03-20T21:00:00.263794+00:00" },
+    });
+
+    expect(result).toHaveLength(2);
+    expect(result.find((window) => window.windowType === "five_hour")?.percentUsed).toBe(35);
+    expect(result.find((window) => window.windowType === "weekly")?.percentUsed).toBe(17);
+    expect(result.find((window) => window.windowType === "weekly")?.modelBreakdown?.sonnet).toBe(0);
+  });
+
+  it("also accepts camelCase response keys", () => {
+    const result = parseClaudeWindows({
+      fiveHour: { used_percent: 22, resetsAt: "2026-03-14T02:00:01.263755+00:00" },
+      sevenDay: { percent_used: 41, resetsAt: "2026-03-20T03:00:00.263780+00:00" },
+      sevenDayOpus: { used_percent: 5, resetsAt: "2026-03-20T21:00:00.263794+00:00" },
+    });
+
+    expect(result).toHaveLength(2);
+    expect(result.find((window) => window.windowType === "five_hour")?.percentUsed).toBe(22);
+    expect(result.find((window) => window.windowType === "weekly")?.modelBreakdown?.opus).toBe(5);
+  });
+});
+
+describe("parseCodexRateLimitWindows", () => {
+  it("accepts the wham HTTP response shape", () => {
+    const result = parseCodexRateLimitWindows({
+      rate_limit: {
+        primary_window: { used_percent: 15, reset_at: 1773446952 },
+        secondary_window: { used_percent: 63, reset_at: 1773853354 },
+      },
+    });
+
+    expect(result).toHaveLength(2);
+    expect(result.find((window) => window.windowType === "five_hour")?.percentUsed).toBe(15);
+    expect(result.find((window) => window.windowType === "weekly")?.percentUsed).toBe(63);
+  });
+
+  it("accepts the CodexBar CLI rateLimits shape", () => {
+    const result = parseCodexRateLimitWindows({
+      rateLimits: {
+        primary: { usedPercent: 17, resetsAt: 1773446952 },
+        secondary: { usedPercent: 64, resetsAt: 1773853354 },
+      },
+    });
+
+    expect(result).toHaveLength(2);
+    expect(result.find((window) => window.windowType === "five_hour")?.percentUsed).toBe(17);
+    expect(result.find((window) => window.windowType === "weekly")?.percentUsed).toBe(64);
   });
 });
 

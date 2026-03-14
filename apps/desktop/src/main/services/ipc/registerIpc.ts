@@ -174,9 +174,6 @@ import type {
   KeybindingOverride,
   KeybindingsSnapshot,
   ImportBranchLaneArgs,
-  CiScanResult,
-  CiImportRequest,
-  CiImportResult,
   OnboardingDetectionResult,
   OnboardingExistingLaneCandidate,
   OnboardingStatus,
@@ -495,7 +492,6 @@ import type { createKeybindingsService } from "../keybindings/keybindingsService
 import type { createTerminalProfilesService } from "../terminalProfiles/terminalProfilesService";
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
 import type { createOnboardingService } from "../onboarding/onboardingService";
-import type { createCiService } from "../ci/ciService";
 import type { createAutomationService } from "../automations/automationService";
 import type { createAutomationPlannerService } from "../automations/automationPlannerService";
 import type { createAutomationIngressService } from "../automations/automationIngressService";
@@ -550,7 +546,6 @@ export type AppContext = {
   terminalProfilesService: ReturnType<typeof createTerminalProfilesService>;
   agentToolsService: ReturnType<typeof createAgentToolsService>;
   onboardingService: ReturnType<typeof createOnboardingService>;
-  ciService: ReturnType<typeof createCiService>;
   laneService: ReturnType<typeof createLaneService>;
   laneEnvironmentService: ReturnType<typeof createLaneEnvironmentService> | null;
   laneTemplateService: ReturnType<typeof createLaneTemplateService> | null;
@@ -623,6 +618,15 @@ export type AppContext = {
   mcpSocketPath?: string;
 };
 
+function notifyLaneCreated(ctx: AppContext, lane: LaneSummary): void {
+  ctx.automationService?.onLaneCreated?.({
+    laneId: lane.id,
+    laneName: lane.name,
+    branchRef: lane.branchRef,
+    folder: lane.folder ?? null,
+  });
+}
+
 function clampLayout(layout: DockLayout): DockLayout {
   const out: DockLayout = {};
   for (const [k, v] of Object.entries(layout)) {
@@ -668,6 +672,32 @@ const AI_USAGE_FEATURE_KEYS: AiFeatureKey[] = [
   "orchestrator",
   "initial_context"
 ];
+
+function isDatabaseClosedError(error: unknown): boolean {
+  return error instanceof Error && /database closed/i.test(error.message);
+}
+
+function getUnavailableAiStatus(): AiSettingsStatus {
+  return {
+    mode: "guest",
+    availableProviders: {
+      claude: false,
+      codex: false,
+    },
+    models: {
+      claude: [],
+      codex: [],
+    },
+    detectedAuth: [],
+    features: AI_USAGE_FEATURE_KEYS.map((feature) => ({
+      feature,
+      enabled: false,
+      dailyUsage: 0,
+      dailyLimit: null,
+    })),
+    availableModelIds: [],
+  };
+}
 
 
 async function safeRefreshMissionPack(
@@ -1360,8 +1390,17 @@ export function registerIpc({
           })(),
           args: summarizeIpcValue(args),
         });
+        const IPC_TIMEOUT_MS = 30_000;
         try {
-          const result = await listener(event, ...args);
+          const result = await Promise.race([
+            listener(event, ...args),
+            new Promise<never>((_, reject) =>
+              setTimeout(
+                () => reject(new Error(`IPC handler for '${channel}' timed out after ${IPC_TIMEOUT_MS}ms (callId=${callId})`)),
+                IPC_TIMEOUT_MS
+              )
+            ),
+          ]);
           logger.info("ipc.invoke.done", {
             callId,
             channel,
@@ -1689,6 +1728,21 @@ export function registerIpc({
     return await switchProjectFromDialog(selected);
   });
 
+  ipcMain.handle(
+    IPC.projectChooseDirectory,
+    async (event, args: { title?: string; defaultPath?: string } = {}): Promise<string | null> => {
+      const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+      const options: Electron.OpenDialogOptions = {
+        title: args.title?.trim() || "Choose directory",
+        defaultPath: args.defaultPath?.trim() || undefined,
+        properties: ["openDirectory"]
+      };
+      const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      if (result.canceled || result.filePaths.length === 0) return null;
+      return result.filePaths[0] ?? null;
+    }
+  );
+
   ipcMain.handle(IPC.projectOpenAdeFolder, async (): Promise<void> => {
     const ctx = getCtx();
     await shell.openPath(ctx.adeDir);
@@ -1797,21 +1851,35 @@ export function registerIpc({
 
   ipcMain.handle(IPC.aiGetStatus, async (): Promise<AiSettingsStatus> => {
     const ctx = getCtx();
-    const status = await ctx.aiIntegrationService.getStatus();
-    // Single query for all feature daily usage instead of N individual queries
-    const usageBatch = ctx.aiIntegrationService.getDailyUsageBatch(AI_USAGE_FEATURE_KEYS);
-    return {
-      mode: status.mode,
-      availableProviders: status.availableProviders,
-      models: status.models,
-      detectedAuth: status.detectedAuth,
-      features: AI_USAGE_FEATURE_KEYS.map((feature) => ({
-        feature,
-        enabled: ctx.aiIntegrationService.getFeatureFlag(feature),
-        dailyUsage: usageBatch.get(feature) ?? 0,
-        dailyLimit: ctx.aiIntegrationService.getDailyBudgetLimit(feature)
-      }))
-    };
+    if (!ctx.aiIntegrationService) {
+      return getUnavailableAiStatus();
+    }
+    try {
+      const status = await ctx.aiIntegrationService.getStatus();
+      // Single query for all feature daily usage instead of N individual queries
+      const usageBatch = ctx.aiIntegrationService.getDailyUsageBatch(AI_USAGE_FEATURE_KEYS);
+      return {
+        mode: status.mode,
+        availableProviders: status.availableProviders,
+        models: status.models,
+        detectedAuth: status.detectedAuth,
+        availableModelIds: status.availableModelIds,
+        features: AI_USAGE_FEATURE_KEYS.map((feature) => ({
+          feature,
+          enabled: ctx.aiIntegrationService.getFeatureFlag(feature),
+          dailyUsage: usageBatch.get(feature) ?? 0,
+          dailyLimit: ctx.aiIntegrationService.getDailyBudgetLimit(feature)
+        }))
+      };
+    } catch (error) {
+      if (isDatabaseClosedError(error)) {
+        ctx.logger.info("ai.get_status.unavailable_during_shutdown", {
+          projectRoot: ctx.project?.rootPath ?? null,
+        });
+        return getUnavailableAiStatus();
+      }
+      throw error;
+    }
   });
 
   ipcMain.handle(IPC.aiStoreApiKey, async (_event, arg: { provider: string; key: string }): Promise<void> => {
@@ -1958,16 +2026,6 @@ export function registerIpc({
     return ctx.onboardingService.complete();
   });
 
-  ipcMain.handle(IPC.ciScan, async (): Promise<CiScanResult> => {
-    const ctx = getCtx();
-    return await ctx.ciService.scan();
-  });
-
-  ipcMain.handle(IPC.ciImport, async (_event, arg: CiImportRequest): Promise<CiImportResult> => {
-    const ctx = getCtx();
-    return await ctx.ciService.import(arg);
-  });
-
   ipcMain.handle(IPC.automationsList, async (): Promise<AutomationRuleSummary[]> => {
     const ctx = getCtx();
     return ctx.automationService.list();
@@ -1976,6 +2034,11 @@ export function registerIpc({
   ipcMain.handle(IPC.automationsToggle, async (_event, arg: { id: string; enabled: boolean }): Promise<AutomationRuleSummary[]> => {
     const ctx = getCtx();
     return ctx.automationService.toggle({ id: arg?.id ?? "", enabled: Boolean(arg?.enabled) });
+  });
+
+  ipcMain.handle(IPC.automationsDeleteRule, async (_event, arg: { id: string }): Promise<AutomationRuleSummary[]> => {
+    const ctx = getCtx();
+    return ctx.automationService.deleteRule({ id: arg?.id ?? "" });
   });
 
   ipcMain.handle(IPC.automationsTriggerManually, async (_event, arg: AutomationManualTriggerRequest): Promise<AutomationRun> => {
@@ -2856,6 +2919,7 @@ export function registerIpc({
     const ctx = getCtx();
     const lane = await ctx.laneService.create({ name: arg.name, description: arg.description, parentLaneId: arg.parentLaneId });
     await ensureLanePortLease(ctx, lane.id);
+    notifyLaneCreated(ctx, lane);
     triggerAutoContextDocs(ctx, {
       event: "lane_create",
       reason: `lanes_create:${lane.id}`,
@@ -2867,6 +2931,7 @@ export function registerIpc({
     const ctx = getCtx();
     const lane = await ctx.laneService.createChild(arg);
     await ensureLanePortLease(ctx, lane.id);
+    notifyLaneCreated(ctx, lane);
     triggerAutoContextDocs(ctx, {
       event: "lane_create",
       reason: `lanes_create_child:${lane.id}`,
@@ -2878,6 +2943,7 @@ export function registerIpc({
     const ctx = getCtx();
     const lane = await ctx.laneService.importBranch(arg);
     await ensureLanePortLease(ctx, lane.id);
+    notifyLaneCreated(ctx, lane);
     return lane;
   });
 
@@ -2885,6 +2951,7 @@ export function registerIpc({
     const ctx = getCtx();
     const lane = await ctx.laneService.attach(arg);
     await ensureLanePortLease(ctx, lane.id);
+    notifyLaneCreated(ctx, lane);
     return lane;
   });
 
@@ -2892,6 +2959,7 @@ export function registerIpc({
     const ctx = getCtx();
     const lane = await ctx.laneService.adoptAttached(arg);
     await ensureLanePortLease(ctx, lane.id);
+    notifyLaneCreated(ctx, lane);
     return lane;
   });
 
@@ -2912,8 +2980,20 @@ export function registerIpc({
 
   ipcMain.handle(IPC.lanesArchive, async (_event, arg: ArchiveLaneArgs): Promise<void> => {
     const ctx = getCtx();
+    const lane = await ctx.laneService
+      .list({ includeArchived: true, includeStatus: false })
+      .then((lanes) => lanes.find((entry) => entry.id === arg.laneId) ?? null)
+      .catch(() => null);
     ctx.laneService.archive(arg);
     ctx.portAllocationService?.release(arg.laneId);
+    if (lane) {
+      ctx.automationService?.onLaneArchived?.({
+        laneId: lane.id,
+        laneName: lane.name,
+        branchRef: lane.branchRef,
+        folder: lane.folder ?? null,
+      });
+    }
   });
 
   ipcMain.handle(IPC.lanesDelete, async (_event, arg: DeleteLaneArgs): Promise<void> => {
@@ -3484,6 +3564,11 @@ export function registerIpc({
     return await ctx.agentChatService.updateSession(arg);
   });
 
+  ipcMain.handle(IPC.agentChatWarmupModel, async (_event, arg: { sessionId: string; modelId: string }): Promise<void> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.warmupModel(arg);
+  });
+
   ipcMain.handle(IPC.agentChatListContextPacks, async (_event, arg: ContextPackListArgs = {}): Promise<ContextPackOption[]> => {
     const ctx = getCtx();
     return ctx.agentChatService.listContextPacks(arg);
@@ -3800,7 +3885,17 @@ export function registerIpc({
 
   ipcMain.handle(IPC.gitPush, async (_event, arg: GitPushArgs): Promise<GitActionResult> => {
     const ctx = getCtx();
-    return ctx.gitService.push(arg);
+    const result = await ctx.gitService.push(arg);
+    const lane = await ctx.laneService
+      .list({ includeArchived: true, includeStatus: false })
+      .then((lanes) => lanes.find((entry) => entry.id === arg.laneId) ?? null)
+      .catch(() => null);
+    ctx.automationService?.onGitPushed?.({
+      laneId: arg.laneId,
+      branchRef: lane?.branchRef ?? null,
+      summary: lane ? `Pushed ${lane.branchRef}` : "Pushed branch",
+    });
+    return result;
   });
 
   ipcMain.handle(IPC.gitGetConflictState, async (_event, arg: { laneId: string }): Promise<GitConflictState> => {
@@ -5259,6 +5354,25 @@ export function registerIpc({
       tokenExpiresAt: null,
       message: "Linear token cleared.",
     };
+  });
+
+  ipcMain.handle(IPC.ctoSetLinearOAuthClient, async (_event, arg: import("../../../shared/types").CtoSetLinearOAuthClientArgs): Promise<LinearConnectionStatus> => {
+    const ctx = getCtx();
+    if (!ctx.linearCredentialService) throw new Error("Linear credential service is not available.");
+    ctx.linearCredentialService.setOAuthClientCredentials({
+      clientId: arg.clientId,
+      clientSecret: arg.clientSecret ?? null,
+    });
+    const tokenStored = Boolean(ctx.linearCredentialService.getStatus().tokenStored);
+    return buildLinearConnectionStatus(ctx, tokenStored);
+  });
+
+  ipcMain.handle(IPC.ctoClearLinearOAuthClient, async (): Promise<LinearConnectionStatus> => {
+    const ctx = getCtx();
+    if (!ctx.linearCredentialService) throw new Error("Linear credential service is not available.");
+    ctx.linearCredentialService.clearOAuthClientCredentials();
+    const tokenStored = Boolean(ctx.linearCredentialService.getStatus().tokenStored);
+    return buildLinearConnectionStatus(ctx, tokenStored);
   });
 
   ipcMain.handle(IPC.ctoStartLinearOAuth, async (): Promise<CtoStartLinearOAuthResult> => {

@@ -3,7 +3,7 @@ import { ChatCircleText, Command, Terminal } from "@phosphor-icons/react";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { SessionCard } from "./SessionCard";
 import { sortLanesForTabs } from "../lanes/laneUtils";
-import { MONO_FONT } from "../lanes/laneDesignTokens";
+import { SANS_FONT } from "../lanes/laneDesignTokens";
 import type { WorkDraftKind, WorkStatusFilter } from "../../state/appStore";
 
 const STATUS_OPTIONS: ReadonlyArray<{ value: "all" | "running" | "awaiting-input" | "ended"; label: string; color?: string }> = [
@@ -80,7 +80,7 @@ export const SessionListPane = React.memo(function SessionListPane({
           borderBottom: "1px solid rgba(255,255,255, 0.04)",
           display: "flex",
           gap: 4,
-          fontFamily: MONO_FONT,
+          fontFamily: SANS_FONT,
         }}
       >
         {ENTRY_OPTIONS.map((entry) => {
@@ -96,20 +96,19 @@ export const SessionListPane = React.memo(function SessionListPane({
                 alignItems: "center",
                 gap: 5,
                 padding: "5px 10px",
-                border: active ? `1px solid ${entry.color}30` : "1px solid transparent",
-                borderRadius: 12,
-                background: active ? `${entry.color}10` : "transparent",
+                border: active ? `1px solid ${entry.color}20` : "1px solid transparent",
+                borderRadius: 8,
+                background: active ? `${entry.color}0C` : "transparent",
                 color: active ? "var(--color-fg)" : "var(--color-muted-fg)",
-                fontFamily: MONO_FONT,
-                fontSize: 9,
-                fontWeight: 700,
-                letterSpacing: "0.14em",
-                textTransform: "uppercase",
+                fontFamily: SANS_FONT,
+                fontSize: 11,
+                fontWeight: 500,
+                letterSpacing: "-0.01em",
                 cursor: "pointer",
                 transition: "all 120ms",
               }}
             >
-              <Icon size={10} weight="bold" style={{ color: entry.color }} />
+              <Icon size={12} weight="regular" style={{ color: entry.color, opacity: active ? 1 : 0.7 }} />
               {entry.label}
             </button>
           );
@@ -124,7 +123,7 @@ export const SessionListPane = React.memo(function SessionListPane({
           display: "flex",
           flexDirection: "column",
           gap: 6,
-          fontFamily: MONO_FONT,
+          fontFamily: SANS_FONT,
         }}
       >
         {/* Lane chips — horizontal scroll */}
@@ -133,23 +132,21 @@ export const SessionListPane = React.memo(function SessionListPane({
             type="button"
             onClick={() => setFilterLaneId("all")}
             style={{
-              padding: "3px 8px",
-              fontSize: 9,
-              fontWeight: 700,
-              fontFamily: MONO_FONT,
-              textTransform: "uppercase",
-              letterSpacing: "0.12em",
-              borderRadius: 12,
-              border: `1px solid ${filterLaneId === "all" ? "var(--color-fg)" : "rgba(255,255,255, 0.04)"}`,
-              background: filterLaneId === "all" ? "var(--color-fg)" : "transparent",
-              color: filterLaneId === "all" ? "var(--color-card)" : "var(--color-muted-fg)",
+              padding: "3px 9px",
+              fontSize: 11,
+              fontWeight: filterLaneId === "all" ? 600 : 400,
+              fontFamily: SANS_FONT,
+              borderRadius: 6,
+              border: "1px solid transparent",
+              background: filterLaneId === "all" ? "rgba(255,255,255, 0.08)" : "transparent",
+              color: filterLaneId === "all" ? "var(--color-fg)" : "var(--color-muted-fg)",
               cursor: "pointer",
               whiteSpace: "nowrap",
               flexShrink: 0,
               transition: "all 120ms",
             }}
           >
-            All lanes
+            All
           </button>
           {orderedLanes.map((lane) => (
             <button
@@ -158,16 +155,14 @@ export const SessionListPane = React.memo(function SessionListPane({
               onClick={() => setFilterLaneId(lane.id)}
               title={lane.name}
               style={{
-                padding: "3px 8px",
-                fontSize: 9,
-                fontWeight: 700,
-                fontFamily: MONO_FONT,
-                textTransform: "uppercase",
-                letterSpacing: "0.12em",
-                borderRadius: 12,
-                border: `1px solid ${filterLaneId === lane.id ? "var(--color-fg)" : "rgba(255,255,255, 0.04)"}`,
-                background: filterLaneId === lane.id ? "var(--color-fg)" : "transparent",
-                color: filterLaneId === lane.id ? "var(--color-card)" : "var(--color-muted-fg)",
+                padding: "3px 9px",
+                fontSize: 11,
+                fontWeight: filterLaneId === lane.id ? 600 : 400,
+                fontFamily: SANS_FONT,
+                borderRadius: 6,
+                border: "1px solid transparent",
+                background: filterLaneId === lane.id ? "rgba(255,255,255, 0.08)" : "transparent",
+                color: filterLaneId === lane.id ? "var(--color-fg)" : "var(--color-muted-fg)",
                 cursor: "pointer",
                 whiteSpace: "nowrap",
                 flexShrink: 0,
@@ -192,15 +187,13 @@ export const SessionListPane = React.memo(function SessionListPane({
                 type="button"
                 onClick={() => setFilterStatus(opt.value)}
                 style={{
-                  padding: "3px 8px",
-                  fontSize: 9,
-                  fontWeight: 700,
-                  fontFamily: MONO_FONT,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.12em",
-                  borderRadius: 12,
-                  border: `1px solid ${active ? (opt.color ?? "var(--color-fg)") : "rgba(255,255,255, 0.04)"}`,
-                  background: active && opt.color ? `color-mix(in srgb, ${opt.color} 14%, transparent)` : "transparent",
+                  padding: "3px 9px",
+                  fontSize: 11,
+                  fontWeight: active ? 500 : 400,
+                  fontFamily: SANS_FONT,
+                  borderRadius: 6,
+                  border: "1px solid transparent",
+                  background: active && opt.color ? `color-mix(in srgb, ${opt.color} 10%, transparent)` : "transparent",
                   color: active ? (opt.color ?? "var(--color-fg)") : "var(--color-muted-fg)",
                   cursor: "pointer",
                   whiteSpace: "nowrap",
@@ -216,14 +209,14 @@ export const SessionListPane = React.memo(function SessionListPane({
         {/* Search */}
         <input
           style={{
-            height: 28,
+            height: 30,
             width: "100%",
-            borderRadius: 12,
+            borderRadius: 8,
             border: "1px solid rgba(255,255,255, 0.06)",
-            background: "rgba(255,255,255, 0.02)",
-            padding: "0 8px",
-            fontSize: 10,
-            fontFamily: MONO_FONT,
+            background: "rgba(255,255,255, 0.03)",
+            padding: "0 10px",
+            fontSize: 12,
+            fontFamily: SANS_FONT,
             color: "var(--color-fg)",
             outline: "none",
           }}
@@ -250,21 +243,19 @@ export const SessionListPane = React.memo(function SessionListPane({
             <Terminal size={18} weight="regular" style={{ color: "var(--color-muted-fg)", opacity: 0.3, marginBottom: 10 }} />
             <div
               style={{
-                fontSize: 10,
-                fontWeight: 700,
-                fontFamily: MONO_FONT,
-                textTransform: "uppercase",
-                letterSpacing: "1px",
+                fontSize: 12,
+                fontWeight: 500,
+                fontFamily: SANS_FONT,
                 color: "var(--color-fg)",
               }}
             >
-              No sessions in this view
+              No sessions
             </div>
             <div
               style={{
-                marginTop: 6,
-                fontSize: 10,
-                fontFamily: MONO_FONT,
+                marginTop: 4,
+                fontSize: 12,
+                fontFamily: SANS_FONT,
                 color: "var(--color-muted-fg)",
                 lineHeight: 1.5,
                 maxWidth: 200,
@@ -287,10 +278,13 @@ export const SessionListPane = React.memo(function SessionListPane({
                       flexShrink: 0,
                     }}
                   />
-                  <span style={{ fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", color: "var(--color-success)" }}>
-                    Running · {runningFiltered.length}
+                  <span style={{ fontSize: 11, fontWeight: 500, fontFamily: SANS_FONT, color: "var(--color-success)" }}>
+                    Running
                   </span>
-                  <span style={{ flex: 1, height: "1px", marginLeft: 6, background: "color-mix(in srgb, var(--color-success) 12%, transparent)" }} />
+                  <span style={{ fontSize: 11, fontWeight: 400, fontFamily: SANS_FONT, color: "var(--color-muted-fg)" }}>
+                    {runningFiltered.length}
+                  </span>
+                  <span style={{ flex: 1, height: "1px", marginLeft: 6, background: "color-mix(in srgb, var(--color-success) 8%, transparent)" }} />
                 </div>
                 <div className="space-y-1">
                   {runningFiltered.map((session) => (
@@ -312,10 +306,13 @@ export const SessionListPane = React.memo(function SessionListPane({
             {awaitingInputFiltered.length > 0 && (
               <div className={runningFiltered.length > 0 ? "mt-3" : ""}>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 4px", marginBottom: 4 }}>
-                  <span style={{ fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", color: "var(--color-warning)" }}>
-                    Awaiting input · {awaitingInputFiltered.length}
+                  <span style={{ fontSize: 11, fontWeight: 500, fontFamily: SANS_FONT, color: "var(--color-warning)" }}>
+                    Awaiting input
                   </span>
-                  <span style={{ flex: 1, height: "1px", marginLeft: 6, background: "color-mix(in srgb, var(--color-warning) 12%, transparent)" }} />
+                  <span style={{ fontSize: 11, fontWeight: 400, fontFamily: SANS_FONT, color: "var(--color-muted-fg)" }}>
+                    {awaitingInputFiltered.length}
+                  </span>
+                  <span style={{ flex: 1, height: "1px", marginLeft: 6, background: "color-mix(in srgb, var(--color-warning) 8%, transparent)" }} />
                 </div>
                 <div className="space-y-1">
                   {awaitingInputFiltered.map((session) => (
@@ -337,10 +334,13 @@ export const SessionListPane = React.memo(function SessionListPane({
             {endedFiltered.length > 0 && (
               <div className={runningFiltered.length > 0 || awaitingInputFiltered.length > 0 ? "mt-3" : ""}>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 4px", marginBottom: 4 }}>
-                  <span style={{ fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", color: "var(--color-error)" }}>
-                    Ended · {endedFiltered.length}
+                  <span style={{ fontSize: 11, fontWeight: 500, fontFamily: SANS_FONT, color: "var(--color-error)" }}>
+                    Ended
                   </span>
-                  <span style={{ flex: 1, height: "1px", marginLeft: 6, background: "color-mix(in srgb, var(--color-error) 12%, transparent)" }} />
+                  <span style={{ fontSize: 11, fontWeight: 400, fontFamily: SANS_FONT, color: "var(--color-muted-fg)" }}>
+                    {endedFiltered.length}
+                  </span>
+                  <span style={{ flex: 1, height: "1px", marginLeft: 6, background: "color-mix(in srgb, var(--color-error) 8%, transparent)" }} />
                 </div>
                 <div className="space-y-1">
                   {endedFiltered.map((session) => (

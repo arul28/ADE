@@ -31,6 +31,7 @@ type ManagedProcessEntry = {
   laneId: string;
   runtime: ProcessRuntime;
   child: ChildProcessByStdio<null, Readable, Readable> | null;
+  processGroupId: number | null;
   definition: ProcessDefinition | null;
   runId: string | null;
   stopIntent: ManagedTerminationReason | null;
@@ -136,6 +137,31 @@ function checkPortReady(port: number): Promise<boolean> {
     socket.once("timeout", () => settle(false));
     socket.once("error", () => settle(false));
   });
+}
+
+function isAliveSignalError(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "EPERM");
+}
+
+function isProcessIdAlive(pid: number | null): boolean {
+  if (pid == null || !Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return isAliveSignalError(error);
+  }
+}
+
+function isProcessGroupAlive(processGroupId: number | null): boolean {
+  if (process.platform === "win32") return false;
+  if (processGroupId == null || !Number.isInteger(processGroupId) || processGroupId <= 0) return false;
+  try {
+    process.kill(-processGroupId, 0);
+    return true;
+  } catch (error) {
+    return isAliveSignalError(error);
+  }
 }
 
 function keyFor(laneId: string, processId: string): string {
@@ -327,6 +353,34 @@ export function createProcessService({
     }
   };
 
+  const signalManagedProcess = (entry: ManagedProcessEntry, signal: NodeJS.Signals) => {
+    const processGroupId = process.platform !== "win32" ? entry.processGroupId : null;
+    if (processGroupId != null) {
+      try {
+        process.kill(-processGroupId, signal);
+        return;
+      } catch {
+        // Fall through to direct child signaling if the process group is gone.
+      }
+    }
+
+    if (entry.child) {
+      try {
+        entry.child.kill(signal);
+        return;
+      } catch {
+        // ignore
+      }
+    }
+
+    if (entry.runtime.pid == null) return;
+    try {
+      process.kill(entry.runtime.pid, signal);
+    } catch {
+      // ignore
+    }
+  };
+
   const ensureEntry = (laneId: string, processId: string, definition: ProcessDefinition | null): ManagedProcessEntry => {
     const k = keyFor(laneId, processId);
     const existing = entries.get(k);
@@ -360,18 +414,22 @@ export function createProcessService({
       persisted?.status === "stopping" ||
       persisted?.status === "degraded";
 
+    const persistedPid = persisted?.pid ?? null;
+    const recoveredProcessGroupId = isProcessGroupAlive(persistedPid) ? persistedPid : null;
+    const recoveredPidAlive = isProcessIdAlive(persistedPid);
+    const recoveredActive = hadActiveStatus && (recoveredProcessGroupId != null || recoveredPidAlive);
     const now = nowIso();
     const runtime: ProcessRuntime = {
       laneId,
       processId,
-      status: hadActiveStatus ? "exited" : persisted?.status ?? "stopped",
+      status: recoveredActive ? persisted?.status ?? "running" : hadActiveStatus ? "exited" : persisted?.status ?? "stopped",
       readiness: persisted?.readiness ?? "unknown",
-      pid: null,
-      startedAt: hadActiveStatus ? null : persisted?.started_at ?? null,
-      endedAt: hadActiveStatus ? now : persisted?.ended_at ?? null,
+      pid: recoveredActive ? persistedPid : null,
+      startedAt: recoveredActive ? persisted?.started_at ?? null : hadActiveStatus ? null : persisted?.started_at ?? null,
+      endedAt: recoveredActive ? null : hadActiveStatus ? now : persisted?.ended_at ?? null,
       exitCode: persisted?.exit_code ?? null,
       lastExitCode: persisted?.exit_code ?? null,
-      lastEndedAt: hadActiveStatus ? now : persisted?.ended_at ?? null,
+      lastEndedAt: recoveredActive ? persisted?.ended_at ?? null : hadActiveStatus ? now : persisted?.ended_at ?? null,
       uptimeMs: null,
       ports: definition?.readiness.type === "port" ? [definition.readiness.port] : [],
       logPath: processLogPath(laneId, processId),
@@ -382,6 +440,7 @@ export function createProcessService({
       laneId,
       runtime,
       child: null,
+      processGroupId: recoveredProcessGroupId,
       definition,
       runId: null,
       stopIntent: null,
@@ -541,6 +600,7 @@ export function createProcessService({
 
     entry.child = null;
     entry.stopIntent = null;
+    entry.processGroupId = null;
     entry.runtime.pid = null;
     entry.runtime.status = runtimeStatus;
     entry.runtime.readiness = "unknown";
@@ -590,6 +650,36 @@ export function createProcessService({
         });
       }, delayMs + jitter);
     }
+  };
+
+  const monitorRecoveredStop = (
+    entry: ManagedProcessEntry,
+    processId: string,
+    forceKillAtMs: number,
+    startedAtMs = Date.now(),
+    sentSigKill = false
+  ) => {
+    clearKillTimer(entry);
+    entry.gracefulKillTimeout = setTimeout(() => {
+      const alive = entry.processGroupId != null ? isProcessGroupAlive(entry.processGroupId) : isProcessIdAlive(entry.runtime.pid);
+      if (!alive) {
+        handleProcessExit(entry, processId, entry.runtime.lastExitCode ?? null);
+        return;
+      }
+
+      const shouldForceKill = !sentSigKill && Date.now() - startedAtMs >= forceKillAtMs;
+      if (shouldForceKill) {
+        signalManagedProcess(entry, "SIGKILL");
+      }
+
+      monitorRecoveredStop(
+        entry,
+        processId,
+        forceKillAtMs,
+        startedAtMs,
+        sentSigKill || shouldForceKill
+      );
+    }, 250);
   };
 
   const attachProcessStreams = (
@@ -645,6 +735,7 @@ export function createProcessService({
       child = spawn(definition.command[0]!, definition.command.slice(1), {
         cwd,
         env,
+        detached: process.platform !== "win32",
         shell: false,
         stdio: ["ignore", "pipe", "pipe"]
       });
@@ -658,6 +749,7 @@ export function createProcessService({
     }
 
     entry.child = child;
+    entry.processGroupId = process.platform !== "win32" ? (child.pid ?? null) : null;
     entry.definition = definition;
     entry.stopIntent = null;
     entry.runId = runId;
@@ -712,7 +804,7 @@ export function createProcessService({
     ensureEntriesForLane(laneId, config.effective);
     const entry = entries.get(keyFor(laneId, processId));
     if (!entry) throw new Error(`Process not found: ${processId}`);
-    if (!entry.child) return { ...entry.runtime };
+    if (!entry.child && entry.processGroupId == null && entry.runtime.pid == null) return { ...entry.runtime };
 
     clearKillTimer(entry);
     entry.stopIntent = intent;
@@ -720,28 +812,23 @@ export function createProcessService({
     emitRuntime(entry);
 
     if (force) {
-      try {
-        entry.child.kill("SIGKILL");
-      } catch {
-        // ignore
+      signalManagedProcess(entry, "SIGKILL");
+      if (!entry.child) {
+        monitorRecoveredStop(entry, processId, 0);
       }
       return { ...entry.runtime };
     }
 
     const shutdownMs = Math.max(250, entry.definition?.gracefulShutdownMs ?? 7000);
-    try {
-      entry.child.kill("SIGTERM");
-    } catch {
-      // ignore
+    signalManagedProcess(entry, "SIGTERM");
+    if (entry.child) {
+      entry.gracefulKillTimeout = setTimeout(() => {
+        if (!entry.child && entry.processGroupId == null) return;
+        signalManagedProcess(entry, "SIGKILL");
+      }, shutdownMs);
+    } else {
+      monitorRecoveredStop(entry, processId, shutdownMs);
     }
-    entry.gracefulKillTimeout = setTimeout(() => {
-      if (!entry.child) return;
-      try {
-        entry.child.kill("SIGKILL");
-      } catch {
-        // ignore
-      }
-    }, shutdownMs);
 
     return { ...entry.runtime };
   };
@@ -858,13 +945,7 @@ export function createProcessService({
         clearHealthTimers(entry);
         clearKillTimer(entry);
         entry.stopIntent = "killed";
-        if (entry.child) {
-          try {
-            entry.child.kill("SIGKILL");
-          } catch {
-            // ignore
-          }
-        }
+        signalManagedProcess(entry, "SIGKILL");
         if (entry.logStream) {
           try {
             entry.logStream.end();

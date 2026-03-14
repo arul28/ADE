@@ -111,6 +111,7 @@ Each workflow supports:
 - supervisor review paths (after work, before PR, after PR)
 - reject behaviors (loop back, reopen issue, cancel)
 - closeout with configurable success/failure Linear states
+- proof attachment from repo-local artifacts or absolute local files such as temporary screenshots
 - simulation for testing before going live
 
 ### Employee and team routing
@@ -120,6 +121,7 @@ Workflows can route to any configured ADE employee, not just the CTO. The Team p
 - direct CTO sessions for CTO-assigned issues
 - fresh-lane supervised worker runs for delegated implementation
 - arbitrary employee routing based on Linear assignee matching
+- dynamic delegation via the LinearSyncPanel when no employee match is found (runs enter `awaiting_delegation` status with a dropdown for manual assignment before any invalid launch is attempted)
 
 ### Supervisor review
 
@@ -133,6 +135,8 @@ Each workflow run is observable through:
 - per-run timeline with ingress events, step execution, and review decisions
 - queue dashboard with status counts
 - run detail with lane/session/PR/supervisor state
+
+The LinearSyncPanel now stages hydration and debounces follow-up refreshes so active sync stays observable without forcing the whole CTO tab to churn on every queue event.
 
 ### Sync loop
 

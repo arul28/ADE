@@ -975,7 +975,8 @@ export type OrchestratorRuntimeEventType =
   | "reflection_added"
   | "retrospective_generated"
   | "tool_profiles_updated"
-  | "budget_exceeded";
+  | "budget_exceeded"
+  | "finalization_queue_landed";
 
 export type OrchestratorRuntimeQuestionLink = {
   threadId: string;

@@ -34,6 +34,7 @@ import {
 import type {
   OrchestratorRunGraph,
   MissionStatus,
+  MissionStepStatus,
   OrchestratorWorkerRole,
   OrchestratorStepStatus,
   OrchestratorWorkerStatus,
@@ -186,6 +187,110 @@ export function syncMissionStepsFromRun(ctx: OrchestratorContext, graph: Orchest
       apply();
     }
   }
+}
+
+/**
+ * User-initiated mission step statuses that should propagate back to the
+ * orchestrator run graph.  Only statuses that represent deliberate user
+ * actions (cancel / skip) are synced — we never push running/pending back
+ * because those are orchestrator-driven transitions.
+ */
+const USER_INITIATED_STEP_STATUSES = new Set<MissionStepStatus>([
+  "canceled",
+  "skipped",
+]);
+
+/**
+ * Map a mission step status to the corresponding orchestrator step status.
+ * This is the reverse of `mapOrchestratorStepStatus`.
+ */
+function mapMissionStepStatusToOrchestrator(
+  status: MissionStepStatus
+): OrchestratorStepStatus {
+  switch (status) {
+    case "canceled":
+      return "canceled";
+    case "skipped":
+      return "skipped";
+    default:
+      return status as OrchestratorStepStatus;
+  }
+}
+
+/**
+ * Reverse sync: propagate user-initiated status changes (cancelled, skipped)
+ * from mission steps back to the orchestrator run graph.
+ *
+ * This complements `syncMissionStepsFromRun` which only syncs orchestrator → mission.
+ * The reverse direction ensures that when a user manually cancels or skips a
+ * mission step in the UI, the orchestrator is aware and stops scheduling work
+ * for that step.
+ */
+export function syncRunStepsFromMission(
+  ctx: OrchestratorContext,
+  graph: OrchestratorRunGraph
+): { synced: number } {
+  const missionId = graph.run.missionId;
+  const mission = ctx.missionService.get(missionId);
+  if (!mission) return { synced: 0 };
+
+  let synced = 0;
+
+  for (const missionStep of mission.steps) {
+    // Only propagate user-initiated terminal statuses
+    if (!USER_INITIATED_STEP_STATUSES.has(missionStep.status)) continue;
+
+    // Find the matching orchestrator step via metadata linkage
+    const msMeta = isRecord(missionStep.metadata) ? missionStep.metadata : {};
+    const orchestratorStepId =
+      typeof msMeta.orchestratorStepId === "string"
+        ? msMeta.orchestratorStepId
+        : null;
+    const stepKey =
+      typeof msMeta.stepKey === "string" ? msMeta.stepKey : null;
+
+    const runStep = graph.steps.find((s) => {
+      if (orchestratorStepId && s.id === orchestratorStepId) return true;
+      if (stepKey && s.stepKey === stepKey) return true;
+      return false;
+    });
+
+    if (!runStep) continue;
+
+    // Don't overwrite if the orchestrator step is already in a terminal state
+    const alreadyTerminal =
+      runStep.status === "succeeded" ||
+      runStep.status === "failed" ||
+      runStep.status === "skipped" ||
+      runStep.status === "superseded" ||
+      runStep.status === "canceled";
+    if (alreadyTerminal) continue;
+
+    const targetStatus = mapMissionStepStatusToOrchestrator(missionStep.status);
+    try {
+      if (targetStatus === "skipped") {
+        ctx.orchestratorService.skipStep({
+          runId: graph.run.id,
+          stepId: runStep.id,
+          reason: `User ${missionStep.status} mission step "${missionStep.title}" via UI`,
+        });
+      } else {
+        // For canceled: use skipStep with a cancel reason since orchestratorService
+        // does not expose a dedicated cancelStep — skipStep is the closest equivalent
+        // that properly handles downstream dependency refreshes.
+        ctx.orchestratorService.skipStep({
+          runId: graph.run.id,
+          stepId: runStep.id,
+          reason: `User canceled mission step "${missionStep.title}" via UI`,
+        });
+      }
+      synced++;
+    } catch {
+      // Ignore failures (step may already be terminal in a race)
+    }
+  }
+
+  return { synced };
 }
 
 /**

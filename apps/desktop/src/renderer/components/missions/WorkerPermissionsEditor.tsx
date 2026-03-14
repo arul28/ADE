@@ -49,6 +49,9 @@ export type WorkerPermissionsEditorProps = {
   onPermissionChange: (next: MissionPermissionConfig) => void;
   labelStyle?: React.CSSProperties;
   inputStyle?: React.CSSProperties;
+  title?: string;
+  description?: string;
+  showExternalMcp?: boolean;
 };
 
 function normalizeMissionSelection(value?: ExternalMcpMissionSelection | null): ExternalMcpMissionSelection {
@@ -98,6 +101,9 @@ export function WorkerPermissionsEditor({
   onPermissionChange,
   labelStyle: _lblStyle,
   inputStyle: inpStyle,
+  title,
+  description,
+  showExternalMcp = true,
 }: WorkerPermissionsEditorProps) {
   const families = useMemo(
     () => deriveActivePermFamilies(orchestratorModelId, phases),
@@ -189,8 +195,13 @@ export function WorkerPermissionsEditor({
     <div className="space-y-2">
       <span style={_lblStyle ?? DEFAULT_LABEL_STYLE}>
         <Shield size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
-        WORKER PERMISSIONS
+        {title ?? "WORKER PERMISSIONS"}
       </span>
+      {description ? (
+        <div style={{ fontSize: 10, color: COLORS.textDim, fontFamily: MONO_FONT, lineHeight: "1.5" }}>
+          {description}
+        </div>
+      ) : null}
 
       <div className="space-y-2">
         {families.length === 0 && (
@@ -315,132 +326,134 @@ export function WorkerPermissionsEditor({
         </div>
       )}
 
-      <div
-        style={{
-          background: COLORS.recessedBg,
-          border: `1px solid ${COLORS.border}`,
-          padding: "10px 12px",
-          marginTop: 8,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-          <span style={{ fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", color: COLORS.textPrimary }}>
-            External MCP
-          </span>
-          <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-            Mission-level external tool surface
-          </span>
-        </div>
-
-        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: COLORS.textPrimary, fontFamily: MONO_FONT }}>
-          <input
-            type="checkbox"
-            checked={externalSelection.enabled === true}
-            onChange={(event) => updateExternalMcp({ ...externalSelection, enabled: event.target.checked })}
-          />
-          Enable ADE-managed external MCP tools for this mission
-        </label>
-
-        {externalRegistryError && (
-          <div style={{ fontSize: 10, color: COLORS.danger, fontFamily: MONO_FONT, marginTop: 8 }}>
-            {externalRegistryError}
+      {showExternalMcp ? (
+        <div
+          style={{
+            background: COLORS.recessedBg,
+            border: `1px solid ${COLORS.border}`,
+            padding: "10px 12px",
+            marginTop: 8,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <span style={{ fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", color: COLORS.textPrimary }}>
+              External MCP
+            </span>
+            <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+              Mission-level external tool surface
+            </span>
           </div>
-        )}
 
-        {!externalRegistryError && externalSelection.enabled === true && (
-          <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
-            {availableServers.length === 0 ? (
-              <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                No external MCP servers are configured in ADE yet.
-              </div>
-            ) : (
-              <div>
-                <div style={{ fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", color: COLORS.textMuted, marginBottom: 6 }}>
-                  Selected Servers
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: COLORS.textPrimary, fontFamily: MONO_FONT }}>
+            <input
+              type="checkbox"
+              checked={externalSelection.enabled === true}
+              onChange={(event) => updateExternalMcp({ ...externalSelection, enabled: event.target.checked })}
+            />
+            Enable ADE-managed external MCP tools for this mission
+          </label>
+
+          {externalRegistryError && (
+            <div style={{ fontSize: 10, color: COLORS.danger, fontFamily: MONO_FONT, marginTop: 8 }}>
+              {externalRegistryError}
+            </div>
+          )}
+
+          {!externalRegistryError && externalSelection.enabled === true && (
+            <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+              {availableServers.length === 0 ? (
+                <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                  No external MCP servers are configured in ADE yet.
                 </div>
-                <div style={{ display: "grid", gap: 6 }}>
-                  {availableServers.map((serverName) => {
-                    const snapshot = snapshotByName.get(serverName);
-                    const isChecked = (externalSelection.selectedServers ?? []).includes(serverName);
-                    return (
-                      <label key={serverName} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: COLORS.textPrimary, fontFamily: MONO_FONT }}>
-                        <input
-                          type="checkbox"
-                          checked={isChecked}
-                          onChange={(event) => {
-                            const selectedServers = toggleValue(
-                              externalSelection.selectedServers ?? [],
-                              serverName,
-                              event.target.checked,
-                            );
-                            const allowedToolNames = new Set(
-                              externalSnapshots
-                                .filter((entry) => selectedServers.length === 0 || selectedServers.includes(entry.config.name))
-                                .flatMap((entry) => entry.tools.map((tool) => tool.namespacedName)),
-                            );
-                            updateExternalMcp({
+              ) : (
+                <div>
+                  <div style={{ fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", color: COLORS.textMuted, marginBottom: 6 }}>
+                    Selected Servers
+                  </div>
+                  <div style={{ display: "grid", gap: 6 }}>
+                    {availableServers.map((serverName) => {
+                      const snapshot = snapshotByName.get(serverName);
+                      const isChecked = (externalSelection.selectedServers ?? []).includes(serverName);
+                      return (
+                        <label key={serverName} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: COLORS.textPrimary, fontFamily: MONO_FONT }}>
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={(event) => {
+                              const selectedServers = toggleValue(
+                                externalSelection.selectedServers ?? [],
+                                serverName,
+                                event.target.checked,
+                              );
+                              const allowedToolNames = new Set(
+                                externalSnapshots
+                                  .filter((entry) => selectedServers.length === 0 || selectedServers.includes(entry.config.name))
+                                  .flatMap((entry) => entry.tools.map((tool) => tool.namespacedName)),
+                              );
+                              updateExternalMcp({
+                                ...externalSelection,
+                                selectedServers,
+                                selectedTools: (externalSelection.selectedTools ?? []).filter((toolName) => allowedToolNames.has(toolName)),
+                              });
+                            }}
+                          />
+                          <span>{serverName}</span>
+                          <span style={{ marginLeft: "auto", color: COLORS.textMuted }}>
+                            {snapshot?.state ?? "disconnected"} · {snapshot?.toolCount ?? 0} tools
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <div style={{ fontSize: 10, color: COLORS.textDim, fontFamily: MONO_FONT, marginTop: 6 }}>
+                    Leave everything unchecked to allow all externally approved servers for this mission.
+                  </div>
+                </div>
+              )}
+
+              {availableTools.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", color: COLORS.textMuted, marginBottom: 6 }}>
+                    Selected Tools
+                  </div>
+                  <div style={{ display: "grid", gap: 6, maxHeight: 180, overflowY: "auto", paddingRight: 4 }}>
+                    {availableTools.map((tool) => (
+                      <label key={tool.namespacedName} style={{ display: "grid", gap: 2, border: `1px solid ${COLORS.outlineBorder}`, background: COLORS.cardBg, padding: "6px 8px" }}>
+                        <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: COLORS.textPrimary, fontFamily: MONO_FONT }}>
+                          <input
+                            type="checkbox"
+                            checked={(externalSelection.selectedTools ?? []).includes(tool.namespacedName)}
+                            onChange={(event) => updateExternalMcp({
                               ...externalSelection,
-                              selectedServers,
-                              selectedTools: (externalSelection.selectedTools ?? []).filter((toolName) => allowedToolNames.has(toolName)),
-                            });
-                          }}
-                        />
-                        <span>{serverName}</span>
-                        <span style={{ marginLeft: "auto", color: COLORS.textMuted }}>
-                          {snapshot?.state ?? "disconnected"} · {snapshot?.toolCount ?? 0} tools
+                              selectedTools: toggleValue(
+                                externalSelection.selectedTools ?? [],
+                                tool.namespacedName,
+                                event.target.checked,
+                              ),
+                            })}
+                          />
+                          <span>{tool.namespacedName}</span>
+                          <span style={{ marginLeft: "auto", color: tool.safety === "write" ? COLORS.warning : COLORS.info }}>
+                            {tool.safety}
+                          </span>
                         </span>
+                        {tool.description && (
+                          <span style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                            {tool.description}
+                          </span>
+                        )}
                       </label>
-                    );
-                  })}
+                    ))}
+                  </div>
+                  <div style={{ fontSize: 10, color: COLORS.textDim, fontFamily: MONO_FONT, marginTop: 6 }}>
+                    Leave everything unchecked to allow all tools from the selected servers.
+                  </div>
                 </div>
-                <div style={{ fontSize: 10, color: COLORS.textDim, fontFamily: MONO_FONT, marginTop: 6 }}>
-                  Leave everything unchecked to allow all externally approved servers for this mission.
-                </div>
-              </div>
-            )}
-
-            {availableTools.length > 0 && (
-              <div>
-                <div style={{ fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", color: COLORS.textMuted, marginBottom: 6 }}>
-                  Selected Tools
-                </div>
-                <div style={{ display: "grid", gap: 6, maxHeight: 180, overflowY: "auto", paddingRight: 4 }}>
-                  {availableTools.map((tool) => (
-                    <label key={tool.namespacedName} style={{ display: "grid", gap: 2, border: `1px solid ${COLORS.outlineBorder}`, background: COLORS.cardBg, padding: "6px 8px" }}>
-                      <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: COLORS.textPrimary, fontFamily: MONO_FONT }}>
-                        <input
-                          type="checkbox"
-                          checked={(externalSelection.selectedTools ?? []).includes(tool.namespacedName)}
-                          onChange={(event) => updateExternalMcp({
-                            ...externalSelection,
-                            selectedTools: toggleValue(
-                              externalSelection.selectedTools ?? [],
-                              tool.namespacedName,
-                              event.target.checked,
-                            ),
-                          })}
-                        />
-                        <span>{tool.namespacedName}</span>
-                        <span style={{ marginLeft: "auto", color: tool.safety === "write" ? COLORS.warning : COLORS.info }}>
-                          {tool.safety}
-                        </span>
-                      </span>
-                      {tool.description && (
-                        <span style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                          {tool.description}
-                        </span>
-                      )}
-                    </label>
-                  ))}
-                </div>
-                <div style={{ fontSize: 10, color: COLORS.textDim, fontFamily: MONO_FONT, marginTop: 6 }}>
-                  Leave everything unchecked to allow all tools from the selected servers.
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
+              )}
+            </div>
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }

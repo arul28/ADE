@@ -3,30 +3,39 @@ import type { AgentRole, AgentStatus, WorkerTemplate } from "../../../../shared/
 /* ── Shared form class patterns ── */
 
 export const inputCls =
-  "h-8 w-full rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 text-xs font-mono text-fg placeholder:text-muted-fg/40 hover:border-white/[0.12] focus:border-accent/40 focus:outline-none transition-colors";
+  "h-9 w-full rounded-lg border border-white/[0.07] bg-[rgba(24,20,35,0.5)] px-3 text-sm font-sans text-fg placeholder:text-muted-fg/40 hover:border-[rgba(167,139,250,0.18)] focus:border-[rgba(167,139,250,0.35)] focus:outline-none transition-colors backdrop-blur-sm";
 
 export const selectCls = `${inputCls} appearance-none`;
 
 export const labelCls =
-  "text-xs font-mono font-semibold uppercase tracking-[0.5px] text-muted-fg/70 mb-1.5";
+  "mb-1.5 text-xs font-medium text-muted-fg/55";
+
+/* ── Accent palette (matches Preview tab) ── */
+export const ACCENT = {
+  purple: "#A78BFA",
+  blue: "#60A5FA",
+  green: "#34D399",
+  pink: "#F472B6",
+  amber: "#FBBF24",
+} as const;
 
 export const textareaCls =
-  "w-full rounded-lg border border-white/[0.08] bg-white/[0.03] p-3 text-xs font-mono text-fg placeholder:text-muted-fg/40 hover:border-white/[0.12] focus:border-accent/40 focus:outline-none resize-vertical transition-colors";
+  "w-full rounded-lg border border-white/[0.07] bg-[rgba(24,20,35,0.5)] p-3 text-sm font-sans text-fg placeholder:text-muted-fg/40 hover:border-[rgba(167,139,250,0.18)] focus:border-[rgba(167,139,250,0.35)] focus:outline-none resize-vertical transition-colors backdrop-blur-sm";
 
 export const cardCls =
-  "rounded-xl border border-white/[0.06] bg-white/[0.03] p-4 backdrop-blur-xl";
+  "rounded-xl border border-[rgba(167,139,250,0.1)] bg-[rgba(24,20,35,0.55)] p-4 backdrop-blur-[20px] transition-all duration-200 hover:border-[rgba(167,139,250,0.22)] hover:bg-[rgba(24,20,35,0.7)]";
 
 export const surfaceCardCls =
-  "rounded-xl border border-white/[0.06] bg-white/[0.02] p-4 backdrop-blur-xl";
+  "rounded-xl border border-[rgba(167,139,250,0.08)] bg-[rgba(24,20,35,0.4)] p-4 backdrop-blur-[20px]";
 
 export const recessedPanelCls =
-  "rounded-xl border border-white/[0.04] bg-white/[0.01] backdrop-blur-xl";
+  "rounded-xl border border-white/[0.05] bg-[rgba(15,12,24,0.6)] backdrop-blur-[20px]";
 
 export const shellTabBarCls =
-  "shrink-0 flex items-center gap-0 border-b border-white/[0.06] bg-white/[0.02] backdrop-blur-xl";
+  "shrink-0 flex items-center gap-0 border-b border-white/[0.05] bg-transparent backdrop-blur-sm";
 
 export const shellBodyCls =
-  "flex h-full w-full overflow-hidden bg-bg text-fg";
+  "flex h-full w-full overflow-hidden bg-bg text-fg font-sans";
 
 /* ── Agent status colors ── */
 

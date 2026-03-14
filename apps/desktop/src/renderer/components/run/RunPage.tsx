@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Play, Stop, Plus, MagnifyingGlass, X, FolderOpen, Folder, Rocket } from "@phosphor-icons/react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Play, Stop, Plus, X, FolderOpen, Folder, Rocket } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { RunSidebar } from "./RunSidebar";
@@ -7,7 +7,6 @@ import { CommandCard } from "./CommandCard";
 import { ProcessMonitor } from "./ProcessMonitor";
 import { LaneRuntimeBar } from "./LaneRuntimeBar";
 import { AddCommandDialog, type AddCommandInitialValues } from "./AddCommandDialog";
-import { AiScanPanel, type AiScanSuggestion } from "./AiScanPanel";
 import { commandArrayToLine, parseCommandLine } from "../../lib/shell";
 import type {
   ProcessDefinition,
@@ -153,12 +152,16 @@ export function RunPage() {
   const [runtime, setRuntime] = useState<ProcessRuntime[]>([]);
   const [selectedStackId, setSelectedStackId] = useState<string | null>(null);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
-  const [scanPanelOpen, setScanPanelOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [editingProcess, setEditingProcess] = useState<{ id: string; values: AddCommandInitialValues } | null>(null);
   const [moveToStackProcessId, setMoveToStackProcessId] = useState<string | null>(null);
+  const runtimeRefreshTimerRef = useRef<number | null>(null);
 
   const effectiveLaneId = runLaneId ?? selectedLaneId ?? lanes[0]?.id ?? null;
+  const selectedLane = useMemo(
+    () => lanes.find((lane) => lane.id === effectiveLaneId) ?? null,
+    [effectiveLaneId, lanes]
+  );
 
   // Sync runLaneId from selectedLaneId
   useEffect(() => {
@@ -167,12 +170,10 @@ export function RunPage() {
     }
   }, [runLaneId, selectedLaneId, selectRunLane]);
 
-  // Load config, definitions, runtime
-  const refreshAll = useCallback(async () => {
+  const refreshDefinitions = useCallback(async () => {
     if (showWelcome) {
       setConfig(null);
       setDefinitions([]);
-      setRuntime([]);
       return;
     }
 
@@ -184,21 +185,51 @@ export function RunPage() {
       ]);
       setConfig(nextConfig);
       setDefinitions(nextDefs);
-      if (effectiveLaneId) {
-        const nextRuntime = await window.ade.processes.listRuntime(effectiveLaneId);
-        setRuntime(nextRuntime);
-      }
     } catch (err) {
-      console.error("RunPage.refreshAll", err);
+      console.error("RunPage.refreshDefinitions", err);
     } finally {
       setLoading(false);
+    }
+  }, [showWelcome]);
+
+  const refreshRuntime = useCallback(async () => {
+    if (showWelcome || !effectiveLaneId) {
+      setRuntime([]);
+      return;
+    }
+    try {
+      const nextRuntime = await window.ade.processes.listRuntime(effectiveLaneId);
+      setRuntime(nextRuntime);
+    } catch (err) {
+      console.error("RunPage.refreshRuntime", err);
     }
   }, [effectiveLaneId, showWelcome]);
 
   useEffect(() => {
     if (showWelcome) return;
-    void refreshAll();
-  }, [refreshAll, showWelcome]);
+    void refreshDefinitions();
+  }, [refreshDefinitions, showWelcome]);
+
+  useEffect(() => {
+    if (runtimeRefreshTimerRef.current != null) {
+      window.clearTimeout(runtimeRefreshTimerRef.current);
+      runtimeRefreshTimerRef.current = null;
+    }
+    if (showWelcome) {
+      setRuntime([]);
+      return;
+    }
+    runtimeRefreshTimerRef.current = window.setTimeout(() => {
+      runtimeRefreshTimerRef.current = null;
+      void refreshRuntime();
+    }, 140);
+    return () => {
+      if (runtimeRefreshTimerRef.current != null) {
+        window.clearTimeout(runtimeRefreshTimerRef.current);
+        runtimeRefreshTimerRef.current = null;
+      }
+    };
+  }, [refreshRuntime, showWelcome]);
 
   // Subscribe to process events
   useEffect(() => {
@@ -357,9 +388,9 @@ export function RunPage() {
       shared.stackButtons = stackButtons;
 
       await window.ade.projectConfig.save({ shared, local: config.local });
-      await refreshAll();
+      await Promise.all([refreshDefinitions(), refreshRuntime()]);
     },
-    [config, refreshAll]
+    [config, refreshDefinitions, refreshRuntime]
   );
 
   const updateProcessInConfig = useCallback(
@@ -411,9 +442,9 @@ export function RunPage() {
 
       shared.stackButtons = stackButtons;
       await window.ade.projectConfig.save({ shared, local: config.local });
-      await refreshAll();
+      await Promise.all([refreshDefinitions(), refreshRuntime()]);
     },
-    [config, refreshAll]
+    [config, refreshDefinitions, refreshRuntime]
   );
 
   const handleDeleteProcess = useCallback(
@@ -426,9 +457,9 @@ export function RunPage() {
         processIds: (s.processIds ?? []).filter((id) => id !== processId),
       }));
       await window.ade.projectConfig.save({ shared, local: config.local });
-      await refreshAll();
+      await Promise.all([refreshDefinitions(), refreshRuntime()]);
     },
-    [config, refreshAll]
+    [config, refreshDefinitions, refreshRuntime]
   );
 
   const handleCreateStack = useCallback(
@@ -442,9 +473,9 @@ export function RunPage() {
       };
       shared.stackButtons = [...(shared.stackButtons ?? []), newStack];
       await window.ade.projectConfig.save({ shared, local: config.local });
-      await refreshAll();
+      await Promise.all([refreshDefinitions(), refreshRuntime()]);
     },
-    [config, refreshAll]
+    [config, refreshDefinitions, refreshRuntime]
   );
 
   const handleRenameStack = useCallback(
@@ -455,9 +486,9 @@ export function RunPage() {
         s.id === stackId ? { ...s, name } : s
       );
       await window.ade.projectConfig.save({ shared, local: config.local });
-      await refreshAll();
+      await Promise.all([refreshDefinitions(), refreshRuntime()]);
     },
-    [config, refreshAll]
+    [config, refreshDefinitions, refreshRuntime]
   );
 
   const handleDeleteStack = useCallback(
@@ -467,32 +498,9 @@ export function RunPage() {
       shared.stackButtons = (shared.stackButtons ?? []).filter((s) => s.id !== stackId);
       await window.ade.projectConfig.save({ shared, local: config.local });
       if (selectedStackId === stackId) setSelectedStackId(null);
-      await refreshAll();
+      await Promise.all([refreshDefinitions(), refreshRuntime()]);
     },
-    [config, refreshAll, selectedStackId]
-  );
-
-  const handleAddFromScan = useCallback(
-    async (suggestion: AiScanSuggestion) => {
-      await saveProcessToConfig({
-        name: suggestion.name,
-        command: suggestion.command,
-        stackId: null,
-        newStackName: suggestion.stack,
-        cwd: ".",
-      });
-    },
-    [saveProcessToConfig]
-  );
-
-  const handleAddAllFromScan = useCallback(
-    async (suggestions: AiScanSuggestion[]) => {
-      for (const s of suggestions) {
-        await handleAddFromScan(s);
-      }
-      setScanPanelOpen(false);
-    },
-    [handleAddFromScan]
+    [config, refreshDefinitions, refreshRuntime, selectedStackId]
   );
 
   const handleEditProcess = useCallback(
@@ -540,9 +548,9 @@ export function RunPage() {
       shared.stackButtons = stackButtons;
       await window.ade.projectConfig.save({ shared, local: config.local });
       setMoveToStackProcessId(null);
-      await refreshAll();
+      await Promise.all([refreshDefinitions(), refreshRuntime()]);
     },
-    [config, refreshAll]
+    [config, refreshDefinitions, refreshRuntime]
   );
 
   // Show welcome screen when no project is currently selected or user has closed all projects.
@@ -620,14 +628,6 @@ export function RunPage() {
         >
           <Plus size={14} weight="bold" />
           Add
-        </button>
-        <button
-          type="button"
-          onClick={() => setScanPanelOpen(true)}
-          style={outlineButton()}
-        >
-          <MagnifyingGlass size={14} weight="bold" />
-          Scan
         </button>
       </div>
 
@@ -769,16 +769,12 @@ export function RunPage() {
                     maxWidth: 300,
                   }}
                 >
-                  Add commands manually or scan your repo to detect dev servers, build scripts, and deploy commands.
+                  Add a command for the lane you want to run, then start it here to get runtime state and preview routing.
                 </div>
                 <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
                   <button type="button" onClick={() => setAddDialogOpen(true)} style={primaryButton()}>
                     <Plus size={14} weight="bold" />
                     Add Command
-                  </button>
-                  <button type="button" onClick={() => setScanPanelOpen(true)} style={outlineButton()}>
-                    <MagnifyingGlass size={14} weight="bold" />
-                    Scan Repo
                   </button>
                 </div>
               </div>
@@ -821,6 +817,7 @@ export function RunPage() {
         open={addDialogOpen}
         onClose={() => setAddDialogOpen(false)}
         onSubmit={saveProcessToConfig}
+        laneRootPath={selectedLane?.worktreePath ?? null}
       />
 
       {/* ── Edit Process Dialog (reuses AddCommandDialog) ── */}
@@ -837,13 +834,7 @@ export function RunPage() {
         initialValues={editingProcess?.values ?? null}
         title="Edit Command"
         submitLabel="Save"
-      />
-
-      <AiScanPanel
-        open={scanPanelOpen}
-        onClose={() => setScanPanelOpen(false)}
-        onAddCommand={handleAddFromScan}
-        onAddAll={handleAddAllFromScan}
+        laneRootPath={selectedLane?.worktreePath ?? null}
       />
 
       {/* ── Move to Stack Dialog ── */}

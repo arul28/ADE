@@ -2,27 +2,28 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import cron from "node-cron";
-import type {
-  AutomationAction,
-  AutomationActionType,
-  AutomationDraftAmbiguity,
-  AutomationDraftConfirmationRequirement,
-  AutomationDraftIssue,
-  AutomationDraftResolution,
-  AutomationDraftResolutionCandidate,
-  AutomationParseNaturalLanguageRequest,
-  AutomationParseNaturalLanguageResult,
-  AutomationRule,
-  AutomationRuleDraft,
-  AutomationRuleDraftNormalized,
-  AutomationSaveDraftRequest,
-  AutomationSaveDraftResult,
-  AutomationSimulateRequest,
-  AutomationSimulateResult,
-  AutomationSimulationAction,
-  AutomationValidateDraftRequest,
-  AutomationValidateDraftResult,
-  TestSuiteDefinition
+import {
+  AUTOMATION_TRIGGER_TYPES,
+  type AutomationAction,
+  type AutomationActionType,
+  type AutomationDraftAmbiguity,
+  type AutomationDraftConfirmationRequirement,
+  type AutomationDraftIssue,
+  type AutomationDraftResolution,
+  type AutomationDraftResolutionCandidate,
+  type AutomationParseNaturalLanguageRequest,
+  type AutomationParseNaturalLanguageResult,
+  type AutomationRule,
+  type AutomationRuleDraft,
+  type AutomationRuleDraftNormalized,
+  type AutomationSaveDraftRequest,
+  type AutomationSaveDraftResult,
+  type AutomationSimulateRequest,
+  type AutomationSimulateResult,
+  type AutomationSimulationAction,
+  type AutomationValidateDraftRequest,
+  type AutomationValidateDraftResult,
+  type TestSuiteDefinition
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { Logger } from "../logging/logger";
@@ -183,6 +184,7 @@ function resolveTestSuite(query: string, suites: TestSuiteDefinition[]): {
 
 function buildPlannerSchema(): Record<string, unknown> {
   // JSON Schema for strict, machine-readable draft output.
+  const triggerTypes = [...AUTOMATION_TRIGGER_TYPES];
   const baseActionProps = {
     condition: { type: "string" },
     continueOnFailure: { type: "boolean" },
@@ -201,9 +203,17 @@ function buildPlannerSchema(): Record<string, unknown> {
         type: "object",
         additionalProperties: false,
         properties: {
-          type: { type: "string", enum: ["session-end", "commit", "schedule", "manual"] },
+          type: { type: "string", enum: triggerTypes },
           cron: { type: "string" },
-          branch: { type: "string" }
+          branch: { type: "string" },
+          targetBranch: { type: "string" },
+          paths: { type: "array", items: { type: "string" } },
+          namePattern: { type: "string" },
+          project: { type: "string" },
+          team: { type: "string" },
+          assignee: { type: "string" },
+          stateTransition: { type: "string" },
+          changedFields: { type: "array", items: { type: "string" } }
         },
         required: ["type"]
       },
@@ -259,12 +269,26 @@ function buildPlannerPrompt(args: {
     "Policy:",
     "- If user intent implies running commands, prefer built-in actions when possible.",
     "- For schedules, output a 5-field cron expression (minute hour day-of-month month day-of-week).",
+    "- Prefer the docs-style trigger names for git, file, lane, and Linear events.",
     "",
     "Available triggers:",
     "- session-end",
     "- commit",
+    "- git.commit",
+    "- git.push",
+    "- git.pr_opened",
+    "- git.pr_updated",
+    "- git.pr_merged",
+    "- git.pr_closed",
+    "- file.change",
+    "- lane.created",
+    "- lane.archived",
     "- schedule (requires cron)",
     "- manual",
+    "- linear.issue_created",
+    "- linear.issue_updated",
+    "- linear.issue_assigned",
+    "- linear.issue_status_changed",
     "",
     "Available actions:",
     "- update-packs",
@@ -490,8 +514,21 @@ function normalizeDraft(args: {
     if (
       triggerType !== "session-end" &&
       triggerType !== "commit" &&
+      triggerType !== "git.commit" &&
+      triggerType !== "git.push" &&
+      triggerType !== "git.pr_opened" &&
+      triggerType !== "git.pr_updated" &&
+      triggerType !== "git.pr_merged" &&
+      triggerType !== "git.pr_closed" &&
+      triggerType !== "file.change" &&
+      triggerType !== "lane.created" &&
+      triggerType !== "lane.archived" &&
       triggerType !== "schedule" &&
       triggerType !== "manual" &&
+      triggerType !== "linear.issue_created" &&
+      triggerType !== "linear.issue_updated" &&
+      triggerType !== "linear.issue_assigned" &&
+      triggerType !== "linear.issue_status_changed" &&
       triggerType !== "github-webhook" &&
       triggerType !== "webhook"
     ) {
@@ -509,6 +546,8 @@ function normalizeDraft(args: {
     }
     const branch = safeTrim(raw?.branch);
     if (branch) trigger.branch = branch;
+    const targetBranch = safeTrim(raw?.targetBranch);
+    if (targetBranch) trigger.targetBranch = targetBranch;
     const event = safeTrim(raw?.event);
     if (event) trigger.event = event;
     const author = safeTrim(raw?.author);
@@ -519,6 +558,18 @@ function normalizeDraft(args: {
     if (paths.length) trigger.paths = paths;
     const keywords = Array.isArray(raw?.keywords) ? raw.keywords.map((value: unknown) => safeTrim(value)).filter(Boolean) : [];
     if (keywords.length) trigger.keywords = keywords;
+    const namePattern = safeTrim(raw?.namePattern);
+    if (namePattern) trigger.namePattern = namePattern;
+    const project = safeTrim(raw?.project);
+    if (project) trigger.project = project;
+    const team = safeTrim(raw?.team);
+    if (team) trigger.team = team;
+    const assignee = safeTrim(raw?.assignee);
+    if (assignee) trigger.assignee = assignee;
+    const stateTransition = safeTrim(raw?.stateTransition);
+    if (stateTransition) trigger.stateTransition = stateTransition;
+    const changedFields = Array.isArray(raw?.changedFields) ? raw.changedFields.map((value: unknown) => safeTrim(value)).filter(Boolean) : [];
+    if (changedFields.length) trigger.changedFields = changedFields;
     const secretRef = safeTrim(raw?.secretRef);
     if ((triggerType === "webhook" || triggerType === "github-webhook") && !secretRef) {
       issues.push({ level: "error", path: `triggers[${index}].secretRef`, message: "Webhook triggers require secretRef." });
@@ -895,21 +946,27 @@ export function createAutomationPlannerService({
         };
       }
 
+      const parsedTrigger = {
+        type: safeTrim(parsed?.trigger?.type) as any || "manual",
+        ...(safeTrim(parsed?.trigger?.cron) ? { cron: safeTrim(parsed.trigger.cron) } : {}),
+        ...(safeTrim(parsed?.trigger?.branch) ? { branch: safeTrim(parsed.trigger.branch) } : {}),
+        ...(safeTrim(parsed?.trigger?.targetBranch) ? { targetBranch: safeTrim(parsed.trigger.targetBranch) } : {}),
+        ...(Array.isArray(parsed?.trigger?.paths) && parsed.trigger.paths.length ? { paths: parsed.trigger.paths.map((value: unknown) => safeTrim(value)).filter(Boolean) } : {}),
+        ...(safeTrim(parsed?.trigger?.namePattern) ? { namePattern: safeTrim(parsed.trigger.namePattern) } : {}),
+        ...(safeTrim(parsed?.trigger?.project) ? { project: safeTrim(parsed.trigger.project) } : {}),
+        ...(safeTrim(parsed?.trigger?.team) ? { team: safeTrim(parsed.trigger.team) } : {}),
+        ...(safeTrim(parsed?.trigger?.assignee) ? { assignee: safeTrim(parsed.trigger.assignee) } : {}),
+        ...(safeTrim(parsed?.trigger?.stateTransition) ? { stateTransition: safeTrim(parsed.trigger.stateTransition) } : {}),
+        ...(Array.isArray(parsed?.trigger?.changedFields) && parsed.trigger.changedFields.length ? { changedFields: parsed.trigger.changedFields.map((value: unknown) => safeTrim(value)).filter(Boolean) } : {}),
+      };
+
       const draft: AutomationRuleDraft = {
         ...createEmptyDraft(),
         name: safeTrim(parsed?.name) || "New automation",
         enabled: typeof parsed?.enabled === "boolean" ? parsed.enabled : true,
         mode: safeTrim(parsed?.mode) === "fix" || safeTrim(parsed?.mode) === "monitor" ? safeTrim(parsed.mode) as any : "review",
-        triggers: [{
-          type: safeTrim(parsed?.trigger?.type) as any || "manual",
-          ...(safeTrim(parsed?.trigger?.cron) ? { cron: safeTrim(parsed.trigger.cron) } : {}),
-          ...(safeTrim(parsed?.trigger?.branch) ? { branch: safeTrim(parsed.trigger.branch) } : {}),
-        }],
-        trigger: {
-          type: safeTrim(parsed?.trigger?.type) as any || "manual",
-          ...(safeTrim(parsed?.trigger?.cron) ? { cron: safeTrim(parsed.trigger.cron) } : {}),
-          ...(safeTrim(parsed?.trigger?.branch) ? { branch: safeTrim(parsed.trigger.branch) } : {}),
-        },
+        triggers: [parsedTrigger],
+        trigger: parsedTrigger,
         ...(safeTrim(parsed?.prompt) ? { prompt: safeTrim(parsed.prompt) } : {}),
         ...(safeTrim(parsed?.templateId) ? { templateId: safeTrim(parsed.templateId) } : {}),
         ...(safeTrim(parsed?.reviewProfile) ? { reviewProfile: safeTrim(parsed.reviewProfile) as any } : {}),
@@ -1020,6 +1077,8 @@ export function createAutomationPlannerService({
         mode: normalized.mode,
         triggers: normalized.triggers,
         executor: normalized.executor,
+        ...(normalized.modelConfig ? { modelConfig: normalized.modelConfig } : {}),
+        ...(normalized.permissionConfig ? { permissionConfig: normalized.permissionConfig } : {}),
         ...(safeTrim(normalized.templateId) ? { templateId: safeTrim(normalized.templateId) } : {}),
         ...(safeTrim(normalized.prompt) ? { prompt: safeTrim(normalized.prompt) } : {}),
         reviewProfile: normalized.reviewProfile,
@@ -1030,7 +1089,8 @@ export function createAutomationPlannerService({
         outputs: normalized.outputs,
         verification: normalized.verification,
         billingCode: normalized.billingCode,
-        ...(normalized.queueStatus ? { queueStatus: normalized.queueStatus } : {})
+        ...(normalized.queueStatus ? { queueStatus: normalized.queueStatus } : {}),
+        ...(normalized.actions.length ? { actions: normalized.actions } : {}),
       };
       if (idx >= 0) rules[idx] = nextRule;
       else rules.push(nextRule);

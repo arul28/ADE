@@ -144,6 +144,7 @@ export function createProceduralLearningService(args: {
     UnifiedMemoryService,
     "getMemory" | "listMemories" | "addCandidateMemory" | "promoteMemory" | "archiveMemory" | "pinMemory" | "writeMemory"
   >;
+  onProcedurePromoted?: (memoryId: string) => void;
 }) {
   const { db, projectId, memoryService } = args;
 
@@ -345,6 +346,7 @@ export function createProceduralLearningService(args: {
     if (!memory.pinned && input.outcome === "success" && successCount >= 3 && nextConfidence >= 0.8) {
       memoryService.pinMemory(input.memoryId);
       memoryService.promoteMemory(input.memoryId);
+      try { args.onProcedurePromoted?.(input.memoryId); } catch { /* best-effort */ }
     }
     if (!memory.pinned && applications >= 5 && nextConfidence < 0.3) {
       memoryService.archiveMemory(input.memoryId);

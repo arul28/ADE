@@ -1179,7 +1179,7 @@ ADE now ships a canonical `.ade` contract. The tracked/shareable subset lives al
 
 ### Shipped Implementation Summary
 
-Phases 1, 1.5, 2, 3, 4, and 5 are complete. The sections below summarize the major shipped components across all phases.
+Phases 1, 1.5, 2, 3, 4, and 5 are complete. The v1 closeout (2026-03-13) addressed remaining integration gaps. The sections below summarize the major shipped components across all phases.
 
 **Orchestrator and mission runtime**:
 - AI orchestrator service with mission lifecycle management, decomposed into modular architecture (core + 8 extracted modules)
@@ -1195,7 +1195,8 @@ Phases 1, 1.5, 2, 3, 4, and 5 are complete. The sections below summarize the maj
 - Session persistence via attempt_transcripts table and JSONL files
 - Session resume via resumeUnified()
 - Shared facts injection and run narrative generation
-- Orchestrator Overhaul Phases 1-7 complete (reflection protocol closure, cross-mission trends, pattern-candidate promotion gates)
+- Orchestrator Overhaul Phases 1-9 complete (reflection protocol, cross-mission trends, pattern-candidate promotion, adaptive runtime, UI overhaul)
+- Coordinator finalization awareness: `check_finalization_status` tool + queue landing event routing
 - Approval gates (`phase_approval` intervention type), mandatory planning enforcement, multi-round deliberation
 - Adaptive runtime (`classifyTaskComplexity`, `scaleParallelismCap`, `evaluateModelDowngrade`)
 - Budget-gated spawns (hard cap checks before every worker spawn)
@@ -1210,6 +1211,9 @@ Phases 1, 1.5, 2, 3, 4, and 5 are complete. The sections below summarize the maj
 - Reasoning tier standardization: Claude CLI low/medium/high, Claude API low/medium/high/max, Codex minimal/low/medium/high/xhigh
 - UnifiedModelSelector redesign (auth-type grouping, hide unavailable models, "Configure more..." settings link)
 - Universal tools for API-key and local models (`universalTools.ts`: permission modes plan/edit/full-auto)
+- Workflow tools for chat agents (`workflowTools.ts`: lane creation, PR creation, screenshot capture, completion reporting)
+- Three-tier tool architecture: universalTools (all agents) -> workflowTools (chat agents) -> coordinatorTools (orchestrator only)
+- System prompt agent capability boundaries (tool tier guidance in agent prompts)
 - Middleware layer (`middleware.ts`: logging, retry, cost guard, reasoning extraction)
 
 **Memory and knowledge**:
@@ -1219,10 +1223,13 @@ Phases 1, 1.5, 2, 3, 4, and 5 are complete. The sections below summarize the maj
 - Orchestrator memory wiring (W7b): mission-memory SSoT, exact employee L2 injection
 - Skills and learning pipeline (W7c): episodic-to-procedural extraction, `.ade/skills/SKILL.md` materialization, skill ingestion from legacy sources, knowledge capture from failures/interventions/repeated errors/PR feedback, CTO memory review surfaces with provenance, confidence history, and re-index actions
 - Memory tool wiring into agent coding tool set
+- Memory pipeline fully wired: compaction flush into agentChatService, human work digest connected to git head watcher, failure knowledge capture on mission/agent errors, procedural learning export to `.ade/skills/`
+- Embedding health monitoring with structured logging
 
 **CTO and worker infrastructure** (Phase 4):
 - CTO core identity (W1), worker org chart (W2), heartbeat and activation (W3)
 - Bidirectional Linear sync (W4): `linearClient.ts`, `linearSyncService.ts`, `linearOutboundService.ts`, `linearRoutingService.ts`, `linearTemplateService.ts`, `linearCredentialService.ts`, `flowPolicyService.ts`, `linearCloseoutService.ts`, `linearDispatcherService.ts`, `linearIntakeService.ts`, `linearOAuthService.ts`, `linearWorkflowFileService.ts`, `issueTracker.ts` abstraction
+- Linear dispatcher hardening (v1 closeout): snapshot refresh before step execution, employee fallback to `awaiting_delegation`, PR null-check for manual mode, closure notifications to agent chat sessions, dynamic delegation UI
 - Automations platform and Night Shift (W5): `automationService.ts`, `automationPlannerService.ts`, `automationRoutingService.ts`, `automationIngressService.ts`, `automationSecretService.ts`
 - CTO + Org Experience Overhaul (W-UX): onboarding, activity, memory browser, and polish surfaces
 - External MCP consumption (W8): ADE-managed external MCP registry/service, namespaced `ext.*` tool exposure
@@ -1247,11 +1254,12 @@ Phases 1, 1.5, 2, 3, 4, and 5 are complete. The sections below summarize the maj
 - Pack service decomposed: `projectPackBuilder.ts`, `missionPackBuilder.ts`, `conflictPackBuilder.ts`, `packUtils.ts` extracted
 - Shared utilities consolidated: backend `utils.ts` (60+ duplicate removals), renderer `format.ts`/`shell.ts`/`sessions.ts`, shared React hooks
 
-**Not yet shipped**:
-- Computer use runtime: The `localComputerUse.ts` capability detection module exists, and mission validation models screenshot/browser-verification/video evidence requirements, but the full `screenshot_environment` / `interact_gui` / `record_environment` MCP tool loop is not exposed end-to-end. Automatic PR proof embedding from computer-use artifacts is not shipped.
+**Not yet shipped (v1 known limitations)**:
+- Computer use runtime: The `localComputerUse.ts` capability detection module exists, screenshot capture is available as a workflow tool (depends on agent runtime support), and mission validation models screenshot/browser-verification/video evidence requirements, but the full `screenshot_environment` / `interact_gui` / `record_environment` MCP tool loop is not exposed end-to-end. Automatic PR proof embedding from computer-use artifacts is not shipped.
 - Multi-device sync (cr-sqlite + WebSocket real-time replication) is Phase 6 work.
 - Remote brain deployment (user-owned VPS) is Phase 6 work.
 - iOS companion app is Phase 7 work.
+- Mission orchestration works end-to-end but complex multi-phase flows may benefit from human guidance via interventions.
 
 ### Compute Backends for Agent Execution
 
@@ -1762,7 +1770,7 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Chat session integration | Complete | `codex-chat`, `claude-chat`, and `ai-chat` tool types in `terminal_sessions` |
 | MCP server (`apps/mcp-server`) | Complete | JSON-RPC 2.0 server with 35 tools, dual-mode architecture (headless + embedded) |
 | MCP dual-mode architecture | Complete | Transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding (.ade/mcp.sock), smart entry point auto-detection |
-| AI orchestrator (Claude + MCP) | Complete | Tasks 1-7 shipped; Orchestrator Overhaul Phases 1-7 complete (reflection protocol closure with deterministic retrospectives, trend persistence, and candidate promotion gating). M4/M5 additions: approval gates, mandatory planning enforcement, multi-round deliberation, adaptive runtime, model downgrade, budget-gated spawns, benign error classification. |
+| AI orchestrator (Claude + MCP) | Complete | Tasks 1-7 shipped; Orchestrator Overhaul Phases 1-9 complete (reflection protocol, adaptive runtime, UI overhaul). V1 closeout: coordinator finalization awareness. M4/M5 additions: approval gates, mandatory planning enforcement, multi-round deliberation, adaptive runtime, model downgrade, budget-gated spawns, benign error classification. |
 | Phase 4 orchestrator delegation/team runtime | Complete | `delegate_parallel`, push sub-agent progress/completion rollups, native teammate auto-registration + allocation cap guardrails, single team-member data path |
 | Adaptive Runtime (M5) | Complete | `adaptiveRuntime.ts` — `classifyTaskComplexity`, `scaleParallelismCap`, `evaluateModelDowngrade`; budget hard cap enforcement in coordinator tools |
 | Approval Gates (M4/M5) | Complete | `phase_approval` intervention type, `requiresApproval` on PhaseCard, blocking phase transitions until user approval |

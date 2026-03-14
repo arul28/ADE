@@ -113,7 +113,7 @@ function PermissionHoverPane({ opt }: { opt: PermissionOption }) {
     <div
       className={cn(
         "pointer-events-none absolute z-50 w-[260px]",
-        "rounded-xl border border-white/[0.08] bg-card/95 shadow-[var(--shadow-float)] backdrop-blur-xl",
+        "rounded-xl border border-white/[0.08] bg-card shadow-[var(--shadow-float)]",
         "border-l-2",
         colors.border
       )}
@@ -395,6 +395,7 @@ export function AgentChatComposer({
     isCliWrapped: sessionIsCliWrapped ?? false,
     profile: surfaceProfile,
   });
+  const showAdvancedComputerUseControls = !isPersistentIdentitySurface;
 
   /* ── Keyboard handler for textarea ── */
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -458,7 +459,7 @@ export function AgentChatComposer({
     const shouldSend = sendOnEnter ? !commandEnter : commandEnter;
     if (!shouldSend) return;
     event.preventDefault();
-    if (busy) return;
+    if (busy || !modelId) return;
     onSubmit();
   };
 
@@ -672,182 +673,203 @@ export function AgentChatComposer({
         </>
       }
       footer={
-        <div className="flex items-center gap-2 px-3 py-1.5">
-          <UnifiedModelSelector
-            value={modelId}
-            onChange={onModelChange}
-            availableModelIds={availableModelIds}
-            disabled={modelSelectionLocked}
-            showReasoning={!isPersistentIdentitySurface}
-            reasoningEffort={reasoningEffort}
-            onReasoningEffortChange={onReasoningEffortChange}
-          />
-
-          {!isPersistentIdentitySurface && executionModeOptions.length > 0 && onExecutionModeChange ? (
-            <div className="flex items-center gap-1">
-              {executionModeOptions.map((option) => {
-                const isActive = executionMode === option.value;
-                return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className={cn(
-                      "rounded-[var(--chat-radius-pill)] border px-2.5 py-1 font-mono text-[8px] font-bold uppercase tracking-[0.16em] transition-colors",
-                      isActive
-                        ? "text-fg/84"
-                        : "border-white/[0.06] bg-black/10 text-muted-fg/28 hover:text-fg/62",
-                    )}
-                    style={isActive ? {
-                      borderColor: `${option.accent}44`,
-                      background: `${option.accent}18`,
-                    } : undefined}
-                    onClick={() => onExecutionModeChange(option.value)}
-                    title={option.helper}
-                  >
-                    {option.label}
-                  </button>
-                );
-              })}
-            </div>
-          ) : null}
-
-          {permissionMode && onPermissionModeChange && permissionOptions.length > 0 && !permissionModeLocked ? (
-            <div className="relative flex items-center gap-px rounded-[var(--chat-radius-pill)] border border-white/[0.06] bg-black/10">
-              {permissionOptions.map((opt) => {
-                const isActive = permissionMode === opt.value;
-                const isHovered = hoveredMode === opt.value;
-                const colors = safetyColors(opt.safety);
-                return (
-                  <div key={opt.value} className="relative">
+        <div className="space-y-1.5 px-3 py-2">
+          {/* Row 1: Control groups — permissions, CU, execution mode */}
+          <div className="flex flex-wrap items-center gap-1.5 overflow-x-auto scrollbar-none">
+            {!isPersistentIdentitySurface && executionModeOptions.length > 0 && onExecutionModeChange ? (
+              <div className="flex shrink-0 items-center gap-px rounded-md border border-white/[0.06] bg-white/[0.02]">
+                {executionModeOptions.map((option) => {
+                  const isActive = executionMode === option.value;
+                  return (
                     <button
+                      key={option.value}
                       type="button"
                       className={cn(
-                        "rounded-[var(--chat-radius-pill)] px-2.5 py-1 font-mono text-[8px] font-bold uppercase tracking-wider transition-colors",
-                        isActive ? `${colors.activeBg} text-fg/84` : "text-muted-fg/25 hover:text-muted-fg/50",
+                        "rounded-md px-2 py-1 font-sans text-[10px] font-medium transition-colors",
+                        isActive
+                          ? "text-fg/80"
+                          : "text-muted-fg/28 hover:text-fg/55",
                       )}
-                      onClick={() => onPermissionModeChange(opt.value)}
-                      onMouseEnter={() => setHoveredMode(opt.value)}
-                      onMouseLeave={() => setHoveredMode(null)}
-                      title={opt.shortDesc}
+                      style={isActive ? {
+                        borderColor: `${option.accent}44`,
+                        background: `${option.accent}18`,
+                      } : undefined}
+                      onClick={() => onExecutionModeChange(option.value)}
+                      title={option.helper}
                     >
-                      {opt.label}
+                      {option.label}
                     </button>
-                    {isHovered ? <PermissionHoverPane opt={opt} /> : null}
-                  </div>
+                  );
+                })}
+              </div>
+            ) : null}
+
+            {permissionMode && onPermissionModeChange && permissionOptions.length > 0 && !permissionModeLocked ? (
+              <div className="relative flex shrink-0 items-center gap-px rounded-md border border-white/[0.06] bg-white/[0.02]">
+                {permissionOptions.map((opt) => {
+                  const isActive = permissionMode === opt.value;
+                  const isHovered = hoveredMode === opt.value;
+                  const colors = safetyColors(opt.safety);
+                  return (
+                    <div key={opt.value} className="relative">
+                      <button
+                        type="button"
+                        className={cn(
+                          "rounded-md px-2 py-1 font-sans text-[10px] font-medium transition-colors",
+                          isActive ? `${colors.activeBg} text-fg/80` : "text-muted-fg/25 hover:text-muted-fg/50",
+                        )}
+                        onClick={() => onPermissionModeChange(opt.value)}
+                        onMouseEnter={() => {
+                          if (!isPersistentIdentitySurface) setHoveredMode(opt.value);
+                        }}
+                        onMouseLeave={() => setHoveredMode(null)}
+                        title={opt.shortDesc}
+                      >
+                        {opt.label}
+                      </button>
+                      {isHovered && !isPersistentIdentitySurface ? <PermissionHoverPane opt={opt} /> : null}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+
+            <div className="flex shrink-0 items-center gap-px rounded-md border border-white/[0.06] bg-white/[0.02] px-0.5 py-0.5">
+              {isPersistentIdentitySurface ? (
+                <span className="px-1.5 font-sans text-[10px] font-medium text-muted-fg/50">
+                  CU
+                </span>
+              ) : null}
+              {(["off", "auto", "enabled"] as const).map((mode) => {
+                const isActive = computerUsePolicy.mode === mode;
+                return (
+                  <button
+                    key={mode}
+                    type="button"
+                    className={cn(
+                      "rounded-md px-1.5 py-1 font-sans text-[10px] font-medium transition-colors",
+                      isActive
+                        ? "bg-sky-500/10 text-sky-300"
+                        : "text-muted-fg/25 hover:text-muted-fg/50",
+                    )}
+                    onClick={() => onComputerUsePolicyChange({ ...computerUsePolicy, mode })}
+                    title="Computer-use policy for this chat session"
+                  >
+                    {showAdvancedComputerUseControls
+                      ? (mode === "enabled" ? "CU On" : mode === "off" ? "CU Off" : "CU Auto")
+                      : (mode === "enabled" ? "On" : mode === "off" ? "Off" : "Auto")}
+                  </button>
                 );
               })}
-            </div>
-          ) : null}
-
-          <div className="flex items-center gap-1 rounded-[var(--chat-radius-pill)] border border-white/[0.06] bg-black/10 px-1.5 py-1">
-            {(["off", "auto", "enabled"] as const).map((mode) => {
-              const isActive = computerUsePolicy.mode === mode;
-              return (
-                <button
-                  key={mode}
-                  type="button"
-                  className={cn(
-                    "rounded-[var(--chat-radius-pill)] px-2 py-1 font-mono text-[8px] font-bold uppercase tracking-wider transition-colors",
-                    isActive
-                      ? "border border-sky-400/30 bg-sky-500/12 text-sky-200"
-                      : "text-muted-fg/25 hover:text-muted-fg/55",
-                  )}
-                  onClick={() => onComputerUsePolicyChange({ ...computerUsePolicy, mode })}
-                  title="Computer-use policy for this chat session"
-                >
-                  {mode === "enabled" ? "CU On" : mode === "off" ? "CU Off" : "CU Auto"}
-                </button>
-              );
-            })}
-            <button
-              type="button"
-              className={cn(
-                "rounded-[var(--chat-radius-pill)] px-2 py-1 font-mono text-[8px] uppercase tracking-wider transition-colors",
-                computerUsePolicy.allowLocalFallback ? "text-amber-200" : "text-muted-fg/25 hover:text-muted-fg/55",
-              )}
-              onClick={() => onComputerUsePolicyChange({
-                ...computerUsePolicy,
-                allowLocalFallback: !computerUsePolicy.allowLocalFallback,
-              })}
-              title="Allow ADE local fallback"
-            >
-              Fallback
-            </button>
-            <button
-              type="button"
-              className={cn(
-                "rounded-[var(--chat-radius-pill)] px-2 py-1 font-mono text-[8px] uppercase tracking-wider transition-colors",
-                computerUsePolicy.retainArtifacts ? "text-emerald-200" : "text-muted-fg/25 hover:text-muted-fg/55",
-              )}
-              onClick={() => onComputerUsePolicyChange({
-                ...computerUsePolicy,
-                retainArtifacts: !computerUsePolicy.retainArtifacts,
-              })}
-              title="Retain computer-use proof artifacts"
-            >
-              Proof
-            </button>
-          </div>
-
-          <div className="ml-auto flex items-center gap-1">
-            <button
-              type="button"
-              className="rounded-[var(--chat-radius-pill)] px-2 py-1 font-mono text-[8px] text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
-              disabled={!canAttach}
-              onClick={() => canAttach && setAttachmentPickerOpen((o) => !o)}
-              title="Attach files or images (@)"
-            >@</button>
-            <button
-              type="button"
-              className="rounded-[var(--chat-radius-pill)] px-2 py-1 font-mono text-[8px] text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
-              onClick={() => setContextPickerOpen((o) => !o)}
-              title="Context packs (#)"
-            >#</button>
-            <button
-              type="button"
-              className="rounded-[var(--chat-radius-pill)] px-2 py-1 font-mono text-[8px] text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
-              onClick={() => { onDraftChange("/"); setSlashPickerOpen(true); setSlashQuery(""); setSlashCursor(0); textareaRef.current?.focus(); }}
-              title="Commands (/)"
-            >/</button>
-
-            {turnActive ? (
-              <>
-                {draft.trim().length > 0 && (
+              {showAdvancedComputerUseControls ? (
+                <>
                   <button
                     type="button"
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-[var(--chat-radius-pill)] border border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] transition-all hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)]"
-                    onClick={onSubmit}
-                    title="Steer"
+                    className={cn(
+                      "rounded-md px-1.5 py-1 font-sans text-[10px] font-medium transition-colors",
+                      computerUsePolicy.allowLocalFallback ? "text-amber-300" : "text-muted-fg/25 hover:text-muted-fg/50",
+                    )}
+                    onClick={() => onComputerUsePolicyChange({
+                      ...computerUsePolicy,
+                      allowLocalFallback: !computerUsePolicy.allowLocalFallback,
+                    })}
+                    title="Allow ADE local fallback"
                   >
-                    <PaperPlaneTilt size={11} weight="fill" />
+                    Fallback
                   </button>
-                )}
-                <button
-                  type="button"
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-[var(--chat-radius-pill)] border border-red-500/20 bg-red-500/[0.06] text-red-400/70 transition-all hover:border-red-500/35 hover:bg-red-500/12 hover:text-red-400"
-                  title="Interrupt (Cmd+.)"
-                  onClick={onInterrupt}
-                >
-                  <Square size={10} weight="fill" />
-                </button>
-              </>
-            ) : (
+                  <button
+                    type="button"
+                    className={cn(
+                      "rounded-md px-1.5 py-1 font-sans text-[10px] font-medium transition-colors",
+                      computerUsePolicy.retainArtifacts ? "text-emerald-300" : "text-muted-fg/25 hover:text-muted-fg/50",
+                    )}
+                    onClick={() => onComputerUsePolicyChange({
+                      ...computerUsePolicy,
+                      retainArtifacts: !computerUsePolicy.retainArtifacts,
+                    })}
+                    title="Retain computer-use proof artifacts"
+                  >
+                    Proof
+                  </button>
+                </>
+              ) : null}
+            </div>
+          </div>
+
+          {/* Row 2: Model selector + actions */}
+          <div className="flex items-center gap-2">
+            <div className="min-w-0 shrink">
+              <UnifiedModelSelector
+                value={modelId}
+                onChange={onModelChange}
+                availableModelIds={availableModelIds}
+                disabled={modelSelectionLocked}
+                showReasoning={!isPersistentIdentitySurface}
+                reasoningEffort={reasoningEffort}
+                onReasoningEffortChange={onReasoningEffortChange}
+              />
+            </div>
+
+            <div className="ml-auto flex shrink-0 items-center gap-1">
               <button
                 type="button"
-                className={cn(
-                  "inline-flex h-7 items-center justify-center rounded-[var(--chat-radius-pill)] border px-3 transition-all",
-                  busy || !draft.trim().length
-                    ? "border-white/[0.04] text-muted-fg/12"
-                    : "border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_20%,transparent)]",
-                )}
-                disabled={busy || !draft.trim().length}
-                onClick={onSubmit}
-                title="Send"
-              >
-                <PaperPlaneTilt size={11} weight="fill" />
-                <span className="ml-1 font-mono text-[9px] uppercase tracking-[0.14em]">Send</span>
-              </button>
-            )}
+                className="rounded-md px-2 py-1 font-sans text-[10px] text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
+                disabled={!canAttach}
+                onClick={() => canAttach && setAttachmentPickerOpen((o) => !o)}
+                title="Attach files or images (@)"
+              >@</button>
+              <button
+                type="button"
+                className="rounded-md px-2 py-1 font-sans text-[10px] text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
+                onClick={() => setContextPickerOpen((o) => !o)}
+                title="Context packs (#)"
+              >#</button>
+              <button
+                type="button"
+                className="rounded-md px-2 py-1 font-sans text-[10px] text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
+                onClick={() => { onDraftChange("/"); setSlashPickerOpen(true); setSlashQuery(""); setSlashCursor(0); textareaRef.current?.focus(); }}
+                title="Commands (/)"
+              >/</button>
+
+              {turnActive ? (
+                <>
+                  {draft.trim().length > 0 && (
+                    <button
+                      type="button"
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] transition-all hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)]"
+                      onClick={onSubmit}
+                      title="Steer"
+                    >
+                      <PaperPlaneTilt size={11} weight="fill" />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-red-500/20 bg-red-500/[0.06] text-red-400/70 transition-all hover:border-red-500/35 hover:bg-red-500/12 hover:text-red-400"
+                    title="Interrupt (Cmd+.)"
+                    onClick={onInterrupt}
+                  >
+                    <Square size={10} weight="fill" />
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex h-7 items-center justify-center rounded-md border px-3 transition-all",
+                    busy || !draft.trim().length || !modelId
+                      ? "border-white/[0.04] text-muted-fg/12"
+                      : "border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_20%,transparent)]",
+                  )}
+                  disabled={busy || !draft.trim().length || !modelId}
+                  onClick={onSubmit}
+                  title={!modelId ? "Select a model first" : "Send"}
+                >
+                  <PaperPlaneTilt size={11} weight="fill" />
+                  <span className="ml-1 font-sans text-[10px]">Send</span>
+                </button>
+              )}
+            </div>
           </div>
         </div>
       }

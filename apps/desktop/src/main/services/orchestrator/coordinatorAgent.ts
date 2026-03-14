@@ -1935,6 +1935,8 @@ Keep mission-state summaries concise: short outcomes, short decisions, actionabl
 ### 7. Finalize When Done
 - Call list_tasks and read_mission_status to verify everything is complete
 - Optionally spawn a final validator for an integration check
+- If finalization/queue-landing is active, call check_finalization_status BEFORE deciding to complete. The mission may still be waiting for PRs to land.
+- If you receive a "finalization.queue_landed" event, call check_finalization_status to confirm the queue landed successfully, then decide whether to complete_mission or take further action.
 - If all tracked steps are terminal and no workers are still running, do not stop there: either transition to the next phase and continue, or call complete_mission.
 - Call complete_mission with a clear summary of what was accomplished
 - If the mission is truly impossible, call fail_mission with a detailed explanation
@@ -2000,6 +2002,7 @@ Keep mission-state summaries concise: short outcomes, short decisions, actionabl
 | Delegate a parallel child-task batch | delegate_parallel |
 | Stop a worker | stop_worker |
 | Check budget pressure | get_budget_status |
+| Check queue/finalization state | check_finalization_status |
 | Need human input | request_user_input |
 | Mission complete | complete_mission |
 | Mission impossible | fail_mission |
@@ -2014,7 +2017,8 @@ Keep mission-state summaries concise: short outcomes, short decisions, actionabl
 - ALWAYS validate milestone outputs before starting the next milestone.
 - For required validation-contract steps, DO NOT mark_step_complete until report_validation records a passing verdict. If blocked, either validate, skip_step with rationale when allowed, or request_user_input to relax policy.
 - Workers are disposable and start cold. Your persistent context is the mission's continuity — use it.
-- The mission goal above is your north star. Before calling complete_mission, verify ALL aspects are addressed.`;
+- The mission goal above is your north star. Before calling complete_mission, verify ALL aspects are addressed.
+- If finalization is active, call check_finalization_status before complete_mission to ensure queue landing or PR merging is done.`;
   }
 
   // ─── Model Resolution ────────────────────────────────────────────

@@ -5,9 +5,9 @@ This plan has been split into individual phase files for maintainability. Each p
 ## Table of Contents
 
 - [Phases 1-2: Foundation (Complete)](phases-1-2.md)
-- [Phase 3: AI Orchestrator + Missions Overhaul](phase-3.md)
-- [Phase 4: CTO + Ecosystem](phase-4.md)
-- [Phase 5: Play Runtime Isolation](phase-5.md)
+- [Phase 3: AI Orchestrator + Missions Overhaul (Complete)](phase-3.md)
+- [Phase 4: CTO + Ecosystem (Complete)](phase-4.md)
+- [Phase 5: Play Runtime Isolation (Complete)](phase-5.md)
 - [Phase 6: Multi-Device Sync Foundation](phase-6.md)
 - [Phase 7: Mobile + Remote Access](phase-7.md)
 - [Phase 8: Core Extraction + SpacetimeDB Evaluation (Deferred/Optional)](phase-8.md)
@@ -37,6 +37,27 @@ For all remaining Phase 3 orchestrator work, see `docs/ORCHESTRATOR_OVERHAUL.md`
 
 Historical compatibility note:
 - Legacy statuses `partially_completed` and `succeeded_with_risk` were removed in the orchestrator overhaul (Phases 5-6). Any mention of them in archived sections below is non-authoritative.
+
+## V1 Closeout (2026-03-13)
+
+Phases 1-5 are complete for single-device operation. The v1 closeout addresses the final integration gaps needed for tester-ready quality:
+
+### What was completed
+
+- **Workflow tools for chat agents**: Chat agents now have access to `workflowTools` (lane creation, PR creation, screenshot capture, completion reporting) in addition to `universalTools`. This establishes a three-tier tool architecture: universalTools (all agents) -> workflowTools (chat agents) -> coordinatorTools (orchestrator only).
+- **Coordinator finalization awareness**: The mission coordinator can now check finalization status via a `check_finalization_status` tool and receives queue landing completion events, enabling informed decisions about mission completion.
+- **Memory pipeline fully wired**: Compaction flush is connected to agent chat sessions. Human work digest triggers on git HEAD changes. Failure knowledge capture fires on mission/agent failures. Procedural learning export produces `.ade/skills/` files from high-confidence procedures.
+- **Linear dispatcher hardening**: Snapshot refresh before step execution (stale issue detection), employee fallback to `awaiting_delegation` instead of crash, PR null-check fix for manual mode, closure notifications sent to agent chat sessions.
+- **Embedding health monitoring**: Structured logging for embedding service state, queue depth, and error rates.
+- **UI polish**: Error/loading states on mission and CTO components, dynamic delegation UI in LinearSyncPanel, IDE deep-linking per lane, IPC handler coverage verification.
+- **System prompt boundaries**: Agent system prompts now describe tool tiers and guide agents on when to use each capability.
+
+### Known v1 limitations
+
+- **Single device only** — multi-device sync (cr-sqlite) is Phase 6.
+- **Mission orchestration** works end-to-end but complex multi-phase flows may benefit from human guidance via interventions.
+- **Computer use/screenshots** depend on agent runtime support; the full MCP tool loop is not exposed end-to-end yet.
+- **Embedding model** loads on a delay and may not be ready for the first few minutes after startup.
 
 ---
 
@@ -107,6 +128,7 @@ Baseline derived from code in `apps/desktop`.
   - UI bug fixes: removed `ExecutionPlanPreview`, fixed duplicate progress bar, fixed DAG SVG spinning animation, tab renames (usage->details, channels->chat)
 - **Codebase Refactoring & Modularization (shipped 2026-03-02):** AI orchestrator decomposed (`aiOrchestratorService.ts` 13.2K -> 7.7K lines + 9 extracted modules). Pack service decomposed (`packService.ts` 5.7K -> 3.2K lines + 4 builder modules). Type system modernized (monolithic `types.ts` replaced by `src/shared/types/` with 17 domain modules). Frontend decomposed (`MissionsPage.tsx` 60% reduction, `WorkspaceGraphPage.tsx` 11 extracted files). Shared backend/frontend utilities consolidated. Net -14,370 lines, 0 TypeScript errors.
 - **Memory Consolidation Overhaul (shipped 2026-03-13):** Unified memory system fully operational. Single UI surface (Settings > Memory) replaces the previous split across CTO and Settings tabs. Improved agent prompt guidance for memory writes. Quality controls on write sources (garbage-source filtering). 3-scope model (project/agent/mission) with CTO core memory coexisting as a separate always-in-context system. Feature docs (`features/MEMORY.md`, `features/CHAT.md`, `features/LINEAR.md`) and architecture doc (`architecture/MEMORY.md`) added to PRD.
+- **V1 Closeout (shipped 2026-03-13):** Final integration pass making Phases 1-5 tester-ready. Workflow tools for chat agents (lane/PR/screenshot/completion). Coordinator finalization awareness (check_finalization_status tool + queue landing events). Memory pipeline fully wired (compaction flush, human work digest, failure knowledge capture, procedural export). Linear dispatcher hardening (snapshot refresh, employee fallback, PR null-check, closure notifications). Embedding health monitoring. UI error states and IDE deep-linking. System prompt agent capability boundaries.
 
 ### 2.3 Architectural leverage and constraints
 
@@ -125,31 +147,17 @@ Baseline derived from code in `apps/desktop`.
 Not fully implemented yet:
 
 - Mission proof/computer-use runtime follow-through (`screenshot_environment`, `record_environment`, native computer-use loops, and automatic PR proof embedding remain incomplete even though mission evidence requirements and artifact links are partially wired)
-- Single-device tester hardening across Run, Settings, Graph, onboarding, and general performance surfaces
-- Multi-device sync (cr-sqlite + WebSocket real-time replication)
-- Device registry and brain management (which machine runs agents)
-- iOS companion app (remote control, push notifications, mission monitoring)
-- VPS headless deployment (headless ADE on remote machines)
+- Multi-device sync (cr-sqlite + WebSocket real-time replication) — Phase 6
+- Device registry and brain management (which machine runs agents) — Phase 6
+- iOS companion app (remote control, push notifications, mission monitoring) — Phase 7
+- VPS headless deployment (headless ADE on remote machines) — Phase 6
 - Provider usage telemetry parity (CLI/API/local) and budget UX refinements
 
-### 2.5 Phase 3 Status Snapshot (2026-03-02 update)
+### 2.5 Phase 3 Status Snapshot (Complete)
 
-Phase 3 encompasses both orchestrator autonomy and the missions overhaul. The codebase was significantly refactored in Wave 4 (2026-03-02), decomposing the orchestrator, pack service, type system, and frontend into modular architectures to improve maintainability and prepare for future core extraction.
+Phase 3 encompasses both orchestrator autonomy and the missions overhaul. All tasks are complete. The codebase was significantly refactored in Wave 4 (2026-03-02), decomposing the orchestrator, pack service, type system, and frontend into modular architectures.
 
-Implemented in baseline:
-
-1. **Task 1: Orchestrator Autonomy Core** -- team runtime schema/capability enforcement, structured reporting tools, autonomous `revise_plan` with supersede semantics, role tool profiles, historical `partially_completed` + recovery handoff design (status now removed; see ORCHESTRATOR_OVERHAUL.md)
-2. **Task 2: Validation & Lane Continuity** -- validation contract/reporting primitives, open-obligation surfacing, lane continuity for replacement/rework, explicit lane transfer audit trail
-
-Remaining execution tracks (see `ORCHESTRATOR_OVERHAUL.md` for current plan):
-
-3. **Task 3: Mission Phases Engine & Profiles** -- implemented (Task 3)
-4. **Task 4: Mission UI Overhaul** -- implemented (Task 4)
-5. **Task 5: Pre-Flight, Intervention & HITL** -- implemented (Task 5)
-6. **Task 6: Budget & Usage Tracking** -- implemented (Task 6)
-7. **Tasks 7-8** -- superseded by ORCHESTRATOR_OVERHAUL.md Phases 4-7 (subagent delegation, validation enforcement, UI observability, reflection protocol)
-
-Tasks 1-6 are baseline. Remaining work is tracked in `docs/ORCHESTRATOR_OVERHAUL.md`.
+All Phase 3 tasks (1-6) are shipped. Orchestrator Overhaul Phases 1-9 are complete (see `docs/ORCHESTRATOR_OVERHAUL.md`). The v1 closeout added coordinator finalization awareness (check_finalization_status tool + queue landing events) as the final orchestrator integration piece.
 
 ---
 
@@ -178,7 +186,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Agent SDK integration + AgentExecutor interface | Phase 1 | Current baseline | Complete |
 | Agent Chat integration (Codex App Server, Claude SDK, unified API/local runtime) | Phase 1.5 | Phase 1 (partial -- SDK wiring) | Complete |
 | MCP server | Phase 2 | Phase 1 | Complete |
-| AI orchestrator | Phase 3 | Phases 1 and 2 | Complete (Tasks 1-6 shipped; Overhaul Phases 1-7 complete including reflection protocol) |
+| AI orchestrator | Phase 3 | Phases 1 and 2 | Complete (Tasks 1-6 shipped; Overhaul Phases 1-9 complete; v1 closeout: finalization awareness) |
 | Mission team runtime model (roles/templates) | Phase 3 | Phases 1 and 2 | Implemented (Task 1 baseline) |
 | Validation contracts + validator loop | Phase 3 | Phases 1 and 2 | Implemented (Task 2 baseline, coordinator-driven loop) |
 | Mission policy flags + precedence | Phase 3 | Phases 1 and 2 | Implemented (Task 1 baseline) |

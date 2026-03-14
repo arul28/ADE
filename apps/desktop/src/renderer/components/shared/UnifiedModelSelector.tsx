@@ -611,8 +611,8 @@ export function UnifiedModelSelector({
           aria-expanded={open}
         >
           {selectedModel ? <ModelGlyph model={selectedModel} size={14} /> : null}
-          <span className="flex-1 truncate text-left">
-            {selectedModel?.displayName ?? value}
+          <span className={cn("flex-1 truncate text-left", !selectedModel && !value && "text-muted-fg/40")}>
+            {selectedModel?.displayName ?? (value || "Select model")}
           </span>
           <CaretDown
             size={10}

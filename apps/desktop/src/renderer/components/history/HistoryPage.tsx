@@ -47,16 +47,41 @@ export function HistoryPage() {
 
   // ── Initial fetch & auto-refresh ───────────────────────────
   useEffect(() => {
-    fetchEvents();
+    void fetchEvents();
   }, [fetchEvents]);
 
-  // Auto-refresh every 2.5s if any operations are running
+  // Auto-refresh while operations are actively running, but keep it quiet.
   useEffect(() => {
     const hasRunning = events.some((e) => e.status === "running");
     if (!hasRunning) return;
-    const interval = setInterval(() => fetchEvents(), 2500);
-    return () => clearInterval(interval);
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      void fetchEvents({ silent: true });
+    };
+    const interval = setInterval(refresh, 4_000);
+    const onFocus = () => refresh();
+    const onVisibilityChange = () => refresh();
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, [events, fetchEvents]);
+
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      void fetchEvents({ silent: true });
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [fetchEvents]);
 
   // ── URL sync: read selectedEventId from search params ──────
   useEffect(() => {

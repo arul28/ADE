@@ -27,7 +27,6 @@ import type {
 import { AgentChatPane } from "../chat/AgentChatPane";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
-import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
 import { AgentSidebar } from "./AgentSidebar";
 import { WorkerDetailPanel, WorkerEditorPanel, workerDraftFromAgent } from "./TeamPanel";
@@ -44,11 +43,11 @@ import { cardCls, shellBodyCls, shellTabBarCls } from "./shared/designTokens";
 
 type TabId = "chat" | "team" | "linear" | "settings";
 
-const TABS: { id: TabId; label: string; icon: React.ElementType }[] = [
-  { id: "chat", label: "Chat", icon: ChatCircle },
-  { id: "team", label: "Team", icon: UsersThree },
-  { id: "linear", label: "Linear", icon: GitBranch },
-  { id: "settings", label: "Settings", icon: Gear },
+const TABS: { id: TabId; label: string; icon: React.ElementType; color: string }[] = [
+  { id: "chat", label: "Chat", icon: ChatCircle, color: "#A78BFA" },
+  { id: "team", label: "Team", icon: UsersThree, color: "#60A5FA" },
+  { id: "linear", label: "Linear", icon: GitBranch, color: "#34D399" },
+  { id: "settings", label: "Settings", icon: Gear, color: "#F472B6" },
 ];
 
 function splitTrimmed(value: string): string[] {
@@ -286,7 +285,6 @@ export function CtoPage() {
   useEffect(() => {
     if (activeTab !== "chat") {
       setLoading(false);
-      setSession(null);
       return;
     }
     if (!window.ade?.cto) {
@@ -355,6 +353,7 @@ export function CtoPage() {
     const snapshot = await window.ade.cto.updateIdentity({ patch });
     setCtoIdentity(snapshot.identity);
   }, []);
+
 
   const saveWorker = useCallback(async () => {
     if (!window.ade?.cto) return;
@@ -543,10 +542,6 @@ export function CtoPage() {
 
   /* ── Render ── */
 
-  function capabilityLabel(mode: AgentChatSession["capabilityMode"] | null | undefined): string {
-    return mode === "full_mcp" ? "FULL MCP" : "FALLBACK";
-  }
-
   const teamStats = useMemo(() => {
     const counts = {
       total: agents.length,
@@ -560,27 +555,18 @@ export function CtoPage() {
   const persistentIdentityPresentation = useMemo<ChatSurfacePresentation>(() => ({
     mode: "standard",
     profile: "persistent_identity",
+    modelSwitchPolicy: selectedWorker ? "same-family-after-launch" : "any-after-launch",
     title: selectedWorker ? selectedWorker.name : (ctoIdentity?.name?.trim() || "CTO"),
     subtitle: selectedWorker
-      ? "Persistent employee session with durable memory and smooth model switching."
+      ? "Persistent employee session with durable memory and same-family model switching."
       : summarizeText(
           coreMemory?.projectSummary,
-          "Always-on project operator with durable memory. You can swap models without changing who this agent is.",
+          "Your always-on CTO for this project. You can switch models later without changing who this is.",
         ),
     accentColor: selectedWorker ? "#60A5FA" : "#22D3EE",
-    chips: selectedWorker
-      ? [
-        { label: "persistent memory", tone: "accent" },
-        { label: "employee", tone: "info" },
-        { label: session?.permissionMode === "full-auto" ? "full access" : "default permissions", tone: session?.permissionMode === "full-auto" ? "success" : "warning" },
-      ]
-      : [
-        { label: "persistent memory", tone: "accent" },
-        { label: "project operator", tone: "success" },
-        { label: session?.permissionMode === "full-auto" ? "full access" : "default permissions", tone: session?.permissionMode === "full-auto" ? "success" : "warning" },
-      ],
+    chips: [],
     showMcpStatus: false,
-  }), [coreMemory?.projectSummary, ctoIdentity?.name, selectedWorker, session?.permissionMode]);
+  }), [coreMemory?.projectSummary, ctoIdentity?.name, selectedWorker]);
 
   const sidebarCtoModelInfo = useMemo(
     () => (
@@ -611,43 +597,19 @@ export function CtoPage() {
     return "Bridge offline";
   }, [openclawStatus]);
 
-  const identitySummaryCards = useMemo(() => {
-    const currentBrain = session
+  const currentBrainSummary = useMemo(() => (
+    session
       ? [session.provider, session.model].filter(Boolean).join(" / ")
       : selectedWorker
         ? [selectedWorker.adapterType, String((selectedWorker.adapterConfig as { model?: string } | null)?.model ?? "adaptive")].join(" / ")
-        : [ctoIdentity?.modelPreferences.provider, ctoIdentity?.modelPreferences.model].filter(Boolean).join(" / ");
+        : [ctoIdentity?.modelPreferences.provider, ctoIdentity?.modelPreferences.model].filter(Boolean).join(" / ")
+  ), [ctoIdentity?.modelPreferences.model, ctoIdentity?.modelPreferences.provider, selectedWorker, session]);
 
-    return [
-      {
-        label: "Current brain",
-        value: currentBrain || "Adaptive runtime",
-        detail: selectedWorker ? "You can swap models without resetting this employee's memory." : "Choose a new model anytime; the CTO identity stays intact.",
-      },
-      {
-        label: "Access",
-        value: session?.permissionMode === "full-auto" ? "Full access" : "Default permissions",
-        detail: session ? `${capabilityLabel(session.capabilityMode)} runtime · ${bridgeSummary}` : bridgeSummary,
-      },
-      {
-        label: selectedWorker ? "Worker focus" : "Memory focus",
-        value: selectedWorker
-          ? summarizeList(selectedWorker.capabilities, "Generalist execution")
-          : summarizeList(coreMemory?.activeFocus, "Keeps durable project memory warm across sessions"),
-        detail: selectedWorker
-          ? summarizeText(selectedWorker.title || selectedWorker.role, "Persistent employee identity")
-          : summarizeList(coreMemory?.criticalConventions, "Project conventions will accumulate here over time"),
-      },
-    ];
-  }, [
-    bridgeSummary,
-    coreMemory?.activeFocus,
-    coreMemory?.criticalConventions,
-    ctoIdentity?.modelPreferences.model,
-    ctoIdentity?.modelPreferences.provider,
-    selectedWorker,
-    session,
-  ]);
+  const focusSummary = useMemo(() => (
+    selectedWorker
+      ? summarizeList(selectedWorker.capabilities, "Generalist execution")
+      : summarizeList(coreMemory?.activeFocus, "No focus saved yet")
+  ), [coreMemory?.activeFocus, selectedWorker]);
 
   return (
     <div className={shellBodyCls}>
@@ -682,93 +644,43 @@ export function CtoPage() {
           />
         )}
 
-        <div className="border-b border-white/[0.06] px-4 py-4">
-          <div
-            className="overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.03] shadow-float"
-            style={{
-              backgroundImage: "radial-gradient(circle at top left, rgba(34, 211, 238, 0.16), transparent 42%), radial-gradient(circle at bottom right, rgba(59, 130, 246, 0.12), transparent 44%)",
-            }}
-          >
-            <div className="flex flex-col gap-5 px-5 py-5">
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                <div className="min-w-0 max-w-4xl">
-                  <div className="font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-cyan-300/80">
-                    {selectedWorker ? "Persistent employee" : "Persistent CTO"}
-                  </div>
-                  <div className="mt-2 font-sans text-[26px] font-semibold tracking-[-0.02em] text-fg">
-                    {selectedWorker ? selectedWorker.name : (ctoIdentity?.name?.trim() || "CTO")}
-                  </div>
-                  <div className="mt-2 max-w-3xl text-sm leading-6 text-fg/70">
-                    {selectedWorker
-                      ? summarizeText(
-                          selectedWorker.title || selectedWorker.role,
-                          "Long-running employee identity with durable memory, warm runtime continuity, and smooth model swaps.",
-                        )
-                      : summarizeText(
-                          coreMemory?.projectSummary,
-                          "Always-on project operator with durable memory, cross-model continuity, and a single long-lived session for the workspace.",
-                        )}
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  <Chip className="border-cyan-400/25 bg-cyan-500/10 text-[10px] text-cyan-100">Always on</Chip>
-                  <Chip className="border-emerald-400/20 bg-emerald-500/10 text-[10px] text-emerald-100">
-                    {session?.permissionMode === "full-auto" ? "Default: full access" : "Default permissions"}
-                  </Chip>
-                  <Chip className="border-white/10 bg-black/15 text-[10px] text-fg/70">{bridgeSummary}</Chip>
-                  {laneId ? (
-                    <Chip className="border-white/10 bg-black/15 text-[10px] text-fg/70">{`Lane ${laneId}`}</Chip>
-                  ) : null}
-                </div>
+        <div className="px-4 py-3">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ background: "rgba(167, 139, 250, 0.12)", border: "1px solid rgba(167, 139, 250, 0.2)" }}>
+                <span className="text-sm font-bold" style={{ color: "#A78BFA" }}>
+                  {(selectedWorker ? selectedWorker.name : (ctoIdentity?.name?.trim() || "CTO")).charAt(0).toUpperCase()}
+                </span>
               </div>
-
-              <div className="grid gap-3 lg:grid-cols-3">
-                {identitySummaryCards.map((card) => (
-                  <div
-                    key={card.label}
-                    className="rounded-xl border border-white/[0.08] bg-black/20 px-4 py-3 backdrop-blur"
-                  >
-                    <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-fg/45">{card.label}</div>
-                    <div className="mt-2 text-sm font-semibold text-fg">{card.value}</div>
-                    <div className="mt-1 text-xs leading-5 text-muted-fg/65">{card.detail}</div>
-                  </div>
-                ))}
+              <div className="font-sans text-sm font-semibold tracking-[-0.01em] text-fg truncate">
+                {selectedWorker ? selectedWorker.name : (ctoIdentity?.name?.trim() || "CTO")}
               </div>
             </div>
+
+            {/* model selector lives in AgentChatPane */}
           </div>
         </div>
 
         {/* Tab bar */}
-        <div className={cn(shellTabBarCls, "px-4 py-3")} style={{ minHeight: 56 }}>
-          {TABS.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setActiveTab(id)}
-              className={cn(
-                "flex items-center gap-2 rounded-full border px-3.5 py-2 font-mono text-[10px] font-semibold uppercase tracking-[0.18em] transition-all duration-150",
-                activeTab === id
-                  ? "border-cyan-400/25 bg-cyan-500/10 text-cyan-100"
-                  : "border-transparent text-muted-fg/60 hover:border-white/10 hover:bg-white/[0.03] hover:text-fg",
-              )}
-            >
-              <Icon size={14} weight={activeTab === id ? "bold" : "regular"} />
-              {label}
-            </button>
-          ))}
-
-          {/* Right side: agent context */}
-          <div className="ml-auto flex items-center gap-2.5 pr-4">
-            {session && (
-              <Chip className={cn("text-[10px]", session.capabilityMode === "full_mcp" ? "text-success" : "text-warning")} data-testid="cto-capability-badge">
-                {capabilityLabel(session.capabilityMode)}
-              </Chip>
-            )}
-            <span className="font-mono text-xs text-muted-fg/50">
-              {selectedWorker ? selectedWorker.name : "CTO"}
-            </span>
-          </div>
+        <div className={cn(shellTabBarCls, "px-4 py-2")} style={{ minHeight: 40 }}>
+          {TABS.map(({ id, label, icon: Icon, color }) => {
+            const active = activeTab === id;
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setActiveTab(id)}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all duration-200",
+                  active ? "text-fg" : "text-muted-fg/40 hover:text-muted-fg/65",
+                )}
+                style={active ? { background: `${color}10`, border: `1px solid ${color}18` } : { border: "1px solid transparent" }}
+              >
+                <Icon size={13} weight={active ? "fill" : "regular"} style={active ? { color } : undefined} />
+                {label}
+              </button>
+            );
+          })}
         </div>
 
         {/* Tab content */}
@@ -784,14 +696,31 @@ export function CtoPage() {
                 </div>
               )}
 
-              <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-white/[0.06] bg-black/10">
-                <AgentChatPane
-                  laneId={laneId}
-                  lockSessionId={session?.id ?? null}
-                  initialSessionSummary={lockedSessionSummary}
-                  hideSessionTabs
-                  presentation={persistentIdentityPresentation}
-                />
+              <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-[rgba(167,139,250,0.08)] bg-[rgba(24,20,35,0.3)]">
+                {showOnboarding || needsOnboarding ? (
+                  <div className="flex h-full items-center justify-center p-6 text-center">
+                    <div className="max-w-xs space-y-3">
+                      <div className="text-sm font-semibold text-fg">Complete setup to start chatting</div>
+                      <Button variant="primary" onClick={() => setShowOnboarding(true)}>
+                        Continue setup
+                      </Button>
+                    </div>
+                  </div>
+                ) : !session ? (
+                  <div className="flex h-full items-center justify-center p-6 text-center">
+                    <div className="space-y-2">
+                      <div className="text-sm font-medium text-fg/60">Connecting...</div>
+                    </div>
+                  </div>
+                ) : (
+                  <AgentChatPane
+                    laneId={laneId}
+                    lockSessionId={session?.id ?? null}
+                    initialSessionSummary={lockedSessionSummary}
+                    hideSessionTabs
+                    presentation={persistentIdentityPresentation}
+                  />
+                )}
               </div>
             </div>
           )}
@@ -826,10 +755,12 @@ export function CtoPage() {
                 </div>
               ) : agents.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full p-8">
-                  <UsersThree size={48} weight="thin" className="text-muted-fg/15 mb-4" />
-                  <div className="font-sans text-base font-bold text-fg">Your Team</div>
-                  <div className="font-mono text-xs text-muted-fg/50 mt-2 text-center max-w-[44ch] leading-relaxed">
-                    Hire workers to handle tasks autonomously. Start from a template or configure from scratch, then map their Linear identities so assignee-based workflows can route issues to them.
+                  <div className="flex h-12 w-12 items-center justify-center rounded-xl mb-4" style={{ background: "rgba(167, 139, 250, 0.1)", border: "1px solid rgba(167, 139, 250, 0.15)" }}>
+                    <UsersThree size={22} weight="duotone" style={{ color: "#A78BFA" }} />
+                  </div>
+                  <div className="font-sans text-base font-semibold text-fg">No workers yet</div>
+                  <div className="text-xs text-muted-fg/45 mt-1.5 text-center max-w-[36ch]">
+                    Hire autonomous workers from templates or build custom ones.
                   </div>
                   <Button variant="primary" className="mt-4" onClick={handleHireWorker}>
                     Hire Worker
@@ -840,12 +771,7 @@ export function CtoPage() {
                   {!selectedWorker ? (
                     <div className="space-y-4" data-testid="team-overview">
                       <div className="flex items-center justify-between">
-                        <div>
-                          <div className="font-sans text-sm font-bold text-fg">Department Overview</div>
-                          <div className="mt-1 font-mono text-xs text-muted-fg/50">
-                            Pick a worker from the sidebar to inspect details, hire a new teammate, or edit Linear identity mappings so CTO &gt; Linear can route assignee-based workflows correctly.
-                          </div>
-                        </div>
+                        <div className="font-sans text-sm font-semibold text-fg">Team Overview</div>
                         <Button variant="outline" size="sm" onClick={handleHireWorker}>
                           Hire Worker
                         </Button>
@@ -866,13 +792,8 @@ export function CtoPage() {
                       </div>
 
                       <div className={cn(cardCls, "p-4")} data-testid="cto-subordinate-activity">
-                        <div className="mb-3 flex items-center justify-between">
-                          <div>
-                            <div className="font-sans text-sm font-bold text-fg">Recent Department Activity</div>
-                            <div className="mt-1 font-mono text-xs text-muted-fg/50">
-                              Existing worker runs and direct worker chat activity flowing up to the CTO.
-                            </div>
-                          </div>
+                        <div className="mb-3">
+                          <div className="font-sans text-sm font-semibold text-fg">Recent Activity</div>
                         </div>
                         <div className="space-y-1">
                           {subordinateActivity.length === 0 ? (

@@ -10,7 +10,7 @@ describe("compactionFlushService", () => {
       reserveTokensFloor: 40_000,
       maxFlushTurnsPerSession: 3,
     });
-    expect(service.getConfig().flushPrompt).toContain("memoryAdd");
+    expect(service.getConfig().flushPrompt).toContain("compaction");
   });
 
   it("injects a hidden system message and runs a flush turn when the threshold is exceeded", async () => {
@@ -36,14 +36,14 @@ describe("compactionFlushService", () => {
       expect.objectContaining({
         role: "system",
         hidden: true,
-        content: expect.stringContaining("memoryAdd"),
+        content: expect.stringContaining("compaction"),
       }),
     );
     expect(flushTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: "session-1",
         boundaryId: "boundary-1",
-        prompt: expect.stringContaining("memoryAdd"),
+        prompt: expect.stringContaining("compaction"),
       }),
     );
   });

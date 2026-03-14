@@ -16,7 +16,6 @@ export type SqlValue = string | number | null | Uint8Array;
  *
  * Known key patterns:
  *   "onboarding:status"           -> OnboardingStatus
- *   "ci:import_state"             -> CiImportState
  *   "keybinding:overrides"        -> KeybindingOverride[]
  *   "trusted_shared_hash"         -> string
  *   "context_doc_last_run"        -> { provider; generatedAt; prdPath; archPath }

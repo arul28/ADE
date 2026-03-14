@@ -71,7 +71,43 @@ dry-run simulator exposed in the UI.
   per-issue and globally, and deduplication.
 
 Run statuses: `queued -> in_progress -> waiting_for_target ->
-waiting_for_pr -> awaiting_human_review -> completed | failed | cancelled`.
+waiting_for_pr -> awaiting_human_review -> awaiting_delegation ->
+completed | failed | cancelled`.
+
+### Dispatcher Hardening (v1 Closeout)
+
+The v1 closeout addressed four dispatcher reliability issues:
+
+1. **Snapshot refresh**: Before executing steps, the dispatcher now
+   refreshes the issue snapshot from Linear. If the issue is no longer
+   open, the run is cancelled automatically. This prevents work on
+   stale or already-resolved issues.
+
+2. **Employee fallback**: When `resolveEmployeeTarget()` finds no
+   matching employee, the run enters `awaiting_delegation` status
+   instead of crashing. A `run.awaiting_delegation` event is emitted,
+   and the workflow waits for manual assignment via the dynamic
+   delegation UI in LinearSyncPanel.
+
+3. **PR null-check**: The condition for skipping PR creation now
+   correctly checks for explicit `manual` mode in `prStrategy.kind`,
+   rather than incorrectly skipping when `prStrategy` is absent.
+
+4. **Closure notifications**: When `finalizeRun` completes, a message
+   is sent to the linked agent chat session informing it that the
+   workflow completed or failed, with the final run status and any
+   relevant artifact links.
+
+5. **Review wait timeout**: `request_human_review` steps now time out
+   after 48 hours. When the timeout fires, the step is marked failed
+   with a `review_timeout` reason and the run advances rather than
+   blocking indefinitely.
+
+6. **Outbound error handling**: All outbound Linear comment operations
+   (status updates, artifact links, closure messages) are wrapped in
+   try-catch. Failures log a warning instead of crashing the run,
+   so a transient Linear API error does not derail an otherwise
+   successful workflow.
 
 ## Closeout Service
 
@@ -81,6 +117,9 @@ waiting_for_pr -> awaiting_human_review -> completed | failed | cancelled`.
   `blocked`, `in_review`, `todo`).
 - Posts a summary comment and attaches proof artifacts (links or
   file attachments depending on `artifactMode`).
+- Accepts repo-local artifacts and absolute local files outside the
+  project root, so temporary screenshots or verification captures can
+  still be linked or uploaded during closeout.
 - Transitions the issue to the configured success or failure state.
 
 ## LinearSyncPanel UI
@@ -94,8 +133,11 @@ surface:
   visual step builder. A dry-run simulator lets you test trigger
   matching against a sample issue before going live.
 - **Queue dashboard** -- Live counts of queued, dispatched, retrying,
-  escalated, and failed items. Each queue item links to its workflow
-  run detail with step-by-step timeline.
+  escalated, awaiting delegation, and failed items. Each queue item
+  links to its workflow run detail with step-by-step timeline.
+- **Dynamic delegation** -- Runs in `awaiting_delegation` status
+  expose a dropdown that lets users pick an employee override,
+  reassigning the work without restarting the workflow.
 - **Run detail view** -- Drill into a specific run to see steps,
   events, review state, linked PR status, and supervisor notes.
 - **Setup checklist** -- Guides first-time users through API key

@@ -13,8 +13,15 @@ import {
   type ModelMessage,
   type UserContent,
 } from "ai";
-import { query as claudeQuery } from "@anthropic-ai/claude-agent-sdk";
+import { query as claudeQuery, unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
 import type { Query as ClaudeSDKQuery, SDKMessage, Options as ClaudeSDKOptions, PermissionResult as ClaudePermissionResult } from "@anthropic-ai/claude-agent-sdk";
+
+type ClaudeV2Session = {
+  send: (msg: string) => Promise<void>;
+  stream: () => AsyncGenerator<SDKMessage, void>;
+  close: () => void;
+  readonly sessionId: string;
+};
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createSessionService } from "../sessions/sessionService";
@@ -58,9 +65,11 @@ import {
   resolveModelAlias,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
+import { canSwitchChatSessionModel } from "../../../shared/chatModelSwitching";
 import { detectAllAuth } from "../ai/authDetector";
 import * as providerResolver from "../ai/providerResolver";
 import { createUniversalToolSet, type PermissionMode } from "../ai/tools/universalTools";
+import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { buildCodingAgentSystemPrompt, composeSystemPrompt } from "../ai/tools/systemPrompt";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
@@ -68,6 +77,8 @@ import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import type { createMemoryService } from "../memory/memoryService";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { createWorkerAgentService } from "../cto/workerAgentService";
+import type { createPrService } from "../prs/prService";
+import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { resolveAdeMcpServerLaunch } from "../orchestrator/unifiedOrchestratorAdapter";
 
 type JsonRpcEnvelope = {
@@ -132,6 +143,7 @@ type CodexRuntime = {
   kind: "codex";
   process: ChildProcessWithoutNullStreams;
   reader: readline.Interface;
+  suppressExitError: boolean;
   nextRequestId: number;
   pending: Map<string, PendingRpc>;
   approvals: Map<string, PendingCodexApproval>;
@@ -153,6 +165,13 @@ type ClaudeRuntime = {
   kind: "claude";
   sdkSessionId: string | null;
   activeQuery: import("@anthropic-ai/claude-agent-sdk").Query | null;
+  v2Session: ClaudeV2Session | null;
+  /** Single stream generator kept alive across turns (never closed by for-await). */
+  v2StreamGen: AsyncGenerator<any, void> | null;
+  /** Resolves when the subprocess is initialized (system:init received). */
+  v2WarmupDone: Promise<void> | null;
+  /** Set to true when teardown runs to cancel an in-flight warmup. */
+  v2WarmupCancelled: boolean;
   activeSubagents: Map<string, { taskId: string; description: string }>;
   slashCommands: Array<{ name: string; description: string; argumentHint?: string }>;
   busy: boolean;
@@ -309,6 +328,7 @@ const CHAT_TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] chat transcript limit reached (8MB
 const AUTO_TITLE_MAX_CHARS = 48;
 const REASONING_ACTIVITY_DETAIL = "Thinking through the answer";
 const WORKING_ACTIVITY_DETAIL = "Preparing response";
+const TURN_TIMEOUT_MS = 300_000; // 5 minutes – overall turn-level timeout
 const AUTO_TITLE_SYSTEM_PROMPT = `You title software development chat sessions.
 Return only the title text.
 - Use 2 to 6 words.
@@ -927,6 +947,8 @@ export function createAgentChatService(args: {
   episodicSummaryService?: EpisodicSummaryService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
+  prService?: ReturnType<typeof createPrService> | null;
+  computerUseArtifactBrokerService?: ComputerUseArtifactBrokerService | null;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
@@ -944,6 +966,8 @@ export function createAgentChatService(args: {
     episodicSummaryService,
     ctoStateService,
     workerAgentService,
+    prService,
+    computerUseArtifactBrokerService,
     laneService,
     sessionService,
     projectConfigService,
@@ -952,6 +976,8 @@ export function createAgentChatService(args: {
     onEvent,
     onSessionEnded
   } = args;
+
+  let computerUseArtifactBrokerRef = computerUseArtifactBrokerService ?? null;
 
   const layout = resolveAdeLayout(projectRoot);
   const chatSessionsDir = layout.chatSessionsDir;
@@ -1657,6 +1683,7 @@ export function createAgentChatService(args: {
   const teardownRuntime = (managed: ManagedChatSession): void => {
     flushBufferedReasoning(managed);
     if (managed.runtime?.kind === "codex") {
+      managed.runtime.suppressExitError = true;
       try { managed.runtime.reader.close(); } catch { /* ignore */ }
       try { managed.runtime.process.kill(); } catch { /* ignore */ }
       managed.runtime.pending.clear();
@@ -1664,8 +1691,13 @@ export function createAgentChatService(args: {
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "claude") {
+      managed.runtime.v2WarmupCancelled = true;
       managed.runtime.activeQuery?.close();
       managed.runtime.activeQuery = null;
+      try { managed.runtime.v2Session?.close(); } catch { /* ignore */ }
+      managed.runtime.v2Session = null;
+      managed.runtime.v2StreamGen = null;
+      managed.runtime.v2WarmupDone = null;
       managed.runtime.activeSubagents.clear();
       for (const pending of managed.runtime.approvals.values()) {
         pending.resolve("cancel");
@@ -2146,171 +2178,66 @@ export function createAgentChatService(args: {
     let costUsd: number | null = null;
 
     try {
-      const chatConfig = resolveChatConfig();
-      const claudePermissionMode = managed.session.permissionMode
-        ? mapPermissionToClaude(managed.session.permissionMode)
-        : chatConfig.claudePermissionMode;
-
-      const lightweight = isLightweightSession(managed.session);
-
-      // Build canUseTool handler
-      const canUseTool = async (
-        toolName: string,
-        toolInput: Record<string, unknown>,
-        opts: { signal: AbortSignal; suggestions?: Array<unknown>; toolUseID: string },
-      ): Promise<ClaudePermissionResult> => {
-        if (isPlanningApprovalGuarded(managed)) {
-          return {
-            behavior: "deny",
-            message: buildPlanningApprovalViolation(toolName),
-          };
-        }
-        const itemId = randomUUID();
-
-        // Special handling for AskUserQuestion / TodoWrite
-        if (toolName === "AskUserQuestion" || toolName === "askUser") {
-          const question = typeof toolInput.question === "string" ? toolInput.question : String(toolInput.question ?? "");
-          const options = Array.isArray(toolInput.options) ? toolInput.options : undefined;
-          emitChatEvent(managed, {
-            type: "structured_question",
-            question,
-            options: options?.map((o: unknown) => {
-              if (o && typeof o === "object" && "label" in o && "value" in o) {
-                return { label: String((o as any).label), value: String((o as any).value) };
-              }
-              return { label: String(o), value: String(o) };
-            }),
-            itemId,
-            turnId,
-          });
-        }
-
-        if (toolName === "TodoWrite" || toolName === "TaskCreate" || toolName === "TaskUpdate") {
-          const todos = Array.isArray(toolInput.todos) ? toolInput.todos : Array.isArray(toolInput.items) ? toolInput.items : null;
-          if (todos) {
-            emitChatEvent(managed, {
-              type: "todo_update",
-              items: todos.map((t: any, idx: number) => ({
-                id: String(t.id ?? `todo-${idx}`),
-                description: String(t.content ?? t.description ?? t.text ?? ""),
-                status: t.status === "completed" ? "completed" : t.status === "in_progress" ? "in_progress" : "pending",
-              })),
-              turnId,
-            });
-          }
-          // Allow TodoWrite to proceed without approval
-          return { behavior: "allow" };
-        }
-
-        emitChatEvent(managed, {
-          type: "approval_request",
-          itemId,
-          kind: "tool_call",
-          description: `Tool '${toolName}' requests approval`,
-          detail: toolInput,
-          turnId,
-        });
-
-        const decision = await new Promise<AgentChatApprovalDecision>((resolve) => {
-          runtime.approvals.set(itemId, { resolve });
-        });
-        runtime.approvals.delete(itemId);
-
-        if (decision === "accept" || decision === "accept_for_session") {
-          const result: ClaudePermissionResult = { behavior: "allow" };
-          if (decision === "accept_for_session" && opts.suggestions) {
-            (result as any).updatedPermissions = opts.suggestions;
-          }
-          return result;
-        }
-
-        return {
-          behavior: "deny",
-          message: `Tool '${toolName}' blocked by user decision.`,
-        };
-      };
-
-      // Build SDK options
-      const sdkOpts: ClaudeSDKOptions = {
-        cwd: managed.laneWorktreePath,
-        permissionMode: claudePermissionMode as any,
-        includePartialMessages: true,
-        maxBudgetUsd: chatConfig.sessionBudgetUsd ?? undefined,
-      };
-
-      if (runtime.sdkSessionId) {
-        sdkOpts.resume = runtime.sdkSessionId;
-      }
-
-      if (!lightweight) {
-        sdkOpts.systemPrompt = { type: "preset", preset: "claude_code" };
-        sdkOpts.settingSources = ["user", "project", "local"];
-        sdkOpts.mcpServers = buildAdeMcpServers(
-          "claude",
-          managed.session.identityKey === "cto" ? "cto" : "agent",
-          resolveWorkerIdentityAgentId(managed.session.identityKey),
-        ) as any;
-        sdkOpts.canUseTool = canUseTool as any;
-      }
-
       const claudeDescriptor = resolveSessionModelDescriptor(managed.session);
       const claudeSupportsReasoning = claudeDescriptor?.capabilities.reasoning ?? true;
-      if (claudeSupportsReasoning && managed.session.reasoningEffort) {
-        const effort = managed.session.reasoningEffort;
-        if (effort === "low" || effort === "medium" || effort === "high") {
-          sdkOpts.effort = effort;
-        }
-        const tokens = CLAUDE_EFFORT_TO_TOKENS[effort];
-        if (tokens) {
-          sdkOpts.thinking = { type: "enabled", budgetTokens: tokens };
+
+      // ── V2 persistent session with background pre-warming ──
+      // The pre-warm was kicked off in ensureClaudeSessionRuntime. Wait for it.
+      if (runtime.v2WarmupDone) {
+        await runtime.v2WarmupDone;
+      }
+      // Fallback: if pre-warm failed or didn't run, create session on the fly
+      if (!runtime.v2Session) {
+        const v2Opts = buildClaudeV2SessionOpts(managed, runtime);
+        logger.info("agent_chat.claude_v2_session_create_fallback", {
+          sessionId: managed.session.id, model: v2Opts.model,
+        });
+        if (runtime.sdkSessionId) {
+          runtime.v2Session = unstable_v2_resumeSession(runtime.sdkSessionId, v2Opts as any) as unknown as ClaudeV2Session;
+        } else {
+          runtime.v2Session = unstable_v2_createSession(v2Opts as any) as unknown as ClaudeV2Session;
         }
       }
 
-      sdkOpts.model = resolveClaudeCliModel(managed.session.model);
+      // V2 pattern: send() then stream() per turn. Session stays alive between turns.
+      await runtime.v2Session.send(promptText);
 
-      // Launch SDK query
-      const q = claudeQuery({ prompt: promptText, options: sdkOpts });
-      runtime.activeQuery = q;
+      // Don't emit a pre-emptive "thinking" activity — wait for actual content from the stream.
+      // The renderer will show the turn as "started" (from the status event above) which is sufficient.
 
-      emitChatEvent(managed, {
-        type: "activity",
-        activity: claudeSupportsReasoning ? "thinking" : "working",
-        detail: claudeSupportsReasoning ? REASONING_ACTIVITY_DETAIL : WORKING_ACTIVITY_DETAIL,
-        turnId,
-      });
-
-      // Iterate SDK messages
-      for await (const msg of q) {
+      for await (const msg of runtime.v2Session.stream()) {
         if (runtime.interrupted) break;
 
-        // system:init — capture session_id and slash commands
+        // Capture session_id from any message
+        if (!runtime.sdkSessionId && (msg as any).session_id) {
+          runtime.sdkSessionId = (msg as any).session_id;
+          persistChatState(managed);
+        }
+
+        // system:init — capture data silently (no UI emission)
         if (msg.type === "system" && (msg as any).subtype === "init") {
           const initMsg = msg as any;
-          runtime.sdkSessionId = initMsg.session_id ?? null;
-          // Capture slash commands reported by the SDK
+          runtime.sdkSessionId = initMsg.session_id ?? runtime.sdkSessionId;
           if (Array.isArray(initMsg.slash_commands)) {
             runtime.slashCommands = initMsg.slash_commands
               .filter((cmd: unknown) => typeof cmd === "string" && cmd.length > 0)
               .map((cmd: string) => ({ name: cmd.startsWith("/") ? cmd : `/${cmd}`, description: "" }));
           }
-          // Also try supportedCommands() for richer metadata
-          if (runtime.activeQuery && typeof runtime.activeQuery.supportedCommands === "function") {
-            runtime.activeQuery.supportedCommands().then((cmds) => {
-              if (Array.isArray(cmds) && cmds.length > 0) {
-                runtime.slashCommands = cmds.map((c: any) => ({
-                  name: typeof c.name === "string" ? (c.name.startsWith("/") ? c.name : `/${c.name}`) : String(c),
-                  description: typeof c.description === "string" ? c.description : "",
-                  argumentHint: typeof c.argumentHint === "string" ? c.argumentHint : undefined,
-                }));
-              }
-            }).catch(() => { /* supportedCommands not available — keep init list */ });
-          }
-          emitChatEvent(managed, {
-            type: "activity",
-            activity: "working",
-            detail: "Session initialized",
-            turnId,
-          });
+          try {
+            const sessionImpl = runtime.v2Session as any;
+            if (typeof sessionImpl?.supportedCommands === "function") {
+              sessionImpl.supportedCommands().then((cmds: any[]) => {
+                if (Array.isArray(cmds) && cmds.length > 0) {
+                  runtime.slashCommands = cmds.map((c: any) => ({
+                    name: typeof c.name === "string" ? (c.name.startsWith("/") ? c.name : `/${c.name}`) : String(c),
+                    description: typeof c.description === "string" ? c.description : "",
+                    argumentHint: typeof c.argumentHint === "string" ? c.argumentHint : undefined,
+                  }));
+                }
+              }).catch(() => { /* not available */ });
+            }
+          } catch { /* ignore */ }
+          persistChatState(managed);
           continue;
         }
 
@@ -2452,6 +2379,7 @@ export function createAgentChatService(args: {
                   turnId,
                 });
               } else if (block.type === "thinking") {
+                const thinkingText = block.thinking ?? block.text ?? "";
                 emitChatEvent(managed, {
                   type: "activity",
                   activity: "thinking",
@@ -2460,7 +2388,7 @@ export function createAgentChatService(args: {
                 });
                 emitChatEvent(managed, {
                   type: "reasoning",
-                  text: block.thinking ?? "",
+                  text: thinkingText,
                   turnId,
                 });
               } else if (block.type === "tool_use") {
@@ -2507,7 +2435,7 @@ export function createAgentChatService(args: {
                 emitChatEvent(managed, { type: "text", text, turnId });
               }
             } else if (delta?.type === "thinking_delta") {
-              const text = delta.thinking ?? "";
+              const text = delta.thinking ?? delta.text ?? "";
               if (text.length) {
                 emitChatEvent(managed, {
                   type: "activity",
@@ -2535,6 +2463,11 @@ export function createAgentChatService(args: {
                 detail: REASONING_ACTIVITY_DETAIL,
                 turnId,
               });
+              // Some SDK versions include initial thinking text on block start
+              const startText = block.thinking ?? block.text ?? "";
+              if (startText.length) {
+                emitChatEvent(managed, { type: "reasoning", text: startText, turnId });
+              }
             } else if (block?.type === "tool_use") {
               const toolName = String(block.name ?? "tool");
               const nextActivity = activityForToolName(toolName);
@@ -2634,6 +2567,7 @@ export function createAgentChatService(args: {
       }
 
       // ── Turn completion ──
+      // Note: v2Session is NOT closed here — it stays alive for the next turn
       runtime.activeQuery = null;
       runtime.busy = false;
       runtime.activeTurnId = null;
@@ -2676,6 +2610,12 @@ export function createAgentChatService(args: {
       runtime.activeQuery = null;
       runtime.busy = false;
       runtime.activeTurnId = null;
+
+      // Close V2 session on error so the next turn starts fresh
+      try { runtime.v2Session?.close(); } catch { /* ignore */ }
+      runtime.v2Session = null;
+      runtime.v2StreamGen = null;
+      runtime.v2WarmupDone = null;
 
       if (runtime.interrupted) {
         managed.session.status = "idle";
@@ -2768,6 +2708,22 @@ export function createAgentChatService(args: {
 
     const abortController = new AbortController();
     runtime.abortController = abortController;
+
+    // Turn-level timeout: abort if the entire turn exceeds the limit
+    const turnTimeout = setTimeout(() => {
+      logger.warn("agent_chat.turn_timeout", {
+        sessionId: managed.session.id,
+        turnId,
+        timeoutMs: TURN_TIMEOUT_MS,
+      });
+      emitChatEvent(managed, {
+        type: "error",
+        message: `Turn timed out after ${TURN_TIMEOUT_MS / 1000}s. The agent loop was aborted.`,
+        turnId,
+      });
+      runtime.interrupted = true;
+      abortController.abort();
+    }, TURN_TIMEOUT_MS);
 
     const streamMessages = runtime.messages.map((message, index): ModelMessage => {
       const isCurrentUserMessage = index === runtime.messages.length - 1 && message.role === "user";
@@ -2889,6 +2845,18 @@ export function createAgentChatService(args: {
               return String(response.decision);
             },
           });
+
+      // Merge workflow tools (lane, PR, screenshot, completion) into the tool set
+      if (!lightweight) {
+        const workflowTools = createWorkflowTools({
+          laneService,
+          prService: prService ?? undefined,
+          computerUseArtifactBrokerService: computerUseArtifactBrokerRef ?? undefined,
+          sessionId: managed.session.id,
+          laneId: managed.session.laneId,
+        });
+        Object.assign(tools, workflowTools);
+      }
 
       const thinkingLevel = mapReasoningEffortToThinking(managed.session.reasoningEffort);
       const providerOptions = providerResolver.buildProviderOptions(runtime.modelDescriptor, thinkingLevel);
@@ -3081,6 +3049,7 @@ export function createAgentChatService(args: {
       }
 
       // ── Shared turn completion ──
+      clearTimeout(turnTimeout);
       if (assistantText.trim().length) {
         runtime.messages.push({ role: "assistant", content: assistantText });
       }
@@ -3122,6 +3091,7 @@ export function createAgentChatService(args: {
         }
       }
     } catch (error) {
+      clearTimeout(turnTimeout);
       runtime.busy = false;
       runtime.activeTurnId = null;
       runtime.abortController = null;
@@ -3666,6 +3636,7 @@ export function createAgentChatService(args: {
       kind: "codex",
       process: proc,
       reader,
+      suppressExitError: false,
       nextRequestId: 1,
       pending,
       approvals: new Map<string, PendingCodexApproval>(),
@@ -3772,6 +3743,7 @@ export function createAgentChatService(args: {
 
       runtime.approvals.clear();
 
+      if (runtime.suppressExitError) return;
       if (managed.closed || managed.session.status === "ended") return;
 
       emitChatEvent(managed, {
@@ -3879,6 +3851,143 @@ export function createAgentChatService(args: {
       .catch(() => { /* account/rateLimits/read not supported — ignore */ });
   };
 
+  /**
+   * Build V2 SDK options from the managed session state. Shared between warmup and runClaudeTurn.
+   */
+  const buildClaudeV2SessionOpts = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    canUseTool?: ClaudeSDKOptions["canUseTool"],
+  ): { model: string } & ClaudeSDKOptions => {
+    const chatConfig = resolveChatConfig();
+    const claudePermissionMode = managed.session.permissionMode
+      ? mapPermissionToClaude(managed.session.permissionMode)
+      : chatConfig.claudePermissionMode;
+    const lightweight = isLightweightSession(managed.session);
+    const opts: ClaudeSDKOptions = {
+      cwd: managed.laneWorktreePath,
+      permissionMode: claudePermissionMode as any,
+      includePartialMessages: true,
+      maxBudgetUsd: chatConfig.sessionBudgetUsd ?? undefined,
+      model: resolveClaudeCliModel(managed.session.model),
+    };
+    if (!lightweight) {
+      opts.systemPrompt = { type: "preset", preset: "claude_code" };
+      opts.settingSources = ["user", "project", "local"];
+      opts.mcpServers = buildAdeMcpServers(
+        "claude",
+        managed.session.identityKey === "cto" ? "cto" : "agent",
+        resolveWorkerIdentityAgentId(managed.session.identityKey),
+      ) as any;
+      if (canUseTool) opts.canUseTool = canUseTool as any;
+    }
+    const claudeDescriptor = resolveSessionModelDescriptor(managed.session);
+    const claudeSupportsReasoning = claudeDescriptor?.capabilities.reasoning ?? true;
+    if (claudeSupportsReasoning) {
+      const effort = managed.session.reasoningEffort;
+      if (effort === "low" || effort === "medium" || effort === "high" || effort === "max") {
+        opts.effort = effort as any;
+      }
+      const tokens = effort ? CLAUDE_EFFORT_TO_TOKENS[effort] : undefined;
+      if (tokens) {
+        opts.thinking = { type: "enabled", budgetTokens: tokens };
+      } else {
+        // Use adaptive thinking when no specific budget applies (e.g. "max",
+        // "xhigh", or no effort set). The SDK defaults to adaptive for models
+        // that support it, but being explicit ensures thinking is always active
+        // for reasoning-capable models.
+        opts.thinking = { type: "adaptive" };
+      }
+    }
+    const model = opts.model ?? resolveClaudeCliModel(managed.session.model) ?? "claude-sonnet-4-6";
+    return { ...opts, model };
+  };
+
+  /**
+   * Pre-warm the Claude V2 session in the background.
+   * Creates the session and sends a warmup turn so the subprocess + MCP servers
+   * are fully initialized by the time the user sends their first real message.
+   * The warmup turn (~30s cold start) runs while the user is composing their message.
+   */
+  const prewarmClaudeV2Session = (managed: ManagedChatSession): void => {
+    const runtime = managed.runtime;
+    if (!runtime || runtime.kind !== "claude") return;
+    if (runtime.v2Session || runtime.v2WarmupDone) return;
+
+    runtime.v2WarmupCancelled = false;
+
+    runtime.v2WarmupDone = (async () => {
+      try {
+        const v2Opts = buildClaudeV2SessionOpts(managed, runtime);
+        logger.info("agent_chat.claude_v2_prewarm_start", {
+          sessionId: managed.session.id,
+          resume: !!runtime.sdkSessionId,
+          model: v2Opts.model,
+        });
+
+        if (runtime.v2WarmupCancelled) return;
+
+        if (runtime.sdkSessionId) {
+          runtime.v2Session = unstable_v2_resumeSession(runtime.sdkSessionId, v2Opts as any) as unknown as ClaudeV2Session;
+        } else {
+          runtime.v2Session = unstable_v2_createSession(v2Opts as any) as unknown as ClaudeV2Session;
+        }
+
+        if (runtime.v2WarmupCancelled) {
+          try { runtime.v2Session?.close(); } catch { /* ignore */ }
+          runtime.v2Session = null;
+          return;
+        }
+
+        // Send a warmup turn — this triggers the ~30s subprocess cold start.
+        // The response is consumed silently. By the time the user types and sends
+        // their first real message, the subprocess is already running.
+        await runtime.v2Session.send("System initialization check. Respond with only the word READY.");
+        for await (const msg of runtime.v2Session.stream()) {
+          if (runtime.v2WarmupCancelled) break;
+          if (!runtime.sdkSessionId && (msg as any).session_id) {
+            runtime.sdkSessionId = (msg as any).session_id;
+          }
+          if (msg.type === "system" && (msg as any).subtype === "init") {
+            const initMsg = msg as any;
+            runtime.sdkSessionId = initMsg.session_id ?? runtime.sdkSessionId;
+            if (Array.isArray(initMsg.slash_commands)) {
+              runtime.slashCommands = initMsg.slash_commands
+                .filter((cmd: unknown) => typeof cmd === "string" && cmd.length > 0)
+                .map((cmd: string) => ({ name: cmd.startsWith("/") ? cmd : `/${cmd}`, description: "" }));
+            }
+          }
+          if (msg.type === "result") break;
+        }
+
+        if (runtime.v2WarmupCancelled) {
+          try { runtime.v2Session?.close(); } catch { /* ignore */ }
+          runtime.v2Session = null;
+          return;
+        }
+
+        persistChatState(managed);
+        logger.info("agent_chat.claude_v2_prewarm_done", {
+          sessionId: managed.session.id,
+          sdkSessionId: runtime.sdkSessionId,
+        });
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: "Session ready",
+        });
+      } catch (error) {
+        if (runtime.v2WarmupCancelled) return; // expected — teardown killed the session
+        logger.warn("agent_chat.claude_v2_prewarm_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        try { runtime.v2Session?.close(); } catch { /* ignore */ }
+        runtime.v2Session = null;
+      }
+    })();
+  };
+
   const ensureClaudeSessionRuntime = (managed: ManagedChatSession): ClaudeRuntime => {
     if (managed.runtime?.kind === "claude") return managed.runtime;
     const persisted = readPersistedState(managed.session.id);
@@ -3888,6 +3997,10 @@ export function createAgentChatService(args: {
       kind: "claude",
       sdkSessionId,
       activeQuery: null,
+      v2Session: null,
+      v2StreamGen: null,
+      v2WarmupDone: null,
+      v2WarmupCancelled: false,
       activeSubagents: new Map(),
       slashCommands: [],
       busy: false,
@@ -3897,6 +4010,7 @@ export function createAgentChatService(args: {
       interrupted: false,
     };
     managed.runtime = runtime;
+
     return runtime;
   };
 
@@ -4420,6 +4534,11 @@ export function createAgentChatService(args: {
     const runtime = ensureClaudeSessionRuntime(managed);
     runtime.interrupted = true;
     runtime.activeQuery?.interrupt().catch(() => {});
+    // Close the V2 session on interrupt — it will be recreated on the next turn
+    try { runtime.v2Session?.close(); } catch { /* ignore */ }
+    runtime.v2Session = null;
+    runtime.v2StreamGen = null;
+    runtime.v2WarmupDone = null;
   };
 
   const resumeSession = async ({ sessionId }: { sessionId: string }): Promise<AgentChatSession> => {
@@ -4806,6 +4925,7 @@ export function createAgentChatService(args: {
   }: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
     const managed = ensureManagedSession(sessionId);
     const isIdentitySession = Boolean(managed.session.identityKey);
+    const hasConversation = managed.recentConversationEntries.length > 0 || readTranscriptConversationEntries(managed).length > 0;
 
     if (modelId !== undefined) {
       const nextModelId = String(modelId ?? "").trim();
@@ -4825,25 +4945,31 @@ export function createAgentChatService(args: {
         return managed.session.provider;
       })();
       const nextModel = descriptor.isCliWrapped ? descriptor.shortId : descriptor.id;
+      const previousModelId = managed.session.modelId
+        ?? resolveModelIdFromStoredValue(managed.session.model, managed.session.provider)
+        ?? managed.session.model;
       const previousProvider = managed.session.provider;
-      if (managed.runtime && isIdentitySession) {
+      const modelSwitchPolicy = managed.session.identityKey === "cto"
+        ? "any-after-launch"
+        : "same-family-after-launch";
+
+      if (!canSwitchChatSessionModel({
+        currentModelId: previousModelId,
+        nextModelId: descriptor.id,
+        hasConversation,
+        policy: modelSwitchPolicy,
+      })) {
+        throw new Error("This chat can only switch within the same model family after the conversation has started.");
+      }
+
+      const modelChanged =
+        previousProvider !== nextProvider
+        || managed.session.modelId !== descriptor.id
+        || managed.session.model !== nextModel;
+
+      if (managed.runtime && modelChanged) {
         teardownRuntime(managed);
         refreshReconstructionContext(managed, { includeConversationTail: true });
-      }
-
-      let compatible = true;
-      if (managed.runtime != null) {
-        if (managed.session.provider === "codex") {
-          compatible = descriptor.family === "openai" && descriptor.isCliWrapped;
-        } else if (managed.session.provider === "claude") {
-          compatible = descriptor.family === "anthropic" && descriptor.isCliWrapped;
-        } else {
-          compatible = !descriptor.isCliWrapped;
-        }
-      }
-
-      if (!compatible) {
-        throw new Error("This session can only switch to models compatible with its current runtime.");
       }
 
       const currentTitle = sessionService.get(sessionId)?.title ?? null;
@@ -4869,10 +4995,31 @@ export function createAgentChatService(args: {
           nextProvider,
         );
       }
-    }
 
-    if (reasoningEffort !== undefined) {
+      // Apply reasoningEffort BEFORE pre-warming so the V2 session is created
+      // with the correct thinking configuration.
+      if (reasoningEffort !== undefined) {
+        managed.session.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
+      }
+
+      // Pre-warm the Claude V2 session when the user selects an Anthropic model.
+      // This gives natural warmup time while the user types their message.
+      if (modelChanged && nextProvider === "claude") {
+        ensureClaudeSessionRuntime(managed);
+        prewarmClaudeV2Session(managed);
+      }
+    } else if (reasoningEffort !== undefined) {
+      const prev = managed.session.reasoningEffort ?? null;
       managed.session.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
+      const next = managed.session.reasoningEffort ?? null;
+      // When reasoning effort changes on a Claude session with an active V2
+      // session, invalidate the V2 session so it is recreated on the next turn
+      // with the updated thinking configuration.
+      if (prev !== next && managed.runtime?.kind === "claude" && managed.runtime.v2Session) {
+        managed.runtime.v2Session.close();
+        managed.runtime.v2Session = null;
+        managed.runtime.v2WarmupDone = null;
+      }
     }
 
     if (permissionMode !== undefined) {
@@ -4890,6 +5037,42 @@ export function createAgentChatService(args: {
 
     persistChatState(managed);
     return managed.session;
+  };
+
+  /**
+   * Trigger early warmup of the Claude V2 session for an existing chat session.
+   * Called from the renderer when the user selects a Claude/Anthropic model in the
+   * model picker — before they've submitted a message — so the ~30s subprocess
+   * cold-start happens while they're still composing.
+   */
+  const warmupModel = async ({
+    sessionId,
+    modelId,
+  }: {
+    sessionId: string;
+    modelId: string;
+  }): Promise<void> => {
+    const managed = managedSessions.get(sessionId);
+    if (!managed) return;
+
+    const descriptor = getModelById(modelId) ?? resolveModelAlias(modelId);
+    if (!descriptor) return;
+
+    const isAnthropicCli = descriptor.family === "anthropic" && descriptor.isCliWrapped;
+    if (!isAnthropicCli) return;
+
+    // Only prewarm if the session is idle (not mid-turn) and not already warmed
+    if (managed.runtime?.kind === "claude" && managed.runtime.v2WarmupDone) return;
+
+    // Apply the selected model to the session so buildClaudeV2SessionOpts
+    // picks up the correct model for warmup.
+    managed.session.provider = "claude";
+    managed.session.modelId = descriptor.id;
+    managed.session.model = descriptor.shortId;
+
+    // Ensure a Claude runtime exists and kick off pre-warming
+    ensureClaudeSessionRuntime(managed);
+    prewarmClaudeV2Session(managed);
   };
 
   const listContextPacks = async (args: { laneId?: string } = {}): Promise<import("../../../shared/types").ContextPackOption[]> => {
@@ -5120,8 +5303,12 @@ export function createAgentChatService(args: {
     dispose,
     disposeAll,
     updateSession,
+    warmupModel,
     listContextPacks,
     fetchContextPack,
     changePermissionMode,
+    setComputerUseArtifactBrokerService(svc: ComputerUseArtifactBrokerService) {
+      computerUseArtifactBrokerRef = svc;
+    },
   };
 }

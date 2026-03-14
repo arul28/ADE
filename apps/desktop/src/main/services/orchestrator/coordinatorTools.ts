@@ -61,6 +61,9 @@ import {
   updateDelegationContract,
 } from "./delegationContracts";
 
+/** Timeout for autopilot agent startup (Promise.race guard). */
+const AUTOPILOT_START_TIMEOUT_MS = 15_000;
+
 const VALIDATION_CONTRACT_SCHEMA = z
   .object({
     level: z.enum(["step", "milestone", "mission"]),
@@ -188,6 +191,7 @@ export const COORDINATOR_TOOL_NAMES = [
   "read_step_output",
   "search_files",
   "get_project_context",
+  "check_finalization_status",
 ] as const;
 
 const COORDINATOR_OBSERVATION_TOOL_NAMES = [
@@ -2335,7 +2339,7 @@ export function createCoordinatorToolSet(deps: {
               reason: "coordinator_spawn_worker",
             }),
             new Promise<number>((_, reject) =>
-              setTimeout(() => reject(new Error("autopilot_start_timeout")), 5000)
+              setTimeout(() => reject(new Error("autopilot_start_timeout")), AUTOPILOT_START_TIMEOUT_MS)
             ),
           ]);
           // Verify an attempt is actually running for this step
@@ -6400,7 +6404,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
               reason: "coordinator_delegate_subagent",
             }),
             new Promise<number>((_, reject) =>
-              setTimeout(() => reject(new Error("autopilot_start_timeout")), 5000)
+              setTimeout(() => reject(new Error("autopilot_start_timeout")), AUTOPILOT_START_TIMEOUT_MS)
             ),
           ]);
           if (newStep) {
@@ -6731,7 +6735,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
               reason: "coordinator_delegate_parallel",
             }),
             new Promise<number>((_, reject) =>
-              setTimeout(() => reject(new Error("autopilot_start_timeout")), 5000)
+              setTimeout(() => reject(new Error("autopilot_start_timeout")), AUTOPILOT_START_TIMEOUT_MS)
             ),
           ]);
         } catch {
@@ -6774,6 +6778,57 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         return { ok: false, error: msg };
       }
     }
+  });
+
+  const check_finalization_status = tool({
+    description:
+      "Check the current finalization/queue-landing status for this mission. Returns contractSatisfied, executionComplete, queue landing state, closeout requirements, and any blockers. Use this before deciding to complete_mission when finalization is in progress, or after receiving a queue landing event.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      try {
+        const state = await readMissionStateDocument({
+          projectRoot,
+          runId,
+        });
+        if (!state) {
+          return {
+            ok: true,
+            finalizationActive: false,
+            summary: "No mission state document found. Finalization has not been configured.",
+          };
+        }
+        const fin = state.finalization;
+        if (!fin) {
+          return {
+            ok: true,
+            finalizationActive: false,
+            summary: "No finalization policy is active for this mission.",
+          };
+        }
+        return {
+          ok: true,
+          finalizationActive: true,
+          status: fin.status,
+          executionComplete: fin.executionComplete,
+          contractSatisfied: fin.contractSatisfied,
+          blocked: fin.blocked,
+          blockedReason: fin.blockedReason,
+          waitReason: fin.waitReason,
+          summary: fin.summary,
+          detail: fin.detail,
+          prUrls: fin.prUrls,
+          mergeReadiness: fin.mergeReadiness,
+          requirements: fin.requirements,
+          warnings: fin.warnings,
+          updatedAt: fin.updatedAt,
+          completedAt: fin.completedAt,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error("coordinator.check_finalization_status.error", { error: msg });
+        return { ok: false, error: msg };
+      }
+    },
   });
 
   return {
@@ -6819,5 +6874,6 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     read_step_output,
     search_files,
     get_project_context,
+    check_finalization_status,
   };
 }

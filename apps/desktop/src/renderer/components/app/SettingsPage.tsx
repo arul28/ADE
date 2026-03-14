@@ -7,8 +7,8 @@ import { ProvidersSection } from "../settings/ProvidersSection";
 import { ComputerUseSection } from "../settings/ComputerUseSection";
 import { ExternalMcpSection } from "../settings/ExternalMcpSection";
 import { GitHubSection } from "../settings/GitHubSection";
+import { LinearSection } from "../settings/LinearSection";
 import { ContextSection } from "../settings/ContextSection";
-import { UsageDashboard } from "../missions/UsageDashboard";
 import { AutomationsSection } from "../settings/AutomationsSection";
 import { TerminalProfilesSection } from "../settings/TerminalProfilesSection";
 import { KeybindingsSection } from "../settings/KeybindingsSection";
@@ -17,6 +17,7 @@ import { ProxyAndPreviewSection } from "../settings/ProxyAndPreviewSection";
 import { DiagnosticsDashboardSection } from "../settings/DiagnosticsDashboardSection";
 import { MemoryHealthTab } from "../settings/MemoryHealthTab";
 import { AiFeaturesSection } from "../settings/AiFeaturesSection";
+import { SettingsUsageSection } from "../settings/SettingsUsageSection";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton, dangerButton } from "../lanes/laneDesignTokens";
 import { ConfirmDialog, PromptDialog, useConfirmDialog, usePromptDialog } from "../shared/InlineDialogs";
 import type { PhaseProfile, PhaseCard } from "../../../shared/types";
@@ -30,6 +31,7 @@ const SECTIONS = [
   { id: "external-mcp", label: "External MCP", icon: Database },
   { id: "ai", label: "AI", icon: Brain },
   { id: "github", label: "GitHub", icon: GitBranch },
+  { id: "linear", label: "Linear", icon: Plugs },
   { id: "memory", label: "Memory", icon: Database },
   { id: "context", label: "Context & Docs", icon: BookOpenText },
   { id: "automations", label: "Automations", icon: Robot },
@@ -544,6 +546,7 @@ export function SettingsPage() {
         {section === "external-mcp" && <ExternalMcpSection />}
         {section === "ai" && <AiFeaturesSection />}
         {section === "github" && <GitHubSection />}
+        {section === "linear" && <LinearSection />}
         {section === "memory" && <MemoryHealthTab />}
         {section === "context" && <ContextSection />}
         {section === "automations" && <AutomationsSection />}
@@ -557,7 +560,7 @@ export function SettingsPage() {
         )}
         {section === "keybindings" && <KeybindingsSection />}
         {section === "phase-profiles" && <PhaseProfilesSection />}
-        {section === "usage" && <UsageDashboard missionId={null} />}
+        {section === "usage" && <SettingsUsageSection />}
       </div>
     </div>
   );

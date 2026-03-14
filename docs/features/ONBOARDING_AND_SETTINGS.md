@@ -76,9 +76,9 @@ Settings owns durable configuration and infrastructure concerns, organized into 
 - **General** — AI mode, task routing, provider-specific permission policy, config reload, local/shared config boundaries
 - **Context & Docs** — context doc management, skill files, deterministic context health
 - **Memory** — consolidated memory management with two sub-tabs:
-  - *Overview* — memory health, scope summaries, and promotion status
+  - *Overview* — memory health, scope summaries, promotion status, embedding progress and health monitoring (service state, queue depth, error rates)
   - *Browse All* — full memory browser across all scopes (project, agent, mission) and tiers (Tier 1 Pinned, Tier 2 Active, Tier 3 Fading)
-- **Integrations** — GitHub, Linear, and related connectivity state; automation defaults and credentials
+- **Integrations** — GitHub, Linear, and related connectivity state; automation defaults and credentials. When a stored GitHub token cannot be decrypted (e.g., keychain migration or corruption), the service sets a `tokenDecryptionFailed` flag, logs a WARN-level message, and the UI displays a banner prompting the user to re-authenticate rather than silently failing GitHub operations.
 
 Memory is no longer scattered across multiple surfaces (CTO tab, mission detail, etc.). All memory browsing and management is consolidated in the Settings > Memory tab.
 

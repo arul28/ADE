@@ -143,7 +143,9 @@ export function createEmbeddingWorkerService(opts: CreateEmbeddingWorkerServiceO
   }
 
   function queueMemory(memoryId: string) {
-    if (!embeddingService.isAvailable()) return;
+    // Don't gate on isAvailable() — items should queue during model loading
+    // and get processed once the model is ready. The processing loop handles
+    // unavailability via embed()'s ensureExtractor() which awaits loading.
     const normalized = String(memoryId ?? "").trim();
     if (!normalized || queuedIds.has(normalized)) return;
     queuedIds.add(normalized);

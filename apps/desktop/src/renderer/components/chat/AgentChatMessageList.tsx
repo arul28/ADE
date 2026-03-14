@@ -96,17 +96,17 @@ function toolSourceChip(toolName: string): { label: string; tone: ChatSurfaceChi
   return null;
 }
 
-function messageCardStyle(accentAlpha = 0.18): React.CSSProperties {
+function messageCardStyle(_accentAlpha = 0.18): React.CSSProperties {
   return {
-    borderColor: "color-mix(in srgb, var(--chat-accent) 12%, transparent)",
-    background: `color-mix(in srgb, var(--chat-accent) ${Math.round(accentAlpha * 50)}%, rgba(255,255,255,0.02))`,
+    borderColor: "rgba(251, 191, 36, 0.08)",
+    background: "rgba(251, 191, 36, 0.03)",
   };
 }
 
 function surfaceInlineCardStyle(): React.CSSProperties {
   return {
-    borderColor: "rgba(255,255,255, 0.04)",
-    background: "rgba(255,255,255, 0.02)",
+    borderColor: "rgba(94, 234, 212, 0.06)",
+    background: "rgba(94, 234, 212, 0.02)",
   };
 }
 
@@ -171,13 +171,11 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
   }
 
   // Activity events are useful for the live streaming indicator, but too noisy
-  // to render inline when they carry no useful detail.
+  // to render inline when they carry no useful detail. Abstract activities
+  // (thinking, working, searching, reading) are suppressed from the history
+  // since they only make sense during live streaming.
   if (event.type === "activity") {
-    if (!isAbstractActivity(event.activity)) {
-      return;
-    }
-    const detail = summarizeInlineText(event.detail ?? "", 120);
-    if (!detail.length && event.activity === "thinking") {
+    if (isAbstractActivity(event.activity)) {
       return;
     }
   }
@@ -606,19 +604,30 @@ const ACTIVITY_LABELS: Record<string, string> = {
   tool_calling: "Calling tool"
 };
 
-function ActivityIndicator({ activity, detail }: { activity: string; detail?: string }) {
+const ACTIVITY_COLORS: Record<string, { border: string; bg: string; icon: string; text: string }> = {
+  thinking: { border: "border-violet-400/10", bg: "bg-violet-400/[0.03]", icon: "text-violet-400/50", text: "text-violet-200/55" },
+  working: { border: "border-teal-400/10", bg: "bg-teal-400/[0.03]", icon: "text-teal-400/50", text: "text-teal-200/55" },
+  editing_file: { border: "border-amber-400/10", bg: "bg-amber-400/[0.03]", icon: "text-amber-400/50", text: "text-amber-200/55" },
+  running_command: { border: "border-orange-400/10", bg: "bg-orange-400/[0.03]", icon: "text-orange-400/50", text: "text-orange-200/55" },
+  searching: { border: "border-sky-400/10", bg: "bg-sky-400/[0.03]", icon: "text-sky-400/50", text: "text-sky-200/55" },
+  reading: { border: "border-emerald-400/10", bg: "bg-emerald-400/[0.03]", icon: "text-emerald-400/50", text: "text-emerald-200/55" },
+  tool_calling: { border: "border-indigo-400/10", bg: "bg-indigo-400/[0.03]", icon: "text-indigo-400/50", text: "text-indigo-200/55" },
+};
+
+const ACTIVITY_DEFAULT_COLOR = { border: "border-white/[0.04]", bg: "bg-white/[0.02]", icon: "text-fg/35", text: "text-fg/55" };
+
+function ActivityIndicator({ activity, detail, animate = true }: { activity: string; detail?: string; animate?: boolean }) {
   const label = ACTIVITY_LABELS[activity] ?? activity;
   const displayText = detail ? `${label}: ${replaceInternalToolNames(detail)}` : `${label}...`;
   const isThinking = activity === "thinking";
   const Icon = isThinking ? Brain : SpinnerGap;
+  const colors = ACTIVITY_COLORS[activity] ?? ACTIVITY_DEFAULT_COLOR;
 
   return (
-    <div className="flex items-center gap-3 rounded-[var(--chat-radius-card)] border border-white/[0.04] bg-white/[0.03] px-4 py-2.5 font-mono text-[11px] text-fg/68 backdrop-blur-xl">
-      <div className="flex h-6 w-6 items-center justify-center rounded-full border border-[var(--chat-accent-faint)] bg-[var(--chat-accent-faint)]">
-        <Icon size={12} weight="bold" className={cn("text-[var(--chat-accent)]", isThinking ? "animate-pulse" : "animate-spin")} />
-      </div>
+    <div className={cn("flex items-center gap-3 rounded-lg border px-4 py-2.5 font-sans text-[12px]", colors.border, colors.bg, colors.text)}>
+      <Icon size={12} weight="regular" className={cn("shrink-0", colors.icon, animate ? (isThinking ? "animate-pulse" : "animate-spin") : "")} />
       <div className="min-w-0 flex-1">
-        <span className="block truncate font-medium">{displayText}</span>
+        <span className="block truncate">{displayText}</span>
       </div>
     </div>
   );
@@ -742,6 +751,7 @@ function renderEvent(
     turnModel?: { label: string; modelId?: string; model?: string } | null;
     surfaceMode?: ChatSurfaceMode;
     surfaceProfile?: ChatSurfaceProfile;
+    turnActive?: boolean;
   }
 ) {
   const event = envelope.event;
@@ -756,16 +766,16 @@ function renderEvent(
       <div className="flex justify-end">
         <div className={cn(GLASS_CARD_CLASS, "max-w-[82%] px-4 py-3")} style={messageCardStyle(0.18)}>
           <div className="mb-2 flex items-center gap-2">
-            <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-white/8 bg-black/15">
-              <User size={11} weight="bold" className="text-[var(--chat-accent)]" />
+            <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-amber-400/12 bg-amber-400/[0.06]">
+              <User size={10} weight="regular" className="text-amber-300/70" />
             </span>
-            <span className="font-mono text-[9px] font-bold uppercase tracking-[1.5px] text-[var(--chat-accent)]">You</span>
+            <span className="font-sans text-[11px] font-medium text-amber-200/60">You</span>
             {deliveryChip ? (
-              <span className={cn("inline-flex items-center border px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase tracking-[0.18em]", deliveryChip.className)}>
+              <span className={cn("inline-flex items-center border px-1.5 py-0.5 font-sans text-[9px] font-medium", deliveryChip.className)}>
                 {deliveryChip.label}
               </span>
             ) : null}
-            <span className="ml-auto font-mono text-[9px] text-muted-fg/25">{formatTime(envelope.timestamp)}</span>
+            <span className="ml-auto font-sans text-[10px] text-amber-300/20">{formatTime(envelope.timestamp)}</span>
           </div>
           <div className="whitespace-pre-wrap break-words text-[12.5px] leading-[1.65] text-fg/85">{event.text}</div>
           {event.attachments?.length ? (
@@ -782,20 +792,20 @@ function renderEvent(
       <div className="flex justify-start">
         <div className={cn(GLASS_CARD_CLASS, "max-w-[94%] px-4 py-3")} style={surfaceInlineCardStyle()}>
           <div className="mb-2 flex items-center gap-2">
-            <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-white/8 bg-black/15">
+            <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-teal-400/12 bg-teal-400/[0.06]">
               <ModelGlyph
-                size={11}
+                size={10}
                 modelId={options?.turnModel?.modelId}
                 model={options?.turnModel?.model ?? options?.turnModel?.label ?? undefined}
-                className="text-[var(--chat-accent)]"
+                className="text-teal-300/70"
               />
             </span>
-            <span className="font-mono text-[9px] font-bold uppercase tracking-[1.5px] text-[var(--chat-accent)]">Agent</span>
-            <span className="ml-auto font-mono text-[9px] text-muted-fg/20">{formatTime(envelope.timestamp)}</span>
+            <span className="font-sans text-[11px] font-medium text-teal-200/60">Agent</span>
+            <span className="ml-auto font-sans text-[10px] text-teal-300/18">{formatTime(envelope.timestamp)}</span>
           </div>
           <MarkdownBlock markdown={event.text} />
           {options?.turnModel?.label ? (
-            <div className="mt-3 border-t border-white/[0.04] pt-2 font-mono text-[9px] uppercase tracking-[1.4px] text-muted-fg/30">
+            <div className="mt-3 border-t border-teal-400/[0.06] pt-2 font-sans text-[10px] text-teal-300/20">
               {options.turnModel.label}
             </div>
           ) : null}
@@ -1457,7 +1467,7 @@ function renderEvent(
 
   /* ── Activity ── */
   if (event.type === "activity") {
-    return <ActivityIndicator activity={event.activity} detail={event.detail} />;
+    return <ActivityIndicator activity={event.activity} detail={event.detail} animate={options?.turnActive !== false} />;
   }
 
   /* ── Status ── */
@@ -1534,29 +1544,27 @@ function renderEvent(
       return null;
     }
     const statusTone = event.status === "completed"
-      ? "border-border/12 bg-surface-recessed/55 text-fg/52"
+      ? "border-teal-400/8 bg-teal-400/[0.03] text-fg/45"
       : event.status === "failed"
         ? "border-red-500/15 bg-red-500/[0.05] text-red-300"
         : "border-amber-500/15 bg-amber-500/[0.05] text-amber-300";
 
     return (
-      <div className={cn("flex flex-wrap items-center gap-2 rounded-[var(--chat-radius-pill)] border px-3 py-1.5 font-mono text-[9px] uppercase tracking-[0.16em]", statusTone)}>
-        <span className="inline-flex items-center gap-1 border border-border/15 bg-surface/50 px-1.5 py-0.5 text-[8px] font-bold tracking-[0.18em] text-fg/55">
-          Usage
-        </span>
+      <div className={cn("flex flex-wrap items-center gap-2 rounded-lg border px-3 py-1.5 font-sans text-[10px]", statusTone)}>
+        <span className="font-medium text-fg/40">Usage</span>
         {modelLabel ? (
-          <span className="inline-flex items-center gap-1.5 text-[9px] text-fg/45">
-            <ModelGlyph modelId={event.modelId} model={event.model} size={10} className="text-fg/55" />
+          <span className="inline-flex items-center gap-1.5 text-fg/35">
+            <ModelGlyph modelId={event.modelId} model={event.model} size={10} className="text-fg/40" />
             <span>{modelLabel}</span>
           </span>
         ) : null}
-        {inputTokens ? <span className="text-[9px] text-fg/40">In {inputTokens}</span> : null}
-        {outputTokens ? <span className="text-[9px] text-fg/40">Out {outputTokens}</span> : null}
-        {cacheRead ? <span className="text-[9px] text-emerald-400/40">Cache {cacheRead}</span> : null}
-        {cacheCreation ? <span className="text-[9px] text-violet-400/40">New cache {cacheCreation}</span> : null}
-        {costLabel ? <span className="text-[9px] text-fg/35">{costLabel}</span> : null}
+        {inputTokens ? <span className="text-fg/30">In {inputTokens}</span> : null}
+        {outputTokens ? <span className="text-fg/30">Out {outputTokens}</span> : null}
+        {cacheRead ? <span className="text-emerald-400/35">Cache {cacheRead}</span> : null}
+        {cacheCreation ? <span className="text-violet-400/35">New cache {cacheCreation}</span> : null}
+        {costLabel ? <span className="text-fg/30">{costLabel}</span> : null}
         {event.status !== "completed" ? (
-          <span className="ml-auto text-[8px] text-current">{event.status}</span>
+          <span className="ml-auto text-[9px] text-current">{event.status}</span>
         ) : null}
       </div>
     );
@@ -1566,7 +1574,7 @@ function renderEvent(
   return (
     <div className="flex items-center gap-3 py-0.5">
       <div className="h-px flex-1 bg-white/6" />
-      <span className="rounded-[var(--chat-radius-pill)] border border-white/[0.04] px-2 py-1 font-mono text-[9px] font-bold uppercase tracking-[2px] text-muted-fg/25">event</span>
+      <span className="font-sans text-[10px] text-muted-fg/20">event</span>
       <div className="h-px flex-1 bg-white/6" />
     </div>
   );
@@ -1671,6 +1679,7 @@ type EventRowProps = {
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;
+  turnActive?: boolean;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -1681,19 +1690,20 @@ const EventRow = React.memo(function EventRow({
   onApproval,
   surfaceMode = "standard",
   surfaceProfile = "standard",
+  turnActive,
 }: EventRowProps) {
   return (
     <div className="space-y-3">
       {showTurnDivider && turnDividerLabel ? (
         <div className="flex items-center gap-3 py-2">
-          <div className="h-px flex-1 bg-[color:color-mix(in_srgb,var(--chat-accent)_20%,transparent)]" />
-          <span className="rounded-[var(--chat-radius-pill)] border border-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)] px-2 py-1 font-mono text-[9px] font-bold uppercase tracking-[0.22em] text-[color:color-mix(in_srgb,var(--chat-accent)_84%,white_16%)]">
+          <div className="h-px flex-1 bg-violet-400/[0.06]" />
+          <span className="font-sans text-[10px] text-violet-300/25">
             {turnDividerLabel}
           </span>
-          <div className="h-px flex-1 bg-[color:color-mix(in_srgb,var(--chat-accent)_20%,transparent)]" />
+          <div className="h-px flex-1 bg-violet-400/[0.06]" />
         </div>
       ) : null}
-      {renderEvent(envelope, { onApproval, turnModel, surfaceMode, surfaceProfile })}
+      {renderEvent(envelope, { onApproval, turnModel, surfaceMode, surfaceProfile, turnActive })}
     </div>
   );
 });
@@ -1957,6 +1967,7 @@ export function AgentChatMessageList({
           onApproval={handleApproval}
           surfaceMode={surfaceMode}
           surfaceProfile={surfaceProfile}
+          turnActive={showStreamingIndicator}
         />
       );
     }
@@ -1971,9 +1982,10 @@ export function AgentChatMessageList({
         onApproval={handleApproval}
         surfaceMode={surfaceMode}
         surfaceProfile={surfaceProfile}
+        turnActive={showStreamingIndicator}
       />
     );
-  }, [surfaceMode, surfaceProfile, rows, turnModelMap, handleApproval, handleMeasure]);
+  }, [surfaceMode, surfaceProfile, rows, turnModelMap, handleApproval, handleMeasure, showStreamingIndicator]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

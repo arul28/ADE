@@ -83,12 +83,18 @@ export type AutomationActionResult = {
 
 export type AutomationRuleSummary = AutomationRule & {
   lastRunAt: string | null;
+  nextRunAt: string | null;
   lastRunStatus: AutomationRunStatus | null;
   running: boolean;
   queueCount: number;
   paused: boolean;
   ignoredRunCount: number;
   confidence: AutomationConfidenceScore | null;
+  source: "local" | "shared" | "merged";
+};
+
+export type AutomationDeleteRuleRequest = {
+  id: string;
 };
 
 export type AutomationQueueItem = {

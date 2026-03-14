@@ -6,7 +6,7 @@ import { TerminalView } from "./TerminalView";
 import { ToolLogo } from "./ToolLogos";
 import { AgentChatPane } from "../chat/AgentChatPane";
 import { WorkStartSurface } from "./WorkStartSurface";
-import { MONO_FONT } from "../lanes/laneDesignTokens";
+import { MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 import { isChatToolType, primarySessionLabel, secondarySessionLabel, truncateSessionLabel } from "../../lib/sessions";
 import { sessionStatusDot } from "../../lib/terminalAttention";
 
@@ -40,14 +40,13 @@ function SessionSurface({ session, isActive }: { session: TerminalSessionSummary
     >
       <div
         style={{
-          border: "1px solid color-mix(in srgb, var(--color-error) 20%, transparent)",
-          background: THEME_CARD,
+          background: "rgba(255,255,255, 0.03)",
           padding: "8px 14px",
-          fontFamily: MONO_FONT,
-          fontSize: 10,
+          fontFamily: SANS_FONT,
+          fontSize: 12,
+          fontWeight: 400,
           color: THEME_MUTED,
-          textTransform: "uppercase",
-          letterSpacing: "0.12em",
+          borderRadius: 8,
         }}
       >
         Session ended
@@ -117,29 +116,26 @@ export function WorkViewArea({
           <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
           <span
             style={{
-              fontFamily: MONO_FONT,
-              fontSize: 10,
-              fontWeight: 700,
-              textTransform: "uppercase",
-              letterSpacing: "1px",
+              fontFamily: SANS_FONT,
+              fontSize: 11,
+              fontWeight: 500,
               color: "var(--color-muted-fg)",
             }}
           >
-            GRID VIEW
+            Grid
           </span>
           <span
             style={{
               display: "inline-flex",
               alignItems: "center",
-              padding: "2px 8px",
-              fontSize: 10,
-              fontWeight: 700,
-              fontFamily: MONO_FONT,
-              letterSpacing: "1px",
-              color: "rgba(var(--tab-tint-rgb, 113, 113, 122), 0.95)",
-              background: "rgba(var(--tab-tint-rgb, 113, 113, 122), 0.14)",
+              padding: "1px 7px",
+              fontSize: 11,
+              fontWeight: 400,
+              fontFamily: SANS_FONT,
+              color: "var(--color-muted-fg)",
+              background: "rgba(255,255,255, 0.05)",
               border: "none",
-              borderRadius: 8,
+              borderRadius: 4,
             }}
           >
             {displaySessions.length}
@@ -175,17 +171,17 @@ export function WorkViewArea({
                     className="flex min-h-[260px] flex-col overflow-hidden"
                     style={{
                       border: isActive
-                        ? `1px solid ${laneColor}30`
+                        ? "1px solid rgba(255,255,255, 0.08)"
                         : "1px solid rgba(255,255,255, 0.04)",
                       background: "transparent",
-                      borderRadius: 16,
+                      borderRadius: 10,
                     }}
                   >
                     <div
                       className="flex items-center gap-2 px-2 py-1.5"
                       style={{
                         borderBottom: "1px solid rgba(255,255,255, 0.04)",
-                        background: isActive ? `${laneColor}0C` : "transparent",
+                        background: isActive ? "rgba(255,255,255, 0.02)" : "transparent",
                       }}
                     >
                       <button
@@ -193,7 +189,7 @@ export function WorkViewArea({
                         className="min-w-0 flex-1 text-left"
                         onClick={() => onSelectItem(session.id)}
                       >
-                        <span className="flex items-center gap-2" style={{ fontFamily: MONO_FONT, fontSize: 11 }}>
+                        <span className="flex items-center gap-2" style={{ fontFamily: SANS_FONT, fontSize: 12 }}>
                           <span
                             title={dot.label}
                             className={`${dot.cls} h-2.5 w-2.5 shrink-0 ${dot.spinning ? " animate-spin" : ""}`}
@@ -209,14 +205,10 @@ export function WorkViewArea({
                               display: "inline-flex",
                               alignItems: "center",
                               padding: "1px 6px",
-                              fontSize: 9,
-                              fontWeight: 700,
-                              fontFamily: MONO_FONT,
-                              letterSpacing: "0.12em",
-                              textTransform: "uppercase",
-                              color: laneColor,
-                              background: `${laneColor}16`,
-                              border: `1px solid ${laneColor}33`,
+                              fontSize: 10,
+                              fontWeight: 400,
+                              fontFamily: SANS_FONT,
+                              color: "var(--color-muted-fg)",
                             }}
                           >
                             {session.laneName}
@@ -293,9 +285,9 @@ export function WorkViewArea({
                 style={{
                   padding: "0 8px",
                   height: 28,
-                  fontFamily: MONO_FONT,
-                  fontSize: 10,
-                  fontWeight: isActive ? 600 : 400,
+                  fontFamily: SANS_FONT,
+                  fontSize: 11,
+                  fontWeight: isActive ? 500 : 400,
                   background: "transparent",
                   color: isActive ? THEME_FG : "var(--color-muted-fg)",
                   cursor: "pointer",

@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-05
+> Last updated: 2026-03-13
 
 ---
 
@@ -51,6 +51,8 @@ This timeline serves multiple purposes:
   especially useful in team environments where understanding who did what matters.
 
 **Current status**: Implemented and working (Phases 2 + 8). The core operations timeline is recorded and browsable, and Phase 8 adds checkpoints + pack events as first-class history artifacts. The UI favors readable activity summaries with deep links into lanes and packs; raw metadata remains available but is de-emphasized to reduce noise. Advanced timeline features (graph view, undo, replay, export) remain planned for Phase 9.
+
+Recent UI hardening keeps the page quieter under load: polling only runs while live operations exist, background refreshes stay silent, and focus/visibility return triggers catch-up refresh instead of constant foreground churn.
 
 ---
 
@@ -173,7 +175,7 @@ The left pane displays a chronological list of operations, most recent first.
 - **Status filter** (chip buttons): "All" (default), succeeded, failed,
   running, canceled — click to toggle
 - **Refresh button**: Manually refresh the operation list
-- Auto-refresh: polling every 2.5s when any operation has `running` status
+- Auto-refresh: silent polling every 4s when any operation has `running` status, guarded by window visibility/focus so background tabs stay quiet
 
 **Operation rows**:
 
@@ -194,7 +196,7 @@ Each row displays:
 
 - Click a row to select it and populate the detail panel
 - Selected row is highlighted with a distinct background color
-- Scroll loads more operations (pagination via offset/limit)
+- Scroll loads more operations (pagination via offset/limit; default fetch size is intentionally bounded to keep large histories responsive)
 - Empty state: "No operations recorded yet" with explanation
 
 ### Event Detail Panel
@@ -504,8 +506,8 @@ Backend data structures remain in place, but public browsing/IPC for them is sti
 | HIST-025 | Human-readable operation descriptions (`describeOperation`) | DONE — Phase 8 (pack updates, git commits, and other operations get readable titles/detail lines) |
 | HIST-026 | Status-colored left border on operation rows | DONE — Phase 8 (emerald/red/amber/gray border based on status) |
 | HIST-027 | URL parameter support (`laneId`, `operationId`) | DONE — Phase 8 (deep linking to specific lane/operation) |
-| HIST-028 | Auto-refresh for running operations | DONE — Phase 8 (2.5s polling when any operation has `running` status) |
+| HIST-028 | Auto-refresh for running operations | DONE — Phase 8, later hardened to 4s silent visibility-aware polling when any operation has `running` status |
 
 ---
 
-*This document describes the History feature for ADE. The core operations timeline is implemented. Checkpoints, pack event logging, and pack version tracking still exist as backend compatibility data, but they are not currently exposed through a public `ade.packs.*` bridge or dedicated History UI browser. The History UI received PaneTilingLayout, human-readable descriptions, status-colored borders, URL parameter support, and auto-refresh in Phase 8. Advanced timeline features (graph view, undo, replay, export, checkpoint/event browsing) remain future work.*
+*This document describes the History feature for ADE. The core operations timeline is implemented. Checkpoints, pack event logging, and pack version tracking still exist as backend compatibility data, but they are not currently exposed through a public `ade.packs.*` bridge or dedicated History UI browser. The History UI received PaneTilingLayout, human-readable descriptions, status-colored borders, URL parameter support, and auto-refresh in Phase 8, with later hardening for quieter silent refresh and visibility-aware polling. Advanced timeline features (graph view, undo, replay, export, checkpoint/event browsing) remain future work.*

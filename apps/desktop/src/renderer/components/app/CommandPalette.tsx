@@ -41,6 +41,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
       { id: "go-settings", title: "Go to Settings", shortcut: "G S", group: "Navigation", run: () => navigate("/settings") },
       { id: "go-settings-general", title: "Go to General Settings", hint: "Provider, model, theme", group: "Settings", run: () => navigate("/settings?tab=general") },
       { id: "go-settings-github", title: "Go to GitHub Settings", hint: "Token, repos, PRs", group: "Settings", run: () => navigate("/settings?tab=github") },
+      { id: "go-settings-linear", title: "Go to Linear Settings", hint: "Connection, OAuth, issue sync", group: "Settings", run: () => navigate("/settings?tab=linear") },
       { id: "go-settings-context", title: "Go to Context & Docs", hint: "Context files, docs generation", group: "Settings", run: () => navigate("/settings?tab=context") },
       { id: "go-settings-usage", title: "Go to Usage", hint: "Token usage, cost breakdown", group: "Settings", run: () => navigate("/settings?tab=usage") },
       {

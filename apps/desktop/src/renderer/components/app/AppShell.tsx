@@ -90,10 +90,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const shouldTrackTerminalAttention =
     Boolean(project?.rootPath)
     && !showWelcome
-    && (location.pathname === "/project"
-      || location.pathname === "/work"
-      || location.pathname === "/lanes"
-      || location.pathname === "/missions");
+    && (location.pathname === "/work" || location.pathname === "/lanes");
 
   useEffect(() => {
     console.info(`renderer.route_change ${JSON.stringify({
@@ -190,7 +187,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
     const unsubData = window.ade.pty.onData(() => scheduleRefresh());
     const unsubExit = window.ade.pty.onExit(() => scheduleRefresh());
-    const unsubChat = window.ade.agentChat.onEvent(() => scheduleRefresh(220));
     const interval = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       scheduleRefresh();
@@ -206,7 +202,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       try {
         unsubData();
         unsubExit();
-        unsubChat();
       } catch {
         // ignore
       }
@@ -373,13 +368,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  const commandHint = useMemo(() => {
-    const isMac = navigator.platform.toLowerCase().includes("mac");
-    const primary = commandPaletteBinding.split(",")[0]?.trim() ?? "Mod+K";
-    const normalized = primary.replace(/\bMod\b/g, isMac ? "Cmd" : "Ctrl");
-    return normalized;
-  }, [commandPaletteBinding]);
-
   const tintClass = useMemo(() => {
     const tintMap: Record<string, string> = {
       "/project": "tab-tint-project",
@@ -400,13 +388,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="h-screen w-screen text-fg overflow-hidden flex flex-col bg-bg">
       <div className="shrink-0 relative z-20">
-        <TopBar
-          onOpenCommandPalette={() => setCommandOpen(true)}
-          commandPaletteOpen={commandOpen}
-          commandHint={
-            <span className="font-mono">{commandHint}</span>
-          }
-        />
+        <TopBar />
       </div>
 
       {projectMissing && project?.rootPath ? (

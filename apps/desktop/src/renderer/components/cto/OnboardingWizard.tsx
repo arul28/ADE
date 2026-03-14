@@ -1,12 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Brain,
-  ArrowSquareOut,
-  GitBranch,
   IdentificationCard,
   FolderOpen,
   Plugs,
-  ShieldCheck,
   CheckCircle,
   Sparkle,
 } from "@phosphor-icons/react";
@@ -23,11 +20,12 @@ import { cardCls, inputCls, labelCls, recessedPanelCls, textareaCls } from "./sh
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { LinearConnectionPanel } from "./LinearConnectionPanel";
+import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
 
 const STEPS: WizardStep[] = [
-  { id: "identity", label: "Identity", description: "Name the operator and choose its first brain.", icon: IdentificationCard },
-  { id: "project", label: "Project Context", description: "Seed the memory it should carry forward.", icon: FolderOpen },
-  { id: "integrations", label: "Integrations", description: "Connect Linear now or finish setup fast.", icon: Plugs },
+  { id: "identity", label: "Identity", icon: IdentificationCard },
+  { id: "project", label: "Project", icon: FolderOpen },
+  { id: "integrations", label: "Integrations", icon: Plugs },
 ];
 
 const PERSONALITY_PRESETS = [
@@ -150,6 +148,7 @@ export function OnboardingWizard({
   const [activeStep, setActiveStep] = useState(STEPS[0].id);
   const [completing, setCompleting] = useState(false);
   const [identityError, setIdentityError] = useState<string | null>(null);
+  const [stepError, setStepError] = useState<string | null>(null);
 
   const [identity, setIdentity] = useState<IdentityDraft>({
     name: "CTO",
@@ -236,11 +235,15 @@ export function OnboardingWizard({
 
   const handleAdvance = useCallback(async (stepId: string) => {
     setCompleting(true);
+    setStepError(null);
     try {
       if (stepId === "identity") return await saveIdentityStep();
       if (stepId === "project") return await saveProjectStep();
       if (stepId === "integrations") return await saveIntegrationsStep();
       return true;
+    } catch (err) {
+      setStepError(err instanceof Error ? err.message : "Failed to save step.");
+      return false;
     } finally {
       setCompleting(false);
     }
@@ -345,70 +348,28 @@ export function OnboardingWizard({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center"
-      style={{ background: "rgba(0, 0, 0, 0.7)", backdropFilter: "blur(8px)" }}
+      style={{ background: "rgba(0, 0, 0, 0.75)", backdropFilter: "blur(12px)" }}
     >
       <div
-        className="flex flex-col overflow-hidden border border-border/30 shadow-float"
+        className="flex flex-col overflow-hidden rounded-2xl border shadow-float"
         style={{
-          width: "min(1180px, 96vw)",
-          height: "min(760px, 92vh)",
-          background: "var(--color-bg)",
+          width: "min(1200px, 96vw)",
+          height: "min(780px, 94vh)",
+          background: "#0C0A14",
+          borderColor: "rgba(167, 139, 250, 0.1)",
         }}
       >
         <div
-          className="shrink-0 border-b border-border/20 px-6 py-6"
-          style={{
-            background:
-              "radial-gradient(circle at top left, rgba(34, 211, 238, 0.18), transparent 34%), radial-gradient(circle at bottom right, rgba(59, 130, 246, 0.12), transparent 38%), linear-gradient(180deg, rgba(255,255,255,0.03) 0%, transparent 100%)",
-          }}
+          className="shrink-0 border-b px-6 py-5"
+          style={{ borderColor: "rgba(167, 139, 250, 0.08)" }}
         >
-          <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
-            <div className="max-w-3xl">
-              <div className="font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-cyan-300/80">
-                Configure your CTO
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-lg font-semibold tracking-[-0.02em] text-fg">
+                Set up your CTO
               </div>
-              <div className="mt-2 text-2xl font-semibold tracking-[-0.02em] text-fg">
-                Stand up a persistent project operator
-              </div>
-              <div className="mt-2 max-w-2xl text-sm leading-6 text-fg/72">
-                This is not a throwaway chat. You are creating one long-running identity for the workspace: it keeps memory, can swap brains later, and starts from a full-access operator model by default.
-              </div>
-              <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                {[
-                  { label: "Persistent identity", detail: "One CTO persona for the whole workspace." },
-                  { label: "Brain can change", detail: "Model swaps do not reset memory or who this is." },
-                  { label: "Linear optional", detail: "Finish setup now and connect issue workflows later." },
-                ].map((item) => (
-                  <div key={item.label} className="rounded-2xl border border-white/[0.08] bg-black/20 px-4 py-3">
-                    <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-fg/48">{item.label}</div>
-                    <div className="mt-2 text-xs leading-5 text-fg/72">{item.detail}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div className="grid gap-3 xl:w-[300px]">
-              <div className="rounded-2xl border border-white/[0.08] bg-black/20 px-4 py-4">
-                <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-fg/45">What you leave with</div>
-                <div className="mt-3 space-y-2 text-xs leading-5 text-fg/74">
-                  <div className="flex items-start gap-2">
-                    <CheckCircle size={14} weight="fill" className="mt-0.5 text-emerald-300" />
-                    <span>A named CTO identity with a starting brain.</span>
-                  </div>
-                  <div className="flex items-start gap-2">
-                    <CheckCircle size={14} weight="fill" className="mt-0.5 text-emerald-300" />
-                    <span>Seeded project memory that carries forward after this wizard.</span>
-                  </div>
-                  <div className="flex items-start gap-2">
-                    <CheckCircle size={14} weight="fill" className="mt-0.5 text-emerald-300" />
-                    <span>Optional Linear routing, without blocking first-run setup.</span>
-                  </div>
-                </div>
-              </div>
-              <div className="rounded-2xl border border-cyan-400/18 bg-cyan-500/[0.08] px-4 py-3">
-                <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-cyan-100">OpenClaw-style mental model</div>
-                <div className="mt-2 text-xs leading-5 text-cyan-50/82">
-                  Treat this like one always-on operator with durable memory. You can change the active model later without creating a different person.
-                </div>
+              <div className="mt-0.5 text-xs text-muted-fg/45">
+                Name it, give it context, connect integrations.
               </div>
             </div>
           </div>
@@ -426,82 +387,36 @@ export function OnboardingWizard({
             nextLabel="Save & Continue"
             completeLabel={linearStatus?.connected ? "Finish Setup" : "Finish Without Linear"}
           >
+            {stepError ? (
+              <div className="rounded-lg border border-red-500/20 bg-red-500/[0.06] px-3 py-2 text-[11px] text-red-300">
+                {stepError}
+              </div>
+            ) : null}
             {activeStep === "identity" && (
-              <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
-                <div className="space-y-5">
-                  <div className={cn(cardCls, "p-5")}>
-                    <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-cyan-300/80">Step 1 · Identity</div>
-                    <div className="mt-2 text-xl font-semibold tracking-[-0.02em] text-fg">
-                      Define the persistent operator people are talking to
-                    </div>
-                    <div className="mt-2 max-w-3xl text-sm leading-6 text-fg/72">
-                      You are creating one long-running CTO identity for this workspace. The identity, memory, and session continuity persist over time. The model is just the starting brain.
-                    </div>
-                    <div className="mt-4 grid gap-3 md:grid-cols-3">
-                      {[
-                        { label: "What persists", detail: "Name, persona, memory, and operator continuity." },
-                        { label: "What can change later", detail: "Provider, model, and tool routing." },
-                        { label: "Default runtime", detail: "Full access by default for a trusted operator surface." },
-                      ].map((item) => (
-                        <div key={item.label} className="rounded-2xl border border-white/[0.08] bg-black/15 px-4 py-3">
-                          <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-fg/48">{item.label}</div>
-                          <div className="mt-2 text-xs leading-5 text-fg/72">{item.detail}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className={cn(cardCls, "p-5")}>
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="font-sans text-sm font-semibold text-fg">Choose a starting brain</div>
-                        <div className="mt-1 text-xs leading-5 text-muted-fg/68">
-                          Pick a sensible starting point. You can swap this later without resetting the CTO&apos;s memory or identity.
-                        </div>
-                      </div>
-                      <div className="rounded-full border border-emerald-400/20 bg-emerald-500/10 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-emerald-100">
-                        Brain swaps are safe
-                      </div>
-                    </div>
-                    <div className="mt-4 grid gap-3 md:grid-cols-2">
-                      {STARTING_BRAIN_PRESETS.map((preset) => {
-                        const isSelected = identity.modelId === preset.modelId;
-                        return (
-                          <button
-                            key={preset.modelId}
-                            type="button"
-                            onClick={() => setIdentity((draft) => ({
-                              ...draft,
-                              provider: preset.provider,
-                              model: preset.model,
-                              modelId: preset.modelId,
-                            }))}
-                            className={cn(
-                              "rounded-2xl border px-4 py-3 text-left transition-all",
-                              isSelected
-                                ? "border-accent/40 bg-accent/8"
-                                : "border-white/[0.08] bg-white/[0.02] hover:border-white/[0.14] hover:bg-white/[0.03]",
-                            )}
-                          >
-                            <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-fg/45">
-                              {preset.provider}
-                            </div>
-                            <div className="mt-2 text-sm font-semibold text-fg">{preset.label}</div>
-                            <div className="mt-1 text-xs leading-5 text-muted-fg/65">{preset.detail}</div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  <div className={cn(cardCls, "space-y-4 p-5")}>
+              <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_280px]">
+                <div className="space-y-4">
+                  <div className={cn(cardCls, "space-y-3 p-4")}>
                     <div>
-                      <div className="font-sans text-sm font-semibold text-fg">Shape the operator</div>
-                      <div className="mt-1 text-xs leading-5 text-muted-fg/68">
-                        Give the CTO a clear name, decide its tone, and set the raw provider/model values if you want something custom.
+                      <div className="font-sans text-sm font-semibold text-fg">Model</div>
+                      <div className="mt-2">
+                        <UnifiedModelSelector
+                          value={identity.modelId ?? ""}
+                          onChange={(modelId) => {
+                            const model = getModelById(modelId);
+                            if (model) {
+                              setIdentity((draft) => ({
+                                ...draft,
+                                provider: model.family,
+                                model: model.shortId ?? model.id.split("/").pop() ?? model.id,
+                                modelId,
+                              }));
+                            }
+                          }}
+                        />
                       </div>
                     </div>
 
+                    <div className="font-sans text-sm font-semibold text-fg">Personality</div>
                     <div className="grid gap-2 md:grid-cols-2">
                       {PERSONALITY_PRESETS.map((preset) => (
                         <button
@@ -513,121 +428,80 @@ export function OnboardingWizard({
                             persona: preset.id === "custom" ? draft.persona : preset.persona,
                           }))}
                           className={cn(
-                            "rounded-2xl border px-4 py-3 text-left transition-all",
+                            "rounded-lg border px-3 py-2.5 text-left transition-all duration-200",
                             identity.personality === preset.id
-                              ? "border-accent/40 bg-accent/8"
-                              : "border-white/[0.08] bg-white/[0.02] hover:border-white/[0.14] hover:bg-white/[0.03]",
+                              ? "border-[rgba(167,139,250,0.35)] bg-[rgba(167,139,250,0.08)]"
+                              : "border-white/[0.06] bg-[rgba(24,20,35,0.4)] hover:border-[rgba(167,139,250,0.18)]",
                           )}
                         >
-                          <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-fg">{preset.label}</div>
-                          <div className="mt-1 text-xs leading-5 text-muted-fg/62">{preset.description}</div>
+                          <div className="text-xs font-medium text-fg">{preset.label}</div>
+                          <div className="mt-0.5 text-[11px] text-muted-fg/45">{preset.description}</div>
                         </button>
                       ))}
                     </div>
 
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <label className="space-y-1">
-                        <div className={labelCls}>CTO Name</div>
-                        <input
-                          className={inputCls}
-                          placeholder="CTO"
-                          value={identity.name}
-                          onChange={(event) => setIdentity((draft) => ({ ...draft, name: event.target.value }))}
-                        />
-                        <div className="text-[11px] leading-5 text-muted-fg/58">
-                          This is the name people will see when they talk to the persistent CTO.
-                        </div>
-                      </label>
-                      <label className="space-y-1">
-                        <div className={labelCls}>Starting brain</div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <input
-                            className={inputCls}
-                            placeholder="anthropic"
-                            value={identity.provider}
-                            onChange={(event) => setIdentity((draft) => ({ ...draft, provider: event.target.value, modelId: null }))}
-                          />
-                          <input
-                            className={inputCls}
-                            placeholder="claude-sonnet-4-6"
-                            value={identity.model}
-                            onChange={(event) => setIdentity((draft) => ({ ...draft, model: event.target.value, modelId: null }))}
-                          />
-                        </div>
-                        <div className="text-[11px] leading-5 text-muted-fg/58">
-                          These fields are the raw routing preference. Keep them simple unless you need a specific provider/model pairing.
-                        </div>
-                      </label>
-                    </div>
+                    <label className="space-y-1">
+                      <div className={labelCls}>Name</div>
+                      <input
+                        className={cn(inputCls, "max-w-xs")}
+                        placeholder="CTO"
+                        value={identity.name}
+                        onChange={(event) => setIdentity((draft) => ({ ...draft, name: event.target.value }))}
+                      />
+                    </label>
 
                     <label className="space-y-1 block">
-                      <div className={labelCls}>Persona / Instructions</div>
+                      <div className={labelCls}>Persona</div>
                       <textarea
-                        className={cn(textareaCls, "min-h-[140px]")}
-                        rows={6}
+                        className={cn(textareaCls, "min-h-[120px]")}
+                        rows={5}
                         value={identity.persona}
                         onChange={(event) => setIdentity((draft) => ({ ...draft, persona: event.target.value }))}
                       />
-                      <div className="text-[11px] leading-5 text-muted-fg/58">
-                        This becomes the durable operator persona, not a one-off prompt for a single chat.
-                      </div>
                     </label>
 
                     {identityError ? (
-                      <div className="rounded-2xl border border-red-500/20 bg-red-500/[0.06] px-4 py-3 font-mono text-[10px] text-red-200">
+                      <div className="rounded-lg border border-red-500/20 bg-red-500/[0.06] px-3 py-2 text-[11px] text-red-300">
                         {identityError}
                       </div>
                     ) : null}
                   </div>
 
-                  <div className="rounded-2xl border border-accent/15 bg-accent/5 p-4">
-                    <div className="mb-2 flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-[1px] text-muted-fg/42">
+                  <div className="rounded-lg border p-3" style={{ borderColor: "rgba(167, 139, 250, 0.12)", background: "rgba(167, 139, 250, 0.04)" }}>
+                    <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-fg/50">
                       <Sparkle size={10} weight="bold" />
-                      Prompt Preview
+                      System prompt preview
                     </div>
-                    <div className="max-h-48 overflow-y-auto whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-fg/76" data-testid="cto-onboarding-prompt-preview">
+                    <div className="max-h-36 overflow-y-auto whitespace-pre-wrap text-[11px] leading-relaxed text-fg/60" data-testid="cto-onboarding-prompt-preview">
                       {promptPreview?.prompt ?? "Preview unavailable."}
                     </div>
                   </div>
                 </div>
 
-                <div className="space-y-4 xl:pt-1">
-                  <div className={cn(recessedPanelCls, "p-4")}>
-                    <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-fg/45">What this creates</div>
-                    <div className="mt-4 space-y-3">
+                <div className="space-y-3 xl:pt-0">
+                  <div className={cn(recessedPanelCls, "p-3")}>
+                    <div className="text-[10px] font-medium uppercase tracking-wider text-muted-fg/50">Summary</div>
+                    <div className="mt-3 space-y-2">
                       {[
                         { label: "Identity", value: identity.name.trim() || "CTO" },
-                        { label: "Starting brain", value: selectedBrainSummary },
-                        { label: "Permissions", value: "Full access by default" },
-                        { label: "Memory", value: "Persistent project memory attached to this operator" },
+                        { label: "Model", value: selectedBrainSummary },
+                        { label: "Memory", value: "Persistent" },
                       ].map((item) => (
-                        <div key={item.label} className="rounded-2xl border border-white/[0.06] bg-white/[0.02] px-3 py-3">
-                          <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-fg/42">{item.label}</div>
-                          <div className="mt-1 text-xs leading-5 text-fg/78">{item.value}</div>
+                        <div key={item.label} className="flex items-center justify-between rounded-lg border border-white/[0.05] bg-white/[0.02] px-3 py-2">
+                          <div className="text-[10px] text-muted-fg/50">{item.label}</div>
+                          <div className="text-[11px] font-medium text-fg/70">{item.value}</div>
                         </div>
                       ))}
                     </div>
                   </div>
 
-                  <div className={cn(recessedPanelCls, "p-4")}>
-                    <div className="flex items-center gap-2 text-fg">
-                      <Brain size={14} weight="duotone" className="text-cyan-200" />
-                      <div className="font-sans text-sm font-semibold">How brain changes work</div>
+                  <div className={cn(recessedPanelCls, "p-3")}>
+                    <div className="flex items-center gap-1.5 text-fg/70">
+                      <Brain size={12} weight="duotone" style={{ color: "#A78BFA" }} />
+                      <div className="text-xs font-medium">Model swaps</div>
                     </div>
-                    <div className="mt-3 space-y-2 text-xs leading-5 text-muted-fg/68">
-                      <div>You are not locking the CTO to one model family forever.</div>
-                      <div>Changing the active model later swaps the brain, not the person.</div>
-                      <div>That means the identity, memory, and long-running context remain intact.</div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-emerald-400/18 bg-emerald-500/[0.08] p-4">
-                    <div className="flex items-center gap-2 text-emerald-100">
-                      <ShieldCheck size={14} weight="duotone" />
-                      <div className="font-sans text-sm font-semibold">Operator mode</div>
-                    </div>
-                    <div className="mt-2 text-xs leading-5 text-emerald-50/84">
-                      CTO chat is treated like a trusted always-on operator surface, not a temporary planner tab. That is why full access is the default starting posture here.
+                    <div className="mt-2 text-[11px] leading-5 text-muted-fg/45">
+                      Changing the model later keeps identity and memory intact.
                     </div>
                   </div>
                 </div>
@@ -635,151 +509,83 @@ export function OnboardingWizard({
             )}
 
             {activeStep === "project" && (
-              <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
-                <div className="space-y-5">
-                  <div className={cn(cardCls, "p-5")}>
-                    <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-cyan-300/80">Step 2 · Project memory</div>
-                    <div className="mt-2 text-xl font-semibold tracking-[-0.02em] text-fg">
-                      Seed the memory this operator should carry forward
-                    </div>
-                    <div className="mt-2 max-w-3xl text-sm leading-6 text-fg/72">
-                      This is the memory the CTO keeps warm across sessions. Think in terms of stable project understanding, conventions the team should not forget, and the work that matters right now.
-                    </div>
-                    <div className="mt-4 grid gap-3 md:grid-cols-3">
-                      {[
-                        { label: "Project summary", detail: "What this repo is, what it uses, and what matters." },
-                        { label: "Conventions", detail: "Rules and habits the CTO should keep enforcing." },
-                        { label: "Current focus", detail: "The live priorities it should orient around today." },
-                      ].map((item) => (
-                        <div key={item.label} className="rounded-2xl border border-white/[0.08] bg-black/15 px-4 py-3">
-                          <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-fg/48">{item.label}</div>
-                          <div className="mt-2 text-xs leading-5 text-fg/72">{item.detail}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
+              <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_280px]">
+                <div className="space-y-4">
                   {detection ? (
-                    <div className={cn(cardCls, "p-5")}>
-                      <div className="flex items-start justify-between gap-4">
-                        <div>
-                          <div className="font-sans text-sm font-semibold text-fg">Use repository-detected defaults</div>
-                          <div className="mt-1 text-xs leading-5 text-muted-fg/68">
-                            We scanned the repo to give you a head start. Apply these defaults if they look roughly right, then refine them.
-                          </div>
-                        </div>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={populateDetectedDefaults}
-                          data-testid="cto-onboarding-apply-detection"
-                        >
-                          Use detected defaults
-                        </Button>
+                    <div className="flex items-center justify-between rounded-lg border border-white/[0.05] bg-[rgba(24,20,35,0.4)] px-3 py-2.5">
+                      <div className="text-xs text-fg/60">
+                        Detected: {detection.projectTypes.join(", ") || "project"}
                       </div>
-
-                      <div className="mt-4 grid gap-3 md:grid-cols-[1.1fr_1fr]">
-                        <div className="rounded-2xl border border-white/[0.08] bg-black/15 px-4 py-3">
-                          <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-fg/45">Detected project types</div>
-                          <div className="mt-2 text-sm text-fg/78">
-                            {detection.projectTypes.join(", ") || "No strong project type detected"}
-                          </div>
-                        </div>
-                        <div className="rounded-2xl border border-white/[0.08] bg-black/15 px-4 py-3">
-                          <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-fg/45">Signals</div>
-                          <div className="mt-2 text-xs leading-5 text-fg/68">
-                            {detectedSignalsSummary}
-                          </div>
-                        </div>
-                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={populateDetectedDefaults}
+                        data-testid="cto-onboarding-apply-detection"
+                      >
+                        Auto-fill
+                      </Button>
                     </div>
                   ) : null}
 
-                  <div className={cn(cardCls, "space-y-4 p-5")}>
-                    <div>
-                      <div className="font-sans text-sm font-semibold text-fg">Teach the CTO your project</div>
-                      <div className="mt-1 text-xs leading-5 text-muted-fg/68">
-                        Short, concrete inputs are better than huge essays. Write the stable things you want remembered, then list the current priorities separately.
-                      </div>
-                    </div>
+                  <div className={cn(cardCls, "space-y-3 p-4")}>
+                    <div className="font-sans text-sm font-semibold text-fg">Project context</div>
 
                     <label className="space-y-1 block">
-                      <div className={labelCls}>Project Summary</div>
+                      <div className={labelCls}>Summary</div>
                       <textarea
-                        className={cn(textareaCls, "min-h-[120px]")}
-                        rows={5}
+                        className={cn(textareaCls, "min-h-[100px]")}
+                        rows={4}
                         placeholder="What is this project, who is it for, and what stack does it use?"
                         value={project.projectSummary}
                         onChange={(event) => setProject((draft) => ({ ...draft, projectSummary: event.target.value }))}
                       />
-                      <div className="text-[11px] leading-5 text-muted-fg/58">
-                        Example: “Desktop app for AI-assisted software execution. Electron + React + TypeScript. CTO and worker flows coordinate coding, review, and Linear routing.”
-                      </div>
                     </label>
 
                     <label className="space-y-1 block">
-                      <div className={labelCls}>Key Conventions</div>
+                      <div className={labelCls}>Conventions</div>
                       <textarea
-                        className={cn(textareaCls, "min-h-[92px]")}
-                        rows={4}
-                        placeholder={"TypeScript strict\nNo force pushes to shared branches\nPrefer one living Linear workpad comment"}
+                        className={cn(textareaCls, "min-h-[80px]")}
+                        rows={3}
+                        placeholder={"TypeScript strict\nNo force pushes to shared branches"}
                         value={project.conventions}
                         onChange={(event) => setProject((draft) => ({ ...draft, conventions: event.target.value }))}
                       />
-                      <div className="text-[11px] leading-5 text-muted-fg/58">
-                        Use commas or new lines. These become long-term team rules the CTO should remember.
-                      </div>
                     </label>
 
                     <label className="space-y-1 block">
-                      <div className={labelCls}>Active Focus Areas</div>
+                      <div className={labelCls}>Current focus</div>
                       <textarea
-                        className={cn(textareaCls, "min-h-[92px]")}
-                        rows={4}
-                        placeholder={"single-device CTO polish\nworker continuity\nproof-backed Linear closeout"}
+                        className={cn(textareaCls, "min-h-[80px]")}
+                        rows={3}
+                        placeholder={"CTO polish\nworker continuity"}
                         value={project.activeFocus}
                         onChange={(event) => setProject((draft) => ({ ...draft, activeFocus: event.target.value }))}
                       />
-                      <div className="text-[11px] leading-5 text-muted-fg/58">
-                        Use this for current priorities only. It is okay for this section to change often.
-                      </div>
                     </label>
 
                     {scanDone ? (
-                      <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/18 bg-emerald-500/[0.08] px-4 py-3 font-mono text-[10px] text-emerald-100">
-                        <CheckCircle size={12} weight="bold" />
-                        Repo-detected defaults applied.
+                      <div className="flex items-center gap-1.5 text-[11px] text-emerald-300/70">
+                        <CheckCircle size={11} weight="bold" />
+                        Defaults applied
                       </div>
                     ) : null}
                   </div>
                 </div>
 
-                <div className="space-y-4 xl:pt-1">
-                  <div className={cn(recessedPanelCls, "p-4")}>
-                    <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-fg/45">Memory after setup</div>
-                    <div className="mt-4 space-y-3">
+                <div className="space-y-3 xl:pt-0">
+                  <div className={cn(recessedPanelCls, "p-3")}>
+                    <div className="text-[10px] font-medium uppercase tracking-wider text-muted-fg/50">Preview</div>
+                    <div className="mt-3 space-y-2">
                       {[
-                        { label: "Summary", value: project.projectSummary.trim() || "No project summary yet." },
-                        { label: "Conventions", value: summarizeDraftList(project.conventions, "No conventions yet.") },
-                        { label: "Current focus", value: summarizeDraftList(project.activeFocus, "No active focus yet.") },
+                        { label: "Summary", value: project.projectSummary.trim() || "—" },
+                        { label: "Conventions", value: summarizeDraftList(project.conventions, "—") },
+                        { label: "Focus", value: summarizeDraftList(project.activeFocus, "—") },
                       ].map((item) => (
-                        <div key={item.label} className="rounded-2xl border border-white/[0.06] bg-white/[0.02] px-3 py-3">
-                          <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-fg/42">{item.label}</div>
-                          <div className="mt-1 text-xs leading-5 text-fg/76">{item.value}</div>
+                        <div key={item.label} className="flex flex-col gap-0.5 rounded-lg border border-white/[0.05] bg-white/[0.02] px-3 py-2">
+                          <div className="text-[10px] text-muted-fg/40">{item.label}</div>
+                          <div className="text-[11px] text-fg/60 line-clamp-2">{item.value}</div>
                         </div>
                       ))}
-                    </div>
-                  </div>
-
-                  <div className={cn(recessedPanelCls, "p-4")}>
-                    <div className="flex items-center gap-2 text-fg">
-                      <GitBranch size={14} weight="duotone" className="text-cyan-200" />
-                      <div className="font-sans text-sm font-semibold">How this gets used</div>
-                    </div>
-                    <div className="mt-3 space-y-2 text-xs leading-5 text-muted-fg/68">
-                      <div>The project summary helps the CTO explain the repo and make better strategic decisions.</div>
-                      <div>Conventions are the rules it should keep bringing back into implementation and review.</div>
-                      <div>Active focus areas bias the operator toward what matters most right now without overwriting the stable memory.</div>
                     </div>
                   </div>
                 </div>
@@ -787,48 +593,24 @@ export function OnboardingWizard({
             )}
 
             {activeStep === "integrations" && (
-              <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
-                <div className="space-y-5">
-                  <div className={cn(cardCls, "p-5")}>
-                    <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-cyan-300/80">Step 3 · Integrations</div>
-                    <div className="mt-2 text-xl font-semibold tracking-[-0.02em] text-fg">
-                      Decide whether to connect Linear right now
-                    </div>
-                    <div className="mt-2 max-w-3xl text-sm leading-6 text-fg/72">
-                      Keep first-run setup simple. The CTO works without Linear. If you connect it now, you unlock issue routing and workflow publishing immediately. If not, you can finish setup and come back later.
-                    </div>
-                    <div className="mt-4 grid gap-3 md:grid-cols-2">
-                      <div className="rounded-2xl border border-white/[0.08] bg-black/15 px-4 py-4">
-                        <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-fg/45">Fastest path</div>
-                        <div className="mt-2 text-sm font-semibold text-fg">Finish setup without Linear</div>
-                        <div className="mt-1 text-xs leading-5 text-muted-fg/68">
-                          Best if you just want the persistent CTO live now. You can wire Linear in later from the CTO tab.
-                        </div>
-                      </div>
-                      <div className="rounded-2xl border border-white/[0.08] bg-black/15 px-4 py-4">
-                        <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-fg/45">If you connect now</div>
-                        <div className="mt-2 text-sm font-semibold text-fg">Issue routing starts earlier</div>
-                        <div className="mt-1 text-xs leading-5 text-muted-fg/68">
-                          You immediately unlock delegated issue workflows, living workpad comments, and proof-backed closeout publishing.
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className={cn(cardCls, "p-5")}>
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="font-sans text-sm font-semibold text-fg">Linear connection</div>
-                        <div className="mt-1 text-xs leading-5 text-muted-fg/68">
-                          Personal API keys are the fastest first-run path. OAuth is still available when you want it.
-                        </div>
-                      </div>
-                      <div className="rounded-full border border-white/[0.08] bg-white/[0.03] px-3 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-fg/68">
+              <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_280px]">
+                <div className="space-y-4">
+                  <div className={cn(cardCls, "p-4")}>
+                    <div className="flex items-center justify-between">
+                      <div className="font-sans text-sm font-semibold text-fg">Linear</div>
+                      <div className="rounded-full px-2.5 py-1 text-[10px] font-medium" style={{
+                        color: linearStatus?.connected ? "#34D399" : "#A78BFA",
+                        background: linearStatus?.connected ? "rgba(52, 211, 153, 0.08)" : "rgba(167, 139, 250, 0.06)",
+                        border: `1px solid ${linearStatus?.connected ? "rgba(52, 211, 153, 0.15)" : "rgba(167, 139, 250, 0.1)"}`,
+                      }}>
                         {linearSummary}
                       </div>
                     </div>
+                    <div className="mt-0.5 text-xs text-muted-fg/40">
+                      Optional. Enables issue routing and workflow automation.
+                    </div>
 
-                    <div className="mt-4 rounded-2xl border border-white/[0.08] bg-black/15 p-4">
+                    <div className="mt-3 rounded-lg border border-white/[0.05] bg-[rgba(15,12,24,0.5)] p-3">
                       <LinearConnectionPanel
                         compact
                         onStatusChange={handleLinearStatusChange}
@@ -837,73 +619,48 @@ export function OnboardingWizard({
                   </div>
 
                   {!linearStatus?.connected ? (
-                    <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] px-4 py-4">
-                      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                        <div>
-                          <div className="font-sans text-sm font-semibold text-fg">You can finish setup without Linear</div>
-                          <div className="mt-1 text-xs leading-5 text-muted-fg/68">
-                            The primary button will still complete onboarding. Linear setup stays available from the CTO tab afterward.
-                          </div>
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setIntegrationSkipped(true)}
-                        >
-                          Skip Linear for now
-                        </Button>
-                      </div>
+                    <div className="flex items-center justify-between rounded-lg border border-white/[0.05] bg-[rgba(24,20,35,0.4)] px-3 py-2.5">
+                      <span className="text-xs text-muted-fg/40">You can add Linear later from settings.</span>
+                      <button
+                        type="button"
+                        onClick={() => setIntegrationSkipped(true)}
+                        className="text-[11px] font-medium transition-colors hover:text-fg"
+                        style={{ color: "#A78BFA" }}
+                      >
+                        Skip
+                      </button>
                     </div>
                   ) : null}
-
-                  <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] px-4 py-4">
-                    <div className="font-sans text-sm font-semibold text-fg">External routing can wait</div>
-                    <div className="mt-1 text-xs leading-5 text-muted-fg/68">
-                      OpenClaw bridge routing and other advanced integration policies do not need to be part of first-run setup. Keep the first launch simple, then extend from CTO settings when the operator is already live.
-                    </div>
-                  </div>
                 </div>
 
-                <div className="space-y-4 xl:pt-1">
-                  <div className={cn(recessedPanelCls, "p-4")}>
-                    <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-fg/45">What Linear unlocks</div>
-                    <div className="mt-4 space-y-3">
+                <div className="space-y-3 xl:pt-0">
+                  <div className={cn(recessedPanelCls, "p-3")}>
+                    <div className="text-[10px] font-medium uppercase tracking-wider text-muted-fg/50">Linear unlocks</div>
+                    <div className="mt-3 space-y-2">
                       {[
-                        "Assignee and workflow-based issue routing",
-                        "One living workpad comment per delegated run",
-                        "PR / proof links in closeout publishing",
+                        "Issue routing by assignee",
+                        "Living workpad comments",
+                        "PR proof links on close",
                       ].map((item) => (
-                        <div key={item} className="flex items-start gap-2 text-xs leading-5 text-fg/74">
-                          <CheckCircle size={13} weight="fill" className="mt-1 text-emerald-300" />
+                        <div key={item} className="flex items-center gap-2 text-[11px] text-fg/55">
+                          <CheckCircle size={11} weight="fill" style={{ color: "#34D399" }} />
                           <span>{item}</span>
                         </div>
                       ))}
                     </div>
                   </div>
 
-                  <div className={cn(recessedPanelCls, "p-4")}>
-                    <div className="flex items-center gap-2 text-fg">
-                      <ArrowSquareOut size={14} weight="duotone" className="text-cyan-200" />
-                      <div className="font-sans text-sm font-semibold">After setup</div>
+                  <div className={cn(recessedPanelCls, "p-3")}>
+                    <div className="flex items-center gap-1.5" style={{ color: "#A78BFA" }}>
+                      <Plugs size={12} weight="duotone" />
+                      <div className="text-xs font-medium">Status</div>
                     </div>
-                    <div className="mt-3 space-y-2 text-xs leading-5 text-muted-fg/68">
-                      <div>You can reopen this flow from the CTO tab settings any time.</div>
-                      <div>You can change the active model later without rebuilding the operator.</div>
-                      <div>You can connect Linear later without losing the memory you just created.</div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-cyan-400/18 bg-cyan-500/[0.08] p-4">
-                    <div className="flex items-center gap-2 text-cyan-100">
-                      <Plugs size={14} weight="duotone" />
-                      <div className="font-sans text-sm font-semibold">Current status</div>
-                    </div>
-                    <div className="mt-2 text-xs leading-5 text-cyan-50/84">
+                    <div className="mt-1.5 text-[11px] leading-5 text-muted-fg/45">
                       {linearStatus?.connected
-                        ? `Linear is connected${linearStatus.viewerName ? ` as ${linearStatus.viewerName}` : ""}.`
+                        ? `Connected${linearStatus.viewerName ? ` as ${linearStatus.viewerName}` : ""}`
                         : integrationSkipped
-                          ? "You have chosen to keep first-run setup focused and add Linear later."
-                          : "Linear is still optional here. You can finish onboarding even if you leave it disconnected."}
+                          ? "Skipped — add later from settings"
+                          : "Not connected yet"}
                     </div>
                   </div>
                 </div>

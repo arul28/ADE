@@ -3,10 +3,12 @@ import type { ListSessionsArgs, TerminalSessionSummary } from "../../shared/type
 type CacheEntry = {
   value: TerminalSessionSummary[] | null;
   timestamp: number;
+  fetchedLimit: number | null;
   inFlight: Promise<TerminalSessionSummary[]> | null;
+  inFlightLimit: number | null;
 };
 
-const DEFAULT_SESSION_LIST_TTL_MS = 900;
+const DEFAULT_SESSION_LIST_TTL_MS = 1_500;
 const cache = new Map<string, CacheEntry>();
 
 function normalizeArgs(args?: ListSessionsArgs): ListSessionsArgs {
@@ -23,8 +25,24 @@ function cacheKey(args?: ListSessionsArgs): string {
   return JSON.stringify({
     laneId: normalized.laneId ?? null,
     status: normalized.status ?? null,
-    limit: normalized.limit ?? null,
   });
+}
+
+function requestedLimit(args?: ListSessionsArgs): number | null {
+  const normalized = normalizeArgs(args);
+  return typeof normalized.limit === "number" && Number.isFinite(normalized.limit) && normalized.limit > 0
+    ? normalized.limit
+    : null;
+}
+
+function canSatisfyLimit(availableLimit: number | null, nextLimit: number | null): boolean {
+  if (nextLimit == null) return availableLimit == null;
+  return availableLimit != null && availableLimit >= nextLimit;
+}
+
+function sliceRows(rows: TerminalSessionSummary[], limit: number | null): TerminalSessionSummary[] {
+  if (limit == null || rows.length <= limit) return rows;
+  return rows.slice(0, limit);
 }
 
 export async function listSessionsCached(
@@ -33,30 +51,39 @@ export async function listSessionsCached(
 ): Promise<TerminalSessionSummary[]> {
   const key = cacheKey(args);
   const ttlMs = options?.ttlMs ?? DEFAULT_SESSION_LIST_TTL_MS;
+  const limit = requestedLimit(args);
   const now = Date.now();
   const existing = cache.get(key);
 
-  if (!options?.force && existing?.value && now - existing.timestamp < ttlMs) {
-    return existing.value;
+  if (!options?.force && existing?.value && now - existing.timestamp < ttlMs && canSatisfyLimit(existing.fetchedLimit, limit)) {
+    return sliceRows(existing.value, limit);
   }
-  if (!options?.force && existing?.inFlight) {
-    return existing.inFlight;
+  if (!options?.force && existing?.inFlight && canSatisfyLimit(existing.inFlightLimit, limit)) {
+    return existing.inFlight.then((rows) => sliceRows(rows, limit));
   }
 
-  const request = window.ade.sessions.list(normalizeArgs(args)).then((rows) => {
-    cache.set(key, {
-      value: rows,
-      timestamp: Date.now(),
-      inFlight: null,
-    });
+  let request: Promise<TerminalSessionSummary[]> | null = null;
+  request = window.ade.sessions.list(normalizeArgs(args)).then((rows) => {
+    const current = cache.get(key);
+    if (current?.inFlight === request) {
+      cache.set(key, {
+        value: rows,
+        timestamp: Date.now(),
+        fetchedLimit: limit,
+        inFlight: null,
+        inFlightLimit: null,
+      });
+    }
     return rows;
   }).catch((error) => {
     const current = cache.get(key);
-    if (current?.inFlight) {
+    if (current?.inFlight === request) {
       cache.set(key, {
         value: current.value,
         timestamp: current.timestamp,
+        fetchedLimit: current.fetchedLimit,
         inFlight: null,
+        inFlightLimit: null,
       });
     }
     throw error;
@@ -65,10 +92,12 @@ export async function listSessionsCached(
   cache.set(key, {
     value: existing?.value ?? null,
     timestamp: existing?.timestamp ?? 0,
+    fetchedLimit: existing?.fetchedLimit ?? null,
     inFlight: request,
+    inFlightLimit: limit,
   });
 
-  return request;
+  return request.then((rows) => sliceRows(rows, limit));
 }
 
 export function invalidateSessionListCache(): void {

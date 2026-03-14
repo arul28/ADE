@@ -10,6 +10,7 @@ import type {
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
   ArchiveLaneArgs,
+  AutomationDeleteRuleRequest,
   AutomationIngressEventRecord,
   AutomationIngressStatus,
   AutomationManualTriggerRequest,
@@ -223,9 +224,6 @@ import type {
   OnboardingDetectionResult,
   OnboardingExistingLaneCandidate,
   OnboardingStatus,
-  CiScanResult,
-  CiImportRequest,
-  CiImportResult,
   LaneSummary,
   ListOverlapsArgs,
   ListLanesArgs,
@@ -550,6 +548,8 @@ contextBridge.exposeInMainWorld("ade", {
   },
   project: {
     openRepo: async (): Promise<ProjectInfo | null> => ipcRenderer.invoke(IPC.projectOpenRepo),
+    chooseDirectory: async (args: { title?: string; defaultPath?: string } = {}): Promise<string | null> =>
+      ipcRenderer.invoke(IPC.projectChooseDirectory, args),
     openAdeFolder: async (): Promise<void> => ipcRenderer.invoke(IPC.projectOpenAdeFolder),
     clearLocalData: async (args: ClearLocalAdeDataArgs = {}): Promise<ClearLocalAdeDataResult> =>
       ipcRenderer.invoke(IPC.projectClearLocalData, args),
@@ -621,14 +621,12 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.onboardingDetectExistingLanes),
     complete: async (): Promise<OnboardingStatus> => ipcRenderer.invoke(IPC.onboardingComplete)
   },
-  ci: {
-    scan: async (): Promise<CiScanResult> => ipcRenderer.invoke(IPC.ciScan),
-    import: async (req: CiImportRequest): Promise<CiImportResult> => ipcRenderer.invoke(IPC.ciImport, req)
-  },
   automations: {
     list: async (): Promise<AutomationRuleSummary[]> => ipcRenderer.invoke(IPC.automationsList),
     toggle: async (args: { id: string; enabled: boolean }): Promise<AutomationRuleSummary[]> =>
       ipcRenderer.invoke(IPC.automationsToggle, args),
+    deleteRule: async (args: AutomationDeleteRuleRequest): Promise<AutomationRuleSummary[]> =>
+      ipcRenderer.invoke(IPC.automationsDeleteRule, args),
     triggerManually: async (args: AutomationManualTriggerRequest): Promise<AutomationRun> =>
       ipcRenderer.invoke(IPC.automationsTriggerManually, args),
     getHistory: async (args: { id: string; limit?: number }): Promise<AutomationRun[]> =>
@@ -1084,6 +1082,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.agentChatDispose, args),
     updateSession: async (args: AgentChatUpdateSessionArgs): Promise<AgentChatSession> =>
       ipcRenderer.invoke(IPC.agentChatUpdateSession, args),
+    warmupModel: async (args: { sessionId: string; modelId: string }): Promise<void> =>
+      ipcRenderer.invoke(IPC.agentChatWarmupModel, args),
     onEvent: (cb: (ev: AgentChatEventEnvelope) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: AgentChatEventEnvelope) => cb(payload);
       ipcRenderer.on(IPC.agentChatEvent, listener);
@@ -1648,6 +1648,10 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.ctoPreviewSystemPrompt, args),
     getLinearProjects: async (): Promise<CtoLinearProject[]> =>
       ipcRenderer.invoke(IPC.ctoGetLinearProjects),
+    setLinearOAuthClient: async (args: import("../shared/types").CtoSetLinearOAuthClientArgs): Promise<LinearConnectionStatus> =>
+      ipcRenderer.invoke(IPC.ctoSetLinearOAuthClient, args),
+    clearLinearOAuthClient: async (): Promise<LinearConnectionStatus> =>
+      ipcRenderer.invoke(IPC.ctoClearLinearOAuthClient),
     startLinearOAuth: async (): Promise<CtoStartLinearOAuthResult> =>
       ipcRenderer.invoke(IPC.ctoStartLinearOAuth),
     getLinearOAuthSession: async (args: CtoGetLinearOAuthSessionArgs): Promise<CtoGetLinearOAuthSessionResult> =>

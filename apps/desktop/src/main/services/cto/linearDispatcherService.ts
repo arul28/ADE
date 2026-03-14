@@ -284,7 +284,7 @@ export function createLinearDispatcherService(args: {
           select *
           from linear_workflow_runs
           where project_id = ?
-            and status in ('queued', 'in_progress', 'waiting_for_target', 'waiting_for_pr', 'awaiting_human_review', 'retry_wait')
+            and status in ('queued', 'in_progress', 'waiting_for_target', 'waiting_for_pr', 'awaiting_human_review', 'awaiting_delegation', 'retry_wait')
           order by datetime(created_at) asc
         `,
         [args.projectId]
@@ -297,7 +297,7 @@ export function createLinearDispatcherService(args: {
         select count(*) as total
         from linear_workflow_runs
         where project_id = ?
-          and status in ('queued', 'in_progress', 'waiting_for_target', 'waiting_for_pr', 'awaiting_human_review', 'retry_wait')
+          and status in ('queued', 'in_progress', 'waiting_for_target', 'waiting_for_pr', 'awaiting_human_review', 'awaiting_delegation', 'retry_wait')
         limit 1
       `,
       [args.projectId]
@@ -440,7 +440,7 @@ export function createLinearDispatcherService(args: {
 
   type ResolvedWorkerTarget = { id: string; slug: string; adapterType: AdapterType };
   type ResolvedEmployeeSessionTarget = {
-    identityKey: AgentChatIdentityKey;
+    identityKey: AgentChatIdentityKey | null;
     worker: ResolvedWorkerTarget | null;
     label: string;
   };
@@ -544,7 +544,13 @@ export function createLinearDispatcherService(args: {
       };
     }
     const worker = resolveWorkerFromAssignee(issue) ?? resolveWorker(workflow);
-    if (!worker) return null;
+    if (!worker) {
+      return {
+        identityKey: null,
+        worker: null,
+        label: "Awaiting delegation",
+      };
+    }
     return {
       identityKey: `agent:${worker.id}`,
       worker,
@@ -722,11 +728,7 @@ export function createLinearDispatcherService(args: {
       return existing.id;
     }
 
-    if (workflow.target.prStrategy?.kind === "manual") {
-      return null;
-    }
-
-    if (!workflow.target.prStrategy && workflow.closeout?.reviewReadyWhen === "work_complete") {
+    if (!workflow.target.prStrategy) {
       return null;
     }
 
@@ -860,13 +862,15 @@ export function createLinearDispatcherService(args: {
         };
       }
       return {
-        state: "waiting",
+        state: targetStatusAllowsTerminalSuccess(targetStatus) ? "completed" : "waiting",
         payload: {
           targetStatus,
           linkedSessionId: run.linkedSessionId,
-          sessionStatus: linkedSession?.status ?? "missing",
+          sessionStatus: linkedSession?.status ?? "ended",
           identityKey,
-          waitingFor: "explicit_completion",
+          ...(targetStatusAllowsTerminalSuccess(targetStatus)
+            ? { autoCompleted: true }
+            : { waitingFor: "explicit_completion" }),
         },
       };
     }
@@ -957,6 +961,7 @@ export function createLinearDispatcherService(args: {
         launchMode: workflow.target.runMode === "manual" ? "manual" : "autopilot",
         employeeAgentId: worker?.id,
         ...(workflow.target.prStrategy ? { executionPolicy: { prStrategy: workflow.target.prStrategy } } : {}),
+        ...(workflow.target.phaseProfile ? { phaseProfileId: workflow.target.phaseProfile } : {}),
       });
       await args.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
@@ -977,7 +982,13 @@ export function createLinearDispatcherService(args: {
     }
 
     if (workflow.target.type === "employee_session") {
-      if (!employeeTarget) throw new Error(`Workflow '${workflow.name}' could not resolve an employee session owner.`);
+      if (!employeeTarget || !employeeTarget.identityKey) {
+        appendEvent(run.id, "run.awaiting_delegation", "waiting", `No employee could be resolved for workflow '${workflow.name}'. Queued for manual delegation.`);
+        emitRunEvent(run, "delegated", `Awaiting manual delegation for ${run.identifier}.`);
+        return {
+          status: "awaiting_delegation" as LinearWorkflowRunStatus,
+        };
+      }
       const laneId = await ensureExecutionLane(run, workflow, issue);
       if (!laneId) throw new Error(`Workflow '${workflow.name}' could not resolve a lane for employee session launch.`);
       const session = await args.agentChatService.ensureIdentitySession({
@@ -1139,6 +1150,16 @@ export function createLinearDispatcherService(args: {
       emitRunEvent(refreshed, "failed", summary);
       emitNotification(refreshed, `${refreshed.identifier} needs attention`, summary, "error");
     }
+
+    if (refreshed.linkedSessionId) {
+      const outcomeLabel = outcome === "completed" ? "completed successfully" : outcome === "failed" ? "failed" : "been cancelled";
+      await args.agentChatService.sendMessage({
+        sessionId: refreshed.linkedSessionId,
+        text: `[Linear Workflow] The workflow for ${refreshed.identifier} (${refreshed.title}) has ${outcomeLabel}. ${summary}`,
+      }).catch(() => {
+        /* best-effort notification — don't fail finalization if chat send fails */
+      });
+    }
   };
 
   const findStepIndex = (workflow: LinearWorkflowDefinition, stepId: string | null | undefined): number =>
@@ -1189,6 +1210,16 @@ export function createLinearDispatcherService(args: {
     instructions: step.instructions?.trim() || workflow.humanReview?.instructions?.trim() || null,
   });
 
+  const refreshIssueSnapshot = async (runId: string, issueId: string): Promise<NormalizedLinearIssue | null> => {
+    const fresh = await args.issueTracker.fetchIssueById(issueId);
+    if (!fresh) return null;
+    args.db.run(
+      `update linear_workflow_runs set source_issue_snapshot_json = ?, updated_at = ? where id = ? and project_id = ?`,
+      [JSON.stringify(fresh), nowIso(), runId, args.projectId]
+    );
+    return fresh;
+  };
+
   const advanceRun = async (runId: string, policy: LinearWorkflowConfig): Promise<LinearWorkflowRun | null> => {
     const row = getRunRow(runId);
     if (!row) return null;
@@ -1204,6 +1235,14 @@ export function createLinearDispatcherService(args: {
       return toRun(getRunRow(run.id)!);
     }
 
+    const refreshedIssue = await refreshIssueSnapshot(run.id, run.issueId);
+    if (refreshedIssue && (refreshedIssue.stateType === "completed" || refreshedIssue.stateType === "canceled")) {
+      const reason = refreshedIssue.stateType === "completed" ? "completed" : "cancelled";
+      appendEvent(run.id, "run.cancelled", "cancelled", `Issue ${run.identifier} is no longer open (state: ${refreshedIssue.stateName}).`);
+      await finalizeRun(run, workflow, "cancelled", `Issue ${run.identifier} was ${reason} externally.`);
+      return toRun(getRunRow(run.id)!);
+    }
+
     const steps = getStepRows(run.id);
     for (let index = run.currentStepIndex; index < steps.length; index += 1) {
       const stepRow = steps[index]!;
@@ -1214,7 +1253,8 @@ export function createLinearDispatcherService(args: {
       updateStep(stepRow.id, { status: "running", startedAt: stepRow.started_at ?? nowIso() });
 
       if (step.type === "launch_target") {
-        const patch = await executeTarget(toRun(getRunRow(run.id)!), policy, workflow, run.sourceIssueSnapshot as NormalizedLinearIssue);
+        const liveRun = toRun(getRunRow(run.id)!);
+        const patch = await executeTarget(liveRun, policy, workflow, liveRun.sourceIssueSnapshot as NormalizedLinearIssue);
         updateRun(run.id, { ...patch, currentStepIndex: index + 1, currentStepId: workflow.steps[index + 1]?.id ?? null });
         updateStep(stepRow.id, { status: "completed", completedAt: nowIso(), payload: patch });
         appendEvent(run.id, "step.launch_target", "completed", `Launched ${workflow.target.type}.`, patch as Record<string, unknown>);
@@ -1230,11 +1270,14 @@ export function createLinearDispatcherService(args: {
                 ? "pull request"
                 : patch.status === "awaiting_human_review"
                   ? "supervisor review"
-                  : null,
+                  : patch.status === "awaiting_delegation"
+                    ? "manual delegation"
+                    : null,
         });
         const nextStep = workflow.steps[index + 1] ?? null;
         const shouldPauseAfterLaunch =
           patch.status === "awaiting_human_review"
+          || patch.status === "awaiting_delegation"
           || (patch.status === "waiting_for_target" && nextStep?.type === "wait_for_target_status")
           || (patch.status === "waiting_for_pr" && nextStep?.type === "wait_for_pr");
         if (shouldPauseAfterLaunch) {
@@ -1347,6 +1390,31 @@ export function createLinearDispatcherService(args: {
       if (step.type === "request_human_review") {
         const reviewContext = buildReviewContext(workflow, step);
         const liveRun = toRun(getRunRow(run.id)!);
+
+        // Check for review timeout — default 48 hours.
+        if (liveRun.status === "awaiting_human_review" && stepRow.status === "waiting" && stepRow.started_at) {
+          const REVIEW_TIMEOUT_MS = 48 * 60 * 60 * 1000;
+          const elapsedMs = Date.now() - Date.parse(stepRow.started_at);
+          if (elapsedMs >= REVIEW_TIMEOUT_MS) {
+            updateStep(stepRow.id, {
+              status: "failed",
+              completedAt: nowIso(),
+              payload: { reviewState: "timeout", note: "Review timed out after 48 hours." },
+            });
+            appendEvent(run.id, "step.review_timeout", "failed", "Supervisor review timed out after 48 hours.", {
+              reviewerIdentityKey: reviewContext.reviewerIdentityKey,
+              elapsedMs,
+            });
+            await finalizeRun(
+              toRun(getRunRow(run.id)!),
+              workflow,
+              "failed",
+              "Supervisor review timed out after 48 hours without a response."
+            );
+            return toRun(getRunRow(run.id)!);
+          }
+        }
+
         if (liveRun.reviewState === "approved") {
           updateStep(stepRow.id, {
             status: "completed",
@@ -1464,6 +1532,27 @@ export function createLinearDispatcherService(args: {
         appendEvent(run.id, "step.apply_linear_label", "completed", `Applied label '${step.label.trim()}'.`, {
           label: step.label.trim(),
         });
+      } else if (step.type === "attach_artifacts") {
+        const refreshed = toRun(getRunRow(run.id)!);
+        const issue = refreshed.sourceIssueSnapshot as NormalizedLinearIssue;
+        const artifactMode = step.mode ?? workflow.closeout?.artifactMode ?? "links";
+        try {
+          await args.closeoutService.applyOutcome({
+            run: refreshed,
+            workflow,
+            issue,
+            outcome: "completed",
+            summary: step.summary?.trim() || "Artifacts collected for the workflow run.",
+          });
+          appendEvent(run.id, "step.attach_artifacts", "completed", "Artifacts posted to the Linear issue.", {
+            artifactMode,
+          });
+        } catch (error) {
+          appendEvent(run.id, "step.attach_artifacts", "completed", "Artifact attachment attempted but encountered an error.", {
+            artifactMode,
+            error: String(error && typeof error === "object" && "message" in error ? (error as { message: string }).message : error),
+          });
+        }
       } else if (step.type === "complete_issue") {
         await finalizeRun(toRun(getRunRow(run.id)!), workflow, "completed", "Workflow completed successfully.");
         updateStep(stepRow.id, { status: "completed", completedAt: nowIso() });
@@ -1474,10 +1563,39 @@ export function createLinearDispatcherService(args: {
         return toRun(getRunRow(run.id)!);
       } else if (step.type === "emit_app_notification") {
         const refreshed = toRun(getRunRow(run.id)!);
+        if (step.notifyOn) {
+          const events = getEventRows(run.id);
+          const milestoneMap: Record<string, string> = {
+            "step.launch_target": "delegated",
+            "run.pr_linked": "pr_linked",
+            "run.pr_created": "pr_linked",
+            "run.review_approved": "review_ready",
+            "run.finalized": "completed",
+          };
+          const reachedMilestones = new Set<string>();
+          for (const event of events) {
+            const mapped = milestoneMap[event.event_type];
+            if (mapped) {
+              if (mapped === "completed" && event.status === "failed") {
+                reachedMilestones.add("failed");
+              } else {
+                reachedMilestones.add(mapped);
+              }
+            }
+          }
+          if (!reachedMilestones.has(step.notifyOn)) {
+            appendEvent(run.id, "step.emit_app_notification", "skipped", `Skipped notification: milestone '${step.notifyOn}' not reached.`, {
+              notifyOn: step.notifyOn,
+              reachedMilestones: [...reachedMilestones],
+            });
+            updateStep(stepRow.id, { status: "skipped", completedAt: nowIso() });
+            continue;
+          }
+        }
         const title = step.notificationTitle?.trim() || `${refreshed.identifier} workflow update`;
         const message = step.message?.trim() || step.body?.trim() || step.summary?.trim() || "Workflow milestone reached.";
         emitNotification(refreshed, title, message, "info");
-        appendEvent(run.id, "step.emit_app_notification", "completed", message, { title });
+        appendEvent(run.id, "step.emit_app_notification", "completed", message, { title, ...(step.notifyOn ? { notifyOn: step.notifyOn } : {}) });
       }
 
       updateStep(stepRow.id, { status: "completed", completedAt: nowIso() });
@@ -1559,6 +1677,24 @@ export function createLinearDispatcherService(args: {
       [args.projectId, issueId]
     );
     return row ? toRun(row) : null;
+  };
+
+  const cancelRun = async (runId: string, reason: string, policy: LinearWorkflowConfig): Promise<void> => {
+    const row = getRunRow(runId);
+    if (!row) return;
+    const run = toRun(row);
+    const workflow = policy.workflows.find((entry) => entry.id === run.workflowId);
+    if (!workflow) {
+      // No matching workflow definition — do a bare status update
+      updateRun(run.id, {
+        status: "cancelled",
+        terminalOutcome: "cancelled",
+        lastError: reason,
+      });
+      appendEvent(run.id, "run.finalized", "cancelled", reason, null);
+      return;
+    }
+    await finalizeRun(run, workflow, "cancelled", reason);
   };
 
   const resolveRunAction = async (
@@ -1690,7 +1826,7 @@ export function createLinearDispatcherService(args: {
         steps.find((entry) => entry.type === "launch_target")?.payload_json ?? null
       ) ?? {};
       const status: LinearSyncQueueItem["status"] =
-        row.status === "queued"
+        row.status === "queued" || row.status === "awaiting_delegation"
           ? "queued"
           : row.status === "retry_wait"
             ? "retry_wait"
@@ -1779,6 +1915,7 @@ export function createLinearDispatcherService(args: {
     resolveRunAction,
     getRunDetail,
     findActiveRunForIssue,
+    cancelRun,
   };
 }
 

@@ -5,6 +5,8 @@ import type {
   PortLease,
   LanePreviewInfo,
   OAuthSession,
+  ProcessEvent,
+  ProcessRuntime,
 } from "../../../shared/types";
 
 export type LaneRuntimeBarProps = {
@@ -21,6 +23,7 @@ export function LaneRuntimeBar({ laneId }: LaneRuntimeBarProps) {
   const [portLease, setPortLease] = useState<PortLease | null>(null);
   const [preview, setPreview] = useState<LanePreviewInfo | null>(null);
   const [oauthCount, setOauthCount] = useState(0);
+  const [runtimes, setRuntimes] = useState<ProcessRuntime[]>([]);
 
   // Parallel initial fetch for all lane runtime data
   useEffect(() => {
@@ -29,6 +32,7 @@ export function LaneRuntimeBar({ laneId }: LaneRuntimeBarProps) {
       setPortLease(null);
       setPreview(null);
       setOauthCount(0);
+      setRuntimes([]);
       return;
     }
     let cancelled = false;
@@ -46,10 +50,12 @@ export function LaneRuntimeBar({ laneId }: LaneRuntimeBarProps) {
     void Promise.all([
       window.ade.lanes.diagnosticsGetLaneHealth({ laneId }).catch(() => null),
       window.ade.lanes.portGetLease({ laneId }).catch(() => null),
-    ]).then(([h, l]) => {
+      window.ade.processes.listRuntime(laneId).catch(() => [] as ProcessRuntime[]),
+    ]).then(([h, l, nextRuntimes]) => {
       if (cancelled) return;
       setHealth(h);
       setPortLease(l);
+      setRuntimes(nextRuntimes);
     });
 
     return () => {
@@ -89,12 +95,26 @@ export function LaneRuntimeBar({ laneId }: LaneRuntimeBarProps) {
       }
     });
 
+    const unsubProcesses = window.ade.processes.onEvent((ev: ProcessEvent) => {
+      if (cancelled || ev.type !== "runtime" || ev.runtime.laneId !== laneId) return;
+      setRuntimes((prev) => {
+        const idx = prev.findIndex((runtime) => runtime.processId === ev.runtime.processId);
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = ev.runtime;
+          return next;
+        }
+        return [...prev, ev.runtime];
+      });
+    });
+
     return () => {
       cancelled = true;
       unsubHealth();
       unsubPort();
       unsubProxy();
       unsubOAuth();
+      unsubProcesses();
     };
   }, [laneId]);
 
@@ -118,6 +138,10 @@ export function LaneRuntimeBar({ laneId }: LaneRuntimeBarProps) {
   const hStatus = health?.status ?? "unknown";
   const hColor = healthColor(hStatus);
   const issueCount = health?.issues?.length ?? 0;
+  const hasPreviewableRuntime = runtimes.some((runtime) => (
+    (runtime.status === "starting" || runtime.status === "running" || runtime.status === "degraded")
+      && runtime.ports.length > 0
+  ));
 
   return (
     <div
@@ -167,47 +191,49 @@ export function LaneRuntimeBar({ laneId }: LaneRuntimeBarProps) {
       </div>
 
       {/* Preview */}
-      <div style={{ display: "flex", alignItems: "center", gap: 6, ...dividerStyle }}>
-        <span style={{ ...LABEL_STYLE, fontSize: 9 }}>Preview</span>
-        {preview && preview.active ? (
-          <>
-            <span
-              style={{
-                fontFamily: MONO_FONT,
-                fontSize: 11,
-                color: COLORS.textSecondary,
-                maxWidth: 180,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-              title={preview.previewUrl}
-            >
-              {preview.hostname}
+      {hasPreviewableRuntime && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, ...dividerStyle }}>
+          <span style={{ ...LABEL_STYLE, fontSize: 9 }}>Preview</span>
+          {preview && preview.active ? (
+            <>
+              <span
+                style={{
+                  fontFamily: MONO_FONT,
+                  fontSize: 11,
+                  color: COLORS.textSecondary,
+                  maxWidth: 180,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+                title={preview.previewUrl}
+              >
+                {preview.hostname}
+              </span>
+              <button
+                type="button"
+                onClick={() => void window.ade.app.openExternal(preview.previewUrl)}
+                aria-label={`Open preview ${preview.hostname}`}
+                style={outlineButton({ height: 22, fontSize: 9, padding: "0 8px" })}
+              >
+                OPEN
+              </button>
+              <button
+                type="button"
+                onClick={() => void window.ade.app.writeClipboardText(preview.previewUrl)}
+                aria-label={`Copy preview URL ${preview.hostname}`}
+                style={outlineButton({ height: 22, fontSize: 9, padding: "0 8px" })}
+              >
+                COPY
+              </button>
+            </>
+          ) : (
+            <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textDim }}>
+              Starting preview...
             </span>
-            <button
-              type="button"
-              onClick={() => void window.ade.app.openExternal(preview.previewUrl)}
-              aria-label={`Open preview ${preview.hostname}`}
-              style={outlineButton({ height: 22, fontSize: 9, padding: "0 8px" })}
-            >
-              OPEN
-            </button>
-            <button
-              type="button"
-              onClick={() => void window.ade.app.writeClipboardText(preview.previewUrl)}
-              aria-label={`Copy preview URL ${preview.hostname}`}
-              style={outlineButton({ height: 22, fontSize: 9, padding: "0 8px" })}
-            >
-              COPY
-            </button>
-          </>
-        ) : (
-          <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textDim }}>
-            No preview
-          </span>
-        )}
-      </div>
+          )}
+        </div>
+      )}
 
       {/* OAuth */}
       {oauthCount > 0 && (

@@ -5,17 +5,31 @@ export function UsageMeter({
   percent,
   sublabel,
   modelBreakdown,
+  mode = "used",
   className,
 }: {
   label: string;
   percent: number;
   sublabel?: string;
   modelBreakdown?: Record<string, number>;
+  mode?: "used" | "remaining";
   className?: string;
 }) {
   const clamped = Math.max(0, Math.min(100, percent));
   const breakdownEntries = modelBreakdown ? Object.entries(modelBreakdown) : [];
   const hasBreakdown = breakdownEntries.length > 0;
+  const fillColor =
+    mode === "remaining"
+      ? clamped <= 10
+        ? "#EF4444"
+        : clamped <= 30
+          ? "#F59E0B"
+          : "#22C55E"
+      : clamped > 90
+        ? "#EF4444"
+        : clamped > 70
+          ? "#F59E0B"
+          : "#A78BFA";
 
   return (
     <div className={cn("space-y-1.5", className)}>
@@ -24,7 +38,7 @@ export function UsageMeter({
           {label}
         </span>
         <span className="font-mono text-[10px] font-bold text-[#FAFAFA]">
-          {clamped.toFixed(1)}%
+          {clamped.toFixed(1)}% {mode}
         </span>
       </div>
 
@@ -39,7 +53,7 @@ export function UsageMeter({
             className="absolute inset-y-0 left-0 transition-all duration-500 ease-out"
             style={{
               width: `${clamped}%`,
-              background: clamped > 90 ? "#EF4444" : clamped > 70 ? "#F59E0B" : "#A78BFA",
+              background: fillColor,
             }}
           />
         )}
@@ -58,7 +72,7 @@ export function UsageMeter({
                 style={{ background: MODEL_COLORS[i % MODEL_COLORS.length] }}
               />
               <span className="font-mono text-[9px] text-[#8B8B9A]">
-                {model} {pct.toFixed(1)}%
+                {model} {pct.toFixed(1)}% {mode}
               </span>
             </div>
           ))}

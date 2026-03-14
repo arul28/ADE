@@ -45,7 +45,7 @@
   --pane-radius: 12px;
   --pane-minimized-height: 28px;
 
-  --font-sans: "Space Grotesk", "Geist", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-sans: "Geist", -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: "JetBrains Mono", "Geist Mono", ui-monospace, monospace;
 
   --shadow-card: 0 2px 8px -2px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(45, 40, 64, 0.2);
@@ -1875,12 +1875,7 @@ button:active, [role="button"]:active {
 
 /* 4. Terminals — Hacker Console / Code Rain + CRT Scanlines (green #22c55e) */
 .ade-tab-bg-terminals {
-  background:
-    repeating-linear-gradient(0deg,
-      transparent,
-      transparent 1px,
-      rgba(34, 197, 94, 0.012) 1px,
-      rgba(34, 197, 94, 0.012) 2px);
+  background: transparent;
 }
 
 .ade-tab-bg-terminals::before {
@@ -1888,29 +1883,9 @@ button:active, [role="button"]:active {
   position: absolute;
   inset: 0;
   background:
-    repeating-linear-gradient(90deg,
-      transparent,
-      transparent 39px,
-      rgba(34, 197, 94, 0.03) 39px,
-      rgba(34, 197, 94, 0.03) 40px);
-  opacity: 0.4;
-}
-
-.ade-tab-bg-terminals::after {
-  content: "";
-  position: absolute;
-  top: -100%;
-  left: 0;
-  width: 100%;
-  height: 200%;
-  background:
-    repeating-linear-gradient(90deg,
-      transparent 0px,
-      transparent 38px,
-      rgba(34, 197, 94, 0.05) 38px,
-      rgba(34, 197, 94, 0.05) 40px);
-  animation: ade-code-rain 8s linear infinite;
-  opacity: 0.25;
+    radial-gradient(ellipse 60% 50% at 20% 50%, rgba(34, 197, 94, 0.03) 0%, transparent 70%),
+    radial-gradient(ellipse 40% 60% at 80% 40%, rgba(34, 197, 94, 0.02) 0%, transparent 70%);
+  opacity: 1;
 }
 
 /* 5. Conflicts — Battlefield / Diagonal Tension Lines (red #ef4444) */

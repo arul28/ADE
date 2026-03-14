@@ -105,7 +105,10 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
     );
   }, [detectedAuth]);
 
-  const hasAnySub = useMemo(() => detectedAuth.some((a) => a.type === "cli-subscription" && a.authenticated), [detectedAuth]);
+  const hasAnyApiAuth = useMemo(
+    () => detectedAuth.some((a) => a.type === "api-key" || a.type === "openrouter"),
+    [detectedAuth]
+  );
 
   const byProvider = useMemo(() => {
     if (!stats) return [];
@@ -285,7 +288,6 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
                 <span>Active workers: {budget.activeWorkers}</span>
                 <span>Tokens: {formatTokens(budget.mission.usedTokens)} / {budget.mission.maxTokens != null ? formatTokens(budget.mission.maxTokens) : "n/a"}</span>
                 <span>Time: {formatBudgetMs(budget.mission.usedTimeMs)} / {formatBudgetMs(budget.mission.maxTimeMs ?? null)}</span>
-                <span>Observed spend: {formatCost(budget.mission.usedCostUsd)}</span>
               </div>
             ) : (
               <div className="flex flex-wrap items-center gap-3" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
@@ -431,10 +433,12 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
       ) : (
       <>
       {/* Summary Cards */}
-      <div className="grid grid-cols-4 gap-2">
+      <div className={`grid gap-2 ${hasAnyApiAuth ? "grid-cols-4" : "grid-cols-3"}`}>
         <SummaryCard icon={Pulse} label="Sessions" value={String(stats.summary.totalSessions)} sub={stats.summary.activeSessions > 0 ? `${stats.summary.activeSessions} active` : undefined} />
         <SummaryCard icon={Cpu} label="Tokens" value={formatTokens(stats.summary.totalInputTokens + stats.summary.totalOutputTokens)} sub={`${formatTokens(stats.summary.totalInputTokens)} in / ${formatTokens(stats.summary.totalOutputTokens)} out`} />
-        <SummaryCard icon={CurrencyDollar} label={hasAnySub ? "Est. API Cost" : "Est. Cost"} value={formatCost(stats.summary.totalCostEstimateUsd)} sub={hasAnySub ? "subscription usage tracked by tokens" : "estimated"} />
+        {hasAnyApiAuth ? (
+          <SummaryCard icon={CurrencyDollar} label="Estimated cost" value={formatCost(stats.summary.totalCostEstimateUsd)} sub="estimated from API token pricing" />
+        ) : null}
         <SummaryCard icon={Clock} label="Compute" value={formatDuration(stats.summary.totalDurationMs)} />
       </div>
 
@@ -491,7 +495,7 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
                     <div className="flex items-center gap-3" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
                       <span>{m.sessions} sessions</span>
                       <span>{formatTokens(total)} tokens</span>
-                      {!isSub && <span>{formatCost(m.costEstimateUsd)}</span>}
+                      {hasAnyApiAuth && !isSub ? <span>{formatCost(m.costEstimateUsd)}</span> : null}
                     </div>
                   </div>
                   <div className="h-1.5 overflow-hidden" style={{ background: "#1E1B26", borderRadius: 0 }}>
@@ -530,7 +534,7 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
                     <div className="flex items-center gap-3" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
                       <span>{p.sessions} sessions</span>
                       <span>{formatTokens(total)} tokens</span>
-                      {!provIsSub && <span>{formatCost(p.costEstimateUsd)}</span>}
+                      {hasAnyApiAuth && !provIsSub ? <span>{formatCost(p.costEstimateUsd)}</span> : null}
                     </div>
                   </div>
                   <div className="h-1.5 overflow-hidden" style={{ background: "#1E1B26", borderRadius: 0 }}>
@@ -553,7 +557,7 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
                 <span className="truncate max-w-[60%]" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace" }}>{m.missionTitle}</span>
                 <div className="flex items-center gap-3" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
                   <span>{formatTokens(m.totalTokens)}</span>
-                  <span>{formatCost(m.costEstimateUsd)}</span>
+                  {hasAnyApiAuth ? <span>{formatCost(m.costEstimateUsd)}</span> : null}
                 </div>
               </div>
             ))}

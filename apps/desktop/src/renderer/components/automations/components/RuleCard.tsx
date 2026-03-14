@@ -2,6 +2,7 @@ import {
   Play,
   PencilSimple,
   ClockCounterClockwise,
+  Trash,
 } from "@phosphor-icons/react";
 import type { AutomationRuleSummary } from "../../../../shared/types";
 import { Chip } from "../../ui/Chip";
@@ -9,12 +10,10 @@ import { cn } from "../../ui/cn";
 import { formatDate, statusToneAutomation as statusTone } from "../../../lib/format";
 
 function summarizeRule(rule: AutomationRuleSummary): string {
-  const trigger = rule.triggers[0];
-  const triggerLabel = trigger
-    ? trigger.type === "schedule" && trigger.cron
-      ? `${trigger.type} ${trigger.cron}`
-      : trigger.type
-    : "manual";
+  const triggerLabel = rule.triggers
+    .slice(0, 2)
+    .map((trigger) => trigger.type === "schedule" && trigger.cron ? `${trigger.type} ${trigger.cron}` : trigger.type)
+    .join(" + ") || "manual";
   return `${rule.mode} · ${rule.reviewProfile} · ${triggerLabel}`;
 }
 
@@ -39,6 +38,7 @@ export function RuleCard({
   onRunNow,
   onEdit,
   onHistory,
+  onDelete,
 }: {
   rule: AutomationRuleSummary;
   selected: boolean;
@@ -47,6 +47,7 @@ export function RuleCard({
   onRunNow: () => void;
   onEdit: () => void;
   onHistory: () => void;
+  onDelete?: () => void;
 }) {
   return (
     <div
@@ -98,11 +99,12 @@ export function RuleCard({
           </div>
 
           <div className="mt-1.5 text-xs text-[#71717A] truncate font-mono">
-            last run: {formatDate(rule.lastRunAt, "Never")} · queue {rule.queueCount}
+            next: {formatDate(rule.nextRunAt, "On demand")} · last: {formatDate(rule.lastRunAt, "Never")} · queue {rule.queueCount}
           </div>
           <div className="mt-1 text-[10px] text-[#8B8B9A] font-mono truncate">
             {rule.outputs.disposition} · {rule.verification.verifyBeforePublish ? `${rule.verification.mode ?? "intervention"} gate` : "publish ungated"}
             {rule.modelConfig?.orchestratorModel.modelId ? ` · ${rule.modelConfig.orchestratorModel.modelId}` : ""}
+            {rule.source ? ` · ${rule.source}` : ""}
           </div>
           {rule.confidence ? (
             <div className="mt-1 text-[10px] text-[#8B8B9A] font-mono">
@@ -150,6 +152,16 @@ export function RuleCard({
             >
               <ClockCounterClockwise size={12} weight="regular" />
             </button>
+            {onDelete ? (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onDelete(); }}
+                className="p-1 text-[#71717A] hover:text-[#FCA5A5] transition-colors"
+                title="Delete"
+              >
+                <Trash size={12} weight="regular" />
+              </button>
+            ) : null}
           </div>
         </div>
       </div>

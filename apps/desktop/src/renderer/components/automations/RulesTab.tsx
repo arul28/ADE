@@ -11,6 +11,7 @@ import {
   Wrench,
 } from "@phosphor-icons/react";
 import { motion } from "motion/react";
+import { getDefaultModelDescriptor } from "../../../shared/modelRegistry";
 import type {
   AgentTool,
   AutomationDraftConfirmationRequirement,
@@ -36,6 +37,11 @@ import { RuleEditorPanel } from "./components/RuleEditorPanel";
 
 /* ── Helpers ── */
 
+const DEFAULT_AUTOMATION_MODEL_ID =
+  getDefaultModelDescriptor("unified")?.id
+  ?? getDefaultModelDescriptor("claude")?.id
+  ?? "anthropic/claude-sonnet-4-6";
+
 function toDraftFromRule(rule: AutomationRuleSummary): AutomationRuleDraft {
   return {
     id: rule.id,
@@ -43,18 +49,20 @@ function toDraftFromRule(rule: AutomationRuleSummary): AutomationRuleDraft {
     description: rule.description ?? "",
     enabled: rule.enabled,
     mode: rule.mode,
-    triggers: rule.triggers,
-    trigger: rule.trigger ?? rule.triggers[0],
+    triggers: rule.triggers.map((trigger) => ({ ...trigger })),
+    trigger: rule.trigger ? { ...rule.trigger } : { ...rule.triggers[0]! },
     executor: rule.executor,
+    modelConfig: rule.modelConfig ? structuredClone(rule.modelConfig) : undefined,
+    permissionConfig: rule.permissionConfig ? structuredClone(rule.permissionConfig) : undefined,
     templateId: rule.templateId,
     prompt: rule.prompt ?? "",
     reviewProfile: rule.reviewProfile,
-    toolPalette: rule.toolPalette,
-    contextSources: rule.contextSources,
-    memory: rule.memory,
-    guardrails: rule.guardrails,
-    outputs: rule.outputs,
-    verification: rule.verification,
+    toolPalette: [...rule.toolPalette],
+    contextSources: rule.contextSources.map((source) => ({ ...source })),
+    memory: { ...rule.memory },
+    guardrails: { ...rule.guardrails },
+    outputs: { ...rule.outputs },
+    verification: { ...rule.verification },
     billingCode: rule.billingCode,
     queueStatus: rule.queueStatus,
     actions: (rule.legacy?.actions ?? rule.actions ?? []).map((a) => {
@@ -99,6 +107,7 @@ function createBlankDraft(): AutomationRuleDraft {
     triggers: [{ type: "manual" }],
     trigger: { type: "manual" },
     executor: { mode: "automation-bot" },
+    modelConfig: { orchestratorModel: { modelId: DEFAULT_AUTOMATION_MODEL_ID, thinkingLevel: "medium" } },
     prompt: "",
     reviewProfile: "quick",
     toolPalette: ["repo", "memory", "mission"],
@@ -659,6 +668,26 @@ export function RulesTab({
     catch (err) { setError(extractError(err)); }
   };
 
+  const deleteRule = async (rule: AutomationRuleSummary) => {
+    if (rule.source !== "local") {
+      setError("Only local automations can be deleted from the app. Remove shared rules from project config.");
+      return;
+    }
+    if (!window.confirm(`Delete automation "${rule.name}"?`)) return;
+    setError(null);
+    try {
+      const next = await window.ade.automations.deleteRule({ id: rule.id });
+      setRules(next);
+      if (selectedRuleId === rule.id) {
+        setSelectedRuleId(null);
+        setDraft(null);
+        setEditorOpen(false);
+      }
+    } catch (err) {
+      setError(extractError(err));
+    }
+  };
+
   const save = async () => {
     if (!draft) return;
     setSaving(true); setError(null);
@@ -795,6 +824,7 @@ export function RulesTab({
                   onRunNow={() => { setSelectedRuleId(rule.id); void runNow(rule.id); }}
                   onEdit={() => { setSelectedRuleId(rule.id); setEditorOpen(true); }}
                   onHistory={() => { setSelectedRuleId(rule.id); setHistoryOpen(true); }}
+                  onDelete={rule.source === "local" ? () => { void deleteRule(rule); } : undefined}
                 />
               ))}
             </div>

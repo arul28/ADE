@@ -51,22 +51,35 @@ export function createGithubService({
   const githubStateDir = resolveAdeLayout(projectRoot).githubSecretsDir;
   const tokenPath = path.join(githubStateDir, AUTH_STORE_FILE_NAME);
 
+  let tokenDecryptionFailed = false;
+
   const readStoredToken = (): string | null => {
-    if (!fs.existsSync(tokenPath)) return null;
+    if (!fs.existsSync(tokenPath)) {
+      tokenDecryptionFailed = false;
+      return null;
+    }
     try {
       const bytes = fs.readFileSync(tokenPath);
       if (!safeStorage.isEncryptionAvailable()) {
-        logger.warn("github.token_store_unavailable", {
-          message: "OS secure storage is unavailable; GitHub token cannot be decrypted."
+        tokenDecryptionFailed = true;
+        logger.warn("github.token_decryption_failed", {
+          reason: "os_secure_storage_unavailable",
+          message: "OS secure storage is unavailable; GitHub token cannot be decrypted. Please re-authenticate."
         });
         return null;
       }
       const decrypted = safeStorage.decryptString(bytes);
       const parsed = JSON.parse(decrypted) as { token?: unknown };
       const token = asString(parsed?.token);
+      tokenDecryptionFailed = false;
       return token.trim().length ? token.trim() : null;
     } catch (error) {
-      logger.warn("github.token_store_read_failed", { error: error instanceof Error ? error.message : String(error) });
+      tokenDecryptionFailed = true;
+      logger.warn("github.token_decryption_failed", {
+        reason: "decrypt_or_parse_error",
+        message: "GitHub token exists but could not be decrypted. The token may be corrupted — please re-authenticate.",
+        error: error instanceof Error ? error.message : String(error)
+      });
       return null;
     }
   };
@@ -196,6 +209,7 @@ export function createGithubService({
     if (!token) {
       cachedStatus = {
         tokenStored: false,
+        tokenDecryptionFailed,
         repo,
         userLogin: null,
         scopes: [],
@@ -215,6 +229,7 @@ export function createGithubService({
       const validated = await validateToken(token);
       cachedStatus = {
         tokenStored: true,
+        tokenDecryptionFailed: false,
         repo,
         userLogin: validated.userLogin,
         scopes: validated.scopes,
@@ -226,6 +241,7 @@ export function createGithubService({
       logger.warn("github.token_validation_failed", { error: error instanceof Error ? error.message : String(error) });
       cachedStatus = {
         tokenStored: true,
+        tokenDecryptionFailed: false,
         repo,
         userLogin: null,
         scopes: [],
@@ -241,12 +257,14 @@ export function createGithubService({
 
     setToken(token: string): void {
       persistToken(token);
+      tokenDecryptionFailed = false;
       cachedStatus = null;
       cachedAt = 0;
     },
 
     clearToken(): void {
       persistToken(null);
+      tokenDecryptionFailed = false;
       cachedStatus = null;
       cachedAt = 0;
     },

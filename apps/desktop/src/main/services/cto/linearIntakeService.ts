@@ -42,7 +42,14 @@ export function createLinearIntakeService(args: {
       stateTypes: ["backlog", "unstarted", "started"],
     });
 
-    return issues.map((issue) => {
+    const eligible = issues.filter((issue) => !issue.hasOpenBlockers);
+
+    eligible.sort((a, b) => {
+      if (a.priority !== b.priority) return a.priority - b.priority;
+      return a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
+    });
+
+    return eligible.map((issue) => {
       const existing = args.db.get<{ payload_json: string; hash: string }>(
         `
           select payload_json, hash

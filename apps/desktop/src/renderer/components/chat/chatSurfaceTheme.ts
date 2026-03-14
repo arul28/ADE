@@ -2,19 +2,19 @@ import type { CSSProperties } from "react";
 import type { ChatSurfaceChipTone, ChatSurfaceMode } from "../../../shared/types";
 
 export const CHAT_SURFACE_ACCENTS: Record<ChatSurfaceMode, string> = {
-  standard: "#A78BFA",
+  standard: "#A1A1AA",
   resolver: "#F97316",
   "mission-thread": "#38BDF8",
   "mission-feed": "#22C55E",
 };
 
 const CHIP_TONE_STYLES: Record<ChatSurfaceChipTone, string> = {
-  accent: "border-[color:color-mix(in_srgb,var(--chat-accent)_34%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] text-[color:color-mix(in_srgb,var(--chat-accent)_88%,white_12%)]",
-  success: "border-emerald-400/30 bg-emerald-500/10 text-emerald-200",
-  warning: "border-amber-400/30 bg-amber-500/10 text-amber-200",
-  danger: "border-red-400/30 bg-red-500/10 text-red-200",
-  info: "border-sky-400/30 bg-sky-500/10 text-sky-200",
-  muted: "border-border/20 bg-surface-recessed/70 text-fg/55",
+  accent: "border-[color:color-mix(in_srgb,var(--chat-accent)_20%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_8%,transparent)] text-[color:color-mix(in_srgb,var(--chat-accent)_88%,white_12%)]",
+  success: "border-emerald-400/15 bg-emerald-500/6 text-emerald-300",
+  warning: "border-amber-400/15 bg-amber-500/6 text-amber-300",
+  danger: "border-red-400/15 bg-red-500/6 text-red-300",
+  info: "border-sky-400/15 bg-sky-500/6 text-sky-300",
+  muted: "border-white/[0.06] bg-white/[0.03] text-fg/50",
 };
 
 function hexChannel(segment: string): number {
@@ -28,7 +28,7 @@ function normalizeHex(value: string): string {
   if (/^#[0-9a-f]{3}$/i.test(trimmed)) {
     return `#${trimmed[1]}${trimmed[1]}${trimmed[2]}${trimmed[2]}${trimmed[3]}${trimmed[3]}`;
   }
-  return "#A78BFA";
+  return "#A1A1AA";
 }
 
 export function colorToRgba(value: string, alpha: number): string {

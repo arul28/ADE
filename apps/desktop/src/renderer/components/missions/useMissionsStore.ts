@@ -275,6 +275,10 @@ export const initialMissionsState: MissionsState = {
   cleanupBusy: false,
 };
 
+function isRendererVisible(): boolean {
+  return typeof document === "undefined" || document.visibilityState === "visible";
+}
+
 /* ── Toast timer registry (module-scoped, not per-render) ── */
 const toastTimers = new Map<string, number>();
 let missionSelectionRequestSeq = 0;
@@ -655,6 +659,7 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
     let orchestratorEventTimer: number | null = null;
 
     const unsubMissions = window.ade.missions.onEvent((payload) => {
+      if (!isRendererVisible()) return;
       if (missionEventTimer !== null) window.clearTimeout(missionEventTimer);
       missionEventTimer = window.setTimeout(() => {
         missionEventTimer = null;
@@ -666,10 +671,11 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
             await get().selectMission(payload.missionId);
           }
         })();
-      }, 300);
+      }, 350);
     });
 
     const unsubOrchestrator = window.ade.orchestrator.onEvent((event) => {
+      if (!isRendererVisible()) return;
       const selectedRunId = get().runGraph?.run.id ?? null;
       if (selectedRunId && event.runId && event.runId !== selectedRunId) return;
       if (orchestratorEventTimer !== null) window.clearTimeout(orchestratorEventTimer);
@@ -680,8 +686,7 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
         const latestSelectedRunId = get().runGraph?.run.id ?? null;
         if (latestSelectedRunId && event.runId && event.runId !== latestSelectedRunId) return;
         void get().selectMission(latestSelectedId);
-        void get().loadDashboard();
-      }, 300);
+      }, 650);
     });
 
     return () => {
