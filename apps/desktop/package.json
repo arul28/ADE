@@ -1,7 +1,7 @@
 {
   "name": "ade-desktop",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "main": "electron.cjs",
   "author": "Arul Sharma",
