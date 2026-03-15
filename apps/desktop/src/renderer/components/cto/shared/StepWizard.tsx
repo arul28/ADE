@@ -43,6 +43,7 @@ export function StepWizard({
   const activeIndex = steps.findIndex((s) => s.id === activeStep);
   const isLast = activeIndex === steps.length - 1;
   const isFirst = activeIndex === 0;
+  const progress = steps.length > 1 ? ((activeIndex + 1) / steps.length) * 100 : 100;
 
   const handleNext = async () => {
     if (onNext) {
@@ -68,10 +69,41 @@ export function StepWizard({
     <div className="flex h-full min-h-0 flex-col lg:flex-row">
       {/* Left rail */}
       <div
-        className="shrink-0 border-b lg:border-b-0 lg:border-r px-4 py-4 lg:w-[200px] lg:px-4 lg:py-5"
-        style={{ borderColor: "rgba(167, 139, 250, 0.06)", background: "rgba(12, 10, 20, 0.5)" }}
+        className="shrink-0 border-b lg:border-b-0 lg:border-r px-4 py-4 lg:w-[250px] lg:px-5 lg:py-5"
+        style={{
+          borderColor: "rgba(255, 255, 255, 0.06)",
+          background: "linear-gradient(180deg, rgba(9, 14, 21, 0.96), rgba(7, 11, 18, 0.92))",
+        }}
       >
-        <div className="flex gap-1.5 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible lg:pb-0 lg:gap-1">
+        <div className="mb-4 hidden lg:block">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-fg/42">
+            Setup flow
+          </div>
+          <div className="mt-2 text-sm font-semibold text-fg">
+            Build a persistent CTO
+          </div>
+          <div className="mt-1 text-[12px] leading-5 text-muted-fg/44">
+            Identity first, then the long-term brief, then optional Linear wiring.
+          </div>
+          <div className="mt-4">
+            <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.16em] text-muted-fg/38">
+              <span>Progress</span>
+              <span>{activeIndex + 1}/{steps.length}</span>
+            </div>
+            <div className="mt-2 h-2 rounded-full bg-white/[0.05]">
+              <div
+                className="h-full rounded-full transition-all duration-300"
+                style={{
+                  width: `${progress}%`,
+                  background: "linear-gradient(90deg, rgba(56,189,248,0.95), rgba(251,191,36,0.95))",
+                  boxShadow: "0 0 18px rgba(56, 189, 248, 0.25)",
+                }}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="flex gap-2 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible lg:pb-0 lg:gap-2">
           {steps.map((step, i) => {
             const isActive = step.id === activeStep;
             const isDone = step.completed || i < activeIndex;
@@ -84,16 +116,21 @@ export function StepWizard({
                 disabled={!onStepChange}
                 onClick={() => onStepChange?.(step.id)}
                 className={cn(
-                  "flex items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-all duration-200 lg:w-full",
+                  "flex min-w-[170px] items-start gap-3 rounded-2xl px-3.5 py-3 text-left transition-all duration-200 lg:w-full lg:min-w-0",
                   isActive
-                    ? "bg-[rgba(167,139,250,0.08)]"
-                    : "hover:bg-white/[0.02]",
+                    ? "bg-[linear-gradient(180deg,rgba(56,189,248,0.12),rgba(56,189,248,0.07))]"
+                    : "hover:bg-white/[0.03]",
                 )}
-                style={isActive ? { border: "1px solid rgba(167, 139, 250, 0.15)" } : { border: "1px solid transparent" }}
+                style={isActive
+                  ? {
+                      border: "1px solid rgba(56, 189, 248, 0.22)",
+                      boxShadow: "0 12px 28px rgba(0, 0, 0, 0.18)",
+                    }
+                  : { border: "1px solid rgba(255,255,255,0.04)" }}
               >
                 <div
                   className={cn(
-                    "flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-all",
+                    "flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition-all",
                     isDone
                       ? "text-fg"
                       : isActive
@@ -102,27 +139,34 @@ export function StepWizard({
                   )}
                   style={
                     isDone
-                      ? { background: "rgba(52, 211, 153, 0.12)", border: "1px solid rgba(52, 211, 153, 0.2)" }
+                      ? { background: "rgba(52, 211, 153, 0.14)", border: "1px solid rgba(52, 211, 153, 0.24)" }
                       : isActive
-                        ? { background: "rgba(167, 139, 250, 0.12)", border: "1px solid rgba(167, 139, 250, 0.2)" }
+                        ? { background: "rgba(56, 189, 248, 0.14)", border: "1px solid rgba(56, 189, 248, 0.24)" }
                         : { background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.05)" }
                   }
                 >
                   {isDone ? (
                     <Check size={10} weight="bold" style={{ color: "#34D399" }} />
                   ) : (
-                    <Icon size={10} weight={isActive ? "bold" : "regular"} style={isActive ? { color: "#A78BFA" } : undefined} />
+                    <Icon size={12} weight={isActive ? "bold" : "regular"} style={isActive ? { color: "#38BDF8" } : undefined} />
                   )}
                 </div>
 
-                <span
-                  className={cn(
-                    "text-xs font-medium whitespace-nowrap",
-                    isActive ? "text-fg" : isDone ? "text-fg/60" : "text-muted-fg/35",
-                  )}
-                >
-                  {step.label}
-                </span>
+                <div className="min-w-0 flex-1">
+                  <div
+                    className={cn(
+                      "text-xs font-semibold",
+                      isActive ? "text-fg" : isDone ? "text-fg/72" : "text-muted-fg/42",
+                    )}
+                  >
+                    {step.label}
+                  </div>
+                  {step.description ? (
+                    <div className="mt-1 hidden text-[11px] leading-5 text-muted-fg/38 lg:block">
+                      {step.description}
+                    </div>
+                  ) : null}
+                </div>
               </button>
             );
           })}
@@ -138,9 +182,15 @@ export function StepWizard({
         {/* Bottom bar */}
         <div
           className="shrink-0 flex items-center justify-between gap-3 px-4 py-3 lg:px-5"
-          style={{ borderTop: "1px solid rgba(167, 139, 250, 0.06)", background: "rgba(12, 10, 20, 0.5)" }}
+          style={{
+            borderTop: "1px solid rgba(255, 255, 255, 0.06)",
+            background: "linear-gradient(180deg, rgba(10, 14, 21, 0.92), rgba(8, 11, 17, 0.96))",
+          }}
         >
-          <div>
+          <div className="flex items-center gap-3">
+            <div className="hidden sm:block text-[11px] text-muted-fg/36">
+              Step {activeIndex + 1} of {steps.length}
+            </div>
             {showSkip && onSkip && (
               <button
                 type="button"

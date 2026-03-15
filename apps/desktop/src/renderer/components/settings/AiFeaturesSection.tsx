@@ -2,9 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import type {
   AiFeatureKey,
   AiConfig,
-  AiChatConfig,
   AiSettingsStatus,
-  AiModelDescriptor,
 } from "../../../shared/types";
 import {
   COLORS,
@@ -12,20 +10,20 @@ import {
   LABEL_STYLE,
   cardStyle,
 } from "../lanes/laneDesignTokens";
-import { deriveConfiguredModelOptions } from "../../lib/modelOptions";
+import { deriveConfiguredModelIds } from "../../lib/modelOptions";
+import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
+import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
 
 type FeatureInfo = {
   key: AiFeatureKey;
   label: string;
   description: string;
-  defaultModel?: string;
-  requiresExplicitModel?: boolean;
 };
 
 const FEATURES: FeatureInfo[] = [
-  { key: "terminal_summaries", label: "Chat & Terminal Summaries", description: "Summarize closed terminal sessions and keep chat session summaries updated", defaultModel: "anthropic/claude-haiku-4-5" },
-  { key: "pr_descriptions", label: "PR Description Drafting", description: "Draft PR descriptions when you trigger the action in the PR flows", defaultModel: "anthropic/claude-haiku-4-5" },
-  { key: "commit_messages", label: "Commit Messages", description: "Generate a brief git commit subject when the field is empty", requiresExplicitModel: true },
+  { key: "terminal_summaries", label: "Chat & terminal summaries", description: "Summarize closed terminal sessions and keep chat session summaries updated" },
+  { key: "pr_descriptions", label: "PR description drafting", description: "Draft PR descriptions when you trigger the action in the PR flows" },
+  { key: "commit_messages", label: "Commit messages", description: "Generate a brief git commit subject when the field is empty" },
 ];
 
 const sectionLabelStyle: React.CSSProperties = {
@@ -34,33 +32,24 @@ const sectionLabelStyle: React.CSSProperties = {
   marginBottom: 10,
 };
 
-const selectStyle: React.CSSProperties = {
-  height: 28,
-  padding: "0 6px",
-  fontSize: 11,
-  fontFamily: MONO_FONT,
-  color: COLORS.textPrimary,
-  background: COLORS.recessedBg,
-  border: `1px solid ${COLORS.outlineBorder}`,
-  borderRadius: 0,
-  outline: "none",
-  appearance: "none",
-  WebkitAppearance: "none",
-  cursor: "pointer",
-  minWidth: 100,
-};
+
+function normalizeModelSetting(value: unknown): string {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw.length) return "";
+  return getModelById(raw)?.id ?? resolveModelAlias(raw)?.id ?? raw;
+}
 
 function buildDefaultFeatureModels(): Record<string, string> {
   const defaults: Record<string, string> = {};
   for (const feature of FEATURES) {
-    defaults[feature.key] = feature.defaultModel ?? "";
+    defaults[feature.key] = "";
   }
   return defaults;
 }
 
 function mergeFeatureModels(
   defaultFeatureModels: Record<string, string>,
-  effectiveAi: AiConfig | null
+  effectiveAi: AiConfig | null,
 ): Record<string, string> {
   const persistedFeatureModels = effectiveAi?.featureModelOverrides ?? {};
   const nextFeatureModels: Record<string, string> = { ...defaultFeatureModels };
@@ -86,7 +75,7 @@ function mergeFeatureModels(
 
 function toFeatureModelOverrides(featureModels: Record<string, string>): AiConfig["featureModelOverrides"] {
   return Object.fromEntries(
-    Object.entries(featureModels).filter(([, value]) => value.trim().length > 0)
+    Object.entries(featureModels).filter(([, value]) => value.trim().length > 0),
   ) as AiConfig["featureModelOverrides"];
 }
 
@@ -130,20 +119,39 @@ export function AiFeaturesSection() {
   const [saving, setSaving] = useState(false);
   const defaultFeatureModels = React.useMemo(buildDefaultFeatureModels, []);
   const [featureModels, setFeatureModels] = useState<Record<string, string>>(defaultFeatureModels);
+  const [featureReasoning, setFeatureReasoning] = useState<Record<string, string | null>>({});
+  const [utilityModel, setUtilityModel] = useState("");
+  const [chatAutoTitleEnabled, setChatAutoTitleEnabled] = useState(false);
+  const [chatAutoTitleRefresh, setChatAutoTitleRefresh] = useState(true);
+  const [chatAutoTitleReasoning, setChatAutoTitleReasoning] = useState<string | null>(null);
 
   const loadStatus = useCallback(async () => {
     try {
-      const [s, snapshot] = await Promise.all([
+      const [nextStatus, snapshot] = await Promise.all([
         window.ade.ai.getStatus(),
         window.ade.projectConfig.get(),
       ]);
-      setStatus(s);
+      setStatus(nextStatus);
+
       const effectiveAiRaw = snapshot.effective?.ai;
       const effectiveAi = effectiveAiRaw && typeof effectiveAiRaw === "object" ? (effectiveAiRaw as AiConfig) : null;
       setFeatureModels(mergeFeatureModels(defaultFeatureModels, effectiveAi));
-      setUnifiedPerm(effectiveAi?.chat?.unifiedPermissionMode ?? "plan");
-      setClaudePerm(effectiveAi?.chat?.claudePermissionMode ?? "plan");
-      setCodexSandbox(effectiveAi?.chat?.codexSandbox ?? "read-only");
+      setUtilityModel(
+        normalizeModelSetting(effectiveAi?.chat?.autoTitleModelId)
+        || normalizeModelSetting(effectiveAi?.sessionIntelligence?.summaries?.modelId)
+        || normalizeModelSetting(effectiveAi?.featureModelOverrides?.terminal_summaries)
+        || "",
+      );
+      setChatAutoTitleEnabled(effectiveAi?.chat?.autoTitleEnabled === true);
+      setChatAutoTitleRefresh(effectiveAi?.chat?.autoTitleRefreshOnComplete !== false);
+      setChatAutoTitleReasoning(effectiveAi?.chat?.autoTitleReasoningEffort ?? null);
+
+      const persistedReasoning = effectiveAi?.featureReasoningOverrides ?? {};
+      const nextReasoning: Record<string, string | null> = {};
+      for (const key of Object.keys(persistedReasoning)) {
+        nextReasoning[key] = persistedReasoning[key as AiFeatureKey] ?? null;
+      }
+      setFeatureReasoning(nextReasoning);
     } finally {
       setLoading(false);
     }
@@ -153,9 +161,39 @@ export function AiFeaturesSection() {
     void loadStatus();
   }, [loadStatus]);
 
-  const allModels: AiModelDescriptor[] = React.useMemo(() => {
-    return deriveConfiguredModelOptions(status);
-  }, [status]);
+  const availableModelIds = React.useMemo(() => deriveConfiguredModelIds(status), [status]);
+
+  const saveChatTitleSettings = useCallback(async (patch: Partial<NonNullable<AiConfig["chat"]>>) => {
+    const nextModelId =
+      patch.autoTitleModelId !== undefined
+        ? patch.autoTitleModelId
+        : utilityModel || "";
+    const nextEnabled =
+      patch.autoTitleEnabled !== undefined ? patch.autoTitleEnabled : chatAutoTitleEnabled;
+    const nextRefresh =
+      patch.autoTitleRefreshOnComplete !== undefined
+        ? patch.autoTitleRefreshOnComplete
+        : chatAutoTitleRefresh;
+    const nextReasoning =
+      patch.autoTitleReasoningEffort !== undefined
+        ? patch.autoTitleReasoningEffort
+        : chatAutoTitleReasoning;
+
+    await window.ade.ai.updateConfig({
+      chat: {
+        autoTitleEnabled: nextEnabled,
+        autoTitleModelId: nextModelId || undefined,
+        autoTitleRefreshOnComplete: nextRefresh,
+        autoTitleReasoningEffort: nextReasoning,
+      } as AiConfig["chat"],
+    });
+
+    setChatAutoTitleEnabled(nextEnabled);
+    setChatAutoTitleRefresh(nextRefresh);
+    if (patch.autoTitleReasoningEffort !== undefined) {
+      setChatAutoTitleReasoning(patch.autoTitleReasoningEffort);
+    }
+  }, [chatAutoTitleEnabled, chatAutoTitleRefresh, chatAutoTitleReasoning, utilityModel]);
 
   const handleToggle = useCallback(async (key: AiFeatureKey, enabled: boolean) => {
     if (saving) return;
@@ -184,7 +222,7 @@ export function AiFeaturesSection() {
     } finally {
       setSaving(false);
     }
-  }, [saving, status, loadStatus]);
+  }, [loadStatus, saving, status]);
 
   const handleModelChange = useCallback(async (key: AiFeatureKey, modelId: string) => {
     if (saving) return;
@@ -209,27 +247,23 @@ export function AiFeaturesSection() {
     }
   }, [featureModels, saving]);
 
-  // Permission mode defaults
-  const [unifiedPerm, setUnifiedPerm] = useState<AiChatConfig["unifiedPermissionMode"]>("plan");
-  const [claudePerm, setClaudePerm] = useState<AiChatConfig["claudePermissionMode"]>("plan");
-  const [codexSandbox, setCodexSandbox] = useState<AiChatConfig["codexSandbox"]>("read-only");
-
-  const handlePermChange = useCallback(async (
-    field: "unifiedPermissionMode" | "claudePermissionMode" | "codexSandbox",
-    value: string
-  ) => {
+  const handleReasoningChange = useCallback(async (key: AiFeatureKey, effort: string | null) => {
     if (saving) return;
     setSaving(true);
     try {
-      const chatPatch: Partial<AiChatConfig> = { [field]: value };
-      await window.ade.ai.updateConfig({ chat: chatPatch as AiConfig["chat"] });
-      if (field === "unifiedPermissionMode") setUnifiedPerm(value as AiChatConfig["unifiedPermissionMode"]);
-      if (field === "claudePermissionMode") setClaudePerm(value as AiChatConfig["claudePermissionMode"]);
-      if (field === "codexSandbox") setCodexSandbox(value as AiChatConfig["codexSandbox"]);
+      const nextReasoning = { ...featureReasoning, [key]: effort };
+      setFeatureReasoning(nextReasoning);
+      const overrides: Partial<Record<string, string | null>> = {};
+      for (const [k, v] of Object.entries(nextReasoning)) {
+        if (v != null) overrides[k] = v;
+      }
+      await window.ade.ai.updateConfig({
+        featureReasoningOverrides: overrides as AiConfig["featureReasoningOverrides"],
+      });
     } finally {
       setSaving(false);
     }
-  }, [saving]);
+  }, [featureReasoning, saving]);
 
   if (loading) {
     return (
@@ -249,17 +283,16 @@ export function AiFeaturesSection() {
 
   return (
     <div style={{ maxWidth: 720 }}>
-      <div style={sectionLabelStyle}>AI DEFAULTS</div>
+      <div style={sectionLabelStyle}>HELPER DEFAULTS</div>
       <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: MONO_FONT, marginBottom: 8, lineHeight: 1.6 }}>
-        These are the lightweight helpers ADE can apply automatically while you work. Mission orchestration and conflict-resolution models are configured in their own surfaces.
+        Configure the lightweight helpers ADE can run automatically while you work. Mission orchestration and conflict-resolution models are configured in their own surfaces.
       </div>
 
       <div style={cardStyle({ padding: 0 })}>
-        {/* Header row */}
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "44px 1fr 120px 60px",
+            gridTemplateColumns: "44px 1fr auto 60px",
             gap: 12,
             alignItems: "center",
             padding: "10px 16px",
@@ -272,26 +305,26 @@ export function AiFeaturesSection() {
           <div style={{ ...LABEL_STYLE, fontSize: 9, textAlign: "right" }}>TODAY</div>
         </div>
 
-        {FEATURES.map((f, i) => {
-          const row = status.features.find((r) => r.feature === f.key);
+        {FEATURES.map((feature, index) => {
+          const row = status.features.find((entry) => entry.feature === feature.key);
           const enabled = row?.enabled ?? false;
           const dailyUsage = row?.dailyUsage ?? 0;
-          const selectedModel = featureModels[f.key] ?? f.defaultModel ?? "";
-          const needsModelSelection = enabled && f.requiresExplicitModel && !selectedModel;
+          const selectedModel = featureModels[feature.key] ?? "";
+          const needsModelSelection = enabled && !selectedModel;
 
           return (
             <div
-              key={f.key}
+              key={feature.key}
               style={{
                 display: "grid",
-                gridTemplateColumns: "44px 1fr 120px 60px",
+                gridTemplateColumns: "44px 1fr auto 60px",
                 gap: 12,
                 alignItems: "center",
                 padding: "10px 16px",
-                borderBottom: i < FEATURES.length - 1 ? `1px solid ${COLORS.border}` : undefined,
+                borderBottom: index < FEATURES.length - 1 ? `1px solid ${COLORS.border}` : undefined,
               }}
             >
-              <Toggle checked={enabled} onChange={(v) => handleToggle(f.key, v)} />
+              <Toggle checked={enabled} onChange={(value) => handleToggle(feature.key, value)} />
 
               <div>
                 <div
@@ -302,7 +335,7 @@ export function AiFeaturesSection() {
                     color: enabled ? COLORS.textPrimary : COLORS.textMuted,
                   }}
                 >
-                  {f.label}
+                  {feature.label}
                 </div>
                 <div
                   style={{
@@ -312,7 +345,7 @@ export function AiFeaturesSection() {
                     marginTop: 2,
                   }}
                 >
-                  {f.description}
+                  {feature.description}
                 </div>
                 {needsModelSelection ? (
                   <div
@@ -323,36 +356,22 @@ export function AiFeaturesSection() {
                       marginTop: 4,
                     }}
                   >
-                    Select a model before blank commit messages can be generated.
+                    Select a model to enable this feature.
                   </div>
                 ) : null}
               </div>
 
-              <select
-                style={{
-                  ...selectStyle,
-                  opacity: enabled ? 1 : 0.4,
-                  pointerEvents: enabled ? "auto" : "none",
-                }}
-                value={selectedModel}
-                disabled={!enabled}
-                onChange={(e) => handleModelChange(f.key, e.target.value)}
-              >
-                {f.requiresExplicitModel ? <option value="">Select model...</option> : null}
-                {allModels.length > 0 ? (
-                  allModels.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))
-                ) : (
-                  <>
-                    <option value="haiku">Haiku</option>
-                    <option value="sonnet">Sonnet</option>
-                    <option value="opus">Opus</option>
-                  </>
-                )}
-              </select>
+              <div style={{ opacity: enabled ? 1 : 0.4, pointerEvents: enabled ? "auto" : "none" }}>
+                <UnifiedModelSelector
+                  value={selectedModel}
+                  onChange={(modelId) => void handleModelChange(feature.key, modelId)}
+                  availableModelIds={availableModelIds}
+                  disabled={!enabled}
+                  showReasoning
+                  reasoningEffort={featureReasoning[feature.key] ?? null}
+                  onReasoningEffortChange={(effort) => void handleReasoningChange(feature.key, effort)}
+                />
+              </div>
 
               <div
                 style={{
@@ -368,62 +387,85 @@ export function AiFeaturesSection() {
             </div>
           );
         })}
-      </div>
 
-      {/* ── Default Chat Permission Modes ── */}
-      <div style={{ ...sectionLabelStyle, marginTop: 24 }}>DEFAULT CHAT PERMISSION MODES</div>
-      <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: MONO_FONT, marginBottom: 8 }}>
-        Defaults for new chat sessions. Can be overridden per-session.
-      </div>
+        {/* Auto-name chat tabs */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "44px 1fr auto 60px",
+            gap: 12,
+            alignItems: "center",
+            padding: "10px 16px",
+            borderTop: `1px solid ${COLORS.border}`,
+          }}
+        >
+          <Toggle
+            checked={chatAutoTitleEnabled}
+            onChange={(value) => void saveChatTitleSettings({ autoTitleEnabled: value })}
+          />
 
-      <div style={cardStyle({ padding: 16 })}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
-          {/* Unified / API Models */}
           <div>
-            <div style={{ fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted, marginBottom: 6 }}>
-              UNIFIED / API MODELS
-            </div>
-            <select
-              style={{ ...selectStyle, width: "100%" }}
-              value={unifiedPerm ?? "plan"}
-              onChange={(e) => handlePermChange("unifiedPermissionMode", e.target.value)}
+            <div
+              style={{
+                fontSize: 12,
+                fontFamily: MONO_FONT,
+                fontWeight: 600,
+                color: chatAutoTitleEnabled ? COLORS.textPrimary : COLORS.textMuted,
+              }}
             >
-              <option value="plan">Plan</option>
-              <option value="edit">Edit</option>
-              <option value="full-auto">Full Auto</option>
-            </select>
+              Auto-name chat tabs
+            </div>
+            <div
+              style={{
+                fontSize: 11,
+                fontFamily: MONO_FONT,
+                color: COLORS.textDim,
+                marginTop: 2,
+              }}
+            >
+              Generate a title from chat content
+            </div>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={chatAutoTitleRefresh}
+                onChange={(e) => void saveChatTitleSettings({ autoTitleRefreshOnComplete: e.target.checked })}
+                style={{ margin: 0 }}
+              />
+              <span style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                Refresh when session closes
+              </span>
+            </label>
           </div>
 
-          {/* Claude CLI */}
-          <div>
-            <div style={{ fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted, marginBottom: 6 }}>
-              CLAUDE CLI
-            </div>
-            <select
-              style={{ ...selectStyle, width: "100%" }}
-              value={claudePerm ?? "plan"}
-              onChange={(e) => handlePermChange("claudePermissionMode", e.target.value)}
-            >
-              <option value="plan">Plan</option>
-              <option value="acceptEdits">Accept Edits</option>
-              <option value="bypassPermissions">Bypass Permissions</option>
-            </select>
+          <div style={{ opacity: chatAutoTitleEnabled ? 1 : 0.4, pointerEvents: chatAutoTitleEnabled ? "auto" : "none" }}>
+            <UnifiedModelSelector
+              value={utilityModel}
+              onChange={(modelId) => {
+                setUtilityModel(modelId);
+                void saveChatTitleSettings({ autoTitleModelId: modelId });
+              }}
+              availableModelIds={availableModelIds}
+              disabled={!chatAutoTitleEnabled}
+              showReasoning
+              reasoningEffort={chatAutoTitleReasoning}
+              onReasoningEffortChange={(effort) => {
+                setChatAutoTitleReasoning(effort);
+                void saveChatTitleSettings({ autoTitleReasoningEffort: effort });
+              }}
+            />
           </div>
 
-          {/* Codex CLI */}
-          <div>
-            <div style={{ fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted, marginBottom: 6 }}>
-              CODEX CLI
-            </div>
-            <select
-              style={{ ...selectStyle, width: "100%" }}
-              value={codexSandbox ?? "read-only"}
-              onChange={(e) => handlePermChange("codexSandbox", e.target.value)}
-            >
-              <option value="read-only">Default (Read-Only)</option>
-              <option value="workspace-write">Workspace Write</option>
-              <option value="danger-full-access">Full Access</option>
-            </select>
+          <div
+            style={{
+              fontSize: 12,
+              fontFamily: MONO_FONT,
+              fontWeight: 600,
+              color: COLORS.textDim,
+              textAlign: "right",
+            }}
+          >
+            —
           </div>
         </div>
       </div>

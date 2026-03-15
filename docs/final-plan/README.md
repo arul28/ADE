@@ -8,8 +8,8 @@ This plan has been split into individual phase files for maintainability. Each p
 - [Phase 3: AI Orchestrator + Missions Overhaul (Complete)](phase-3.md)
 - [Phase 4: CTO + Ecosystem (Complete)](phase-4.md)
 - [Phase 5: Play Runtime Isolation (Complete)](phase-5.md)
-- [Phase 6: Multi-Device Sync Foundation](phase-6.md)
-- [Phase 7: Mobile + Remote Access](phase-7.md)
+- [Phase 6: Multi-Device Sync & iOS Companion](phase-6.md)
+- [Phase 7: Full iOS & Advanced Remote](phase-7.md)
 - [Phase 8: Core Extraction + SpacetimeDB Evaluation (Deferred/Optional)](phase-8.md)
 - [Appendix: Rules, Risks, KPIs](appendix.md)
 
@@ -18,10 +18,10 @@ This plan has been split into individual phase files for maintainability. Each p
 The following phase files are superseded by the new roadmap and should be considered archived:
 
 - `phase-5.5.md` — **Dropped.** Compute Backend Abstraction is no longer a phase. VPS is just another machine running ADE. Computer use is agent-level (extensions), not ADE-level. Sandboxing dropped.
-- `phase-6.md` (Integration Sandbox) — **Dropped.** Existing conflict detection is sufficient. Replaced by Phase 6: Multi-Device Sync Foundation.
-- `phase-7.md` (Core Extraction) — **Deferred** to Phase 8 (only if cr-sqlite fails). Replaced by Phase 7: Mobile + Remote Access.
+- `phase-6.md` (Integration Sandbox) — **Dropped.** Existing conflict detection is sufficient. Replaced by Phase 6: Multi-Device Sync & iOS Companion.
+- `phase-7.md` (Core Extraction) — **Deferred** to Phase 8 (only if cr-sqlite fails). Replaced by Phase 7: Mobile Polish & Advanced Remote.
 - `phase-8.md` (Relay + Machines) — **Replaced** by Phase 6: Multi-Device Sync via cr-sqlite.
-- `phase-9.md` (iOS Control App) — **Replaced** by Phase 7: Mobile + Remote Access.
+- `phase-9.md` (iOS Control App) — **Merged** into Phase 6: Multi-Device Sync & iOS Companion.
 
 ---
 
@@ -160,7 +160,7 @@ Not fully implemented yet:
 - Automatic PR proof embedding still needs follow-through, but ADE-local proof capture now auto-ingests and links `screenshot_environment` / `record_environment` artifacts at creation time
 - Multi-device sync (cr-sqlite + WebSocket real-time replication) — Phase 6
 - Device registry and brain management (which machine runs agents) — Phase 6
-- iOS companion app (remote control, push notifications, mission monitoring) — Phase 7
+- iOS companion app (agent chat, mission management, push notifications) — Phase 6
 - VPS headless deployment (headless ADE on remote machines) — Phase 6
 - Provider usage telemetry parity (CLI/API/local) and budget UX refinements
 
@@ -215,7 +215,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Missions Home Dashboard (aggregate stats, history) | Phase 3 | Phase 3 | Implemented (Task 4) |
 | Budget Management (subscription + API key) | Phase 3 | Phase 3 | Implemented (Task 6) |
 | CTO Agent (persistent project-aware assistant) | Phase 4 | Phase 3 | Complete (W1) |
-| Automations Platform + Night Shift | Phase 4 | Phase 3 | Complete (W5) |
+| Automations Platform (time-based/action-based triggers + execution routing) | Phase 4 | Phase 3 | Complete (W5) |
 | Learning Packs (auto-curated knowledge) | Phase 4 | Phase 3 | Complete |
 | Memory Architecture Upgrade (vector search, tiers) | Phase 4 | Phase 3 | Complete |
 | Candidate Memory Triage Automation (auto-promote + stale archive sweep) | Phase 4 | Phase 3 memory lifecycle baseline | Complete (W6 + W6½) |
@@ -238,16 +238,30 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Memory Consolidation | Phase 4 | Phase 3 | Complete (W6½) |
 | Episodic + Procedural Memory | Phase 4 | Phase 3 | Complete |
 | Play runtime isolation | Phase 5 | Phase 3 (parallel with Phase 4) | Complete |
-| cr-sqlite multi-device sync | Phase 6 | Phase 4 | Planned |
-| Device registry & brain management | Phase 6 | Phase 4 | Planned |
-| Tailscale integration | Phase 6 | Phase 4 | Planned |
-| WebSocket sync server | Phase 6 | Phase 4 | Planned |
-| Device pairing | Phase 6 | Phase 4 | Planned |
-| File access protocol | Phase 6 | Phase 4 | Planned |
-| VPS headless deployment | Phase 6 | Phase 4 | Planned |
-| iOS companion app | Phase 7 | Phase 6 | Planned |
-| Push notifications | Phase 7 | Phase 6 | Planned |
-| VPS provider integrations | Phase 7 | Phase 6 | Planned |
+| cr-sqlite multi-device sync (all 103 tables) | Phase 6 | Phases 1-5 | Planned |
+| Device registry & brain management | Phase 6 | Phases 1-5 | Planned |
+| Tailscale integration | Phase 6 | Phases 1-5 | Planned |
+| WebSocket sync server & protocol | Phase 6 | Phases 1-5 | Planned |
+| Device pairing & configuration | Phase 6 | Phases 1-5 | Planned |
+| File access & terminal stream protocols | Phase 6 | Phases 1-5 | Planned |
+| VPS headless deployment | Phase 6 | Phases 1-5 | Planned |
+| iOS app shell & navigation | Phase 6 | Phases 1-5 | Planned |
+| iOS Lanes tab (high parity) | Phase 6 | Phases 1-5 | Planned |
+| iOS Files tab (high parity) | Phase 6 | Phases 1-5 | Planned |
+| iOS Work tab (high parity) | Phase 6 | Phases 1-5 | Planned |
+| iOS PRs tab (high parity) | Phase 6 | Phases 1-5 | Planned |
+| Lane portability (desktop-to-desktop) | Phase 6 | Phases 1-5 | Planned |
+| Command routing & connection status | Phase 6 | Phases 1-5 | Planned |
+| iOS Missions tab | Phase 7 | Phase 6 | Planned |
+| iOS CTO & Agent Chat tab | Phase 7 | Phase 6 | Planned |
+| iOS Automations, Graph, History tabs | Phase 7 | Phase 6 | Planned |
+| iOS full Settings tab | Phase 7 | Phase 6 | Planned |
+| Push notifications & notification routing | Phase 7 | Phase 6 | Planned |
+| VPS provider integrations (Hetzner, DO, SSH) | Phase 7 | Phase 6 | Planned |
+| Mobile automations execution + digest | Phase 7 | Phase 6 | Planned |
+| Advanced offline resilience | Phase 7 | Phase 6 | Planned |
+| Computer-use artifact viewing (iOS) | Phase 7 | Phase 6 | Planned |
+| iPad support, widgets, Spotlight, polish | Phase 7 | Phase 6 | Planned |
 | Core extraction + SpacetimeDB evaluation | Phase 8 | Phase 6 | Deferred (only if cr-sqlite fails) |
 
 ---
@@ -257,14 +271,16 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 Phases 4 and 5 are **fully independent** — they share no code, no database tables, and no runtime surfaces. Both depend only on Phase 3. Run them in parallel with separate agents.
 
 ```
-Phase 3 ──┬──→ Phase 4 (CTO + Ecosystem) ──→ Phase 6 (Multi-Device Sync) ──→ Phase 7 (Mobile)
+Phase 3 ──┬──→ Phase 4 (CTO + Ecosystem) ──→ Phase 6 (Sync + iOS) ──→ Phase 7 (Full iOS + Advanced Remote)
            │
-           └──→ Phase 5 (Play Runtime)  ← OFF CRITICAL PATH, runs anytime after Phase 3
+           └──→ Phase 5 (Play Runtime)  ← OFF CRITICAL PATH, completed
 ```
 
-**Critical path**: Phase 3 → 4 → 6 → 7. Phase 5 is off the critical path and can complete at any point.
+**Critical path**: Phase 3 → 4 → 6 → 7. Phases 1-5 are complete.
 
-**Timeline compression**: Sequential execution would be ~28-34 weeks. With Phase 4/5 parallelism, the critical path is ~17 weeks.
+**Phase 6** builds the full sync infrastructure (all 103 tables, all device types) and ships 4 high-parity iOS tabs (Lanes, Files, Work, PRs) — complete project management from your phone.
+
+**Phase 7** adds the remaining iOS tabs (Missions, CTO/Chat, Automations, Graph, History, Settings), push notifications, VPS provider integrations, and iOS polish. Because Phase 6 syncs all tables to all devices, Phase 7 iOS tabs are pure SwiftUI work — zero sync layer changes needed.
 
 Each phase doc includes an **Execution Order** section showing which workstreams can run in parallel and which must be sequential.
 

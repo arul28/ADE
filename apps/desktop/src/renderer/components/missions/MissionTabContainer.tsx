@@ -42,7 +42,7 @@ export function MissionTabNavigation() {
 
   const tabs: Array<{ key: WorkspaceTab; label: string; icon: typeof SquaresFour }> = [
     { key: "overview", label: "Overview", icon: SquaresFour },
-    { key: "chat", label: "Feed", icon: ChatCircle },
+    { key: "chat", label: "Conversations", icon: ChatCircle },
     { key: "plan", label: "Plan", icon: SquaresFour },
     { key: "history", label: "Timeline", icon: Pulse },
     { key: "artifacts", label: "Artifacts", icon: Pulse },
@@ -276,14 +276,6 @@ export function MissionTabContent() {
       >
         {activeTab === "overview" && selectedMission && (
           <div className="space-y-3">
-            <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-              <div className="text-[10px] font-semibold" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
-                Prompt
-              </div>
-              <div className="mt-1.5 text-[12px]" style={{ color: COLORS.textPrimary, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                {selectedMission.prompt}
-              </div>
-            </div>
             <MissionRunPanel
               runView={runView}
               interventions={selectedMission.interventions}
@@ -291,23 +283,48 @@ export function MissionTabContent() {
               showInterventions={false}
               hideInterventionHaltReason
             />
+            <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+              <div className="text-[10px] font-semibold" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
+                Mission brief
+              </div>
+              <div className="mt-1 text-[11px]" style={{ color: COLORS.textSecondary }}>
+                The current run state, blockers, active workers, and latest progress appear above. The brief stays here for reference without taking over the page.
+              </div>
+              <div className="mt-2 max-h-[180px] overflow-auto text-[12px]" style={{ color: COLORS.textPrimary, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                {selectedMission.prompt}
+              </div>
+            </div>
           </div>
         )}
 
         {activeTab === "plan" && (
-          <div className="flex h-full min-h-0 flex-col gap-3 lg:flex-row">
-            <div className="min-h-0 min-w-0 flex-1 overflow-auto">
-              <PlanTab mission={selectedMission} runGraph={runGraph} attemptsByStep={attemptsByStep} selectedStepId={selectedStepId} onStepSelect={(id) => useMissionsStore.getState().setSelectedStepId(id)} />
+          <div className="space-y-3">
+            <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+              <div className="text-[10px] font-semibold uppercase tracking-[0.12em]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
+                Execution plan
+              </div>
+              <div className="mt-1 text-[11px]" style={{ color: COLORS.textSecondary }}>
+                Review the phase-by-phase work breakdown below. Selected step details stay visible here instead of living in a separate split pane.
+              </div>
             </div>
-            <div className="space-y-3 lg:w-[380px] lg:max-w-[40%] lg:shrink-0">
-              <StepDetailPanel step={selectedStep} attempts={selectedStepAttempts} allSteps={runSteps} claims={runClaims} onOpenWorkerThread={(target) => { useMissionsStore.getState().setChatJumpTarget(target); useMissionsStore.getState().setActiveTab("chat"); }} onInspectPrompt={(stepId) => void loadWorkerPromptInspector(stepId)} />
-              {selectedStep ? <PromptInspectorCard inspector={workerPromptInspector} loading={workerPromptLoading} error={workerPromptError} title="Selected step effective prompt" /> : null}
+            <StepDetailPanel step={selectedStep} attempts={selectedStepAttempts} allSteps={runSteps} claims={runClaims} onOpenWorkerThread={(target) => { useMissionsStore.getState().setChatJumpTarget(target); useMissionsStore.getState().setActiveTab("chat"); }} onInspectPrompt={(stepId) => void loadWorkerPromptInspector(stepId)} />
+            {selectedStep ? <PromptInspectorCard inspector={workerPromptInspector} loading={workerPromptLoading} error={workerPromptError} title="Selected step effective prompt" /> : null}
+            <div className="min-h-0 min-w-0 overflow-auto">
+              <PlanTab mission={selectedMission} runGraph={runGraph} attemptsByStep={attemptsByStep} selectedStepId={selectedStepId} onStepSelect={(id) => useMissionsStore.getState().setSelectedStepId(id)} />
             </div>
           </div>
         )}
 
         {activeTab === "history" && (
           <div className="space-y-3">
+            <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+              <div className="text-[10px] font-semibold uppercase tracking-[0.12em]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
+                Timeline diagnostics
+              </div>
+              <div className="mt-1 text-[11px]" style={{ color: COLORS.textSecondary }}>
+                Raw orchestration events, scheduler activity, and runtime internals live here. Use Conversations for readable mission updates.
+              </div>
+            </div>
             <ActivityNarrativeHeader runGraph={runGraph} steeringLog={steeringLog} />
             <OrchestratorActivityFeed runId={runGraph?.run.id ?? ""} initialTimeline={runTimeline} />
             {Array.isArray(runGraph?.run?.metadata?.runNarrative) && (runGraph.run.metadata.runNarrative as Array<{ stepKey: string; summary: string; at: string }>).length > 0 && (

@@ -31,6 +31,7 @@ import type {
 import { createDefaultComputerUsePolicy } from "../../../shared/types";
 import { BUILT_IN_PROFILES } from "../../../shared/modelProfiles";
 import { getDefaultModelDescriptor, MODEL_REGISTRY, resolveModelDescriptor } from "../../../shared/modelRegistry";
+import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton } from "../lanes/laneDesignTokens";
 import { ModelSelector } from "./ModelSelector";
 import { SmartBudgetPanel } from "./SmartBudgetPanel";
@@ -87,7 +88,7 @@ const CREATE_DIALOG_PREWARM_DELAY_MS = 300;
 const CREATE_DIALOG_PHASE_SYNC_DELAY_MS = 1_500;
 
 type CreateMissionDialogAiStatusCache = {
-  availableModelIds?: string[];
+  availableModelIds: string[];
   detectedAuth: import("../../../shared/types").AiDetectedAuth[] | null;
 };
 
@@ -131,28 +132,10 @@ export async function prewarmCreateMissionDialogCache(): Promise<void> {
   if (shouldRefreshAiStatus) {
     tasks.push(
       window.ade.ai.getStatus().then((status) => {
-        const ids: string[] = [];
-        const auth = status.detectedAuth ?? [];
-        for (const entry of auth) {
-          if (!entry.authenticated) continue;
-          if (entry.type === "cli-subscription" && entry.cli) {
-            const familyMap: Record<string, string> = { claude: "anthropic", codex: "openai" };
-            const family = familyMap[entry.cli];
-            if (family) {
-              for (const model of MODEL_REGISTRY) {
-                if (model.family === family && !model.deprecated) ids.push(model.id);
-              }
-            }
-          }
-          if (entry.type === "api-key" && entry.provider) {
-            for (const model of MODEL_REGISTRY) {
-              if (model.family === entry.provider && !model.deprecated) ids.push(model.id);
-            }
-          }
-        }
+        const ids = deriveConfiguredModelIds(status);
         createMissionDialogCache.aiStatus = {
-          detectedAuth: auth,
-          availableModelIds: ids.length > 0 ? [...new Set(ids)] : undefined,
+          detectedAuth: status.detectedAuth ?? [],
+          availableModelIds: ids,
         };
         createMissionDialogCache.aiStatusCachedAt = Date.now();
       }).catch(() => {})
@@ -526,28 +509,10 @@ function CreateMissionDialogInner({
       if (cancelled) return;
       void window.ade.ai.getStatus().then((status) => {
         if (cancelled) return;
-        const ids: string[] = [];
-        const auth = status.detectedAuth ?? [];
-        for (const entry of auth) {
-          if (!entry.authenticated) continue;
-          if (entry.type === "cli-subscription" && entry.cli) {
-            const familyMap: Record<string, string> = { claude: "anthropic", codex: "openai" };
-            const family = familyMap[entry.cli];
-            if (family) {
-              for (const model of MODEL_REGISTRY) {
-                if (model.family === family && !model.deprecated) ids.push(model.id);
-              }
-            }
-          }
-          if (entry.type === "api-key" && entry.provider) {
-            for (const model of MODEL_REGISTRY) {
-              if (model.family === entry.provider && !model.deprecated) ids.push(model.id);
-            }
-          }
-        }
+        const ids = deriveConfiguredModelIds(status);
         const cachedStatus: CreateMissionDialogAiStatusCache = {
-          detectedAuth: auth,
-          availableModelIds: ids.length > 0 ? [...new Set(ids)] : undefined,
+          detectedAuth: status.detectedAuth ?? [],
+          availableModelIds: ids,
         };
         createMissionDialogCache.aiStatus = cachedStatus;
         createMissionDialogCache.aiStatusCachedAt = Date.now();
@@ -855,10 +820,20 @@ function CreateMissionDialogInner({
           transition: { duration: open ? 0.15 : 0.1 },
         }}
         className="w-full max-w-3xl shadow-2xl max-h-[90vh] overflow-y-auto"
-        style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}
+        style={{
+          background: COLORS.cardBgSolid,
+          border: `1px solid ${COLORS.outlineBorder}`,
+          boxShadow: "0 28px 80px -36px rgba(0,0,0,0.82)",
+        }}
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-5 h-14" style={{ background: COLORS.recessedBg, borderBottom: `1px solid ${COLORS.border}` }}>
+        <div
+          className="flex items-center justify-between px-5 h-14"
+          style={{
+            background: "#120F1A",
+            borderBottom: `1px solid ${COLORS.border}`,
+          }}
+        >
           <div className="flex items-center gap-2">
             <Rocket className="h-4 w-4" style={{ color: COLORS.accent }} />
             <h2 className="text-sm font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>NEW MISSION</h2>

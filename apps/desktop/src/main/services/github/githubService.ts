@@ -43,23 +43,24 @@ function parseGitHubRepoFromRemoteUrl(remoteUrlRaw: string): GitHubRepoRef | nul
 
 export function createGithubService({
   logger,
-  projectRoot
+  projectRoot,
+  appDataDir,
 }: {
   logger: Logger;
   projectRoot: string;
+  appDataDir: string;
 }) {
-  const githubStateDir = resolveAdeLayout(projectRoot).githubSecretsDir;
+  const legacyGithubStateDir = resolveAdeLayout(projectRoot).githubSecretsDir;
+  const legacyTokenPath = path.join(legacyGithubStateDir, AUTH_STORE_FILE_NAME);
+  const githubStateDir = path.join(appDataDir, "secrets", "github");
   const tokenPath = path.join(githubStateDir, AUTH_STORE_FILE_NAME);
 
   let tokenDecryptionFailed = false;
 
-  const readStoredToken = (): string | null => {
-    if (!fs.existsSync(tokenPath)) {
-      tokenDecryptionFailed = false;
-      return null;
-    }
+  const readEncryptedToken = (candidatePath: string): string | null => {
+    if (!fs.existsSync(candidatePath)) return null;
     try {
-      const bytes = fs.readFileSync(tokenPath);
+      const bytes = fs.readFileSync(candidatePath);
       if (!safeStorage.isEncryptionAvailable()) {
         tokenDecryptionFailed = true;
         logger.warn("github.token_decryption_failed", {
@@ -84,14 +85,18 @@ export function createGithubService({
     }
   };
 
-  const persistToken = (token: string | null): void => {
+  const removeTokenFile = (candidatePath: string): void => {
+    try {
+      if (fs.existsSync(candidatePath)) fs.unlinkSync(candidatePath);
+    } catch {
+      // ignore
+    }
+  };
+
+  const persistEncryptedToken = (candidatePath: string, token: string | null): void => {
     const clean = (token ?? "").trim();
     if (!clean) {
-      try {
-        if (fs.existsSync(tokenPath)) fs.unlinkSync(tokenPath);
-      } catch {
-        // ignore
-      }
+      removeTokenFile(candidatePath);
       return;
     }
 
@@ -99,13 +104,59 @@ export function createGithubService({
       throw new Error("OS secure storage is unavailable. Cannot persist GitHub token.");
     }
 
-    fs.mkdirSync(githubStateDir, { recursive: true });
+    fs.mkdirSync(path.dirname(candidatePath), { recursive: true });
     const encrypted = safeStorage.encryptString(JSON.stringify({ token: clean }));
-    fs.writeFileSync(tokenPath, encrypted);
+    fs.writeFileSync(candidatePath, encrypted);
     try {
-      fs.chmodSync(tokenPath, 0o600);
+      fs.chmodSync(candidatePath, 0o600);
     } catch {
       // ignore best-effort chmod
+    }
+  };
+
+  let migrationDone = false;
+  const migrateLegacyTokenIfNeeded = (): string | null => {
+    const globalToken = readEncryptedToken(tokenPath);
+    if (globalToken) {
+      tokenDecryptionFailed = false;
+      migrationDone = true;
+      return globalToken;
+    }
+
+    if (migrationDone) return null;
+
+    const legacyToken = readEncryptedToken(legacyTokenPath);
+    if (!legacyToken) { migrationDone = true; return null; }
+
+    try {
+      persistEncryptedToken(tokenPath, legacyToken);
+      removeTokenFile(legacyTokenPath);
+      logger.info("github.token_migrated_to_global_store", { projectRoot });
+    } catch (error) {
+      logger.warn("github.token_migration_failed", {
+        projectRoot,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    tokenDecryptionFailed = false;
+    migrationDone = true;
+    return legacyToken;
+  };
+
+  const readStoredToken = (): string | null => {
+    const token = migrateLegacyTokenIfNeeded();
+    if (!token) {
+      tokenDecryptionFailed = false;
+    }
+    return token;
+  };
+
+  const persistToken = (token: string | null): void => {
+    persistEncryptedToken(tokenPath, token);
+    if (!(token ?? "").trim()) {
+      removeTokenFile(legacyTokenPath);
+    } else if (fs.existsSync(legacyTokenPath)) {
+      removeTokenFile(legacyTokenPath);
     }
   };
 
@@ -210,6 +261,7 @@ export function createGithubService({
       cachedStatus = {
         tokenStored: false,
         tokenDecryptionFailed,
+        storageScope: "app",
         repo,
         userLogin: null,
         scopes: [],
@@ -230,6 +282,7 @@ export function createGithubService({
       cachedStatus = {
         tokenStored: true,
         tokenDecryptionFailed: false,
+        storageScope: "app",
         repo,
         userLogin: validated.userLogin,
         scopes: validated.scopes,
@@ -242,6 +295,7 @@ export function createGithubService({
       cachedStatus = {
         tokenStored: true,
         tokenDecryptionFailed: false,
+        storageScope: "app",
         repo,
         userLogin: null,
         scopes: [],

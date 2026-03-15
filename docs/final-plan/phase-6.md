@@ -1,363 +1,524 @@
-# Phase 6: Multi-Device Sync Foundation
+# Phase 6: Multi-Device Sync & iOS Companion
 
-## Phase 6 -- Multi-Device Sync Foundation (6-8 weeks)
+## Phase 6 -- Multi-Device Sync & iOS Companion (8-10 weeks)
 
-Goal: Enable real-time state synchronization across all user devices without cloud dependency. Any device running ADE becomes a peer; one device per project is designated the "brain" (runs agents), while others are viewers/controllers. All app state syncs via cr-sqlite CRDTs over WebSocket. File access from remote devices uses on-demand fetch.
+Goal: Ship end-to-end multi-device ADE with a polished iOS app for project management. Any Mac can be a brain (runs agents), any other Mac or iPhone can be a viewer/controller. Sync is peer-to-peer via cr-sqlite CRDTs over WebSocket — no cloud. By the end of this phase a user can pick up their iPhone and manage their project with high-parity Lanes, Files, Work, and PRs tabs while their Mac Studio runs agents in the background.
 
 ### Reference docs
 
-- [architecture/DESKTOP_APP.md](../architecture/DESKTOP_APP.md) — main process service graph, database access
-- [features/ONBOARDING_AND_SETTINGS.md](../features/ONBOARDING_AND_SETTINGS.md) — Device Management settings
-- [features/LANES.md](../features/LANES.md) — lane metadata sync, worktree lifecycle
+- [architecture/DESKTOP_APP.md](../architecture/DESKTOP_APP.md) — main process service graph, database, startup contract
+- [architecture/MEMORY.md](../architecture/MEMORY.md) — unified memory schema, embedding service, CTO core memory
+- [architecture/AI_INTEGRATION.md](../architecture/AI_INTEGRATION.md) — agent runtimes, orchestrator, MCP tools
+- [features/CTO.md](../features/CTO.md) — CTO state, daily logs, Linear sync
+- [features/CHAT.md](../features/CHAT.md) — agent chat sessions, providers, attachments
 
 ### Dependencies
 
-- Phase 4 complete (CTO + org system — agent identities, memory, heartbeat, and Linear sync all create database tables and state that must be CRR-marked for sync).
-- Phase 3 complete (orchestrator autonomy — see `ORCHESTRATOR_OVERHAUL.md`).
-- Phase 5 is **NOT** a dependency. Play runtime isolation (ports, proxies, lane environments) is local-only infrastructure — nothing in Phase 6 requires it. Phase 5 can run fully in parallel with Phase 4 and complete before, during, or after Phase 6.
+- Phases 1-5 complete (single-device operation is stable and shipping).
+
+---
 
 ### Architecture Overview
 
 #### The Brain Model
-- One machine per project is the "brain" — it runs agents, missions, and orchestrator processes.
-- Any device except a phone can be a brain: laptop, Mac Studio, Mac Mini, VPS.
-- All other connected devices are viewers/controllers — they see full state in real-time and can issue commands.
-- Brain designation is explicit: users choose which machine is the brain in the device list.
-- Only one brain per project at a time. Brain can be transferred between machines.
+
+- One machine per project is the **brain** — it runs agents, missions, orchestrator processes, CTO heartbeats, Linear sync, and all AI compute.
+- Any Mac (laptop, Mac Studio, Mac Mini) or VPS can be a brain. Phones cannot.
+- All other connected devices are **viewers/controllers** — they see full state in real-time and can issue commands. The brain does the work.
+- Brain designation is explicit: the user chooses which machine is the brain in Settings > Devices. Only one brain per project at a time.
+- Brain can be transferred between machines via a structured handoff protocol.
 
 #### Sync Architecture
-- **cr-sqlite** (SQLite CRDT extension) provides conflict-free replication for all 63 database tables.
-- cr-sqlite is a SQLite extension, NOT a database replacement — zero changes to existing SQL code.
-- Tables are marked as CRRs (Conflict-free Replicated Relations) with `SELECT crsql_as_crr('table_name')`.
-- cr-sqlite generates changesets that are transported via WebSocket to connected peers.
-- Each device maintains its own full SQLite database; cr-sqlite merges changes automatically.
-- CRDTs handle concurrent writes without conflicts — last-writer-wins per column with Lamport timestamps.
+
+- **cr-sqlite** (SQLite CRDT extension) provides conflict-free replication for all **103 database tables** (see current schema in `kvDb.ts`).
+- cr-sqlite is a SQLite extension loaded into the existing sql.js WASM runtime on desktop and native SQLite on iOS — zero changes to existing SQL code.
+- Tables are marked as CRRs (Conflict-free Replicated Relations): `SELECT crsql_as_crr('table_name')`.
+- cr-sqlite generates changesets transported via WebSocket to connected peers.
+- Each device maintains its own full SQLite database. cr-sqlite merges changes automatically using last-writer-wins per column with Lamport timestamps.
+- The FTS4 virtual table (`unified_memories_fts`) is **not** marked as a CRR — each device rebuilds its FTS index from the synced `unified_memories` table.
+- **All 103 tables are synced to all devices** (desktop and iOS alike). The sync layer is comprehensive — what varies between devices is the UI, not the data. This keeps the sync protocol simple and ensures any future iOS tab can read its data immediately without sync changes.
+
+#### Design Principle: Mobile as Desktop Parity
+
+The iOS app is fundamentally a 1:1 wrap of the desktop chat/workspace experience in an iOS form factor. Every capability that works on desktop — tool calls, streaming UI, terminal output, chat attachments, computer use artifacts — must work on mobile via the sync protocol. The mobile app is not a "lite" companion; it is a full peer that happens to run on a phone. Where the desktop renders a tool call result inline, the phone renders the same data with native SwiftUI components. Where the desktop streams terminal output into a pane, the phone streams the same output via the terminal sub-protocol. No feature is desktop-only by design — only by phase scoping (Phase 6 ships four tabs, Phase 7 adds the rest).
+
+#### Future-Proofing: Sync Once, UI Later
+
+The sync infrastructure syncs all tables to all device types. This is a deliberate architectural choice:
+
+- **Adding a new table** to the desktop app requires one line (`SELECT crsql_as_crr('new_table')`) and the data flows to all devices automatically.
+- **Adding a new column** to an existing table requires no sync changes — cr-sqlite handles new columns transparently.
+- **Adding a new iOS tab** (Phase 7) requires only SwiftUI work — the data is already on the device.
+- **Adding a new command type** (e.g., "launch mission" from iOS in Phase 7) requires one command handler on the brain.
+
+This means Phase 6 sync work is a one-time investment. Phase 7 iOS tabs are pure UI work with zero sync layer changes.
 
 #### What Syncs vs What Doesn't
+
 - **Syncs via cr-sqlite** (all database state):
-  - Mission state, steps, attempts, chat messages, agent output
-  - Lane metadata (name, branch, status, assignment)
-  - Memory entries, agent identities, learning packs
-  - Terminal session metadata, summaries, deltas
-  - Settings, automation rules, pack metadata
-  - AI usage logs, conflict records, PR state
-- **Syncs via git** (code only):
+  - Mission state, steps, events, interventions, artifacts, chat messages
+  - Lane metadata (name, branch, status, assignment, agent run state)
+  - CTO identity, core memory, session logs, flow policies
+  - Worker agent identities, revisions, task sessions, runs, cost events
+  - Unified memories, embeddings metadata
+  - Linear sync state, issue snapshots, dispatch queue, workflow runs
+  - AI usage logs, budget records, external MCP usage events
+  - PR state, conflict predictions, integration proposals
+  - Settings, pack metadata, phase cards, phase profiles
+  - Orchestrator runs, steps, claims, decisions, worker digests, reflections, retrospectives
+  - Terminal session metadata, session deltas
+  - Process definitions, test suites, test runs
+  - All other tables in `kvDb.ts`
+- **Syncs via git** (code, desktop peers only):
   - Source code files in working trees
-  - `.ade/agents/*.yaml`, `.ade/identities/*.yaml`, `.ade/local.yaml` (tiny config, no secrets)
-  - `.ade/context/` (PRD.ade.md, ARCHITECTURE.ade.md)
-- **Does NOT sync** (machine-specific, gitignored):
-  - `.ade/local.secret.yaml` (API keys, external MCP configs, local paths)
-  - Worktree physical directories (each machine creates its own from git branches)
+  - `.ade/agents/*.yaml`, `.ade/context/`, `.ade/local.yaml`
+- **Does NOT sync** (machine-specific):
+  - `.ade/local.secret.yaml` (API keys, external MCP configs)
+  - Worktree physical directories
   - PTY processes and terminal output streams
-  - Transcript files on disk (`.ade/transcripts/`)
-  - Cache directories, embeddings
-  - Running process state
+  - `.ade/cto/daily-logs/` files (brain-only, summaries sync via cr-sqlite)
+  - Transcript files, cache, embedding model weights
+  - Running process state, mcp.sock
 
 #### CTO & Worker Agent Reachability
 
-The CTO agent and all worker agents (Phase 4) run exclusively on the brain machine. Multi-device access works as follows:
+- **Agent state syncs via cr-sqlite**: identities, memory entries, run status, chat messages, org chart, cost events, Linear workflow state. Any device sees the full picture in real-time.
+- **Agent execution is brain-only**: CTO heartbeats, Linear polling, worker activations, mission orchestration, embedding worker — all run on the brain. Non-brain devices never spawn agent processes.
+- **Command routing for agent chat**: user sends a message from phone or viewer Mac → message written locally → cr-sqlite syncs to brain → WebSocket command triggers brain to process → agent response written on brain → cr-sqlite syncs back to all peers.
+- **Linear credentials are brain-only**: API tokens live in `.ade/local.secret.yaml` (machine-specific, never synced). Only the brain needs them.
 
-- **Agent state syncs via cr-sqlite**: Agent identities, memory entries, config revisions, run status, chat messages, and org chart structure all sync as regular database state. Any device sees the full org in real-time.
-- **Agent execution is brain-only**: CTO heartbeats, Linear polling, worker activations, and mission orchestration all run on the brain. Non-brain devices never spawn agent processes.
-- **Command routing for agent chat**: When a user talks to the CTO or any worker from a non-brain device, the message is written locally (cr-sqlite syncs to brain) and a WebSocket command routes to the brain to trigger agent processing. The agent's response syncs back via cr-sqlite.
-- **Heartbeat on VPS brain**: When ADE runs headlessly on a VPS (W9), the CTO heartbeat fires on schedule, Linear sync runs continuously, and workers process issues — all without a desktop being open.
-- **Linear credentials are brain-only**: Linear API token lives in `.ade/local.secret.yaml` (gitignored, machine-specific). Only the brain needs it. Other devices see mission results via cr-sqlite sync.
+#### `.ade/` Folder Structure
 
-#### `.ade/` Folder Structure (Revised)
 ```
 .ade/
 ├── agents/            # Git-tracked: agent identity YAML files
-│   ├── lead.yaml
-│   └── reviewer.yaml
 ├── identities/        # Git-tracked: user identity configs
 ├── context/           # Git-tracked: PRD.ade.md, ARCHITECTURE.ade.md
-├── local.yaml         # Git-tracked: project config (lane templates, phase profiles, feature flags — NO secrets)
-├── local.secret.yaml  # Gitignored: machine-specific secrets (API keys, external MCP server configs, local paths)
+├── local.yaml         # Git-tracked: project config (no secrets)
+├── local.secret.yaml  # Gitignored: machine-specific secrets
 ├── ade.db             # cr-sqlite synced: ALL app state (gitignored)
 ├── ade.db-wal         # WAL file (gitignored)
 ├── mcp.sock           # Runtime socket (gitignored)
+├── cto/
+│   ├── core-memory.json  # Dual-persisted (also in cr-sqlite)
+│   └── daily-logs/       # Brain-only markdown logs (gitignored)
 ├── transcripts/       # Machine-specific logs (gitignored)
 ├── cache/             # Machine-specific cache (gitignored)
 ├── worktrees/         # Machine-specific lane checkouts (gitignored)
 └── secrets/           # Machine-specific secrets (gitignored)
 ```
 
+#### iOS App Scope (Phase 6)
+
+The Phase 6 iOS app ships **four high-parity tabs** that provide complete project management from the phone:
+
+| Tab | Desktop equivalent | What it does on iOS |
+|-----|-------------------|---------------------|
+| **Lanes** | `/lanes` | Full lane list with status, branch info, agent assignment, dirty/ahead/behind indicators. Create and archive lanes. View lane details. On non-brain: lane availability states (Local/Behind/Live/Remote only). |
+| **Files** | `/files` | Full file browser with directory tree, syntax-highlighted file viewer, file search, basic file editing (sends edits to brain). High parity with desktop file explorer. |
+| **Work** | `/work` | Terminal session list, read-only terminal output viewing (streamed from brain via WebSocket), session metadata. Quick-launch actions that route to brain. |
+| **PRs** | `/prs` | PR list with status, merge readiness, CI checks. PR detail view with diff. Create PR (routes to brain). Merge/close actions. Stacked PR visualization. |
+
+**Not in Phase 6 iOS** (deferred to Phase 7):
+- Missions tab (mission management, intervention approval, launch)
+- CTO tab (agent chat, org chart, identity management)
+- Chat tab (ad-hoc agent chat sessions)
+- Automations tab
+- Graph tab
+- History tab
+- Settings tab (beyond basic device/connection settings)
+
+This scoping is intentional: Lanes + Files + Work + PRs give full project management from the phone. The AI orchestration tabs (Missions, CTO, Chat) come in Phase 7 once the project management foundation is proven.
+
+#### iOS Design Direction
+
+- **Native SwiftUI throughout** — the iOS app uses native SwiftUI components and follows iOS Human Interface Guidelines. No embedded web views for core UI. Components should feel native to the platform.
+- **Color palette**: project purple (`#7C3AED`) as the primary accent color, with iOS-standard system backgrounds (`Color(.systemBackground)`, `Color(.secondarySystemBackground)`). Dark mode support via system appearance.
+- **Typography**: SF Pro (the iOS system font) exclusively. No custom fonts, no monospace outside of code/terminal contexts. Use standard Dynamic Type size categories for accessibility.
+- **Navigation**: standard `TabView` with four tabs (Lanes, Files, Work, PRs). Each tab uses `NavigationStack` for drill-down. No hamburger menus, no custom tab bars.
+- **Aesthetic**: clean, functional, slightly opinionated. Avoid generic AI app aesthetics — no gradient blobs, no floating orbs, no "chat with your AI" landing screens. The app opens to real project state, not decoration.
+- **Chat bubbles, tool call cards, and proof panels** (Phase 7 and forward-looking W8 elements): these must feel native to iOS, not web-view ports. Use `List` rows, `DisclosureGroup` for expandable content, `Sheet` for detail panels. No custom scroll views where SwiftUI native components suffice.
+- **Iconography**: SF Symbols exclusively. No custom icon sets.
+
+#### iOS Chat & Agent Visibility Requirements (Forward-Looking)
+
+While the full Chat tab is scoped for Phase 7, certain agent interaction patterns appear in Phase 6 tabs (Work tab terminal streaming, command routing feedback) and must be designed with the following in mind for continuity:
+
+- **Streaming message rendering**: chat messages from agents must render incrementally as tokens arrive, not after completion. The sync protocol delivers message deltas via cr-sqlite; the UI appends content on each changeset.
+- **Tool call results visible inline**: when an agent executes a tool (file write, terminal command, git operation), the result must be visible inline in chat context. Use expandable/collapsible `DisclosureGroup` cards — collapsed by default showing tool name + status, expandable to show full output.
+- **Terminal output streaming to iOS**: terminal output from agent sessions on the brain must be streamable to iOS in real-time via the terminal stream sub-protocol (W2). This is already used by the W8 Work tab, but must also feed into chat context when agents run commands.
+- **Persistent process indicator**: when agents are running commands, a persistent indicator must be visible — similar to a terminal-above-prompt pattern. On iOS, this is a sticky banner or inline card at the top of the chat/work view showing: agent name, current tool/command, elapsed time, and a pulsing activity indicator.
+- **Chat attachments (images, files)**: all attachments sent or received in chat must render on iOS. Images render inline with tap-to-fullscreen. Files show metadata with a tap-to-view action that fetches content via the file access sub-protocol.
+
+#### iOS Computer Use & Proof Requirements
+
+Proof that agents are working is critical to user trust. The desktop app has a proof drawer pattern (screenshots, videos, traces from computer use sessions). The iOS app needs equivalent visibility:
+
+- **Computer use artifacts (screenshots, videos, traces) must be viewable on iOS**: these are stored as file references in the database (paths in artifact records). The artifact metadata syncs via cr-sqlite like all other tables. The actual media files are served by the brain over the existing WebSocket file access sub-protocol (W2) — the same mechanism the Files tab uses to fetch file contents.
+- **No separate media backend needed**: the brain device serves media files (screenshots, screen recordings, trace logs) over the existing WebSocket connection. No S3, no CDN, no cloud relay. The phone requests a file by path, the brain reads it from disk and sends the bytes. This is the same flow as the Files tab viewing a source file — just with an image or video MIME type.
+- **Proof panel on iOS**: the desktop proof drawer pattern translates to a SwiftUI `Sheet` or `NavigationLink` detail view. Tapping an artifact card in chat or in a mission step opens the proof panel showing:
+  - Screenshots: full-resolution image with pinch-to-zoom
+  - Videos: inline video player (`AVKit` `VideoPlayer`)
+  - Traces: scrollable log view with timestamp + action pairs
+- **Artifact timeline**: within a mission step or agent chat session, artifacts are displayed in chronological order so the user can follow what the agent did step by step.
+- **Media sync path**: artifact metadata (file path, timestamp, type, associated step/session) syncs via cr-sqlite. Media files themselves are fetched on-demand from the brain via the file access sub-protocol — not eagerly synced. This keeps the cr-sqlite changeset stream lightweight. Thumbnails can be cached locally on iOS after first fetch.
+
+---
+
 ### Workstreams
 
 #### W1: cr-sqlite Integration
-- Load cr-sqlite extension into existing sql.js WASM runtime.
-- Mark all 63 existing tables as CRRs via migration: `SELECT crsql_as_crr('table_name')` for each table.
-- Verify zero breaking changes to existing SQL operations (~926 operations across 40 service files).
-- Add changeset extraction: `SELECT * FROM crsql_changes WHERE db_version > ?` to get incremental changes.
-- Add changeset application: `INSERT INTO crsql_changes(...)` to apply remote changes.
-- Add site ID management for device identity in the CRDT merge.
-- Update `.gitignore` to exclude `ade.db` and related files from git tracking.
 
-#### W2: WebSocket Sync Server
-- Brain machine runs a WebSocket server (default port 8787) for sync connections.
+- Load cr-sqlite extension into the existing sql.js WASM runtime used by `kvDb.ts`.
+- Mark all 103 existing tables as CRRs via migration: `SELECT crsql_as_crr('table_name')` for each table.
+- Exclude FTS4 virtual table (`unified_memories_fts`) from CRR marking — FTS indexes are rebuilt locally from synced content.
+- Verify zero breaking changes to existing SQL operations across all service files.
+- Add changeset extraction: `SELECT * FROM crsql_changes WHERE db_version > ?` for incremental sync.
+- Add changeset application: `INSERT INTO crsql_changes(...)` to apply remote changes.
+- Add site ID management for device identity in the CRDT merge (one unique site ID per device).
+- Add FTS rebuild trigger: after applying remote changesets that touch `unified_memories`, rebuild affected FTS rows.
+
+#### W2: WebSocket Sync Server & Protocol
+
+- Brain machine runs a WebSocket server (default port 8787) embedded in the Electron main process.
 - Protocol: authenticated WebSocket with JSON-framed cr-sqlite changesets.
-- Connection flow: peer connects → authenticates with pairing token → sends its db_version → brain sends all changes since that version → continuous bidirectional sync.
-- Changeset delivery: brain watches for local DB changes (WAL hook or polling), extracts changesets, broadcasts to all connected peers.
-- Peers send their local changes to brain, which applies and rebroadcasts to other peers.
-- Handles connection drops with automatic reconnection and version-based catch-up.
-- Compression for changeset batches over slow connections.
+- Connection flow:
+  1. Peer connects with pairing token + device type (desktop/iOS)
+  2. Brain validates token
+  3. Peer sends its `db_version`
+  4. Brain sends all changesets since that version
+  5. Continuous bidirectional sync begins
+- Brain watches for local DB changes via WAL hook or short-interval polling, extracts changesets, broadcasts to all connected peers.
+- Peers send their local changes (commands, chat messages) to brain; brain applies and rebroadcasts to other peers.
+- Automatic reconnection with version-based catch-up on connection drops.
+- Changeset compression (zlib) for batches over slow or metered connections.
+- Heartbeat ping/pong (30s interval) for connection health monitoring.
+- **File access sub-protocol**: request/response for on-demand file reads, directory listings, and file writes. Used by iOS Files tab, desktop remote file viewing, and media/artifact retrieval. Supports any file type — source code, images, videos, logs — by path. Content-type is inferred from file extension. This single sub-protocol is the transport for all file-like data including computer use screenshots and screen recordings (no separate media backend needed).
+- **Terminal stream sub-protocol**: subscribe to terminal session output from brain. Used by iOS Work tab for read-only terminal viewing and by agent chat sessions for inline terminal output.
 
 #### W3: Device Registry & Brain Management
-- New `devices` table tracking all paired devices: device_id, name, platform (macOS/iOS/Linux), last_seen, is_brain, ip_addresses.
-- Brain election: explicit user action — "Make this device the brain" in device list.
-- Brain transfer protocol: current brain stops agents → syncs final state → new brain takes over → starts accepting agent work.
-- Brain status broadcast: brain periodically announces its status (running missions, resource usage) to all peers.
-- Device discovery: mDNS/Bonjour on local network for zero-config LAN discovery. Tailscale for cross-network.
 
-#### W4: Tailscale Integration
-- Optional Tailscale integration for device reachability across networks.
-- Tailscale gives every device a stable IP (100.64.x.x) that works from anywhere — home, office, mobile.
-- Traffic is peer-to-peer (WireGuard encrypted), NOT routed through a cloud relay.
-- Self-hostable control plane via Headscale for users who want zero cloud dependency.
-- ADE detects Tailscale IPs automatically and uses them for sync when LAN discovery fails.
-- Tailscale is optional — LAN-only users can skip it entirely.
+- New `devices` table (synced): device_id, name, platform (`macOS` / `iOS` / `linux`), device_type (`desktop` / `phone` / `vps`), last_seen, is_brain, ip_addresses, tailscale_ip.
+- Brain election: explicit user action — "Make this device the brain" in Settings > Devices.
+- Brain transfer protocol:
+  1. Current brain stops all agents and orchestrator processes
+  2. Final sync flush to all connected peers
+  3. Brain flag transfers to new device
+  4. New brain starts accepting agent work
+- Brain status broadcast: brain periodically announces running missions, active agents, resource usage, and uptime to all peers.
+- Device discovery: mDNS/Bonjour for zero-config LAN discovery. Tailscale IPs used when LAN fails.
+- Device configuration UI in Settings > Devices:
+  - Add device (shows pairing flow)
+  - Configure device type and role
+  - Remove device (revokes pairing, disconnects)
+  - Transfer brain designation
+  - View per-device sync status (last seen, sync lag)
 
-#### W5: Device Pairing UX
-- First-time pairing: brain generates a QR code or 6-digit code. New device scans/enters the code.
-- Pairing establishes a shared secret stored in OS keychain (macOS Keychain, iOS Keychain).
-- After pairing, devices reconnect automatically — no re-auth needed.
-- Device list in Settings → Devices: shows all paired devices with name, platform, status (online/offline/brain).
-- Remove device: revokes pairing token, device can no longer connect.
+#### W4: Device Pairing & Network
 
-#### W6: File Access Protocol
-- Remote file viewing: viewer device requests a file path → brain reads from disk → sends content over WebSocket.
-- Supports text files (source code, configs) and binary files (images) with size limits.
-- File listing: remote device can browse the project directory tree.
-- Basic file editing: viewer sends edit (path + content) → brain writes to disk → git tracks the change.
-- NOT a full filesystem tunnel — on-demand fetch for specific files only.
-- File change notifications: brain notifies viewers when watched files change on disk.
+- First-time pairing: brain generates a **QR code** (encodes brain IP/port + one-time pairing token) or a **6-digit numeric code** for manual entry.
+- Pairing establishes a shared secret stored in OS keychain (macOS Keychain / iOS Keychain).
+- After pairing, devices reconnect automatically on every app launch — no re-auth.
+- **Tailscale integration** (optional):
+  - ADE detects Tailscale IPs (100.64.x.x) automatically and uses them when LAN discovery fails.
+  - Peer-to-peer WireGuard encrypted traffic — no cloud relay.
+  - Self-hostable control plane via Headscale for zero cloud dependency.
+  - Tailscale is never required — LAN-only users skip it entirely.
+- **VPS brain deployment**:
+  - ADE runs headlessly on a VPS via `xvfb-run electron .` (~200MB RAM overhead, zero code changes).
+  - Systemd service file for auto-restart on crash.
+  - VPS brain works identically to a desktop brain — other devices connect via Tailscale, direct IP, or VPN.
+  - Deployment guide: install Node.js, clone repo, install deps, configure as brain, pair devices remotely.
+- Remove device: revokes pairing token, device can no longer connect, entry removed from registry.
 
-#### W7: Persistent Status Bar
-- Always-visible status indicator in the app chrome showing current connection state:
-  - **Local (Brain)**: "Running locally" — this device is the brain.
-  - **Connected**: "Connected to [device-name]" — viewing/controlling a remote brain.
-  - **Disconnected**: "Offline — last synced [timestamp]" — no brain reachable.
-  - **Syncing**: "Syncing..." — actively exchanging changesets.
-- Click status bar → opens device management panel.
-- Connection quality indicator (latency, sync lag).
+#### W5: iOS App Shell & Core Navigation
 
-#### W8: Command Routing
-- When a viewer/controller device issues a command (launch mission, start agent chat, create lane):
-  - If it's a state-only operation (create lane metadata): write locally, cr-sqlite syncs to brain.
-  - If it requires brain execution (launch mission, spawn agent): send command over WebSocket to brain, brain executes.
+- Native **SwiftUI** application targeting iOS 17+.
+- cr-sqlite embedded via SQLite.swift wrapper with cr-sqlite extension loaded natively.
+- WebSocket client for brain connection — reuses the same protocol from W2.
+- Local SQLite database as a cr-sqlite peer — all tables synced, full state available offline.
+- Pairing flow: open iOS app → scan QR code displayed on brain → token stored in iOS Keychain → connected.
+- **Four-tab navigation**: Lanes, Files, Work, PRs.
+- Persistent connection status header: brain name, connection state, sync indicator.
+- Pull-to-refresh triggers manual sync check.
+- Background app refresh for periodic state sync when app is backgrounded.
+- Basic Settings screen (accessible from profile/gear icon): paired devices list, connection info, disconnect.
+
+#### W6: iOS Lanes Tab
+
+High-parity SwiftUI implementation of the desktop Lanes page.
+
+- **Lane list**: all lanes with name, branch, dirty/ahead/behind indicators, agent assignment badge, mission link.
+- **Lane detail view**: full lane info — branch, status, recent commits, assigned agent and status, linked mission/step.
+- **Create lane**: name + base branch input → command routes to brain → brain creates worktree → metadata syncs back.
+- **Archive/unarchive lane**: swipe action or detail view button.
+- **Lane availability states** (when connected to brain from a non-brain device):
+  - Local, Behind, Live on [device], Remote only, Push pending, Offline
+  - Computed from cr-sqlite metadata + brain status
+  - "Sync to this Mac" not applicable on iOS (no worktrees), but state is displayed for awareness
+- **Agent status per lane**: if an agent is running on a lane, show provider, model, current step, duration.
+- **Search and filter**: filter by status (active/archived), search by name.
+- **Swipe gestures**: swipe to archive, long-press for quick actions.
+
+#### W7: iOS Files Tab
+
+High-parity SwiftUI implementation of the desktop Files page.
+
+- **File tree browser**: hierarchical project directory tree fetched on-demand from brain via file access sub-protocol. Lazy-loaded — only expanded directories fetch contents.
+- **Syntax-highlighted file viewer**: full syntax highlighting for common languages (Swift, TypeScript, Python, Rust, Go, Java, HTML/CSS, JSON, YAML, Markdown). Line numbers, word wrap toggle.
+- **File search**: fuzzy filename search across the project. Search request routes to brain, results displayed on phone.
+- **Basic file editing**: tap "Edit" on any text file → simple text editor for quick fixes. Edit routes to brain, brain writes to disk, git tracks the change. Not a full IDE — intentionally minimal for config tweaks and typo fixes.
+- **Diff viewer**: view pending changes (unstaged/staged) per file with syntax-highlighted unified diff.
+- **File metadata**: size, last modified, last commit touching this file.
+- **Binary file preview**: images rendered inline, other binary files show metadata only.
+
+#### W8: iOS Work Tab
+
+High-parity SwiftUI implementation of the desktop Work page, including agent activity visibility.
+
+- **Terminal session list**: all active and recent terminal sessions from the brain, showing session name, lane, status (running/exited), last output timestamp.
+- **Read-only terminal output**: tap a session to view its output streamed in real-time from the brain via the terminal stream sub-protocol. Monospace rendering with ANSI color support.
+- **Session metadata**: start time, duration, exit code (if finished), associated lane.
+- **Quick-launch actions**: predefined commands (e.g., "npm test", "npm run build") that route to the brain for execution. Brain spawns the process, output streams back to the phone.
+- **Session search**: search across session output (search request routes to brain).
+- **Pull-to-refresh**: refreshes session list and reconnects any dropped terminal streams.
+- **Agent activity feed**: when agents are running on the brain, the Work tab shows a persistent activity section at the top of the session list. Each active agent shows: agent name, current action (tool call name or terminal command), lane, elapsed time, and a pulsing activity dot. Tapping an active agent opens its terminal session output. This gives the user immediate proof that work is happening without navigating to a separate tab.
+- **Tool call result cards**: when an agent session includes tool calls (file writes, git operations, test runs), these appear as inline cards in the terminal stream — collapsed by default (tool name + pass/fail badge), expandable to show full output. This mirrors the desktop chat experience where tool call results are visible inline.
+- **Computer use artifact previews**: if an agent session produces computer use artifacts (screenshots, screen recordings), thumbnail previews appear inline in the session view. Tap to open the proof panel (full-resolution image or video player). Artifacts are fetched on-demand from the brain via the file access sub-protocol.
+
+#### W9: iOS PRs Tab
+
+High-parity SwiftUI implementation of the desktop PRs page.
+
+- **PR list**: all open PRs with title, branch, status (open/merged/closed), CI check status (pass/fail/pending), review status, merge readiness indicator.
+- **PR detail view**: full PR info — title, description, branch, base, commits, file changes, CI checks, reviewers.
+- **Diff viewer**: per-file syntax-highlighted unified diffs. Swipe between changed files. Line count badges.
+- **PR actions** (route to brain):
+  - Create PR: select lane → title + description input → brain runs `gh pr create`.
+  - Merge: merge button with strategy selector (merge/squash/rebase) → brain executes.
+  - Close: close PR with optional comment.
+  - Request review: add reviewers.
+- **Stacked PR visualization**: if lanes use stacking, show the stack order and per-PR status.
+- **CI check details**: tap a check to see its log output (fetched from brain/GitHub).
+- **Pull-to-refresh**: refreshes PR state from GitHub via brain.
+
+#### W10: Command Routing & Connection Status
+
+**Command routing:**
+- When any non-brain device issues a command:
+  - **State-only operations** (create lane metadata, update settings): write locally, cr-sqlite syncs to brain and all peers.
+  - **Execution operations** (create worktree, run terminal command, create PR, merge PR, git operations): send command over WebSocket to brain. Brain executes, state changes sync back via cr-sqlite.
 - Command acknowledgment: brain confirms receipt and execution start.
-- Command result: brain executes → state changes sync back via cr-sqlite.
+- Command failure: brain returns error, originating device shows actionable error with retry option.
+- Offline command queue: if device is disconnected, execution commands queue locally and replay on reconnect (in order, with conflict detection).
 
-#### W9: VPS Deployment (Headless Brain)
-- ADE can run headlessly on a VPS as a brain using `xvfb-run electron .` (virtual framebuffer).
-- This wastes ~200MB RAM for the unused renderer but requires ZERO code changes.
-- VPS deployment guide: install Node.js, clone repo, install deps, run with xvfb.
-- VPS brain works identically to a desktop brain — other devices connect via Tailscale or direct IP.
-- Systemd service file for auto-restart on crash.
+**Connection status (desktop):**
+- Always-visible status indicator in the top bar:
+  - **Brain** — "Running locally" with device count badge
+  - **Connected** — "Connected to [device-name]" with sync indicator
+  - **Disconnected** — "Offline — last synced [timestamp]"
+  - **Syncing** — "Syncing..." with progress during large catch-ups
+- Click status bar → opens device management panel with full device list and sync status.
+- Connection quality indicator (latency, sync lag, last changeset timestamp).
 
-#### W10: Lane Portability & Multi-Device Lane UX
+**Connection status (iOS):**
+- Persistent connection indicator in the header across all tabs.
+- Same four states as desktop, adapted for mobile UI.
+- Connection lost → banner with "Reconnecting..." and auto-retry.
 
-Lane portability is the user-facing layer that makes multi-device development feel seamless. It covers how lanes appear on non-brain devices, how code syncs between machines, and how ADE prevents dangerous concurrent writes.
+#### W11: Lane Portability (Desktop-to-Desktop)
 
-##### Core Mechanics
+Lane portability makes multi-device desktop development seamless. This workstream applies to desktop peers — iOS shows lane status but does not create worktrees.
 
-- Lane metadata (name, branch, status, agent assignment) syncs via cr-sqlite — instant, automatic, always.
-- Worktree physical directories are machine-specific — NOT synced. Each machine creates its own from the git branch.
-- Code syncs via git (push from brain → pull on viewer). This is the one step that requires an explicit action (or auto-push policy).
-- Archiving a lane on one device archives it everywhere (metadata sync).
+**Core mechanics:**
+- Lane metadata (name, branch, status, agent assignment) syncs via cr-sqlite — instant and automatic.
+- Worktree physical directories are machine-specific — NOT synced. Each Mac creates its own from the git branch.
+- Code syncs via git (push from brain → pull on viewer). Requires explicit action or auto-push policy.
 
-##### Auto-Push Policy
+**Auto-push policy** (configurable per project in Settings):
+- `on-commit` (default): push after every commit. Code available on other devices within seconds.
+- `on-agent-complete`: push when agent finishes work on the lane. Cleaner mid-work history.
+- `manual`: never auto-push. User pushes explicitly.
+- Push failure: lane flagged as "push pending," retried on next connectivity.
 
-To close the gap between "metadata synced" and "code available," the brain should auto-push lane branches:
+**Lane availability states** (computed per device from cr-sqlite metadata + local git state):
 
-- **On every commit**: When an agent or user commits on a lane, the brain auto-pushes the branch to the remote. This makes code available to other devices within seconds of a commit.
-- **Configurable**: Users can set the auto-push policy per project in Settings:
-  - `on-commit` (default): Push after every commit. Minimal delay, code always available.
-  - `on-agent-complete`: Push when an agent finishes its work on the lane. Avoids mid-work pushes for cleaner history.
-  - `manual`: Never auto-push. User must explicitly push. For users who want full control.
-- **Push failures**: If auto-push fails (network down, remote rejected), the lane is flagged as "push pending" and retried on next connectivity. The viewer device sees "Behind (push pending on [brain-name])" instead of a stale state.
+| State | Meaning | Actions |
+|-------|---------|---------|
+| **Local** | Branch synced, worktree exists, no remote agents running | Full local dev |
+| **Behind** | Brain has commits not yet pulled | "Sync to this Mac" (one-click) |
+| **Live on [device]** | Agent actively running on brain | View remotely, chat with agent, auto-sync when done |
+| **Remote only** | Lane exists on brain, never pulled | "Bring to this machine" (one-click) |
+| **Push pending** | Brain has unpushed commits | Wait or request push |
+| **Offline** | Brain unreachable, code state unknown | View cached metadata, work on local lanes |
 
-##### Lane Availability States
+**One-click lane sync** ("Sync to this Mac"):
+1. If brain has unpushed commits → command brain to `git push`
+2. Local device runs `git fetch origin`
+3. Create local worktree from branch ref
+4. Lane transitions to Local — full dev enabled
 
-Each lane has a per-device **availability state** computed from cr-sqlite metadata + local git state. This is the primary signal shown to the user on non-brain devices:
+**Agent-running guard:**
+- When an agent is active on a lane on the brain, local worktree creation is blocked on other Macs.
+- "Auto-sync when done" registers intent: agent completes → auto-push → auto-fetch → worktree created → system notification.
+- Reverse guard: warns if launching a remote agent on a locally-checked-out lane (prevents divergent changes).
 
-| State | Icon | Meaning | User Actions |
-|-------|------|---------|--------------|
-| **Local** | ✓ | Branch synced, worktree exists locally, no remote agents running | Full local dev — edit, commit, push, run processes |
-| **Behind** | ⚠ | Brain has commits not yet pulled to this device, agents are done | "Sync to this Mac" (one-click) |
-| **Live on [device]** | 🔵 | Agent actively running on this lane on the brain | View remotely, chat with agent, wait, or auto-sync when done |
-| **Remote only** | ☁ | Lane exists on brain, never been pulled to this device | "Bring to this machine" (one-click) |
-| **Push pending** | ⏳ | Brain has commits but hasn't pushed yet (auto-push failed or policy is manual) | "Request push from [brain-name]" or wait |
-| **Offline** | ○ | Lane metadata synced but brain is unreachable, code state unknown | View cached metadata only, work on already-local lanes |
+**Device sync summary:**
+- Shown as a dismissible overlay when a non-brain Mac connects to the brain.
+- Shows per-lane availability state, agent progress, and sync actions.
+- "Sync all ready lanes" bulk-syncs all non-live lanes.
 
-State derivation logic:
-```typescript
-function computeLaneAvailability(lane: LaneSummary, device: Device): LaneAvailability {
-  const hasLocalWorktree = localWorktreeExists(lane.worktreePath);
-  const brainReachable = isBrainConnected();
-  const agentRunning = lane.activeAgentRunId != null;
-  const localBranchExists = gitBranchExistsLocally(lane.branchRef);
-  const localBehind = localBranchExists && isLocalBehindRemote(lane.branchRef);
-  const pushPending = lane.pushPendingOnDevice != null;
+#### W12: Validation
 
-  if (!brainReachable) return 'offline';
-  if (agentRunning) return 'live';
-  if (pushPending) return 'push-pending';
-  if (hasLocalWorktree && !localBehind) return 'local';
-  if (localBranchExists && localBehind) return 'behind';
-  return 'remote-only';
-}
-```
+**cr-sqlite:**
+- Mark all tables as CRRs, verify zero SQL breakage across all services.
+- Generate changesets, apply to second database, verify identical state.
+- Concurrent writes from two peers, verify CRDT merge correctness.
+- FTS rebuild after remote changeset application.
 
-##### Device Sync Summary (On Connection)
+**WebSocket sync:**
+- Connection, authentication, changeset exchange.
+- Reconnection with version-based catch-up.
+- Compression, heartbeat, connection timeout.
+- Multiple peers connected simultaneously.
+- File access sub-protocol: request file, receive content, verify integrity.
+- Terminal stream sub-protocol: subscribe, receive output, handle disconnection.
 
-When a non-brain device connects to the brain (e.g., opening laptop at a coffee shop), ADE shows a **Device Sync Summary** overlay before dumping the user into the lanes list. This gives a full picture in one glance:
+**iOS app — Lanes tab:**
+- Lane list displays all lanes with correct status indicators.
+- Create lane from phone → brain creates worktree → lane appears on phone.
+- Archive lane from phone → reflected on desktop.
+- Lane availability states display correctly for non-brain connections.
 
-```
-+------------------------------------------------------------------+
-| CONNECTED TO MAC STUDIO                          via Tailscale    |
-+------------------------------------------------------------------+
-|                                                                    |
-|  3 lanes on this project                                           |
-|                                                                    |
-|  ● feat-auth         🔵 Agent running (step 4/7)                 |
-|                       View remotely · Auto-sync when done          |
-|                                                                    |
-|  ● bugfix-nav         ⚠ Behind (2 commits)                       |
-|                       [Sync to this Mac]                           |
-|                                                                    |
-|  ● refactor-db        ✓ Already local & up to date                |
-|                                                                    |
-|  ──────────────────────────────────────────────                    |
-|  [Sync all ready lanes]              Skips lanes with active agents |
-+------------------------------------------------------------------+
-```
+**iOS app — Files tab:**
+- File tree loads and navigates without stalling.
+- Syntax highlighting renders correctly for all supported languages.
+- File edit on phone → brain writes → verify change in git.
+- File search returns correct results.
 
-- Appears as a dismissible overlay on first connection per session (not on every reconnect).
-- Also accessible on-demand from the status bar → "Device sync status."
-- "Sync all ready lanes" bulk-syncs all lanes in `behind` or `remote-only` state where no agent is running.
-- Lanes in `live` state show the agent's current progress and offer "Auto-sync when done."
+**iOS app — Work tab:**
+- Terminal session list matches desktop session list.
+- Terminal output streams in real-time from brain.
+- Quick-launch command executes on brain and output appears on phone.
+- Agent activity feed shows active agents with correct status, tool name, and elapsed time.
+- Tool call result cards render inline and expand/collapse correctly.
+- Computer use artifact thumbnails appear inline; tapping opens proof panel with full-resolution media.
+- Media files (screenshots, videos) load correctly via file access sub-protocol from brain.
 
-##### One-Click Lane Sync Flow
+**iOS app — PRs tab:**
+- PR list matches GitHub state.
+- PR creation from phone → verify PR exists on GitHub.
+- Merge from phone → verify merge on GitHub.
+- Diff viewer renders correctly for various file types.
 
-"Sync to this Mac" (or "Bring to this machine") is one button that orchestrates:
+**iOS app — general:**
+- Pairing flow: QR scan → token storage → auto-reconnect.
+- Offline: view cached state, queue commands, reconnect and replay.
+- Background refresh keeps state fresh.
+- Design audit: all screens use SF Pro, SF Symbols, project purple accent, native SwiftUI components. No web views, no custom fonts, no generic AI aesthetics.
 
-1. **If brain has unpushed commits**: Send command to brain → brain runs `git push` on the lane branch.
-2. **Local device**: `git fetch origin` → fetch the updated branch.
-3. **Create local worktree**: `git worktree add .ade/worktrees/<slug> <branch-ref>`.
-4. **Lane state transitions to Local** — full local dev enabled.
+**Desktop-to-desktop:**
+- Lane availability state computation for all 6 states.
+- Auto-push policy: on-commit, on-agent-complete, manual, failure retry.
+- One-click sync flow end-to-end.
+- Agent-running guard and reverse guard.
+- Device sync summary overlay.
+- Brain transfer: stop agents → sync → transfer → new brain starts.
 
-Progress is shown inline:
-```
-● bugfix-nav         Syncing...
-  Pushing from Mac Studio... → Fetching... → Creating worktree... → Done ✓
-```
+**Cross-device:**
+- Action on phone → verify on desktop, and vice versa.
+- Action on Mac A → verify on Mac B (both non-brain).
+- Brain dies after auto-push → viewer syncs normally.
+- Network drop during sync → retry succeeds.
 
-If any step fails (network error, merge conflict on push), the error is shown inline with a retry option and the lane stays in its previous state.
+---
 
-##### Agent-Running Guard
+### Execution Order
 
-**Core rule: Don't let two machines write to the same branch simultaneously.**
-
-When a lane has `activeAgentRunId != null` (agent running on brain):
-
-- **Local worktree creation is blocked** on other devices. The UI shows:
-  ```
-  ● feat-auth                                 🔵 Live on Mac Studio
-    Agent: Claude Sonnet · Step 4/7 · Running for 12m
-
-    ┌─────────────────────────────┐
-    │  View agent work (remote)   │
-    └─────────────────────────────┘
-
-    ⓘ Local editing disabled while agent is running on Mac Studio.
-      You can view, chat with the agent, or wait for it to finish.
-    When done: [Notify me] [Auto-sync when done]
-  ```
-
-- **"View agent work (remote)"** opens the lane in remote-view mode: file contents fetched via File Access Protocol (W6), agent chat visible via cr-sqlite, terminal output streamed. The user can send messages to the agent from the viewer device.
-
-- **"Auto-sync when done"** registers an intent:
-  1. Brain finishes agent work → auto-pushes the lane branch (per auto-push policy).
-  2. Brain sends a `lane-agent-completed` event to all peers.
-  3. Viewer device receives event → auto-fetches branch → creates local worktree → notifies user.
-  4. If user has moved on (app backgrounded), a system notification surfaces: "feat-auth is ready for local dev."
-
-- **"Notify me"** is lighter — just sends a notification when the agent finishes, user decides what to do.
-
-- **Reverse guard**: If a user is actively working on a lane locally on their laptop and tries to launch an agent on that lane on the brain, ADE warns:
-  ```
-  This lane is checked out on your MacBook Pro.
-  Running an agent on Mac Studio would create divergent changes.
-
-  Options:
-  [Push changes first, then run agent]  [Run agent here instead]  [Cancel]
-  ```
-
-##### Lane Status Badges in Lane List
-
-The lane list on non-brain devices shows availability state prominently:
+#### Dependency Graph
 
 ```
-+------------------------------------------------------------------+
-| LANES                                                              |
-+------------------------------------------------------------------+
-|  ● feat-auth        ↑3  M     🔵 Live on Studio                  |
-|  ● bugfix-nav       ↑1        ⚠ Behind (2 commits)              |
-|  ● refactor-db      ↑2  M     ✓ Local                            |
-|  ● experiment-ui              ☁ Remote only                       |
-+------------------------------------------------------------------+
+W1 (cr-sqlite) ──► W2 (WebSocket sync) ──► W3 (device registry) ──► W4 (pairing & network)
+                                                    │
+                                                    ▼
+                                              W5 (iOS shell) ──┬──► W6 (Lanes tab)
+                                                               ├──► W7 (Files tab)
+                                                               ├──► W8 (Work tab)
+                                                               └──► W9 (PRs tab)
+                                                                        │
+                                              W11 (lane portability) ◄──┤  (W11 needs W2-W4, not iOS)
+                                                                        │
+                                                                        ▼
+                                              W10 (command routing + connection status)
+                                                                        │
+                                                                        ▼
+                                              W12 (validation)
 ```
 
-The availability badge replaces or supplements the existing dirty/ahead/behind indicators when viewing from a non-brain device. On the brain device itself, lanes show the standard indicators (dirty, ahead, behind) since all lanes are inherently "local" on the brain.
+Key dependencies:
+- W1 (cr-sqlite) is the foundational dependency -- everything else builds on it.
+- W2 requires W1 (changesets to transport).
+- W3 requires W2 (device table needs sync, brain status needs WebSocket).
+- W4 requires W3 (pairing writes to device registry).
+- W5 requires W1-W4 proven (iOS app depends on working sync infrastructure).
+- W6-W9 require W5 (each tab builds on the iOS shell) and can run in parallel.
+- W10 requires W6-W9 (command routing surfaces across all tabs).
+- W11 requires W2-W4 (desktop-to-desktop lane sync) but is independent of iOS work.
+- W12 requires all other workstreams (validation covers everything).
 
-##### Failure Scenarios & Recovery
+#### Wave Groupings
 
-| Scenario | What happens | User sees |
-|----------|-------------|-----------|
-| Brain dies with unpushed commits | cr-sqlite metadata survived (synced before death). Code is on brain's disk only. | Lane shows "Push pending on [brain] — device offline." User must recover the brain machine or its disk. |
-| Brain dies after auto-push | Code is on remote. Viewer can sync. | Lane shows "Behind" → user syncs normally. |
-| Network drops during sync | Partial state — branch may be pushed but worktree not created. | "Sync interrupted — [Retry]" with clear status of what completed. |
-| User force-pushes on viewer while agent runs on brain | Guard prevents this — local worktree creation is blocked while agent is running. | If user bypasses guard (e.g., raw git commands), ADE detects diverged state on next sync and shows conflict resolution UI. |
-| Brain auto-push fails (remote rejected) | Lane flagged as push-pending. Brain retries on schedule. | Viewer sees "Push pending on [brain]" with timestamp of last attempt. |
-| Two users on different non-brain devices both try to sync and edit | cr-sqlite handles metadata conflicts. Git handles code conflicts (normal merge/rebase flow). | Standard git conflict resolution if both push to the same branch. ADE's conflict prediction catches this early. |
+**Wave 1: Sync Infrastructure (W1-W4) -- ~3-4 weeks**
 
-#### W11: Validation
-- cr-sqlite integration tests: mark tables, generate changesets, apply changesets, verify merge correctness.
-- WebSocket sync tests: connection, authentication, changeset exchange, reconnection, catch-up.
-- Multi-device simulation: 2-3 devices making concurrent changes, verify eventual consistency.
-- Brain transfer tests: transfer brain designation, verify agents stop/start correctly.
-- File access tests: remote file read/write, directory listing, size limits.
-- Device pairing tests: QR code generation, code entry, token persistence, device removal.
-- VPS deployment tests: headless startup, sync connectivity, agent execution.
-- Offline/reconnection tests: device goes offline, makes changes, reconnects, changes merge correctly.
-- **Lane portability tests** (W10):
-  - Lane availability state computation: verify correct state derivation for all 6 states (local, behind, live, remote-only, push-pending, offline).
-  - Auto-push policy: verify on-commit push, on-agent-complete push, manual mode, and push failure retry.
-  - One-click sync flow: remote push → local fetch → worktree creation end-to-end.
-  - Agent-running guard: verify local worktree creation is blocked while agent is active on brain.
-  - Reverse guard: verify warning when launching remote agent on locally-checked-out lane.
-  - Auto-sync-when-done: register intent → agent completes → auto-push → auto-fetch → worktree created → notification delivered.
-  - Device Sync Summary: verify overlay appears on first connection, shows correct per-lane states, "Sync all ready lanes" skips live lanes.
-  - Failure recovery: brain dies with unpushed commits (metadata survives, code unavailable), network drop during sync (retry works), push rejection (push-pending state shown).
+The foundation. cr-sqlite integration, WebSocket protocol, device registry, and pairing. Nothing else can start until this wave proves the sync architecture works. A **cr-sqlite spike** (load extension, mark tables as CRRs, generate and apply changesets between two databases) should be the very first step -- budget 2-3 days to validate WASM compatibility and merge correctness before committing to the full protocol implementation.
+
+**Wave 2: iOS Shell (W5) -- ~1-2 weeks**
+
+Xcode project setup, SQLite.swift + cr-sqlite native integration, WebSocket client, pairing flow, tab navigation scaffold. This wave produces an iOS app that connects to the brain and syncs state but has no functional tabs yet. W11 (lane portability) can start in parallel here since it only needs desktop sync infrastructure.
+
+**Wave 3: iOS Tabs (W6-W9) in Parallel -- ~3-4 weeks**
+
+Four tabs built in parallel by separate developers or sequentially by one. Each tab follows the same pattern: read from local cr-sqlite database, render SwiftUI views, send commands to brain. W10 (command routing + connection status) is woven in as tabs need it.
+
+**Wave 4: Integration and Validation (W10-W12) -- ~1-2 weeks**
+
+Command routing hardening, connection status UI on both platforms, lane portability finalization, and comprehensive cross-device validation.
+
+#### Rough Effort Estimates
+
+| Wave | Workstreams | Duration | Risk |
+|---|---|---|---|
+| Wave 1 | W1-W4 | 3-4 weeks | High (cr-sqlite WASM compatibility is the main risk) |
+| Wave 2 | W5, W11 (parallel) | 1-2 weeks | Medium (iOS project setup, native cr-sqlite loading) |
+| Wave 3 | W6-W9, W10 | 3-4 weeks | Low (pattern is well-defined, each tab is independent) |
+| Wave 4 | W10 finalization, W12 | 1-2 weeks | Low (validation, polish) |
+
+**Total: 8-10 weeks** (matches phase estimate). Critical path is Wave 1 -- if cr-sqlite works cleanly, the rest is execution.
+
+---
 
 ### Exit criteria
 
-- cr-sqlite extension loads and all existing tables are CRR-marked with zero SQL code changes.
-- Multiple devices sync database state in real-time via WebSocket.
-- Brain designation is explicit and transferable between devices.
-- Devices pair with a one-time code/QR scan and reconnect automatically.
-- Remote file viewing and basic editing work from any connected device.
-- Status bar shows connection state at all times.
-- Commands from viewer devices route to brain and execute correctly.
-- VPS headless deployment works as a brain with xvfb.
-- Lane metadata syncs; worktrees are machine-specific.
-- Tailscale integration works for cross-network device reachability (optional).
-- Device list in Settings shows all paired devices with status.
-- Lane availability states (Local / Behind / Live / Remote only / Push pending / Offline) are computed and displayed correctly on non-brain devices.
-- Auto-push policy works with configurable modes (on-commit, on-agent-complete, manual).
-- One-click "Sync to this Mac" orchestrates remote push + local fetch + worktree creation.
-- Agent-running guard prevents local worktree creation while an agent is writing on the brain.
-- "Auto-sync when done" registers intent and automatically syncs when agent completes.
-- Device Sync Summary overlay appears on first connection and shows per-lane availability.
-- Reverse guard warns when launching a remote agent on a locally-checked-out lane.
+1. cr-sqlite extension loads and all 103 tables are CRR-marked with zero SQL code changes.
+2. All devices (desktop + iOS) sync full database state in real-time via WebSocket.
+3. Brain designation is explicit and transferable between Macs.
+4. Devices pair with a one-time QR/code scan and reconnect automatically (macOS Keychain + iOS Keychain).
+5. Tailscale integration works for cross-network reachability (optional, not required).
+6. VPS headless brain deployment works via `xvfb-run`.
+7. iOS Lanes tab has high parity with desktop: lane list, detail, create, archive, availability states.
+8. iOS Files tab has high parity with desktop: file tree, syntax-highlighted viewer, search, basic editing.
+9. iOS Work tab shows terminal sessions with real-time output streaming from brain.
+10. iOS PRs tab has high parity with desktop: PR list, detail, diff viewer, create, merge, close.
+11. Commands from any non-brain device route to brain and execute correctly.
+12. Offline command queue replays correctly on reconnect.
+13. Connection status visible on both desktop (status bar) and iOS (header).
+14. Device management UI in Settings shows all paired devices with type, role, status, and sync lag.
+15. Lane availability states computed and displayed correctly on non-brain Macs.
+16. Auto-push policy works with all three modes.
+17. One-click lane sync orchestrates push → fetch → worktree creation.
+18. Agent-running guard prevents concurrent writes across devices.
+19. Remote file access works from both desktop viewers and iOS — including media files (images, videos) served via the file access sub-protocol.
+20. Terminal output streaming works from iOS to brain.
+21. Agent activity is visible on iOS Work tab: active agent list, tool call result cards, and process indicators.
+22. Computer use artifacts (screenshots, videos, traces) are viewable on iOS via proof panel — fetched on-demand from brain.
+23. iOS app uses native SwiftUI components, SF Pro typography, project purple (#7C3AED) accent, and SF Symbols throughout — no web-view ports or custom UI frameworks.

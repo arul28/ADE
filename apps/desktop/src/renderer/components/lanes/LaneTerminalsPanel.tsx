@@ -11,7 +11,7 @@ import { TerminalView } from "../terminals/TerminalView";
 import { TilingLayout } from "./TilingLayout";
 import { useNavigate } from "react-router-dom";
 import { sessionIndicatorState } from "../../lib/terminalAttention";
-import { isChatToolType, primarySessionLabel, secondarySessionLabel } from "../../lib/sessions";
+import { isChatToolType, isRunOwnedSession, primarySessionLabel, secondarySessionLabel } from "../../lib/sessions";
 import { listSessionsCached } from "../../lib/sessionListCache";
 import { ToolLogo } from "../terminals/ToolLogos";
 import { persistLaunchTracked, readLaunchTracked } from "../../lib/terminalLaunchPreferences";
@@ -82,12 +82,13 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
       { laneId, limit: 80 },
       options?.force ? { force: true } : undefined,
     );
-    const nonChatRows = rows.filter((row) => !isChatToolType(row.toolType));
-    const chatRows = rows.filter((row) => isChatToolType(row.toolType));
+    const visibleRows = rows.filter((row) => !isRunOwnedSession(row));
+    const nonChatRows = visibleRows.filter((row) => !isChatToolType(row.toolType));
+    const chatRows = visibleRows.filter((row) => isChatToolType(row.toolType));
     setSessions(nonChatRows);
     setChatSessions(chatRows);
-    laneSessionIdsRef.current = new Set(rows.map((row) => row.id));
-    hasPollableSessionsRef.current = rows.some((row) => row.status === "running");
+    laneSessionIdsRef.current = new Set(visibleRows.map((row) => row.id));
+    hasPollableSessionsRef.current = visibleRows.some((row) => row.status === "running");
     if (nonChatRows.length > 0) {
       const runningOnly = nonChatRows.filter((s) => s.status === "running" && Boolean(s.ptyId));
       const visible = viewMode === "tabs" && runningOnly.length ? runningOnly : nonChatRows;

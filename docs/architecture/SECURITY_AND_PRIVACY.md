@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-26
+> Last updated: 2026-03-15
 
 This document describes how ADE protects user data, source code, and development workflows. ADE is a fully local-first desktop application — all code, configuration, and AI processing remain on the user's machine.
 
@@ -268,17 +268,21 @@ The memory architecture introduces scoped knowledge namespaces that agents can r
 
 #### Memory Scoping Rules
 
+The unified memory system uses three scopes (defined as `UnifiedMemoryScope` in `unifiedMemoryService.ts`):
+
 | Scope | Visibility | Write Access | Examples |
 |-------|-----------|-------------|----------|
 | `project` | All runtimes in the project (policy filtered) | Agents with active claims and policy grant | Conventions, architecture decisions, dependency notes |
-| `run` | Runtimes in the current mission/run | Agents in the run | Shared facts, blockers, dependencies |
-| `identity` | Runtimes using the same agent definition/identity | Policy-filtered by identity ownership | Agent-specific preferences and procedures |
-| `runtime-thread` | Current runtime only | Current runtime only | Ephemeral working context and intermediate reasoning |
-| `daily-log` | Time-window continuity readers | Controlled writeback jobs | Briefing snapshots, shift summaries |
+| `agent` | Runtimes using the same agent definition/identity | Policy-filtered by identity ownership (`scope_owner_id` = agent ID) | Agent-specific preferences, procedures, learned patterns |
+| `mission` | Runtimes in the current mission/run | Agents in the run (`scope_owner_id` = run/mission ID) | Shared facts, blockers, dependencies, mission-specific context |
+
+Legacy scope names (`user`, `lane`) are normalized to `agent` and `mission` respectively by `normalizeScope()` in `unifiedMemoryService.ts`.
+
+CTO core memory coexists as a separate always-in-context system outside the three-scope model.
 
 **Cross-project isolation**: Memories are strictly scoped to a single project via `project_id`. There is no mechanism for memories to leak between projects. Each project's `.ade/ade.db` contains its own independent memory store.
 
-**Agent identity scoping**: Memories tagged with an `agent_id` are injected only for runtimes bound to that identity (subject to policy). This prevents one identity's learned biases from affecting unrelated agents.
+**Agent identity scoping**: Memories with scope `agent` are tagged with a `scope_owner_id` matching the agent definition. They are injected only for runtimes bound to that identity (subject to policy). This prevents one identity's learned biases from affecting unrelated agents.
 
 **CTO and worker threads**: CTO conversations (CTO tab) and worker runtime threads are not automatically merged into mission transcripts. Promotion into durable memory requires explicit scoped writeback rules.
 

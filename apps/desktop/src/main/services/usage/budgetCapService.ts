@@ -52,12 +52,10 @@ function normalizeBudgetConfig(input: BudgetCapConfig): BudgetCapConfig {
     ? input.preset
     : undefined;
   const refreshIntervalMin = clampPositive(input.refreshIntervalMin);
-  const nightShiftReservePercent = clampPercent(input.nightShiftReservePercent);
   const alertAtWeeklyPercent = clampPercent(input.alertAtWeeklyPercent);
   return {
     ...(preset ? { preset } : {}),
     ...(refreshIntervalMin != null ? { refreshIntervalMin } : {}),
-    ...(nightShiftReservePercent != null ? { nightShiftReservePercent } : {}),
     ...(alertAtWeeklyPercent != null ? { alertAtWeeklyPercent } : {}),
     ...(Array.isArray(input.budgetCaps)
       ? {
@@ -187,37 +185,6 @@ export function createBudgetCapService({
   }
 
   // ------------------------------------------------------------------
-  // Night Shift reserve check
-  // ------------------------------------------------------------------
-
-  function isNightShiftReserveBlocked(
-    scope: BudgetCapScope,
-    config: BudgetCapConfig
-  ): { blocked: boolean; reason?: string } {
-    const reservePct = config.nightShiftReservePercent;
-    if (!reservePct || reservePct <= 0) return { blocked: false };
-
-    // Only block daytime (non-night-shift) scopes
-    if (scope === "night-shift-run" || scope === "night-shift-global") {
-      return { blocked: false };
-    }
-
-    const maxWeeklyPct = getMaxWindowPercent("weekly");
-    if (maxWeeklyPct == null) return { blocked: false };
-
-    const maxAllowed = 100 - reservePct;
-
-    if (maxWeeklyPct >= maxAllowed) {
-      return {
-        blocked: true,
-        reason: `Night Shift reserve active: ${reservePct}% reserved. Weekly usage at ${maxWeeklyPct.toFixed(1)}%, max allowed for daytime: ${maxAllowed}%`
-      };
-    }
-
-    return { blocked: false };
-  }
-
-  // ------------------------------------------------------------------
   // Cap evaluation
   // ------------------------------------------------------------------
 
@@ -292,7 +259,7 @@ export function createBudgetCapService({
 
   return {
     /**
-     * Check budget before dispatching an automation or Night Shift run.
+     * Check budget before dispatching an automation run.
      */
     checkBudget(
       scope: BudgetCapScope,
@@ -303,18 +270,7 @@ export function createBudgetCapService({
       const weekKey = currentWeekKey();
       const warnings: string[] = [];
 
-      // 1. Night Shift reserve check
-      const nsReserve = isNightShiftReserveBlocked(scope, config);
-      if (nsReserve.blocked) {
-        logger.warn("budgetCap.nightShiftReserveBlocked", { scope, scopeId, reason: nsReserve.reason });
-        return {
-          allowed: false,
-          reason: nsReserve.reason,
-          warnings: [nsReserve.reason!]
-        };
-      }
-
-      // 2. Alert threshold check (soft warning)
+      // 1. Alert threshold check (soft warning)
       const alertAt = config.alertAtWeeklyPercent;
       if (alertAt != null && alertAt > 0) {
         const maxPct = getMaxWindowPercent("weekly") ?? 0;
@@ -325,7 +281,7 @@ export function createBudgetCapService({
         }
       }
 
-      // 3. Preset-based global cap check
+      // 2. Preset-based global cap check
       if (config.preset) {
         const presetLimit = presetToWeeklyPercent(config.preset);
         const maxPct = getMaxWindowPercent("weekly") ?? 0;
@@ -336,7 +292,7 @@ export function createBudgetCapService({
         }
       }
 
-      // 4. Evaluate explicit budget caps
+      // 3. Evaluate explicit budget caps
       const caps = config.budgetCaps ?? [];
       let blocked = false;
       let blockReason: string | undefined;
@@ -395,7 +351,7 @@ export function createBudgetCapService({
     },
 
     /**
-     * Record usage after an automation/Night Shift run completes.
+     * Record usage after an automation run completes.
      */
     recordUsage(
       scope: BudgetCapScope,

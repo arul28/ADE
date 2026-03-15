@@ -391,10 +391,20 @@ export function MissionSettingsDialog({
           transition: { duration: open ? 0.15 : 0.1 },
         }}
         className="flex w-[min(96vw,1100px)] max-h-[92vh] flex-col shadow-2xl"
-        style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}
+        style={{
+          background: COLORS.cardBgSolid,
+          border: `1px solid ${COLORS.outlineBorder}`,
+          boxShadow: "0 28px 80px -36px rgba(0,0,0,0.82)",
+        }}
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-5 h-14 shrink-0" style={{ background: COLORS.recessedBg, borderBottom: `1px solid ${COLORS.border}` }}>
+        <div
+          className="flex items-center justify-between px-5 h-14 shrink-0"
+          style={{
+            background: "#120F1A",
+            borderBottom: `1px solid ${COLORS.border}`,
+          }}
+        >
           <div className="flex items-center gap-2">
             <GearSix className="h-4 w-4" style={{ color: COLORS.accent }} />
             <h2 className="text-sm font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>MISSION SETTINGS</h2>

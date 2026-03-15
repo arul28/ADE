@@ -12,7 +12,7 @@ import type {
 
 export type CtoCapabilityMode = "full_mcp" | "fallback";
 
-export type CtoPersonalityPreset = "professional" | "casual" | "minimal" | "custom";
+export type CtoPersonalityPreset = "strategic" | "professional" | "hands_on" | "casual" | "minimal" | "custom";
 
 export type CtoCommunicationStyle = {
   verbosity: "concise" | "detailed" | "adaptive";

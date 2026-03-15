@@ -199,7 +199,12 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
     logger
   });
 
-  const aiIntegrationService = createAiIntegrationService({ db, logger, projectConfigService });
+  const aiIntegrationService = createAiIntegrationService({
+    db,
+    logger,
+    projectConfigService,
+    projectRoot,
+  });
 
   const packService = createPackService({
     db,

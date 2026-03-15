@@ -495,7 +495,7 @@ The Settings tab provides application preferences including AI provider configur
 
 **Phase Profile Management**: Settings includes a dedicated section for managing mission phase profiles. Users can create, edit, and delete named phase profiles that define default phase configurations for different mission types. Each profile specifies which phases are included, their ordering, model selection, budget caps, validation gates, and custom instructions. Phase profiles configured here serve as the global defaults that can be overridden per-mission at launch time.
 
-**Automations**: Automations is a first-class tab and the canonical surface for creating, simulating, running, and reviewing background workflows. Settings provides defaults and integration setup for Automations (models, budgets, connectors, shared templates, Night Shift defaults) but is not the main builder UI.
+**Automations**: Automations is a first-class tab and the canonical surface for creating, simulating, running, and reviewing background workflows. Settings provides defaults and integration setup for Automations (models, budgets, connectors, shared templates), while usage policy is managed centrally in **Settings > Usage**.
 
 See: [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md)
 
@@ -517,7 +517,7 @@ Each feature area is specified in detail in the following documents. These are t
 | 8 | Packs | [features/PACKS.md](features/PACKS.md) | Durable context and history system. Covers immutable checkpoints, append-only pack events, pack versioning with head pointers, materialized current views, all six pack types, the update pipeline, and privacy/retention controls. |
 | 9 | Workspace Graph | [features/WORKSPACE_GRAPH.md](features/WORKSPACE_GRAPH.md) | Infinite-canvas topology overview. Covers primary/worktree/attached node rendering, stack and risk edge overlays, merge simulation interactions, and snapshot-based status overlays. |
 | 10 | Missions | [features/MISSIONS.md](features/MISSIONS.md) | AI orchestrator control center for mission intake and execution. Covers mission lifecycle, orchestrator run management, step DAG visualization, intervention queues, artifacts (including PR links), timeline events, and per-task-type model routing. |
-| 11 | Automations | [features/AUTOMATIONS.md](features/AUTOMATIONS.md) | First-class background execution surface. Covers trigger families (local + GitHub/webhook), executor routing (automation bots, employees, CTO-route, Night Shift), templates, tool palettes, automation-scoped memory, simulation, history, and overnight review. |
+| 11 | Automations | [features/AUTOMATIONS.md](features/AUTOMATIONS.md) | First-class background execution surface. Covers trigger families (time-based + action-based), execution routing (`agent-session`, `mission`, `built-in-task`), templates, tool palettes, automation-scoped memory, simulation, and history with shared budget policy in Usage. |
 | 12 | Onboarding and Settings | [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md) | Repository initialization and user preferences. Covers onboarding flow (repo selection, `.ade/` setup, CLI tool detection), trust surfaces, operation previews, escape hatches, AI provider and per-task-type routing configuration, automation defaults/integration setup, and theme/keybinding settings. |
 | 13 | CTO | [features/CTO.md](features/CTO.md) | Always-on project-aware agent. Covers the CTO's persistent chat interface, three-tier memory model with project-scoped core memory, MCP tool access for mission creation and lane management, external request routing, and relationship to the mission orchestrator. Persistent employees can own and execute automations created in the Automations tab. |
 | 14 | Memory | [features/MEMORY.md](features/MEMORY.md) | Unified memory system. Covers the 3-scope model (project/agent/mission), consolidated Settings > Memory UI surface, quality controls on writes, agent prompt guidance, garbage-source filtering, CTO core memory coexistence, and the memory consolidation lifecycle. |
@@ -584,7 +584,7 @@ Mission workers are the agents that the orchestrator spawns to execute tasks wit
 
 **Worker Autonomy**: Workers operate within their assigned lane under the permission mode appropriate to their phase and provider. Planning/read-only workers should stay non-mutating; implementation workers can read/write/run tools when their provider/runtime mode allows it. ADE separately scopes its own coordinator/MCP tools by role. If a worker encounters a situation it cannot resolve, it escalates to the orchestrator (not directly to the human).
 
-**Background Automations**: Autonomous background behaviors live in the dedicated Automations tab. Rules can be created there, simulated before activation, assigned to automation bots or persistent employees, routed through the CTO, or queued for Night Shift. Settings only holds defaults and integration credentials.
+**Background Automations**: Autonomous background behaviors live in the dedicated Automations tab. Rules can be created there, simulated before activation, and configured with `agent-session`, `mission`, or `built-in-task` execution. Triggering can be time-based or action-based, and shared budget policy is controlled in **Settings > Usage**. Settings only holds defaults and integration credentials.
 
 ### 10.3 Workspace Graph
 
@@ -675,7 +675,7 @@ Candidate entries are promoted by relevance/confidence and policy. The Context B
 
 **Cost controls**: Execution is tied to session boundaries, not keystrokes. Context pack exports are bounded by default. The orchestrator context profile excludes narrative text unless explicitly opted in. Content-hash caching avoids redundant work.
 
-**Usage tracking**: Every AI call is logged to a local `ai_usage_log` table with feature type, provider, model, token counts, duration, and success status. The Settings tab surfaces this data as a usage dashboard with per-feature progress bars, subscription status, and configurable budget controls. Budget enforcement supports both per-phase caps in missions and per-automation caps in the Automations system (Night Shift, scheduled tasks, etc.).
+**Usage tracking**: Every AI call is logged to a local `ai_usage_log` table with feature type, provider, model, token counts, duration, and success status. The Settings tab surfaces this data as a usage dashboard with per-feature progress bars, subscription status, and configurable budget controls. Budget policy is shared across Missions and Automations and is configured in **Settings > Usage**.
 
 ### 10.6 Compute Backends
 
@@ -742,9 +742,8 @@ All of these surfaces now follow the same quiet-first UI rule: open the cheap sh
 - Orchestrator intelligence that scales from simple to complex missions
 
 **Background Automations** (`/automations`, fire-and-forget or employee-backed):
-- Automation rules: Builder-defined flows with local triggers plus GitHub and webhook triggers
-- Executor routing: disposable automation bots, persistent employees, CTO-route, or Night Shift queue
-- Night Shift mode: Scheduled unattended execution with morning digest
+- Automation rules: Builder-defined flows with time-based and action-based triggers
+- Execution routing: `agent-session`, `mission`, or `built-in-task`
 - Templates and tool palettes: reusable recipes with explicit allowed tools and verification requirements
 
 Background automations are created and operated from the Automations tab. Each automation defines a trigger, executor, tool palette, memory mode, and guardrails (budget caps, stop conditions, verification rules). Settings supplies shared defaults and connector setup.
@@ -762,8 +761,8 @@ Current baseline:
 - Machine-specific credentials remain local-only, either in ignored files or encrypted local storage.
 
 Roadmap direction:
-- Phase 6 adds cr-sqlite state sync, device registry, and the brain/viewer model.
-- Phase 7 builds remote/mobile control on top of that sync foundation.
+- Phase 6 adds cr-sqlite state sync, device registry, brain/viewer model, iOS companion app, and push notifications.
+- Phase 7 adds mobile polish, VPS provider integrations, and advanced offline resilience.
 
 ### 10.12 External Agent Bridge
 
@@ -805,7 +804,7 @@ This section clarifies the runtime characteristics of ADE's AI agents (mission w
 
 This reconstruction pattern means the CTO and mission infrastructure are file-backed under `.ade/` and compatible with the cross-machine portability model (Section 10.11). ADE ships a tracked `.ade/.gitignore` that selectively ignores machine-local runtime state (databases, caches, worktrees, transcripts, secrets) while allowing CTO/worker identity, memory artifacts, history, and shared config to be committed alongside the repo.
 
-**Background Automations**: Scheduled and event-driven automations are event-driven. A rule defines its trigger, executor target, tool palette, memory policy, and output contract; when the trigger fires, ADE dispatches either a disposable automation bot, a persistent employee, a CTO-routed worker, or a Night Shift queue item. Between activations, automations consume no compute resources.
+**Background Automations**: Scheduled and action-driven automations are triggered by rule execution. A rule defines trigger, execution surface, tool palette, memory policy, and output contract; when a trigger fires, ADE dispatches an `agent-session`, `mission`, or `built-in-task`. Between activations, automations consume no compute resources.
 
 **Context Window Strategy**: ADE optimizes context windows for both the CTO and workers using several techniques inspired by the ZOE/CODEX separation pattern:
 - **Business/code separation**: Business context (mission intent, acceptance criteria, architectural constraints) is structured as a compact preamble. Code context (diffs, file contents, test output) is streamed on-demand via MCP tools rather than pre-loaded.

@@ -113,6 +113,7 @@ export function CtoPage() {
   const [workerError, setWorkerError] = useState<string | null>(null);
   const ctoHistoryLoadedRef = useRef(false);
   const lastBudgetLoadAtRef = useRef(0);
+  const ctoDisplayName = "CTO";
 
   const laneId = useMemo(() => {
     if (selectedLaneId && lanes.some((lane) => lane.id === selectedLaneId)) return selectedLaneId;
@@ -336,11 +337,23 @@ export function CtoPage() {
 
   /* ── Callbacks ── */
 
+  const refreshPersistentCtoSession = useCallback(async () => {
+    if (!window.ade?.cto || !laneId || showOnboarding || needsOnboarding) {
+      return null;
+    }
+    const next = await window.ade.cto.ensureSession({ laneId, permissionMode: "full-auto" });
+    if (!selectedAgentId) {
+      setSession(next);
+    }
+    return next;
+  }, [laneId, needsOnboarding, selectedAgentId, showOnboarding]);
+
   const handleSaveCoreMemory = useCallback(async (patch: Record<string, unknown>) => {
     if (!window.ade?.cto) throw new Error("CTO bridge unavailable.");
     const snapshot = await window.ade.cto.updateCoreMemory({ patch });
     setCoreMemory(snapshot.coreMemory);
-  }, []);
+    await refreshPersistentCtoSession();
+  }, [refreshPersistentCtoSession]);
 
   const handleSaveWorkerCoreMemory = useCallback(async (patch: Record<string, unknown>) => {
     if (!window.ade?.cto || !selectedAgentId) throw new Error("Select a worker first.");
@@ -352,7 +365,8 @@ export function CtoPage() {
     if (!window.ade?.cto) throw new Error("CTO bridge unavailable.");
     const snapshot = await window.ade.cto.updateIdentity({ patch });
     setCtoIdentity(snapshot.identity);
-  }, []);
+    await refreshPersistentCtoSession();
+  }, [refreshPersistentCtoSession]);
 
 
   const saveWorker = useCallback(async () => {
@@ -556,7 +570,7 @@ export function CtoPage() {
     mode: "standard",
     profile: "persistent_identity",
     modelSwitchPolicy: selectedWorker ? "same-family-after-launch" : "any-after-launch",
-    title: selectedWorker ? selectedWorker.name : (ctoIdentity?.name?.trim() || "CTO"),
+    title: selectedWorker ? selectedWorker.name : ctoDisplayName,
     subtitle: selectedWorker
       ? "Persistent employee session with durable memory and same-family model switching."
       : summarizeText(
@@ -566,7 +580,9 @@ export function CtoPage() {
     accentColor: selectedWorker ? "#60A5FA" : "#22D3EE",
     chips: [],
     showMcpStatus: false,
-  }), [coreMemory?.projectSummary, ctoIdentity?.name, selectedWorker]);
+    assistantLabel: selectedWorker ? selectedWorker.name : ctoDisplayName,
+    messagePlaceholder: selectedWorker ? `Message ${selectedWorker.name}...` : "Message the CTO...",
+  }), [coreMemory?.projectSummary, ctoDisplayName, selectedWorker]);
 
   const sidebarCtoModelInfo = useMemo(
     () => (
@@ -611,6 +627,17 @@ export function CtoPage() {
       : summarizeList(coreMemory?.activeFocus, "No focus saved yet")
   ), [coreMemory?.activeFocus, selectedWorker]);
 
+  const pageTitle = selectedWorker ? selectedWorker.name : ctoDisplayName;
+  const pageSubtitle = selectedWorker
+    ? summarizeText(
+        selectedWorker.title || summarizeList(selectedWorker.capabilities, ""),
+        "Persistent worker session with durable memory and delegated execution context.",
+      )
+    : summarizeText(
+        coreMemory?.projectSummary,
+        "Your persistent project CTO with layered memory, durable context, and full ADE reach.",
+      );
+
   return (
     <div className={shellBodyCls}>
       {/* Onboarding wizard overlay */}
@@ -645,85 +672,173 @@ export function CtoPage() {
         )}
 
         <div className="px-4 py-3">
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ background: "rgba(167, 139, 250, 0.12)", border: "1px solid rgba(167, 139, 250, 0.2)" }}>
-                <span className="text-sm font-bold" style={{ color: "#A78BFA" }}>
-                  {(selectedWorker ? selectedWorker.name : (ctoIdentity?.name?.trim() || "CTO")).charAt(0).toUpperCase()}
-                </span>
-              </div>
-              <div className="font-sans text-sm font-semibold tracking-[-0.01em] text-fg truncate">
-                {selectedWorker ? selectedWorker.name : (ctoIdentity?.name?.trim() || "CTO")}
+          <div
+            className={cn(cardCls, "overflow-hidden p-0")}
+            style={{
+              background: "radial-gradient(circle at top left, rgba(56,189,248,0.14), transparent 28%), radial-gradient(circle at top right, rgba(251,191,36,0.1), transparent 24%), linear-gradient(180deg, rgba(16,22,32,0.94), rgba(9,13,19,0.96))",
+            }}
+          >
+            <div className="border-b border-white/[0.06] px-5 py-5">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="min-w-0 max-w-[48rem]">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-fg/38">
+                    {selectedWorker ? "Worker session" : "CTO control room"}
+                  </div>
+                  <div className="mt-2 flex items-center gap-3 min-w-0">
+                    <div
+                      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border"
+                      style={{
+                        background: selectedWorker ? "rgba(96, 165, 250, 0.12)" : "rgba(56, 189, 248, 0.12)",
+                        borderColor: selectedWorker ? "rgba(96, 165, 250, 0.22)" : "rgba(56, 189, 248, 0.22)",
+                      }}
+                    >
+                      <span className="text-base font-bold" style={{ color: selectedWorker ? "#60A5FA" : "#38BDF8" }}>
+                        {pageTitle.charAt(0).toUpperCase()}
+                      </span>
+                    </div>
+                    <div className="min-w-0">
+                      <div className="truncate text-[1.1rem] font-semibold tracking-[-0.03em] text-fg">
+                        {pageTitle}
+                      </div>
+                      <div className="mt-1 max-w-[44rem] text-[12px] leading-6 text-muted-fg/42">
+                        {pageSubtitle}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  {[
+                    { label: bridgeSummary, tone: openclawStatus?.state === "connected" ? "#34D399" : "#38BDF8" },
+                    { label: currentBrainSummary || "Brain not set", tone: selectedWorker ? "#60A5FA" : "#38BDF8" },
+                  ].map((item) => (
+                    <div
+                      key={item.label}
+                      className="rounded-full border px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em]"
+                      style={{
+                        color: item.tone,
+                        borderColor: `${item.tone}22`,
+                        background: `${item.tone}12`,
+                      }}
+                    >
+                      {item.label}
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
 
-            {/* model selector lives in AgentChatPane */}
-          </div>
-        </div>
+            <div className="grid gap-3 px-5 py-4 md:grid-cols-2 xl:grid-cols-4">
+              {[
+                {
+                  label: selectedWorker ? "Role" : "Focus",
+                  value: focusSummary,
+                },
+                {
+                  label: "Memory mode",
+                  value: selectedWorker ? "Worker continuity + revisions" : "Identity, brief, current context, durable memory",
+                },
+                {
+                  label: "Team",
+                  value: `${teamStats.active} active / ${teamStats.total} total workers`,
+                },
+                {
+                  label: "Continuity",
+                  value: `${sessionLogs.length} recent CTO sessions`,
+                },
+              ].map((item) => (
+                <div key={item.label} className="rounded-2xl border border-white/[0.06] bg-black/20 px-3.5 py-3">
+                  <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-fg/34">
+                    {item.label}
+                  </div>
+                  <div className="mt-1.5 text-[12px] leading-5 text-fg/76">
+                    {item.value}
+                  </div>
+                </div>
+              ))}
+            </div>
 
-        {/* Tab bar */}
-        <div className={cn(shellTabBarCls, "px-4 py-2")} style={{ minHeight: 40 }}>
-          {TABS.map(({ id, label, icon: Icon, color }) => {
-            const active = activeTab === id;
-            return (
-              <button
-                key={id}
-                type="button"
-                onClick={() => setActiveTab(id)}
-                className={cn(
-                  "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all duration-200",
-                  active ? "text-fg" : "text-muted-fg/40 hover:text-muted-fg/65",
-                )}
-                style={active ? { background: `${color}10`, border: `1px solid ${color}18` } : { border: "1px solid transparent" }}
-              >
-                <Icon size={13} weight={active ? "fill" : "regular"} style={active ? { color } : undefined} />
-                {label}
-              </button>
-            );
-          })}
+            <div className="px-5 pb-5">
+              <div className={cn(shellTabBarCls, "w-full flex-wrap")}>
+                {TABS.map(({ id, label, icon: Icon, color }) => {
+                  const active = activeTab === id;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => setActiveTab(id)}
+                      className={cn(
+                        "flex items-center gap-2 rounded-[14px] px-3.5 py-2 text-xs font-semibold transition-all duration-200",
+                        active ? "text-fg" : "text-muted-fg/44 hover:text-muted-fg/68",
+                      )}
+                      style={active
+                        ? {
+                            background: `${color}12`,
+                            border: `1px solid ${color}24`,
+                            boxShadow: "0 12px 26px rgba(0,0,0,0.18)",
+                          }
+                        : { border: "1px solid transparent" }}
+                    >
+                      <Icon size={13} weight={active ? "fill" : "regular"} style={active ? { color } : undefined} />
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Tab content */}
         <div className="flex-1 min-h-0 overflow-hidden">
           {/* Chat tab */}
-          {activeTab === "chat" && (
-            <div className="flex h-full min-h-0 flex-col p-4 pt-0">
-              {loading && <div className="px-1 py-2 font-mono text-[10px] text-muted-fg/55" data-testid="cto-loading">Connecting persistent session...</div>}
-              {error && <div className="px-1 py-2 font-mono text-[10px] text-error" data-testid="cto-error">{error}</div>}
-              {!laneId && (
-                <div className="px-1 py-2 font-mono text-[10px] text-muted-fg/55" data-testid="cto-no-lane">
-                  Create a lane to start the persistent CTO session.
-                </div>
-              )}
-
-              <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-[rgba(167,139,250,0.08)] bg-[rgba(24,20,35,0.3)]">
-                {showOnboarding || needsOnboarding ? (
-                  <div className="flex h-full items-center justify-center p-6 text-center">
-                    <div className="max-w-xs space-y-3">
-                      <div className="text-sm font-semibold text-fg">Complete setup to start chatting</div>
-                      <Button variant="primary" onClick={() => setShowOnboarding(true)}>
-                        Continue setup
-                      </Button>
-                    </div>
-                  </div>
-                ) : !session ? (
-                  <div className="flex h-full items-center justify-center p-6 text-center">
-                    <div className="space-y-2">
-                      <div className="text-sm font-medium text-fg/60">Connecting...</div>
-                    </div>
-                  </div>
-                ) : (
-                  <AgentChatPane
-                    laneId={laneId}
-                    lockSessionId={session?.id ?? null}
-                    initialSessionSummary={lockedSessionSummary}
-                    hideSessionTabs
-                    presentation={persistentIdentityPresentation}
-                  />
-                )}
+          <div className={cn("h-full min-h-0 flex-col p-4 pt-0", activeTab === "chat" ? "flex" : "hidden")}>
+            {loading && <div className="px-1 py-2 font-mono text-[10px] text-muted-fg/55" data-testid="cto-loading">Connecting persistent session...</div>}
+            {error && <div className="px-1 py-2 font-mono text-[10px] text-error" data-testid="cto-error">{error}</div>}
+            {!laneId && (
+              <div className="px-1 py-2 font-mono text-[10px] text-muted-fg/55" data-testid="cto-no-lane">
+                Create a lane to start the persistent CTO session.
               </div>
+            )}
+
+            <div
+              className="min-h-0 flex-1 overflow-hidden rounded-[24px] border border-white/[0.07]"
+              style={{
+                background: "radial-gradient(circle at top left, rgba(56,189,248,0.08), transparent 26%), linear-gradient(180deg, rgba(13,18,27,0.88), rgba(9,12,18,0.94))",
+              }}
+            >
+              {showOnboarding || needsOnboarding ? (
+                <div className="flex h-full items-center justify-center p-6 text-center">
+                  <div className="max-w-sm space-y-3">
+                    <div className="text-sm font-semibold text-fg">Complete setup to unlock the CTO session</div>
+                    <div className="text-[12px] leading-6 text-muted-fg/42">
+                      ADE needs the identity and long-term brief before it can keep the CTO stable across compaction and chat resumes.
+                    </div>
+                    <Button variant="primary" onClick={() => setShowOnboarding(true)}>
+                      Continue setup
+                    </Button>
+                  </div>
+                </div>
+              ) : !session ? (
+                <div className="flex h-full items-center justify-center p-6 text-center">
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium text-fg/70">Connecting the persistent session…</div>
+                    <div className="text-[12px] leading-6 text-muted-fg/40">
+                      Rehydrating identity, memory, and recent continuity.
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <AgentChatPane
+                  laneId={laneId}
+                  lockSessionId={session?.id ?? null}
+                  initialSessionSummary={lockedSessionSummary}
+                  hideSessionTabs
+                  presentation={persistentIdentityPresentation}
+                />
+              )}
             </div>
-          )}
+          </div>
 
           {/* Team tab */}
           {activeTab === "team" && (
@@ -755,8 +870,8 @@ export function CtoPage() {
                 </div>
               ) : agents.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full p-8">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-xl mb-4" style={{ background: "rgba(167, 139, 250, 0.1)", border: "1px solid rgba(167, 139, 250, 0.15)" }}>
-                    <UsersThree size={22} weight="duotone" style={{ color: "#A78BFA" }} />
+                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl mb-4" style={{ background: "rgba(56, 189, 248, 0.12)", border: "1px solid rgba(56, 189, 248, 0.16)" }}>
+                    <UsersThree size={22} weight="duotone" style={{ color: "#38BDF8" }} />
                   </div>
                   <div className="font-sans text-base font-semibold text-fg">No workers yet</div>
                   <div className="text-xs text-muted-fg/45 mt-1.5 text-center max-w-[36ch]">

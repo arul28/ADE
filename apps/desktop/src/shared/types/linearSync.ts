@@ -443,7 +443,7 @@ export type LinearAutoDispatchRuleMatch = {
   owner?: string[];
 };
 
-export type LinearAutoDispatchAction = "auto" | "escalate" | "queue-night-shift";
+export type LinearAutoDispatchAction = "auto" | "escalate";
 
 export type LinearAutoDispatchRule = {
   id?: string;
@@ -531,6 +531,8 @@ export type LinearConnectionStatus = {
   connected: boolean;
   viewerId: string | null;
   viewerName: string | null;
+  projectCount?: number;
+  projectPreview?: string[];
   checkedAt: string | null;
   message: string | null;
   authMode?: "manual" | "oauth" | null;

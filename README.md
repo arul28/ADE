@@ -24,6 +24,12 @@
   <img src="https://img.shields.io/badge/MCP-built--in-6f42c1" alt="MCP built in" />
 </p>
 
+<p align="center">
+  <a href="https://docs.ade-app.dev"><strong>Documentation</strong></a> &nbsp;|&nbsp;
+  <a href="https://www.ade-app.dev"><strong>Website</strong></a> &nbsp;|&nbsp;
+  <a href="https://github.com/arul28/ADE/releases"><strong>Download</strong></a>
+</p>
+
 ---
 
 ADE is a desktop app for AI-native software development. It combines agent orchestration, persistent memory, multi-provider AI support, and deep git integration into a single local-first environment.
@@ -43,6 +49,9 @@ ADE is built for people who want agents to operate inside a real development wor
 - **PR workflows** -- Stacking, conflict simulation, and queue landing
 - **Context packs** -- Structured, bounded context delivery for agents
 - **ADE MCP server** -- Shared services for both desktop and headless MCP flows
+- **Memory system** -- Persistent knowledge across sessions with semantic search
+- **Linear integration** -- Workflow automation triggered by Linear issues
+- **Multi-repo aware workflows** -- Project-local state under `.ade/` plus machine-local secrets, cache, and artifacts
 
 ## Stack
 
@@ -76,17 +85,6 @@ xattr -dr com.apple.quarantine /Applications/ADE.app
 That removes the quarantine attribute Apple adds to downloaded apps and allows ADE to launch locally. Only do this for builds you downloaded from the ADE releases page and trust.
 
 ADE auto-updates. When a new version is available, an update button appears in the header bar -- click it to restart and apply.
-
-## Features
-
-- **Memory system** -- Persistent knowledge across sessions with semantic search
-- **Linear integration** -- Workflow automation triggered by Linear issues
-- **Multi-repo aware workflows** -- Project-local state under `.ade/` plus machine-local secrets, cache, and artifacts
-- **Release-ready desktop packaging** -- Auto-update support and GitHub release publishing for macOS
-
-## Documentation
-
-[ADE Docs](https://ade-ac1c6011.mintlify.app)
 
 ## Contributing
 

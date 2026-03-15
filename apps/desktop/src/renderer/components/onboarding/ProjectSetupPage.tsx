@@ -1,16 +1,18 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { CheckCircle, Circle, GithubLogo, Plugs, RocketLaunch } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
+import type { ContextStatus } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { AiSettingsSection } from "../settings/AiSettingsSection";
 import { GitHubSection } from "../settings/GitHubSection";
 import { LinearSection } from "../settings/LinearSection";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
+import { publishOnboardingStatusUpdated } from "../../lib/onboardingStatusEvents";
 
-type SetupStep = "ai" | "github" | "linear" | "finish";
+type SetupStep = "ai" | "github" | "linear" | "context";
 
-const STEP_ORDER: SetupStep[] = ["ai", "github", "linear", "finish"];
+const STEP_ORDER: SetupStep[] = ["ai", "github", "linear", "context"];
 
 const STEP_META: Record<SetupStep, { title: string; description: string }> = {
   ai: {
@@ -25,9 +27,9 @@ const STEP_META: Record<SetupStep, { title: string; description: string }> = {
     title: "Linear",
     description: "Optional. Connect Linear now if you want issue links and later CTO routing.",
   },
-  finish: {
-    title: "Ready to work",
-    description: "You can reopen this setup at any time from General settings.",
+  context: {
+    title: "Context docs",
+    description: "Kick off context doc generation so ADE can build project memory and better first-session context.",
   },
 };
 
@@ -35,8 +37,12 @@ export function ProjectSetupPage() {
   const navigate = useNavigate();
   const project = useAppStore((s) => s.project);
   const [step, setStep] = useState<SetupStep>("ai");
-  const [status, setStatus] = useState<{ completedAt: string | null; dismissedAt: string | null } | null>(null);
+  const [status, setStatus] = useState<{ completedAt: string | null; dismissedAt: string | null; freshProject?: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [contextStatus, setContextStatus] = useState<ContextStatus | null>(null);
+  const [contextLoading, setContextLoading] = useState(false);
+  const [contextLaunchNotice, setContextLaunchNotice] = useState<string | null>(null);
+  const [contextLaunchError, setContextLaunchError] = useState<string | null>(null);
 
   const stepIndex = STEP_ORDER.indexOf(step);
   const isLastStep = stepIndex === STEP_ORDER.length - 1;
@@ -56,6 +62,23 @@ export function ProjectSetupPage() {
     };
   }, []);
 
+  const reloadContextStatus = React.useCallback(async () => {
+    setContextLoading(true);
+    try {
+      const next = await window.ade.context.getStatus();
+      setContextStatus(next);
+    } catch {
+      setContextStatus(null);
+    } finally {
+      setContextLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (step !== "context") return;
+    void reloadContextStatus();
+  }, [reloadContextStatus, step]);
+
   const progressLabel = useMemo(() => `${stepIndex + 1} / ${STEP_ORDER.length}`, [stepIndex]);
 
   const handleNext = async () => {
@@ -64,13 +87,14 @@ export function ProjectSetupPage() {
       try {
         const next = await window.ade.onboarding.complete();
         setStatus(next);
+        publishOnboardingStatusUpdated(next);
         navigate("/project", { replace: true });
       } finally {
         setBusy(false);
       }
       return;
     }
-    setStep(STEP_ORDER[stepIndex + 1] ?? "finish");
+    setStep(STEP_ORDER[stepIndex + 1] ?? "context");
   };
 
   const handleBack = () => {
@@ -83,14 +107,35 @@ export function ProjectSetupPage() {
     try {
       const next = await window.ade.onboarding.setDismissed(true);
       setStatus(next);
+      publishOnboardingStatusUpdated(next);
       navigate("/project", { replace: true });
     } finally {
       setBusy(false);
     }
   };
 
+  const handleLaunchContextGeneration = async () => {
+    setContextLaunchError(null);
+    setContextLaunchNotice(null);
+    try {
+      const prefs = await window.ade.context.getPrefs();
+      void window.ade.context.generateDocs({
+        provider: prefs.provider ?? "unified",
+        modelId: prefs.modelId ?? undefined,
+        reasoningEffort: prefs.reasoningEffort ?? null,
+        events: prefs.events,
+      }).catch(() => {});
+      setContextLaunchNotice("Context doc generation started. ADE will keep running it in the background while you finish setup.");
+      window.setTimeout(() => {
+        void reloadContextStatus();
+      }, 500);
+    } catch (error) {
+      setContextLaunchError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   const stepContent = (() => {
-    if (step === "ai") return <AiSettingsSection />;
+    if (step === "ai") return <AiSettingsSection forceProviderRefreshOnMount />;
     if (step === "github") return <GitHubSection />;
     if (step === "linear") return <LinearSection />;
     return (
@@ -105,11 +150,11 @@ export function ProjectSetupPage() {
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
             <RocketLaunch size={18} color={COLORS.accent} />
             <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.textPrimary }}>
-              Project setup is {status?.completedAt ? "up to date" : "ready to finish"}
+              Finish by kicking off context docs
             </div>
           </div>
           <div style={{ fontSize: 12, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.7 }}>
-            Providers and defaults live under AI settings. GitHub and Linear stay under Integrations. If you skip Linear now, you can add it later without losing anything.
+            Context docs improve first-message context, memory ingestion, and project-level summaries. You can launch generation now and ADE will continue it while you start working.
           </div>
         </div>
 
@@ -125,9 +170,52 @@ export function ProjectSetupPage() {
             color: COLORS.textMuted,
           }}
         >
-          <div>After this, you can start in Run, create lanes, and open PRs immediately.</div>
-          <div>CTO setup stays separate and can be done later from the CTO tab.</div>
-          <div>General settings lets you rerun this flow or hide the reminder state.</div>
+          <div>
+            {contextLoading
+              ? "Checking context doc status..."
+              : contextStatus?.generation.state === "running"
+                ? "Context doc generation is already running."
+                : contextStatus?.generation.state === "failed"
+                  ? `Last generation failed${contextStatus.generation.error ? `: ${contextStatus.generation.error}` : "."}`
+                  : `Missing docs: ${(contextStatus?.docs?.filter((doc) => !doc.exists).map((doc) => doc.label).join(", ") || "none")}.`}
+          </div>
+          <div>Once generation is launched, you can finish setup immediately and let ADE handle the rest in the background.</div>
+          <div>Settings later lets you change the model, triggers, or rerun generation manually.</div>
+        </div>
+
+        {contextLaunchNotice ? (
+          <div style={{
+            padding: "10px 12px",
+            border: `1px solid ${COLORS.success}30`,
+            background: `${COLORS.success}12`,
+            fontSize: 11,
+            fontFamily: MONO_FONT,
+            color: COLORS.success,
+          }}>
+            {contextLaunchNotice}
+          </div>
+        ) : null}
+
+        {contextLaunchError ? (
+          <div style={{
+            padding: "10px 12px",
+            border: `1px solid ${COLORS.danger}30`,
+            background: `${COLORS.danger}12`,
+            fontSize: 11,
+            fontFamily: MONO_FONT,
+            color: COLORS.danger,
+          }}>
+            {contextLaunchError}
+          </div>
+        ) : null}
+
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <Button size="md" variant="outline" onClick={() => void reloadContextStatus()}>
+            Refresh status
+          </Button>
+          <Button size="md" variant="primary" onClick={() => void handleLaunchContextGeneration()}>
+            {contextStatus?.generation.state === "running" ? "Restart generation" : "Start generation in background"}
+          </Button>
         </div>
       </div>
     );
@@ -193,7 +281,7 @@ export function ProjectSetupPage() {
           <div style={{ marginTop: 22, display: "grid", gap: 10 }}>
             {STEP_ORDER.map((stepId, index) => {
               const active = stepId === step;
-              const complete = index < stepIndex || (stepId === "finish" && Boolean(status?.completedAt));
+              const complete = index < stepIndex || (stepId === "context" && Boolean(status?.completedAt));
               return (
                 <button
                   key={stepId}
@@ -259,7 +347,7 @@ export function ProjectSetupPage() {
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <Button size="sm" variant="ghost" disabled={busy} onClick={() => void handleSkip()}>
-                Hide reminder
+                Skip setup
               </Button>
             </div>
           </div>
@@ -312,7 +400,7 @@ export function ProjectSetupPage() {
             </Button>
             <div style={{ display: "flex", gap: 10 }}>
               {!isLastStep ? (
-                <Button size="md" variant="outline" disabled={busy} onClick={() => setStep("finish")}>
+                <Button size="md" variant="outline" disabled={busy} onClick={() => setStep("context")}>
                   Skip ahead
                 </Button>
               ) : null}

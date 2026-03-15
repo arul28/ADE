@@ -28,7 +28,7 @@ Phase 3 delivers two things: (1) autonomous orchestration foundations that make 
 - [AI_INTEGRATION.md](../architecture/AI_INTEGRATION.md) — orchestrator architecture, planning, execution, context management
 - [MISSIONS.md](../features/MISSIONS.md) — mission lifecycle, step DAG, interventions, artifacts
 - [CONTEXT_CONTRACT.md](../architecture/CONTEXT_CONTRACT.md) — context delivery, export tiers
-- [AUTOMATIONS.md](../features/AUTOMATIONS.md) — automation rules (Night Shift absorbed here in Phase 4)
+- [AUTOMATIONS.md](../features/AUTOMATIONS.md) — automation rules (time-based/action-based triggers and execution routing)
 - [ONBOARDING_AND_SETTINGS.md](../features/ONBOARDING_AND_SETTINGS.md) — phase profile management, AI usage dashboard
 - [SECURITY_AND_PRIVACY.md](../architecture/SECURITY_AND_PRIVACY.md) — trust model for unattended execution
 - [SYSTEM_OVERVIEW.md](../architecture/SYSTEM_OVERVIEW.md) — type system architecture, shared utilities, orchestrator decomposition
@@ -192,7 +192,7 @@ Validator returns structured pass/fail + remediation instructions. Coordinator d
 
 - **Agents tab is removed.** Missions tab is the sole surface for development orchestration.
 - **CTO tab** provides persistent project-aware assistance (Phase 4).
-- **Night Shift** is absorbed into Automations as a scheduling mode (Phase 4).
+- **Automations** in Phase 4 use only time-based/action-based triggers and supported execution routing.
 
 ---
 
@@ -597,7 +597,7 @@ The mission launch flow includes a phase configuration step:
 ```
 
 - Each phase card is a collapsible/expandable row showing model, validation tier, and budget at a glance.
-- Click **[Configure]** to expand inline: edit instructions, model, budget caps, validation criteria, ask-questions settings.
+- Click **[Configure]** to expand inline: edit instructions, model, validation criteria, ask-questions settings, and execution routing.
 - **Drag-and-drop reordering**: cards can be dragged to new positions. Invalid positions (violating ordering constraints) show a red indicator with tooltip ("Development must be first", "Validation must follow Development").
 - **Profile selector**: dropdown at top. Changing profile reloads the phase card list. Modifications create a per-mission override (don't change the saved profile).
 - **[+ Add Custom Phase]**: opens an inline form with the same fields as a built-in phase. Custom phases are validated before save.
@@ -1190,7 +1190,7 @@ Phase 3 is complete when:
 
 After Phase 3 is complete, Phase 4 focuses on:
 - CTO agent (persistent project-aware assistant with layered identity memory + shared project memory)
-- Night Shift mode in Automations (overnight execution, morning briefing)
+- Updated Automations model (time-based/action-based triggers, execution type routing, and centralized Settings > Usage budget policy)
 - Memory architecture upgrade (vector search, composite scoring, consolidation, episodic/procedural memory)
 - Learning packs (auto-curated project knowledge from agent interactions)
 - External MCP consumption (agents consume external MCP servers)

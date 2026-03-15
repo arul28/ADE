@@ -136,7 +136,7 @@ Broker-managed artifacts can flow into:
 - chat history
 - GitHub PR workflows
 - Linear closeout and issue workflows
-- automation history
+- Automations history
 
 The broker keeps provenance intact so ADE can always answer:
 

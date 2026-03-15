@@ -1,301 +1,175 @@
-import { useState } from "react";
 import {
+  Bug,
+  ChatCircleText,
+  GitPullRequest,
   ShieldCheck,
   TestTube,
-  Bug,
-  CheckSquare,
-  Wrench,
-  PencilSimple,
 } from "@phosphor-icons/react";
-import { motion } from "motion/react";
 import type { AutomationRuleDraft } from "../../../shared/types";
 import { TemplateCard, type AutomationTemplate } from "./components/TemplateCard";
 
-const TEMPLATES: (AutomationTemplate & { draft: Omit<AutomationRuleDraft, "id"> })[] = [
+const TEMPLATES: Array<AutomationTemplate & { draft: Omit<AutomationRuleDraft, "id"> }> = [
   {
-    id: "security-audit",
-    name: "Security Audit",
-    description: "Scan for vulnerabilities on every push to main. Runs dependency audit and SAST checks.",
-    triggerType: "commit",
-    actionSummary: "run-command: security audit",
-    icon: ShieldCheck,
+    id: "daily-agent-brief",
+    name: "Daily agent brief",
+    description: "Send a prompt to an automation-only chat thread every weekday morning to summarize repo activity and likely follow-ups.",
+    triggerType: "schedule",
+    actionSummary: "agent session",
+    icon: ChatCircleText,
     draft: {
-      name: "Security Audit on Push",
+      name: "Daily agent brief",
       enabled: true,
-      description: "Review security-sensitive changes and stop before publishing external side effects.",
+      description: "Create a concise weekday brief that summarizes repo activity, risks, and obvious next actions.",
       mode: "review",
-      triggers: [{ type: "commit", branch: "main" }],
-      trigger: { type: "commit", branch: "main" },
+      triggers: [{ type: "schedule", cron: "0 9 * * 1-5" }],
+      trigger: { type: "schedule", cron: "0 9 * * 1-5" },
+      execution: { kind: "agent-session", session: { title: "Daily brief" } },
       executor: { mode: "automation-bot" },
-      prompt: "Run a security-focused review over the latest changes, highlight only high-confidence issues, and summarize release risk.",
-      reviewProfile: "security",
-      toolPalette: ["repo", "git", "tests", "memory", "mission"],
-      contextSources: [{ type: "project-memory" }, { type: "procedures" }, { type: "skills" }],
-      memory: { mode: "automation-plus-project" },
-      guardrails: { confidenceThreshold: 0.72, maxFindings: 8 },
-      outputs: { disposition: "comment-only", createArtifact: true },
-      verification: { verifyBeforePublish: true, mode: "intervention" },
-      billingCode: "auto:security-audit",
-      actions: [{ type: "run-command", command: "npm audit --audit-level=high && npx semgrep --config=auto ." } as any],
-      legacyActions: [{ type: "run-command", command: "npm audit --audit-level=high && npx semgrep --config=auto ." } as any],
-    },
-  },
-  {
-    id: "test-coverage",
-    name: "Test Coverage Sweep",
-    description: "Run the full test suite after each session ends. Catch regressions early.",
-    triggerType: "session-end",
-    actionSummary: "run-tests",
-    icon: TestTube,
-    draft: {
-      name: "Post-Session Test Sweep",
-      enabled: true,
-      description: "Monitor session-end health and surface regressions quickly.",
-      mode: "monitor",
-      triggers: [{ type: "session-end" }],
-      trigger: { type: "session-end" },
-      executor: { mode: "automation-bot" },
-      prompt: "Check the latest session changes, run the default quality sweep, and summarize whether follow-up work is needed.",
-      reviewProfile: "incremental",
-      toolPalette: ["repo", "tests", "memory", "mission"],
-      contextSources: [{ type: "project-memory" }, { type: "procedures" }],
-      memory: { mode: "automation-plus-project" },
-      guardrails: { maxFindings: 5 },
-      outputs: { disposition: "comment-only", createArtifact: true },
-      verification: { verifyBeforePublish: false, mode: "intervention" },
-      billingCode: "auto:test-sweep",
-      actions: [{ type: "run-tests", suite: "" } as any],
-      legacyActions: [{ type: "run-tests", suite: "" } as any],
-    },
-  },
-  {
-    id: "bug-triage",
-    name: "Bug Triage",
-    description: "Predict merge conflicts on every commit and route actionable follow-up early.",
-    triggerType: "commit",
-    actionSummary: "predict-conflicts",
-    icon: Bug,
-    draft: {
-      name: "Bug Triage on Commit",
-      enabled: true,
-      description: "Review commits for likely breakage and queue actionable work.",
-      mode: "review",
-      triggers: [{ type: "commit" }],
-      trigger: { type: "commit" },
-      executor: { mode: "cto-route" },
-      prompt: "Triage the latest commit for high-signal bugs, conflict risk, and follow-up work. Route actionable findings clearly.",
+      modelConfig: {
+        orchestratorModel: {
+          modelId: "anthropic/claude-sonnet-4-6",
+          thinkingLevel: "medium",
+        },
+      },
+      prompt: "Summarize the most important repo activity since the last weekday brief. Keep it concise, concrete, and oriented around what the team should know next.",
       reviewProfile: "quick",
       toolPalette: ["repo", "git", "memory", "mission"],
       contextSources: [{ type: "project-memory" }, { type: "procedures" }],
       memory: { mode: "automation-plus-project" },
-      guardrails: { maxFindings: 6 },
-      outputs: { disposition: "open-task", createArtifact: true },
+      guardrails: { maxDurationMin: 10 },
+      outputs: { disposition: "comment-only", createArtifact: true },
       verification: { verifyBeforePublish: false, mode: "intervention" },
-      billingCode: "auto:bug-triage",
-      actions: [{ type: "predict-conflicts" } as any],
-      legacyActions: [{ type: "predict-conflicts" } as any],
+      billingCode: "auto:daily-agent-brief",
+      actions: [],
+      legacyActions: [],
     },
   },
   {
-    id: "pr-reviewer",
-    name: "PR Reviewer",
-    description: "Review each newly opened PR for missing tests, risky changes, and clear follow-up guidance.",
+    id: "pr-review-session",
+    name: "PR review session",
+    description: "When a pull request opens, send a focused review prompt to an automation-only chat thread and keep the transcript in Automations history.",
     triggerType: "git.pr_opened",
-    actionSummary: "mission-powered PR review",
-    icon: ShieldCheck,
+    actionSummary: "agent session",
+    icon: GitPullRequest,
     draft: {
-      name: "PR Reviewer",
+      name: "PR review session",
       enabled: true,
-      description: "Run a focused PR review when a lane opens a new pull request.",
+      description: "Review new PRs for concrete risk, missing tests, and release impact.",
       mode: "review",
-      triggers: [{ type: "git.pr_opened", branch: "feat/*", draftState: "any" }],
-      trigger: { type: "git.pr_opened", branch: "feat/*", draftState: "any" },
+      triggers: [{ type: "git.pr_opened", branch: "main" }],
+      trigger: { type: "git.pr_opened", branch: "main" },
+      execution: { kind: "agent-session", session: { title: "PR review" } },
       executor: { mode: "automation-bot" },
-      prompt: "A PR was just opened. Review the diff for risky changes, missing tests, and release notes impact. Summarize only concrete findings and cite files or checks.",
+      modelConfig: {
+        orchestratorModel: {
+          modelId: "anthropic/claude-sonnet-4-6",
+          thinkingLevel: "high",
+        },
+      },
+      prompt: "Review the pull request for risky changes, missing tests, and release impact. Report only concrete findings and cite the files or checks that support them.",
       reviewProfile: "full",
       toolPalette: ["repo", "git", "github", "memory", "mission"],
-      contextSources: [{ type: "project-memory" }, { type: "procedures" }, { type: "skills" }],
-      memory: { mode: "automation-plus-project" },
-      guardrails: { confidenceThreshold: 0.7, maxFindings: 8 },
-      outputs: { disposition: "comment-only", createArtifact: true },
-      verification: { verifyBeforePublish: true, mode: "intervention" },
-      billingCode: "auto:pr-reviewer",
-      actions: [],
-      legacyActions: [],
-    },
-  },
-  {
-    id: "routine-tasks",
-    name: "Routine Tasks",
-    description: "Scheduled weekday sweep for regressions and conflict risk.",
-    triggerType: "schedule",
-    actionSummary: "run-tests, predict-conflicts",
-    icon: CheckSquare,
-    draft: {
-      name: "Daily Routine (9 AM)",
-      enabled: true,
-      description: "Nightly sweep for release readiness, regressions, and follow-up recommendations.",
-      mode: "monitor",
-      triggers: [{ type: "schedule", cron: "0 9 * * 1-5" }],
-      trigger: { type: "schedule", cron: "0 9 * * 1-5" },
-      executor: { mode: "night-shift" },
-      prompt: "Run a routine daily sweep, summarize noteworthy regressions, and queue anything better handled overnight.",
-      reviewProfile: "full",
-      toolPalette: ["repo", "git", "tests", "memory", "mission"],
-      contextSources: [{ type: "project-memory" }, { type: "procedures" }, { type: "skills" }],
-      memory: { mode: "automation-plus-project" },
-      guardrails: { reserveBudget: true, maxFindings: 10 },
-      outputs: { disposition: "queue-overnight", createArtifact: true },
-      verification: { verifyBeforePublish: false, mode: "intervention" },
-      billingCode: "auto:daily-routine",
-      actions: [
-        { type: "run-tests", suite: "" } as any,
-        { type: "predict-conflicts" } as any,
-      ],
-      legacyActions: [
-        { type: "run-tests", suite: "" } as any,
-        { type: "predict-conflicts" } as any,
-      ],
-    },
-  },
-  {
-    id: "daily-standup",
-    name: "Daily Standup",
-    description: "Weekday summary of yesterday's repo activity with links, risks, and clear talking points.",
-    triggerType: "schedule",
-    actionSummary: "weekday status report",
-    icon: CheckSquare,
-    draft: {
-      name: "Daily Standup Summary",
-      enabled: true,
-      description: "Summarize yesterday's git activity for standup without speculation.",
-      mode: "monitor",
-      triggers: [{ type: "schedule", cron: "0 9 * * 1-5" }],
-      trigger: { type: "schedule", cron: "0 9 * * 1-5" },
-      executor: { mode: "automation-bot" },
-      prompt: "Summarize yesterday's repo activity for standup. Anchor every statement to commits, PRs, or files. Keep it scannable and team-ready.",
-      reviewProfile: "quick",
-      toolPalette: ["repo", "git", "memory", "mission"],
       contextSources: [{ type: "project-memory" }, { type: "procedures" }],
       memory: { mode: "automation-plus-project" },
-      guardrails: { maxFindings: 6 },
+      guardrails: { confidenceThreshold: 0.7, maxDurationMin: 20 },
       outputs: { disposition: "comment-only", createArtifact: true },
       verification: { verifyBeforePublish: false, mode: "intervention" },
-      billingCode: "auto:daily-standup",
+      billingCode: "auto:pr-review-session",
       actions: [],
       legacyActions: [],
     },
   },
   {
-    id: "linear-triager",
-    name: "Linear Triager",
-    description: "Route newly created issues with priority, owner suggestions, and a clean summary for humans.",
+    id: "linear-triage-mission",
+    name: "Linear triage mission",
+    description: "Launch a mission when new Linear issues arrive so ADE can do a deeper triage pass with mission-level tooling and permissions.",
     triggerType: "linear.issue_created",
-    actionSummary: "cto-route triage",
-    icon: Bug,
+    actionSummary: "mission",
+    icon: ShieldCheck,
     draft: {
-      name: "Linear Triager",
+      name: "Linear triage mission",
       enabled: true,
-      description: "Review new Linear issues and recommend ownership, priority, and next step.",
+      description: "Launch a mission to triage new Linear issues with ownership and severity guidance.",
       mode: "review",
       triggers: [{ type: "linear.issue_created", team: "ENG" }],
       trigger: { type: "linear.issue_created", team: "ENG" },
-      executor: { mode: "cto-route" },
-      prompt: "A new Linear issue was created. Suggest the right owner, likely priority, and whether it needs immediate action. Be concise and concrete.",
+      execution: { kind: "mission", mission: { title: "Linear triage" } },
+      executor: { mode: "automation-bot" },
+      modelConfig: {
+        orchestratorModel: {
+          modelId: "anthropic/claude-sonnet-4-6",
+          thinkingLevel: "high",
+        },
+      },
+      prompt: "Triage the new Linear issue. Recommend likely owner, severity, and next action. Use the mission to gather enough context before deciding.",
       reviewProfile: "quick",
-      toolPalette: ["linear", "memory", "mission"],
+      toolPalette: ["linear", "repo", "memory", "mission"],
       contextSources: [{ type: "project-memory" }, { type: "procedures" }],
       memory: { mode: "automation-plus-project" },
-      guardrails: { maxFindings: 4 },
-      outputs: { disposition: "open-task", createArtifact: true },
-      verification: { verifyBeforePublish: true, mode: "intervention" },
-      billingCode: "auto:linear-triager",
-      actions: [],
-      legacyActions: [],
-    },
-  },
-  {
-    id: "session-cleanup",
-    name: "Session Cleanup",
-    description: "Mission-powered session wrap-up that records follow-up risk and next steps.",
-    triggerType: "session-end",
-    actionSummary: "mission-powered review",
-    icon: Wrench,
-    draft: {
-      name: "Session Cleanup",
-      enabled: true,
-      description: "Clean up after sessions and keep project state warm for the next automation.",
-      mode: "monitor",
-      triggers: [{ type: "session-end" }],
-      trigger: { type: "session-end" },
-      executor: { mode: "automation-bot" },
-      prompt: "Summarize the session end state, refresh context, and note any follow-up risk.",
-      reviewProfile: "quick",
-      toolPalette: ["repo", "memory", "mission"],
-      contextSources: [{ type: "project-memory" }, { type: "automation-memory" }],
-      memory: { mode: "automation-plus-project" },
-      guardrails: {},
+      guardrails: { maxDurationMin: 25 },
       outputs: { disposition: "comment-only", createArtifact: true },
       verification: { verifyBeforePublish: false, mode: "intervention" },
-      billingCode: "auto:session-cleanup",
+      billingCode: "auto:linear-triage-mission",
       actions: [],
       legacyActions: [],
     },
   },
   {
-    id: "nightly-dependency-sweep",
-    name: "Nightly Dependency Sweep",
-    description: "Queue an overnight dependency and changelog sweep after pushes to main.",
-    triggerType: "git.push",
-    actionSummary: "night shift dependency review",
-    icon: Wrench,
+    id: "nightly-test-sweep",
+    name: "Nightly test sweep",
+    description: "Run a built-in test suite on a schedule without starting a mission or an agent chat thread.",
+    triggerType: "schedule",
+    actionSummary: "built-in tasks",
+    icon: TestTube,
     draft: {
-      name: "Nightly Dependency Sweep",
+      name: "Nightly test sweep",
       enabled: true,
-      description: "After pushes to main, queue a night-shift pass that checks dependencies and release notes impact.",
+      description: "Run a nightly built-in test sweep on weekdays.",
       mode: "monitor",
-      triggers: [{ type: "git.push", branch: "main" }],
-      trigger: { type: "git.push", branch: "main" },
-      executor: { mode: "night-shift" },
-      prompt: "A push landed on main. Review dependency updates, release note impact, and anything that should be queued for the next maintenance window.",
-      reviewProfile: "release-risk",
-      toolPalette: ["repo", "git", "tests", "memory", "mission"],
-      contextSources: [{ type: "project-memory" }, { type: "procedures" }, { type: "skills" }],
-      memory: { mode: "automation-plus-project" },
-      guardrails: { reserveBudget: true, maxFindings: 6 },
-      outputs: { disposition: "queue-overnight", createArtifact: true },
-      verification: { verifyBeforePublish: false, mode: "intervention" },
-      billingCode: "auto:nightly-dependency-sweep",
-      actions: [],
-      legacyActions: [],
-    },
-  },
-  {
-    id: "custom",
-    name: "Custom Automation",
-    description: "Start from scratch. Pick your trigger and build any action pipeline you want.",
-    triggerType: "manual",
-    actionSummary: "(configure actions)",
-    icon: PencilSimple,
-    draft: {
-      name: "New Custom Rule",
-      enabled: false,
-      description: "",
-      mode: "review",
-      triggers: [{ type: "manual" }],
-      trigger: { type: "manual" },
+      triggers: [{ type: "schedule", cron: "0 2 * * 1-5" }],
+      trigger: { type: "schedule", cron: "0 2 * * 1-5" },
+      execution: { kind: "built-in", builtIn: { actions: [{ type: "run-tests", suiteId: "" }] } },
       executor: { mode: "automation-bot" },
       prompt: "",
       reviewProfile: "quick",
-      toolPalette: ["repo", "memory", "mission"],
-      contextSources: [{ type: "project-memory" }, { type: "procedures" }],
-      memory: { mode: "automation-plus-project" },
-      guardrails: {},
+      toolPalette: ["tests"],
+      contextSources: [{ type: "project-memory" }],
+      memory: { mode: "project" },
+      guardrails: { maxDurationMin: 30 },
       outputs: { disposition: "comment-only", createArtifact: true },
       verification: { verifyBeforePublish: false, mode: "intervention" },
-      billingCode: "auto:custom",
-      actions: [],
-      legacyActions: [],
+      billingCode: "auto:nightly-test-sweep",
+      actions: [{ type: "run-tests", suite: "" }],
+      legacyActions: [{ type: "run-tests", suite: "" }],
+    },
+  },
+  {
+    id: "push-conflict-scan",
+    name: "Push conflict scan",
+    description: "Run a built-in conflict prediction task whenever a push lands on the default branch.",
+    triggerType: "git.push",
+    actionSummary: "built-in tasks",
+    icon: Bug,
+    draft: {
+      name: "Push conflict scan",
+      enabled: true,
+      description: "Predict conflict risk after pushes on main.",
+      mode: "monitor",
+      triggers: [{ type: "git.push", branch: "main" }],
+      trigger: { type: "git.push", branch: "main" },
+      execution: { kind: "built-in", builtIn: { actions: [{ type: "predict-conflicts" }] } },
+      executor: { mode: "automation-bot" },
+      prompt: "",
+      reviewProfile: "quick",
+      toolPalette: ["git"],
+      contextSources: [{ type: "project-memory" }],
+      memory: { mode: "project" },
+      guardrails: { maxDurationMin: 10 },
+      outputs: { disposition: "comment-only", createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" },
+      billingCode: "auto:push-conflict-scan",
+      actions: [{ type: "predict-conflicts" }],
+      legacyActions: [{ type: "predict-conflicts" }],
     },
   },
 ];
@@ -306,42 +180,25 @@ export function TemplatesTab({
   onUseTemplate: (draft: Omit<AutomationRuleDraft, "id">) => void;
 }) {
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.2 }}
-      className="h-full overflow-y-auto p-6"
-      style={{ background: "#0F0D14" }}
-    >
-      <div className="max-w-4xl mx-auto">
-        <div className="mb-6">
-          <div
-            className="text-[16px] font-bold text-[#FAFAFA] tracking-[-0.4px]"
-            style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-          >
-            Templates
-          </div>
-          <div className="mt-1 font-mono text-[10px] text-[#71717A]">
-            Start with a pre-built automation recipe and customize it to your workflow.
+    <div className="h-full overflow-y-auto px-6 py-6" style={{ background: "#0F0D14" }}>
+      <div className="mx-auto max-w-6xl">
+        <div className="max-w-3xl">
+          <div className="text-lg font-semibold text-[#FAFAFA]">Templates</div>
+          <div className="mt-2 text-sm leading-6 text-[#9A96B2]">
+            Start from a clean schedule or event-driven pattern. Templates follow the new Automations model: one trigger, one execution kind, and clear history inside Automations.
           </div>
         </div>
 
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {TEMPLATES.map((tmpl, i) => (
-            <motion.div
-              key={tmpl.id}
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.3, delay: i * 0.05, ease: "easeOut" }}
-            >
-              <TemplateCard
-                template={tmpl}
-                onUse={() => onUseTemplate(tmpl.draft)}
-              />
-            </motion.div>
+        <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {TEMPLATES.map((template) => (
+            <TemplateCard
+              key={template.id}
+              template={template}
+              onUse={() => onUseTemplate(template.draft)}
+            />
           ))}
         </div>
       </div>
-    </motion.div>
+    </div>
   );
 }

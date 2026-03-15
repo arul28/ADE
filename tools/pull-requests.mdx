@@ -4,7 +4,7 @@ description: "ADE's integrated PR management interface — create, review, and m
 icon: "code-pull-request"
 ---
 
-<Info>**📸 Screenshot needed:** The PRs tab in full split-pane layout — left panel showing a PR list with status badges (open, approved, draft, changes_requested) and lane name tags, right panel showing a PR detail view with the Overview tab active, displaying CI check status indicators, reviewer avatars, and a description rendered from markdown. A stacked PR dependency arrow should be visible between two items in the list.</Info>
+<Info>**Screenshot: The PRs tab in full split-pane layout — left panel showing a PR list with status badges (open, approved, draft, changes_requested) and lane name tags, right panel showing a PR detail view with the Overview tab active, displaying CI check status indicators, reviewer avatars, and a description rendered from markdown. A stacked PR dependency arrow should be visible between two items in the list.</Info>
 
 ## What is the Pull Requests View?
 
@@ -59,7 +59,7 @@ The PR status badge is visible in the lane list (left pane of the Lanes tab), th
     - **Reviewers** — any reviewers configured in the lane settings or in `.ade/ade.yaml`
     - **Labels** — labels mapped to the lane's associated Linear issue (if connected)
 
-    <Info>**📸 Screenshot needed:** The "Create PR" form filled in — title field showing "feat: add session expiry logic", description showing a formatted markdown body with an "Intent" section and an "Acceptance Criteria" checklist, base branch dropdown showing "main", and a "Reviewers" field with two user avatars. A "Draft PR" toggle should be visible and enabled.</Info>
+    <Info>**Screenshot: The "Create PR" form filled in — title field showing "feat: add session expiry logic", description showing a formatted markdown body with an "Intent" section and an "Acceptance Criteria" checklist, base branch dropdown showing "main", and a "Reviewers" field with two user avatars. A "Draft PR" toggle should be visible and enabled.</Info>
   </Step>
   <Step title="Toggle draft mode if needed">
     If the work is not ready for review, enable the **Draft PR** toggle. Draft PRs are tracked by ADE but will not be auto-merged even if CI passes and all reviews are complete. Draft mode can be toggled per-lane in lane settings.
@@ -75,7 +75,7 @@ The PR status badge is visible in the lane list (left pane of the Lanes tab), th
 
 ADE has first-class support for stacked PR workflows, where a series of lanes build on each other and their PRs target each other (rather than all targeting `main`).
 
-<Info>**📸 Screenshot needed:** The PR list showing a stack of 3 PRs — "auth-base", "auth-middleware", "auth-endpoints" — connected by vertical dependency arrows indicating merge order (bottom up). Each PR shows its CI status indicator. The bottom PR ("auth-base") has a green "Approved" badge, the middle is "Open", and the top is "Draft".</Info>
+<Info>**Screenshot: The PR list showing a stack of 3 PRs — "auth-base", "auth-middleware", "auth-endpoints" — connected by vertical dependency arrows indicating merge order (bottom up). Each PR shows its CI status indicator. The bottom PR ("auth-base") has a green "Approved" badge, the middle is "Open", and the top is "Draft".</Info>
 
 ### How Stacked PRs Are Structured
 
@@ -138,7 +138,7 @@ Select any PR in the list to open its full detail in the right panel. The detail
     - File tree sidebar for navigation (click any file name to jump to its diff)
     - Filter controls: "Show additions only", "Show deletions only", "Hide whitespace changes"
     - Expand/collapse individual file diffs
-    - Jump to a specific file using `Cmd+P` (`Ctrl+P` on Windows/Linux) to open the file picker
+    - Jump to a specific file using `Cmd+P` to open the file picker
     - Line-level commenting: click any line number to open an inline comment draft (requires GitHub auth)
   </Tab>
   <Tab title="Comments">
@@ -211,7 +211,7 @@ All PR actions are available from the detail view's action bar at the top of the
 
 ADE polls GitHub Actions for CI status on all linked PRs. The CI check list is visible in the PR Overview tab and as an icon badge on the PR list entry.
 
-<Info>**📸 Screenshot needed:** The CI checks section of the PR Overview tab — showing 4 checks: "build" (green checkmark), "unit-tests" (green checkmark), "e2e-tests" (red X with "2 failures" label), "lint" (green checkmark). The "e2e-tests" row is expanded showing a truncated log output with red error lines. An "Ask CTO about this failure" button sits below the log.</Info>
+<Info>**Screenshot: The CI checks section of the PR Overview tab — showing 4 checks: "build" (green checkmark), "unit-tests" (green checkmark), "e2e-tests" (red X with "2 failures" label), "lint" (green checkmark). The "e2e-tests" row is expanded showing a truncated log output with red error lines. An "Ask CTO about this failure" button sits below the log.</Info>
 
 ### Reading CI Status
 
@@ -225,7 +225,7 @@ ADE polls GitHub Actions for CI status on all linked PRs. The CI check list is v
 
 ### Viewing CI Logs
 
-Click any check name to expand its log output inline in the Overview tab. Logs are syntax-highlighted for common CI output formats (Go test output, Jest, pytest, etc.). Use `Cmd+F` (`Ctrl+F`) inside the log viewer to search for specific error text.
+Click any check name to expand its log output inline in the Overview tab. Logs are syntax-highlighted for common CI output formats (Go test output, Jest, pytest, etc.). Use `Cmd+F` inside the log viewer to search for specific error text.
 
 ### CI Failure Assistance
 

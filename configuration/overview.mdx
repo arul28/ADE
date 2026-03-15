@@ -4,7 +4,7 @@ description: "ADE stores all project configuration in a .ade/ directory at your 
 icon: "folder-tree"
 ---
 
-<Info>Screenshot needed: The .ade/ directory expanded in a file tree showing ade.yaml, local.yaml, local.secret.yaml, and subdirectories.</Info>
+<Info>Screenshot: The .ade/ directory expanded in a file tree showing ade.yaml, local.yaml, local.secret.yaml, and subdirectories.</Info>
 
 ## The `.ade/` Directory
 
@@ -74,7 +74,7 @@ The layering order means a developer can override the team's default AI model (s
   </Step>
 </Steps>
 
-<Info>Screenshot needed: The config approval dialog showing a diff view of ade.yaml changes with Approve and Reject buttons.</Info>
+<Info>Screenshot: The config approval dialog showing a diff view of ade.yaml changes with Approve and Reject buttons.</Info>
 
 <Warning>
 The approved SHA is machine-specific. If two developers need to approve the same change, each must approve it on their own machine. This is intentional — one person's trust cannot be delegated to another.
@@ -202,11 +202,6 @@ notifications:
   budgetWarning: true
   prStatusChange: false
 
-nightShift:
-  idleThresholdMinutes: 15              # Minutes idle before Night Shift activates
-  runWindowStart: "23:00"               # Earliest Night Shift can start
-  runWindowEnd: "06:00"                 # Latest Night Shift runs until
-
 # Approval state — managed automatically
 trust:
   approvedSha: "abc123..."              # Your machine's approved ade.yaml SHA
@@ -303,7 +298,7 @@ If you update an API key in `local.secret.yaml` while an agent is mid-session, t
   </Accordion>
 </AccordionGroup>
 
-<Info>Screenshot needed: The Settings panel showing the three config files, the Approved SHA display, and the Re-approve button.</Info>
+<Info>Screenshot: The Settings panel showing the three config files, the Approved SHA display, and the Re-approve button.</Info>
 
 ---
 

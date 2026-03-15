@@ -189,20 +189,21 @@ export function createOnboardingService(args: {
   projectRoot: string;
   projectId: string;
   baseRef: string;
+  freshProject: boolean;
   laneService: ReturnType<typeof createLaneService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
 }) {
-  const { db, logger, projectRoot, baseRef, laneService, projectConfigService } = args;
+  const { db, logger, projectRoot, baseRef, freshProject, laneService, projectConfigService } = args;
 
   const getStatus = (): OnboardingStatus => {
     const stored = db.getJson<OnboardingStatus>(STATUS_KEY);
     const completedAt = typeof stored?.completedAt === "string" ? stored.completedAt : null;
     const dismissedAt = typeof stored?.dismissedAt === "string" ? stored.dismissedAt : null;
-    return { completedAt, dismissedAt };
+    return { completedAt, dismissedAt, freshProject };
   };
 
   const complete = (): OnboardingStatus => {
-    const status: OnboardingStatus = { completedAt: nowIso(), dismissedAt: null };
+    const status: OnboardingStatus = { completedAt: nowIso(), dismissedAt: null, freshProject };
     db.setJson(STATUS_KEY, status);
     return status;
   };
@@ -212,6 +213,7 @@ export function createOnboardingService(args: {
     const status: OnboardingStatus = {
       completedAt: current.completedAt,
       dismissedAt: dismissed ? nowIso() : null,
+      freshProject,
     };
     db.setJson(STATUS_KEY, status);
     return status;

@@ -1,32 +1,26 @@
-import type {
-  AutomationIngressStatus,
-  NightShiftQueueMutationRequest,
-  NightShiftState,
-} from "../../../shared/types";
-
 /** Shared constants and utilities for the automations UI. */
 
 /** Standard inline styles for text inputs, selects, and textareas. */
-export const INPUT_CLS = "h-8 w-full px-3 text-xs text-[#FAFAFA] placeholder:text-[#71717A50] font-mono";
-export const INPUT_STYLE: React.CSSProperties = { background: "#0B0A0F", border: "1px solid #2D284080" };
-
-/** Standard elevated card shadow used across automation panels. */
-export const CARD_SHADOW_STYLE: React.CSSProperties = {
-  background: "#181423",
-  border: "1px solid #2D2840",
-  boxShadow: "0 1px 6px -1px rgba(0,0,0,0.6), 0 0 0 1px rgba(45,40,64,0.3)",
+export const INPUT_CLS = "h-9 w-full rounded-md px-3 text-xs text-[#F5F7FA] placeholder:text-[#7E8A9A] font-mono";
+export const INPUT_STYLE: React.CSSProperties = {
+  background: "rgba(7, 15, 24, 0.82)",
+  border: "1px solid rgba(74, 99, 122, 0.42)",
 };
+
+/** Standard elevated card style used across automation panels. */
+export const CARD_STYLE: React.CSSProperties = {
+  background: "linear-gradient(180deg, rgba(20, 31, 45, 0.96) 0%, rgba(10, 18, 28, 0.94) 100%)",
+  border: "1px solid rgba(87, 108, 128, 0.22)",
+  boxShadow: "0 18px 40px -24px rgba(0, 0, 0, 0.78), inset 0 1px 0 rgba(255,255,255,0.04)",
+};
+
+export const CARD_SHADOW_STYLE = CARD_STYLE;
 
 /** Extract a human-readable error message from an unknown thrown value. */
 export function extractError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export type AutomationsRendererBridge = Omit<typeof window.ade.automations, "getIngressStatus" | "mutateNightShiftQueue"> & {
-  getIngressStatus?: () => Promise<AutomationIngressStatus>;
-  mutateNightShiftQueue?: (args: NightShiftQueueMutationRequest) => Promise<NightShiftState>;
-};
-
-export function getAutomationsBridge(): AutomationsRendererBridge {
-  return window.ade.automations as AutomationsRendererBridge;
+export function getAutomationsBridge() {
+  return window.ade.automations;
 }

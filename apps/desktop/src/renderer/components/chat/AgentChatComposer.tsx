@@ -47,16 +47,7 @@ const LOCAL_SLASH_COMMANDS: SlashCommandEntry[] = [
 ];
 
 /** Well-known defaults shown before the SDK session is initialized. */
-const CLAUDE_DEFAULT_COMMANDS: SlashCommandEntry[] = [
-  { command: "/compact", label: "Compact", description: "Compact conversation context", source: "sdk" },
-  { command: "/review", label: "Review", description: "Review code changes", source: "sdk" },
-  { command: "/help", label: "Help", description: "Show available commands", source: "sdk" },
-  { command: "/model", label: "Model", description: "Switch model", source: "sdk" },
-  { command: "/permissions", label: "Permissions", description: "View or manage permissions", source: "sdk" },
-  { command: "/cost", label: "Cost", description: "Show token usage and cost", source: "sdk" },
-  { command: "/memory", label: "Memory", description: "Edit CLAUDE.md files", source: "sdk" },
-  { command: "/status", label: "Status", description: "Show session status", source: "sdk" },
-];
+const CLAUDE_DEFAULT_COMMANDS: SlashCommandEntry[] = [];
 
 const CODEX_DEFAULT_COMMANDS: SlashCommandEntry[] = [
   { command: "/review", label: "Review", description: "Review uncommitted changes", source: "sdk" },
@@ -352,6 +343,7 @@ export function AgentChatComposer({
   executionModeOptions = [],
   modelSelectionLocked = false,
   permissionModeLocked = false,
+  messagePlaceholder,
   onModelChange,
   onReasoningEffortChange,
   onDraftChange,
@@ -399,6 +391,7 @@ export function AgentChatComposer({
   executionModeOptions?: ExecutionModeOption[];
   modelSelectionLocked?: boolean;
   permissionModeLocked?: boolean;
+  messagePlaceholder?: string;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
   onDraftChange: (value: string) => void;
@@ -995,7 +988,7 @@ export function AgentChatComposer({
                 onChange={onModelChange}
                 availableModelIds={availableModelIds}
                 disabled={modelSelectionLocked}
-                showReasoning={!isPersistentIdentitySurface}
+                showReasoning
                 reasoningEffort={reasoningEffort}
                 onReasoningEffortChange={onReasoningEffortChange}
               />
@@ -1100,7 +1093,7 @@ export function AgentChatComposer({
             "min-h-[40px] max-h-[160px] w-full resize-none bg-transparent px-4 py-3 text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/25",
             dragActive ? "opacity-30" : "",
           )}
-          placeholder={turnActive ? "Steer the active turn..." : "Message the agent..."}
+          placeholder={turnActive ? "Steer the active turn..." : (messagePlaceholder ?? "Message the agent...")}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
         />

@@ -220,14 +220,14 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "memory_add",
-    description: "Save durable project knowledge for future missions and workers. Use this only for important decisions, conventions, repeatable patterns, stable preferences, or gotchas. Do not store ephemeral task chatter.",
+    description: "Save durable project knowledge for future missions and workers. Use this only for important decisions, conventions, repeatable patterns, stable preferences, or gotchas. If the standing CTO brief itself changed, use memory_update_core instead. Do not store ephemeral task chatter.",
     inputSchema: {
       type: "object",
       required: ["content", "category"],
       additionalProperties: false,
       properties: {
         content: { type: "string", minLength: 1 },
-        category: { type: "string", enum: ["fact", "preference", "pattern", "decision", "gotcha"] },
+        category: { type: "string", enum: ["fact", "preference", "pattern", "decision", "gotcha", "convention"] },
         importance: { type: "string", enum: ["low", "medium", "high"], default: "medium" },
         scope: { type: "string", enum: ["project", "mission", "agent"] }
       }
@@ -235,7 +235,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "memory_update_core",
-    description: "Update identity core memory Tier-1 fields (project summary, conventions, preferences, focus, notes).",
+    description: "Update the standing Tier-1 CTO brief when the project summary, conventions, preferences, focus, or notes change. Do not use this for one-off discoveries; save those with memory_add instead.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -276,7 +276,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "memory_search",
-    description: "Search project memories for relevant context from earlier missions and workers.",
+    description: "Search project memories for relevant context from earlier missions and workers before you guess, especially at session start and before architectural decisions.",
     inputSchema: {
       type: "object",
       required: ["query"],
@@ -1184,7 +1184,7 @@ function normalizeExportLevel(value: unknown, fallback: ContextExportLevel = "st
   return fallback;
 }
 
-type MemoryToolCategory = "fact" | "preference" | "pattern" | "decision" | "gotcha";
+type MemoryToolCategory = "fact" | "preference" | "pattern" | "decision" | "gotcha" | "convention";
 type MemoryToolImportance = "low" | "medium" | "high";
 type MemoryToolScope = "project" | "mission" | "agent";
 type MemoryToolSearchStatus = "promoted" | "candidate" | "archived" | "all";
@@ -1198,13 +1198,14 @@ function parseMemoryToolCategory(value: unknown): MemoryToolCategory {
     category === "preference" ||
     category === "pattern" ||
     category === "decision" ||
-    category === "gotcha"
+    category === "gotcha" ||
+    category === "convention"
   ) {
     return category;
   }
   throw new JsonRpcError(
     JsonRpcErrorCode.invalidParams,
-    "category must be one of: fact, preference, pattern, decision, gotcha"
+    "category must be one of: fact, preference, pattern, decision, gotcha, convention"
   );
 }
 
@@ -1249,7 +1250,7 @@ function parseMemoryToolSearchStatus(value: unknown): MemoryToolSearchStatus {
 
 function mapMemoryCategoryToSharedFactType(category: MemoryToolCategory): SharedFactType {
   if (category === "pattern") return "api_pattern";
-  if (category === "preference") return "config";
+  if (category === "preference" || category === "convention") return "config";
   if (category === "gotcha") return "gotcha";
   return "architectural";
 }

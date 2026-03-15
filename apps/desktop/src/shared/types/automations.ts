@@ -6,14 +6,13 @@ import type {
   AutomationAction,
   AutomationActionType,
   AutomationContextSource,
+  AutomationExecution,
   AutomationExecutor,
   AutomationGuardrails,
   AutomationMode,
-  AutomationOutputDisposition,
   AutomationOutputs,
   AutomationReviewProfile,
   AutomationRule,
-  AutomationRunQueueStatus,
   AutomationToolFamily,
   AutomationTrigger,
   AutomationTriggerType,
@@ -21,6 +20,7 @@ import type {
 } from "./config";
 import type { MissionPermissionConfig } from "./missions";
 import type { MissionModelConfig } from "./models";
+import type { AgentChatSessionSummary } from "./chat";
 
 export type AutomationRunStatus =
   | "queued"
@@ -48,21 +48,17 @@ export type AutomationProcedureFeedback = {
 export type AutomationRun = {
   id: string;
   automationId: string;
+  chatSessionId: string | null;
   missionId: string | null;
-  workerRunId: string | null;
-  workerAgentId: string | null;
-  queueItemId: string | null;
   triggerType: AutomationTriggerType;
   startedAt: string;
   endedAt: string | null;
   status: AutomationRunStatus;
-  queueStatus: AutomationRunQueueStatus;
-  executorMode: AutomationExecutor["mode"];
+  executionKind: AutomationExecution["kind"];
   actionsCompleted: number;
   actionsTotal: number;
   errorMessage: string | null;
   spendUsd: number;
-  verificationRequired: boolean;
   confidence: AutomationConfidenceScore | null;
   triggerMetadata: Record<string, unknown> | null;
   summary: string | null;
@@ -86,9 +82,6 @@ export type AutomationRuleSummary = AutomationRule & {
   nextRunAt: string | null;
   lastRunStatus: AutomationRunStatus | null;
   running: boolean;
-  queueCount: number;
-  paused: boolean;
-  ignoredRunCount: number;
   confidence: AutomationConfidenceScore | null;
   source: "local" | "shared" | "merged";
 };
@@ -97,139 +90,35 @@ export type AutomationDeleteRuleRequest = {
   id: string;
 };
 
-export type AutomationQueueItem = {
-  id: string;
-  automationId: string;
-  runId: string | null;
-  missionId: string | null;
-  title: string;
-  mode: AutomationMode;
-  queueStatus: AutomationRunQueueStatus;
-  triggerType: AutomationTriggerType;
-  summary: string | null;
-  severitySummary: string | null;
-  confidence: AutomationConfidenceScore | null;
-  fileCount: number;
-  spendUsd: number;
-  verificationRequired: boolean;
-  suggestedActions: AutomationOutputDisposition[];
-  procedureSignals: string[];
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type NightShiftQueueItem = {
-  id: string;
-  automationId: string;
-  title: string;
-  reviewProfile: AutomationReviewProfile;
-  executorMode: AutomationExecutor["mode"];
-  targetLabel: string | null;
-  scheduledWindow: string | null;
-  status: "queued" | "running" | "paused" | "completed" | "failed";
-  position: number;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type NightShiftBriefingCard = {
-  queueItemId: string;
-  title: string;
-  summary: string;
-  confidence: AutomationConfidenceScore | null;
-  spendUsd: number;
-  suggestedActions: string[];
-  procedureSignals: string[];
-};
-
-export type NightShiftBriefing = {
-  id: string;
-  createdAt: string;
-  completedAt: string | null;
-  totalRuns: number;
-  succeededRuns: number;
-  failedRuns: number;
-  totalSpendUsd: number;
-  cards: NightShiftBriefingCard[];
-};
-
-export type NightShiftSettings = {
-  activeHours: {
-    start: string;
-    end: string;
-    timezone: string;
-  };
-  utilizationPreset: "conservative" | "maximize" | "fixed";
-  paused: boolean;
-  updatedAt: string;
-};
-
-export type NightShiftState = {
-  settings: NightShiftSettings;
-  queue: NightShiftQueueItem[];
-  latestBriefing: NightShiftBriefing | null;
-};
-
 export type AutomationRunDetail = {
   run: AutomationRun;
   rule: AutomationRule | null;
+  chatSession: AgentChatSessionSummary | null;
   actions: AutomationActionResult[];
-  queueItem: AutomationQueueItem | null;
   procedureFeedback: AutomationProcedureFeedback[];
   ingressEvent: AutomationIngressEventRecord | null;
-  pendingPublish: AutomationPendingPublish | null;
 };
-
-export type AutomationQueueListArgs = {
-  automationId?: string;
-  status?: AutomationRunQueueStatus | "all";
-  limit?: number;
-};
-
-export type AutomationQueueActionRequest = {
-  queueItemId: string;
-  action: "ignore" | "archive" | "accept" | "queue-overnight" | "resolve";
-};
-
-export type NightShiftQueueMutationRequest =
-  | { action: "remove"; queueItemId: string }
-  | { action: "run-now"; queueItemId: string }
-  | { action: "pause"; queueItemId: string }
-  | { action: "resume"; queueItemId: string }
-  | { action: "move"; queueItemId: string; position: number };
 
 export type AutomationManualTriggerRequest = {
   id: string;
   laneId?: string | null;
   reviewProfileOverride?: AutomationReviewProfile | null;
-  queueInstead?: boolean;
   verboseTrace?: boolean;
 };
 
 export type AutomationRunListArgs = {
   automationId?: string;
   status?: AutomationRunStatus | "all";
-  queueStatus?: AutomationRunQueueStatus | "all";
   limit?: number;
-};
-
-export type UpdateNightShiftSettingsRequest = {
-  activeHours?: Partial<NightShiftSettings["activeHours"]>;
-  utilizationPreset?: NightShiftSettings["utilizationPreset"];
-  paused?: boolean;
 };
 
 export type AutomationsEventPayload = {
   type:
     | "runs-updated"
-    | "queue-updated"
-    | "night-shift-updated"
-    | "review-updated"
     | "webhook-status-updated"
     | "ingress-updated";
   automationId?: string;
   runId?: string;
-  queueItemId?: string;
 };
 
 export type AutomationIngressSource = "github-relay" | "local-webhook";
@@ -269,16 +158,6 @@ export type AutomationIngressEventRecord = {
   errorMessage: string | null;
   cursor: string | null;
   receivedAt: string;
-};
-
-export type AutomationPendingPublish = {
-  id: string;
-  runId: string;
-  automationId: string;
-  queueItemId: string | null;
-  summary: string;
-  toolPalette: AutomationToolFamily[];
-  createdAt: string;
 };
 
 export type AutomationPlannerProvider = "codex" | "claude";
@@ -324,6 +203,7 @@ export type AutomationRuleDraft = {
   triggers: AutomationTrigger[];
   /** @deprecated Legacy planner/editor compatibility field. */
   trigger: AutomationTrigger;
+  execution?: AutomationExecution;
   executor: AutomationExecutor;
   modelConfig?: MissionModelConfig;
   permissionConfig?: MissionPermissionConfig;
@@ -337,7 +217,6 @@ export type AutomationRuleDraft = {
   outputs: AutomationOutputs;
   verification: AutomationVerification;
   billingCode: string;
-  queueStatus?: AutomationRunQueueStatus;
   linkedRepoPaths?: string[];
   linkedDocPaths?: string[];
   rulePaths?: string[];

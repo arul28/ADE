@@ -2,6 +2,7 @@ import React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { GitPullRequest, GitMerge, Stack as Layers, CheckCircle, Warning, CircleNotch, X, GitBranch, Sparkle, ArrowRight, ArrowLeft, Check } from "@phosphor-icons/react";
 import { getModelById } from "../../../shared/modelRegistry";
+import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { useAppStore } from "../../state/appStore";
 import type {
   AiConfig,
@@ -441,8 +442,8 @@ export function CreatePrModal({
         const effectiveAiRaw = snapshot.effective?.ai;
         const effectiveAi = effectiveAiRaw && typeof effectiveAiRaw === "object" ? (effectiveAiRaw as AiConfig) : null;
         const persisted = effectiveAi?.featureModelOverrides?.pr_descriptions;
-        const nextAvailableModelIds = status.availableModelIds ?? [];
-        const nextModelId = persisted || nextAvailableModelIds[0] || status.models.claude[0]?.id || DEFAULT_PR_DESCRIPTION_MODEL;
+        const nextAvailableModelIds = deriveConfiguredModelIds(status);
+        const nextModelId = persisted || nextAvailableModelIds[0] || DEFAULT_PR_DESCRIPTION_MODEL;
         setAvailableDraftModelIds(nextAvailableModelIds);
         setDraftModel(nextModelId);
         setDraftReasoningEffort((current) => selectReasoningEffort(nextModelId, current));
@@ -1388,7 +1389,7 @@ export function CreatePrModal({
                                 featureModelOverrides: { pr_descriptions: modelId } as AiConfig["featureModelOverrides"],
                               });
                             }}
-                            availableModelIds={availableDraftModelIds.length > 0 ? availableDraftModelIds : undefined}
+                            availableModelIds={availableDraftModelIds}
                             showReasoning
                             reasoningEffort={draftReasoningEffort}
                             onReasoningEffortChange={setDraftReasoningEffort}

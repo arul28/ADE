@@ -1177,9 +1177,15 @@ describe("aiOrchestratorService", () => {
       const runId = launched.started?.run.id;
       if (!runId) throw new Error("Expected mission run to start");
 
-      const chat = fixture.aiOrchestratorService.getChat({ missionId: mission.id });
-      expect(chat.some((entry) => entry.content.includes("I’m online and getting the run ready."))).toBe(true);
-      expect(chat.some((entry) => entry.content.includes("I’m reading your prompt and sizing up the work."))).toBe(true);
+      const coordinatorThread = fixture.aiOrchestratorService
+        .listChatThreads({ missionId: mission.id, includeClosed: true })
+        .find((thread) => thread.threadType === "coordinator");
+      expect(coordinatorThread).toBeTruthy();
+      const coordinatorMessages = coordinatorThread
+        ? fixture.aiOrchestratorService.getThreadMessages({ missionId: mission.id, threadId: coordinatorThread.id, limit: 50 })
+        : [];
+      expect(coordinatorMessages.some((entry) => entry.content.includes("I’m online and getting the run ready."))).toBe(true);
+      expect(coordinatorMessages.some((entry) => entry.content.includes("I’m reading your prompt and sizing up the work."))).toBe(true);
 
       const lifecycleEvents = fixture.orchestratorService
         .listRuntimeEvents({ runId, eventTypes: ["progress"], limit: 50 })
@@ -1473,6 +1479,71 @@ describe("aiOrchestratorService", () => {
           lifecycleState: "planner_launch_failed",
         },
       });
+    } finally {
+      captureSpy.mockRestore();
+      fixture.dispose();
+    }
+  });
+
+  it("pauses the run and opens recovery when the coordinator runtime exits mid-turn", async () => {
+    let capturedCoordinator: CoordinatorAgent | null = null;
+    const originalEnsurePlannerLaunchTrackerStep = (CoordinatorAgent.prototype as any).ensurePlannerLaunchTrackerStep;
+    const captureSpy = vi
+      .spyOn(CoordinatorAgent.prototype as any, "ensurePlannerLaunchTrackerStep")
+      .mockImplementation(function (this: CoordinatorAgent) {
+        capturedCoordinator = this;
+        return originalEnsurePlannerLaunchTrackerStep.call(this);
+      });
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Run the coordinator and recover cleanly if it crashes.",
+        laneId: fixture.laneId,
+      });
+      setMissionPlanningMode(fixture.db, mission.id, "auto");
+
+      const launched = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "autopilot",
+        defaultExecutorKind: "unified",
+      });
+      const runId = launched.started?.run.id;
+      if (!runId) throw new Error("Expected mission run to start");
+      expect(capturedCoordinator).toBeTruthy();
+
+      (capturedCoordinator as any)?.deps.onCoordinatorRuntimeFailure?.({
+        category: "cli_runtime_failure",
+        reasonCode: "coordinator_runtime_cli_exit",
+        interventionType: "unrecoverable_error",
+        retryable: false,
+        recoveryOptions: ["retry", "cancel_run"],
+        message: "Codex CLI exited with code 1",
+        title: "Coordinator runtime exited unexpectedly",
+        body: "ADE paused the run because the coordinator process exited during execution. Error: Codex CLI exited with code 1.",
+        requestedAction: "Inspect coordinator runtime health, then resume the run to retry the same provider and mission state.",
+        turnId: "coord-turn-1",
+      });
+
+      await waitFor(() => fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 20 }).run.status === "paused");
+
+      const refreshedMission = fixture.missionService.get(mission.id);
+      const intervention = refreshedMission?.interventions.find(
+        (entry) =>
+          entry.status === "open"
+          && String(entry.metadata?.reasonCode ?? "") === "coordinator_runtime_cli_exit",
+      );
+      expect(intervention).toBeTruthy();
+      expect(refreshedMission?.status).toBe("intervention_required");
+
+      const runView = await fixture.aiOrchestratorService.getRunView({ missionId: mission.id, runId });
+      expect(runView?.lifecycle.displayStatus).toBe("blocked");
+      expect(runView?.coordinator.available).toBe(false);
+      expect(runView?.haltReason?.title).toBe("Coordinator runtime exited unexpectedly");
+      const offlineProgress = runView?.progressLog.find((item) => item.title === "Orchestrator offline");
+      expect(offlineProgress?.audience).toBe("timeline");
+      expect(
+        runView?.progressLog.some((item) => item.title === "Coordinator runtime exited unexpectedly"),
+      ).toBe(true);
     } finally {
       captureSpy.mockRestore();
       fixture.dispose();

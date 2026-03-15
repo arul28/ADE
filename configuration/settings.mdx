@@ -4,13 +4,13 @@ description: "Complete reference for every setting in ADE — from AI provider m
 icon: "sliders"
 ---
 
-<Info>**📸 Screenshot needed:** The Settings page with the left navigation sidebar visible, showing all section categories listed (General, AI Routing, Context, Budget & Usage, AI Providers, Integrations, Computer Use, CTO, Automations, Permissions, Notifications, Developer). The "General" section is active and its content is shown on the right.</Info>
+<Info>**Screenshot: The Settings page with the left navigation sidebar visible, showing all section categories listed (General, AI Routing, Context, Budget & Usage, AI Providers, Integrations, Computer Use, CTO, Automations, Permissions, Notifications, Developer). The "General" section is active and its content is shown on the right.</Info>
 
 ## Opening Settings
 
 Access Settings from anywhere in ADE:
 
-- **Keyboard shortcut**: `Cmd+,` (macOS) / `Ctrl+,` (Windows/Linux)
+- **Keyboard shortcut**: `Cmd+,`
 - **Sidebar**: Click the gear icon (⚙) at the bottom of the left sidebar
 - **Menu bar**: ADE → Preferences
 
@@ -128,7 +128,7 @@ Preferences are saved automatically and persist across sessions.
 
 Track and control AI spending across all agents and providers.
 
-<Info>**📸 Screenshot needed:** The Budget & Usage settings panel showing: a "Current Month" spending summary card ($34.20 of $100.00 monthly cap), a stacked bar chart breaking down spend by provider (Anthropic, OpenAI), and below it a table showing spend by lane for the last 7 days.</Info>
+<Info>**Screenshot: The Budget & Usage settings panel showing: a "Current Month" spending summary card ($34.20 of $100.00 monthly cap), a stacked bar chart breaking down spend by provider (Anthropic, OpenAI), and below it a table showing spend by lane for the last 7 days.</Info>
 
 ### Budget Caps
 
@@ -251,27 +251,12 @@ The heartbeat interval controls how frequently the CTO agent wakes up to review 
 
 ## Automations
 
-Global controls for the automation system and Night Shift.
+Global controls for the automation system.
 
 | Setting | Description | Default |
 |---------|-------------|---------|
 | Automations enabled | Master switch for all automation rules | On |
 | View all automations | Link to the Automations tab | — |
-
-### Night Shift
-
-Night Shift lets ADE run queued automations and missions during idle hours.
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Idle threshold | Minutes of user inactivity before Night Shift activates | 15 minutes |
-| Run window start | Earliest time Night Shift activates (24h format) | 23:00 |
-| Run window end | Latest time Night Shift continues running | 06:00 |
-| Night Shift budget | Separate daily budget cap for Night Shift runs | $20.00 |
-
-<Tip>
-Set the Night Shift budget separately from your daytime budget. Night Shift often runs long-horizon missions (large refactors, comprehensive test-suite builds) that need more budget than interactive sessions.
-</Tip>
 
 ---
 
@@ -316,21 +301,17 @@ Configure which filesystem paths agents can read and write:
 
 Control how and when ADE notifies you of important events.
 
-| Event | macOS notification | In-app banner | Email |
-|-------|-------------------|---------------|-------|
-| Mission complete | Configurable | Always | Optional |
-| Mission failed | Configurable | Always | Optional |
-| Budget warning (80%) | Configurable | Always | Optional |
-| Budget cap reached | Always on | Always | Optional |
-| Conflict detected | Configurable | Configurable | Off |
-| PR status change | Configurable | Configurable | Off |
-| Automation triggered | Off | Configurable | Off |
-| Automation completed | Configurable | Off | Off |
-| CTO delegation request | Always on | Always on | Optional |
-
-<Note>
-Email notifications require an email address configured in Settings → Notifications → Email. ADE sends notification emails directly — no third-party service. Email delivery requires an outbound SMTP connection from your machine.
-</Note>
+| Event | macOS notification | In-app banner |
+|-------|-------------------|---------------|
+| Mission complete | Configurable | Always |
+| Mission failed | Configurable | Always |
+| Budget warning (80%) | Configurable | Always |
+| Budget cap reached | Always on | Always |
+| Conflict detected | Configurable | Configurable |
+| PR status change | Configurable | Configurable |
+| Automation triggered | Off | Configurable |
+| Automation completed | Configurable | Off |
+| CTO delegation request | Always on | Always on |
 
 ---
 
@@ -338,7 +319,7 @@ Email notifications require an email address configured in Settings → Notifica
 
 Settings for debugging, diagnostics, and low-level access.
 
-<Info>**📸 Screenshot needed:** The Developer settings panel showing: a "Log Level" dropdown set to "info", a "Log file location" path field with a folder-open button, an "Open DevTools" button, a "MCP Debug Mode" toggle (off), and a "Database Inspector" button that opens a read-only SQLite browser.</Info>
+<Info>**Screenshot: The Developer settings panel showing: a "Log Level" dropdown set to "info", a "Log file location" path field with a folder-open button, an "Open DevTools" button, a "MCP Debug Mode" toggle (off), and a "Database Inspector" button that opens a read-only SQLite browser.</Info>
 
 | Setting | Description | Default |
 |---------|-------------|---------|
@@ -367,8 +348,7 @@ Settings for debugging, diagnostics, and low-level access.
     - **Per-session budget**: $2.00
     - **Monthly cap**: $50.00
     - **CTO heartbeat**: 15 minutes
-    - **Night Shift**: On, 23:00–06:00
-    - **Notifications**: Mission complete + Budget warning, macOS only
+    - **Notifications**: Mission complete + Budget warning
   </Tab>
   <Tab title="Small Team">
     Emphasize observability and shared standards:
@@ -389,7 +369,6 @@ Settings for debugging, diagnostics, and low-level access.
     - Enable multiple external MCP servers (GitHub, filesystem, Ghost OS)
     - Set compaction threshold to 60% for earlier and more frequent compaction
     - Enable verbose MCP debug logging only when diagnosing specific issues
-    - Night Shift with a generous budget for overnight mission runs
     - `autoStart: true` on all frequently-used MCP servers
   </Tab>
 </Tabs>
@@ -410,7 +389,6 @@ Settings for debugging, diagnostics, and low-level access.
 | Editor font size | No | Yes |
 | Terminal shell | No | Yes |
 | Notification preferences | No | Yes |
-| Night Shift schedule | No | Yes |
 | API keys | Never | In `local.secret.yaml` |
 
 ---

@@ -15,7 +15,7 @@ import { CARD_SHADOW_STYLE } from "../shared";
 type BudgetCapDraft = NonNullable<BudgetCapConfig["budgetCaps"]>[number] & { rowId: string };
 
 const PRESET_OPTIONS: BudgetPreset[] = ["conservative", "maximize", "fixed"];
-const SCOPE_OPTIONS: BudgetCapScope[] = ["global", "automation-rule", "night-shift-run", "night-shift-global"];
+const SCOPE_OPTIONS: BudgetCapScope[] = ["global", "automation-rule"];
 const TYPE_OPTIONS: BudgetCapType[] = ["weekly-percent", "five-hour-percent"];
 const PROVIDER_OPTIONS: BudgetCapProvider[] = ["any", "claude", "codex"];
 const ACTION_OPTIONS: BudgetCapAction[] = ["block", "warn", "pause"];
@@ -34,14 +34,12 @@ function capTypeLabel(value: BudgetCapType): string {
 
 function toDraft(config: BudgetCapConfig | null): {
   preset: string;
-  nightShiftReservePercent: string;
   alertAtWeeklyPercent: string;
   refreshIntervalMin: string;
   caps: BudgetCapDraft[];
 } {
   return {
     preset: config?.preset ?? "",
-    nightShiftReservePercent: config?.nightShiftReservePercent != null ? String(config.nightShiftReservePercent) : "",
     alertAtWeeklyPercent: config?.alertAtWeeklyPercent != null ? String(config.alertAtWeeklyPercent) : "",
     refreshIntervalMin: config?.refreshIntervalMin != null ? String(config.refreshIntervalMin) : "",
     caps: (config?.budgetCaps ?? []).map((cap, index) => ({
@@ -89,11 +87,10 @@ export function BudgetCapEditor({
   const summaryChips = useMemo(() => {
     const chips: string[] = [];
     if (draft.preset) chips.push(`Preset: ${draft.preset}`);
-    if (draft.nightShiftReservePercent.trim().length > 0) chips.push(`Night Shift Reserve: ${draft.nightShiftReservePercent}%`);
     if (draft.alertAtWeeklyPercent.trim().length > 0) chips.push(`Alert at ${draft.alertAtWeeklyPercent}% weekly`);
     if (draft.refreshIntervalMin.trim().length > 0) chips.push(`Refresh every ${draft.refreshIntervalMin}m`);
     return chips;
-  }, [draft.alertAtWeeklyPercent, draft.nightShiftReservePercent, draft.preset, draft.refreshIntervalMin]);
+  }, [draft.alertAtWeeklyPercent, draft.preset, draft.refreshIntervalMin]);
 
   if (!config && !onSave) {
     return (
@@ -118,9 +115,6 @@ export function BudgetCapEditor({
     if (!onSave) return;
     const nextConfig: BudgetCapConfig = {
       ...(draft.preset ? { preset: draft.preset as BudgetPreset } : {}),
-      ...(parseOptionalNumber(draft.nightShiftReservePercent) != null
-        ? { nightShiftReservePercent: parseOptionalNumber(draft.nightShiftReservePercent) }
-        : {}),
       ...(parseOptionalNumber(draft.alertAtWeeklyPercent) != null
         ? { alertAtWeeklyPercent: parseOptionalNumber(draft.alertAtWeeklyPercent) }
         : {}),
@@ -178,14 +172,6 @@ export function BudgetCapEditor({
               <input
                 value={draft.refreshIntervalMin}
                 onChange={(event) => { setDraft((current) => ({ ...current, refreshIntervalMin: event.target.value })); setDirty(true); }}
-                className={FIELD_CLS_PRIMARY}
-              />
-            </label>
-            <label className="space-y-1">
-              <span className="font-mono text-[9px] uppercase tracking-[0.8px] text-[#71717A]">Night Shift reserve %</span>
-              <input
-                value={draft.nightShiftReservePercent}
-                onChange={(event) => { setDraft((current) => ({ ...current, nightShiftReservePercent: event.target.value })); setDirty(true); }}
                 className={FIELD_CLS_PRIMARY}
               />
             </label>

@@ -64,10 +64,25 @@ function isGenericInternalActivityText(value: string): boolean {
 }
 
 function shouldDisplayMissionFeedItem(item: MissionRunViewProgressItem): boolean {
+  if (item.audience && item.audience !== "mission_feed") return false;
   const title = sanitizeMissionFeedText(item.title);
   const detail = sanitizeMissionFeedText(item.detail);
+  const normalizedTitle = title.toLowerCase();
+  const normalizedDetail = detail.toLowerCase();
 
   if (!title.length && !detail.length) return false;
+  if (normalizedTitle === "run created" || normalizedTitle === "run activated") return false;
+  if (
+    normalizedTitle === "mission update"
+    && (
+      normalizedDetail.includes("status changed to")
+      || normalizedDetail.includes("in_progress")
+      || normalizedDetail.includes("start_run")
+      || normalizedDetail.includes("activate_run")
+    )
+  ) {
+    return false;
+  }
   if (isDismissiveSteerMessage(title) || isDismissiveSteerMessage(detail)) return false;
   if (item.kind === "user" && isDismissiveSteerMessage(detail || title)) return false;
   if (looksLikeLowSignalNoise(title) && (!detail.length || looksLikeLowSignalNoise(detail))) return false;

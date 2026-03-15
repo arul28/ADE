@@ -6,6 +6,7 @@ export type TerminalSessionStatus = "running" | "completed" | "failed" | "dispos
 
 export type TerminalToolType =
   | "shell"
+  | "run-shell"
   | "claude"
   | "codex"
   | "claude-orchestrated"

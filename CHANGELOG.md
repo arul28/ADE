@@ -5,6 +5,34 @@ All notable changes to ADE will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2026-03-15
+
+### Added
+
+- **Provider health pipeline** — five-module detection system (`authDetector`, `providerCredentialSources`, `providerConnectionStatus`, `providerRuntimeHealth`, `claudeRuntimeProbe`) replaces the single-pass provider check with granular CLI, credential, and runtime health detection
+- **CTO identity presets** — built-in personality presets for the CTO agent with one-click selection in the identity editor
+- **Budget cap editor** — inline budget cap editing in the automations UI
+
+### Changed
+
+- **Website overhaul** — complete rewrite of the landing page with accurate feature descriptions, screenshot placeholders, quick-start instructions, and links to docs/GitHub/releases; removed marketing fluff and false claims
+- **README** — docs, website, and download links moved to a prominent position after badges; consolidated redundant sections
+- **Documentation** — updated Mintlify docs and internal architecture docs to match current implementation; removed references to deleted services; fixed inaccurate feature descriptions
+- **Claude runtime probe** — cache is now scoped by project root to prevent cross-project contamination when switching projects
+- **Auth error detection** — deduplicated `isClaudeRuntimeAuthError` and `CLAUDE_RUNTIME_AUTH_ERROR` into a single shared module
+- **GitHub token migration** — added completion flag to skip redundant filesystem checks after first migration
+- **Memory doc sync** — debounced `syncDerivedMemoryDocs` (2s) to avoid write storms during rapid memory mutations
+- **Automation run details** — fixed double DB lookup for ingress events in `getRunDetail`
+- **Chat session comment** — corrected stale "lazy boot" comment to reflect eager pre-warm behavior
+- **Docs site branding** — updated Mintlify config with correct logo paths and canonical URL
+
+### Removed
+
+- `automationRoutingService` (routing logic consolidated into `automationService`)
+- `NightShiftTab` (deprecated automation UI)
+- `PreviewPage` and `TestPage` (unused renderer pages)
+- `infra/` directory (SST cloud infrastructure — ADE is fully local-first)
+
 ## [1.0.1] - 2026-03-14
 
 ### Added
@@ -42,5 +70,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Initial public release.
 
+[1.0.2]: https://github.com/arul28/ADE/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/arul28/ADE/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/arul28/ADE/releases/tag/v1.0.0

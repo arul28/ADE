@@ -2,217 +2,180 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 >
-> Last updated: 2026-03-11
+> Last updated: 2026-03-15
 
 ---
 
 ## Status
 
-This document is the canonical product direction for ADE Automations in W5 and beyond.
+This document captures ADE's current automation model.
 
-- Surface: `/automations` is the first-class UI for creating, simulating, running, and reviewing automations.
-- Settings: Settings holds global defaults, connector auth, and policy presets. It is not the primary automation builder UI.
-- Runtime: automation executions use the same agent/runtime primitives as missions and CTO workers, including guardrails, memory, and audit history.
-- Current baseline: builder UI, Night Shift queue/review surfaces, budget tracking, automation-to-mission dispatch, local webhook/GitHub ingress, tool-family allowlists, and backward-compatible legacy actions (`run-command`, `run-tests`, `predict-conflicts`) are shipped.
-- Still pending in `W5b`: final review/publish polish and a few executor/runtime edge cases. The external MCP substrate from W8 now exists; remaining automation follow-through is product polish and deeper adoption of that shipped surface.
-
-Implementation note: the current baseline still carries some config-era compatibility fields, but the product contract is the Automations tab as the canonical authoring and operations surface.
+- Surface: `/automations` is the canonical UI for creating, simulating, running, and reviewing automations.
+- Settings: stores shared defaults and policy presets, including usage policy.
+- Runtime: each automation dispatches to one of three execution surfaces:
+  - `agent-session`
+  - `mission`
+  - `built-in-task`
+- Triggers: only **time-based** and **action-based** triggers are supported for automation entries.
+- CTO role: CTO owns Linear intake and dispatch; Automations never duplicate issue routing.
 
 ---
 
 ## Overview
 
-Automations turns ADE into a programmable background execution layer for the repo. Users can define local and external triggers, choose who or what should execute the work, control available tools, attach memory, and review outcomes through a friendly builder rather than raw config editing.
+Automations are rule-based background workflows in ADE.
 
-An automation can target any of these executor modes:
+Each rule has:
 
-- `automation-bot`: disposable worker with optional automation-scoped memory
-- `employee`: persistent worker under the CTO org chart
-- `cto-route`: let the CTO choose the best persistent employee or handle it directly
-- `night-shift`: queue the work for unattended overnight execution
+- a trigger (time-based or action-based),
+- a target execution surface,
+- a prompt / mission template,
+- optional tool palette,
+- optional output contract,
+- and guardrails.
 
-This keeps one automation engine while supporting both quick disposable jobs and long-lived employees with memory.
+The execution surface model is the key control point:
 
-### Core Principle: Full ADE Tool Access (W5b)
+- **agent-session**: launch an AI chat thread scoped to the automation and record it as an automation-only chat.
+- **mission**: launch the full Mission runtime (planning/execution/validation, lane workers, interventions).
+- **built-in-task**: run an ADE-native task with structured input and output when no full agent model is required.
 
-Automations are not a limited "run shell command" system. In the shipped W5b baseline, an automation rule can already dispatch an AI agent through the same orchestrator/mission substrate used by CTO workers and mission workers, with tool access shaped by rule-level allowlists. The intended end-state remains **the same capabilities as any CTO worker or mission worker**, including every ADE tool family that has been implemented:
+Agent-session results are visible in **Automations → History**. Mission runs and multi-step artifacts are visible in the Missions surface.
 
-- **Repo/code tools**: read files, search code, analyze dependencies
-- **Git operations**: branch, commit, merge, rebase, cherry-pick
-- **Terminal/PTY**: run arbitrary commands in sandboxed environments
-- **Test runners**: execute test suites, report results
-- **GitHub PR workflows**: open PRs, request reviews, post comments, merge
-- **Linear actions**: create/update issues, transition state, post comments
-- **Browser automation**: navigate, interact, screenshot
-- **External MCP tools** (W8): any ADE-configured external MCP server, exposed back through ADE as namespaced tools
-- **Memory tools**: read/write project memory, search knowledge base
-- **Conflict resolution**: detect and resolve merge conflicts
-- **Mission launch**: spawn sub-missions, validate outcomes, generate artifacts
+---
 
-The user configures per rule: which model to use, what permission level, which tools are available, what the agent should do, and how to handle output (open PR, post to Linear, run tests, verify before publishing). The automation executor dispatches through the orchestrator's mission system — the same infrastructure that powers interactive missions. The main remaining gaps are polish and the unfinished external-MCP family, not greenfield runtime work.
+## Trigger model
 
-## Product Model
+Automation rules are split into two trigger classes.
 
-Each automation rule is defined by a small set of stable building blocks:
+### Time-based
 
-- `trigger`: what starts the rule
-- `executor`: who runs it
-- `template/prompt`: the repeatable behavior or starting instructions
-- `tool palette`: which tools/integrations the automation may use
-- `memory`: what the automation remembers across runs
-- `guardrails`: budgets, time limits, approval rules, and allowed hours
-- `outputs`: verification requirements, posting behavior, artifacts, and notifications
+- `schedule` for cron-like cadence.
 
-Representative shape:
+### Action-based
 
-```typescript
-interface AutomationRule {
-  id: string;
-  name: string;
-  triggers: AutomationTrigger[];
-  executor: {
-    mode: "automation-bot" | "employee" | "cto-route" | "night-shift";
-    targetId?: string;
-  };
-  templateId?: string;
-  prompt?: string;
-  toolPalette: string[];
-  memory: {
-    mode: "none" | "automation" | "automation-plus-employee";
-  };
-  guardrails: {
-    budgetUsd?: number;
-    maxDurationMin?: number;
-    activeHours?: { start: string; end: string; timezone: string };
-    verifyBeforePublish: boolean;
-  };
-}
-```
-
-## Linear Dispatch Boundary
-
-> Decided 2026-03-06
-
-**CTO owns Linear dispatch; Automations does NOT duplicate it.**
-
-The CTO heartbeat (W4, shipped) is the intelligent intake and routing path for Linear issues. It polls Linear, classifies issues, selects mission templates, and dispatches work to the appropriate worker. This is where logic like "P0 bug -> bug-fix template -> backend-dev worker" belongs.
-
-Automations handles local triggers (commit, schedule, session-end, manual), webhooks, and programmable workflows. Linear appears in Automations only as an **action** — for example, "on commit -> update Linear issue status" or "on session-end -> post summary to Linear issue". Automations does NOT re-implement Linear issue intake or routing as a trigger.
-
-If a user wants "P0 bug -> specific template", that is a CTO dispatch policy configured via `linearSync.autoDispatch.rules` in W4, not an automation rule. This boundary prevents UX confusion ("which system handles my Linear issue?") and avoids duplicating the already-shipped W4 dispatch infrastructure.
-
-## Supported Trigger Families
-
-W5 supports both local repo triggers and external event triggers.
-
-### Local triggers
-
-- `manual`
-- `schedule`
-- `commit`
+- `manual` from the Automations UI
+- `git.commit` and other Git event variants
 - `session-end`
+- `webhook` and `github.webhook`
 
-### External triggers (W5b)
+Current action coverage is intentionally focused to keep runtime semantics predictable and easy to debug.
 
-- `GitHub` (webhooks)
-- `webhook` (generic)
+---
 
-Note: Linear is intentionally excluded as a trigger — see Linear Dispatch Boundary above. Slack, PagerDuty, and other external sources are deferred for later phases and can plug into the same trigger contract once the first connector set is stable.
+## Trigger and execution boundaries
 
-## Tool Palettes
+### CTO and Linear boundary
 
-Automations should not be constrained to a tiny fixed action enum. Users configure a tool palette per rule so the executor gets exactly the capabilities it needs.
+CTO owns Linear issue intake. Linear polling, priority routing, worker assignment, and dispatch are in CTO.
 
-Initial W5 palette families:
+Automations can use Linear in two ways:
 
-- repo/code/test tools
-- GitHub actions: open PR, comment on PR, review PR, request reviewers
-- Linear actions: create issue, update issue, comment, transition state
+- as an execution target (`output` writes, comments, status updates),
+- or as an external context in output templates.
+
+They do **not** define Linear issue intake logic.
+
+---
+
+## Execution surfaces
+
+### 1) agent-session
+
+Best for lightweight autonomous text-work: reviews, audits, short summaries, status checks.
+
+- lightweight one-shot agent call path
+- direct visibility in Automations history as a chat thread
+- minimal orchestration overhead
+
+### 2) mission
+
+Best for code-affecting or multi-step tasks.
+
+- planner + phase model
+- interventions and validation gates
+- reusable lane/worker execution
+- multi-artifact outputs
+
+Mission results use the Missions UI by design.
+
+### 3) built-in-task
+
+Best for deterministic built-in ADE operations.
+
+- schema-driven inputs and outputs
+- no separate mission thread
+- low overhead execution
+
+---
+
+## Execution model and memory
+
+- `agent-session`: uses rule-scoped memory and optional project memory depending on config.
+- `mission`: inherits mission memory model and may reference project/employee context.
+- `built-in-task`: usually project-context lightweight and task-scoped.
+
+Execution mode should map directly to what each rule needs: cheap and local for quick automation, mission for durable workflows.
+
+---
+
+## Tool palettes
+
+Automations expose explicit tool palettes per rule instead of a fixed global enum. Examples:
+
+- repo/code/test
+- GitHub actions (review/comment/open/reviewers)
+- Linear actions (create/update/comment/status)
+- mission launch/validation utilities
 - MCP tool bundles
-- memory read/write tools
-- internal ADE operations such as mission launch, validation, and artifact generation
+- memory tools
 
-## UX Contract
+---
 
-The Automations tab is optimized for fast setup and safe unattended execution.
+## Output model and result routing
 
-- Template gallery for common recipes and team-shared starting points
-- Natural-language creation flow that drafts a rule from plain English
-- Friendly builder with explicit steps for Trigger, Run As, Tools, Memory, Guardrails, Output, and Verification
-- Simulation / dry-run before activation
-- Run history with rerun, pause, edit, and failure inspection
-- Clear ownership surfaces so users can see which employee, bot, or Night Shift queue owns a rule
+Automations can route outputs to:
 
-## Memory Model
+- comments/notes in artifacts
+- PR updates
+- Linear updates
+- in-app notifications
+- built-in workflow endpoints
 
-Automations can keep their own scoped memory even when they run as disposable bots.
+When output requires high visibility or follow-up, choose `mission`; otherwise an `agent-session` often provides the right signal-to-noise profile.
 
-- Automation-scoped memory stores recurring preferences, learned context, and prior run summaries for that rule
-- When an automation targets a persistent employee, automation memory is combined with that employee's long-lived identity memory
-- CTO-routed rules can use automation memory for the rule itself while still benefiting from CTO and employee project memory
+---
 
-This is a key differentiator from one-shot background jobs: recurring automations improve over time.
+## Usage and budget policy
 
-## Relationship to CTO and Employees
+Budget policy is shared from **Settings > Usage** and applies consistently across automations, missions, and chat surfaces.
 
-The Automations tab is where rules are authored. The CTO tab is where persistent employees live.
+- rule-level caps are allowed for predictable cost control
+- global/shared caps prevent accidental runaway spend
+- budget changes in settings apply across surfaces
 
-- Persistent employees can own one or more automations
-- The CTO can review, route, or reassign automations across employees
-- Night Shift is an execution mode and queue within the automation system, not a separate product surface
-- Morning briefings and history views make overnight employee work reviewable inside the same automation system
+Usage telemetry should remain aligned with actual cost models for each provider type.
 
-## Relationship to Settings
+---
 
-Settings stores global defaults and infrastructure, including:
+## What changed with the current model
 
-- default model/provider preferences
-- connector credentials and integration health for GitHub, Linear, and webhooks
-- default guardrails and budget policies
-- default Night Shift window and notification preferences
-- team template defaults and shared presets
+- Automation execution now uses a single model: **time-based or action-based** triggers plus three execution surfaces (`agent-session`, `mission`, `built-in-task`).
+- All budget policy for automations is centralized in **Settings > Usage** and shared with Missions.
+- Output placement is explicit by execution surface: `agent-session` writes to Automations history, while `mission` writes stay in Missions.
 
-Rule creation, simulation, activation, and run review happen in `/automations`, not in Settings.
+---
 
-## Usage Tracking and Budget Caps
+## Competitive references
 
-> Added 2026-03-06. Inspired by [CodexBar](https://github.com/steipete/CodexBar).
+- Template gallery and trigger/action taxonomy are informed by modern automation systems.
+- ADE adapts local-first execution and explicit execution surfaces to reduce confusion over where output lives.
 
-Automations includes a usage tracking and budget cap layer to give users visibility into AI spend and prevent runaway costs from unattended execution.
+---
 
-### Usage Tracking
-
-- **OAuth API polling**: Real-time usage data from Claude (`api.anthropic.com/api/oauth/usage` with five_hour and seven_day windows) and Codex (`chatgpt.com/backend-api/wham/usage` or CLI RPC).
-- **Local cost scanning**: Parse JSONL session logs from `~/.claude/projects/` and `~/.codex/sessions/` for granular per-session cost attribution.
-- **Pacing calculation**: Determine whether usage is on-track, ahead, or behind based on `usage% vs time_elapsed%` within the billing window.
-
-### Budget Caps
-
-- **Per-rule caps**: Each automation rule can specify a USD or token budget per run.
-- **Per-night-shift-run caps**: Limit how much a single Night Shift session can spend.
-- **Global caps**: Expressed as percentage of weekly budget or absolute USD.
-- **Night Shift reserve**: Protect X% of weekly budget for overnight runs, preventing daytime usage from starving Night Shift.
-
-### Implementation
-
-- `usageTrackingService`: Provider-agnostic usage snapshots, polling intervals, pacing math.
-- `budgetCapService`: Budget enforcement at rule, night-shift, and global levels. Emits budget-breach events for notification/auto-pause.
-- Usage data surfaced in the Automations tab via a dedicated "Usage" sub-tab.
-
-## Competitive References
-
-> Added 2026-03-06
-
-Design decisions informed by competitive analysis:
-
-- **Cursor Automations (Mar 2026)**: Triggers from GitHub/Linear/Slack/PagerDuty/webhooks/schedules, cloud sandbox agents with MCP access, memory tool, template categories (security review, PR review, incident triage, routine maintenance). ADE adopts the template gallery pattern, trigger taxonomy, and memory-aware execution. ADE skips cloud sandbox execution (local-first) and does not use Linear as an automation trigger (CTO dispatch boundary).
-- **Codex Agents SDK**: "Works unprompted" concept, skills system, multi-agent orchestration with PM agent, trace dashboard. ADE adopts the "works unprompted" framing for Night Shift, trace/history visibility, and multi-agent orchestration (CTO as PM agent equivalent).
-- **CodexBar**: macOS menu bar usage tracker for Claude and Codex. ADE adopts the OAuth API polling pattern and pacing calculation, integrated into the Usage tab rather than a separate menu bar app.
-
-## Canonical References
+## Canonical references
 
 - [docs/features/CTO.md](CTO.md)
-- [docs/features/AGENTS.md](AGENTS.md)
 - [docs/features/MISSIONS.md](MISSIONS.md)
 - [docs/architecture/AI_INTEGRATION.md](../architecture/AI_INTEGRATION.md)
 - [docs/architecture/CONTEXT_CONTRACT.md](../architecture/CONTEXT_CONTRACT.md)

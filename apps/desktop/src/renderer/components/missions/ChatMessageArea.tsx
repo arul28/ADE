@@ -107,7 +107,7 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
     if (!selectedChannel) return "Mission chat";
     switch (selectedChannel.kind) {
       case "global":
-        return "Signal and raw mission traffic stay visible here, including routed user notes and coordinator updates.";
+        return "Readable mission updates land here. Timeline keeps the raw scheduler and runtime diagnostics.";
       case "orchestrator":
         return "Message the coordinator directly for planning changes, recovery guidance, and run-level direction.";
       case "teammate":

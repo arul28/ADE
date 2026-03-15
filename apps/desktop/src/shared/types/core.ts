@@ -54,6 +54,7 @@ export type DockLayout = Record<string, number>;
 export type OnboardingStatus = {
   completedAt: string | null;
   dismissedAt: string | null;
+  freshProject?: boolean;
 };
 
 export type OnboardingDetectionIndicator = {

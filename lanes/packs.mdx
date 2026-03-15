@@ -15,7 +15,7 @@ A Lane Pack contains:
 - **Recent checkpoints** — the last N session boundaries with their SHAs, diffs, and outcomes
 - **Current diff summary** — a narrative description of what has changed and why
 
-<Info>**Screenshot needed:** The Packs sub-tab in the right inspector, showing a Lane Pack with labeled sections: intent at the top, criteria as a bulleted list, touched files as a compact file list, and a diff summary paragraph. Show a "Regenerate" button and a pack freshness timestamp in the header.</Info>
+<Info>**Screenshot:** The Packs sub-tab in the right inspector, showing a Lane Pack with labeled sections: intent at the top, criteria as a bulleted list, touched files as a compact file list, and a diff summary paragraph. Show a "Regenerate" button and a pack freshness timestamp in the header.</Info>
 
 ---
 
@@ -23,7 +23,7 @@ A Lane Pack contains:
 
 ADE regenerates the Lane Pack automatically after each committed checkpoint. You can also manually trigger regeneration from the Packs sub-tab. A freshness indicator turns amber if the pack is more than one session stale — this matters because agents injected with stale packs may not have accurate context about recent changes.
 
-<Tip>If the freshness indicator turns amber, use the keyboard shortcut `Cmd+Shift+P` (macOS) / `Ctrl+Shift+P` (Windows/Linux) to instantly regenerate the Lane Pack without leaving the current view.</Tip>
+<Tip>If the freshness indicator turns amber, use the keyboard shortcut `Cmd+Shift+P` to instantly regenerate the Lane Pack without leaving the current view.</Tip>
 
 ---
 

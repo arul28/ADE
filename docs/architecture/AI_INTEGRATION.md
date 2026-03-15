@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-14
+> Last updated: 2026-03-15
 
 The AI integration layer replaces the previous hosted agent with a local-first, provider-flexible approach. Instead of a cloud backend with remote job queues, ADE routes work to configured runtimes (CLI subscriptions, API-key/OpenRouter providers, and local endpoints such as LM Studio/Ollama/vLLM), coordinates tooling through MCP, and manages multi-step workflows via an AI orchestrator.
 
@@ -72,7 +72,7 @@ From Phase 4 onward, ADE treats agent runtimes as the mandatory substrate for al
 - Mission planning and step execution
 - Conflict and PR AI actions
 - Narrative generation and background summaries
-- Night Shift, watcher, and review workflows
+- Automations (time-based and action-based), watcher, and review workflows
 - Future mobile-triggered/background runs
 
 All of those paths are normalized into a runtime record (`agentDefinitionId` + run/step/session lineage + memory policy + guardrails), even when the UX appears "one-shot".
@@ -211,14 +211,21 @@ The AI integration service (`aiIntegrationService.ts`) is the main-process servi
 
 The service routes each AI task to the appropriate provider based on task type and configuration:
 
-| Task Type | Default Provider | CLI Command | Rationale |
-|-----------|-----------------|-------------|-----------|
-| `planning` | Claude CLI | `claude -p` | Strong multi-step reasoning for mission decomposition |
-| `implementation` | Codex CLI | `codex exec` | Optimized code generation with sandbox isolation |
-| `review` | Claude CLI | `claude -p` | Detailed analysis with explanation capabilities |
-| `conflict_resolution` | Claude CLI | `claude -p` | Reasoning over overlapping changes with full context |
-| `narrative` | Claude CLI | `claude -p` | Concise, developer-facing markdown summaries |
-| `pr_description` | Claude CLI | `claude -p` | Factual, structured markdown for GitHub |
+| Task Type | Default Model | Rationale |
+|-----------|--------------|-----------|
+| `planning` | `anthropic/claude-sonnet-4-6` | Strong multi-step reasoning for mission decomposition |
+| `implementation` | `openai/gpt-5.4-codex` | Optimized code generation with sandbox isolation |
+| `review` | `anthropic/claude-sonnet-4-6` | Detailed analysis with explanation capabilities |
+| `conflict_resolution` | `anthropic/claude-sonnet-4-6` | Reasoning over overlapping changes with full context |
+| `commit_message` | `anthropic/claude-haiku-4-5` | Short-form generation, low latency |
+| `memory_consolidation` | `anthropic/claude-haiku-4-5` | Batch memory lifecycle processing |
+| `narrative` | `anthropic/claude-haiku-4-5` | Concise, developer-facing markdown summaries |
+| `pr_description` | `anthropic/claude-haiku-4-5` | Factual, structured markdown for GitHub |
+| `terminal_summary` | `anthropic/claude-haiku-4-5` | Structured terminal session summaries |
+| `mission_planning` | `anthropic/claude-sonnet-4-6` | Multi-turn mission decomposition with tool use |
+| `initial_context` | `anthropic/claude-sonnet-4-6` | Repository scan and context doc generation |
+
+All task types route through the unified executor. Model resolution follows: explicit per-call hint > `taskRouting.<task>.model` in config > built-in default. CLI-wrapped models spawn as subprocesses; API/local models execute in-process via Vercel AI SDK.
 
 #### Narrative Generation
 
@@ -246,18 +253,15 @@ Generates pull request content from lane history:
 
 #### Provider Detection
 
-On startup and project switch, the AI integration service probes for available CLI tools:
+On startup and project switch, the AI integration service probes for available providers through a multi-module detection pipeline:
 
-```typescript
-function detectAvailableProviders(): ProviderAvailability {
-  return {
-    claude: commandExists("claude"),
-    codex: commandExists("codex"),
-  };
-}
-```
+- **`authDetector.ts`**: Detects CLI subscriptions (`claude`, `codex`), configured API keys, OpenRouter keys, and local model endpoints. Returns a `DetectedAuth[]` array used for mode derivation and model availability filtering.
+- **`providerCredentialSources.ts`**: Reads local credential files (Claude OAuth credentials, Codex auth tokens, macOS Keychain) and checks token freshness.
+- **`providerConnectionStatus.ts`**: Builds a structured `AiProviderConnections` object with per-provider `authAvailable`, `runtimeDetected`, `runtimeAvailable`, `usageAvailable`, `blocker`, and `sources` fields.
+- **`providerRuntimeHealth.ts`**: Tracks runtime health state (`ready`, `auth-failed`, `runtime-failed`) per provider. Health version increments on state changes, invalidating the status cache.
+- **`claudeRuntimeProbe.ts`**: On forced refresh, performs a lightweight Claude Agent SDK query to confirm the Claude runtime can authenticate and start from the current app session.
 
-If no CLI tools are detected, ADE operates in guest mode: all deterministic features (packs, diffs, conflict detection) work normally, but AI-generated content (narratives, proposals, PR descriptions) is unavailable. The UI clearly indicates which features require a CLI subscription.
+If no usable provider is detected, ADE operates in guest mode: all deterministic features (packs, diffs, conflict detection) work normally, but AI-generated content (narratives, proposals, PR descriptions) is unavailable. The UI clearly indicates which features require a CLI subscription.
 
 #### Model Registry & Dynamic Pricing
 
@@ -1218,6 +1222,7 @@ Phases 1, 1.5, 2, 3, 4, and 5 are complete. The v1 closeout (2026-03-13) address
 - Model registry unified: pricing fields in `ModelDescriptor`, `getModelPricing()`, `FAMILY_TO_CLI` map, `modelProfiles.ts` derived from registry
 - Model registry expansion (40+ models across 8 provider families, auth-type classification, runtime enrichment via `enrichModelRegistry()`)
 - Dynamic pricing via models.dev integration (`modelsDevService.ts`: fetch, 6h cache, fallback to hardcoded)
+- Provider detection pipeline: `authDetector.ts` + `providerCredentialSources.ts` + `providerConnectionStatus.ts` + `providerRuntimeHealth.ts` + `claudeRuntimeProbe.ts` (structured per-provider connection status with auth, runtime, and usage availability)
 - Provider options simplification (`providerOptions.ts`: pure tier-string passthrough, no invented token budgets)
 - Reasoning tier standardization: Claude CLI low/medium/high, Claude API low/medium/high/max, Codex minimal/low/medium/high/xhigh
 - UnifiedModelSelector redesign (auth-type grouping, hide unavailable models, "Configure more..." settings link)
@@ -1241,7 +1246,7 @@ Phases 1, 1.5, 2, 3, 4, and 5 are complete. The v1 closeout (2026-03-13) address
 - CTO core identity (W1), worker org chart (W2), heartbeat and activation (W3)
 - Bidirectional Linear sync (W4): `linearClient.ts`, `linearSyncService.ts`, `linearOutboundService.ts`, `linearRoutingService.ts`, `linearTemplateService.ts`, `linearCredentialService.ts`, `flowPolicyService.ts`, `linearCloseoutService.ts`, `linearDispatcherService.ts`, `linearIntakeService.ts`, `linearOAuthService.ts`, `linearWorkflowFileService.ts`, `issueTracker.ts` abstraction
 - Linear dispatcher hardening (v1 closeout): snapshot refresh before step execution, employee fallback to `awaiting_delegation`, PR null-check for manual mode, closure notifications to agent chat sessions, dynamic delegation UI
-- Automations platform and Night Shift (W5): `automationService.ts`, `automationPlannerService.ts`, `automationRoutingService.ts`, `automationIngressService.ts`, `automationSecretService.ts`
+- Automations platform (W5): `automationService.ts`, `automationPlannerService.ts`, `automationIngressService.ts`, `automationSecretService.ts`
 - CTO + Org Experience Overhaul (W-UX): onboarding, activity, memory browser, and polish surfaces
 - External MCP consumption (W8): ADE-managed external MCP registry/service, namespaced `ext.*` tool exposure
 - OpenClaw bridge (W9)
@@ -1269,7 +1274,7 @@ Phases 1, 1.5, 2, 3, 4, and 5 are complete. The v1 closeout (2026-03-13) address
 - Computer use runtime: The `localComputerUse.ts` capability detection module exists, screenshot capture is available as a workflow tool (depends on agent runtime support), and mission validation models screenshot/browser-verification/video evidence requirements, but the full `screenshot_environment` / `interact_gui` / `record_environment` MCP tool loop is not exposed end-to-end. Automatic PR proof embedding from computer-use artifacts is not shipped.
 - Multi-device sync (cr-sqlite + WebSocket real-time replication) is Phase 6 work.
 - Remote brain deployment (user-owned VPS) is Phase 6 work.
-- iOS companion app is Phase 7 work.
+- iOS companion app (core functionality) is Phase 6 work; advanced mobile features are Phase 7.
 - Mission orchestration works end-to-end but complex multi-phase flows may benefit from human guidance via interventions.
 
 ### Compute Backends for Agent Execution

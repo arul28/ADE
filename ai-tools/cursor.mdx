@@ -1,39 +1,19 @@
 ---
-title: "Cursor setup"
-description: "Configure Cursor for your documentation workflow"
+title: "Cursor"
+description: "Open your project in Cursor from ADE and track the session."
 icon: "arrow-pointer"
 ---
 
-Set up Cursor to help you write and maintain your Mintlify documentation.
+## Overview
 
-## Prerequisites
+ADE can launch [Cursor](https://cursor.com) for your project directly from the Run tab. When launched through ADE, the session is tracked as a managed session in the lane for visibility in the History view.
 
-- Cursor editor installed
+## Requirements
 
-## Setup
+- Cursor installed on your machine
 
-<Steps>
-<Step title="Open your docs directory in Cursor">
-  Open the root of your documentation repository where `docs.json` is located.
-</Step>
+## Launching Cursor from ADE
 
-<Step title="Install the Mintlify skill">
-  In the integrated terminal, run:
+Open the **Run** tab or **Project Home** and click the **Cursor** launcher. ADE opens the current project (or the selected lane's worktree) in Cursor as a separate application window.
 
-  ```bash
-  npx skills add https://mintlify.com/docs
-  ```
-
-  This gives Cursor Mintlify's component reference, writing standards,
-  and workflow guidance.
-</Step>
-
-<Step title="Customize project instructions">
-  Edit `AGENTS.md` in your project root to add project-specific terminology,
-  style preferences, and content boundaries.
-</Step>
-
-<Step title="Start writing with Cursor">
-  Open a file and use Cursor's AI features to draft and edit documentation.
-</Step>
-</Steps>
+The session is linked back to the active lane for tracking purposes. File changes made in Cursor are visible in the lane's diff view as soon as they are saved.

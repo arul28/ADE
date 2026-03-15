@@ -13,6 +13,7 @@ import type {
   CtoSnapshot,
   CtoSystemPromptPreview,
 } from "../../../shared/types";
+import type { createUnifiedMemoryService, Memory, MemoryCategory } from "../memory/unifiedMemoryService";
 import type { AdeDb } from "../state/kvDb";
 import { nowIso, parseIsoToEpoch, safeJsonParse, uniqueStrings, writeTextAtomic } from "../shared/utils";
 import { createLogIntegrityService } from "../projects/logIntegrityService";
@@ -21,6 +22,7 @@ type CtoStateServiceArgs = {
   db: AdeDb;
   projectId: string;
   adeDir: string;
+  memoryService?: Pick<ReturnType<typeof createUnifiedMemoryService>, "listMemories">;
 };
 
 type CoreMemoryPatch = Partial<Omit<CtoCoreMemory, "version" | "updatedAt">>;
@@ -49,6 +51,17 @@ type PersistedDoc<T> = {
   payload: T;
   updatedAt: string;
 };
+
+const CTO_LONG_TERM_MEMORY_RELATIVE_PATH = ".ade/cto/MEMORY.md";
+const CTO_CURRENT_CONTEXT_RELATIVE_PATH = ".ade/cto/CURRENT.md";
+const DURABLE_MEMORY_CATEGORY_ORDER: MemoryCategory[] = [
+  "decision",
+  "convention",
+  "pattern",
+  "gotcha",
+  "preference",
+  "fact",
+];
 
 function asStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -88,6 +101,35 @@ function normalizeOnboardingState(value: unknown): CtoOnboardingState | undefine
   };
 }
 
+function normalizePersonalityPreset(value: unknown): CtoIdentity["personality"] | undefined {
+  return value === "strategic"
+    || value === "professional"
+    || value === "hands_on"
+    || value === "casual"
+    || value === "minimal"
+    || value === "custom"
+    ? value
+    : undefined;
+}
+
+function personalityInstructionForPreset(value: CtoIdentity["personality"]): string | null {
+  switch (value) {
+    case "strategic":
+      return "Operate as a strategic technical leader: strong architectural judgment, clear prioritization, and crisp tradeoff calls.";
+    case "professional":
+      return "Operate as a calm executive technical lead: structured, accountable, and steady under pressure.";
+    case "hands_on":
+      return "Operate as a hands-on CTO: stay close to implementation details, jump into debugging, and unblock execution quickly.";
+    case "casual":
+      return "Operate as a collaborative CTO: warm, human, and easy to work with while still making strong technical calls.";
+    case "minimal":
+      return "Operate as a concise CTO: low-noise, direct, and focused on decisions, blockers, and next actions.";
+    case "custom":
+    default:
+      return null;
+  }
+}
+
 function normalizeIdentity(input: unknown): CtoIdentity | null {
   if (!input || typeof input !== "object") return null;
   const source = input as Record<string, unknown>;
@@ -114,13 +156,7 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
   const externalMcpAccess = normalizeExternalMcpAccess(source.externalMcpAccess);
   const openclawContextPolicy = normalizeOpenclawContextPolicy(source.openclawContextPolicy);
   const onboardingState = normalizeOnboardingState(source.onboardingState);
-  const personality =
-    source.personality === "professional"
-      || source.personality === "casual"
-      || source.personality === "minimal"
-      || source.personality === "custom"
-      ? source.personality
-      : undefined;
+  const personality = normalizePersonalityPreset(source.personality);
   const customPersonality =
     typeof source.customPersonality === "string" && source.customPersonality.trim().length
       ? source.customPersonality.trim()
@@ -219,6 +255,35 @@ function normalizeOpenclawContextPolicy(value: unknown): OpenclawContextPolicy |
   };
 }
 
+function squishText(value: string): string {
+  return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function clipText(value: string, maxLength = 220): string {
+  const normalized = squishText(value);
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+}
+
+function labelForMemoryCategory(category: MemoryCategory): string {
+  switch (category) {
+    case "decision":
+      return "Decisions";
+    case "convention":
+      return "Conventions";
+    case "pattern":
+      return "Patterns";
+    case "gotcha":
+      return "Gotchas";
+    case "preference":
+      return "Preferences";
+    case "fact":
+      return "Facts";
+    default:
+      return "Other";
+  }
+}
+
 function normalizeCoreMemory(input: unknown): CtoCoreMemory | null {
   if (!input || typeof input !== "object") return null;
   const source = input as Record<string, unknown>;
@@ -294,9 +359,11 @@ function makeDefaultIdentity(): CtoIdentity {
     name: "CTO",
     version: 1,
     persona: [
-      "You are the persistent technical lead for this project.",
+      "You are the CTO for this project inside ADE.",
+      "You are not a generic assistant, Codex, or Claude speaking abstractly about the codebase.",
+      "You are the persistent technical lead who owns architecture, execution quality, engineering continuity, and team direction.",
       "You hold the complete mental model of the codebase — architecture, conventions, active work, known pitfalls, and the reasoning behind past decisions.",
-      "You coordinate worker agents, review their output, and ensure consistency across all development efforts.",
+      "You can inspect the repo, edit code, run validation, coordinate worker agents, and use ADE's connected tools when needed.",
       "",
       "Your core responsibilities:",
       "- Own the technical vision and ensure all work aligns with it",
@@ -306,9 +373,13 @@ function makeDefaultIdentity(): CtoIdentity {
       "- Guide implementation decisions with context that workers lack",
       "- Proactively surface risks, conflicts, or forgotten context",
       "",
+      "When asked who you are, answer as the project's CTO.",
+      "When asked what you can do, answer in terms of ADE's capabilities and your leadership role on this project.",
+      "",
       "You think like a senior engineer who has been on this project for years.",
       "You are direct, opinionated when you have evidence, and honest when you don't know something.",
     ].join("\n"),
+    personality: "strategic",
     modelPreferences: {
       provider: "claude",
       model: "sonnet",
@@ -338,7 +409,7 @@ function makeDefaultCoreMemory(): CtoCoreMemory {
   return {
     version: 1,
     updatedAt: timestamp,
-    projectSummary: "CTO memory initialized. Capture project goals and critical architecture decisions here.",
+    projectSummary: "No CTO brief saved yet. Add the project purpose, rules, and current priorities here.",
     criticalConventions: [],
     userPreferences: [],
     activeFocus: [],
@@ -351,6 +422,8 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
   const ctoDir = path.join(args.adeDir, "cto");
   const identityPath = path.join(ctoDir, "identity.yaml");
   const coreMemoryPath = path.join(ctoDir, "core-memory.json");
+  const memoryDocPath = path.join(ctoDir, "MEMORY.md");
+  const currentContextDocPath = path.join(ctoDir, "CURRENT.md");
   const sessionsPath = path.join(ctoDir, "sessions.jsonl");
   const subordinateActivityPath = path.join(ctoDir, "subordinate-activity.jsonl");
 
@@ -628,6 +701,179 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     };
   };
 
+  const listProjectContextDocPaths = (): string[] => {
+    const projectRoot = path.dirname(args.adeDir);
+    return [".ade/context/PRD.ade.md", ".ade/context/ARCHITECTURE.ade.md"].filter((rel) => {
+      try {
+        return fs.existsSync(path.join(projectRoot, rel));
+      } catch {
+        return false;
+      }
+    });
+  };
+
+  const listDurableMemoryHighlights = (limit = 12): Memory[] => {
+    if (!args.memoryService) return [];
+    const promoted = args.memoryService.listMemories({
+      projectId: args.projectId,
+      scope: "project",
+      status: "promoted",
+      categories: DURABLE_MEMORY_CATEGORY_ORDER,
+      limit: Math.max(limit * 2, 24),
+    });
+    const curated = promoted.filter((memory) =>
+      memory.pinned
+      || memory.tier === 1
+      || memory.importance === "high"
+    );
+    return (curated.length > 0 ? curated : promoted).slice(0, limit);
+  };
+
+  const buildDurableHighlightLines = (memories: ReadonlyArray<Memory>): string[] => {
+    if (memories.length === 0) {
+      return ["- No promoted durable memories yet. Use memoryAdd for reusable decisions, patterns, and gotchas."];
+    }
+
+    const lines: string[] = [];
+    for (const category of DURABLE_MEMORY_CATEGORY_ORDER) {
+      const group = memories.filter((memory) => memory.category === category);
+      if (group.length === 0) continue;
+      lines.push(`### ${labelForMemoryCategory(category)}`);
+      for (const memory of group) {
+        lines.push(`- ${clipText(memory.content, 260)}${memory.pinned ? " (pinned)" : ""}`);
+      }
+      lines.push("");
+    }
+    while (lines[lines.length - 1] === "") lines.pop();
+    return lines;
+  };
+
+  const listRecentDailyLogSnippets = (lineLimits = [14, 8]): Array<{ date: string; lines: string[] }> => {
+    return listDailyLogs(lineLimits.length)
+      .map((date, index) => {
+        const raw = readDailyLog(date)?.trim();
+        if (!raw) return null;
+        const entries = raw.split("\n").map((line) => line.trim()).filter(Boolean);
+        if (entries.length === 0) return null;
+        const sliceSize = lineLimits[index] ?? lineLimits[lineLimits.length - 1] ?? 8;
+        return {
+          date,
+          lines: entries.length > sliceSize ? entries.slice(-sliceSize) : entries,
+        };
+      })
+      .filter((entry): entry is { date: string; lines: string[] } => Boolean(entry));
+  };
+
+  const buildLongTermMemoryLines = (snapshot: CtoSnapshot): string[] => {
+    const lines: string[] = [];
+    lines.push("## Core brief");
+    lines.push(`- Project summary: ${snapshot.coreMemory.projectSummary}`);
+    lines.push(
+      snapshot.coreMemory.criticalConventions.length > 0
+        ? `- Critical conventions: ${snapshot.coreMemory.criticalConventions.join("; ")}`
+        : "- Critical conventions: none captured yet",
+    );
+    if (snapshot.coreMemory.userPreferences.length > 0) {
+      lines.push(`- User preferences: ${snapshot.coreMemory.userPreferences.join("; ")}`);
+    }
+    if (snapshot.coreMemory.activeFocus.length > 0) {
+      lines.push(`- Active focus: ${snapshot.coreMemory.activeFocus.join("; ")}`);
+    }
+    if (snapshot.coreMemory.notes.length > 0) {
+      lines.push(`- Notes: ${snapshot.coreMemory.notes.join("; ")}`);
+    }
+
+    lines.push("");
+    lines.push("## Durable project memory highlights");
+    lines.push(...buildDurableHighlightLines(listDurableMemoryHighlights()));
+    return lines;
+  };
+
+  const buildCurrentContextLines = (snapshot: CtoSnapshot): string[] => {
+    const lines: string[] = [];
+    lines.push("## Active context");
+    if (snapshot.coreMemory.activeFocus.length > 0) {
+      lines.push(...snapshot.coreMemory.activeFocus.map((item) => `- Focus: ${item}`));
+    } else {
+      lines.push("- Focus: no active focus captured yet");
+    }
+    if (snapshot.coreMemory.notes.length > 0) {
+      lines.push(...snapshot.coreMemory.notes.map((item) => `- Note: ${item}`));
+    }
+
+    if (snapshot.recentSessions.length > 0) {
+      lines.push("");
+      lines.push("## Recent CTO sessions");
+      for (const entry of snapshot.recentSessions) {
+        lines.push(`- [${entry.createdAt}] ${clipText(entry.summary, 220)}`);
+      }
+    }
+
+    if (snapshot.recentSubordinateActivity.length > 0) {
+      lines.push("");
+      lines.push("## Recent worker activity");
+      for (const entry of snapshot.recentSubordinateActivity) {
+        const detailParts = [
+          entry.taskKey ? `task ${entry.taskKey}` : "",
+          entry.issueKey ? `issue ${entry.issueKey}` : "",
+        ].filter((part) => part.length > 0);
+        lines.push(
+          `- [${entry.createdAt}] ${entry.agentName}${detailParts.length ? ` (${detailParts.join(", ")})` : ""}: ${clipText(entry.summary, 220)}`
+        );
+      }
+    }
+
+    const contextDocs = listProjectContextDocPaths();
+    if (contextDocs.length > 0) {
+      lines.push("");
+      lines.push("## Project context docs");
+      lines.push(...contextDocs.map((docPath) => `- ${docPath}`));
+    }
+
+    const recentLogs = listRecentDailyLogSnippets();
+    if (recentLogs.length > 0) {
+      lines.push("");
+      lines.push("## Daily carry-forward");
+      for (const log of recentLogs) {
+        lines.push(`### ${log.date}`);
+        lines.push(...log.lines);
+        lines.push("");
+      }
+      while (lines[lines.length - 1] === "") lines.pop();
+    }
+
+    return lines;
+  };
+
+  const renderGeneratedMemoryDoc = (
+    title: string,
+    intro: string,
+    bodyLines: ReadonlyArray<string>,
+  ): string => {
+    return [
+      `# ${title}`,
+      "",
+      intro,
+      "",
+      ...bodyLines,
+    ].join("\n").trim();
+  };
+
+  const syncDerivedMemoryDocs = (snapshot = getSnapshot(8)): void => {
+    const longTermDoc = renderGeneratedMemoryDoc(
+      "CTO Memory",
+      "Internal ADE-generated long-term CTO memory. This mirrors the always-on brief layer plus promoted durable project memory.",
+      buildLongTermMemoryLines(snapshot),
+    );
+    const currentContextDoc = renderGeneratedMemoryDoc(
+      "CTO Current Context",
+      "Internal ADE-generated working context for continuity across compaction and session resumes.",
+      buildCurrentContextLines(snapshot),
+    );
+    writeTextAtomic(memoryDocPath, `${longTermDoc}\n`);
+    writeTextAtomic(currentContextDocPath, `${currentContextDoc}\n`);
+  };
+
   const updateCoreMemory = (patch: CoreMemoryPatch): CtoSnapshot => {
     const current = getCoreMemory();
     const timestamp = nowIso();
@@ -643,7 +889,9 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     };
     writeCoreMemoryToFile(next);
     writeCoreMemoryToDb(next);
-    return getSnapshot();
+    const snapshot = getSnapshot();
+    syncDerivedMemoryDocs(snapshot);
+    return snapshot;
   };
 
   const appendSessionLog = (entry: AppendCtoSessionLogArgs): CtoSessionLogEntry => {
@@ -660,7 +908,9 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       createdAt: nowIso(),
     };
     insertSessionLogToDb(next);
-    return appendSessionLogToFile(next);
+    const written = appendSessionLogToFile(next);
+    syncDerivedMemoryDocs();
+    return written;
   };
 
   const getSubordinateActivityLogs = (limit = 20): CtoSubordinateActivityEntry[] => {
@@ -685,80 +935,29 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       createdAt: nowIso(),
     };
     appendSubordinateActivityToFile(next);
+    syncDerivedMemoryDocs();
     return next;
   };
 
   const buildReconstructionContext = (recentLimit = 8): string => {
     const snapshot = getSnapshot(recentLimit);
     const sections: string[] = [];
+    sections.push("CTO Memory Stack");
+    sections.push(`- Layer 1 — runtime identity and operating doctrine. Hidden system instructions and identity.yaml keep you in the CTO role.`);
+    sections.push(`- Layer 2 — long-term CTO brief at ${CTO_LONG_TERM_MEMORY_RELATIVE_PATH}. Update this layer with memoryUpdateCore when the project summary, conventions, preferences, focus, or standing notes change.`);
+    sections.push(`- Layer 3 — current working context at ${CTO_CURRENT_CONTEXT_RELATIVE_PATH}. This layer carries active focus, recent sessions, worker activity, and daily logs through compaction.`);
+    sections.push("- Layer 4 — searchable durable project memory. Use memorySearch before non-trivial work and memoryAdd for reusable decisions, conventions, patterns, gotchas, and stable preferences.");
+    sections.push("");
     sections.push("CTO Identity");
     sections.push(`- Name: ${snapshot.identity.name}`);
     sections.push(`- Persona: ${snapshot.identity.persona}`);
     sections.push(`- Preferred model: ${snapshot.identity.modelPreferences.provider}/${snapshot.identity.modelPreferences.model}`);
     sections.push("");
-    sections.push("Core Memory");
-    sections.push(`- Project summary: ${snapshot.coreMemory.projectSummary}`);
-    if (snapshot.coreMemory.criticalConventions.length) {
-      sections.push(`- Critical conventions: ${snapshot.coreMemory.criticalConventions.join("; ")}`);
-    }
-    if (snapshot.coreMemory.userPreferences.length) {
-      sections.push(`- User preferences: ${snapshot.coreMemory.userPreferences.join("; ")}`);
-    }
-    if (snapshot.coreMemory.activeFocus.length) {
-      sections.push(`- Active focus: ${snapshot.coreMemory.activeFocus.join("; ")}`);
-    }
-    if (snapshot.coreMemory.notes.length) {
-      sections.push(`- Notes: ${snapshot.coreMemory.notes.join("; ")}`);
-    }
-    if (snapshot.recentSessions.length) {
-      sections.push("");
-      sections.push("Recent Sessions");
-      for (const entry of snapshot.recentSessions) {
-        sections.push(`- [${entry.createdAt}] ${entry.summary}`);
-      }
-    }
-    if (snapshot.recentSubordinateActivity.length) {
-      sections.push("");
-      sections.push("Recent Employee Activity");
-      for (const entry of snapshot.recentSubordinateActivity) {
-        const detailParts = [
-          entry.taskKey ? `task ${entry.taskKey}` : "",
-          entry.issueKey ? `issue ${entry.issueKey}` : "",
-        ].filter((part) => part.length > 0);
-        sections.push(
-          `- [${entry.createdAt}] ${entry.agentName} (${entry.activityType}${detailParts.length ? `; ${detailParts.join(", ")}` : ""}): ${entry.summary}`
-        );
-      }
-    }
-
-    // Include pointers to project-level context docs if they exist
-    const projectRoot = path.dirname(args.adeDir);
-    const contextDocPaths = [".ade/context/PRD.ade.md", ".ade/context/ARCHITECTURE.ade.md"];
-    const existingContextDocs = contextDocPaths.filter((rel) => {
-      try { return fs.existsSync(path.join(projectRoot, rel)); } catch { return false; }
-    });
-    if (existingContextDocs.length > 0) {
-      sections.push("");
-      sections.push("Project Context Docs");
-      sections.push("Read these at session start for project-level context (generated from main branch, may not reflect in-progress lane work):");
-      for (const rel of existingContextDocs) {
-        sections.push(`- ${rel}`);
-      }
-    }
-
-    // Include today's daily log for continuity
-    const todayLog = readDailyLog();
-    if (todayLog?.trim()) {
-      sections.push("");
-      sections.push(`Today's Log (${nowIso().slice(0, 10)})`);
-      // Only include last 20 lines to keep context manageable
-      const logLines = todayLog.trim().split("\n");
-      const recentLines = logLines.length > 20 ? logLines.slice(-20) : logLines;
-      sections.push(...recentLines);
-      if (logLines.length > 20) {
-        sections.push(`(${logLines.length - 20} earlier entries omitted)`);
-      }
-    }
+    sections.push("Layer 2 — Long-term CTO brief");
+    sections.push(...buildLongTermMemoryLines(snapshot));
+    sections.push("");
+    sections.push("Layer 3 — Current working context");
+    sections.push(...buildCurrentContextLines(snapshot));
 
     return sections.join("\n").trim();
   };
@@ -792,6 +991,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     };
     writeIdentityToFile(updated);
     writeIdentityToDb(updated);
+    syncDerivedMemoryDocs();
     return next;
   };
 
@@ -807,6 +1007,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     };
     writeIdentityToFile(updated);
     writeIdentityToDb(updated);
+    syncDerivedMemoryDocs();
     return next;
   };
 
@@ -821,6 +1022,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     };
     writeIdentityToFile(updated);
     writeIdentityToDb(updated);
+    syncDerivedMemoryDocs();
     return next;
   };
 
@@ -841,7 +1043,9 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     };
     writeIdentityToFile(next);
     writeIdentityToDb(next);
-    return getSnapshot();
+    const snapshot = getSnapshot();
+    syncDerivedMemoryDocs(snapshot);
+    return snapshot;
   };
 
   /* ── System prompt preview ── */
@@ -854,13 +1058,17 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     const sections: string[] = [];
 
     sections.push(`You are ${identity.name}.`);
+    sections.push("You are the CTO for the current project inside ADE.");
+    sections.push("Do not introduce yourself as Codex, Claude, or a generic assistant.");
+    sections.push("When the user asks who you are, answer as the project's CTO and technical lead.");
 
     if (identity.persona?.trim()) {
       sections.push("", identity.persona.trim());
     }
 
-    if (identity.personality && identity.personality !== "custom") {
-      sections.push("", `Personality: ${identity.personality}`);
+    const presetInstruction = personalityInstructionForPreset(identity.personality);
+    if (presetInstruction) {
+      sections.push("", presetInstruction);
     } else if (identity.customPersonality?.trim()) {
       sections.push("", `Personality: ${identity.customPersonality.trim()}`);
     }
@@ -887,20 +1095,29 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     // Memory protocol — baked into CTO DNA, not optional
     sections.push(
       "",
+      "## Memory Stack",
+      "You operate with four memory layers:",
+      "1. Runtime identity and operating doctrine. This keeps you in the CTO role and is always re-applied after compaction.",
+      `2. Long-term CTO brief (${CTO_LONG_TERM_MEMORY_RELATIVE_PATH}). Use memoryUpdateCore when the project summary, conventions, user preferences, active focus, or standing notes change.`,
+      `3. Current working context (${CTO_CURRENT_CONTEXT_RELATIVE_PATH}). This is generated from recent sessions, worker activity, and daily logs for continuity.`,
+      "4. Durable searchable project memory. Use memorySearch to retrieve it and memoryAdd to save reusable lessons.",
+      "",
       "## Memory Protocol",
       "You have persistent memory that survives across conversations. Use it.",
       "- Before starting non-trivial work: search memory for relevant conventions, decisions, and known pitfalls",
+      "- When the project brief itself changes: update Layer 2 with memoryUpdateCore",
       "- When you learn something important: save it to memory immediately using memoryAdd",
+      "- Save reusable rules, decisions, patterns, gotchas, and stable preferences with memoryAdd",
       "- When corrected on a mistake: save the correction as a convention or gotcha",
       "- When a decision is made: save the decision AND the reasoning behind it",
-      "- When a session is winding down or context is getting large: save key findings to memory",
+      "- When a session is winding down or context is getting large: distill the active state into memoryUpdateCore or memoryAdd before compaction erases detail",
       "Do NOT save: file paths, raw errors, task status, things derivable from git log or the code itself.",
       "",
       "## Daily Context",
       "At the start of each conversation, orient yourself:",
-      "1. Search memory for active focus areas and recent decisions",
-      "2. Check what workers have been doing (subordinate activity)",
-      "3. Review any conventions or gotchas relevant to the current topic",
+      "1. Re-ground yourself in Layer 2 and Layer 3",
+      "2. Search durable memory for active focus areas, recent decisions, and relevant gotchas",
+      "3. Check what workers have been doing (subordinate activity)",
       "This gives you continuity. You are not starting fresh — you are picking up where you left off.",
       "",
       "## Decision Framework",
@@ -908,6 +1125,11 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       "- Escalate to the user when a decision is risky, irreversible, or ambiguous",
       "- When you lack context, search memory and the repo before asking the user",
       "- State your reasoning concisely — the user wants decisions, not analysis paralysis",
+      "",
+      "## Role Boundaries",
+      "- Act as the project's CTO and technical lead, not as a detached coding chatbot",
+      "- Speak with authority about the project once you have repo or memory evidence",
+      "- Use ADE's tools, workers, and connected systems when they help move the project forward",
     );
 
     const prompt = sections.join("\n").trim();
@@ -931,6 +1153,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     const logPath = getDailyLogPath(date);
     const timestamp = nowIso().slice(11, 19); // HH:MM:SS
     fs.appendFileSync(logPath, `- [${timestamp}] ${entry.trim()}\n`, "utf8");
+    syncDerivedMemoryDocs();
   };
 
   const readDailyLog = (date?: string): string | null => {
@@ -949,8 +1172,25 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       .map((f) => f.replace(/\.md$/, ""));
   };
 
+  const appendContinuityCheckpoint = (args: {
+    reason: "compaction" | "manual";
+    entries: Array<{ role: "user" | "assistant"; text: string }>;
+  }): void => {
+    const latestUser = [...args.entries].reverse().find((entry) => entry.role === "user" && squishText(entry.text).length > 0);
+    const latestAssistant = [...args.entries].reverse().find((entry) => entry.role === "assistant" && squishText(entry.text).length > 0);
+    const detailParts = [
+      latestUser ? `user: ${clipText(latestUser.text, 180)}` : "",
+      latestAssistant ? `cto: ${clipText(latestAssistant.text, 180)}` : "",
+    ].filter((value) => value.length > 0);
+    if (detailParts.length === 0) return;
+    appendDailyLog(
+      `${args.reason === "compaction" ? "Compaction checkpoint" : "Continuity checkpoint"} — ${detailParts.join(" | ")}`
+    );
+  };
+
   // Ensure the state is initialized as soon as the service is created.
   reconcileAll();
+  syncDerivedMemoryDocs();
 
   return {
     getIdentity,
@@ -969,8 +1209,10 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     resetOnboarding,
     previewSystemPrompt,
     appendDailyLog,
+    appendContinuityCheckpoint,
     readDailyLog,
     listDailyLogs,
+    syncDerivedMemoryDocs,
   };
 }
 

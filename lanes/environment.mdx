@@ -49,13 +49,13 @@ lanes:
 
 When a startup command is configured and the lane's process is running, ADE generates a preview URL (`http://<lane-name>.localhost:<port>`) that you can open directly from the lane detail header. The Lane Proxy routes requests through ADE's reverse proxy to the correct lane's port.
 
-<Info>**Screenshot needed:** Lane detail header showing a preview URL badge (e.g., "http://auth-refactor.localhost:3001") next to the branch name, with a green "Running" indicator and a clickable external link icon.</Info>
+<Info>**Screenshot:** Lane detail header showing a preview URL badge (e.g., "http://auth-refactor.localhost:3001") next to the branch name, with a green "Running" indicator and a clickable external link icon.</Info>
 
 ---
 
-## Lane Runtime Isolation (Phase 5)
+## Lane Runtime Isolation
 
-Phase 5 introduces full runtime isolation for production-grade parallel development:
+ADE provides full runtime isolation for production-grade parallel development:
 
 <AccordionGroup>
   <Accordion title="Lane Environment Init with Overlay Policies" icon="layers">

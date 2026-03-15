@@ -79,6 +79,37 @@ describe("prepareMissionFeedItems", () => {
     expect(items[0]?.detail).toContain("PostHog Query Run");
     expect(items[0]?.detail).not.toContain("mcp__posthog__query-run");
   });
+
+  it("drops internal lifecycle noise and non-feed items", () => {
+    const items = prepareMissionFeedItems([
+      makeProgressItem({
+        id: "timeline-only",
+        audience: "timeline",
+        title: "Scheduler tick",
+        detail: "Internal runtime loop.",
+      }),
+      makeProgressItem({
+        id: "run-created",
+        kind: "system",
+        title: "Run created",
+        detail: "start_run",
+      }),
+      makeProgressItem({
+        id: "status-transition",
+        kind: "system",
+        title: "Mission update",
+        detail: "Mission status changed to in_progress.",
+      }),
+      makeProgressItem({
+        id: "keep",
+        title: "Worker completed",
+        detail: "Implemented the mission feed cleanup.",
+      }),
+    ]);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.id).toBe("keep");
+  });
 });
 
 describe("buildMissionStateNarrative", () => {

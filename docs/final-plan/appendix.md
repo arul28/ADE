@@ -10,8 +10,8 @@ Base build order:
 3. Phase 3 (AI Orchestrator + Missions Overhaul) — **Complete** (Overhaul Phases 1-7 shipped including reflection protocol closure; Task 8 soak is tracked as verification hardening)
 4. Phase 4 (CTO + Ecosystem)
 5. Phase 5 (Play Runtime Isolation)
-6. Phase 6 (Multi-Device Sync Foundation) — **NEW**
-7. Phase 7 (Mobile + Remote Access) — **NEW**
+6. Phase 6 (Multi-Device Sync & iOS Companion) — **NEW**
+7. Phase 7 (Full iOS & Advanced Remote) — **NEW**
 8. Phase 8 (Core Extraction + SpacetimeDB Evaluation) — **DEFERRED/OPTIONAL**
 
 Pull-forward rules:
@@ -22,7 +22,7 @@ Pull-forward rules:
 - Phase 3 mission phases UI work runs alongside the Phase 3 completion package since it depends on orchestrator runtime, not specific P3 workstreams.
 - Phase 3 remaining tasks (Tasks 1-8) are a hard prerequisite for full autonomous mission quality. Phase 4 CTO and ecosystem work should not bypass these runtime foundations.
 - Phase 6 cr-sqlite prototyping may begin during Phase 5 to derisk sync integration.
-- Phase 7 iOS app shell may begin during Phase 6 once the sync protocol stabilizes.
+- Phase 7 iOS polish work may begin during late Phase 6 once the core iOS app is functional.
 - Phase 8 activates ONLY if Phase 6 cr-sqlite reveals fundamental sync issues.
 
 ---
@@ -48,7 +48,7 @@ Each phase must satisfy:
 | Claude subscription auth policy uncertainty | Anthropic may restrict subscription OAuth in third-party tools | Community Vercel provider workaround; `AgentExecutor` interface enables quick switch to official SDK if policy changes |
 | Context window limits under large missions | Orchestrator may lose coherence on complex multi-step missions | Progressive context loading; context pressure management; pack compression; **compaction engine (Hivemind HW6) triggers at 70% threshold with durable resume** |
 | Monolithic IPC concentration | Slows core extraction and relay work | Domain adapter split in Phase 8 with parity test gates |
-| Unsafe unattended execution | High blast radius in Night Shift mode (Automations) | Hard budgets, explicit policy gates, intervention states, per-automation guardrail constraints |
+| Unsafe unattended execution | High blast radius for unattended automations | Policy gates, intervention states, and centralized budget policy in Settings > Usage |
 | Runtime isolation brittleness | Play instability | Deterministic lease model + diagnostics + fallback mode |
 | Cross-device race conditions | Inconsistent mission outcomes | cr-sqlite CRDTs + optimistic locking + event sequencing |
 | MCP tool permission model gaps | Orchestrator may invoke unsafe operations | Permission/policy layer with deny-by-default; audit logging for all tool calls |
@@ -69,7 +69,7 @@ Each phase must satisfy:
 | Tailscale adoption friction | Users may resist installing a VPN tool for device sync | Tailscale is optional; LAN-only mode works without it; clear docs on privacy (peer-to-peer, no cloud relay) |
 | Brain single-point-of-failure | If brain machine goes offline, no agents run | Brain transfer protocol allows quick failover; VPS brain option for always-on; offline cached state on all devices |
 | WebSocket sync reliability | Sync connection drops may cause stale state on viewer devices | Version-based catch-up on reconnect; offline queue replay; cr-sqlite CRDTs handle eventual consistency |
-| SpacetimeDB migration scope | 63 tables, ~926 SQL operations across 40 files is a significant migration | Only triggered if cr-sqlite fails; agent swarm can accelerate; repository abstraction limits blast radius |
+| SpacetimeDB migration scope | 103 tables, ~926 SQL operations across 40+ files is a significant migration | Only triggered if cr-sqlite fails; agent swarm can accelerate; repository abstraction limits blast radius |
 | iOS App Store review | Apple may reject or delay the iOS app | Submit early; follow Apple guidelines strictly; plan for review cycles in timeline |
 | Push notification infrastructure | APNs requires some server-side infrastructure | Multiple options (self-hosted, FCM, no-push fallback); minimal infra requirements |
 
@@ -147,8 +147,8 @@ Each phase must satisfy:
 - Subscription detection success rate at onboarding
 - `guest` vs `subscription` mode usage ratio
 - Mission weekly active users
-- Night Shift mode adoption rate
-- Morning Briefing items approved vs. dismissed ratio
+- Time-based automation adoption rate
+- Automation run completion and intervention rate
 - Phase profile creation rate (users creating custom profiles vs using defaults)
 - Custom phase adoption rate (missions using custom phases vs built-in only)
 - CTO agent activation rate
@@ -244,7 +244,7 @@ Protocols evaluated during research for inter-agent and agent-to-human communica
 
 **A2A Protocol (Google)**: Agent-to-agent discovery and communication protocol. Provides standardized agent capability advertisement and structured message exchange between agents from different platforms. Relevant for future scenarios where ADE agents need to discover and communicate with agents running on other platforms (not just via MCP tool calls, but via structured protocol). Not adopted in Phase 4 — MCP provides sufficient inter-platform communication for current needs. Candidate for Phase 8+ if multi-platform agent orchestration demand emerges.
 
-**A2H Protocol (Twilio)**: Agent-to-human communication across channels (SMS, voice, chat, email). Provides standardized patterns for agents to reach humans through their preferred channel. Relevant for Phase 7 (Mobile + Remote Access) and for agents that need to notify users when interventions are needed. Currently, ADE uses IPC push events and (Phase 7) APNs for human communication. A2H patterns could inform a future multi-channel notification system.
+**A2H Protocol (Twilio)**: Agent-to-human communication across channels (SMS, voice, chat, email). Provides standardized patterns for agents to reach humans through their preferred channel. Relevant for Phase 6 (Multi-Device Sync & iOS Companion) and for agents that need to notify users when interventions are needed. Currently, ADE uses IPC push events and (Phase 6) APNs for human communication. A2H patterns could inform a future multi-channel notification system.
 
 **MCP Async Tasks**: Experimental MCP primitive for long-running agent work. Allows an MCP tool call to return immediately with a task ID, and the caller polls or subscribes for completion. Relevant for ADE's MCP server when external agents launch missions — missions are long-running and the current MCP request/response model blocks until completion. When the MCP async task spec stabilizes, ADE should adopt it for mission-launch and task-agent-launch tools.
 
@@ -299,8 +299,8 @@ The program is complete when:
 - Play supports deterministic lane isolation.
 - Missions use configurable phase pipelines with pre-flight validation and tiered quality gates.
 - CTO agent provides persistent project-aware assistance with full memory and context.
-- Night Shift mode in Automations executes overnight tasks with guardrails and produces morning briefings.
-- Morning Briefing (in Automations Night Shift) provides rapid review of overnight results.
+- Automations support only time-based and action-based triggers.
+- Automations execution types are `agent-session`, `mission`, and `built-in task`.
 - Desktop, VPS, and iOS sync state in real-time via cr-sqlite. Any device can view and control; the brain runs agents.
 - MCP server safely exposes ADE capabilities to the AI orchestrator and external agent ecosystems.
 - VPS deployment enables always-on brain machines for unattended agent execution.

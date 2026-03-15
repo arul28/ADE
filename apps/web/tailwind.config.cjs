@@ -26,8 +26,8 @@ module.exports = {
         mono: ["var(--font-mono)", "ui-monospace", "SFMono-Regular", "Menlo", "monospace"]
       },
       boxShadow: {
-        "glass-sm": "0 8px 30px rgba(0,0,0,0.06)",
-        "glass-md": "0 20px 60px rgba(0,0,0,0.12)"
+        "glass-sm": "0 4px 20px rgba(0,0,0,0.12)",
+        "glass-md": "0 12px 40px rgba(0,0,0,0.2)"
       }
     }
   },

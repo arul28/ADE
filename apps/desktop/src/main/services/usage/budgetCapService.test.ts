@@ -209,7 +209,7 @@ describe("budgetCapService", () => {
       });
 
       svc.recordUsage("automation-rule", "rule-1", { tokensUsed: 1000, costUsd: 0.05, provider: "claude" });
-      svc.recordUsage("night-shift-run", "ns-1", { tokensUsed: 3000, costUsd: 0.20, provider: "claude" });
+      svc.recordUsage("global", "all", { tokensUsed: 3000, costUsd: 0.20, provider: "claude" });
 
       const result = svc.getGlobalCumulativeUsage("any");
       expect(result.totalTokens).toBe(4000);
@@ -319,51 +319,6 @@ describe("budgetCapService", () => {
       const result = svc.checkBudget("automation-rule", "rule-1", "any");
       expect(result.allowed).toBe(true);
       expect(result.remainingUsd).toBeCloseTo(4.5);
-    });
-
-    it("blocks Night Shift reserve for daytime automations", () => {
-      const { db } = createInMemoryDb();
-      const usageSnapshot = makeUsageSnapshot({
-        windows: [
-          { provider: "claude" as any, windowType: "weekly", percentUsed: 85, resetsAt: "", resetsInMs: 0 }
-        ]
-      });
-
-      const svc = createBudgetCapService({
-        db,
-        logger: createLogger(),
-        projectConfigService: createMockConfigService({
-          nightShiftReservePercent: 20
-        }),
-        usageTrackingService: createMockUsageTrackingService(usageSnapshot)
-      });
-
-      // Daytime automation should be blocked (85% >= 80% = 100-20)
-      const result = svc.checkBudget("automation-rule", "rule-1", "claude");
-      expect(result.allowed).toBe(false);
-      expect(result.reason).toContain("Night Shift reserve");
-    });
-
-    it("allows Night Shift runs even when reserve is active", () => {
-      const { db } = createInMemoryDb();
-      const usageSnapshot = makeUsageSnapshot({
-        windows: [
-          { provider: "claude" as any, windowType: "weekly", percentUsed: 85, resetsAt: "", resetsInMs: 0 }
-        ]
-      });
-
-      const svc = createBudgetCapService({
-        db,
-        logger: createLogger(),
-        projectConfigService: createMockConfigService({
-          nightShiftReservePercent: 20
-        }),
-        usageTrackingService: createMockUsageTrackingService(usageSnapshot)
-      });
-
-      // Night shift scope should pass through
-      const result = svc.checkBudget("night-shift-run", "ns-1", "claude");
-      expect(result.allowed).toBe(true);
     });
 
     it("emits alert threshold warning", () => {
@@ -510,7 +465,6 @@ describe("budgetCapService", () => {
     it("returns the config from project config service", () => {
       const { db } = createInMemoryDb();
       const config: BudgetCapConfig = {
-        nightShiftReservePercent: 20,
         alertAtWeeklyPercent: 80,
         preset: "conservative"
       };
@@ -521,7 +475,7 @@ describe("budgetCapService", () => {
       });
 
       const result = svc.getConfig();
-      expect(result.nightShiftReservePercent).toBe(20);
+      expect(result.alertAtWeeklyPercent).toBe(80);
       expect(result.preset).toBe("conservative");
     });
   });
@@ -538,7 +492,6 @@ describe("budgetCapService", () => {
 
       const saved = svc.updateConfig({
         preset: "maximize",
-        nightShiftReservePercent: 17.6,
         alertAtWeeklyPercent: 82.4,
         budgetCaps: [
           {
@@ -553,7 +506,6 @@ describe("budgetCapService", () => {
       });
 
       expect(saved.preset).toBe("maximize");
-      expect(saved.nightShiftReservePercent).toBe(18);
       expect(saved.alertAtWeeklyPercent).toBe(82);
       expect(saved.budgetCaps?.[0]?.scopeId).toBe("nightly-review");
       expect(saved.budgetCaps?.[0]?.limit).toBe(79.9);

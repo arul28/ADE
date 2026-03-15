@@ -2,6 +2,9 @@
 // Auth Detector — discovers available authentication methods
 // ---------------------------------------------------------------------------
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { spawn } from "node:child_process";
 
 type CliName = "claude" | "codex";
@@ -85,6 +88,28 @@ function hasPattern(text: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(text));
 }
 
+const HOME_DIR = os.homedir();
+
+const COMMON_BIN_DIRS = [
+  "/opt/homebrew/bin",
+  "/opt/homebrew/sbin",
+  "/usr/local/bin",
+  "/usr/local/sbin",
+  "/usr/bin",
+  "/bin",
+  `${HOME_DIR}/.local/bin`,
+  `${HOME_DIR}/.nvm/current/bin`,
+].filter(Boolean);
+
+function getLookupShell(): string {
+  return process.env.SHELL || "/bin/zsh";
+}
+
+function findExplicitCommandPath(command: string): string | null {
+  const match = COMMON_BIN_DIRS.find((dir) => fs.existsSync(path.join(dir, command)));
+  return match ? path.join(match, command) : null;
+}
+
 /** Run a command asynchronously and return { status, stdout, stderr }. */
 function spawnAsync(
   command: string,
@@ -113,17 +138,22 @@ async function commandExists(command: string): Promise<boolean> {
     // fall through to shell-based check
   }
 
+  const explicitPath = findExplicitCommandPath(command);
+  if (explicitPath) return true;
+
   // Strategy 2: Shell-based lookup (fallback for edge cases)
   try {
     if (process.platform === "win32") {
       const result = await spawnAsync("where", [command], 5_000);
       return result.status === 0;
     }
-    const result = await spawnAsync("sh", ["-lc", `command -v ${command} >/dev/null 2>&1`], 5_000);
+    const result = await spawnAsync(getLookupShell(), ["-lc", `command -v ${command} >/dev/null 2>&1`], 5_000);
     return result.status === 0;
   } catch {
-    return false;
+    // fall through to explicit common-path lookup
   }
+
+  return explicitPath != null;
 }
 
 async function commandPath(command: string): Promise<string> {
@@ -137,21 +167,50 @@ async function commandPath(command: string): Promise<string> {
     if (which.status === 0 && which.stdout?.trim()) {
       return which.stdout.trim();
     }
+    const explicitPath = findExplicitCommandPath(command);
+    if (explicitPath) {
+      return explicitPath;
+    }
     // Fallback to login shell lookup
-    const result = await spawnAsync("sh", ["-lc", `command -v ${command}`], 5_000);
+    const result = await spawnAsync(getLookupShell(), ["-lc", `command -v ${command}`], 5_000);
     return result.stdout?.trim() || command;
   } catch {
-    return command;
+    return findExplicitCommandPath(command) ?? command;
   }
 }
 
-async function inspectCliAuthentication(cli: CliName): Promise<Pick<CliAuthStatus, "authenticated" | "verified">> {
+async function refreshProcessPathFromShell(): Promise<void> {
+  if (process.platform !== "darwin" && process.platform !== "linux") return;
+  const currentPath = process.env.PATH ?? "";
+  const loginShell = process.env.SHELL || "/bin/zsh";
+
+  try {
+    const resolved = await spawnAsync(loginShell, ["-lc", "printf '%s' \"$PATH\""], 5_000);
+    const nextPath = resolved.stdout.trim();
+    if (resolved.status === 0 && nextPath.length > 0) {
+      process.env.PATH = nextPath;
+      return;
+    }
+  } catch {
+    // Fall through to best-effort path augmentation below.
+  }
+
+  const extras = COMMON_BIN_DIRS.filter((entry) => !currentPath.includes(entry));
+  if (extras.length > 0) {
+    process.env.PATH = currentPath.length > 0 ? `${currentPath}:${extras.join(":")}` : extras.join(":");
+  }
+}
+
+async function inspectCliAuthentication(
+  cli: CliName,
+  command: string = cli,
+): Promise<Pick<CliAuthStatus, "authenticated" | "verified">> {
   const probes = CLI_AUTH_PROBES[cli] ?? [];
   let sawUnsupported = false;
 
   for (const args of probes) {
     try {
-      const result = await spawnAsync(cli, args, 8_000);
+      const result = await spawnAsync(command, args, 8_000);
       const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
       const normalized = output.toLowerCase();
 
@@ -527,10 +586,16 @@ export function getCachedCliAuthStatuses(): CliAuthStatus[] {
   return cachedCliAuth?.statuses ?? [];
 }
 
-export async function detectCliAuthStatuses(): Promise<CliAuthStatus[]> {
+export async function detectCliAuthStatuses(options?: { force?: boolean }): Promise<CliAuthStatus[]> {
   const now = Date.now();
-  if (cachedCliAuth && now - cachedCliAuth.checkedAtMs < CLI_AUTH_CACHE_TTL_MS) {
+  if (!options?.force && cachedCliAuth && now - cachedCliAuth.checkedAtMs < CLI_AUTH_CACHE_TTL_MS) {
     return cachedCliAuth.statuses;
+  }
+
+  if (options?.force) {
+    cachedCliAuth = null;
+    cachedLocalProviders = null;
+    await refreshProcessPathFromShell();
   }
 
   const cliChecks: CliName[] = ["claude", "codex"];
@@ -540,7 +605,9 @@ export async function detectCliAuthStatuses(): Promise<CliAuthStatus[]> {
     cliChecks.map(async (cli) => {
       const installed = await commandExists(cli);
       const path = installed ? await commandPath(cli) : null;
-      const auth = installed ? await inspectCliAuthentication(cli) : { authenticated: false, verified: false };
+      const auth = installed
+        ? await inspectCliAuthentication(cli, path ?? cli)
+        : { authenticated: false, verified: false };
       return {
         cli,
         installed,
@@ -557,11 +624,12 @@ export async function detectCliAuthStatuses(): Promise<CliAuthStatus[]> {
 
 export async function detectAllAuth(
   configApiKeys?: Record<string, string>,
+  options?: { force?: boolean },
 ): Promise<DetectedAuth[]> {
   const results: DetectedAuth[] = [];
 
   // 1. CLI subscriptions (connected and authenticated)
-  const cliStatuses = await detectCliAuthStatuses();
+  const cliStatuses = await detectCliAuthStatuses(options);
   for (const cli of cliStatuses) {
     if (cli.cli !== "claude" && cli.cli !== "codex") continue;
     if (!cli.installed) continue;

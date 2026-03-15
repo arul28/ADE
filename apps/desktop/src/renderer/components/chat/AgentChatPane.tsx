@@ -499,6 +499,9 @@ export function AgentChatPane({
   const launchModeEditable = !selectedSessionId || selectedEvents.length === 0;
   const resolvedTitle = presentation?.title?.trim()
     || (surfaceMode === "resolver" ? "AI Resolver" : laneDisplayLabel?.trim() || "Chat");
+  const assistantLabel = presentation?.assistantLabel?.trim() || "Agent";
+  const messagePlaceholder = presentation?.messagePlaceholder?.trim()
+    || (assistantLabel === "Agent" ? "Message the agent..." : `Message ${assistantLabel}...`);
   const chipsJson = JSON.stringify(presentation?.chips ?? []);
   const resolvedChips = useMemo(() => JSON.parse(chipsJson) as ChatSurfaceChip[], [chipsJson]);
 
@@ -962,9 +965,18 @@ export function AgentChatPane({
         setSelectedSessionId(lockSessionId);
       }
 
-      if (envelope.event.type === "done") {
+      const shouldRefreshSlashCommands =
+        envelope.event.type === "done"
+        || (
+          envelope.event.type === "system_notice"
+          && (
+            envelope.event.noticeKind === "auth"
+            || envelope.event.message === "Session ready"
+          )
+        );
+
+      if (shouldRefreshSlashCommands) {
         scheduleSessionsRefresh();
-        // Refresh slash commands — SDK may have reported them during this turn's init
         if (envelope.sessionId === selectedSessionIdRef.current) {
           window.ade.agentChat.slashCommands({ sessionId: envelope.sessionId })
             .then(setSdkSlashCommands)
@@ -1157,6 +1169,7 @@ export function AgentChatPane({
     const draftSnapshot = draft;
     const attachmentsSnapshot = attachments;
     const contextPackSnapshot = selectedContextPacks;
+    const isLiteralSlashCommand = text.startsWith("/");
 
     submitInFlightRef.current = true;
     setBusy(true);
@@ -1166,7 +1179,7 @@ export function AgentChatPane({
     setSelectedContextPacks([]);
     try {
       let finalText = text;
-      if (contextPackSnapshot.length) {
+      if (!isLiteralSlashCommand && contextPackSnapshot.length) {
         const packContents: string[] = [];
         for (const pack of contextPackSnapshot) {
           try {
@@ -1189,7 +1202,7 @@ export function AgentChatPane({
       }
 
       // Prepend project context docs if the user toggled the checkbox
-      if (includeProjectDocs) {
+      if (!isLiteralSlashCommand && includeProjectDocs) {
         const docPaths = [".ade/context/PRD.ade.md", ".ade/context/ARCHITECTURE.ade.md"];
         const docNote = [
           "[Project Context — generated from main branch, may not reflect in-progress lane work]",
@@ -1223,7 +1236,7 @@ export function AgentChatPane({
         throw new Error("Unable to create chat session.");
       }
 
-      const selectedAttachments = attachmentsSnapshot;
+      const selectedAttachments = isLiteralSlashCommand ? [] : attachmentsSnapshot;
       if (turnActiveBySession[sessionId]) {
         const steerText = selectedAttachments.length
           ? `${finalText}\n\nAttached context:\n${selectedAttachments.map((entry) => `- ${entry.type}: ${entry.path}`).join("\n")}`
@@ -1244,7 +1257,15 @@ export function AgentChatPane({
       setDraft((current) => (current.trim().length ? current : draftSnapshot));
       setAttachments((current) => (current.length ? current : attachmentsSnapshot));
       setSelectedContextPacks((current) => (current.length ? current : contextPackSnapshot));
-      setError(submitError instanceof Error ? submitError.message : String(submitError));
+      const message = submitError instanceof Error ? submitError.message : String(submitError);
+      setError(message);
+      if (
+        /ade chat could not authenticate/i.test(message)
+        || /not authenticated/i.test(message)
+        || /login required/i.test(message)
+      ) {
+        void refreshAvailableModels().catch(() => {});
+      }
     } finally {
       submitInFlightRef.current = false;
       setBusy(false);
@@ -1494,6 +1515,7 @@ export function AgentChatPane({
             executionModeOptions={launchModeEditable ? executionModeOptions : []}
             modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model"}
             permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy}
+            messagePlaceholder={messagePlaceholder}
             onExecutionModeChange={setExecutionMode}
             onPermissionModeChange={handlePermissionModeChange}
             onComputerUsePolicyChange={handleComputerUsePolicyChange}
@@ -1639,6 +1661,7 @@ export function AgentChatPane({
                 className="min-h-0 border-0"
                 surfaceMode={surfaceMode}
                 surfaceProfile={surfaceProfile}
+                assistantLabel={assistantLabel}
                 onApproval={(itemId, decision, responseText) => {
                   if (!selectedSessionId) return;
                   window.ade.agentChat.approve({ sessionId: selectedSessionId, itemId, decision, responseText }).then(() => {

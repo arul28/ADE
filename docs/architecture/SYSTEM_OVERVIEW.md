@@ -244,7 +244,7 @@ The v1 closeout completed the final integration gaps:
 
 Future architecture work focuses on:
 
-- Multi-device sync via cr-sqlite (Phase 6)
-- iOS companion app (Phase 7)
+- Multi-device sync via cr-sqlite and iOS companion app (Phase 6)
+- Mobile polish and advanced remote workflows (Phase 7)
 - Full computer-use MCP tool loop
 - Provider usage telemetry refinements

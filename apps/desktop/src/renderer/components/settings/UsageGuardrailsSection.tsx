@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowClockwise as RefreshCw, Lightning, Moon } from "@phosphor-icons/react";
-import type { AiDetectedAuth, BudgetCapConfig, ExtraUsage, UsageSnapshot, UsageWindow } from "../../../shared/types";
+import { ArrowClockwise as RefreshCw, Lightning } from "@phosphor-icons/react";
+import type { AiProviderConnectionStatus, BudgetCapConfig, ExtraUsage, UsageSnapshot, UsageWindow } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { BudgetCapEditor } from "../automations/components/BudgetCapEditor";
@@ -46,7 +46,10 @@ export function UsageGuardrailsSection({
   const [error, setError] = useState<string | null>(null);
   const [budgetSaving, setBudgetSaving] = useState(false);
   const [budgetError, setBudgetError] = useState<string | null>(null);
-  const [detectedAuth, setDetectedAuth] = useState<AiDetectedAuth[]>([]);
+  const [providerConnections, setProviderConnections] = useState<{
+    claude: AiProviderConnectionStatus;
+    codex: AiProviderConnectionStatus;
+  } | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   const load = useCallback(async () => {
@@ -118,10 +121,10 @@ export function UsageGuardrailsSection({
     let cancelled = false;
     window.ade.ai.getStatus()
       .then((status) => {
-        if (!cancelled) setDetectedAuth(status.detectedAuth ?? []);
+        if (!cancelled) setProviderConnections(status.providerConnections ?? null);
       })
       .catch(() => {
-        if (!cancelled) setDetectedAuth([]);
+        if (!cancelled) setProviderConnections(null);
       });
     return () => {
       cancelled = true;
@@ -137,16 +140,15 @@ export function UsageGuardrailsSection({
   const codexWindows = snapshot?.windows.filter((window) => window.provider === "codex") ?? [];
   const claudeCost = snapshot?.costs.find((cost) => cost.provider === "claude");
   const codexCost = snapshot?.costs.find((cost) => cost.provider === "codex");
-  const nightShiftReserve = budgetConfig?.nightShiftReservePercent ?? 0;
   const cliAuth = useMemo(
     () => ({
-      claude: detectedAuth.find((entry) => entry.type === "cli-subscription" && entry.cli === "claude") ?? null,
-      codex: detectedAuth.find((entry) => entry.type === "cli-subscription" && entry.cli === "codex") ?? null,
+      claude: providerConnections?.claude ?? null,
+      codex: providerConnections?.codex ?? null,
     }),
-    [detectedAuth]
+    [providerConnections]
   );
   const showEmptyQuotaWarning =
-    (cliAuth.claude?.authenticated || cliAuth.codex?.authenticated) &&
+    (cliAuth.claude?.authAvailable || cliAuth.codex?.authAvailable) &&
     claudeWindows.length === 0 &&
     codexWindows.length === 0 &&
     (snapshot?.errors.length ?? 0) === 0;
@@ -160,7 +162,7 @@ export function UsageGuardrailsSection({
         <div className="min-w-0">
           <div className="text-sm font-semibold text-fg">Provider limits & automation guardrails</div>
           <div className="mt-0.5 text-xs text-muted-fg">
-            Live Claude/Codex quota polling plus the budget rules that govern automations and Night Shift.
+            Live Claude/Codex quota polling plus the shared budget rules that govern automation runs.
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-3">
             {snapshot?.pacing ? (
@@ -211,23 +213,6 @@ export function UsageGuardrailsSection({
       {(snapshot?.extraUsage ?? []).map((extra) => (
         <ExtraUsageCard key={extra.provider} extra={extra} />
       ))}
-
-      {nightShiftReserve > 0 ? (
-        <div
-          className="mt-4 flex items-center gap-3 rounded-lg p-3"
-          style={{ background: "#181423", border: "1px solid #2D2840" }}
-        >
-          <Moon size={16} weight="regular" className="shrink-0 text-[#A78BFA]" />
-          <div>
-            <div className="font-mono text-[10px] font-bold uppercase tracking-[1px] text-[#A1A1AA]">
-              Night Shift reserve
-            </div>
-            <div className="font-mono text-[10px] text-[#71717A]">
-              {nightShiftReserve}% is reserved for overnight runs. Daytime automations can use the remaining {100 - nightShiftReserve}%.
-            </div>
-          </div>
-        </div>
-      ) : null}
 
       <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-3">
         {showApiCost && claudeCost ? (
@@ -387,13 +372,13 @@ function AuthChip({
   entry,
 }: {
   label: string;
-  entry: AiDetectedAuth | null;
+  entry: AiProviderConnectionStatus | null;
 }) {
-  const authenticated = entry?.type === "cli-subscription" && entry.authenticated;
-  const verified = entry?.type === "cli-subscription" ? entry.verified !== false : false;
-  const tone = authenticated
-    ? { border: "rgba(34,197,94,0.3)", bg: "rgba(34,197,94,0.12)", text: "#22C55E", copy: verified ? "connected" : "connected (unverified)" }
-    : { border: "rgba(113,113,122,0.3)", bg: "rgba(113,113,122,0.12)", text: "#A1A1AA", copy: "not detected" };
+  const tone = entry?.runtimeAvailable
+    ? { border: "rgba(34,197,94,0.3)", bg: "rgba(34,197,94,0.12)", text: "#22C55E", copy: "runtime ready" }
+    : entry?.authAvailable
+      ? { border: "rgba(59,130,246,0.3)", bg: "rgba(59,130,246,0.12)", text: "#60A5FA", copy: entry.runtimeDetected ? "sign-in required" : "auth found locally" }
+      : { border: "rgba(113,113,122,0.3)", bg: "rgba(113,113,122,0.12)", text: "#A1A1AA", copy: "not detected" };
 
   return (
     <div

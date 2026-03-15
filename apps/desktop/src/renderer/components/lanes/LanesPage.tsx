@@ -37,6 +37,7 @@ import {
   type LaneBranchOption
 } from "./laneUtils";
 import { sessionStatusBucket } from "../../lib/terminalAttention";
+import { isRunOwnedSession } from "../../lib/sessions";
 import type {
   ConflictChip,
   ConflictStatus,
@@ -367,7 +368,7 @@ export function LanesPage() {
   const refreshAllSessions = useCallback(async () => {
     try {
       const rows = await listSessionsCached({ limit: 500 });
-      setAllSessions(rows);
+      setAllSessions(rows.filter((session) => !isRunOwnedSession(session)));
     } catch {
       setAllSessions([]);
     }

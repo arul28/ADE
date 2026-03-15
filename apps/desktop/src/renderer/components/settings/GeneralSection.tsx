@@ -9,7 +9,6 @@ import {
   MONO_FONT,
   cardStyle,
   LABEL_STYLE,
-  outlineButton,
   primaryButton,
 } from "../lanes/laneDesignTokens";
 
@@ -131,7 +130,7 @@ function ThemeSwatch({
 export function GeneralSection() {
   const navigate = useNavigate();
   const [info, setInfo] = useState<AppInfo | null>(null);
-  const [onboardingStatus, setOnboardingStatus] = useState<{ completedAt: string | null; dismissedAt: string | null } | null>(null);
+  const [onboardingStatus, setOnboardingStatus] = useState<{ completedAt: string | null; dismissedAt: string | null; freshProject?: boolean } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const providerMode = useAppStore((s) => s.providerMode);
   const theme = useAppStore((s) => s.theme);
@@ -169,7 +168,6 @@ export function GeneralSection() {
   }
 
   const setupComplete = Boolean(onboardingStatus?.completedAt);
-  const reminderHidden = Boolean(onboardingStatus?.dismissedAt) && !setupComplete;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
@@ -179,10 +177,10 @@ export function GeneralSection() {
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
             <div>
               <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textPrimary }}>
-                {setupComplete ? "Project setup completed" : reminderHidden ? "Project setup reminder hidden" : "Project setup still needs attention"}
+                {setupComplete ? "Project setup completed" : onboardingStatus?.freshProject ? "Fresh project setup available" : "Project setup can be reopened"}
               </div>
               <div style={{ marginTop: 6, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.6 }}>
-                Run the guided setup flow to connect providers, pick starter AI defaults, and add GitHub or Linear access. You can reopen it whenever you want.
+                The guided setup flow covers AI, GitHub, Linear, and context docs for fresh projects. You can reopen it any time if you want to walk through those steps again.
               </div>
             </div>
             <span
@@ -195,16 +193,16 @@ export function GeneralSection() {
                 fontFamily: MONO_FONT,
                 textTransform: "uppercase",
                 letterSpacing: "1px",
-                color: setupComplete ? COLORS.success : reminderHidden ? COLORS.textMuted : COLORS.warning,
-                background: setupComplete ? `${COLORS.success}18` : reminderHidden ? `${COLORS.textDim}18` : `${COLORS.warning}18`,
+                color: setupComplete ? COLORS.success : onboardingStatus?.freshProject ? COLORS.warning : COLORS.textMuted,
+                background: setupComplete ? `${COLORS.success}18` : onboardingStatus?.freshProject ? `${COLORS.warning}18` : `${COLORS.textDim}18`,
                 border: setupComplete
                   ? `1px solid ${COLORS.success}30`
-                  : reminderHidden
-                    ? `1px solid ${COLORS.textDim}30`
-                    : `1px solid ${COLORS.warning}30`,
+                  : onboardingStatus?.freshProject
+                    ? `1px solid ${COLORS.warning}30`
+                    : `1px solid ${COLORS.textDim}30`,
               }}
             >
-              {setupComplete ? "Ready" : reminderHidden ? "Reminder hidden" : "Incomplete"}
+              {setupComplete ? "Ready" : onboardingStatus?.freshProject ? "Fresh project" : "Available"}
             </span>
           </div>
 
@@ -212,29 +210,6 @@ export function GeneralSection() {
             <button type="button" style={primaryButton()} onClick={() => navigate("/onboarding")}>
               {setupComplete ? "RUN SETUP AGAIN" : "OPEN PROJECT SETUP"}
             </button>
-            {!setupComplete ? (
-              reminderHidden ? (
-                <button
-                  type="button"
-                  style={outlineButton()}
-                  onClick={() => {
-                    void window.ade.onboarding.setDismissed(false).then(setOnboardingStatus).catch(() => {});
-                  }}
-                >
-                  SHOW REMINDER AGAIN
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  style={outlineButton()}
-                  onClick={() => {
-                    void window.ade.onboarding.setDismissed(true).then(setOnboardingStatus).catch(() => {});
-                  }}
-                >
-                  HIDE REMINDER
-                </button>
-              )
-            ) : null}
           </div>
         </div>
       </section>

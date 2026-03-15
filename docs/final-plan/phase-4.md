@@ -10,7 +10,7 @@ See [phase-4/README.md](phase-4/README.md) for the overview, execution order, de
 |------|-----------|--------|
 | [phase-4/README.md](phase-4/README.md) | Overview, execution order, exit criteria | — |
 | [phase-4/W1-W4.md](phase-4/W1-W4.md) | W1-W4: CTO Core, Workers, Heartbeat, Linear Sync | ✅ Complete |
-| [phase-4/W5.md](phase-4/W5.md) | W5: Automations Platform + Night Shift | ✅ Complete |
+| [phase-4/W5.md](phase-4/W5.md) | W5: Automations Platform | ✅ Complete |
 | [phase-4/W6.md](phase-4/W6.md) | W6: Unified Memory System | ✅ Complete |
 | [phase-4/W6-half.md](phase-4/W6-half.md) | W6½: Memory Engine Hardening | ✅ Complete |
 | [phase-4/W-UX.md](phase-4/W-UX.md) | W-UX: CTO + Org Experience Overhaul | ✅ Complete |

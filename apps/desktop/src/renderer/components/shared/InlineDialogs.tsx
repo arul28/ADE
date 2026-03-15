@@ -16,9 +16,9 @@ const overlayStyle: React.CSSProperties = {
 const panelStyle: React.CSSProperties = {
   width: 420,
   maxWidth: "90vw",
-  background: COLORS.cardBg,
-  border: `1px solid ${COLORS.border}`,
-  boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
+  background: COLORS.cardBgSolid,
+  border: `1px solid ${COLORS.outlineBorder}`,
+  boxShadow: "0 24px 64px -30px rgba(0,0,0,0.82)",
 };
 
 const titleStyle: React.CSSProperties = {
@@ -123,7 +123,7 @@ export function ConfirmDialog({
   return (
     <div style={overlayStyle} onClick={handleOverlayClick}>
       <div ref={panelRef} style={panelStyle}>
-        <div style={{ padding: "14px 16px", borderBottom: `1px solid ${COLORS.border}`, background: COLORS.recessedBg }}>
+        <div style={{ padding: "14px 16px", borderBottom: `1px solid ${COLORS.border}`, background: "#120F1A" }}>
           <div style={titleStyle}>{state.title}</div>
         </div>
         <div style={{ padding: "16px 16px" }}>
@@ -256,7 +256,7 @@ export function PromptDialog({
   return (
     <div style={overlayStyle} onClick={handleOverlayClick}>
       <div style={panelStyle}>
-        <div style={{ padding: "14px 16px", borderBottom: `1px solid ${COLORS.border}`, background: COLORS.recessedBg }}>
+        <div style={{ padding: "14px 16px", borderBottom: `1px solid ${COLORS.border}`, background: "#120F1A" }}>
           <div style={titleStyle}>{state.title}</div>
         </div>
         <div style={{ padding: "16px 16px", display: "flex", flexDirection: "column", gap: 10 }}>

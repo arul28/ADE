@@ -73,9 +73,9 @@ export const ChatInput = React.memo(function ChatInput({
   const channelHelper = (() => {
     switch (selectedChannel?.kind) {
       case "global":
-        return "Use @orchestrator, @all, or an active worker handle to route notes from the mission feed.";
+        return "Mission feed is read-only. Open the orchestrator or a worker thread to send a message.";
       case "orchestrator":
-        return "Steer the coordinator with constraints, priorities, or recovery directions.";
+        return "Talk to the orchestrator directly about priorities, recovery, and run-level decisions.";
       case "teammate":
         return `Send a direct note to ${selectedChannel.label} without leaving the mission thread.`;
       case "worker":
@@ -192,7 +192,7 @@ export const ChatInput = React.memo(function ChatInput({
         placeholder={(() => {
           switch (selectedChannel?.kind) {
             case "global":
-              return "Message global (use @mention to target)...";
+              return "Mission feed is read-only...";
             case "orchestrator":
               return "Message the orchestrator...";
             case "teammate":

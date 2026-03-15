@@ -140,7 +140,7 @@ This two-file structure ensures that adding a new model requires only a single e
 
 ### Database Schema
 
-The following 63 tables are created by the schema bootstrap in `kvDb.ts`:
+The following 103 tables are created by the schema bootstrap in `kvDb.ts`:
 
 #### Key-Value Store
 
@@ -634,7 +634,7 @@ CREATE INDEX IF NOT EXISTS idx_automation_runs_project_started    ON automation_
 CREATE INDEX IF NOT EXISTS idx_automation_runs_project_automation ON automation_runs(project_id, automation_id);
 ```
 
-Records every automation rule execution. Tracks progress (actions completed vs total) and overall status. `trigger_type` identifies what triggered the run (e.g., `head_change`, `manual`).
+Records every automation rule execution. Tracks progress (actions completed vs total) and overall status. `trigger_type` is normalized to the two supported categories: `time_based` or `action_based` (with specific trigger details stored in `trigger_metadata`).
 
 #### Automation Action Results (Phase 8)
 
@@ -657,7 +657,7 @@ CREATE INDEX IF NOT EXISTS idx_automation_action_results_project_run
   ON automation_action_results(project_id, run_id);
 ```
 
-Per-action results within an automation run. Each action in a rule's action list gets a separate result row, enabling granular progress tracking and error diagnosis.
+Per-execution-step results within an automation run. Each step in a rule's execution plan gets a separate result row, enabling granular progress tracking and error diagnosis across `agent-session`, `mission`, and `built-in task` execution types.
 
 #### Missions (Phase 1)
 

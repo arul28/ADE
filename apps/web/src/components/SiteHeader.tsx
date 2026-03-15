@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { ArrowUpRight, Menu, X } from "lucide-react";
+import { ArrowUpRight, Github, Menu, X } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { cn } from "../lib/cn";
 import { LINKS } from "../lib/links";
@@ -8,7 +8,7 @@ import { Container } from "./Container";
 import { LinkButton } from "./LinkButton";
 import { ADE_EASE_OUT } from "../lib/motion";
 
-type NavItem = { label: string; to: string; kind?: "internal" | "external" };
+type NavItem = { label: string; to: string; kind: "internal" | "external" };
 
 export function SiteHeader() {
   const location = useLocation();
@@ -17,7 +17,6 @@ export function SiteHeader() {
   const reduceMotion = useReducedMotion();
 
   useEffect(() => {
-    // Close the mobile menu on navigation.
     setOpen(false);
   }, [location.pathname, location.hash]);
 
@@ -30,8 +29,6 @@ export function SiteHeader() {
 
   useEffect(() => {
     if (!open) return;
-
-    // Lock body scroll while the mobile menu is open.
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => {
@@ -50,10 +47,9 @@ export function SiteHeader() {
 
   const items = useMemo<NavItem[]>(
     () => [
-      { label: "Product", to: "/#product", kind: "internal" },
       { label: "Features", to: "/#features", kind: "internal" },
-      { label: "Architecture", to: "/#architecture", kind: "internal" },
-      { label: "Docs", to: LINKS.docs, kind: "external" }
+      { label: "Get Started", to: "/#quickstart", kind: "internal" },
+      { label: "Docs", to: LINKS.docs, kind: "external" },
     ],
     []
   );
@@ -62,7 +58,7 @@ export function SiteHeader() {
     <header className="sticky top-0 z-50">
       <div
         className={cn(
-          "glass border-b border-border/70 transition-shadow duration-300 [transition-timing-function:var(--ease-out)]",
+          "border-b border-border/70 bg-bg/80 backdrop-blur-xl transition-shadow duration-300 [transition-timing-function:var(--ease-out)]",
           scrolled ? "shadow-glass-sm" : undefined
         )}
       >
@@ -70,18 +66,15 @@ export function SiteHeader() {
           <div className="flex items-center gap-3">
             <Link className="focus-ring inline-flex items-center gap-3 rounded-lg" to="/">
               <img
-                src="/images/ade-mark.svg"
+                src="/logo.svg"
                 alt="ADE"
-                className="h-9 w-9 rounded-[12px] shadow-glass-sm"
+                className="h-8 w-8"
               />
-              <div className="hidden sm:block">
-                <div className="text-sm font-semibold leading-none text-fg">ADE</div>
-                <div className="text-xs text-muted-fg">Agentic Development Environment</div>
-              </div>
+              <span className="text-sm font-semibold text-fg">ADE</span>
             </Link>
           </div>
 
-          <nav className="hidden items-center gap-2 md:flex">
+          <nav className="hidden items-center gap-1 md:flex">
             {items.map((item) =>
               item.kind === "external" ? (
                 <a
@@ -92,7 +85,7 @@ export function SiteHeader() {
                   rel="noreferrer"
                 >
                   <span className="inline-flex items-center gap-1">
-                    {item.label} <ArrowUpRight className="h-4 w-4" />
+                    {item.label} <ArrowUpRight className="h-3.5 w-3.5" />
                   </span>
                 </a>
               ) : (
@@ -106,7 +99,17 @@ export function SiteHeader() {
               )
             )}
 
-            <LinkButton to="/download" variant="primary" size="sm" className="ml-1">
+            <a
+              className="focus-ring ml-1 inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border/70 bg-card/60 text-muted-fg transition-colors hover:text-fg hover:bg-card"
+              href={LINKS.github}
+              target="_blank"
+              rel="noreferrer"
+              aria-label="GitHub"
+            >
+              <Github className="h-4 w-4" />
+            </a>
+
+            <LinkButton to="/download" variant="primary" size="sm" className="ml-2">
               Download
             </LinkButton>
           </nav>
@@ -119,7 +122,7 @@ export function SiteHeader() {
               type="button"
               className={cn(
                 "focus-ring inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-card/70 text-fg shadow-glass-sm",
-                "transition-all duration-200 [transition-timing-function:var(--ease-out)] hover:-translate-y-0.5 hover:bg-card/80 hover:shadow-glass-md active:translate-y-0"
+                "transition-all duration-200 [transition-timing-function:var(--ease-out)] hover:bg-card/80 active:translate-y-0"
               )}
               onClick={() => setOpen((v) => !v)}
               aria-label={open ? "Close menu" : "Open menu"}
@@ -155,52 +158,63 @@ export function SiteHeader() {
             <button
               type="button"
               aria-label="Close menu"
-              className="absolute inset-0 bg-[rgba(10,16,32,0.40)] backdrop-blur-sm"
+              className="absolute inset-0 bg-bg/60 backdrop-blur-sm"
               onClick={() => setOpen(false)}
             />
             <motion.div
               id="ade-mobile-menu"
-              className="absolute left-0 right-0 top-16 border-b border-border/70 bg-[rgba(255,255,255,0.02)]"
+              className="absolute left-0 right-0 top-16 border-b border-border/70 bg-bg/95 backdrop-blur-xl"
               initial={reduceMotion ? undefined : { opacity: 0, y: -10, scale: 0.985 }}
               animate={reduceMotion ? undefined : { opacity: 1, y: 0, scale: 1 }}
               exit={reduceMotion ? undefined : { opacity: 0, y: -10, scale: 0.985 }}
               transition={{ duration: 0.24, ease: ADE_EASE_OUT }}
             >
-              <div className="glass">
-                <Container className="py-4">
-                  <div className="flex flex-col gap-1">
-                    {items.map((item) =>
-                      item.kind === "external" ? (
-                        <a
-                          key={item.label}
-                          className={cn(
-                            "focus-ring rounded-xl px-3 py-2.5 text-sm font-semibold text-fg",
-                            "transition-colors duration-200 [transition-timing-function:var(--ease-out)] hover:bg-card/60"
-                          )}
-                          href={item.to}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          <span className="inline-flex items-center gap-1">
-                            {item.label} <ArrowUpRight className="h-4 w-4" />
-                          </span>
-                        </a>
-                      ) : (
-                        <Link
-                          key={item.label}
-                          className={cn(
-                            "focus-ring rounded-xl px-3 py-2.5 text-sm font-semibold text-fg",
-                            "transition-colors duration-200 [transition-timing-function:var(--ease-out)] hover:bg-card/60"
-                          )}
-                          to={item.to}
-                        >
-                          {item.label}
-                        </Link>
-                      )
+              <Container className="py-4">
+                <div className="flex flex-col gap-1">
+                  {items.map((item) =>
+                    item.kind === "external" ? (
+                      <a
+                        key={item.label}
+                        className={cn(
+                          "focus-ring rounded-xl px-3 py-2.5 text-sm font-semibold text-fg",
+                          "transition-colors duration-200 [transition-timing-function:var(--ease-out)] hover:bg-card/60"
+                        )}
+                        href={item.to}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          {item.label} <ArrowUpRight className="h-4 w-4" />
+                        </span>
+                      </a>
+                    ) : (
+                      <Link
+                        key={item.label}
+                        className={cn(
+                          "focus-ring rounded-xl px-3 py-2.5 text-sm font-semibold text-fg",
+                          "transition-colors duration-200 [transition-timing-function:var(--ease-out)] hover:bg-card/60"
+                        )}
+                        to={item.to}
+                      >
+                        {item.label}
+                      </Link>
+                    )
+                  )}
+                  <a
+                    className={cn(
+                      "focus-ring rounded-xl px-3 py-2.5 text-sm font-semibold text-fg",
+                      "transition-colors duration-200 [transition-timing-function:var(--ease-out)] hover:bg-card/60"
                     )}
-                  </div>
-                </Container>
-              </div>
+                    href={LINKS.github}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <span className="inline-flex items-center gap-1">
+                      GitHub <ArrowUpRight className="h-4 w-4" />
+                    </span>
+                  </a>
+                </div>
+              </Container>
             </motion.div>
           </motion.div>
         ) : null}

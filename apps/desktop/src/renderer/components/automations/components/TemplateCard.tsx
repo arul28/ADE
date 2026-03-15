@@ -1,7 +1,7 @@
 import { Button } from "../../ui/Button";
 import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
-import { CARD_SHADOW_STYLE } from "../shared";
+import { CARD_STYLE } from "../shared";
 
 export type AutomationTemplate = {
   id: string;
@@ -28,7 +28,7 @@ export function TemplateCard({
         "group p-4 flex flex-col gap-3 transition-all duration-150 hover:-translate-y-[1px]",
         className,
       )}
-      style={CARD_SHADOW_STYLE}
+      style={CARD_STYLE}
     >
       <div className="flex items-start gap-3">
         <div

@@ -7,6 +7,8 @@ const mockState = vi.hoisted(() => ({
   verifyProviderApiKey: vi.fn(),
   executeUnified: vi.fn(),
   resumeUnified: vi.fn(),
+  probeClaudeRuntimeHealth: vi.fn(),
+  resetClaudeRuntimeProbeCache: vi.fn(),
 }));
 
 vi.mock("./authDetector", () => ({
@@ -19,6 +21,11 @@ vi.mock("./authDetector", () => ({
 vi.mock("./unifiedExecutor", () => ({
   executeUnified: (...args: unknown[]) => mockState.executeUnified(...args),
   resumeUnified: (...args: unknown[]) => mockState.resumeUnified(...args),
+}));
+
+vi.mock("./claudeRuntimeProbe", () => ({
+  probeClaudeRuntimeHealth: (...args: unknown[]) => mockState.probeClaudeRuntimeHealth(...args),
+  resetClaudeRuntimeProbeCache: (...args: unknown[]) => mockState.resetClaudeRuntimeProbeCache(...args),
 }));
 
 import { createAiIntegrationService } from "./aiIntegrationService";
@@ -123,7 +130,8 @@ function makeService(options: ServiceFactoryOptions = {}) {
   const service = createAiIntegrationService({
     db,
     logger,
-    projectConfigService
+    projectConfigService,
+    projectRoot: "/tmp/project",
   });
 
   return { service, runCalls };
@@ -147,6 +155,7 @@ beforeEach(() => {
     ])
   );
   mockState.resumeUnified.mockImplementation(() => streamEvents([]));
+  mockState.probeClaudeRuntimeHealth.mockResolvedValue(undefined);
 });
 
 describe("aiIntegrationService", () => {
@@ -220,6 +229,22 @@ describe("aiIntegrationService", () => {
 
     expect(mockState.executeUnified).toHaveBeenCalledTimes(1);
     await expect(service.getStatus()).resolves.toMatchObject({ mode: "subscription" });
+  });
+
+  it("runs the Claude runtime probe during forced status refresh when Claude CLI looks available", async () => {
+    const { service } = makeService({
+      availability: { claude: true, codex: false },
+    });
+
+    await service.getStatus({ force: true });
+
+    expect(mockState.resetClaudeRuntimeProbeCache).toHaveBeenCalledTimes(1);
+    expect(mockState.probeClaudeRuntimeHealth).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectRoot: "/tmp/project",
+        force: true,
+      }),
+    );
   });
 
   it("uses planning tools for mission planning tasks", async () => {

@@ -502,6 +502,8 @@ export const AUTOMATION_TRIGGER_TYPES = [
 ] as const;
 export type AutomationTriggerType = (typeof AUTOMATION_TRIGGER_TYPES)[number];
 export type AutomationActionType =
+  | "agent-session"
+  | "launch-mission"
   | "update-packs"
   | "predict-conflicts"
   | "run-tests"
@@ -517,11 +519,7 @@ export type AutomationReviewProfile =
   | "release-risk"
   | "cross-repo-contract";
 
-export type AutomationExecutorMode =
-  | "automation-bot"
-  | "employee"
-  | "cto-route"
-  | "night-shift";
+export type AutomationExecutorMode = "automation-bot";
 
 export type AutomationToolFamily =
   | "repo"
@@ -549,15 +547,13 @@ export type AutomationOutputDisposition =
   | "open-task"
   | "open-lane"
   | "prepare-patch"
-  | "open-pr-draft"
-  | "queue-overnight";
+  | "open-pr-draft";
 
 export type AutomationRunQueueStatus =
   | "pending-review"
   | "actionable-findings"
   | "verification-required"
   | "completed-clean"
-  | "queued-for-night-shift"
   | "ignored"
   | "archived";
 
@@ -597,6 +593,37 @@ export type AutomationAction = {
   continueOnFailure?: boolean;
   timeoutMs?: number;
   retry?: number;
+};
+
+export type AutomationExecutionKind = "agent-session" | "mission" | "built-in";
+
+export type AutomationExecution = {
+  kind: AutomationExecutionKind;
+  /**
+   * Optional preferred lane. If omitted, the runtime falls back to the trigger
+   * lane or the project's primary lane.
+   */
+  targetLaneId?: string | null;
+  /**
+   * Agent-session specific hints. Sessions launched from automations stay in
+   * automation history and are intentionally hidden from the Work tab.
+   */
+  session?: {
+    title?: string | null;
+    reasoningEffort?: string | null;
+  };
+  /**
+   * Mission-specific launch hints reused by the automation mission launcher.
+   */
+  mission?: {
+    title?: string | null;
+  };
+  /**
+   * Built-in deterministic tasks such as run-command and run-tests.
+   */
+  builtIn?: {
+    actions: AutomationAction[];
+  };
 };
 
 export type AutomationExecutor = {
@@ -649,6 +676,7 @@ export type AutomationRule = {
   triggers: AutomationTrigger[];
   /** @deprecated Use `triggers[0]` or `legacy?.trigger`. */
   trigger: AutomationTrigger;
+  execution?: AutomationExecution;
   executor: AutomationExecutor;
   modelConfig?: MissionModelConfig;
   permissionConfig?: MissionPermissionConfig;
@@ -678,6 +706,7 @@ export type ConfigAutomationRule = {
   description?: string;
   mode?: AutomationMode;
   triggers?: AutomationTrigger[];
+  execution?: AutomationExecution;
   executor?: AutomationExecutor;
   modelConfig?: MissionModelConfig;
   permissionConfig?: MissionPermissionConfig;
@@ -763,6 +792,35 @@ export type AiDetectedAuth = {
   verified?: boolean;
 };
 
+export type AiProviderCredentialSource = "macos-keychain" | "claude-credentials-file" | "codex-auth-file";
+
+export type AiProviderConnectionSource = {
+  kind: "cli" | "local-credentials";
+  detected: boolean;
+  authenticated?: boolean;
+  verified?: boolean;
+  path?: string | null;
+  source?: AiProviderCredentialSource;
+  stale?: boolean;
+};
+
+export type AiProviderConnectionStatus = {
+  provider: "claude" | "codex";
+  authAvailable: boolean;
+  runtimeDetected: boolean;
+  runtimeAvailable: boolean;
+  usageAvailable: boolean;
+  path: string | null;
+  blocker: string | null;
+  lastCheckedAt: string;
+  sources: AiProviderConnectionSource[];
+};
+
+export type AiProviderConnections = {
+  claude: AiProviderConnectionStatus;
+  codex: AiProviderConnectionStatus;
+};
+
 export type AiApiKeyVerificationResult = {
   provider: string;
   ok: boolean;
@@ -785,6 +843,7 @@ export type AiSettingsStatus = {
   };
   features: AiFeatureUsageRow[];
   detectedAuth?: AiDetectedAuth[];
+  providerConnections?: AiProviderConnections;
   availableModelIds?: ModelId[];
   apiKeyStore?: {
     secureStorageAvailable: boolean;
@@ -913,6 +972,8 @@ export type AiChatConfig = {
   autoTitleModelId?: ModelId;
   /** @deprecated Use ai.sessionIntelligence.titles.refreshOnComplete instead */
   autoTitleRefreshOnComplete?: boolean;
+  /** Reasoning effort for auto-title generation */
+  autoTitleReasoningEffort?: string | null;
   codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
   claudePermissionMode?: "plan" | "acceptEdits" | "bypassPermissions";
   sessionBudgetUsd?: number;
@@ -936,6 +997,8 @@ export type AiConfig = {
   mcpServers?: Record<string, unknown>;
   /** Per-feature model overrides, e.g. { mission_planning: "claude-sonnet-4-6" } */
   featureModelOverrides?: Partial<Record<AiFeatureKey, string>>;
+  /** Per-feature reasoning effort overrides */
+  featureReasoningOverrides?: Partial<Record<AiFeatureKey, string | null>>;
   /** Unified title + summary intelligence config for all session types */
   sessionIntelligence?: SessionIntelligenceConfig;
 };
@@ -952,6 +1015,7 @@ export type AiIntegrationStatus = {
   };
   // New unified fields
   detectedAuth?: AiDetectedAuth[];
+  providerConnections?: AiProviderConnections;
   availableModelIds?: ModelId[];
 };
 

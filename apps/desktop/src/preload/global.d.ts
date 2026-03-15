@@ -56,11 +56,11 @@ import type {
   ExportHistoryArgs,
   ExportHistoryResult,
   AgentTool,
-  NightShiftQueueMutationRequest,
   AgentChatApproveArgs,
   AgentChatCreateArgs,
   AgentChatDisposeArgs,
   AgentChatEventEnvelope,
+  AgentChatGetSummaryArgs,
   AgentChatInterruptArgs,
   AgentChatListArgs,
   AgentChatModelInfo,
@@ -77,9 +77,6 @@ import type {
   AutomationRun,
   AutomationRunDetail,
   AutomationRunListArgs,
-  AutomationQueueActionRequest,
-  AutomationQueueItem,
-  AutomationQueueListArgs,
   AutomationParseNaturalLanguageRequest,
   AutomationParseNaturalLanguageResult,
   AutomationValidateDraftRequest,
@@ -88,9 +85,6 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
-  NightShiftBriefing,
-  NightShiftState,
-  UpdateNightShiftSettingsRequest,
   UsageSnapshot,
   BudgetCheckResult,
   BudgetCapScope,
@@ -553,7 +547,7 @@ declare global {
         set: (overrides: KeybindingOverride[]) => Promise<KeybindingsSnapshot>;
       };
       ai: {
-        getStatus: () => Promise<AiSettingsStatus>;
+        getStatus: (args?: { force?: boolean }) => Promise<AiSettingsStatus>;
         storeApiKey: (provider: string, key: string) => Promise<void>;
         deleteApiKey: (provider: string) => Promise<void>;
         listApiKeys: () => Promise<string[]>;
@@ -595,13 +589,6 @@ declare global {
         getHistory: (args: { id: string; limit?: number }) => Promise<AutomationRun[]>;
         listRuns: (args?: AutomationRunListArgs) => Promise<AutomationRun[]>;
         getRunDetail: (runId: string) => Promise<AutomationRunDetail | null>;
-        listQueueItems: (args?: AutomationQueueListArgs) => Promise<AutomationQueueItem[]>;
-        updateQueueItem: (args: AutomationQueueActionRequest) => Promise<AutomationQueueItem | null>;
-        getNightShiftState: () => Promise<NightShiftState>;
-        updateNightShiftSettings: (args: UpdateNightShiftSettingsRequest) => Promise<NightShiftState>;
-        mutateNightShiftQueue: (args: NightShiftQueueMutationRequest) => Promise<NightShiftState>;
-        getMorningBriefing: () => Promise<NightShiftBriefing | null>;
-        acknowledgeMorningBriefing: (args: { id: string }) => Promise<NightShiftBriefing | null>;
         getIngressStatus: () => Promise<AutomationIngressStatus>;
         listIngressEvents: (args?: { limit?: number }) => Promise<AutomationIngressEventRecord[]>;
         parseNaturalLanguage: (req: AutomationParseNaturalLanguageRequest) => Promise<AutomationParseNaturalLanguageResult>;
@@ -779,6 +766,7 @@ declare global {
       };
       agentChat: {
         list: (args?: AgentChatListArgs) => Promise<AgentChatSessionSummary[]>;
+        getSummary: (args: AgentChatGetSummaryArgs) => Promise<AgentChatSessionSummary | null>;
         create: (args: AgentChatCreateArgs) => Promise<AgentChatSession>;
         send: (args: AgentChatSendArgs) => Promise<void>;
         steer: (args: AgentChatSteerArgs) => Promise<void>;
@@ -1031,7 +1019,7 @@ declare global {
           projectId?: string;
           scope?: "user" | "project" | "lane" | "mission" | "agent";
           scopeOwnerId?: string;
-          category: "fact" | "preference" | "pattern" | "decision" | "gotcha";
+          category: "fact" | "preference" | "pattern" | "decision" | "gotcha" | "convention";
           content: string;
           importance?: "low" | "medium" | "high";
           sourceRunId?: string;

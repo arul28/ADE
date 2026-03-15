@@ -41,6 +41,7 @@ export function buildCodingAgentSystemPrompt(args: {
     || name === "memoryUpdateCore"
     || name.startsWith("memory_"),
   );
+  const hasCoreMemoryTool = toolNames.some((name) => name === "memoryUpdateCore" || name === "memory_update_core");
   const hasCreateLane = toolNames.includes("createLane");
   const hasCreatePr = toolNames.includes("createPrFromLane");
   const hasCaptureScreenshot = toolNames.includes("captureScreenshot");
@@ -84,6 +85,9 @@ export function buildCodingAgentSystemPrompt(args: {
           "## Memory",
           "You have access to a persistent project memory that survives across sessions.",
           "**Search first:** Before starting non-trivial work, search memory for relevant conventions, past decisions, or known pitfalls. Do not guess when you can check.",
+          ...(hasCoreMemoryTool
+            ? ["**Keep the project brief current:** Use memoryUpdateCore when the project summary, standing conventions, user preferences, or active focus changes. Use memoryAdd for reusable lessons that should survive beyond the current brief."]
+            : []),
           "**Write sparingly and well:** Only save knowledge a developer joining this project would find useful on their first day. Each memory should be a single actionable insight, not a paragraph.",
           "GOOD memories: \"Convention: always use snake_case for DB columns — ORM breaks with camelCase\", \"Decision: chose Postgres over Mongo for ACID transactions in payments\", \"Pitfall: CI silently skips tests if file doesn't match *.test.ts\"",
           "DO NOT save: file paths or directory listings, raw error messages without lessons, task progress updates, information derivable from git log or the code itself, obvious patterns already visible in the codebase.",

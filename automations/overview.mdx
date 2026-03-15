@@ -1,33 +1,39 @@
 ---
 title: "Automations Overview"
-description: "Programmable trigger-driven rules that run AI agents in the background. When a trigger fires, a fully capable AI executor acts on your behalf — without blocking your work."
+description: "Programmable rules that run background work by time or action. Each automation can launch an agent session, a mission, or a built-in task from a single surface."
 icon: "bolt"
 ---
 
-<Info>Screenshot needed: The Automations tab showing a list of active automations with name, trigger type, executor mode, and status columns.</Info>
+<Info>Screenshot: The Automations tab showing a list of active automations with name, trigger type, executor mode, and status columns.</Info>
 
 ## Overview
 
-Automations are ADE's background execution layer. Each automation is a simple rule:
+Automations is ADE's background execution layer. Each automation is a simple rule:
 
-> **Trigger** → **Executor**
+> **Trigger** → **Execution**
 
-When a trigger fires (a PR is opened, a commit lands, a Linear issue is created, or a cron schedule fires), ADE hands control to an AI executor that runs with full tool access. The executor works in the background — you do not need to watch it, approve each step, or even be at your machine.
+When a trigger fires (time-based or action-based), ADE executes it through one of three surfaces:
 
-Think of Automations as GitHub Actions, but instead of a shell script, the "action" is a fully capable AI agent that can read your codebase, write files, commit, open PRs, and update Linear issues.
+- **agent-session**: an automation-only AI chat thread with scoped tools.
+- **mission**: a full mission runtime with phases, workers, and intervention support.
+- **built-in-task**: an ADE-native operation (tests, scans, status sync, and similar jobs) with no separate chat session.
+
+These execution types are configured per rule so you can choose the right level of cost, visibility, and reliability for each scenario.
+
+The trigger can come from a schedule (`schedule`) or an action event (`webhook`, `github.webhook`, `git.push`, `git.commit`, manual run).
 
 <CardGroup cols={2}>
   <Card title="Event-Driven" icon="bolt">
-    Git events, Linear webhooks, file changes, and scheduled crons all trigger automations automatically.
+    Time-based (cron) and action-based triggers fire automatically based on events from git, files, webhooks, and user actions.
   </Card>
-  <Card title="Four Executor Modes" icon="robot">
-    Choose a lightweight bot, a persistent worker, CTO routing, or Night Shift queuing based on the task.
+  <Card title="Execution Surfaces" icon="robot">
+    Choose between Agent Session, Mission, and Built-In Task based on autonomy and audit needs.
   </Card>
   <Card title="Configurable Guardrails" icon="shield-check">
-    Budget caps, file-path restrictions, dry-run mode, and approval gates keep automated agents safe.
+    Budget caps, memory scope, dry-run mode, and verification gates keep automation outcomes controlled.
   </Card>
   <Card title="Built-in Templates" icon="layer-group">
-    ADE ships with PR Reviewer, Test Guardian, Linear Triager, Daily Standup, and more out of the box.
+    ADE ships with PR Reviewer, Test Guardian, Daily Standup, and more out of the box.
   </Card>
 </CardGroup>
 
@@ -48,32 +54,23 @@ Think of Automations as GitHub Actions, but instead of a shell script, the "acti
 | `lane.created` | A new lane is created | Lane name pattern |
 | `lane.archived` | A lane is archived | Lane name pattern |
 | `schedule` | Cron expression | Any valid cron expression |
+| `webhook` | External webhook payload event | Provider-specific routing keys |
+| `github-webhook` | GitHub webhook event | Event name, repository, branch |
+| `linear.*` | Linear issue events (created, updated, assigned, status changed) | Project, team, assignee |
 | `manual` | User clicks "Run" in the Automations UI | — |
-
-### External Events (Linear)
-
-| Trigger | Description | Filter Options |
-|---|---|---|
-| `linear.issue_created` | A new Linear issue is created | Team, label, project |
-| `linear.issue_updated` | An issue is updated | Status transition, field changed |
-| `linear.issue_assigned` | An issue is assigned | Assignee (person or ADE bot) |
-
-<Note>
-Linear triggers require an active Linear integration. See [Configuration → Linear](/configuration/settings) to connect your workspace. ADE distinguishes between reading Linear (always allowed) and writing Linear — the `linear.write` permission must be explicitly enabled per automation.
-</Note>
 
 ---
 
 ## Explore Automations
 
 <CardGroup cols={2}>
-  <Card title="Executor Modes" icon="robot" href="/automations/executors">
-    Learn about the four executor modes and how to create your first automation.
+  <Card title="Execution surfaces" icon="robot" href="/automations/executors">
+    Learn about agent-session, mission, and built-in execution and how to pick the right one.
   </Card>
   <Card title="Templates & Outputs" icon="layer-group" href="/automations/templates">
     Browse built-in automation templates and configure output routing.
   </Card>
   <Card title="Guardrails & Security" icon="shield-check" href="/automations/guardrails">
-    Tool palette security, memory modes, Night Shift queue, and troubleshooting.
+    Tool palette security, execution guardrails, budget controls, and troubleshooting.
   </Card>
 </CardGroup>

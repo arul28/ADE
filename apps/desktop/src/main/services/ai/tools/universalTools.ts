@@ -718,7 +718,7 @@ function createMemoryUpdateCoreTool(
 ) {
   return tool({
     description:
-      "Update identity core memory (Tier-1) with durable project context fields.",
+      "Update identity core memory (Tier-1) when the standing CTO brief changes: project summary, conventions, user preferences, active focus, or persistent notes. Do not use this for one-off discoveries; save those with memoryAdd instead.",
     inputSchema: z.object({
       projectSummary: z.string().optional(),
       criticalConventions: z.array(z.string()).optional(),

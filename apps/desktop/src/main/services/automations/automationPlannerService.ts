@@ -508,7 +508,14 @@ function normalizeDraft(args: {
   const inputTriggers = Array.isArray(args.draft.triggers) && args.draft.triggers.length > 0
     ? args.draft.triggers
     : ((args.draft as any).trigger ? [(args.draft as any).trigger] : [{ type: "manual" }]);
-  const triggers = inputTriggers.map((raw, index) => {
+  if (inputTriggers.length > 1) {
+    issues.push({
+      level: "warning",
+      path: "triggers",
+      message: "Automations now support a single trigger. Only the first trigger will be saved."
+    });
+  }
+  const triggers = inputTriggers.slice(0, 1).map((raw, index) => {
     const triggerType = safeTrim(raw?.type) as any;
     const trigger: Record<string, unknown> = { type: triggerType };
     if (
@@ -679,6 +686,55 @@ function normalizeDraft(args: {
     return { normalized: null, issues, ambiguities, resolutions };
   }
 
+  const requestedExecution = args.draft.execution;
+  const execution =
+    requestedExecution?.kind === "agent-session" || requestedExecution?.kind === "mission" || requestedExecution?.kind === "built-in"
+      ? {
+          kind: requestedExecution.kind,
+          ...(safeTrim(requestedExecution.targetLaneId) ? { targetLaneId: safeTrim(requestedExecution.targetLaneId) } : {}),
+          ...(requestedExecution.kind === "agent-session"
+            ? {
+                session: {
+                  ...(safeTrim(requestedExecution.session?.title) ? { title: safeTrim(requestedExecution.session?.title) } : {}),
+                  ...(safeTrim(requestedExecution.session?.reasoningEffort)
+                    ? { reasoningEffort: safeTrim(requestedExecution.session?.reasoningEffort) }
+                    : {}),
+                },
+              }
+            : {}),
+          ...(requestedExecution.kind === "mission"
+            ? {
+                mission: {
+                  ...(safeTrim(requestedExecution.mission?.title) ? { title: safeTrim(requestedExecution.mission?.title) } : {}),
+                },
+              }
+            : {}),
+          ...(requestedExecution.kind === "built-in" ? { builtIn: { actions: normalizedActions } } : {}),
+        }
+      : normalizedActions.length > 0
+        ? { kind: "built-in" as const, builtIn: { actions: normalizedActions } }
+        : { kind: "agent-session" as const, session: {} };
+
+  if (execution.kind === "built-in" && normalizedActions.length === 0) {
+    issues.push({
+      level: "error",
+      path: "execution.builtIn.actions",
+      message: "Built-in automations require at least one task.",
+    });
+  }
+
+  if (execution.kind !== "built-in" && !safeTrim(args.draft.prompt)) {
+    issues.push({
+      level: "error",
+      path: "prompt",
+      message: `${execution.kind} automations require a prompt.`,
+    });
+  }
+
+  if (issues.some((i) => i.level === "error")) {
+    return { normalized: null, issues, ambiguities, resolutions };
+  }
+
   const normalized: AutomationRuleDraftNormalized = {
     ...(args.draft.id ? { id: safeTrim(args.draft.id) } : {}),
     name,
@@ -687,16 +743,8 @@ function normalizeDraft(args: {
     mode: args.draft.mode === "fix" || args.draft.mode === "monitor" ? args.draft.mode : "review",
     triggers,
     trigger: triggers[0],
-    executor:
-      args.draft.executor?.mode === "employee" ||
-      args.draft.executor?.mode === "cto-route" ||
-      args.draft.executor?.mode === "night-shift"
-        ? {
-            mode: args.draft.executor.mode,
-            ...(args.draft.executor.targetId ? { targetId: safeTrim(args.draft.executor.targetId) } : {}),
-            ...(args.draft.executor.routingHints ? { routingHints: args.draft.executor.routingHints } : {}),
-          }
-        : { mode: "automation-bot" },
+    execution,
+    executor: { mode: "automation-bot" },
     ...(args.draft.modelConfig ? { modelConfig: args.draft.modelConfig } : {}),
     ...(args.draft.permissionConfig ? { permissionConfig: args.draft.permissionConfig } : {}),
     ...(safeTrim(args.draft.templateId) ? { templateId: safeTrim(args.draft.templateId) } : {}),
@@ -736,30 +784,21 @@ function normalizeDraft(args: {
       ...(args.draft.guardrails?.activeHours ? { activeHours: args.draft.guardrails.activeHours } : {}),
     },
     outputs: {
-      disposition: args.draft.outputs?.disposition ?? "comment-only",
+      disposition: "comment-only",
       ...(typeof args.draft.outputs?.createArtifact === "boolean" ? { createArtifact: args.draft.outputs.createArtifact } : { createArtifact: true }),
       ...(safeTrim(args.draft.outputs?.notificationChannel) ? { notificationChannel: safeTrim(args.draft.outputs?.notificationChannel) } : {}),
     },
     verification: {
-      verifyBeforePublish: Boolean(args.draft.verification?.verifyBeforePublish),
-      mode: args.draft.verification?.mode === "dry-run" ? "dry-run" : "intervention",
+      verifyBeforePublish: false,
+      mode: "intervention",
     },
     billingCode: safeTrim(args.draft.billingCode) || `auto:${slugify(name)}`,
-    ...(args.draft.queueStatus ? { queueStatus: args.draft.queueStatus } : {}),
-    actions: normalizedActions,
+    actions: execution.kind === "built-in" ? normalizedActions : [],
     legacy: {
       trigger: triggers[0],
       actions: normalizedActions,
     },
   };
-
-  if (!normalized.prompt && normalizedActions.length === 0) {
-    issues.push({
-      level: "warning",
-      path: "prompt",
-      message: "No custom prompt or legacy actions provided. The default mode prompt will be used."
-    });
-  }
 
   return { normalized, issues, ambiguities, resolutions };
 }
@@ -803,15 +842,6 @@ function requiredConfirmationsForDraft(draft: AutomationRuleDraftNormalized): Au
     }
   }
 
-  if (draft.verification.verifyBeforePublish) {
-    reqs.push({
-      key: "confirm.verify-before-publish",
-      severity: "warning",
-      title: "Verification gate enabled",
-      message: "This automation will stop for intervention before publishing external side effects."
-    });
-  }
-
   return reqs;
 }
 
@@ -827,6 +857,7 @@ function createEmptyDraft(): AutomationRuleDraft {
     mode: "review",
     triggers: [{ type: "manual" }],
     trigger: { type: "manual" },
+    execution: { kind: "agent-session", session: {} },
     executor: { mode: "automation-bot" },
     reviewProfile: "quick",
     toolPalette: ["repo", "memory", "mission"],
@@ -1009,6 +1040,9 @@ export function createAutomationPlannerService({
           };
         }) as any;
       draft.legacyActions = draft.actions;
+      draft.execution = draft.actions.length > 0
+        ? { kind: "built-in", builtIn: { actions: [] } }
+        : { kind: "agent-session", session: {} };
 
       const normalizedRes = normalizeDraft({ draft, suites, projectRoot });
       const confidence = clampNumber(1 - normalizedRes.ambiguities.length * 0.18 - normalizedRes.issues.filter((i) => i.level === "warning").length * 0.08, 0, 1);
@@ -1053,6 +1087,10 @@ export function createAutomationPlannerService({
       }
 
       const normalized = validation.normalized;
+      const execution = normalized.execution ?? {
+        kind: normalized.actions.length ? "built-in" : "agent-session",
+        ...(normalized.actions.length ? { builtIn: { actions: normalized.actions } } : { session: {} }),
+      };
       const idRaw = safeTrim(normalized.id);
       const existing = new Set((automationService.list() ?? []).map((r) => r.id));
       const baseId = idRaw || slugify(normalized.name);
@@ -1076,6 +1114,7 @@ export function createAutomationPlannerService({
         enabled: normalized.enabled,
         mode: normalized.mode,
         triggers: normalized.triggers,
+        execution,
         executor: normalized.executor,
         ...(normalized.modelConfig ? { modelConfig: normalized.modelConfig } : {}),
         ...(normalized.permissionConfig ? { permissionConfig: normalized.permissionConfig } : {}),
@@ -1090,7 +1129,7 @@ export function createAutomationPlannerService({
         verification: normalized.verification,
         billingCode: normalized.billingCode,
         ...(normalized.queueStatus ? { queueStatus: normalized.queueStatus } : {}),
-        ...(normalized.actions.length ? { actions: normalized.actions } : {}),
+        ...(execution.kind === "built-in" && normalized.actions.length ? { actions: normalized.actions } : {}),
       };
       if (idx >= 0) rules[idx] = nextRule;
       else rules.push(nextRule);
@@ -1117,7 +1156,14 @@ export function createAutomationPlannerService({
         return { normalized: null, actions: [], notes: [], issues };
       }
 
-      const actions: AutomationSimulationAction[] = (normalized.legacy?.actions ?? []).map((action, index): AutomationSimulationAction => {
+      const execution = normalized.execution ?? {
+        kind: normalized.actions.length ? "built-in" : "agent-session",
+        ...(normalized.actions.length ? { builtIn: { actions: normalized.actions } } : { session: {} }),
+      };
+      const builtInActions = execution.kind === "built-in"
+        ? execution.builtIn?.actions ?? []
+        : (normalized.legacy?.actions ?? []);
+      const actions: AutomationSimulationAction[] = builtInActions.map((action, index): AutomationSimulationAction => {
         const warnings: string[] = [];
         if (action.type === "run-command") {
           warnings.push("Shell command execution is potentially dangerous. Review command and cwd.");
@@ -1149,21 +1195,21 @@ export function createAutomationPlannerService({
         return { index, type: action.type, summary: action.type, warnings };
       });
 
-      actions.unshift({
-        index: -1,
-        type: "mission-dispatch",
-        summary: `Dispatch ${normalized.mode} mission as ${normalized.executor.mode}`,
-        warnings: normalized.verification.verifyBeforePublish ? ["External publish actions will require intervention approval."] : [],
-      });
-      actions.push({
-        index: actions.length,
-        type: normalized.outputs.disposition === "queue-overnight" ? "queue-result" : "review-summary",
-        summary:
-          normalized.outputs.disposition === "queue-overnight"
-            ? "Queue result for Night Shift review"
-            : `Produce ${normalized.outputs.disposition} output`,
-        warnings: [],
-      });
+      if (execution.kind === "agent-session") {
+        actions.unshift({
+          index: -1,
+          type: "agent-session",
+          summary: "Send the prompt to an automation-only agent thread",
+          warnings: [],
+        });
+      } else if (execution.kind === "mission") {
+        actions.unshift({
+          index: -1,
+          type: "launch-mission",
+          summary: "Launch a mission run with the selected model and permissions",
+          warnings: [],
+        });
+      }
 
       const notes: string[] = [];
       const firstTrigger = normalized.triggers[0];
@@ -1175,6 +1221,15 @@ export function createAutomationPlannerService({
       }
       notes.push(`Tool palette: ${normalized.toolPalette.join(", ")}`);
       notes.push(`Context sources: ${normalized.contextSources.map((source) => source.type).join(", ")}`);
+      if (execution.kind === "agent-session") {
+        notes.push("Run output stays in Automations history and does not appear in Work chat.");
+      }
+      if (execution.kind === "mission") {
+        notes.push("Mission runs stay visible from the Missions tab.");
+      }
+      if (execution.kind === "built-in") {
+        notes.push("Built-in tasks run directly without launching a mission or chat thread.");
+      }
 
       return { normalized, actions, notes, issues };
     }

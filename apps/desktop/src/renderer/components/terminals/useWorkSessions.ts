@@ -4,7 +4,7 @@ import type { TerminalSessionSummary, TerminalToolType } from "../../../shared/t
 import { useAppStore, type WorkDraftKind, type WorkProjectViewState, type WorkStatusFilter, type WorkViewMode } from "../../state/appStore";
 import { listSessionsCached } from "../../lib/sessionListCache";
 import { sessionMatchesStatusFilter, sessionStatusBucket } from "../../lib/terminalAttention";
-import { isChatToolType } from "../../lib/sessions";
+import { isChatToolType, isRunOwnedSession } from "../../lib/sessions";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 
 const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
@@ -225,7 +225,7 @@ export function useWorkSessions() {
     refreshInFlightRef.current = true;
     if (showLoading) setLoading(true);
     try {
-      const rows = await listSessionsCached({ limit: 500 });
+      const rows = (await listSessionsCached({ limit: 500 })).filter((session) => !isRunOwnedSession(session));
       setSessions(rows);
       hasLoadedOnceRef.current = true;
     } finally {

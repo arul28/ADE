@@ -7,8 +7,17 @@ export function isChatToolType(toolType: string | null | undefined): boolean {
   return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat";
 }
 
+export function isRunOwnedToolType(toolType: string | null | undefined): boolean {
+  return toolType === "run-shell";
+}
+
+export function isRunOwnedSession(session: Pick<TerminalSessionSummary, "toolType">): boolean {
+  return isRunOwnedToolType(session.toolType);
+}
+
 export function defaultSessionLabel(toolType: string | null | undefined): string {
   if (toolType === "shell" || toolType == null) return "Workspace";
+  if (toolType === "run-shell") return "Run inspector";
   if (toolType === "claude-orchestrated") return "Claude worker";
   if (toolType === "codex-orchestrated") return "Codex worker";
   if (toolType === "ai-orchestrated") return "AI worker";
@@ -29,6 +38,7 @@ export function formatToolTypeLabel(toolType: string | null | undefined): string
   if (toolType === "ai-chat") return "AI chat";
   if (toolType === "claude") return "Claude session";
   if (toolType === "codex") return "Codex session";
+  if (toolType === "run-shell") return "Run inspector";
   if (toolType === "shell") return "Terminal session";
   return toolType ? toolType.replace(/-/g, " ") : "Unknown";
 }
@@ -93,7 +103,13 @@ export function isGenericSessionTitle(session: TerminalSessionSummary, value: st
   ) {
     return true;
   }
-  if ((session.toolType === "shell" || session.toolType == null) && (normalized === "shell" || normalized === "terminal")) {
+  if (
+    (session.toolType === "shell" || session.toolType == null)
+    && (normalized === "shell" || normalized === "terminal")
+  ) {
+    return true;
+  }
+  if (session.toolType === "run-shell" && (normalized === "run inspector" || normalized === "inspector")) {
     return true;
   }
   return false;
