@@ -1,8 +1,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { openKvDb } from "./kvDb";
+
+const require = createRequire(import.meta.url);
 
 function createLogger() {
   return {
@@ -100,6 +103,34 @@ describe("kvDb sync foundation", () => {
 
     db1.close();
     db2.close();
+  });
+
+  it("repairs a legacy projects unique constraint before CRR marking", async () => {
+    const dbPath = makeDbPath("ade-kvdb-sync-projects-legacy-");
+    const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (path: string) => { exec: (sql: string) => void; close: () => void } };
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    const rawDb = new DatabaseSync(dbPath);
+    rawDb.exec(`
+      create table projects (
+        id text primary key,
+        root_path text not null unique,
+        display_name text not null,
+        default_base_ref text not null,
+        created_at text not null,
+        last_opened_at text not null
+      );
+    `);
+    rawDb.close();
+
+    const repaired = await openKvDb(dbPath, createLogger() as any);
+    const indexes = repaired.all<{ name: string; unique: number; origin: string }>("pragma index_list('projects')");
+    expect(indexes.filter((index) => Number(index.unique) === 1 && index.origin !== "pk")).toHaveLength(0);
+    expect(
+      repaired.get<{ name: string }>(
+        "select name from sqlite_master where type = 'table' and name = 'projects__crsql_clock' limit 1",
+      )?.name,
+    ).toBe("projects__crsql_clock");
+    repaired.close();
   });
 
   it("rebuilds unified memory FTS after remote changes are applied", async () => {

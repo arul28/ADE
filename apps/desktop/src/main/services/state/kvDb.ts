@@ -121,6 +121,18 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function quoteIdentifier(value: string): string {
+  return `"${value.replace(/"/g, "\"\"")}"`;
+}
+
+function rewriteCreateTableName(sql: string, fromName: string, toName: string): string {
+  const pattern = new RegExp(
+    `^(\\s*create\\s+table\\s+(?:if\\s+not\\s+exists\\s+)?)((?:["'\`\\[])?${escapeRegExp(fromName)}(?:["'\`\\]])?)`,
+    "i",
+  );
+  return sql.replace(pattern, `$1${quoteIdentifier(toName)}`);
+}
+
 function retrofitLegacyPrimaryKeyNotNullSchema(db: DatabaseSyncType): boolean {
   const tables = allRows<{ name: string; sql: string }>(
     db,
@@ -136,7 +148,7 @@ function retrofitLegacyPrimaryKeyNotNullSchema(db: DatabaseSyncType): boolean {
   );
 
   let changed = false;
-  runStatement(db, "pragma writable_schema = on");
+  runStatement(db, "pragma foreign_keys = off");
   try {
     for (const table of tables) {
       const tableInfo = allRows<{
@@ -166,31 +178,33 @@ function retrofitLegacyPrimaryKeyNotNullSchema(db: DatabaseSyncType): boolean {
         .split("\n")
         .filter((line) => !line.trim().toLowerCase().startsWith("foreign key("))
         .join("\n")
-        .replace(/\s+unique(?=(\s*,|\s*\)))/gi, "")
-        .replace(/,\s*unique\s*\([^)]*\)/gi, "")
+        .replace(/,\s*unique\s*\([^)]*\)(?:\s+on\s+conflict\s+\w+)?/gi, "")
+        .replace(/\bunique\b(?:\s+on\s+conflict\s+\w+)?/gi, "")
         .replace(/,\s*\)/g, "\n    )");
 
-      if (nextSql !== table.sql) {
-        runStatement(db, "update sqlite_master set sql = ? where type = 'table' and name = ?", [nextSql, table.name]);
-        changed = true;
+      const indexes = allRows<{ name: string; unique: number; origin: string }>(db, `pragma index_list('${table.name.replace(/'/g, "''")}')`);
+      const hasDisallowedUniqueIndices = indexes.some((index) => index.unique && index.origin !== "pk");
+      if (nextSql === table.sql && !hasDisallowedUniqueIndices) {
+        continue;
       }
 
-      const indexes = allRows<{ name: string; unique: number; origin: string }>(db, `pragma index_list('${table.name.replace(/'/g, "''")}')`);
-      for (const index of indexes) {
-        if (index.unique && index.origin !== "pk") {
-          runStatement(db, "delete from sqlite_master where type = 'index' and name = ?", [index.name]);
-          changed = true;
-        }
-      }
+      const repairName = `__ade_crr_repair_${table.name}`;
+      const rewrittenSql = rewriteCreateTableName(nextSql, table.name, repairName);
+      const columnsSql = tableInfo.map((column) => quoteIdentifier(column.name)).join(", ");
+
+      runStatement(db, rewrittenSql);
+      runStatement(
+        db,
+        `insert into ${quoteIdentifier(repairName)} (${columnsSql}) select ${columnsSql} from ${quoteIdentifier(table.name)}`,
+      );
+      runStatement(db, `drop table ${quoteIdentifier(table.name)}`);
+      runStatement(db, `alter table ${quoteIdentifier(repairName)} rename to ${quoteIdentifier(table.name)}`);
+      changed = true;
     }
   } finally {
-    runStatement(db, "pragma writable_schema = off");
+    runStatement(db, "pragma foreign_keys = on");
   }
 
-  if (changed) {
-    const row = getRow<{ schema_version: number }>(db, "pragma schema_version");
-    runStatement(db, `pragma schema_version = ${Number(row?.schema_version ?? 0) + 1}`);
-  }
   return changed;
 }
 
@@ -2618,6 +2632,11 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     if (retrofitLegacyPrimaryKeyNotNullSchema(db)) {
       db.close();
       db = openRawDatabase(dbPath);
+      migrate({
+        run: (sql: string, params: SqlValue[] = []) => {
+          runStatement(db, sql, params);
+        },
+      });
       if (hadCrsqlMetadata) {
         db.enableLoadExtension(true);
         db.loadExtension(extensionPath);
