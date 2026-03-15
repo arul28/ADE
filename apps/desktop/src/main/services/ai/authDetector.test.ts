@@ -83,7 +83,7 @@ describe("authDetector", () => {
         if (args[0] === "claude") return fakeChild({ status: 0, stdout: "/usr/local/bin/claude\n" });
         return fakeChild({ status: 1 });
       }
-      if (command === "claude" && args[0] === "auth") {
+      if ((command === "claude" || command.endsWith("/claude")) && args[0] === "auth") {
         return fakeChild({ status: 1, stderr: "Not logged in. Run `claude auth login`." });
       }
       return fakeChild({ status: 1 });
@@ -119,7 +119,7 @@ describe("authDetector", () => {
         if (args[0] === "claude") return fakeChild({ status: 0, stdout: "/usr/local/bin/claude\n" });
         return fakeChild({ status: 1 });
       }
-      if (command === "claude" && args[0] === "auth") {
+      if ((command === "claude" || command.endsWith("/claude")) && args[0] === "auth") {
         return fakeChild({ status: 0, stdout: "Authenticated as test-user\n" });
       }
       return fakeChild({ status: 1 });
@@ -224,7 +224,7 @@ describe("authDetector", () => {
         if (args[0] === "claude") return fakeChild({ status: 0, stdout: "/usr/local/bin/claude\n" });
         return fakeChild({ status: 1 });
       }
-      if (command === "claude") {
+      if (command === "claude" || command.endsWith("/claude")) {
         return fakeChild({ status: 1, stderr: "unknown command 'auth'" });
       }
       return fakeChild({ status: 1 });
