@@ -207,7 +207,7 @@ ADE Desktop (Electron)
 |   |   +-- Per-task-type model routing
 |   +-- MCP Server (exposes ADE tools to AI)
 |   +-- Existing Services (unchanged)
-|   +-- SQLite (sql.js)
+|   +-- SQLite (node:sqlite + cr-sqlite)
 +-- Preload Bridge (typed IPC)
 ```
 
@@ -220,7 +220,7 @@ The Electron main process is the only component with filesystem and process acce
 - PTY sessions via node-pty
 - Managed process lifecycle (spawn, stop, restart, kill)
 - Job engine and pipeline execution
-- Local database (SQLite via sql.js)
+- Local database (SQLite via node:sqlite)
 - Pack materialization and checkpoint capture
 - AI Integration Service (unified runtime contracts, MCP server, orchestrator)
 
@@ -270,7 +270,7 @@ For detailed architecture, see [Architecture Documentation](#9-architecture-docu
 | UI Primitives | Radix UI (headless, accessible) |
 | Icons | Lucide |
 | State Management | Zustand (renderer) |
-| Database | SQLite via sql.js (main process) |
+| Database | SQLite via node:sqlite (main process) |
 | Terminal | xterm.js (renderer), node-pty (main process), agent chat (Codex App Server, Claude multi-turn, unified API/local runtime) |
 | Editor/Diff | Monaco Editor (lazy-loaded) |
 | Graph/Canvas | React Flow |

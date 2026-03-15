@@ -146,6 +146,15 @@ Budget limits control how many entries are included per section: `lite` = 3, `st
 
 The briefing query is constructed from the task description, phase context, handoff summaries, and file patterns.
 
+### Direct-Source Context Injection
+
+The briefing service now supplements memory database entries with direct-source context:
+
+- **Git log**: Recent commit summaries are read directly from `git log` (via `humanWorkDigestService.getRecentCommitSummaries()` or a fallback `git log --oneline`), injected as synthetic `digest` memories. This replaces reliance on stale digest entries in the database.
+- **Instruction files**: `CLAUDE.md`, `agents.md`, and `AGENTS.md` are read from the project root and injected as synthetic `procedure` memories. This ensures agent briefings always include current instruction files regardless of memory database state.
+
+These synthetic memories are constructed with full `Memory` shape (tier 1, promoted, confidence 1.0) so they integrate seamlessly with the existing briefing budget and deduplication logic.
+
 ## Agent Prompt Guidance
 
 Memory-related instructions are embedded in agent prompts in these files:

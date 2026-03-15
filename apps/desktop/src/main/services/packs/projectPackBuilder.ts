@@ -83,60 +83,174 @@ const safeReadDoc = (absPath: string, maxBytes: number): { text: string; truncat
   }
 };
 
-const formatDocDigest = (args: {
-  title: string;
-  sources: string[];
-  maxChars: number;
-  projectRoot: string;
-}): { content: string; warnings: string[] } => {
-  const warnings: string[] = [];
-  const lines: string[] = [
-    `# ${args.title}`,
-    "",
-    "> ADE minimized context document. Generated deterministically for model context.",
-    ""
-  ];
-  let usedChars = lines.join("\n").length;
+// ── Codebase snapshot builder (deterministic, no AI) ─────────────────────────
 
-  for (const rel of args.sources) {
-    const abs = path.join(args.projectRoot, rel);
-    if (!fs.existsSync(abs)) continue;
-    const read = safeReadDoc(abs, 160_000);
+const MANIFEST_NAMES = ["package.json", "Cargo.toml", "go.mod", "pyproject.toml", "requirements.txt", "Gemfile", "build.gradle", "pom.xml"];
+const ENTRY_POINT_NAMES = [
+  "main.ts", "index.ts", "app.ts", "server.ts",
+  "main.tsx", "index.tsx", "app.tsx",
+  "main.go", "main.rs", "lib.rs",
+  "main.py", "app.py", "manage.py", "__main__.py",
+];
+const ENTRY_SEARCH_DIRS = ["", "src", "cmd", "lib", "app"];
+const DEEP_SCAN_DIRS = ["src", "lib", "apps", "packages"];
+const KEY_DOC_NAMES = ["README.md", "CLAUDE.md", "AGENTS.md"];
+const TECH_INDICATORS: Array<[string, string]> = [
+  ["package.json", "Node.js"],
+  ["tsconfig.json", "TypeScript"],
+  ["Cargo.toml", "Rust"],
+  ["go.mod", "Go"],
+  ["pyproject.toml", "Python"],
+  ["requirements.txt", "Python"],
+  [".python-version", "Python"],
+  ["Gemfile", "Ruby"],
+  ["build.gradle", "Java/Kotlin (Gradle)"],
+  ["pom.xml", "Java (Maven)"],
+  ["docker-compose.yml", "Docker Compose"],
+  ["docker-compose.yaml", "Docker Compose"],
+  ["Dockerfile", "Docker"],
+  [".github/workflows", "GitHub Actions CI"],
+  [".gitlab-ci.yml", "GitLab CI"],
+  ["Makefile", "Make"],
+  ["next.config.js", "Next.js"],
+  ["next.config.ts", "Next.js"],
+  ["vite.config.ts", "Vite"],
+  ["vite.config.js", "Vite"],
+  ["tailwind.config.ts", "Tailwind CSS"],
+  ["tailwind.config.js", "Tailwind CSS"],
+  ["prisma/schema.prisma", "Prisma ORM"],
+  ["electron-builder.yml", "Electron"],
+  ["forge.config.ts", "Electron Forge"],
+];
+
+function buildCodebaseSnapshot(projectRoot: string): string {
+  const lines: string[] = [];
+  const MAX_SNAPSHOT_CHARS = 8000;
+
+  // 1. Directory tree — top-level + 2 levels into deep-scan dirs
+  lines.push("## Directory tree");
+  const topEntries: string[] = [];
+  try {
+    const entries = fs.readdirSync(projectRoot, { withFileTypes: true })
+      .filter((e) => !e.name.startsWith(".") && e.name !== "node_modules" && e.name !== "__pycache__")
+      .slice(0, 60);
+    for (const entry of entries) {
+      const prefix = entry.isDirectory() ? "dir" : "file";
+      topEntries.push(`- ${prefix}: ${entry.name}`);
+    }
+  } catch { /* skip */ }
+
+  const deepEntries: string[] = [];
+  for (const dir of DEEP_SCAN_DIRS) {
+    const absDir = path.join(projectRoot, dir);
+    try {
+      if (!fs.statSync(absDir).isDirectory()) continue;
+    } catch { continue; }
+    const walk = (base: string, depth: number) => {
+      if (depth > 2 || deepEntries.length >= 120) return;
+      try {
+        const entries = fs.readdirSync(base, { withFileTypes: true })
+          .filter((e) => !e.name.startsWith(".") && e.name !== "node_modules" && e.name !== "__pycache__");
+        for (const entry of entries) {
+          if (deepEntries.length >= 120) return;
+          const rel = path.relative(projectRoot, path.join(base, entry.name));
+          const prefix = entry.isDirectory() ? "dir" : "file";
+          deepEntries.push(`- ${prefix}: ${rel}`);
+          if (entry.isDirectory()) walk(path.join(base, entry.name), depth + 1);
+        }
+      } catch { /* skip */ }
+    };
+    walk(absDir, 0);
+  }
+
+  const allTreeEntries = [...topEntries, ...deepEntries].slice(0, 150);
+  for (const entry of allTreeEntries) lines.push(entry);
+  lines.push("");
+
+  // 2. Package manifest — first 60 lines
+  for (const manifest of MANIFEST_NAMES) {
+    const abs = path.join(projectRoot, manifest);
+    try {
+      if (!fs.statSync(abs).isFile()) continue;
+    } catch { continue; }
+    const read = safeReadDoc(abs, 8_000);
     if (!read.text.trim()) continue;
-    const normalized = read.text.replace(/\r\n/g, "\n");
-    const sourceLines = normalized.split("\n");
-    const digest: string[] = [];
-    for (const line of sourceLines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      if (trimmed.startsWith("```")) continue;
-      digest.push(trimmed);
-      if (digest.join(" ").length > 1_400) break;
-    }
-    const blockHeader = `## Source: ${rel}`;
-    const block = [blockHeader, ...digest.slice(0, 16), ""].join("\n");
-    if (usedChars + block.length > args.maxChars) {
-      warnings.push(`${CONTEXT_CLIP_TAG}:${rel}`);
-      lines.push(blockHeader);
-      lines.push(`- ${CONTEXT_CLIP_TAG}: source exceeded generation cap`);
+    const manifestLines = read.text.split("\n").slice(0, 60);
+    lines.push(`## Package manifest (${manifest})`);
+    for (const line of manifestLines) lines.push(line);
+    if (read.truncated || manifestLines.length >= 60) lines.push("...(truncated)");
+    lines.push("");
+    break; // only first manifest found
+  }
+
+  // 3. Tech stack signals
+  const detected: string[] = [];
+  for (const [indicator, label] of TECH_INDICATORS) {
+    try {
+      const abs = path.join(projectRoot, indicator);
+      if (fs.existsSync(abs)) {
+        if (!detected.includes(label)) detected.push(label);
+      }
+    } catch { /* skip */ }
+  }
+  if (detected.length) {
+    lines.push("## Tech stack signals");
+    for (const tech of detected) lines.push(`- ${tech}`);
+    lines.push("");
+  }
+
+  // 4. Entry point headers — first 25 lines of up to 4 files
+  const foundEntryPoints: string[] = [];
+  for (const dir of ENTRY_SEARCH_DIRS) {
+    if (foundEntryPoints.length >= 4) break;
+    for (const name of ENTRY_POINT_NAMES) {
+      if (foundEntryPoints.length >= 4) break;
+      const rel = dir ? path.join(dir, name) : name;
+      const abs = path.join(projectRoot, rel);
+      try {
+        if (!fs.statSync(abs).isFile()) continue;
+      } catch { continue; }
+      if (foundEntryPoints.includes(rel)) continue;
+      foundEntryPoints.push(rel);
+      const read = safeReadDoc(abs, 4_000);
+      if (!read.text.trim()) continue;
+      const headerLines = read.text.split("\n").slice(0, 25);
+      lines.push(`## Entry point: ${rel}`);
+      for (const line of headerLines) lines.push(line);
+      lines.push("...");
       lines.push("");
-      continue;
     }
-    lines.push(blockHeader);
-    for (const entry of digest.slice(0, 16)) lines.push(entry);
-    if (read.truncated) lines.push(`- ${CONTEXT_CLIP_TAG}: source file truncated while reading`);
-    lines.push("");
-    usedChars = lines.join("\n").length;
   }
 
-  if (warnings.length) {
-    lines.push("## Omitted");
-    for (const warning of warnings) lines.push(`- ${warning}`);
+  // 5. Key doc excerpts — first 30 lines of README, CLAUDE.md, AGENTS.md
+  let docCount = 0;
+  for (const docName of KEY_DOC_NAMES) {
+    if (docCount >= 3) break;
+    const abs = path.join(projectRoot, docName);
+    try {
+      if (!fs.statSync(abs).isFile()) continue;
+    } catch { continue; }
+    const read = safeReadDoc(abs, 6_000);
+    if (!read.text.trim()) continue;
+    docCount++;
+    const docLines = read.text.split("\n").slice(0, 30);
+    lines.push(`## Doc excerpt: ${docName}`);
+    for (const line of docLines) lines.push(line);
+    if (read.truncated || docLines.length >= 30) lines.push("...(truncated)");
     lines.push("");
   }
 
-  return { content: `${lines.join("\n").trim()}\n`, warnings };
-};
+  // 6. Git log — last 10 commits oneline
+  // (git log is async via runGit, so we skip it here since this fn is sync;
+  //  the caller will append git log separately)
+
+  // Trim to max snapshot size
+  let snapshot = lines.join("\n");
+  if (snapshot.length > MAX_SNAPSHOT_CHARS) {
+    snapshot = snapshot.slice(0, MAX_SNAPSHOT_CHARS - 20) + "\n...(snapshot truncated)";
+  }
+  return snapshot;
+}
 
 const writeDocWithFallback = (args: {
   preferredAbsPath: string;
@@ -439,42 +553,105 @@ export async function runContextDocGeneration(
   const providerHint = provider === "codex" || provider === "claude" ? provider : undefined;
   const generatedAt = nowIso();
   const warnings: ContextGenerateDocsResult["warnings"] = [];
-  const canonicalPaths = collectContextDocPaths(deps.projectRoot).filter((rel) => !rel.endsWith(".ade.md"));
 
-  const rankedCanonicalPaths = rankDocPathsByRelevance(canonicalPaths);
-  const prdSources = canonicalPaths.filter((rel) => DOC_PRD_HINT_RE.test(rel) || DOC_GUIDE_HINT_RE.test(rel));
-  const archSources = canonicalPaths.filter((rel) => DOC_ARCH_HINT_RE.test(rel));
+  // 1. Build deterministic codebase snapshot from actual code
+  let snapshot = buildCodebaseSnapshot(deps.projectRoot);
 
-  const prdDigest = formatDocDigest({
-    title: "PRD.ade",
-    sources: prdSources.length > 0 ? prdSources : rankedCanonicalPaths.slice(0, 20),
-    maxChars: 18_000,
-    projectRoot: deps.projectRoot
-  });
-  const archDigest = formatDocDigest({
-    title: "ARCHITECTURE.ade",
-    sources: archSources.length > 0 ? archSources : rankedCanonicalPaths.slice(0, 20),
-    maxChars: 20_000,
-    projectRoot: deps.projectRoot
-  });
-  for (const warning of [...prdDigest.warnings, ...archDigest.warnings]) {
-    warnings.push({ code: "omitted_due_size", message: warning });
+  // Append git log (async) — last 10 commits
+  try {
+    const gitLogResult = await runGit(
+      ["log", "--oneline", "-n", "10"],
+      { cwd: deps.projectRoot, timeoutMs: 8_000 }
+    );
+    if (gitLogResult.exitCode === 0 && gitLogResult.stdout.trim()) {
+      snapshot += "\n## Recent git history\n" + gitLogResult.stdout.trim() + "\n";
+    }
+  } catch { /* git unavailable — skip silently */ }
+
+  // 2. Detect mode: first-gen vs update
+  const prdAbsPath = path.join(deps.projectRoot, ADE_DOC_PRD_REL);
+  const archAbsPath = path.join(deps.projectRoot, ADE_DOC_ARCH_REL);
+  const existingPrd = readFileIfExists(prdAbsPath).trim();
+  const existingArch = readFileIfExists(archAbsPath).trim();
+  const MIN_DOC_SIZE = 200;
+  const isUpdateMode = existingPrd.length > MIN_DOC_SIZE && existingArch.length > MIN_DOC_SIZE;
+
+  // 3. For update mode, get changes since last generation
+  let gitChanges = "";
+  if (isUpdateMode) {
+    const lastRunRaw = deps.db.getJson<{ generatedAt?: string }>(CONTEXT_DOC_LAST_RUN_KEY);
+    const lastDate = lastRunRaw?.generatedAt ?? null;
+    if (lastDate) {
+      try {
+        const gitLogStatResult = await runGit(
+          ["log", "--oneline", "--stat", `--since=${lastDate}`],
+          { cwd: deps.projectRoot, timeoutMs: 10_000 }
+        );
+        if (gitLogStatResult.exitCode === 0 && gitLogStatResult.stdout.trim()) {
+          gitChanges = gitLogStatResult.stdout.trim();
+        }
+      } catch { /* git unavailable — fallback handled in prompt */ }
+    }
   }
 
-  const prompt = [
-    "Generate two COMPLETE markdown documents from the provided repository context digest.",
-    "These are canonical context docs. Rewrite them to match the CURRENT repository state (no changelog, no delta section, no historical timeline).",
-    "Return ONLY one JSON object with this exact shape:",
-    '{"prd":"<markdown>","architecture":"<markdown>"}',
-    "Do not include markdown fences or prose outside JSON.",
-    "",
-    "PRD source digest:",
-    prdDigest.content,
-    "",
-    "Architecture source digest:",
-    archDigest.content
-  ].join("\n");
+  // 4. Build prompt
+  let prompt: string;
+  if (isUpdateMode) {
+    const changesSection = gitChanges
+      ? gitChanges
+      : "Git history unavailable. Compare the snapshot below against the current docs.";
+    const lastDate = deps.db.getJson<{ generatedAt?: string }>(CONTEXT_DOC_LAST_RUN_KEY)?.generatedAt ?? "unknown";
+    prompt = [
+      "You are updating existing reference cards that AI agents read at the start of every session.",
+      "",
+      "Current docs:",
+      `<prd>${existingPrd}</prd>`,
+      `<architecture>${existingArch}</architecture>`,
+      "",
+      `Changes since last generation (${lastDate}):`,
+      `<changes>${changesSection}</changes>`,
+      "",
+      "Current codebase snapshot:",
+      `<snapshot>${snapshot}</snapshot>`,
+      "",
+      "You have read-only tools. Use them to inspect changed files if needed. Keep tool calls under 5.",
+      "Update the docs IN-PLACE — no changelogs, no deltas. Return the full updated documents.",
+      "If nothing material changed, return existing content as-is.",
+      "",
+      "CRITICAL: Each document MUST be under 8000 characters.",
+      "",
+      'Return ONLY: {"prd":"<markdown>","architecture":"<markdown>"}'
+    ].join("\n");
+  } else {
+    prompt = [
+      "You are producing two compact reference cards that AI coding agents read at the start of every session for quick orientation. Dense and structured — every sentence earns its place.",
+      "",
+      "Here is a snapshot of the codebase:",
+      `<snapshot>${snapshot}</snapshot>`,
+      "",
+      "You have read-only tools: readFile, glob, grep, listDir, gitLog. Use them to inspect key files — entry points, service definitions, types, config. Keep tool calls under 8.",
+      "",
+      "CRITICAL: Each document MUST be under 8000 characters.",
+      "",
+      'Return ONLY: {"prd":"<markdown>","architecture":"<markdown>"}',
+      "",
+      "PRD.ade.md structure:",
+      "1. **What this is** — product name, what it does, who uses it (2-3 sentences)",
+      "2. **Stack** — languages, frameworks, key deps, repo structure (bullets)",
+      "3. **Feature areas** — each major feature, one line each (bullets)",
+      "4. **Current state** — what's shipped, what's being built (2-3 sentences)",
+      "5. **Working norms** — conventions, testing, deployment (bullets)",
+      "",
+      "ARCHITECTURE.ade.md structure:",
+      "1. **System shape** — layers, boundaries, how the app is structured (3-5 sentences)",
+      "2. **Core services** — name, responsibility, key interface (bullets)",
+      "3. **Data model** — storage, state management (bullets)",
+      "4. **Integration points** — external services, APIs, IPC (bullets)",
+      "5. **Key patterns** — naming, error handling, extension points (bullets)"
+    ].join("\n");
+  }
 
+  // 5. Call AI with prompt (model now gets read-only tools automatically)
   let generatedPrd = "";
   let generatedArch = "";
   let outputPreview = "";
@@ -519,7 +696,7 @@ export async function runContextDocGeneration(
               if (!generatedArch) generatedArch = asString(parsed.architecture).trim();
             }
           } catch {
-            // fall through to deterministic fallback below.
+            // fall through to snapshot-based fallback below.
           }
         }
       }
@@ -531,23 +708,25 @@ export async function runContextDocGeneration(
     }
   }
 
+  // 6. Fallback: write snapshot-based reference doc instead of empty
   if (!generatedPrd.trim()) {
-    generatedPrd = prdDigest.content;
-    warnings.push({ code: "generator_fallback_prd", message: "Used deterministic fallback PRD digest." });
+    generatedPrd = `# PRD.ade\n\n> Auto-generated from codebase snapshot. Regenerate with AI for richer content.\n\n${snapshot}\n`;
+    warnings.push({ code: "generator_fallback_prd", message: "Used snapshot-based fallback PRD." });
   }
   if (!generatedArch.trim()) {
-    generatedArch = archDigest.content;
-    warnings.push({ code: "generator_fallback_architecture", message: "Used deterministic fallback architecture digest." });
+    generatedArch = `# ARCHITECTURE.ade\n\n> Auto-generated from codebase snapshot. Regenerate with AI for richer content.\n\n${snapshot}\n`;
+    warnings.push({ code: "generator_fallback_architecture", message: "Used snapshot-based fallback architecture." });
   }
 
+  // 7. Write files + update lastRun — same as before
   const prdWrite = writeDocWithFallback({
-    preferredAbsPath: path.join(deps.projectRoot, ADE_DOC_PRD_REL),
+    preferredAbsPath: prdAbsPath,
     fallbackFileName: "PRD.ade.md",
     content: generatedPrd,
     fallbackRoot: FALLBACK_GENERATED_ROOT
   });
   const archWrite = writeDocWithFallback({
-    preferredAbsPath: path.join(deps.projectRoot, ADE_DOC_ARCH_REL),
+    preferredAbsPath: archAbsPath,
     fallbackFileName: "ARCHITECTURE.ade.md",
     content: generatedArch,
     fallbackRoot: FALLBACK_GENERATED_ROOT

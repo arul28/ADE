@@ -607,6 +607,51 @@ export function createPrService({
 
   const upsertRow = (summary: Omit<PrSummary, "projectId"> & { projectId?: string }): void => {
     const now = nowIso();
+    const existing = getRowForLane(summary.laneId);
+    if (existing) {
+      db.run(
+        `
+          update pull_requests
+             set repo_owner = ?,
+                 repo_name = ?,
+                 github_pr_number = ?,
+                 github_url = ?,
+                 github_node_id = ?,
+                 title = ?,
+                 state = ?,
+                 base_branch = ?,
+                 head_branch = ?,
+                 checks_status = ?,
+                 review_status = ?,
+                 additions = ?,
+                 deletions = ?,
+                 last_synced_at = ?,
+                 updated_at = ?
+           where id = ? and project_id = ?
+        `,
+        [
+          summary.repoOwner,
+          summary.repoName,
+          summary.githubPrNumber,
+          summary.githubUrl,
+          summary.githubNodeId,
+          summary.title,
+          summary.state,
+          summary.baseBranch,
+          summary.headBranch,
+          summary.checksStatus,
+          summary.reviewStatus,
+          summary.additions,
+          summary.deletions,
+          summary.lastSyncedAt,
+          summary.updatedAt ?? now,
+          existing.id,
+          projectId,
+        ]
+      );
+      return;
+    }
+
     db.run(
       `
         insert into pull_requests(
@@ -630,22 +675,6 @@ export function createPrService({
           created_at,
           updated_at
         ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        on conflict(project_id, lane_id) do update set
-          repo_owner = excluded.repo_owner,
-          repo_name = excluded.repo_name,
-          github_pr_number = excluded.github_pr_number,
-          github_url = excluded.github_url,
-          github_node_id = excluded.github_node_id,
-          title = excluded.title,
-          state = excluded.state,
-          base_branch = excluded.base_branch,
-          head_branch = excluded.head_branch,
-          checks_status = excluded.checks_status,
-          review_status = excluded.review_status,
-          additions = excluded.additions,
-          deletions = excluded.deletions,
-          last_synced_at = excluded.last_synced_at,
-          updated_at = excluded.updated_at
       `,
       [
         summary.id,

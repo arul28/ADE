@@ -56,6 +56,8 @@ The main process owns:
 - mission and orchestrator services
 - consolidated unified memory system (SQLite-backed with local embeddings), digests, and embedding services
 - CTO state, Linear sync/dispatch/ingress, and OpenClaw bridge
+- dev tools detection (git, gh CLI availability checks)
+- multi-device sync (cr-sqlite CRDT replication, WebSocket host/peer, device registry, brain/viewer model)
 
 Background startup is routed through one helper in `main.ts`, which gives every task an explicit label, delay, env gate, and timing log.
 
@@ -242,9 +244,13 @@ The v1 closeout completed the final integration gaps:
 - UI error states, IDE deep-linking, and GitHub token decryption error surfacing
 - Runtime hardening: PR merge 3-tier fallback, stagnation detection, turn-level and autopilot timeouts, IPC handler timeouts, DB flush ordering, mission step bidirectional sync, cascade cleanup of team resources
 
+Current architecture work:
+
+- **Multi-device sync (Phase 6 W1-W3 in progress)**: cr-sqlite CRDT integration, WebSocket sync protocol, device registry, and brain/viewer model are implemented on desktop. See [MULTI_DEVICE_SYNC.md](./MULTI_DEVICE_SYNC.md) for details.
+
 Future architecture work focuses on:
 
-- Multi-device sync via cr-sqlite and iOS companion app (Phase 6)
+- Phase 6 W4+: device pairing (QR/keychain), Tailscale integration, iOS companion app
 - Mobile polish and advanced remote workflows (Phase 7)
 - Full computer-use MCP tool loop
 - Provider usage telemetry refinements

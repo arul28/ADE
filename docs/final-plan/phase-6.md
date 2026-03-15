@@ -31,7 +31,7 @@ Goal: Ship end-to-end multi-device ADE with a polished iOS app for project manag
 #### Sync Architecture
 
 - **cr-sqlite** (SQLite CRDT extension) provides conflict-free replication for all **103 database tables** (see current schema in `kvDb.ts`).
-- cr-sqlite is a SQLite extension loaded into the existing sql.js WASM runtime on desktop and native SQLite on iOS — zero changes to existing SQL code.
+- cr-sqlite is a vendored native SQLite extension loaded into the Node.js `node:sqlite` runtime on desktop and native SQLite on iOS — zero changes to existing SQL code.
 - Tables are marked as CRRs (Conflict-free Replicated Relations): `SELECT crsql_as_crr('table_name')`.
 - cr-sqlite generates changesets transported via WebSocket to connected peers.
 - Each device maintains its own full SQLite database. cr-sqlite merges changes automatically using last-writer-wins per column with Lamport timestamps.
@@ -169,19 +169,21 @@ Proof that agents are working is critical to user trust. The desktop app has a p
 
 #### W1: cr-sqlite Integration
 
-- Load cr-sqlite extension into the existing sql.js WASM runtime used by `kvDb.ts`.
-- Mark all 103 existing tables as CRRs via migration: `SELECT crsql_as_crr('table_name')` for each table.
-- Exclude FTS4 virtual table (`unified_memories_fts`) from CRR marking — FTS indexes are rebuilt locally from synced content.
-- Verify zero breaking changes to existing SQL operations across all service files.
-- Add changeset extraction: `SELECT * FROM crsql_changes WHERE db_version > ?` for incremental sync.
-- Add changeset application: `INSERT INTO crsql_changes(...)` to apply remote changes.
-- Add site ID management for device identity in the CRDT merge (one unique site ID per device).
-- Add FTS rebuild trigger: after applying remote changesets that touch `unified_memories`, rebuild affected FTS rows.
+Status: Implemented on desktop + headless MCP.
+
+- `openKvDb(...)` now uses a shared sync-aware SQLite adapter backed by `node:sqlite` plus the vendored `crsqlite` extension.
+- The existing `AdeDb` contract still works, and W1 adds `db.sync.getSiteId()`, `getDbVersion()`, `exportChangesSince(version)`, and `applyChanges(changes)`.
+- Eligible tables are marked as CRRs dynamically from `sqlite_master`; virtual/internal tables and `unified_memories_fts` are excluded.
+- Existing databases get a one-time local backup before first CRR enablement: `<db>.pre-crsqlite-w1.bak`.
+- Device-local site identity lives at `.ade/secrets/sync-site-id` and is intentionally not synced.
+- Applying remote changes rebuilds the local unified memory FTS index when `unified_memories` changes.
+- Sync-managed tables support later `ALTER TABLE ... ADD COLUMN` through automatic alter wrapping in the shared DB adapter, which keeps follow-on migrations W2+ friendly.
 
 #### W2: WebSocket Sync Server & Protocol
 
 - Brain machine runs a WebSocket server (default port 8787) embedded in the Electron main process.
 - Protocol: authenticated WebSocket with JSON-framed cr-sqlite changesets.
+- Implementation note: desktop W2 now ships the transport on top of W1. The current auth mechanism is a machine-local bootstrap token stored in `.ade/secrets/sync-bootstrap-token`. This is intentionally temporary scaffolding pulled forward from W4 so transport and cross-peer testing can happen before the device registry and pairing UX land.
 - Connection flow:
   1. Peer connects with pairing token + device type (desktop/iOS)
   2. Brain validates token
@@ -195,30 +197,39 @@ Proof that agents are working is critical to user trust. The desktop app has a p
 - Heartbeat ping/pong (30s interval) for connection health monitoring.
 - **File access sub-protocol**: request/response for on-demand file reads, directory listings, and file writes. Used by iOS Files tab, desktop remote file viewing, and media/artifact retrieval. Supports any file type — source code, images, videos, logs — by path. Content-type is inferred from file extension. This single sub-protocol is the transport for all file-like data including computer use screenshots and screen recordings (no separate media backend needed).
 - **Terminal stream sub-protocol**: subscribe to terminal session output from brain. Used by iOS Work tab for read-only terminal viewing and by agent chat sessions for inline terminal output.
+- Validation scaffolding pulled forward from W10: W2 also carries one narrow command path, `work.runQuickCommand`, so remote terminal launch and stream round-trips can be proven before full command routing ships. All other execution commands remain W10 work.
 
 #### W3: Device Registry & Brain Management
 
-- New `devices` table (synced): device_id, name, platform (`macOS` / `iOS` / `linux`), device_type (`desktop` / `phone` / `vps`), last_seen, is_brain, ip_addresses, tailscale_ip.
-- Brain election: explicit user action — "Make this device the brain" in Settings > Devices.
-- Brain transfer protocol:
-  1. Current brain stops all agents and orchestrator processes
-  2. Final sync flush to all connected peers
-  3. Brain flag transfers to new device
-  4. New brain starts accepting agent work
-- Brain status broadcast: brain periodically announces running missions, active agents, resource usage, and uptime to all peers.
-- Device discovery: mDNS/Bonjour for zero-config LAN discovery. Tailscale IPs used when LAN fails.
-- Device configuration UI in Settings > Devices:
-  - Add device (shows pairing flow)
-  - Configure device type and role
-  - Remove device (revokes pairing, disconnects)
-  - Transfer brain designation
-  - View per-device sync status (last seen, sync lag)
+- Implemented desktop-only in W3.
+- Synced `devices` table stores durable device metadata: `device_id`, `site_id`, `name`, `platform`, `device_type`, `last_seen`, `last_host`, `last_port`, `ip_addresses`, `tailscale_ip`, and metadata JSON.
+- Brain authority lives in synced singleton `sync_cluster_state` with `brain_device_id` and `brain_epoch`. We do not use a per-row `is_brain` flag because CRDT replication would make split-brain edge cases harder to reason about.
+- Local desktop auto-registers on startup from the existing `.ade/secrets/sync-site-id` identity and a stable machine-local `sync-device-id`.
+- New Settings > Sync UI ships:
+  - Local device rename/edit controls
+  - Manual host/port/bootstrap-token desktop connect
+  - Current brain/connect details on the active brain
+  - Per-device live status (connected state, last seen, lag, latency)
+  - Disconnect/forget actions
+  - “Make this device the brain”
+- Brain transfer protocol in W3:
+  1. Preflight blocks handoff if live work exists
+  2. Final sync flush completes
+  3. `brain_epoch` increments and `brain_device_id` moves
+  4. Host/client lifecycle flips on the participating desktops
+- W3 transfer blocker rules:
+  - Block on active missions, running chat turns, live PTY sessions, and running managed lane processes
+  - Allow paused missions, CTO history and idle threads, and idle or ended agent chats to survive handoff as durable synced state
+- Brain status broadcast now carries connected peers and sync metrics to viewers.
+- Discovery, QR pairing, keychain storage, Tailscale selection, and secure revoke are not W3. They move to W4.
 
 #### W4: Device Pairing & Network
 
 - First-time pairing: brain generates a **QR code** (encodes brain IP/port + one-time pairing token) or a **6-digit numeric code** for manual entry.
 - Pairing establishes a shared secret stored in OS keychain (macOS Keychain / iOS Keychain).
 - After pairing, devices reconnect automatically on every app launch — no re-auth.
+- Temporary bridge for testing: before this full pairing flow ships, W2 uses a machine-local bootstrap token in `.ade/secrets/sync-bootstrap-token` so the transport can be exercised end to end. Replacing that bootstrap token with registry-backed pairing and keychain storage is still W4 work.
+- Explicit carry-over from W3: the current desktop host listens on all interfaces with bootstrap-token auth only. Treat W3 as trusted-LAN-only scaffolding. W4 must harden this with per-device secrets, secure revoke, and the intended network policy.
 - **Tailscale integration** (optional):
   - ADE detects Tailscale IPs (100.64.x.x) automatically and uses them when LAN discovery fails.
   - Peer-to-peer WireGuard encrypted traffic — no cloud relay.
@@ -237,6 +248,7 @@ Proof that agents are working is critical to user trust. The desktop app has a p
 - cr-sqlite embedded via SQLite.swift wrapper with cr-sqlite extension loaded natively.
 - WebSocket client for brain connection — reuses the same protocol from W2.
 - Local SQLite database as a cr-sqlite peer — all tables synced, full state available offline.
+- Before or alongside W5, revisit sync hot-path performance in the `node:sqlite` adapter. Statement caching is deferred in W3/W4, but it becomes more important once phone peers and heavier multi-peer polling are in the loop.
 - Pairing flow: open iOS app → scan QR code displayed on brain → token stored in iOS Keychain → connected.
 - **Four-tab navigation**: Lanes, Files, Work, PRs.
 - Persistent connection status header: brain name, connection state, sync indicator.
@@ -311,6 +323,7 @@ High-parity SwiftUI implementation of the desktop PRs page.
 - Command acknowledgment: brain confirms receipt and execution start.
 - Command failure: brain returns error, originating device shows actionable error with retry option.
 - Offline command queue: if device is disconnected, execution commands queue locally and replay on reconnect (in order, with conflict detection).
+- W2 pull-forward note: the transport now supports one seed execution command, `work.runQuickCommand`, to validate remote PTY launch plus terminal streaming. That seed path is test scaffolding, not the completion of W10. The rest of command routing and UI connection-state work remains in this workstream.
 
 **Connection status (desktop):**
 - Always-visible status indicator in the top bar:
@@ -470,7 +483,7 @@ Key dependencies:
 
 **Wave 1: Sync Infrastructure (W1-W4) -- ~3-4 weeks**
 
-The foundation. cr-sqlite integration, WebSocket protocol, device registry, and pairing. Nothing else can start until this wave proves the sync architecture works. A **cr-sqlite spike** (load extension, mark tables as CRRs, generate and apply changesets between two databases) should be the very first step -- budget 2-3 days to validate WASM compatibility and merge correctness before committing to the full protocol implementation.
+The foundation. cr-sqlite integration, WebSocket protocol, device registry, and pairing. Nothing else can start until this wave proves the sync architecture works. W1-W3 are now implemented on desktop using Node.js native `node:sqlite` with a vendored cr-sqlite extension (not WASM).
 
 **Wave 2: iOS Shell (W5) -- ~1-2 weeks**
 
@@ -488,12 +501,33 @@ Command routing hardening, connection status UI on both platforms, lane portabil
 
 | Wave | Workstreams | Duration | Risk |
 |---|---|---|---|
-| Wave 1 | W1-W4 | 3-4 weeks | High (cr-sqlite WASM compatibility is the main risk) |
+| Wave 1 | W1-W4 | 3-4 weeks | W1-W3 implemented; W4 remaining |
 | Wave 2 | W5, W11 (parallel) | 1-2 weeks | Medium (iOS project setup, native cr-sqlite loading) |
 | Wave 3 | W6-W9, W10 | 3-4 weeks | Low (pattern is well-defined, each tab is independent) |
 | Wave 4 | W10 finalization, W12 | 1-2 weeks | Low (validation, polish) |
 
 **Total: 8-10 weeks** (matches phase estimate). Critical path is Wave 1 -- if cr-sqlite works cleanly, the rest is execution.
+
+---
+
+### W4 carry-overs
+
+Before or during W4, keep these explicit carry-overs in scope:
+
+- Replace W3 bootstrap-token auth with per-device pairing secrets and OS keychain storage.
+- Add secure revoke semantics for paired devices.
+- Revisit host network posture after pairing lands:
+  - current W3 desktop transport is trusted-LAN-only scaffolding
+  - current host binding/auth model should not be treated as the final network posture
+- Keep the W3 transfer contract intact:
+  - paused missions survive handoff and stay paused
+  - CTO history and idle threads survive handoff
+  - idle and ended agent chats survive handoff
+  - live missions, chat turns, PTYs, and managed processes still block handoff
+- Preserve the CRR upsert rule introduced during W3 hardening:
+  - `ON CONFLICT(...)` on replicated tables must target the table primary key only
+  - non-PK merge cases should use explicit select-then-update logic
+- Track `node:sqlite` prepared-statement caching as deferred performance work before iOS peers and heavier multi-peer sync loads arrive.
 
 ---
 

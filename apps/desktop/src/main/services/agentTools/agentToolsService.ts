@@ -58,7 +58,7 @@ async function which(command: string): Promise<string | null> {
       return line.length ? line : null;
     }
 
-    const res = await spawnAsync("sh", ["-lc", `command -v ${command} 2>/dev/null || true`]);
+    const res = await spawnAsync("sh", ["-lc", 'command -v "$1" 2>/dev/null || true', "--", command]);
     const line = firstLine(res.stdout ?? "");
     return line.length ? line : null;
   } catch {

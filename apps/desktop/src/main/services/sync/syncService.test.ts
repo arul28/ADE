@@ -1,0 +1,226 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { openKvDb } from "../state/kvDb";
+import { createSyncService } from "./syncService";
+
+function createLogger() {
+  return {
+    debug: () => {},
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+  } as const;
+}
+
+function makeProjectRoot(prefix: string): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  fs.mkdirSync(path.join(root, ".ade", "artifacts"), { recursive: true });
+  return root;
+}
+
+function insertProjectAndLane(db: Awaited<ReturnType<typeof openKvDb>>, laneId = "lane-1"): void {
+  const now = "2026-03-15T00:00:00.000Z";
+  db.run(
+    `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)
+     values (?, ?, ?, ?, ?, ?)`,
+    ["project-1", "/repo/a", "Repo A", "main", now, now],
+  );
+  db.run(
+    `insert into lanes(
+      id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path, attached_root_path,
+      is_edit_protected, parent_lane_id, color, icon, tags_json, folder, status, created_at, archived_at
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      laneId,
+      "project-1",
+      "Lane 1",
+      null,
+      "worktree",
+      "main",
+      "feature/sync",
+      `/repo/a/.ade/worktrees/${laneId}`,
+      null,
+      0,
+      null,
+      null,
+      null,
+      null,
+      null,
+      "active",
+      now,
+      null,
+    ],
+  );
+}
+
+const activeDisposers: Array<() => Promise<void>> = [];
+
+afterEach(async () => {
+  while (activeDisposers.length > 0) {
+    const dispose = activeDisposers.pop();
+    if (dispose) await dispose();
+  }
+});
+
+describe("syncService", () => {
+  it("reports W3 transfer blockers while keeping paused and idle state survivable", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-blockers-");
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    insertProjectAndLane(db);
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      fileService: { dispose: () => {} } as any,
+      sessionService: {
+        list: ({ status }: { status?: string } = {}) => {
+          if (status === "running") {
+            return [
+              {
+                id: "chat-1",
+                laneId: "lane-1",
+                title: "CTO delegation thread",
+                status: "running",
+                toolType: "codex-chat",
+              },
+              {
+                id: "term-1",
+                laneId: "lane-1",
+                title: "Build shell",
+                status: "running",
+                toolType: "shell",
+              },
+            ];
+          }
+          return [];
+        },
+      } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      missionService: {
+        list: ({ status }: { status?: string } = {}) => status === "active"
+          ? [{ id: "mission-1", title: "Ship W3", status: "active" }]
+          : [],
+      } as any,
+      agentChatService: {
+        listSessions: async () => [
+          {
+            sessionId: "chat-1",
+            title: "CTO delegation thread",
+            identityKey: "cto",
+            status: "idle",
+          },
+          {
+            sessionId: "chat-2",
+            title: "Idle worker chat",
+            identityKey: "agent:worker-1",
+            status: "idle",
+          },
+          {
+            sessionId: "chat-3",
+            title: "Finished worker chat",
+            identityKey: "agent:worker-2",
+            status: "ended",
+          },
+        ],
+      } as any,
+      processService: {
+        listRuntime: (laneId: string) => laneId === "lane-1"
+          ? [{ processId: "dev-server", status: "running" }]
+          : [],
+      } as any,
+    });
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    const readiness = await service.getTransferReadiness();
+
+    expect(readiness.ready).toBe(false);
+    expect(readiness.blockers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "mission_run", id: "mission-1" }),
+        expect.objectContaining({ kind: "chat_runtime", id: "chat-1", label: "CTO delegation thread" }),
+        expect.objectContaining({ kind: "terminal_session", id: "term-1" }),
+        expect.objectContaining({ kind: "managed_process", id: "lane-1:dev-server" }),
+      ]),
+    );
+    expect(readiness.survivableState).toEqual(
+      expect.arrayContaining([
+        "Paused missions remain paused and can resume on the new brain.",
+        "CTO history and idle threads remain available on the new brain.",
+        "Idle and ended agent chats remain available and resumable on the new brain.",
+      ]),
+    );
+  });
+
+  it("transfers the brain role to the local device when only durable state remains", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-transfer-");
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      fileService: { dispose: () => {} } as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      missionService: { list: () => [] } as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      processService: { listRuntime: () => [] } as any,
+    });
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    const initial = await service.getStatus();
+    const localDevice = initial.localDevice;
+    const now = "2026-03-15T01:00:00.000Z";
+
+    db.run(
+      `insert into devices(
+        device_id, site_id, name, platform, device_type, created_at, updated_at, last_seen_at, last_host, last_port, tailscale_ip, ip_addresses_json, metadata_json
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "remote-brain",
+        "remote-site",
+        "Remote brain",
+        "macOS",
+        "desktop",
+        now,
+        now,
+        now,
+        "10.0.0.9",
+        8787,
+        null,
+        JSON.stringify(["10.0.0.9"]),
+        JSON.stringify({}),
+      ],
+    );
+    db.run(
+      `insert into sync_cluster_state(cluster_id, brain_device_id, brain_epoch, updated_at, updated_by_device_id)
+       values (?, ?, ?, ?, ?)`,
+      ["default", "remote-brain", 3, now, "remote-brain"],
+    );
+
+    const beforeTransfer = await service.getStatus();
+    expect(beforeTransfer.role).toBe("viewer");
+    expect(beforeTransfer.currentBrain?.deviceId).toBe("remote-brain");
+
+    const transferred = await service.transferBrainToLocal();
+
+    expect(transferred.role).toBe("brain");
+    expect(transferred.clusterState?.brainDeviceId).toBe(localDevice.deviceId);
+    expect(transferred.clusterState?.brainEpoch).toBe(4);
+    expect(transferred.currentBrain?.deviceId).toBe(localDevice.deviceId);
+    expect(transferred.transferReadiness.ready).toBe(true);
+  });
+});

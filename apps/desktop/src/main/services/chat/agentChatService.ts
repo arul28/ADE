@@ -3981,7 +3981,18 @@ export function createAgentChatService(args: {
       model: resolveClaudeCliModel(managed.session.model),
     };
     if (!lightweight) {
-      opts.systemPrompt = { type: "preset", preset: "claude_code" };
+      opts.systemPrompt = {
+        type: "preset",
+        preset: "claude_code",
+        append: [
+          "## ADE Memory",
+          "You have access to ADE's persistent project memory via MCP tools (memory_search, memory_add, memory_pin).",
+          "**Search first:** Before starting non-trivial work, search memory for relevant conventions, past decisions, or known pitfalls.",
+          "**Write sparingly and well:** Only save knowledge a developer joining this project would find useful on their first day. Each memory should be a single actionable insight.",
+          "GOOD memories: \"Convention: always use snake_case for DB columns\", \"Decision: chose Postgres over Mongo for ACID transactions\", \"Pitfall: CI silently skips tests if file doesn't match *.test.ts\"",
+          "DO NOT save: file paths, raw error messages without lessons, task progress updates, information derivable from git log or the code itself, obvious patterns already visible in the codebase.",
+        ].join("\n"),
+      };
       opts.settingSources = ["user", "project", "local"];
       opts.mcpServers = buildAdeMcpServers(
         "claude",

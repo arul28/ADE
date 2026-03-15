@@ -1,0 +1,484 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { WebSocket } from "ws";
+import { openKvDb } from "../state/kvDb";
+import { createSyncHostService } from "./syncHostService";
+import { encodeSyncEnvelope, parseSyncEnvelope } from "./syncProtocol";
+import type { ParsedSyncEnvelope } from "./syncProtocol";
+
+function createLogger() {
+  return {
+    debug: () => {},
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+  } as const;
+}
+
+function makeProjectRoot(prefix: string): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  fs.mkdirSync(path.join(root, ".ade", "artifacts"), { recursive: true });
+  return root;
+}
+
+function makeDbPath(prefix: string): string {
+  return path.join(makeProjectRoot(prefix), ".ade", "ade.db");
+}
+
+async function waitFor(check: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("Timed out waiting for condition.");
+}
+
+function toText(raw: Buffer | ArrayBuffer | Buffer[]): string {
+  if (Buffer.isBuffer(raw)) return raw.toString("utf8");
+  if (Array.isArray(raw)) return Buffer.concat(raw).toString("utf8");
+  return Buffer.from(raw).toString("utf8");
+}
+
+function createMessageQueue(ws: WebSocket) {
+  const queued: ParsedSyncEnvelope[] = [];
+  const waiters: Array<{
+    type: string;
+    resolve: (value: ParsedSyncEnvelope) => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }> = [];
+
+  ws.on("message", (raw) => {
+    const parsed = parseSyncEnvelope(toText(raw as Buffer));
+    const matchIndex = waiters.findIndex((entry) => entry.type === parsed.type);
+    if (matchIndex >= 0) {
+      const waiter = waiters.splice(matchIndex, 1)[0]!;
+      clearTimeout(waiter.timer);
+      waiter.resolve(parsed);
+      return;
+    }
+    queued.push(parsed);
+  });
+
+  return {
+    next(type: ParsedSyncEnvelope["type"], timeoutMs = 5_000): Promise<ParsedSyncEnvelope> {
+      const queuedIndex = queued.findIndex((entry) => entry.type === type);
+      if (queuedIndex >= 0) {
+        return Promise.resolve(queued.splice(queuedIndex, 1)[0]!);
+      }
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          const index = waiters.findIndex((entry) => entry.resolve === resolve);
+          if (index >= 0) waiters.splice(index, 1);
+          reject(new Error(`Timed out waiting for ${type}`));
+        }, timeoutMs);
+        waiters.push({ type, resolve, reject, timer });
+      });
+    },
+  };
+}
+
+async function connectClient(args: {
+  port: number;
+  token: string;
+  deviceId: string;
+  deviceName: string;
+  siteId: string;
+  dbVersion: number;
+}) {
+  const ws = new WebSocket(`ws://127.0.0.1:${args.port}`);
+  await new Promise<void>((resolve, reject) => {
+    ws.once("open", () => resolve());
+    ws.once("error", reject);
+  });
+  const queue = createMessageQueue(ws);
+  ws.send(encodeSyncEnvelope({
+    type: "hello",
+    requestId: "hello",
+    payload: {
+      token: args.token,
+      peer: {
+        deviceId: args.deviceId,
+        deviceName: args.deviceName,
+        platform: "macOS",
+        deviceType: "desktop",
+        siteId: args.siteId,
+        dbVersion: args.dbVersion,
+      },
+    },
+    compressionThresholdBytes: 100_000,
+  }));
+  await queue.next("hello_ok");
+  return {
+    ws,
+    queue,
+    close: async () => {
+      ws.close();
+      await new Promise((resolve) => ws.once("close", resolve));
+    },
+  };
+}
+
+function createStubFileService(workspaceRoot: string) {
+  const resolveWorkspacePath = (relPath: string) => {
+    const normalized = relPath.replace(/\\/g, "/").replace(/^\/+/, "");
+    const absolute = path.resolve(workspaceRoot, normalized);
+    if (!absolute.startsWith(workspaceRoot)) {
+      throw new Error("Refusing to access path outside workspace");
+    }
+    if (absolute.split(path.sep).includes(".git")) {
+      throw new Error("Refusing to access .git internals");
+    }
+    return absolute;
+  };
+
+  return {
+    listWorkspaces: () => [{
+      id: "workspace-1",
+      kind: "primary",
+      laneId: "lane-1",
+      name: "Primary",
+      rootPath: workspaceRoot,
+      isReadOnlyByDefault: false,
+    }],
+    listTree: async () => [{
+      name: "notes.txt",
+      path: "notes.txt",
+      type: "file",
+      changeStatus: null,
+      size: fs.existsSync(path.join(workspaceRoot, "notes.txt")) ? fs.statSync(path.join(workspaceRoot, "notes.txt")).size : 0,
+    }],
+    readFile: ({ path: relPath }: { path: string }) => {
+      const absolute = resolveWorkspacePath(relPath);
+      const content = fs.readFileSync(absolute, "utf8");
+      return {
+        content,
+        encoding: "utf-8",
+        size: Buffer.byteLength(content, "utf8"),
+        languageId: "plaintext",
+        isBinary: false,
+      };
+    },
+    writeWorkspaceText: ({ path: relPath, text }: { path: string; text: string }) => {
+      const absolute = resolveWorkspacePath(relPath);
+      fs.mkdirSync(path.dirname(absolute), { recursive: true });
+      fs.writeFileSync(absolute, text, "utf8");
+    },
+    createFile: ({ path: relPath, content }: { path: string; content?: string }) => {
+      const absolute = resolveWorkspacePath(relPath);
+      fs.mkdirSync(path.dirname(absolute), { recursive: true });
+      fs.writeFileSync(absolute, content ?? "", "utf8");
+    },
+    createDirectory: ({ path: relPath }: { path: string }) => {
+      fs.mkdirSync(resolveWorkspacePath(relPath), { recursive: true });
+    },
+    rename: ({ oldPath, newPath }: { oldPath: string; newPath: string }) => {
+      fs.mkdirSync(path.dirname(resolveWorkspacePath(newPath)), { recursive: true });
+      fs.renameSync(resolveWorkspacePath(oldPath), resolveWorkspacePath(newPath));
+    },
+    deletePath: ({ path: relPath }: { path: string }) => {
+      fs.rmSync(resolveWorkspacePath(relPath), { recursive: true, force: true });
+    },
+    quickOpen: async ({ query }: { query: string }) => [{ path: `${query}.txt`, score: 1 }],
+    searchText: async ({ query }: { query: string }) => [{ path: "notes.txt", line: 1, column: 1, preview: query }],
+    dispose: () => {},
+  };
+}
+
+const activeDisposers: Array<() => Promise<void>> = [];
+
+afterEach(async () => {
+  while (activeDisposers.length > 0) {
+    const dispose = activeDisposers.pop();
+    if (dispose) await dispose();
+  }
+});
+
+describe("syncHostService", () => {
+  it("authenticates peers, relays CRDT changes, and rebroadcasts to other peers", async () => {
+    const brainDb = await openKvDb(makeDbPath("ade-sync-brain-"), createLogger() as any);
+    const dbA = await openKvDb(makeDbPath("ade-sync-peer-a-"), createLogger() as any);
+    const dbB = await openKvDb(makeDbPath("ade-sync-peer-b-"), createLogger() as any);
+    const projectRoot = makeProjectRoot("ade-sync-host-project-");
+    const workspaceRoot = path.join(projectRoot, "workspace");
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+
+    const host = createSyncHostService({
+      db: brainDb,
+      logger: createLogger() as any,
+      projectRoot,
+      port: 0,
+      fileService: createStubFileService(workspaceRoot) as any,
+      sessionService: {
+        list: () => [],
+        get: () => null,
+        readTranscriptTail: async () => "",
+      } as any,
+      ptyService: {
+        create: vi.fn(),
+      } as any,
+      computerUseArtifactBrokerService: {
+        listArtifacts: () => [],
+      } as any,
+    });
+    activeDisposers.push(async () => {
+      await host.dispose();
+      brainDb.close();
+      dbA.close();
+      dbB.close();
+    });
+
+    const port = await host.waitUntilListening();
+    const token = host.getBootstrapToken();
+    const clientA = await connectClient({
+      port,
+      token,
+      deviceId: "peer-a",
+      deviceName: "Peer A",
+      siteId: dbA.sync.getSiteId(),
+      dbVersion: dbA.sync.getDbVersion(),
+    });
+    const clientB = await connectClient({
+      port,
+      token,
+      deviceId: "peer-b",
+      deviceName: "Peer B",
+      siteId: dbB.sync.getSiteId(),
+      dbVersion: dbB.sync.getDbVersion(),
+    });
+    activeDisposers.push(clientA.close, clientB.close);
+
+    const beforeVersion = dbA.sync.getDbVersion();
+    dbA.setJson("replicated-state", { value: "hello" });
+    const changes = dbA.sync.exportChangesSince(beforeVersion);
+    clientA.ws.send(encodeSyncEnvelope({
+      type: "changeset_batch",
+      requestId: "changes-a",
+      payload: {
+        reason: "relay",
+        fromDbVersion: beforeVersion,
+        toDbVersion: dbA.sync.getDbVersion(),
+        changes,
+      },
+      compressionThresholdBytes: 100_000,
+    }));
+
+    await waitFor(() => {
+      const replicated = brainDb.getJson<{ value: string }>("replicated-state");
+      return replicated?.value === "hello";
+    });
+
+    const rebroadcast = await clientB.queue.next("changeset_batch");
+    const payload = rebroadcast.payload as { changes: unknown[] };
+    expect(payload.changes.length).toBeGreaterThan(0);
+    dbB.sync.applyChanges(payload.changes as any);
+    expect(dbB.getJson<{ value: string }>("replicated-state")).toEqual({ value: "hello" });
+  });
+
+  it("serves workspace file operations and artifact reads while blocking .git access", async () => {
+    const brainDb = await openKvDb(makeDbPath("ade-sync-files-"), createLogger() as any);
+    const projectRoot = makeProjectRoot("ade-sync-files-project-");
+    const workspaceRoot = path.join(projectRoot, "workspace");
+    fs.mkdirSync(path.join(workspaceRoot, ".git"), { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, ".ade", "artifacts", "computer-use"), { recursive: true });
+    fs.writeFileSync(path.join(workspaceRoot, "notes.txt"), "initial", "utf8");
+    fs.writeFileSync(path.join(workspaceRoot, ".git", "config"), "[core]\n", "utf8");
+    const artifactPath = path.join(projectRoot, ".ade", "artifacts", "computer-use", "shot.png");
+    fs.writeFileSync(artifactPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00]));
+
+    const host = createSyncHostService({
+      db: brainDb,
+      logger: createLogger() as any,
+      projectRoot,
+      port: 0,
+      fileService: createStubFileService(workspaceRoot) as any,
+      sessionService: {
+        list: () => [],
+        get: () => null,
+        readTranscriptTail: async () => "",
+      } as any,
+      ptyService: {
+        create: vi.fn(),
+      } as any,
+      computerUseArtifactBrokerService: {
+        listArtifacts: ({ artifactId }: { artifactId?: string }) => artifactId === "artifact-1"
+          ? [{ id: "artifact-1", uri: path.relative(projectRoot, artifactPath) }]
+          : [],
+      } as any,
+    });
+    activeDisposers.push(async () => {
+      await host.dispose();
+      brainDb.close();
+    });
+
+    const client = await connectClient({
+      port: await host.waitUntilListening(),
+      token: host.getBootstrapToken(),
+      deviceId: "peer-files",
+      deviceName: "Peer Files",
+      siteId: brainDb.sync.getSiteId(),
+      dbVersion: brainDb.sync.getDbVersion(),
+    });
+    activeDisposers.push(client.close);
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "file_request",
+      requestId: "write-text",
+      payload: {
+        action: "writeText",
+        args: {
+          workspaceId: "workspace-1",
+          path: "notes.txt",
+          text: "updated",
+        },
+      },
+    }));
+    const writeResponse = await client.queue.next("file_response");
+    expect(writeResponse.requestId).toBe("write-text");
+    expect(fs.readFileSync(path.join(workspaceRoot, "notes.txt"), "utf8")).toBe("updated");
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "file_request",
+      requestId: "artifact-read",
+      payload: {
+        action: "readArtifact",
+        args: {
+          artifactId: "artifact-1",
+        },
+      },
+    }));
+    const artifactResponse = await client.queue.next("file_response");
+    const artifactPayload = artifactResponse.payload as { ok: boolean; result: { encoding: string; content: string } };
+    expect(artifactPayload.ok).toBe(true);
+    expect(artifactPayload.result.encoding).toBe("base64");
+    expect(Buffer.from(artifactPayload.result.content, "base64").length).toBeGreaterThan(0);
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "file_request",
+      requestId: "git-blocked",
+      payload: {
+        action: "readFile",
+        args: {
+          workspaceId: "workspace-1",
+          path: ".git/config",
+        },
+      },
+    }));
+    const blockedResponse = await client.queue.next("file_response");
+    const blockedPayload = blockedResponse.payload as { ok: boolean; error?: { message: string } };
+    expect(blockedPayload.ok).toBe(false);
+    expect(blockedPayload.error?.message).toMatch(/\.git/i);
+  });
+
+  it("streams terminal snapshots, live output, exit events, and supports the quick-run seed command", async () => {
+    const brainDb = await openKvDb(makeDbPath("ade-sync-terminal-"), createLogger() as any);
+    const projectRoot = makeProjectRoot("ade-sync-terminal-project-");
+    const workspaceRoot = path.join(projectRoot, "workspace");
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+    const createSpy = vi.fn().mockResolvedValue({ ptyId: "pty-1", sessionId: "session-1" });
+
+    const host = createSyncHostService({
+      db: brainDb,
+      logger: createLogger() as any,
+      projectRoot,
+      port: 0,
+      fileService: createStubFileService(workspaceRoot) as any,
+      sessionService: {
+        list: () => [],
+        get: () => ({
+          id: "session-1",
+          transcriptPath: path.join(projectRoot, ".ade", "transcripts", "session-1.log"),
+          status: "running",
+          runtimeState: "running",
+          lastOutputPreview: "echo hi",
+        }),
+        readTranscriptTail: async () => "prior output\n",
+      } as any,
+      ptyService: {
+        create: createSpy,
+      } as any,
+      computerUseArtifactBrokerService: {
+        listArtifacts: () => [],
+      } as any,
+    });
+    activeDisposers.push(async () => {
+      await host.dispose();
+      brainDb.close();
+    });
+
+    const client = await connectClient({
+      port: await host.waitUntilListening(),
+      token: host.getBootstrapToken(),
+      deviceId: "peer-terminal",
+      deviceName: "Peer Terminal",
+      siteId: brainDb.sync.getSiteId(),
+      dbVersion: brainDb.sync.getDbVersion(),
+    });
+    activeDisposers.push(client.close);
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "terminal_subscribe",
+      requestId: "sub-1",
+      payload: {
+        sessionId: "session-1",
+        maxBytes: 32_000,
+      },
+    }));
+    const snapshot = await client.queue.next("terminal_snapshot");
+    expect(snapshot.requestId).toBe("sub-1");
+    expect((snapshot.payload as { transcript: string }).transcript).toContain("prior output");
+
+    host.handlePtyData({
+      ptyId: "pty-1",
+      sessionId: "session-1",
+      data: "live output\n",
+    });
+    const liveData = await client.queue.next("terminal_data");
+    expect((liveData.payload as { data: string }).data).toBe("live output\n");
+
+    host.handlePtyExit({
+      ptyId: "pty-1",
+      sessionId: "session-1",
+      exitCode: 0,
+    });
+    const exitEvent = await client.queue.next("terminal_exit");
+    expect((exitEvent.payload as { exitCode: number | null }).exitCode).toBe(0);
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "command",
+      requestId: "cmd-quick-run",
+      payload: {
+        commandId: "cmd-quick-run",
+        action: "work.runQuickCommand",
+        args: {
+          laneId: "lane-1",
+          title: "Run tests",
+          startupCommand: "npm test",
+        },
+      },
+    }));
+    const ack = await client.queue.next("command_ack");
+    expect((ack.payload as { accepted: boolean }).accepted).toBe(true);
+    const result = await client.queue.next("command_result");
+    expect((result.payload as { ok: boolean; result: { sessionId: string } }).result.sessionId).toBe("session-1");
+    expect(createSpy).toHaveBeenCalledTimes(1);
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "command",
+      requestId: "cmd-unsupported",
+      payload: {
+        commandId: "cmd-unsupported",
+        action: "prs.create",
+        args: {},
+      },
+    }));
+    const rejectedAck = await client.queue.next("command_ack");
+    expect((rejectedAck.payload as { accepted: boolean }).accepted).toBe(false);
+    const rejectedResult = await client.queue.next("command_result");
+    expect((rejectedResult.payload as { ok: boolean; error?: { code: string } }).ok).toBe(false);
+    expect((rejectedResult.payload as { ok: boolean; error?: { code: string } }).error?.code).toBe("unsupported_command");
+  });
+});

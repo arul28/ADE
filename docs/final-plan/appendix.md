@@ -64,7 +64,7 @@ Each phase must satisfy:
 | Custom phase instructions too vague for orchestrator | Orchestrator can't execute phase properly | Semantic validation during pre-flight; require minimum instruction detail |
 | Subscription budget estimation inaccuracy | User unexpectedly hits rate limits | Best-effort estimation with clear 'approximate' labeling; graceful rate-limit handling (pause/wait/retry) |
 | Phase ordering constraint conflicts | Circular dependencies in custom phases | Structural validation catches cycles during pre-flight |
-| cr-sqlite WASM compatibility | cr-sqlite extension may not load cleanly in sql.js WASM runtime | Test early in Phase 6; fallback to native SQLite binding if WASM fails; Phase 8 SpacetimeDB as ultimate fallback |
+| cr-sqlite compatibility | cr-sqlite vendored native extension loaded via node:sqlite — W1 implemented successfully on desktop | Phase 8 SpacetimeDB as fallback if long-term issues arise |
 | cr-sqlite project maturity | cr-sqlite is pre-1.0; API or merge behavior may change | Pin version; maintain fork if needed; Phase 8 provides alternative path |
 | Tailscale adoption friction | Users may resist installing a VPN tool for device sync | Tailscale is optional; LAN-only mode works without it; clear docs on privacy (peer-to-peer, no cloud relay) |
 | Brain single-point-of-failure | If brain machine goes offline, no agents run | Brain transfer protocol allows quick failover; VPS brain option for always-on; offline cached state on all devices |

@@ -966,7 +966,7 @@ The memory system provides agents with durable, searchable long-term memory that
 
 #### Storage Layer
 
-- **Primary store**: SQLite/sql.js with `unified_memories` as the active memory table and `unified_memory_embeddings` storing 384-dim vectors from local Xenova/all-MiniLM-L6-v2
+- **Primary store**: SQLite (node:sqlite + cr-sqlite) with `unified_memories` as the active memory table and `unified_memory_embeddings` storing 384-dim vectors from local Xenova/all-MiniLM-L6-v2
 - **Embedding model**: `@huggingface/transformers` running `Xenova/all-MiniLM-L6-v2` locally — no API calls, fully offline
 - **Background embedding**: `embeddingWorkerService.ts` processes new entries asynchronously and backfills existing ones without blocking
 - **Active retrieval path**: Hybrid FTS4 BM25 (30%) + cosine similarity (70%) + MMR re-ranking (λ=0.7), with graceful fallback to lexical/composite scoring when embeddings are unavailable
@@ -2012,7 +2012,7 @@ The `stream_events` tool uses an in-memory event buffer with a **10,000 event ca
 
 ### 3. Single Process Database Access
 
-ADE uses SQLite (via sql.js WASM) with a single-writer model. If the desktop app and MCP server run simultaneously against the same project database, **SQLite write conflicts** will occur. To avoid this:
+ADE uses SQLite (via node:sqlite) with a single-writer model. If the desktop app and MCP server run simultaneously against the same project database, **SQLite write conflicts** will occur. To avoid this:
 
 - Stop the desktop app before running the MCP server standalone in headless mode, or
 - Use the MCP server in embedded mode (via `.ade/mcp.sock`), which shares the same database connection as the desktop app.

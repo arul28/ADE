@@ -1,5 +1,5 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
-import { createAutoUpdateService } from "../updates/autoUpdateService";
+import type { createAutoUpdateService } from "../updates/autoUpdateService";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -490,6 +490,7 @@ import {
 import { readGlobalState, writeGlobalState, reorderRecentProjects } from "../state/globalState";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
+import type { createDevToolsService } from "../devTools/devToolsService";
 import type { createOnboardingService } from "../onboarding/onboardingService";
 import type { createAutomationService } from "../automations/automationService";
 import type { createAutomationPlannerService } from "../automations/automationPlannerService";
@@ -530,6 +531,8 @@ import type { createExternalMcpService } from "../externalMcp/externalMcpService
 import type { createExternalConnectionAuthService } from "../externalMcp/externalConnectionAuthService";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
 import type { createBudgetCapService } from "../usage/budgetCapService";
+import type { createSyncHostService } from "../sync/syncHostService";
+import type { createSyncService } from "../sync/syncService";
 import type { AdeProjectService } from "../projects/adeProjectService";
 import type { ConfigReloadService } from "../projects/configReloadService";
 import { getErrorMessage, isRecord, nowIso, toMemoryEntryDto, toOptionalString } from "../shared/utils";
@@ -544,6 +547,7 @@ export type AppContext = {
   disposeHeadWatcher: () => void;
   keybindingsService: ReturnType<typeof createKeybindingsService>;
   agentToolsService: ReturnType<typeof createAgentToolsService>;
+  devToolsService: ReturnType<typeof createDevToolsService>;
   onboardingService: ReturnType<typeof createOnboardingService>;
   laneService: ReturnType<typeof createLaneService>;
   laneEnvironmentService: ReturnType<typeof createLaneEnvironmentService> | null;
@@ -614,6 +618,8 @@ export type AppContext = {
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
   configReloadService?: ConfigReloadService | null;
+  syncHostService?: ReturnType<typeof createSyncHostService> | null;
+  syncService?: ReturnType<typeof createSyncService> | null;
   mcpSocketServer?: import("node:net").Server;
   mcpSocketPath?: string;
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
@@ -1948,6 +1954,82 @@ export function registerIpc({
     });
   });
 
+  ipcMain.handle(IPC.syncGetStatus, async (): Promise<import("../../../shared/types").SyncRoleSnapshot> => {
+    const ctx = getCtx();
+    if (!ctx.syncService) {
+      throw new Error("Sync service is not available.");
+    }
+    return await ctx.syncService.getStatus();
+  });
+
+  ipcMain.handle(IPC.syncListDevices, async (): Promise<import("../../../shared/types").SyncDeviceRuntimeState[]> => {
+    const ctx = getCtx();
+    if (!ctx.syncService) {
+      throw new Error("Sync service is not available.");
+    }
+    return await ctx.syncService.listDevices();
+  });
+
+  ipcMain.handle(
+    IPC.syncUpdateLocalDevice,
+    async (
+      _event,
+      arg: { name?: string; deviceType?: import("../../../shared/types").SyncPeerDeviceType },
+    ): Promise<import("../../../shared/types").SyncDeviceRecord> => {
+      const ctx = getCtx();
+      if (!ctx.syncService) {
+        throw new Error("Sync service is not available.");
+      }
+      return await ctx.syncService.updateLocalDevice({
+        name: typeof arg?.name === "string" ? arg.name : undefined,
+        deviceType: arg?.deviceType,
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.syncConnectToBrain,
+    async (_event, arg: import("../../../shared/types").SyncDesktopConnectionDraft): Promise<import("../../../shared/types").SyncRoleSnapshot> => {
+      const ctx = getCtx();
+      if (!ctx.syncService) {
+        throw new Error("Sync service is not available.");
+      }
+      return await ctx.syncService.connectToBrain(arg);
+    },
+  );
+
+  ipcMain.handle(IPC.syncDisconnectFromBrain, async (): Promise<import("../../../shared/types").SyncRoleSnapshot> => {
+    const ctx = getCtx();
+    if (!ctx.syncService) {
+      throw new Error("Sync service is not available.");
+    }
+    return await ctx.syncService.disconnectFromBrain();
+  });
+
+  ipcMain.handle(IPC.syncForgetDevice, async (_event, arg: { deviceId: string }): Promise<import("../../../shared/types").SyncRoleSnapshot> => {
+    const ctx = getCtx();
+    if (!ctx.syncService) {
+      throw new Error("Sync service is not available.");
+    }
+    return await ctx.syncService.forgetDevice(typeof arg?.deviceId === "string" ? arg.deviceId : "");
+  });
+
+  ipcMain.handle(IPC.syncGetTransferReadiness, async (): Promise<import("../../../shared/types").SyncTransferReadiness> => {
+    const ctx = getCtx();
+    if (!ctx.syncService) {
+      throw new Error("Sync service is not available.");
+    }
+    return await ctx.syncService.getTransferReadiness();
+  });
+
+  ipcMain.handle(IPC.syncTransferBrainToLocal, async (): Promise<import("../../../shared/types").SyncRoleSnapshot> => {
+    const ctx = getCtx();
+    if (!ctx.syncService) {
+      throw new Error("Sync service is not available.");
+    }
+    return await ctx.syncService.transferBrainToLocal();
+  });
+
   ipcMain.handle(IPC.externalMcpListServers, async (): Promise<ExternalMcpServerSnapshot[]> => {
     const service = getCtx().externalMcpService;
     if (!service) return [];
@@ -2048,6 +2130,11 @@ export function registerIpc({
   ipcMain.handle(IPC.agentToolsDetect, async (): Promise<AgentTool[]> => {
     const ctx = getCtx();
     return ctx.agentToolsService.detect();
+  });
+
+  ipcMain.handle(IPC.devToolsDetect, async (_event: unknown, arg?: { force?: boolean }) => {
+    const ctx = getCtx();
+    return ctx.devToolsService.detect(arg?.force);
   });
 
   ipcMain.handle(IPC.onboardingGetStatus, async (): Promise<OnboardingStatus> => {

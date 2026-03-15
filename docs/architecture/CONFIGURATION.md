@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-11
+> Last updated: 2026-03-15
 
 The ADE configuration system manages project-level and workspace-level settings through a layered YAML-based approach. It supports shared team configuration, personal local overrides, and a trust model that prevents unauthorized command execution.
 
@@ -75,6 +75,10 @@ project-root/
 │   ├── artifacts/        # Generated compatibility artifacts (ignored)
 │   ├── worktrees/        # Lane worktrees (ignored)
 │   └── secrets/          # Local secret material (ignored)
+│       ├── github/       # Encrypted GitHub tokens
+│       ├── sync-site-id  # cr-sqlite device identity (never syncs)
+│       ├── sync-device-id # Stable device identifier
+│       └── sync-bootstrap-token  # Sync pairing token (machine-local)
 ├── src/
 └── ...
 ```

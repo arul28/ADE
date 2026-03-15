@@ -83,7 +83,7 @@ export function StepWizard({
             Build a persistent CTO
           </div>
           <div className="mt-1 text-[12px] leading-5 text-muted-fg/44">
-            Identity first, then the long-term brief, then optional Linear wiring.
+            Identity, long-term brief, then optional integrations.
           </div>
           <div className="mt-4">
             <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.16em] text-muted-fg/38">

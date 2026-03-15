@@ -151,7 +151,7 @@ Baseline derived from code in `apps/desktop`.
 - Runtime execution flow is single-path (`aiIntegrationService` -> executor/unified runtime); no legacy hosted/BYOK migration branch remains in call flow.
 - Developer baseline assumes modern Git CLI semantics (worktrees, `restore`, `merge-tree --write-tree`, `--ignore-other-worktrees`).
 - **Codebase modularized (2026-03-02)**: AI orchestrator decomposed into 9 domain modules (42% size reduction), pack service decomposed into 4 builder modules (45% reduction), type system split into 17 domain files, frontend components decomposed (MissionsPage 60% reduction). Shared utilities consolidated. This decomposition directly enables Phase 8 core extraction if needed.
-- **cr-sqlite compatibility**: Multi-device sync (Phase 6) targets sql.js WASM + cr-sqlite extension for CRDT-based state replication. The existing SQLite-backed local state layer is compatible with cr-sqlite's merge semantics. If cr-sqlite proves insufficient, Phase 8 evaluates SpacetimeDB as an alternative.
+- **cr-sqlite integration (Phase 6 W1-W3 shipped)**: Multi-device sync uses Node.js native `node:sqlite` + vendored cr-sqlite extension for CRDT-based state replication. W1 (cr-sqlite integration), W2 (WebSocket sync protocol), and W3 (device registry + brain management) are implemented on desktop. If cr-sqlite proves insufficient long-term, Phase 8 evaluates SpacetimeDB as an alternative.
 
 ### 2.4 Confirmed gaps
 

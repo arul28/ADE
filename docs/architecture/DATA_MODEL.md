@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-08
+> Last updated: 2026-03-15
 
 ---
 
@@ -27,7 +27,7 @@
 
 ## Overview
 
-ADE uses a dual persistence strategy: structured data lives in a SQLite database (via sql.js, an in-process WASM implementation), while large artifacts (terminal transcripts, logs, generated docs, and compatibility/history artifacts) are stored as files on the filesystem. This split balances the need for efficient querying of metadata with the practical reality that large text blobs are better served by filesystem storage.
+ADE uses a dual persistence strategy: structured data lives in a SQLite database (via Node.js native `node:sqlite` with the vendored cr-sqlite CRDT extension), while large artifacts (terminal transcripts, logs, generated docs, and compatibility/history artifacts) are stored as files on the filesystem. This split balances the need for efficient querying of metadata with the practical reality that large text blobs are better served by filesystem storage.
 
 All persistence is local to the project. The primary database and all ADE artifact files live under the `.ade/` directory within the project root. `.ade` now has a canonical tracked/shareable subset (`ade.yaml`, `cto/`, `agents/`, `templates/`, `context/`, `memory/`, `history/`, `reflections/`, `skills/`) plus a tracked `.ade/.gitignore` that ignores machine-local runtime state (`local.yaml`, `local.secret.yaml`, databases, caches, transcripts, worktrees, secrets, and generated artifacts). Unified memory in SQLite is the canonical durable memory backend. Persisted pack files under `.ade/artifacts/packs/...` remain compatibility/history artifacts, but live runtime exports are generated from current local state rather than loaded from pre-refreshed pack files. A separate global state file tracks the user's recent project list.
 
@@ -35,24 +35,18 @@ All persistence is local to the project. The primary database and all ADE artifa
 
 ## Design Decisions
 
-### sql.js (WASM) Over Native SQLite
+### Node.js Native SQLite with cr-sqlite
 
-ADE uses sql.js rather than native SQLite (e.g., better-sqlite3) for several reasons:
+ADE uses Node.js native `node:sqlite` (`DatabaseSync`) with a vendored cr-sqlite CRDT extension:
 
-- **No native compilation**: sql.js is pure JavaScript + WASM, eliminating the need to compile native binaries for each platform and Electron version
-- **In-process**: The database runs in the same V8 isolate as the main process, avoiding IPC overhead
+- **Native performance**: `node:sqlite` runs SQLite in-process with no WASM overhead and full WAL mode support
+- **cr-sqlite integration**: The vendored `crsqlite` loadable extension enables conflict-free replicated relations (CRRs) for multi-device sync. Eligible tables are marked as CRRs at startup via `SELECT crsql_as_crr('table_name')`
 - **Portable**: The database file is a standard SQLite format, readable by any SQLite client
-- **Trade-off**: Write performance is lower than native SQLite, but ADE's workload is read-heavy with infrequent writes, making this acceptable
+- **Sync primitives**: The `AdeDb.sync` API exposes `getSiteId()`, `getDbVersion()`, `exportChangesSince(version)`, and `applyChanges(changes)` for the sync transport layer
 
-### Manual Flush Strategy
+### Persistence Strategy
 
-Rather than relying on WAL mode or auto-commit, ADE uses a manual flush strategy. The in-memory database is serialized to disk:
-
-- On a debounced timer (125ms after the last write)
-- On explicit `flushNow()` calls
-- On application shutdown
-
-This approach batches rapid writes (e.g., multiple operation records during a git sync) into a single disk write, reducing I/O overhead.
+ADE relies on SQLite's native WAL (Write-Ahead Logging) mode for durability. The `flushNow()` method on `AdeDb` is a no-op — WAL mode handles persistence automatically with no manual serialization needed. The database is closed cleanly on application shutdown.
 
 ### TEXT Primary Keys (UUIDs)
 
@@ -129,14 +123,17 @@ This two-file structure ensures that adding a new model requires only a single e
 
 **Location**: `<project_root>/.ade/ade.db`
 
-**Engine**: sql.js 1.13 (SQLite compiled to WASM, loaded via `initSqlJs()`)
+**Engine**: Node.js native `node:sqlite` (`DatabaseSync`) with vendored cr-sqlite extension
 
 **Initialization sequence**:
-1. Locate the sql.js WASM binary via `require.resolve("sql.js/dist/sql-wasm.wasm")`
-2. Initialize sql.js with the WASM locator
-3. Load existing database file if present, otherwise create new in-memory database
-4. Bootstrap the current schema via idempotent `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` statements
-5. Return the `AdeDb` interface
+1. Create or open the SQLite database file via `new DatabaseSync(dbPath, { allowExtension: true })`
+2. Load the vendored cr-sqlite extension (`crsqlite.dylib` / `.so` / `.dll`) via `db.loadExtension()`
+3. Run one-time schema compatibility migration (retrofit PK NOT NULL constraints, remove UNIQUE/FK constraints incompatible with cr-sqlite CRRs)
+4. Create a pre-cr-sqlite backup (`<db>.pre-crsqlite-w1.bak`) on first CRR enablement
+5. Bootstrap the current schema via idempotent `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` statements
+6. Mark eligible tables as conflict-free replicated relations via `SELECT crsql_as_crr('table_name')`
+7. Generate or read the device-local site identity from `.ade/secrets/sync-site-id`
+8. Return the `AdeDb` interface with `.sync` API for changeset export/import
 
 ### Database Schema
 
@@ -995,17 +992,29 @@ export type AdeDb = {
   get: <T>(sql: string, params?: SqlValue[]) => T | null;
   all: <T>(sql: string, params?: SqlValue[]) => T[];
 
+  // cr-sqlite sync primitives
+  sync: {
+    getSiteId: () => string;
+    getDbVersion: () => number;
+    exportChangesSince: (version: number) => CrsqlChangeRow[];
+    applyChanges: (changes: CrsqlChangeRow[]) => ApplyRemoteChangesResult;
+  };
+
   // Lifecycle
-  flushNow: () => void;
+  flushNow: () => void;  // No-op with native SQLite (WAL handles persistence)
   close: () => void;
 };
 ```
 
-All queries use parameterized statements (`?` placeholders), preventing SQL injection. The `run()` method is for INSERT/UPDATE/DELETE statements and triggers a debounced flush. The `get()` and `all()` methods are for SELECT queries and do not trigger flushes.
+All queries use parameterized statements (`?` placeholders), preventing SQL injection. The `run()` method is for INSERT/UPDATE/DELETE. The `get()` and `all()` methods are for SELECT queries. With native SQLite and WAL mode, writes are durable immediately — `flushNow()` is a no-op retained for API compatibility.
+
+**cr-sqlite SQL pattern constraints**: Tables marked as CRRs have their UNIQUE constraints and FOREIGN KEY constraints stripped by the cr-sqlite schema retrofit. Services must use explicit `SELECT` → `INSERT/UPDATE` patterns instead of `INSERT ... ON CONFLICT DO UPDATE` (upsert) or `INSERT OR IGNORE`, since those clauses depend on UNIQUE constraints that no longer exist on CRR tables.
 
 ### Migration System
 
-Schema bootstrap is defined in the `migrate()` function in `kvDb.ts`. Runtime startup creates the current tables/indexes idempotently and enables foreign keys (`pragma foreign_keys = on`).
+Schema bootstrap is defined in the `migrate()` function in `kvDb.ts`. Runtime startup creates the current tables/indexes idempotently.
+
+Before CRR enablement, a one-time schema retrofit runs: `retrofitLegacyPrimaryKeyNotNullSchema()` adds `NOT NULL` to primary key columns, drops FOREIGN KEY constraints, strips UNIQUE constraints, and adds `DEFAULT` clauses — all required for cr-sqlite CRR compatibility. A pre-CRR backup (`<db>.pre-crsqlite-w1.bak`) is written before the first retrofit.
 
 The no-legacy baseline assumes current table shapes. Runtime code does not maintain helper backfill layers (`addColumnIfMissing`, `createIndexIfColumnsExist`) or runtime data backfill shims for old schemas.
 
@@ -1050,6 +1059,11 @@ All ADE artifacts live under `.ade/` in the project root:
     │           └── <lane-uuid>/
     │               ├── lane_pack.md     # Optional persisted lane context artifact
     │               └── plan_pack.md     # Optional persisted lane plan artifact
+    ├── secrets/                         # Machine-local secrets (ignored, never syncs)
+    │   ├── github/                      # Encrypted GitHub tokens
+    │   ├── sync-site-id                 # cr-sqlite device identity
+    │   ├── sync-device-id               # Stable device identifier
+    │   └── sync-bootstrap-token         # Sync pairing token
     └── cache/
         ├── chat-sessions/               # Persisted chat session state
         ├── mission-state/               # Mission/coordinator scratch documents
@@ -1112,9 +1126,9 @@ Updated whenever a project is opened. Used to restore the last-opened project on
 
 - TypeScript types directory (`src/shared/types/`) with 16 domain modules + barrel re-export (replaced ~5,700-line monolith)
 - Unified model registry (`src/shared/modelRegistry.ts`) as single source of truth for all AI models, with pricing fields and derived profiles
-- SQLite database initialization with sql.js WASM
-- Complete schema with 40 tables and 80+ indexes
-- Debounced flush strategy (125ms after last write)
+- SQLite database via Node.js native `node:sqlite` with cr-sqlite CRDT extension
+- Complete schema with 103+ tables and 80+ indexes
+- Native WAL-mode persistence (no manual flush needed)
 - Parameterized query API (no SQL injection)
 - KV store for layout and settings
 - All core tables (projects, lanes, sessions, session_deltas, operations, packs_index)

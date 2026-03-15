@@ -68,6 +68,8 @@ These are visible in the Settings > Memory health tab, which shows embedding pro
 
 The human work digest service monitors the project's git HEAD. When it detects new commits made outside of ADE, it generates a structured digest containing commit summaries, diffstats, changed file lists, and file clusters. This digest is saved as a memory entry with the `digest` category, keeping agents informed of manual code changes.
 
+The memory briefing service also reads recent git log entries and project instruction files (`CLAUDE.md`, `agents.md`, `AGENTS.md`) directly from disk and injects them as synthetic memory entries into agent briefings. This ensures agents always have current commit context and instruction files regardless of memory database state.
+
 ## CTO Core Memory
 
 The CTO agent has a separate, structured core memory document distinct from the unified memory database. This is a small identity-level document with five fields:

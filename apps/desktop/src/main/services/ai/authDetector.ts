@@ -64,17 +64,28 @@ const AUTH_INDICATORS = [
   /token valid/i,
 ];
 
-const UNAUTH_INDICATORS = [
+/** Strong unauth signals — explicit negations that always indicate "not logged in". */
+const STRONG_UNAUTH_INDICATORS = [
   /not logged in/i,
   /not authenticated/i,
   /login required/i,
   /sign in required/i,
-  /run .*login/i,
   /unauthorized/i,
   /forbidden/i,
   /invalid token/i,
   /expired/i,
 ];
+
+/**
+ * Weak unauth signals — patterns that can appear in help/usage text even when
+ * the user IS authenticated (e.g. "run `claude auth login` to switch accounts").
+ * These should not override a positive auth indicator.
+ */
+const WEAK_UNAUTH_INDICATORS = [
+  /run .*login/i,
+];
+
+const UNAUTH_INDICATORS = [...STRONG_UNAUTH_INDICATORS, ...WEAK_UNAUTH_INDICATORS];
 
 const UNSUPPORTED_INDICATORS = [
   /unknown command/i,
@@ -147,7 +158,7 @@ async function commandExists(command: string): Promise<boolean> {
       const result = await spawnAsync("where", [command], 5_000);
       return result.status === 0;
     }
-    const result = await spawnAsync(getLookupShell(), ["-lc", `command -v ${command} >/dev/null 2>&1`], 5_000);
+    const result = await spawnAsync(getLookupShell(), ["-lc", 'command -v "$1" >/dev/null 2>&1', "--", command], 5_000);
     return result.status === 0;
   } catch {
     // fall through to explicit common-path lookup
@@ -172,7 +183,7 @@ async function commandPath(command: string): Promise<string> {
       return explicitPath;
     }
     // Fallback to login shell lookup
-    const result = await spawnAsync(getLookupShell(), ["-lc", `command -v ${command}`], 5_000);
+    const result = await spawnAsync(getLookupShell(), ["-lc", 'command -v "$1"', "--", command], 5_000);
     return result.stdout?.trim() || command;
   } catch {
     return findExplicitCommandPath(command) ?? command;
@@ -201,6 +212,35 @@ async function refreshProcessPathFromShell(): Promise<void> {
   }
 }
 
+/** JSON fields that indicate a positive login state across CLI versions. */
+const JSON_AUTH_FIELDS = ["loggedIn", "logged_in", "authenticated", "signedIn", "signed_in", "active"] as const;
+
+function parseJsonAuthStatus(stdout: string): { authenticated: boolean; verified: true } | null {
+  try {
+    const json = JSON.parse(stdout.trim() || "");
+    if (typeof json !== "object" || json === null) return null;
+
+    // Check well-known boolean fields
+    for (const field of JSON_AUTH_FIELDS) {
+      if (field in json) {
+        return { authenticated: Boolean(json[field]), verified: true };
+      }
+    }
+
+    // If the JSON has an email/account field and no explicit false auth flag,
+    // the user is likely authenticated.
+    if (
+      (typeof json.email === "string" && json.email.trim().length > 0)
+      || (typeof json.account === "string" && json.account.trim().length > 0)
+    ) {
+      return { authenticated: true, verified: true };
+    }
+  } catch {
+    // Not JSON — fall through to regex matching.
+  }
+  return null;
+}
+
 async function inspectCliAuthentication(
   cli: CliName,
   command: string = cli,
@@ -215,24 +255,40 @@ async function inspectCliAuthentication(
       const normalized = output.toLowerCase();
 
       // Try JSON parsing first (e.g. `claude auth status --json` returns {"loggedIn": true, ...})
-      try {
-        const json = JSON.parse(result.stdout?.trim() || "");
-        if (typeof json === "object" && json !== null && "loggedIn" in json) {
-          return { authenticated: Boolean(json.loggedIn), verified: true };
-        }
-      } catch {
-        // Not JSON — fall through to regex matching.
-      }
+      const jsonResult = parseJsonAuthStatus(result.stdout ?? "");
+      if (jsonResult) return jsonResult;
 
-      if (hasPattern(normalized, UNAUTH_INDICATORS)) {
+      // Check both AUTH and UNAUTH indicators, then resolve conflicts.
+      // Help text from an authenticated CLI session can mention "run … login"
+      // (a weak unauth signal) even when the user IS logged in, so only strong
+      // unauth patterns override a positive auth indicator.
+      const matchesAuth = hasPattern(normalized, AUTH_INDICATORS);
+      const matchesStrongUnauth = hasPattern(normalized, STRONG_UNAUTH_INDICATORS);
+      const matchesWeakUnauth = hasPattern(normalized, WEAK_UNAUTH_INDICATORS);
+
+      if (matchesStrongUnauth) {
+        // Strong negative signal ("not logged in", "unauthorized", etc.) always wins.
         return { authenticated: false, verified: true };
       }
 
-      if (result.status === 0 && hasPattern(normalized, AUTH_INDICATORS)) {
+      if (matchesAuth) {
+        // Positive signal with no strong negation — authenticated.
+        // Weak unauth patterns (e.g. help text "run … login") are ignored.
         return { authenticated: true, verified: true };
       }
 
+      if (matchesWeakUnauth) {
+        // Only weak unauth with no positive signal — likely unauthenticated.
+        return { authenticated: false, verified: true };
+      }
+
+      // Exit 0 with no recognizable output → treat as authenticated
       if (result.status === 0 && normalized.length === 0) {
+        return { authenticated: true, verified: true };
+      }
+
+      // Exit 0 with unrecognized output → likely authenticated
+      if (result.status === 0 && normalized.length > 0) {
         return { authenticated: true, verified: true };
       }
 

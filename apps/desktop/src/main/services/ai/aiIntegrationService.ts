@@ -167,7 +167,7 @@ const TASK_DEFAULTS: Record<AiTaskType, RuntimeTaskDefaults> = {
   },
   initial_context: {
     modelId: DEFAULT_CLAUDE_TASK_MODEL_ID,
-    timeoutMs: 45_000
+    timeoutMs: 120_000
   }
 };
 
@@ -206,6 +206,9 @@ function resolveUnifiedToolMode(args: {
   permissionMode?: ExecutorOpts["permissions"]["mode"];
 }): "planning" | "coding" | "none" {
   if (args.taskType === "mission_planning") {
+    return "planning";
+  }
+  if (args.taskType === "initial_context") {
     return "planning";
   }
   if (args.feature === "orchestrator" && args.permissionMode === "read-only") {
@@ -859,11 +862,7 @@ export function createAiIntegrationService(args: {
       // populated the cache, so this reads instantly from cache:
       const cliStatuses = getCachedCliAuthStatuses();
       const claudeCli = cliStatuses.find((entry) => entry.cli === "claude");
-      if (
-        claudeCli?.installed
-        && (claudeCli.authenticated || !claudeCli.verified)
-        && options?.force
-      ) {
+      if (claudeCli?.installed && options?.force) {
         await probeClaudeRuntimeHealth({
           projectRoot,
           logger,

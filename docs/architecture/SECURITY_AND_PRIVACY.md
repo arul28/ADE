@@ -168,8 +168,11 @@ ADE implements multiple layers of protection to prevent secrets from being expos
 |-------------|-----------------|------------|
 | GitHub PAT (local) | `.ade/secrets/github/github-token.v1.bin` | Encrypted with Electron `safeStorage` |
 | API provider keys | `.ade/secrets/api-keys.json` | Plaintext on disk with `0600` permissions |
+| Sync site identity | `.ade/secrets/sync-site-id` | Plaintext (never syncs, used as cr-sqlite site ID) |
+| Sync device identity | `.ade/secrets/sync-device-id` | Plaintext (stable machine-local device ID) |
+| Sync bootstrap token | `.ade/secrets/sync-bootstrap-token` | Plaintext (shared pairing token for desktop-to-desktop connection) |
 
-ADE keeps CLI-backed authentication with the tools themselves (Claude Code, Codex). When ADE stores local secrets for secret-backed integrations, they remain on disk under the machine-local `.ade/secrets/` area or in `.ade/local.secret.yaml`.
+ADE keeps CLI-backed authentication with the tools themselves (Claude Code, Codex). When ADE stores local secrets for secret-backed integrations, they remain on disk under the machine-local `.ade/secrets/` area or in `.ade/local.secret.yaml`. Sync-related secrets (site ID, device ID, bootstrap token) are machine-specific and never replicated via cr-sqlite. See [MULTI_DEVICE_SYNC.md](./MULTI_DEVICE_SYNC.md) for the full sync security model.
 
 #### AI Context Exports (Bounded Payloads)
 

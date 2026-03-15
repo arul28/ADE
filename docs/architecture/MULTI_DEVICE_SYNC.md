@@ -4,7 +4,7 @@
 
 > Last updated: 2026-03-15
 
-> Status: **Phase 6 planned, not yet implemented.**
+> Status: **Phase 6 W1-W3 implemented on desktop. W3 ships device registry, desktop peer connection, manual bootstrap-token connect, and safe brain handoff.**
 
 This document describes ADE's multi-device sync architecture: cr-sqlite CRDT replication, the WebSocket sync protocol, the brain/viewer device model, and the security model for device communication.
 
@@ -37,25 +37,35 @@ ADE syncs all application state across devices using **cr-sqlite** (a SQLite CRD
 
 ### Loading the Extension
 
-- Desktop: cr-sqlite extension loaded into the existing sql.js WASM runtime used by `kvDb.ts`.
-- iOS: cr-sqlite loaded as a native SQLite extension via SQLite.swift.
-- Zero changes to existing SQL code required.
+- Desktop and headless MCP load `cr-sqlite` through the shared `openKvDb(...)` path in [`apps/desktop/src/main/services/state/kvDb.ts`](/Users/admin/Projects/ADE/apps/desktop/src/main/services/state/kvDb.ts).
+- The current W1 implementation uses Node's native `node:sqlite` driver plus a vendored `crsqlite` loadable extension on desktop/macOS.
+- iOS remains a future native extension integration in W5.
 
 ### CRR Marking
 
-All database tables (currently 103) are marked as conflict-free replicated relations:
+W1 marks all eligible non-virtual ADE tables as conflict-free replicated relations at startup:
 
 ```sql
 SELECT crsql_as_crr('table_name');
 ```
 
-**Excluded**: The FTS4 virtual table (`unified_memories_fts`) is not a CRR. Each device rebuilds its FTS index locally from the synced `unified_memories` table.
+**Excluded**:
+- Virtual/internal tables such as `sqlite_%`, `crsql_%`, and `unified_memories_fts%`
+- `unified_memories_fts` remains local-only and is rebuilt from synced `unified_memories`
+
+The migration is dynamic rather than count-based: new future tables are discovered from `sqlite_master` and become CRRs automatically unless excluded as virtual/internal tables.
 
 ### Merge Semantics
 
 - Last-writer-wins per column with Lamport timestamps.
-- Each device has a unique site ID for CRDT merge identity.
-- New columns and new tables are handled transparently -- adding a table requires one `crsql_as_crr` call.
+- Each device has a unique local site ID stored at `.ade/secrets/sync-site-id`.
+- `openKvDb(...).sync` exposes the W1 sync primitives used by later transport layers:
+  - `getSiteId()`
+  - `getDbVersion()`
+  - `exportChangesSince(version)`
+  - `applyChanges(changes)`
+- Sync-managed tables support later `ALTER TABLE ... ADD COLUMN` through automatic `crsql_begin_alter` / `crsql_commit_alter` wrapping in the shared DB adapter.
+- Engineering rule under CRR retrofit: app-level `ON CONFLICT(...)` upserts must target a table primary key only. Do not rely on secondary UNIQUE constraints for replicated tables, because the CRR retrofit strips non-PK uniqueness. Non-PK merge cases should use explicit select-then-update logic instead.
 
 ### Changeset Extraction and Application
 
@@ -67,7 +77,7 @@ SELECT * FROM crsql_changes WHERE db_version > ?;
 INSERT INTO crsql_changes(...);
 ```
 
-After applying remote changesets that touch `unified_memories`, affected FTS rows are rebuilt.
+After applying remote changesets that touch `unified_memories`, ADE rebuilds the local FTS index so memory search stays correct.
 
 ---
 
@@ -81,8 +91,8 @@ After applying remote changesets that touch `unified_memories`, affected FTS row
 
 ### Connection Flow
 
-1. Peer connects with pairing token + device type (desktop/iOS).
-2. Brain validates the token against the device registry.
+1. Peer connects with host, port, and bootstrap token.
+2. Brain validates the bootstrap token.
 3. Peer sends its current `db_version`.
 4. Brain sends all changesets since that version.
 5. Continuous bidirectional sync begins.
@@ -106,36 +116,49 @@ Automatic reconnection with version-based catch-up on connection drops. Peers re
 
 ### Device Table
 
-A `devices` table (itself synced via cr-sqlite) stores:
+A synced `devices` table stores durable device metadata:
 
 | Field | Description |
 |---|---|
 | `device_id` | Unique device identifier |
+| `site_id` | Stable cr-sqlite site identifier |
 | `name` | User-assigned device name |
 | `platform` | `macOS`, `iOS`, `linux` |
 | `device_type` | `desktop`, `phone`, `vps` |
-| `is_brain` | Whether this device is the brain |
 | `last_seen` | Last connection timestamp |
+| `last_host` / `last_port` | Last known manual-connect address |
 | `ip_addresses` | LAN IPs |
 | `tailscale_ip` | Tailscale IP (if available) |
+| `metadata_json` | Future-safe operational metadata |
+
+Brain authority is stored separately in a synced singleton `sync_cluster_state` row:
+
+| Field | Description |
+|---|---|
+| `cluster_id` | Singleton cluster key (`default`) |
+| `brain_device_id` | Current brain device |
+| `brain_epoch` | Monotonic handoff counter |
+| `updated_at` | Last handoff timestamp |
+| `updated_by_device_id` | Device that last changed brain ownership |
 
 ### Brain Designation
 
-- Explicit user action: "Make this device the brain" in Settings > Devices.
+- Explicit user action: "Make this device the brain" in Settings > Sync.
 - Only one brain per project at a time.
-- Phones cannot be brains.
+- W3 supports desktop brains and desktop viewers. iOS remains future work.
 
 ### Brain Transfer Protocol
 
-1. Current brain stops all agents and orchestrator processes.
-2. Final sync flush to all connected peers.
-3. Brain flag transfers to new device.
-4. New brain starts accepting agent work.
+1. Transfer preflight checks for live blockers: active missions, running chat turns, live PTY sessions, and running managed processes.
+2. Paused missions, CTO history/idle threads, and idle or ended agent chats are treated as durable synced state and survive handoff.
+3. Final sync flush completes.
+4. `sync_cluster_state.brain_device_id` moves to the new device and `brain_epoch` increments.
+5. New brain starts the host lifecycle, old brain demotes to viewer/standalone as needed.
 
 ### Device Discovery
 
-- **LAN**: mDNS/Bonjour for zero-config discovery.
-- **Cross-network**: Tailscale IPs used when LAN fails (optional, peer-to-peer WireGuard, no cloud relay).
+- W3 uses manual host/port/bootstrap-token entry in Settings > Sync.
+- mDNS discovery, Tailscale address selection, QR pairing, and secure revocation remain W4 work.
 
 ---
 
@@ -178,16 +201,17 @@ A `devices` table (itself synced via cr-sqlite) stores:
 
 ### Device Pairing
 
-- First-time: brain generates a QR code (encodes IP/port + one-time pairing token) or a 6-digit numeric code.
-- Pairing establishes a shared secret stored in the OS keychain (macOS Keychain / iOS Keychain).
-- After pairing, devices reconnect automatically -- no re-auth required.
-- Revoking a device removes its pairing token and disconnects it.
+- W3 uses a shared machine-local bootstrap token stored at `.ade/secrets/sync-bootstrap-token`.
+- The current brain surfaces that token in Settings > Sync for manual desktop-to-desktop connection.
+- QR pairing, per-device secrets, OS keychain storage, and secure revoke remain W4 work.
+- W3 should be treated as trusted-LAN-only scaffolding. The host currently listens on all interfaces and does not yet add W4 hardening such as per-device secrets, revocation, tighter network policy, or transport upgrades.
 
 ### Transport Security
 
 - WebSocket connections are authenticated with the pairing token on every connection.
 - Tailscale connections use WireGuard encryption (peer-to-peer, no cloud relay).
 - LAN connections rely on pairing token validation. TLS is not required for localhost/LAN but can be added.
+- In W3, this is still bootstrap-token auth rather than final pairing auth. Use it only on networks you trust. W4 is responsible for replacing this with secure pairing, revocation, and better network posture.
 
 ### Secret Isolation
 
@@ -207,18 +231,29 @@ A `devices` table (itself synced via cr-sqlite) stores:
 
 | Component | Status | Notes |
 |---|---|---|
-| cr-sqlite extension loading | Planned | Phase 6 W1 |
-| CRR marking for all tables | Planned | Phase 6 W1 |
-| Changeset extraction/application | Planned | Phase 6 W1 |
-| WebSocket sync server | Planned | Phase 6 W2 |
-| Sync protocol (JSON + zlib) | Planned | Phase 6 W2 |
-| File access sub-protocol | Planned | Phase 6 W2 |
-| Terminal stream sub-protocol | Planned | Phase 6 W2 |
-| Device registry table | Planned | Phase 6 W3 |
-| Brain election + transfer | Planned | Phase 6 W3 |
-| Device pairing (QR + keychain) | Planned | Phase 6 W4 |
+| cr-sqlite extension loading | Implemented | Shared `openKvDb(...)` adapter |
+| CRR marking for eligible tables | Implemented | Dynamic startup migration |
+| Changeset extraction/application | Implemented | `AdeDb.sync.exportChangesSince/applyChanges` |
+| WebSocket sync server | Implemented (desktop) | Phase 6 W2 |
+| Sync protocol (JSON + zlib) | Implemented (desktop) | Phase 6 W2 |
+| File access sub-protocol | Implemented (desktop) | Phase 6 W2 |
+| Terminal stream sub-protocol | Implemented (desktop) | Phase 6 W2 |
+| Device registry table | Implemented (desktop) | Phase 6 W3 |
+| Desktop peer client + manual connect | Implemented (desktop) | Phase 6 W3 |
+| Brain election + transfer | Implemented (desktop) | Phase 6 W3 |
+| Device pairing (QR + keychain) | Planned — W2 currently uses bootstrap-token scaffolding only | Phase 6 W4 |
 | Tailscale integration | Planned | Phase 6 W4 |
-| Command routing | Planned | Phase 6 W10 |
+| Command routing | Planned — W2 ships `work.runQuickCommand` only for transport validation | Phase 6 W10 |
 | Lane portability (desktop-to-desktop) | Planned | Phase 6 W11 |
 
-**Overall status**: Not yet implemented. All components are planned for Phase 6. A cr-sqlite spike should be the first step to validate WASM compatibility and merge semantics.
+**Overall status**: W1-W3 are now in place on desktop. ADE has a sync-capable local database, desktop WebSocket transport, device registry, Settings-based manual desktop peer connection, and safe brain handoff with explicit blocker rules. Real pairing, discovery, Tailscale, iOS clients, and broader command routing remain future Phase 6 work.
+
+### Deferred follow-up
+
+- W4 security hardening:
+  - Replace the shared bootstrap token with per-device pairing secrets and OS keychain storage.
+  - Add secure revocation and the intended W4 network posture for desktop peers.
+  - Revisit default host binding and discovery once pairing is in place.
+- Pre-W5 performance work:
+  - The `node:sqlite` adapter currently prepares statements per call.
+  - This is acceptable for W3, but statement caching should be revisited before iOS peers and heavier multi-peer sync loads arrive.

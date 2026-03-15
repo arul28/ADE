@@ -48,17 +48,28 @@ export function createLinearOutboundService(args: {
     commentId: string;
     body: string;
   }): void => {
+    const existing = getRow(params.issueId);
     const hash = bodyHash(params.body);
     const timestamp = nowIso();
+    if (existing) {
+      args.db.run(
+        `
+          update linear_workpads
+             set comment_id = ?,
+                 last_body_hash = ?,
+                 last_body = ?,
+                 updated_at = ?
+           where id = ? and project_id = ?
+        `,
+        [params.commentId, hash, params.body, timestamp, existing.id, args.projectId]
+      );
+      return;
+    }
+
     args.db.run(
       `
         insert into linear_workpads(id, project_id, issue_id, comment_id, last_body_hash, last_body, created_at, updated_at)
         values(?, ?, ?, ?, ?, ?, ?, ?)
-        on conflict(project_id, issue_id) do update set
-          comment_id = excluded.comment_id,
-          last_body_hash = excluded.last_body_hash,
-          last_body = excluded.last_body,
-          updated_at = excluded.updated_at
       `,
       [`${args.projectId}:${params.issueId}`, args.projectId, params.issueId, params.commentId, hash, params.body, timestamp, timestamp]
     );

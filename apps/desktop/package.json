@@ -110,10 +110,12 @@
     "files": [
       "dist/**/*",
       "electron.cjs",
-      "package.json"
+      "package.json",
+      "vendor/**/*"
     ],
     "asarUnpack": [
-      "node_modules/onnxruntime-node/**"
+      "node_modules/onnxruntime-node/**",
+      "vendor/crsqlite/**"
     ],
     "publish": {
       "provider": "github",

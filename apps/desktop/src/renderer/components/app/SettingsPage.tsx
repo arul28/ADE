@@ -1,8 +1,7 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Brain, GearSix, Keyboard, Lightning, Stack, Database, FolderSimple, Plus, X, Plugs } from "@phosphor-icons/react";
+import { Brain, GearSix, Lightning, Stack, Database, FolderSimple, Plus, X, Plugs, DesktopTower } from "@phosphor-icons/react";
 import { GeneralSection } from "../settings/GeneralSection";
-import { KeybindingsSection } from "../settings/KeybindingsSection";
 import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
 import { LaneBehaviorSection } from "../settings/LaneBehaviorSection";
 import { MemoryHealthTab } from "../settings/MemoryHealthTab";
@@ -10,6 +9,7 @@ import { AiSettingsSection } from "../settings/AiSettingsSection";
 import { SettingsUsageSection } from "../settings/SettingsUsageSection";
 import { WorkspaceSettingsSection } from "../settings/WorkspaceSettingsSection";
 import { IntegrationsSettingsSection } from "../settings/IntegrationsSettingsSection";
+import { SyncDevicesSection } from "../settings/SyncDevicesSection";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton, dangerButton } from "../lanes/laneDesignTokens";
 import { ConfirmDialog, PromptDialog, useConfirmDialog, usePromptDialog } from "../shared/InlineDialogs";
 import type { PhaseProfile, PhaseCard } from "../../../shared/types";
@@ -19,10 +19,10 @@ const SECTIONS = [
   { id: "general", label: "General", icon: GearSix },
   { id: "workspace", label: "Workspace", icon: FolderSimple },
   { id: "ai", label: "AI", icon: Brain },
+  { id: "sync", label: "Sync", icon: DesktopTower },
   { id: "integrations", label: "Integrations", icon: Plugs },
   { id: "memory", label: "Memory", icon: Database },
   { id: "lane-templates", label: "Lane Templates", icon: Stack },
-  { id: "keybindings", label: "Keybindings", icon: Keyboard },
   { id: "usage", label: "Usage", icon: Lightning },
 ] as const;
 
@@ -32,10 +32,13 @@ const TAB_ALIASES: Record<string, SectionId> = {
   project: "workspace",
   context: "workspace",
   providers: "ai",
+  devices: "sync",
+  "multi-device": "sync",
   github: "integrations",
   linear: "integrations",
   "computer-use": "integrations",
   "external-mcp": "integrations",
+  keybindings: "general",
 };
 
 function padIndex(i: number): string {
@@ -547,6 +550,7 @@ export function SettingsPage() {
         {section === "general" && <GeneralSection />}
         {section === "workspace" && <WorkspaceSettingsSection />}
         {section === "ai" && <AiSettingsSection />}
+        {section === "sync" && <SyncDevicesSection />}
         {section === "integrations" && <IntegrationsSettingsSection />}
         {section === "memory" && <MemoryHealthTab />}
         {section === "lane-templates" && (
@@ -555,7 +559,6 @@ export function SettingsPage() {
             <LaneBehaviorSection />
           </div>
         )}
-        {section === "keybindings" && <KeybindingsSection />}
         {section === "usage" && <SettingsUsageSection />}
       </div>
     </div>

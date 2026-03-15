@@ -1081,10 +1081,34 @@ export function createOrchestratorService({
     const occurredAt = normalizeIsoTimestamp(args.occurredAt, createdAt);
     const baseKey = `${args.runId}:${args.stepId ?? "none"}:${args.attemptId ?? "none"}:${args.sessionId ?? "none"}:${args.eventType}:${occurredAt}`;
     const eventKey = String(args.eventKey ?? baseKey).trim() || baseKey;
+    const existing = db.get<RuntimeEventRow>(
+      `
+        select
+          id,
+          run_id,
+          step_id,
+          attempt_id,
+          session_id,
+          event_type,
+          event_key,
+          occurred_at,
+          payload_json,
+          created_at
+        from orchestrator_runtime_events
+        where project_id = ?
+          and event_key = ?
+        limit 1
+      `,
+      [projectId, eventKey]
+    );
+    if (existing) {
+      return toRuntimeEvent(existing);
+    }
+
     const eventId = randomUUID();
     db.run(
       `
-        insert or ignore into orchestrator_runtime_events(
+        insert into orchestrator_runtime_events(
           id,
           project_id,
           run_id,
