@@ -65,6 +65,7 @@ describe("onboardingService integration", () => {
         projectRoot,
         projectId: "proj",
         baseRef: "main",
+        freshProject: false,
         laneService: { list: async () => [] } as any,
         projectConfigService: createInMemoryProjectConfigService()
       });

@@ -18,6 +18,35 @@ function sectionHeading(label: string) {
   );
 }
 
+function describeCloseoutRequirement(requirement: MissionCloseoutRequirement): string {
+  const purposes: Partial<Record<MissionCloseoutRequirement["key"], string>> = {
+    validation_verdict: "Shows whether ADE finished validation with an explicit pass or fail call.",
+    changed_files_summary: "Summarizes which files changed so the closeout explains the implementation scope.",
+    final_outcome_summary: "Captures the end result in plain English for the operator.",
+    review_summary: "Summarizes the review findings, follow-ups, or residual risk.",
+    screenshot: "Captures a visual proof artifact for UI-facing work.",
+    browser_verification: "Records browser-based proof that the user flow was actually exercised.",
+    browser_trace: "Keeps a browser trace for debugging or audit follow-up.",
+    test_report: "Shows what ADE ran to validate the work and what happened.",
+    pr_url: "Links the mission to the pull request created during closeout.",
+    proposal_url: "Links the mission to the proposal or review thread created during finalization.",
+  };
+  return requirement.detail?.trim() || purposes[requirement.key] || "Required to explain or verify the mission before closeout.";
+}
+
+function friendlyRequirementStatus(requirement: MissionCloseoutRequirement): {
+  label: "Captured" | "Missing" | "Not required";
+  color: string;
+} {
+  if (!requirement.required || requirement.status === "waived") {
+    return { label: "Not required", color: COLORS.textMuted };
+  }
+  if (requirement.status === "present") {
+    return { label: "Captured", color: COLORS.success };
+  }
+  return { label: "Missing", color: COLORS.warning };
+}
+
 function ArtifactPreview({ artifact }: { artifact: UnifiedMissionArtifact | null }) {
   if (!artifact) {
     return (
@@ -96,6 +125,7 @@ export function MissionArtifactsTab({
 }) {
   const [groupMode, setGroupMode] = useState<ArtifactGroupMode>("phase");
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
+  const [showOptionalRequirements, setShowOptionalRequirements] = useState(false);
 
   const groups = useMemo(() => {
     if (groupMode === "step") return groupedArtifacts.byStep;
@@ -106,6 +136,14 @@ export function MissionArtifactsTab({
   const selectedArtifact = groupedArtifacts.all.find((artifact) => artifact.id === selectedArtifactId)
     ?? groupedArtifacts.all[0]
     ?? null;
+  const visibleRequirements = useMemo(
+    () => closeoutRequirements.filter((requirement) => {
+      if (showOptionalRequirements) return true;
+      return requirement.required && requirement.status !== "waived";
+    }),
+    [closeoutRequirements, showOptionalRequirements],
+  );
+  const hiddenRequirementCount = Math.max(0, closeoutRequirements.length - visibleRequirements.length);
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
@@ -156,27 +194,45 @@ export function MissionArtifactsTab({
 
           {closeoutRequirements.length > 0 ? (
             <div className="rounded-sm p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-              <div className="text-[9px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                Closeout contract
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-[9px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                  Closeout status
+                </div>
+                {hiddenRequirementCount > 0 ? (
+                  <button
+                    type="button"
+                    style={outlineButton({ height: 24, padding: "0 8px", fontSize: 9 })}
+                    onClick={() => setShowOptionalRequirements((current) => !current)}
+                  >
+                    {showOptionalRequirements ? "HIDE OPTIONAL" : `SHOW ${hiddenRequirementCount} OPTIONAL`}
+                  </button>
+                ) : null}
+              </div>
+              <div className="mt-1 text-[11px]" style={{ color: COLORS.textSecondary }}>
+                These checks explain what evidence ADE still needs before closeout is complete.
               </div>
               <div className="mt-2 space-y-2">
-                {closeoutRequirements.map((requirement) => (
+                {visibleRequirements.length === 0 ? (
+                  <div className="rounded-sm p-2 text-[10px]" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, color: COLORS.textSecondary }}>
+                    Only optional or waived closeout checks remain. Use the toggle above if you want to inspect them.
+                  </div>
+                ) : visibleRequirements.map((requirement) => {
+                  const status = friendlyRequirementStatus(requirement);
+                  return (
                   <div key={requirement.key} className="rounded-sm p-2" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
                     <div className="flex items-center justify-between gap-2">
                       <div className="text-[10px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>
                         {requirement.label}
                       </div>
-                      <div className="text-[9px] uppercase" style={{ color: requirement.status === "present" || requirement.status === "waived" ? COLORS.success : COLORS.warning, fontFamily: MONO_FONT }}>
-                        {requirement.status.replace(/_/g, " ")}
+                      <div className="text-[9px] uppercase" style={{ color: status.color, fontFamily: MONO_FONT }}>
+                        {status.label}
                       </div>
                     </div>
-                    {requirement.detail ? (
-                      <div className="mt-1 text-[10px]" style={{ color: COLORS.textSecondary }}>
-                        {requirement.detail}
-                      </div>
-                    ) : null}
+                    <div className="mt-1 text-[10px]" style={{ color: COLORS.textSecondary }}>
+                      {describeCloseoutRequirement(requirement)}
+                    </div>
                   </div>
-                ))}
+                );})}
               </div>
             </div>
           ) : null}

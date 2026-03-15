@@ -152,12 +152,6 @@ type RenderEnvelope = {
   };
 };
 
-/** Returns " " when two non-empty strings would otherwise butt together without whitespace. */
-function textJoinSeparator(a: string, b: string): string {
-  if (a.length > 0 && b.length > 0 && !/\s$/.test(a) && !/^\s/.test(b)) return " ";
-  return "";
-}
-
 function isAbstractActivity(activity: string): boolean {
   return activity === "thinking" || activity === "working" || activity === "searching" || activity === "reading";
 }
@@ -224,13 +218,12 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
       const actualIndex = out.length - 1 - matchIndex;
       const existing = out[actualIndex];
       if (existing?.event.type === "reasoning") {
-        const sep = textJoinSeparator(existing.event.text, event.text);
         out[actualIndex] = {
           ...existing,
           timestamp: envelope.timestamp,
           event: {
             ...existing.event,
-            text: `${existing.event.text}${sep}${event.text}`,
+            text: `${existing.event.text}${event.text}`,
             startTimestamp: (existing.event as any).startTimestamp ?? existing.timestamp,
           } as any
         };
@@ -245,13 +238,12 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
     const prevItem = prev.event.itemId ?? null;
     const nextItem = event.itemId ?? null;
     if (prevTurn === nextTurn && prevItem === nextItem) {
-      const sep = textJoinSeparator(prev.event.text, event.text);
       out[out.length - 1] = {
         ...prev,
         timestamp: envelope.timestamp,
         event: {
           ...prev.event,
-          text: `${prev.event.text}${sep}${event.text}`
+          text: `${prev.event.text}${event.text}`
         }
       };
       return;
@@ -620,6 +612,20 @@ const ACTIVITY_LABELS: Record<string, string> = {
   tool_calling: "Calling tool"
 };
 
+function ThinkingDots({ toneClass = "bg-fg/30" }: { toneClass?: string }) {
+  return (
+    <span className="inline-flex items-center gap-1" aria-hidden="true">
+      {[0, 1, 2].map((index) => (
+        <span
+          key={index}
+          className={cn("ade-thinking-pulse inline-block h-1.5 w-1.5 rounded-full", toneClass)}
+          style={{ animationDelay: `${index * 0.16}s` }}
+        />
+      ))}
+    </span>
+  );
+}
+
 
 function ActivityIndicator({ activity, detail }: { activity: string; detail?: string; animate?: boolean }) {
   const label = ACTIVITY_LABELS[activity] ?? activity;
@@ -627,7 +633,7 @@ function ActivityIndicator({ activity, detail }: { activity: string; detail?: st
 
   return (
     <div className="flex items-center gap-2 py-1 font-mono text-[12px] text-fg/40">
-      <span className="ade-thinking-pulse inline-block h-1.5 w-1.5 rounded-full bg-fg/30" />
+      <ThinkingDots />
       <span className="truncate">{displayText}</span>
     </div>
   );
@@ -751,6 +757,7 @@ function renderEvent(
     turnModel?: { label: string; modelId?: string; model?: string } | null;
     surfaceMode?: ChatSurfaceMode;
     surfaceProfile?: ChatSurfaceProfile;
+    assistantLabel?: string;
     turnActive?: boolean;
   }
 ) {
@@ -799,7 +806,7 @@ function renderEvent(
                 className="text-teal-300/70"
               />
             </span>
-            <span className="font-sans text-[11px] font-medium text-teal-200/60">Agent</span>
+            <span className="font-sans text-[11px] font-medium text-teal-200/60">{options?.assistantLabel ?? "Agent"}</span>
             <span className="ml-auto font-sans text-[10px] text-teal-300/18">{formatTime(envelope.timestamp)}</span>
           </div>
           <MarkdownBlock markdown={event.text} />
@@ -1203,7 +1210,7 @@ function renderEvent(
           <span className="font-mono text-[12px] text-fg/40">
             {isLive ? (
               <span className="flex items-center gap-2">
-                <span className="ade-thinking-pulse inline-block h-1.5 w-1.5 rounded-full bg-fg/40" />
+                <ThinkingDots toneClass="bg-fg/40" />
                 Thinking...
               </span>
             ) : (
@@ -1249,7 +1256,7 @@ function renderEvent(
         summary={
           <div className="flex items-center gap-2 font-mono text-[12px] text-fg/50">
             {event.status === "running" ? (
-              <span className="ade-thinking-pulse inline-block h-1.5 w-1.5 rounded-full bg-fg/30" />
+              <ThinkingDots />
             ) : event.status === "failed" ? (
               <span className="inline-block h-1.5 w-1.5 rounded-full bg-red-400/70" />
             ) : (
@@ -1595,9 +1602,7 @@ function ToolGroupCard({ group }: { group: ToolGroup }) {
         onClick={() => setExpanded((v) => !v)}
       >
         {expanded ? <CaretDown size={10} weight="bold" className="text-fg/30" /> : <CaretRight size={10} weight="bold" className="text-fg/30" />}
-        {runningCount > 0 ? (
-          <span className="ade-thinking-pulse inline-block h-1.5 w-1.5 rounded-full bg-fg/30" />
-        ) : null}
+        {runningCount > 0 ? <ThinkingDots /> : null}
         <span>{group.tools.length} tool calls</span>
       </button>
 
@@ -1617,7 +1622,7 @@ function ToolGroupCard({ group }: { group: ToolGroup }) {
             return (
               <div key={tool.key} className="flex items-center gap-2 py-0.5 font-mono text-[12px] text-fg/50">
                 {tool.event.status === "running" ? (
-                  <span className="ade-thinking-pulse inline-block h-1.5 w-1.5 rounded-full bg-fg/30" />
+                  <ThinkingDots />
                 ) : tool.event.status === "failed" ? (
                   <span className="inline-block h-1.5 w-1.5 rounded-full bg-red-400/70" />
                 ) : (
@@ -1656,6 +1661,7 @@ type EventRowProps = {
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;
+  assistantLabel?: string;
   turnActive?: boolean;
 };
 
@@ -1667,6 +1673,7 @@ const EventRow = React.memo(function EventRow({
   onApproval,
   surfaceMode = "standard",
   surfaceProfile = "standard",
+  assistantLabel,
   turnActive,
 }: EventRowProps) {
   return (
@@ -1680,7 +1687,7 @@ const EventRow = React.memo(function EventRow({
           <div className="h-px flex-1 bg-white/[0.06]" />
         </div>
       ) : null}
-      {renderEvent(envelope, { onApproval, turnModel, surfaceMode, surfaceProfile, turnActive })}
+      {renderEvent(envelope, { onApproval, turnModel, surfaceMode, surfaceProfile, assistantLabel, turnActive })}
     </div>
   );
 });
@@ -1729,6 +1736,7 @@ export function AgentChatMessageList({
   onApproval,
   surfaceMode = "standard",
   surfaceProfile = "standard",
+  assistantLabel,
 }: {
   events: AgentChatEventEnvelope[];
   showStreamingIndicator?: boolean;
@@ -1736,6 +1744,7 @@ export function AgentChatMessageList({
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;
+  assistantLabel?: string;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const collapseCacheRef = useRef<{ events: AgentChatEventEnvelope[]; rows: RenderEnvelope[] }>({
@@ -1943,6 +1952,7 @@ export function AgentChatMessageList({
           onApproval={handleApproval}
           surfaceMode={surfaceMode}
           surfaceProfile={surfaceProfile}
+          assistantLabel={assistantLabel}
           turnActive={showStreamingIndicator}
         />
       );
@@ -1958,10 +1968,11 @@ export function AgentChatMessageList({
         onApproval={handleApproval}
         surfaceMode={surfaceMode}
         surfaceProfile={surfaceProfile}
+        assistantLabel={assistantLabel}
         turnActive={showStreamingIndicator}
       />
     );
-  }, [surfaceMode, surfaceProfile, rows, turnModelMap, handleApproval, handleMeasure, showStreamingIndicator]);
+  }, [assistantLabel, surfaceMode, surfaceProfile, rows, turnModelMap, handleApproval, handleMeasure, showStreamingIndicator]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -1980,7 +1991,7 @@ export function AgentChatMessageList({
       <ActivityIndicator activity={latestActivity.activity} detail={latestActivity.detail} />
     ) : (
       <div className="flex items-center gap-2 py-1 font-mono text-[12px] text-fg/40">
-        <span className="ade-thinking-pulse inline-block h-1.5 w-1.5 rounded-full bg-fg/30" />
+        <ThinkingDots />
         <span>Working...</span>
       </div>
     )

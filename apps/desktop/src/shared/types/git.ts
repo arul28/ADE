@@ -184,6 +184,7 @@ export type GitHubRepoRef = {
 export type GitHubStatus = {
   tokenStored: boolean;
   tokenDecryptionFailed: boolean;
+  storageScope: "app";
   repo: GitHubRepoRef | null;
   userLogin: string | null;
   scopes: string[];

@@ -1106,6 +1106,7 @@ export function createAiOrchestratorService(args: {
       eventType: "progress",
       eventKey: `coordinator_lifecycle:${args.state}`,
       payload: {
+        audience: "mission_feed",
         source: "coordinator_lifecycle",
         state: args.state,
         message: args.message,
@@ -1121,13 +1122,6 @@ export function createAiOrchestratorService(args: {
         message: args.message,
         delegation: args.delegation ?? null,
       },
-    });
-    emitOrchestratorMessage(args.missionId, args.message, null, {
-      role: "coordinator_v2",
-      runId: args.runId,
-      source: "coordinator_lifecycle",
-      lifecycleState: args.state,
-      delegation: args.delegation ?? null,
     });
     updateCoordinatorMissionState(args);
   };
@@ -2075,6 +2069,43 @@ export function createAiOrchestratorService(args: {
               retryCount: failure.retryCount,
             },
           });
+        },
+        onCoordinatorRuntimeFailure: (failure: import("./coordinatorAgent").CoordinatorRuntimeFailure) => {
+          const lifecycleMessage = failure.reasonCode === "coordinator_runtime_provider_auth_failed"
+            ? "The orchestrator could not authenticate with the selected provider, so I paused the run."
+            : failure.category === "provider_unreachable"
+              ? "The orchestrator lost contact with the selected provider, so I paused the run."
+            : failure.category === "permission_denied"
+              ? "The orchestrator was blocked by permissions, so I paused the run."
+              : failure.category === "cli_runtime_failure"
+                ? "The orchestrator process exited unexpectedly, so I paused the run."
+                : "The orchestrator stopped unexpectedly, so I paused the run.";
+          emitCoordinatorLifecycle({
+            missionId,
+            runId,
+            state: "stopped",
+            message: lifecycleMessage,
+            force: true,
+          });
+          pauseRunWithIntervention({
+            runId,
+            missionId,
+            source: "transition_decision",
+            interventionType: failure.interventionType,
+            reasonCode: failure.reasonCode,
+            title: failure.title,
+            body: failure.body,
+            requestedAction: failure.requestedAction,
+            metadata: {
+              category: failure.category,
+              retryable: failure.retryable,
+              recoveryOptions: failure.recoveryOptions,
+              turnId: failure.turnId,
+              modelId,
+              error: failure.message,
+            },
+          });
+          endCoordinatorAgentV2(runId);
         },
         userRules: opts?.userRules,
         projectContext: opts?.projectContext,
@@ -6446,10 +6477,15 @@ Check all worker statuses and continue managing the mission from here. Read work
         eventType: "intervention_opened",
         eventKey: `intervention_opened:${interventionId}`,
         payload: {
+          audience: "mission_feed",
           interventionId,
-          interventionType: "failed_step",
+          interventionType: args.interventionType ?? "failed_step",
           source: args.source,
-          reasonCode: args.reasonCode
+          reasonCode: args.reasonCode,
+          title: args.title,
+          body: args.body,
+          requestedAction: args.requestedAction,
+          summary: args.body,
         }
       });
     }
@@ -8944,16 +8980,41 @@ Check all worker statuses and continue managing the mission from here. Read work
       ?? null;
 
     switch (event.eventType) {
-      case "run_created":
-      case "run_activated":
+      case "coordinator_status": {
+        const state = toOptionalString(detailRecord?.state) ?? event.reason;
+        const message = detailSummary ?? "The orchestrator updated its status.";
+        const title = state === "booting"
+          ? "Orchestrator online"
+          : state === "analyzing_prompt"
+            ? "Orchestrator is sizing up the run"
+            : state === "fetching_project_context"
+              ? "Orchestrator is gathering project context"
+              : state === "launching_planner"
+                ? "Planning worker is launching"
+                : state === "waiting_on_planner"
+                  ? "Planning worker is in flight"
+                  : state === "planner_launch_failed"
+                    ? "Planning worker launch failed"
+                    : state === "stopped"
+                      ? "Orchestrator offline"
+                      : "Orchestrator update";
+        const audience = state === "launching_planner" || state === "waiting_on_planner"
+          ? "mission_feed"
+          : "timeline";
         return {
           id: `timeline:${event.id}`,
           at: event.createdAt,
           kind: "system",
-          title: event.eventType === "run_created" ? "Run created" : "Run activated",
-          detail: detailSummary ?? event.reason ?? "Mission execution is live.",
-          severity: "info",
+          title,
+          detail: message,
+          severity: toRunViewSeverity(state),
+          audience,
+          source: "timeline",
+          stepId: event.stepId,
+          stepKey: step?.stepKey ?? null,
+          attemptId: event.attemptId,
         };
+      }
       case "phase_transition":
         return {
           id: `timeline:${event.id}`,
@@ -8963,6 +9024,8 @@ Check all worker statuses and continue managing the mission from here. Read work
           detail: detailSummary
             ?? `Now working in ${(toOptionalString(detailRecord?.toPhaseName) ?? toOptionalString(detailRecord?.toPhaseKey) ?? "the next phase")}.`,
           severity: "info",
+          audience: "mission_feed",
+          source: "timeline",
           stepId: event.stepId,
           stepKey: step?.stepKey ?? null,
           attemptId: event.attemptId,
@@ -8985,24 +9048,13 @@ Check all worker statuses and continue managing the mission from here. Read work
           title: reasonTitle,
           detail: detailSummary ?? `${stepLabel} is ${event.reason}.`,
           severity: toRunViewSeverity(event.reason),
+          audience: "mission_feed",
+          source: "timeline",
           stepId: event.stepId,
           stepKey: step?.stepKey ?? null,
           attemptId: event.attemptId,
         };
       }
-      case "attempt_started":
-      case "attempt_completed":
-        return {
-          id: `timeline:${event.id}`,
-          at: event.createdAt,
-          kind: "worker",
-          title: event.eventType === "attempt_started" ? "Attempt started" : "Attempt completed",
-          detail: detailSummary ?? `${stepLabel} attempt ${event.eventType === "attempt_started" ? "started" : "finished"}.`,
-          severity: "info",
-          stepId: event.stepId,
-          stepKey: step?.stepKey ?? null,
-          attemptId: event.attemptId,
-        };
       case "worker_status_reported":
       case "worker_result_reported":
         return {
@@ -9012,6 +9064,8 @@ Check all worker statuses and continue managing the mission from here. Read work
           title: event.eventType === "worker_result_reported" ? "Worker result" : "Worker update",
           detail: detailSummary ?? `${stepLabel} reported progress.`,
           severity: toRunViewSeverity(detailSummary ?? event.reason),
+          audience: "mission_feed",
+          source: "timeline",
           stepId: event.stepId,
           stepKey: step?.stepKey ?? null,
           attemptId: event.attemptId,
@@ -9024,6 +9078,8 @@ Check all worker statuses and continue managing the mission from here. Read work
           title: "Step skipped",
           detail: detailSummary ?? `${stepLabel} was skipped by the orchestrator.`,
           severity: "warning",
+          audience: "mission_feed",
+          source: "timeline",
           stepId: event.stepId,
           stepKey: step?.stepKey ?? null,
           attemptId: event.attemptId,
@@ -9036,6 +9092,8 @@ Check all worker statuses and continue managing the mission from here. Read work
           title: "Planner failed to return a plan",
           detail: detailSummary ?? `${stepLabel} completed without a usable plan payload.`,
           severity: "error",
+          audience: "mission_feed",
+          source: "timeline",
           stepId: event.stepId,
           stepKey: step?.stepKey ?? null,
           attemptId: event.attemptId,
@@ -9052,6 +9110,8 @@ Check all worker statuses and continue managing the mission from here. Read work
             title: "Validation update",
             detail: detailSummary ?? `${stepLabel} validation changed.`,
             severity: toRunViewSeverity(event.reason),
+            audience: "mission_feed",
+            source: "timeline",
             stepId: event.stepId,
             stepKey: step?.stepKey ?? null,
             attemptId: event.attemptId,
@@ -9088,19 +9148,26 @@ Check all worker statuses and continue managing the mission from here. Read work
         title: event.eventType === "coordinator_broadcast" ? "Broadcast sent" : "Steering applied",
         detail: detail ?? "Mission steering was applied.",
         severity: "info",
+        audience: "mission_feed",
+        source: "runtime",
         stepId: event.stepId,
         stepKey: step?.stepKey ?? null,
         attemptId: event.attemptId,
       };
     }
     if (event.eventType === "intervention_opened") {
+      const title = toOptionalString(payload?.title) ?? "Intervention opened";
+      const body = toOptionalString(payload?.body);
+      const requestedAction = toOptionalString(payload?.requestedAction);
       return {
         id: `runtime:${event.id}`,
         at: event.occurredAt,
         kind: "intervention",
-        title: "Question opened",
-        detail: detail ?? "ADE opened a clarification and paused the mission.",
+        title,
+        detail: body ?? detail ?? requestedAction ?? "ADE opened an intervention and paused the mission.",
         severity: "warning",
+        audience: "mission_feed",
+        source: "runtime",
         stepId: event.stepId,
         stepKey: step?.stepKey ?? null,
         attemptId: event.attemptId,
@@ -9122,6 +9189,25 @@ Check all worker statuses and continue managing the mission from here. Read work
         title: resolutionLabel,
         detail: detail ?? "ADE applied the intervention outcome.",
         severity: payload?.resolutionKind === "cancel_run" ? "warning" : "info",
+        audience: "mission_feed",
+        source: "runtime",
+        stepId: event.stepId,
+        stepKey: step?.stepKey ?? null,
+        attemptId: event.attemptId,
+      };
+    }
+    if (event.eventType === "worker_message") {
+      const sourceLabel = toOptionalString(payload?.sourceLabel) ?? "One worker";
+      const targetLabel = toOptionalString(payload?.targetLabel) ?? "another worker";
+      return {
+        id: `runtime:${event.id}`,
+        at: event.occurredAt,
+        kind: "worker",
+        title: "Agent handoff",
+        detail: detail ?? `${sourceLabel} sent a message to ${targetLabel}.`,
+        severity: "info",
+        audience: "mission_feed",
+        source: "runtime",
         stepId: event.stepId,
         stepKey: step?.stepKey ?? null,
         attemptId: event.attemptId,
@@ -9140,6 +9226,8 @@ Check all worker statuses and continue managing the mission from here. Read work
         title: "Validation signal",
         detail: detail ?? `${step?.title ?? step?.stepKey ?? "Step"} validation state changed.`,
         severity: toRunViewSeverity(event.eventType),
+        audience: "mission_feed",
+        source: "runtime",
         stepId: event.stepId,
         stepKey: step?.stepKey ?? null,
         attemptId: event.attemptId,
@@ -9154,15 +9242,24 @@ Check all worker statuses and continue managing the mission from here. Read work
   }): MissionRunViewProgressItem[] => {
     const stepById = new Map((args.graph?.steps ?? []).map((step) => [step.id, step] as const));
     const items: MissionRunViewProgressItem[] = [];
+    const seenInterventionIds = new Set<string>();
+    const hasRuntimeInterventionEvents = new Set<string>();
     for (const event of args.graph?.timeline ?? []) {
       const item = buildRunViewTimelineItem(event, stepById);
       if (item) items.push(item);
     }
     for (const event of args.graph?.runtimeEvents ?? []) {
+      const payload = isRecord(event.payload) ? event.payload : null;
+      const interventionId = toOptionalString(payload?.interventionId);
+      if (interventionId) {
+        seenInterventionIds.add(interventionId);
+        hasRuntimeInterventionEvents.add(event.eventType);
+      }
       const item = buildRunViewRuntimeItem(event, stepById);
       if (item) items.push(item);
     }
     for (const intervention of args.mission.interventions) {
+      if (seenInterventionIds.has(intervention.id)) continue;
       items.push({
         id: `intervention:${intervention.id}:${intervention.status}`,
         at: intervention.updatedAt || intervention.createdAt,
@@ -9170,32 +9267,64 @@ Check all worker statuses and continue managing the mission from here. Read work
         title: intervention.title,
         detail: intervention.requestedAction?.trim() || intervention.body,
         severity: intervention.status === "open" ? "warning" : "info",
+        audience: "mission_feed",
+        source: "intervention",
       });
     }
     for (const event of args.mission.events) {
-      if (
-        event.eventType !== "mission_intervention_resolved"
-        && event.eventType !== "mission_status_changed"
-        && event.eventType !== "mission_ready_to_start"
-      ) {
+      if (event.eventType !== "mission_intervention_resolved") {
         continue;
       }
+      if (hasRuntimeInterventionEvents.has("intervention_resolved")) continue;
       items.push({
         id: `mission:${event.id}`,
         at: event.createdAt,
-        kind: event.eventType === "mission_intervention_resolved" ? "user" : "system",
-        title:
-          event.eventType === "mission_intervention_resolved"
-            ? (() => {
-                const payload = isRecord(event.payload) ? event.payload : null;
-                if (payload?.resolutionKind === "accept_defaults") return "Defaults accepted";
-                if (payload?.resolutionKind === "skip_question") return "Question skipped";
-                if (payload?.resolutionKind === "cancel_run") return "Run canceled";
-                return "Intervention resolved";
-              })()
-            : "Mission update",
+        kind: "user",
+        title: (() => {
+          const payload = isRecord(event.payload) ? event.payload : null;
+          if (payload?.resolutionKind === "accept_defaults") return "Defaults accepted";
+          if (payload?.resolutionKind === "skip_question") return "Question skipped";
+          if (payload?.resolutionKind === "cancel_run") return "Run canceled";
+          return "Intervention resolved";
+        })(),
         detail: event.summary,
         severity: toRunViewSeverity(event.eventType),
+        audience: "mission_feed",
+        source: "mission",
+      });
+    }
+    if (args.mission.status === "completed" && args.mission.completedAt) {
+      items.push({
+        id: `mission-terminal:${args.mission.id}:completed`,
+        at: args.mission.completedAt,
+        kind: "system",
+        title: "Mission completed",
+        detail: args.mission.outcomeSummary?.trim() || "The mission finished successfully.",
+        severity: "success",
+        audience: "mission_feed",
+        source: "mission",
+      });
+    } else if (args.mission.status === "failed" && args.mission.updatedAt) {
+      items.push({
+        id: `mission-terminal:${args.mission.id}:failed`,
+        at: args.mission.updatedAt,
+        kind: "system",
+        title: "Mission failed",
+        detail: args.mission.lastError?.trim() || "The mission stopped with an error.",
+        severity: "error",
+        audience: "mission_feed",
+        source: "mission",
+      });
+    } else if (args.mission.status === "canceled" && args.mission.updatedAt) {
+      items.push({
+        id: `mission-terminal:${args.mission.id}:canceled`,
+        at: args.mission.updatedAt,
+        kind: "system",
+        title: "Mission canceled",
+        detail: args.mission.lastError?.trim() || "The mission was canceled before completion.",
+        severity: "warning",
+        audience: "mission_feed",
+        source: "mission",
       });
     }
     return items

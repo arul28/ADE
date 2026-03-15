@@ -1,9 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  ArrowClockwise as RefreshCw,
-  Funnel,
-} from "@phosphor-icons/react";
-import { motion } from "motion/react";
+import { ArrowsClockwise, Funnel } from "@phosphor-icons/react";
 import type { AutomationRun, AutomationRunDetail, AutomationRuleSummary } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
@@ -11,122 +7,150 @@ import { cn } from "../ui/cn";
 import { RunHistoryRow } from "./components/RunHistoryRow";
 import { RunDetailPanel } from "./components/RunDetailPanel";
 
-export function HistoryTab() {
+export function HistoryTab({
+  focusAutomationId,
+  focusRunId,
+}: {
+  focusAutomationId?: string | null;
+  focusRunId?: string | null;
+}) {
   const [rules, setRules] = useState<AutomationRuleSummary[]>([]);
-  const [allRuns, setAllRuns] = useState<(AutomationRun & { ruleName?: string })[]>([]);
+  const [runs, setRuns] = useState<Array<AutomationRun & { ruleName?: string }>>([]);
   const [loading, setLoading] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [detail, setDetail] = useState<AutomationRunDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [filterRule, setFilterRule] = useState<string>("");
+  const [filterRuleId, setFilterRuleId] = useState<string>("");
   const [filterStatus, setFilterStatus] = useState<string>("");
 
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
-      const ruleList = await window.ade.automations.list();
-      setRules(ruleList);
-      const runs = await window.ade.automations.listRuns({ limit: 120 });
+      const [ruleList, runList] = await Promise.all([
+        window.ade.automations.list(),
+        window.ade.automations.listRuns({ limit: 160 }),
+      ]);
       const byRule = new Map(ruleList.map((rule) => [rule.id, rule.name]));
-      setAllRuns(runs.map((run) => ({ ...run, ruleName: byRule.get(run.automationId) ?? run.automationId })));
-    } catch { /* ignore */ }
-    finally { setLoading(false); }
+      setRules(ruleList);
+      setRuns(runList.map((run) => ({ ...run, ruleName: byRule.get(run.automationId) ?? run.automationId })));
+    } finally {
+      setLoading(false);
+    }
   }, []);
-
-  useEffect(() => { loadAll().catch(() => {}); }, [loadAll]);
 
   const loadDetail = useCallback(async (runId: string) => {
     setSelectedRunId(runId);
     setDetailLoading(true);
-    setDetail(null);
     try {
-      const d = await window.ade.automations.getRunDetail(runId);
-      setDetail(d);
-    } catch { /* ignore */ }
-    finally { setDetailLoading(false); }
+      const next = await window.ade.automations.getRunDetail(runId);
+      setDetail(next);
+    } finally {
+      setDetailLoading(false);
+    }
   }, []);
 
-  const refreshSelectedRun = useCallback(async () => {
-    if (!selectedRunId) return;
-    await Promise.all([loadAll(), loadDetail(selectedRunId)]);
+  useEffect(() => {
+    void loadAll();
+    const unsubscribe = window.ade.automations.onEvent(() => {
+      void loadAll();
+      if (selectedRunId) {
+        void loadDetail(selectedRunId);
+      }
+    });
+    return () => unsubscribe();
   }, [loadAll, loadDetail, selectedRunId]);
 
-  const filtered = useMemo(() => {
-    let runs = allRuns;
-    if (filterRule) runs = runs.filter((r) => r.ruleName === filterRule);
-    if (filterStatus) runs = runs.filter((r) => r.status === filterStatus);
-    return runs;
-  }, [allRuns, filterRule, filterStatus]);
+  useEffect(() => {
+    if (!focusAutomationId) return;
+    setFilterRuleId(focusAutomationId);
+  }, [focusAutomationId]);
 
-  const SELECT_CLS = "h-7 px-2 font-mono text-[9px] text-[#FAFAFA]";
-  const SELECT_STYLE: React.CSSProperties = { background: "#0B0A0F", border: "1px solid #2D284080" };
+  useEffect(() => {
+    if (!focusRunId) return;
+    void loadDetail(focusRunId);
+  }, [focusRunId, loadDetail]);
+
+  const filteredRuns = useMemo(() => {
+    let next = runs;
+    if (filterRuleId) {
+      next = next.filter((run) => run.automationId === filterRuleId);
+    }
+    if (filterStatus) {
+      next = next.filter((run) => run.status === filterStatus);
+    }
+    return next;
+  }, [filterRuleId, filterStatus, runs]);
 
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.2 }}
-      className="flex h-full min-h-0"
-      style={{ background: "#0F0D14" }}
-    >
-      {/* Left: run list */}
-      <div className="flex min-h-0 w-[45%] flex-col" style={{ borderRight: "1px solid #2D2840" }}>
-        <div className="shrink-0 flex items-center justify-between px-4 py-3" style={{ borderBottom: "1px solid #2D284060" }}>
-          <div>
-            <div
-              className="text-[13px] font-bold text-[#FAFAFA] tracking-[-0.3px]"
-              style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-            >
-              Run History
+    <div className="flex h-full min-h-0" style={{ background: "#0F0D14" }}>
+      <div className="flex w-[420px] min-h-0 flex-col border-r border-white/[0.06]">
+        <div className="border-b border-white/[0.06] px-4 py-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-[#FAFAFA]">History</div>
+              <div className="mt-1 text-xs leading-5 text-[#9894AF]">
+                Inspect automation threads, mission launches, and built-in task runs.
+              </div>
             </div>
-            <div className="font-mono text-[9px] text-[#71717A]">
-              {loading ? "Loading..." : `${filtered.length} runs`}
-            </div>
+            <Button size="sm" variant="outline" onClick={() => void loadAll()} disabled={loading}>
+              <ArrowsClockwise size={12} weight="regular" className={cn(loading && "animate-spin")} />
+            </Button>
           </div>
-          <Button variant="ghost" size="sm" onClick={() => loadAll().catch(() => {})}>
-            <RefreshCw size={12} weight="regular" className={cn(loading && "animate-spin")} />
-          </Button>
+
+          <div className="mt-4 grid grid-cols-[20px_1fr_1fr] items-center gap-2">
+            <Funnel size={12} className="text-[#8E8AA6]" />
+            <select
+              className="h-9 rounded-md px-3 text-xs text-[#F5F7FA] font-mono"
+              style={{ background: "rgba(7, 15, 24, 0.82)", border: "1px solid rgba(74, 99, 122, 0.42)" }}
+              value={filterRuleId}
+              onChange={(event) => setFilterRuleId(event.target.value)}
+            >
+              <option value="">All rules</option>
+              {rules.map((rule) => (
+                <option key={rule.id} value={rule.id}>{rule.name}</option>
+              ))}
+            </select>
+            <select
+              className="h-9 rounded-md px-3 text-xs text-[#F5F7FA] font-mono"
+              style={{ background: "rgba(7, 15, 24, 0.82)", border: "1px solid rgba(74, 99, 122, 0.42)" }}
+              value={filterStatus}
+              onChange={(event) => setFilterStatus(event.target.value)}
+            >
+              <option value="">All statuses</option>
+              <option value="queued">queued</option>
+              <option value="running">running</option>
+              <option value="succeeded">succeeded</option>
+              <option value="failed">failed</option>
+              <option value="cancelled">cancelled</option>
+            </select>
+          </div>
         </div>
 
-        {/* Filters */}
-        <div className="shrink-0 flex items-center gap-2 px-4 py-2" style={{ borderBottom: "1px solid #2D284040" }}>
-          <Funnel size={10} weight="regular" className="text-[#71717A]" />
-          <select className={SELECT_CLS} style={SELECT_STYLE} value={filterRule} onChange={(e) => setFilterRule(e.target.value)}>
-            <option value="">All rules</option>
-            {rules.map((r) => <option key={r.id} value={r.name}>{r.name}</option>)}
-          </select>
-          <select className={SELECT_CLS} style={SELECT_STYLE} value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
-            <option value="">All statuses</option>
-            <option value="succeeded">succeeded</option>
-            <option value="failed">failed</option>
-            <option value="running">running</option>
-            <option value="needs_review">needs_review</option>
-            <option value="cancelled">cancelled</option>
-          </select>
-        </div>
-
-        {/* Runs */}
-        <div className="flex-1 min-h-0 overflow-y-auto">
-          {filtered.length === 0 ? (
-            <EmptyState title="No run history" description="Runs will appear here after rules execute." />
+        <div className="flex-1 overflow-y-auto px-3 py-3">
+          {filteredRuns.length === 0 ? (
+            <EmptyState
+              title="No runs yet"
+              description="Run history appears here after an automation executes."
+            />
           ) : (
-            filtered.map((run) => (
-              <RunHistoryRow
-                key={run.id}
-                run={run}
-                ruleName={run.ruleName}
-                selected={run.id === selectedRunId}
-                onSelect={() => loadDetail(run.id)}
-              />
-            ))
+            <div className="space-y-3">
+              {filteredRuns.map((run) => (
+                <RunHistoryRow
+                  key={run.id}
+                  run={run}
+                  ruleName={run.ruleName}
+                  selected={run.id === selectedRunId}
+                  onSelect={() => void loadDetail(run.id)}
+                />
+              ))}
+            </div>
           )}
         </div>
       </div>
 
-      {/* Right: detail */}
-      <div className="flex-1 min-h-0 overflow-y-auto">
-        <RunDetailPanel detail={detail} loading={detailLoading} onActionComplete={() => void refreshSelectedRun()} />
+      <div className="flex-1 min-w-0 overflow-y-auto">
+        <RunDetailPanel detail={detail} loading={detailLoading} />
       </div>
-    </motion.div>
+    </div>
   );
 }

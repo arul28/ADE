@@ -43,7 +43,7 @@ export const StepDetailPanel = React.memo(function StepDetailPanel({
 
   if (!step) {
     return (
-      <aside className="p-3 lg:w-[380px] lg:max-w-[40%] lg:shrink-0" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+      <aside className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
         <div className="text-[11px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>STEP DETAILS</div>
         <p className="mt-2 text-[11px]" style={{ color: COLORS.textMuted }}>Select a card in Board or a node in DAG to inspect worker progress.</p>
       </aside>
@@ -97,7 +97,7 @@ export const StepDetailPanel = React.memo(function StepDetailPanel({
   const isWorkerInitializing = isRunning && latestAttempt?.status === "running" && !latestAttempt.executorSessionId;
 
   return (
-    <aside className="p-3 lg:w-[380px] lg:max-w-[40%] lg:shrink-0 overflow-y-auto max-h-full" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+    <aside className="max-h-full overflow-y-auto p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
       <div className="flex items-center justify-between">
         <div className="text-[11px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>STEP DETAILS</div>
         <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[1px]" style={inlineBadge(stepHex)}>

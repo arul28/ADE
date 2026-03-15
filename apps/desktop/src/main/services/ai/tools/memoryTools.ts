@@ -53,6 +53,8 @@ export function createMemoryTools(
   const memoryAdd = tool({
     description: `Save a durable insight that would help a developer who has never seen this project before.
 
+If the standing CTO brief itself changed (project summary, conventions, user preferences, or active focus), use memoryUpdateCore instead of memoryAdd.
+
 GOOD memories (save these):
 - "Convention: always use snake_case for database columns — the ORM breaks with camelCase"
 - "Decision: chose PostgreSQL over MongoDB because we need ACID transactions for payment processing"

@@ -58,11 +58,9 @@ type ChatChannelListProps = {
   completedWorkerChannels: Channel[];
   selectedChannelId: string;
   completedCollapsed: boolean;
-  globalViewMode: "signal" | "raw";
   workerStatusDot: (attemptId: string | null) => string;
   onSelectChannel: (id: string) => void;
   onToggleCompletedCollapsed: () => void;
-  onSetGlobalViewMode: (mode: "signal" | "raw") => void;
 };
 
 export const ChatChannelList = React.memo(function ChatChannelList({
@@ -73,40 +71,17 @@ export const ChatChannelList = React.memo(function ChatChannelList({
   completedWorkerChannels,
   selectedChannelId,
   completedCollapsed,
-  globalViewMode,
   workerStatusDot,
   onSelectChannel,
   onToggleCompletedCollapsed,
-  onSetGlobalViewMode,
 }: ChatChannelListProps) {
   return (
     <aside
-      className="flex w-[160px] shrink-0 flex-col"
+      className="flex w-[188px] shrink-0 flex-col"
       style={{ background: BG_SIDEBAR, borderRight: `1px solid ${BORDER}` }}
     >
       <div className="px-2.5 py-2" style={{ borderBottom: `1px solid ${BORDER}` }}>
-        <div className="flex items-center justify-between gap-2">
-          <div style={{ ...LABEL_STYLE, color: TEXT_PRIMARY }}>Conversations</div>
-          {selectedChannelId === "global" && (
-            <div className="flex items-center gap-1">
-              {(["signal", "raw"] as const).map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  onClick={() => onSetGlobalViewMode(mode)}
-                  className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px]"
-                  style={{
-                    background: globalViewMode === mode ? `${ACCENT}18` : "transparent",
-                    color: globalViewMode === mode ? ACCENT : TEXT_MUTED,
-                    border: `1px solid ${globalViewMode === mode ? `${ACCENT}30` : BORDER}`,
-                  }}
-                >
-                  {mode === "signal" ? "Signal" : "Raw"}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+        <div style={{ ...LABEL_STYLE, color: TEXT_PRIMARY }}>Conversations</div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-1.5 space-y-0.5">

@@ -89,17 +89,20 @@ export const PlanTab = React.memo(function PlanTab({
     <div className="space-y-3 pb-3">
       <div className="px-3 py-2" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
         <div className="flex items-center justify-between text-[11px]" style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT }}>
-          <span>Ordered work breakdown</span>
+          <span>Phase-grouped work breakdown</span>
           <span>
             {executableSteps.filter((step) => PLAN_DONE_STATUSES.has(step.status)).length}/{executableSteps.length} executable steps complete
           </span>
+        </div>
+        <div className="mt-1 text-[11px]" style={{ color: COLORS.textMuted }}>
+          Each card shows status, executor context, ownership hints, and dependency load at a glance.
         </div>
       </div>
 
       {phaseSections.map((phase) => (
         <section key={phase.key} className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
           <div className="flex items-center justify-between">
-            <div className="text-[11px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>
+            <div className="text-[12px] font-semibold" style={{ color: COLORS.textPrimary }}>
               {phase.name}
             </div>
             <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>

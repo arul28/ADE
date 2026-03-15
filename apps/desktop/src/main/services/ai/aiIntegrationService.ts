@@ -3,7 +3,7 @@ import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { AgentModelDescriptor, AgentProvider, ExecutorOpts } from "./agentExecutor";
-import type { AiApiKeyVerificationResult } from "../../../shared/types";
+import type { AiApiKeyVerificationResult, AiProviderConnections } from "../../../shared/types";
 import {
   createDynamicLocalModelDescriptor,
   getDefaultModelDescriptor,
@@ -23,6 +23,9 @@ import { getApiKeyStoreStatus } from "./apiKeyStore";
 import type { createMemoryService } from "../memory/memoryService";
 import type { CompactionFlushService } from "../memory/compactionFlushService";
 import { discoverLocalModels } from "./localModelDiscovery";
+import { buildProviderConnections } from "./providerConnectionStatus";
+import { getProviderRuntimeHealthVersion, resetProviderRuntimeHealth } from "./providerRuntimeHealth";
+import { probeClaudeRuntimeHealth, resetClaudeRuntimeProbeCache } from "./claudeRuntimeProbe";
 
 export type AiTaskType =
   | "planning"
@@ -70,6 +73,7 @@ export type AiIntegrationStatus = {
     authenticated?: boolean;
     verified?: boolean;
   }>;
+  providerConnections?: AiProviderConnections;
   availableModelIds?: string[];
   apiKeyStore?: {
     secureStorageAvailable: boolean;
@@ -313,8 +317,9 @@ export function createAiIntegrationService(args: {
   db: AdeDb;
   logger: Logger;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
+  projectRoot: string;
 }) {
-  const { db, logger, projectConfigService } = args;
+  const { db, logger, projectConfigService, projectRoot } = args;
   let compactionFlushService: CompactionFlushService | null = null;
 
   // Non-blocking: fetch models.dev data and enrich pricing + registry
@@ -344,16 +349,20 @@ export function createAiIntegrationService(args: {
     logger.warn("ai.modelsdev.init_failed", { error: err instanceof Error ? err.message : String(err) });
   });
 
-  const detectAuth = async (): Promise<DetectedAuth[]> => {
+  const detectAuth = async (options?: { force?: boolean }): Promise<DetectedAuth[]> => {
     const snapshot = projectConfigService.get();
-    return await detectAllAuth(extractConfiguredApiKeys(snapshot));
+    return await detectAllAuth(extractConfiguredApiKeys(snapshot), options);
   };
 
   const deriveMode = (args: {
     snapshot: ReturnType<ReturnType<typeof createProjectConfigService>["get"]>;
     auth?: DetectedAuth[];
+    providerConnections?: AiProviderConnections;
   }): AiProviderMode => {
     if (args.snapshot.effective.providerMode === "subscription") {
+      return "subscription";
+    }
+    if (args.providerConnections && (args.providerConnections.claude.authAvailable || args.providerConnections.codex.authAvailable)) {
       return "subscription";
     }
     if (args.auth && hasUsableDetectedAuth(args.auth)) {
@@ -799,7 +808,7 @@ export function createAiIntegrationService(args: {
   };
 
   const STATUS_CACHE_TTL_MS = 30_000; // 30 seconds
-  let statusCache: { result: AiIntegrationStatus; cachedAt: number } | null = null;
+  let statusCache: { result: AiIntegrationStatus; cachedAt: number; runtimeHealthVersion: number } | null = null;
 
   const executeReadOnlyOneShotTask = async (args: {
     feature: AiFeatureKey;
@@ -828,29 +837,64 @@ export function createAiIntegrationService(args: {
   return {
     getMode,
 
-    getStatus: async (): Promise<AiIntegrationStatus> => {
+    getStatus: async (options?: { force?: boolean }): Promise<AiIntegrationStatus> => {
       const now = Date.now();
-      if (statusCache && now - statusCache.cachedAt < STATUS_CACHE_TTL_MS) {
+      let runtimeHealthVersion = getProviderRuntimeHealthVersion();
+      if (
+        !options?.force
+        && statusCache
+        && statusCache.runtimeHealthVersion === runtimeHealthVersion
+        && now - statusCache.cachedAt < STATUS_CACHE_TTL_MS
+      ) {
         return statusCache.result;
       }
-      const auth = await detectAuth();
+      if (options?.force) {
+        resetProviderRuntimeHealth();
+        resetClaudeRuntimeProbeCache();
+        runtimeHealthVersion = getProviderRuntimeHealthVersion();
+      }
+      const auth = await detectAuth(options);
       const available = await getResolvedAvailableModels(auth);
       // detectAuth -> detectAllAuth already called detectCliAuthStatuses() and
       // populated the cache, so this reads instantly from cache:
       const cliStatuses = getCachedCliAuthStatuses();
-      const availability = toCliAvailability(auth);
+      const claudeCli = cliStatuses.find((entry) => entry.cli === "claude");
+      if (
+        claudeCli?.installed
+        && (claudeCli.authenticated || !claudeCli.verified)
+        && options?.force
+      ) {
+        await probeClaudeRuntimeHealth({
+          projectRoot,
+          logger,
+          force: true,
+        });
+        runtimeHealthVersion = getProviderRuntimeHealthVersion();
+      }
+      const providerConnections = await buildProviderConnections(cliStatuses);
+      const availability = {
+        claude: providerConnections.claude.runtimeAvailable,
+        codex: providerConnections.codex.runtimeAvailable,
+      };
+      const runtimeFilteredAvailable = available.filter((descriptor) => {
+        if (!descriptor.isCliWrapped) return true;
+        if (descriptor.family === "anthropic") return providerConnections.claude.runtimeAvailable;
+        if (descriptor.family === "openai") return providerConnections.codex.runtimeAvailable;
+        return true;
+      });
       const result: AiIntegrationStatus = {
-        mode: deriveMode({ snapshot: projectConfigService.get(), auth }),
+        mode: deriveMode({ snapshot: projectConfigService.get(), auth, providerConnections }),
         availableProviders: availability,
         models: {
           claude: availability.claude ? await listModels("claude") : [],
-          codex: availability.codex ? await listModels("codex") : CODEX_FALLBACK_MODELS
+          codex: availability.codex ? await listModels("codex") : []
         },
         detectedAuth: redactDetectedAuth(auth, cliStatuses),
-        availableModelIds: available.map((descriptor) => descriptor.id),
+        providerConnections,
+        availableModelIds: runtimeFilteredAvailable.map((descriptor) => descriptor.id),
         apiKeyStore: getApiKeyStoreStatus(),
       };
-      statusCache = { result, cachedAt: Date.now() };
+      statusCache = { result, cachedAt: Date.now(), runtimeHealthVersion };
       return result;
     },
 

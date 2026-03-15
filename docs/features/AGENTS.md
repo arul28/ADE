@@ -34,7 +34,7 @@ Missions run coordinated agent work via orchestrator runtime:
 
 Automations is the canonical surface for creating and operating non-interactive agent work.
 
-- Rules can target disposable automation bots, persistent employees, CTO-routed execution, or the Night Shift queue.
+- Automation rules configure one of three execution surfaces: `agent-session`, `mission`, or `built-in-task`.
 - W5 trigger families cover local events (`manual`, `schedule`, `commit`, `session-end`) plus external GitHub and webhook triggers.
 - Rules define tool palettes, memory behavior, guardrails, and output/verification policy rather than only a fixed action enum.
 - Automation runs and action results are persisted and queryable for simulation, history, and review.

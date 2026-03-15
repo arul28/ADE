@@ -180,7 +180,7 @@ export const EVENT_KIND_META: Record<string, EventKindMeta> = {
   "automation.triggered":   { label: "Triggered",       category: "automation", iconName: "Lightning",    description: "Automation triggered",  importance: "high" },
   "automation.completed":   { label: "Completed",       category: "automation", iconName: "CheckCircle",  description: "Automation completed",  importance: "high" },
   "automation.failed":      { label: "Failed",          category: "automation", iconName: "XCircle",      description: "Automation failed",     importance: "high" },
-  "automation.night_shift": { label: "Night Shift",     category: "automation", iconName: "Moon",         description: "Night shift run",       importance: "medium" },
+  "automation.run":         { label: "Automation Run", category: "automation", iconName: "Lightning",    description: "Automation run",        importance: "medium" },
   "automation.webhook":     { label: "Webhook",         category: "automation", iconName: "Webhook",      description: "Webhook received",      importance: "medium" },
 
   // ── Process & Test ──────────────────────────────────────────

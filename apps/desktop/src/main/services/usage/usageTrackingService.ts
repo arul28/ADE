@@ -9,7 +9,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { spawn } from "node:child_process";
 import type { Logger } from "../logging/logger";
 import type {
   UsageProvider,
@@ -20,6 +19,16 @@ import type {
   UsageSnapshot,
 } from "../../../shared/types";
 import { isRecord, nowIso, getErrorMessage, safeJsonParse } from "../shared/utils";
+import {
+  clearClaudeCredentialCache,
+  isClaudeTokenExpiredOrExpiring,
+  isCodexTokenStale,
+  readClaudeCredentials,
+  readClaudeCredentialsWithRefresh,
+  readCodexCredentials,
+  refreshClaudeCredentials,
+  runShellCommand,
+} from "../ai/providerCredentialSources";
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -41,240 +50,6 @@ const TOKEN_PRICES: Record<string, { input: number; output: number }> = {
   "codex-mini":    { input: 0.3 / 1_000_000, output: 1.2 / 1_000_000 },
   "default":       { input: 3 / 1_000_000, output: 15 / 1_000_000 },
 };
-
-// ── Constants (OAuth) ────────────────────────────────────────────
-
-const CLAUDE_TOKEN_ENDPOINT = "https://platform.claude.com/v1/oauth/token";
-const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-const TOKEN_REFRESH_BUFFER_MS = 5 * 60_000; // Refresh 5 min before expiry
-
-// ── Credential Helpers ───────────────────────────────────────────
-
-type ClaudeCredentials = {
-  accessToken: string;
-  refreshToken?: string;
-  expiresAt?: number;
-  plan?: string;
-};
-
-type CodexCredentials = {
-  accessToken: string;
-  lastRefresh?: number;
-};
-
-function extractStringField(obj: Record<string, unknown>, ...keys: string[]): string | undefined {
-  for (const key of keys) {
-    if (typeof obj[key] === "string") return obj[key] as string;
-  }
-  return undefined;
-}
-
-function parseClaudeCredentials(parsed: Record<string, unknown>): ClaudeCredentials | null {
-  const oauth = isRecord(parsed.claudeAiOauth) ? parsed.claudeAiOauth : parsed;
-  const token = extractStringField(oauth, "accessToken", "access_token");
-  if (!token) return null;
-  return {
-    accessToken: token,
-    refreshToken: extractStringField(oauth, "refreshToken", "refresh_token"),
-    expiresAt: extractNumberField(oauth, "expiresAt", "expires_at"),
-    plan: extractStringField(oauth, "plan", "subscriptionType", "rateLimitTier", "rate_limit_tier"),
-  };
-}
-
-async function readClaudeCredentials(): Promise<ClaudeCredentials | null> {
-  // Try Keychain first (macOS)
-  if (process.platform === "darwin") {
-    try {
-      const result = await runShellCommand(
-        "security find-generic-password -s 'Claude Code-credentials' -w",
-        5_000
-      );
-      if (result.exitCode === 0 && result.stdout.trim()) {
-        const creds = parseClaudeCredentials(
-          safeJsonParse<Record<string, unknown>>(result.stdout.trim(), {})
-        );
-        if (creds) return creds;
-      }
-    } catch {
-      // fall through to file
-    }
-  }
-
-  // File fallback
-  const credPath = path.join(os.homedir(), ".claude", ".credentials.json");
-  try {
-    const raw = await fs.promises.readFile(credPath, "utf8");
-    return parseClaudeCredentials(safeJsonParse<Record<string, unknown>>(raw, {}));
-  } catch {
-    return null;
-  }
-}
-
-function isTokenExpiredOrExpiring(creds: ClaudeCredentials): boolean {
-  if (!creds.expiresAt) return false;
-  return Date.now() + TOKEN_REFRESH_BUFFER_MS >= creds.expiresAt;
-}
-
-type TokenRefreshResponse = {
-  access_token?: string;
-  refresh_token?: string;
-  expires_in?: number;
-  error?: string;
-};
-
-async function refreshClaudeToken(refreshToken: string): Promise<ClaudeCredentials | null> {
-  const body = new URLSearchParams({
-    grant_type: "refresh_token",
-    refresh_token: refreshToken,
-    client_id: OAUTH_CLIENT_ID,
-  });
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15_000);
-  try {
-    const resp = await fetch(CLAUDE_TOKEN_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: body.toString(),
-      signal: controller.signal,
-    });
-
-    if (!resp.ok) return null;
-
-    const data = (await resp.json()) as TokenRefreshResponse;
-    if (!data.access_token) return null;
-
-    const expiresAt = data.expires_in
-      ? Date.now() + data.expires_in * 1000
-      : undefined;
-
-    return {
-      accessToken: data.access_token,
-      refreshToken: data.refresh_token ?? refreshToken,
-      expiresAt,
-    };
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/** In-memory cache for refreshed tokens so we don't hit keychain + refresh endpoint on every poll */
-let cachedClaudeCreds: ClaudeCredentials | null = null;
-
-async function readClaudeCredentialsWithRefresh(logger: Logger): Promise<ClaudeCredentials | null> {
-  // If we have a cached token that's still valid, use it
-  if (cachedClaudeCreds && !isTokenExpiredOrExpiring(cachedClaudeCreds)) {
-    return cachedClaudeCreds;
-  }
-
-  // Read fresh from keychain/file
-  const creds = await readClaudeCredentials();
-  if (!creds) return null;
-
-  // If token is still valid, cache and return
-  if (!isTokenExpiredOrExpiring(creds)) {
-    cachedClaudeCreds = creds;
-    return creds;
-  }
-
-  // Token expired or about to expire — try to refresh
-  if (creds.refreshToken) {
-    logger.info("usage.token_refresh.attempting", { expiresAt: creds.expiresAt });
-    const refreshed = await refreshClaudeToken(creds.refreshToken);
-    if (refreshed) {
-      logger.info("usage.token_refresh.success", { expiresIn: refreshed.expiresAt ? Math.round((refreshed.expiresAt - Date.now()) / 1000) : "unknown" });
-      cachedClaudeCreds = refreshed;
-      return refreshed;
-    }
-    logger.warn("usage.token_refresh.failed", { message: "refresh endpoint returned no token" });
-  }
-
-  // Refresh failed — return the (possibly expired) token and let the API call fail with 401
-  cachedClaudeCreds = creds;
-  return creds;
-}
-
-function extractNumberField(obj: Record<string, unknown>, ...keys: string[]): number | undefined {
-  for (const key of keys) {
-    if (typeof obj[key] === "number") return obj[key] as number;
-  }
-  return undefined;
-}
-
-function extractTimestampField(obj: Record<string, unknown>, ...keys: string[]): number | undefined {
-  for (const key of keys) {
-    const value = obj[key];
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-    if (typeof value === "string" && value.trim()) {
-      const parsed = Date.parse(value);
-      if (Number.isFinite(parsed)) return parsed;
-    }
-  }
-  return undefined;
-}
-
-async function readCodexCredentials(): Promise<CodexCredentials | null> {
-  const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
-  const authPath = path.join(codexHome, "auth.json");
-  try {
-    const raw = await fs.promises.readFile(authPath, "utf8");
-    const parsed = safeJsonParse<Record<string, unknown>>(raw, {});
-    const tokens = isRecord(parsed.tokens) ? parsed.tokens : parsed;
-    const token = extractStringField(tokens, "access_token", "accessToken");
-    if (!token) return null;
-    return {
-      accessToken: token,
-      lastRefresh: extractTimestampField(parsed, "last_refresh", "lastRefresh"),
-    };
-  } catch {
-    return null;
-  }
-}
-
-function isCodexTokenStale(creds: CodexCredentials): boolean {
-  if (!creds.lastRefresh) return false;
-  const ageMs = Date.now() - creds.lastRefresh;
-  return ageMs > CODEX_TOKEN_REFRESH_DAYS * 24 * 60 * 60 * 1000;
-}
-
-// ── Shell Helper ─────────────────────────────────────────────────
-
-function runShellCommand(
-  command: string,
-  timeoutMs: number
-): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("sh", ["-c", command], {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
-    });
-
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8").slice(0, 50_000);
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8").slice(0, 10_000);
-    });
-
-    const timer = setTimeout(() => {
-      try { child.kill("SIGKILL"); } catch { /* ignore */ }
-      reject(new Error(`Shell command timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-    child.on("exit", (code) => {
-      clearTimeout(timer);
-      resolve({ stdout, stderr, exitCode: code });
-    });
-  });
-}
 
 // ── HTTP Helper ──────────────────────────────────────────────────
 
@@ -487,10 +262,9 @@ async function pollClaudeUsage(logger: Logger): Promise<{ windows: UsageWindow[]
       // On 401, try one refresh cycle and retry
       if (result.status === 401 && creds.refreshToken) {
         logger.info("usage.token_refresh.401_retry");
-        cachedClaudeCreds = null;
-        const refreshed = await refreshClaudeToken(creds.refreshToken);
+        clearClaudeCredentialCache();
+        const refreshed = await refreshClaudeCredentials(creds.refreshToken);
         if (refreshed) {
-          cachedClaudeCreds = refreshed;
           const retry = await fetchJson(CLAUDE_USAGE_URL, {
             Authorization: `Bearer ${refreshed.accessToken}`,
             "anthropic-beta": "oauth-2025-04-20",
@@ -615,7 +389,7 @@ async function pollCodexViaCliRpc(logger: Logger): Promise<{ windows: UsageWindo
     }
 
     // Parse JSONL responses
-    const lines = result.stdout.split("\n").filter((l) => l.trim());
+    const lines = result.stdout.split("\n").filter((line: string) => line.trim());
     for (const line of lines) {
       const parsed = safeJsonParse<Record<string, unknown>>(line, {});
       if (!parsed.result || typeof parsed.result !== "object") continue;
@@ -1127,8 +901,9 @@ export const _testing = {
   readClaudeCredentials,
   readCodexCredentials,
   isCodexTokenStale,
-  isTokenExpiredOrExpiring,
-  refreshClaudeToken,
+  isTokenExpiredOrExpiring: isClaudeTokenExpiredOrExpiring,
+  isClaudeTokenExpiredOrExpiring,
+  refreshClaudeCredentials,
   parseClaudeWindows,
   parseCodexRateLimitWindows,
   pollClaudeUsage,

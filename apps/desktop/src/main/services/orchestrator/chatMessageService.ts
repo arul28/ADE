@@ -1607,6 +1607,36 @@ export function sendAgentMessageCtx(
     metadata: { ...(metadata ?? {}), interAgentDelivery: true }
   });
 
+  if (sourceThread.runId ?? targetThread.runId) {
+    try {
+      ctx.orchestratorService.appendRuntimeEvent({
+        runId: sourceThread.runId ?? targetThread.runId ?? "",
+        stepId: sourceThread.stepId ?? targetThread.stepId ?? null,
+        attemptId: fromAttemptId,
+        eventType: "worker_message",
+        eventKey: `worker_message:${fromAttemptId}:${toAttemptId}:${agentMsg.id}`,
+        occurredAt: agentMsg.timestamp,
+        payload: {
+          audience: "mission_feed",
+          sourceAttemptId: fromAttemptId,
+          targetAttemptId: toAttemptId,
+          sourceThreadId: sourceThread.id,
+          targetThreadId: targetThread.id,
+          sourceLabel: sourceThread.title,
+          targetLabel: targetThread.title,
+          summary: `${sourceThread.title} sent a message to ${targetThread.title}.`,
+        },
+      });
+    } catch (error) {
+      ctx.logger.debug("ai_orchestrator.inter_agent_runtime_event_failed", {
+        missionId,
+        fromAttemptId,
+        toAttemptId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   // Emit thread event so UI updates
   emitThreadEvent(ctx, {
     type: "message_appended",

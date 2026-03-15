@@ -178,9 +178,14 @@ function matchesQuery(model: ModelDescriptor, query: string): boolean {
 
 function mergeSelectorModels(availableModelIds?: string[], filter?: (model: ModelDescriptor) => boolean): ModelDescriptor[] {
   const merged = new Map<string, ModelDescriptor>();
+  const availableSet = availableModelIds
+    ? new Set(availableModelIds.map((entry) => String(entry ?? "").trim()).filter(Boolean))
+    : null;
+
   for (const model of MODEL_REGISTRY) {
     if (model.deprecated) continue;
     if (filter && !filter(model)) continue;
+    if (availableSet && !availableSet.has(model.id)) continue;
     merged.set(model.id, model);
   }
   for (const rawId of availableModelIds ?? []) {

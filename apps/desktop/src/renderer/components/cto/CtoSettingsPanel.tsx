@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { ArrowCounterClockwise, CaretDown, CaretRight, PencilSimple } from "@phosphor-icons/react";
+import { ArrowCounterClockwise, Brain, CaretDown, CaretRight, PencilSimple } from "@phosphor-icons/react";
 import type { CtoCoreMemory, CtoIdentity, CtoSessionLogEntry, ExternalMcpAccessPolicy } from "../../../shared/types";
 import { IdentityEditor } from "./IdentityEditor";
 import { TimelineEntry } from "./shared/TimelineEntry";
@@ -8,6 +8,7 @@ import { cn } from "../ui/cn";
 import { inputCls, labelCls, textareaCls, cardCls, ACCENT } from "./shared/designTokens";
 import { ExternalMcpAccessEditor } from "../shared/ExternalMcpAccessEditor";
 import { OpenclawConnectionPanel } from "./OpenclawConnectionPanel";
+import { getCtoPersonalityPreset } from "./identityPresets";
 
 /* ── Helpers ── */
 
@@ -38,16 +39,16 @@ function CollapsibleSection({ title, color, defaultOpen = true, right, children 
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center justify-between w-full px-4 py-3 text-left hover:bg-white/[0.02] transition-colors"
+        className="flex items-center justify-between w-full px-4 py-3.5 text-left hover:bg-white/[0.02] transition-colors"
       >
         <div className="flex items-center gap-2">
-          <div className="h-1.5 w-1.5 rounded-full" style={{ background: color }} />
-          <span className="text-xs font-semibold text-fg">{title}</span>
+          <div className="h-2 w-2 rounded-full" style={{ background: color, boxShadow: `0 0 14px ${color}55` }} />
+          <span className="text-xs font-semibold uppercase tracking-[0.16em] text-fg/86">{title}</span>
           {open ? <CaretDown size={10} className="text-muted-fg/30" /> : <CaretRight size={10} className="text-muted-fg/30" />}
         </div>
         {right && <div onClick={(e) => e.stopPropagation()}>{right}</div>}
       </button>
-      {open && children}
+      {open && <div className="border-t border-white/[0.05]">{children}</div>}
     </div>
   );
 }
@@ -126,6 +127,45 @@ export function CtoSettingsPanel({
 
   return (
     <div className="flex flex-col h-full min-h-0 overflow-y-auto p-4 gap-3">
+      <div className={cn(cardCls, "overflow-hidden")}>
+        <div
+          className="px-5 py-5"
+          style={{
+            background: "radial-gradient(circle at top left, rgba(56,189,248,0.16), transparent 34%), linear-gradient(180deg, rgba(18,24,34,0.96), rgba(10,14,21,0.94))",
+          }}
+        >
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="max-w-[48rem]">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-fg/42">
+                CTO runtime
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <Brain size={16} weight="duotone" style={{ color: ACCENT.purple }} />
+                <div className="text-base font-semibold text-fg">Identity, brief, and continuity</div>
+              </div>
+              <div className="mt-2 text-[12px] leading-6 text-muted-fg/44">
+                This is the private control surface for the CTO. Update who it is, what it should permanently remember,
+                and what external systems it can touch.
+              </div>
+            </div>
+
+            <div className="grid min-w-[260px] gap-2 sm:grid-cols-2">
+              {[
+                { label: "Model", value: identity ? `${identity.modelPreferences.provider}/${identity.modelPreferences.model}` : "Loading" },
+                { label: "Long-term brief", value: coreMemory?.projectSummary?.trim() ? "Configured" : "Needs work" },
+                { label: "Continuity log", value: sessionLogs.length ? `${sessionLogs.length} recent sessions` : "No recent sessions" },
+                { label: "Memory mode", value: "Layered + durable" },
+              ].map((item) => (
+                <div key={item.label} className="rounded-2xl border border-white/[0.06] bg-black/20 px-3 py-3">
+                  <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-fg/34">{item.label}</div>
+                  <div className="mt-1 text-[12px] leading-5 text-fg/76">{item.value}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Identity */}
       <CollapsibleSection
         title="Identity"
@@ -145,7 +185,7 @@ export function CtoSettingsPanel({
         ) : identity ? (
           <div className="px-4 pb-4 space-y-2">
             <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-fg">{identity.name}</span>
+              <span className="text-sm font-semibold text-fg">CTO</span>
               <span className="text-[10px] text-muted-fg/35">v{identity.version}</span>
             </div>
             <div className="text-xs text-muted-fg/55 leading-relaxed line-clamp-3">{identity.persona}</div>
@@ -153,7 +193,7 @@ export function CtoSettingsPanel({
               {[
                 { label: identity.modelPreferences.provider, color: ACCENT.blue },
                 { label: identity.modelPreferences.model, color: ACCENT.green },
-                ...(identity.personality ? [{ label: identity.personality, color: ACCENT.pink }] : []),
+                ...(identity.personality ? [{ label: getCtoPersonalityPreset(identity.personality).label, color: ACCENT.pink }] : []),
                 ...(identity.modelPreferences.reasoningEffort ? [{ label: `reasoning: ${identity.modelPreferences.reasoningEffort}`, color: ACCENT.amber }] : []),
               ].map((tag) => (
                 <span key={tag.label} className="rounded-md px-2 py-0.5 text-[10px] font-medium" style={{ color: tag.color, background: `${tag.color}12`, border: `1px solid ${tag.color}20` }}>
@@ -169,7 +209,7 @@ export function CtoSettingsPanel({
 
       {/* Core Memory */}
       <CollapsibleSection
-        title="Core Memory"
+        title="Long-term brief"
         color={ACCENT.green}
         right={
           !memoryEditing ? (
@@ -211,6 +251,9 @@ export function CtoSettingsPanel({
           <div className="px-4 pb-4" data-testid="core-memory-view">
             <div className="text-xs text-muted-fg/55 leading-relaxed line-clamp-3">
               {coreMemory.projectSummary || "No project summary yet."}
+            </div>
+            <div className="mt-2 text-[11px] leading-5 text-muted-fg/40">
+              This is the always-on CTO brief that gets reloaded after compaction and across fresh chat resumes.
             </div>
             {[
               { items: coreMemory.criticalConventions, label: "Conventions", color: ACCENT.blue },
@@ -255,7 +298,7 @@ export function CtoSettingsPanel({
       </CollapsibleSection>
 
       {/* Recent Sessions */}
-      <CollapsibleSection title="Recent Sessions" color={ACCENT.amber} defaultOpen={false}>
+      <CollapsibleSection title="Continuity log" color={ACCENT.amber} defaultOpen={false}>
         <div className="px-4 pb-3 max-h-48 overflow-y-auto space-y-1" data-testid="session-history-list">
           {sessionLogs.length === 0 ? (
             <div className="text-[10px] text-muted-fg/40 py-2">No sessions yet.</div>
@@ -273,8 +316,13 @@ export function CtoSettingsPanel({
 
       {/* Re-run Setup */}
       {onResetOnboarding && (
-        <div className="flex items-center justify-between rounded-xl border border-white/[0.05] bg-[rgba(24,20,35,0.3)] px-4 py-3">
-          <span className="text-xs text-muted-fg/40">Re-run the setup wizard</span>
+        <div className="flex items-center justify-between rounded-2xl border border-white/[0.06] bg-[linear-gradient(180deg,rgba(15,20,28,0.74),rgba(10,14,21,0.82))] px-4 py-3">
+          <div>
+            <div className="text-xs font-semibold text-fg/74">Run setup again</div>
+            <div className="mt-1 text-[11px] leading-5 text-muted-fg/38">
+              Revisit the guided flow if you want to rebuild the CTO identity, brief, or integration choices from scratch.
+            </div>
+          </div>
           <Button variant="outline" size="sm" className="shrink-0" onClick={onResetOnboarding}>
             <ArrowCounterClockwise size={10} />
             Re-run

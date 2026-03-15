@@ -48,7 +48,7 @@ Each phase must satisfy:
 | Claude subscription auth policy uncertainty | Anthropic may restrict subscription OAuth in third-party tools | Community Vercel provider workaround; `AgentExecutor` interface enables quick switch to official SDK if policy changes |
 | Context window limits under large missions | Orchestrator may lose coherence on complex multi-step missions | Progressive context loading; context pressure management; pack compression; **compaction engine (Hivemind HW6) triggers at 70% threshold with durable resume** |
 | Monolithic IPC concentration | Slows core extraction and relay work | Domain adapter split in Phase 8 with parity test gates |
-| Unsafe unattended execution | High blast radius in Night Shift mode (Automations) | Hard budgets, explicit policy gates, intervention states, per-automation guardrail constraints |
+| Unsafe unattended execution | High blast radius for unattended automations | Policy gates, intervention states, and centralized budget policy in Settings > Usage |
 | Runtime isolation brittleness | Play instability | Deterministic lease model + diagnostics + fallback mode |
 | Cross-device race conditions | Inconsistent mission outcomes | cr-sqlite CRDTs + optimistic locking + event sequencing |
 | MCP tool permission model gaps | Orchestrator may invoke unsafe operations | Permission/policy layer with deny-by-default; audit logging for all tool calls |
@@ -147,8 +147,8 @@ Each phase must satisfy:
 - Subscription detection success rate at onboarding
 - `guest` vs `subscription` mode usage ratio
 - Mission weekly active users
-- Night Shift mode adoption rate
-- Morning Briefing items approved vs. dismissed ratio
+- Time-based automation adoption rate
+- Automation run completion and intervention rate
 - Phase profile creation rate (users creating custom profiles vs using defaults)
 - Custom phase adoption rate (missions using custom phases vs built-in only)
 - CTO agent activation rate
@@ -299,8 +299,8 @@ The program is complete when:
 - Play supports deterministic lane isolation.
 - Missions use configurable phase pipelines with pre-flight validation and tiered quality gates.
 - CTO agent provides persistent project-aware assistance with full memory and context.
-- Night Shift mode in Automations executes overnight tasks with guardrails and produces morning briefings.
-- Morning Briefing (in Automations Night Shift) provides rapid review of overnight results.
+- Automations support only time-based and action-based triggers.
+- Automations execution types are `agent-session`, `mission`, and `built-in task`.
 - Desktop, VPS, and iOS sync state in real-time via cr-sqlite. Any device can view and control; the brain runs agents.
 - MCP server safely exposes ADE capabilities to the AI orchestrator and external agent ecosystems.
 - VPS deployment enables always-on brain machines for unattended agent execution.

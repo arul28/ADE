@@ -42,6 +42,7 @@ type ContextDocRefreshPrefs = {
 
 const CONTEXT_DOC_PREFS_KEY = "context:docs:preferences.v1";
 const CONTEXT_DOC_LAST_RUN_KEY = "context:docs:lastRun.v1";
+const CONTEXT_DOC_GENERATION_STATUS_KEY = "context:docs:generationStatus.v1";
 
 /** Minimum interval between auto-refresh runs (per event name). */
 const AUTO_REFRESH_MIN_INTERVAL_MS: Record<ContextRefreshEventName, number> = {
@@ -176,9 +177,47 @@ export function createContextDocService(args: {
     return Number.isFinite(ts) ? ts : null;
   };
 
+  const readGenerationStatus = (): ContextStatus["generation"] => {
+    const raw = db.getJson<Record<string, unknown>>(CONTEXT_DOC_GENERATION_STATUS_KEY);
+    const state = raw?.state === "running" || raw?.state === "failed" ? raw.state : "idle";
+    return {
+      state,
+      startedAt: toOptionalString(raw?.startedAt) ?? null,
+      finishedAt: toOptionalString(raw?.finishedAt) ?? null,
+      error: toOptionalString(raw?.error) ?? null,
+    };
+  };
+
+  const writeGenerationStatus = (next: ContextStatus["generation"]): void => {
+    db.setJson(CONTEXT_DOC_GENERATION_STATUS_KEY, next);
+  };
+
   const generateDocs = async (docArgs: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> => {
     persistContextDocRefreshPrefs(docArgs);
-    return await runContextDocGenerationImpl(projectPackBuilderDeps, docArgs);
+    writeGenerationStatus({
+      state: "running",
+      startedAt: nowIso(),
+      finishedAt: null,
+      error: null,
+    });
+    try {
+      const result = await runContextDocGenerationImpl(projectPackBuilderDeps, docArgs);
+      writeGenerationStatus({
+        state: "idle",
+        startedAt: readGenerationStatus().startedAt,
+        finishedAt: result.generatedAt,
+        error: null,
+      });
+      return result;
+    } catch (error) {
+      writeGenerationStatus({
+        state: "failed",
+        startedAt: readGenerationStatus().startedAt,
+        finishedAt: nowIso(),
+        error: getErrorMessage(error),
+      });
+      throw error;
+    }
   };
 
   /**
@@ -267,7 +306,10 @@ export function createContextDocService(args: {
       return readContextDocMetaImpl(projectRoot);
     },
     getStatus(): ContextStatus {
-      return readContextStatusImpl({ db, projectId, projectRoot, packsDir });
+      return {
+        ...readContextStatusImpl({ db, projectId, projectRoot, packsDir }),
+        generation: readGenerationStatus(),
+      };
     },
     getPrefs(): ContextDocPrefs {
       const stored = readContextDocRefreshPrefs();

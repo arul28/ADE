@@ -12,6 +12,7 @@ import type {
   AutomationActionType,
   AutomationActiveHours,
   AutomationContextSource,
+  AutomationExecution,
   AutomationExecutor,
   AutomationGuardrails,
   AutomationMemoryConfig,
@@ -343,16 +344,56 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
   return out;
 }
 
+function coerceAutomationExecution(value: unknown): AutomationExecution | undefined {
+  if (!isRecord(value)) return undefined;
+  const kindRaw = asString(value.kind)?.trim() ?? "";
+  const kind = kindRaw === "agent-session" || kindRaw === "mission" || kindRaw === "built-in"
+    ? kindRaw
+    : null;
+  if (!kind) return undefined;
+
+  const targetLaneId = asString(value.targetLaneId)?.trim() || undefined;
+  if (kind === "agent-session") {
+    const session = isRecord(value.session)
+      ? {
+          ...(asString(value.session.title)?.trim() ? { title: asString(value.session.title)!.trim() } : {}),
+          ...(asString(value.session.reasoningEffort)?.trim()
+            ? { reasoningEffort: asString(value.session.reasoningEffort)!.trim() }
+            : {}),
+        }
+      : undefined;
+    return {
+      kind,
+      ...(targetLaneId ? { targetLaneId } : {}),
+      ...(session && Object.keys(session).length ? { session } : {}),
+    };
+  }
+
+  if (kind === "mission") {
+    const mission = isRecord(value.mission) && asString(value.mission.title)?.trim()
+      ? { title: asString(value.mission.title)!.trim() }
+      : undefined;
+    return {
+      kind,
+      ...(targetLaneId ? { targetLaneId } : {}),
+      ...(mission ? { mission } : {}),
+    };
+  }
+
+  const actions = isRecord(value.builtIn) && Array.isArray(value.builtIn.actions)
+    ? value.builtIn.actions.map(coerceAutomationAction).filter((x): x is AutomationAction => x != null)
+    : [];
+  return {
+    kind,
+    ...(targetLaneId ? { targetLaneId } : {}),
+    builtIn: { actions },
+  };
+}
+
 function coerceAutomationExecutor(value: unknown): AutomationExecutor | undefined {
   if (!isRecord(value)) return undefined;
   const modeRaw = asString(value.mode)?.trim() ?? "";
-  const mode =
-    modeRaw === "automation-bot" ||
-    modeRaw === "employee" ||
-    modeRaw === "cto-route" ||
-    modeRaw === "night-shift"
-      ? modeRaw
-      : null;
+  const mode = modeRaw === "automation-bot" ? modeRaw : null;
   if (!mode) return undefined;
   const targetId = asString(value.targetId);
   const routingHints = isRecord(value.routingHints)
@@ -524,8 +565,7 @@ function coerceAutomationOutputs(value: unknown): AutomationOutputs | undefined 
     dispositionRaw === "open-task" ||
     dispositionRaw === "open-lane" ||
     dispositionRaw === "prepare-patch" ||
-    dispositionRaw === "open-pr-draft" ||
-    dispositionRaw === "queue-overnight"
+    dispositionRaw === "open-pr-draft"
       ? dispositionRaw
       : null;
   if (!disposition) return undefined;
@@ -570,6 +610,7 @@ function coerceAutomationRule(value: unknown): ConfigAutomationRule | null {
   const actions = Array.isArray(value.actions)
     ? value.actions.map(coerceAutomationAction).filter((x): x is AutomationAction => x != null)
     : undefined;
+  const execution = coerceAutomationExecution(value.execution);
   const executor = coerceAutomationExecutor(value.executor);
   const modelConfig = coerceMissionModelConfig(value.modelConfig);
   const permissionConfig = coerceMissionPermissionConfig(value.permissionConfig);
@@ -604,7 +645,6 @@ function coerceAutomationRule(value: unknown): ConfigAutomationRule | null {
     queueStatusRaw === "actionable-findings" ||
     queueStatusRaw === "verification-required" ||
     queueStatusRaw === "completed-clean" ||
-    queueStatusRaw === "queued-for-night-shift" ||
     queueStatusRaw === "ignored" ||
     queueStatusRaw === "archived"
       ? queueStatusRaw
@@ -617,6 +657,7 @@ function coerceAutomationRule(value: unknown): ConfigAutomationRule | null {
   if (triggers != null) out.triggers = triggers;
   if (trigger != null) out.trigger = trigger;
   if (actions != null) out.actions = actions;
+  if (execution != null) out.execution = execution;
   if (executor != null) out.executor = executor;
   if (modelConfig != null) out.modelConfig = modelConfig;
   if (permissionConfig != null) out.permissionConfig = permissionConfig;
@@ -1290,7 +1331,7 @@ function coerceLinearSync(value: unknown): LinearSyncConfig | undefined {
             if (!isRecord(rule)) return null;
             const actionRaw = asString(rule.action)?.trim();
             const action: LinearAutoDispatchAction | null =
-              actionRaw === "auto" || actionRaw === "escalate" || actionRaw === "queue-night-shift"
+              actionRaw === "auto" || actionRaw === "escalate"
                 ? actionRaw
                 : null;
             if (!action) return null;
@@ -1319,7 +1360,7 @@ function coerceLinearSync(value: unknown): LinearSyncConfig | undefined {
       : undefined;
     const defaultActionRaw = asString(value.autoDispatch.default)?.trim();
     const defaultAction: LinearAutoDispatchAction | null =
-      defaultActionRaw === "auto" || defaultActionRaw === "escalate" || defaultActionRaw === "queue-night-shift"
+      defaultActionRaw === "auto" || defaultActionRaw === "escalate"
         ? defaultActionRaw
         : null;
     const autoDispatch: NonNullable<LinearSyncConfig["autoDispatch"]> = {};
@@ -1736,6 +1777,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     ...over,
     ...(over.triggers != null ? { triggers: over.triggers } : base.triggers != null ? { triggers: base.triggers } : {}),
     ...(over.trigger != null ? { trigger: over.trigger } : base.trigger != null ? { trigger: base.trigger } : {}),
+    ...(over.execution != null ? { execution: over.execution } : base.execution != null ? { execution: base.execution } : {}),
     ...(over.actions != null ? { actions: over.actions } : base.actions != null ? { actions: base.actions } : {}),
     ...(over.executor != null ? { executor: over.executor } : base.executor != null ? { executor: base.executor } : {}),
     ...(over.toolPalette != null ? { toolPalette: over.toolPalette } : base.toolPalette != null ? { toolPalette: base.toolPalette } : {}),
@@ -1814,6 +1856,9 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
   const automations: AutomationRule[] = mergedAutomations.map((entry) => {
     const triggers = coerceAutomationTriggers(entry.triggers, entry.trigger);
     const legacyTrigger = coerceAutomationTrigger(entry.trigger);
+    const execution = entry.execution ?? ((entry.actions?.length ?? 0) > 0
+      ? { kind: "built-in" as const, builtIn: { actions: entry.actions ?? [] } }
+      : { kind: "mission" as const });
 
     return {
       id: entry.id.trim(),
@@ -1841,6 +1886,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
         ...(trigger.activeHours ? { activeHours: trigger.activeHours } : {}),
       })),
       trigger: legacyTrigger ?? triggers[0] ?? { type: "manual" },
+      execution,
       executor: entry.executor ?? { mode: "automation-bot" },
       ...(entry.modelConfig ? { modelConfig: entry.modelConfig } : {}),
       ...(entry.permissionConfig ? { permissionConfig: entry.permissionConfig } : {}),
@@ -2342,6 +2388,9 @@ function validateEffectiveConfig(
     if (!rule.triggers.length) {
       issues.push({ path: `${p}.triggers`, message: "Enabled automation must declare at least one trigger." });
     }
+    if (rule.triggers.length > 1) {
+      issues.push({ path: `${p}.triggers`, message: "Automations now support a single trigger. Keep only the primary trigger." });
+    }
 
     for (let triggerIdx = 0; triggerIdx < rule.triggers.length; triggerIdx += 1) {
       const trigger = rule.triggers[triggerIdx]!;
@@ -2382,13 +2431,28 @@ function validateEffectiveConfig(
       }
     }
 
-    if (
-      rule.executor.mode !== "automation-bot" &&
-      rule.executor.mode !== "employee" &&
-      rule.executor.mode !== "cto-route" &&
-      rule.executor.mode !== "night-shift"
+    if (rule.executor.mode !== "automation-bot") {
+      issues.push({ path: `${p}.executor.mode`, message: "Automations now run directly. Legacy executor routing is no longer supported." });
+    }
+
+    if (!rule.execution) {
+      issues.push({ path: `${p}.execution`, message: "Automation execution kind is required." });
+    } else if (
+      rule.execution.kind !== "agent-session"
+      && rule.execution.kind !== "mission"
+      && rule.execution.kind !== "built-in"
     ) {
-      issues.push({ path: `${p}.executor.mode`, message: `Unknown executor mode '${String(rule.executor.mode)}'` });
+      issues.push({ path: `${p}.execution.kind`, message: `Unknown execution kind '${String((rule.execution as { kind?: unknown }).kind)}'` });
+    } else if (rule.execution.kind === "built-in" && !(rule.execution.builtIn?.actions?.length ?? 0)) {
+      issues.push({ path: `${p}.execution.builtIn.actions`, message: "Built-in automations need at least one task." });
+    }
+
+    if (
+      rule.execution?.kind &&
+      rule.execution.kind !== "built-in" &&
+      !(rule.prompt ?? "").trim()
+    ) {
+      issues.push({ path: `${p}.prompt`, message: `${rule.execution.kind} automations require a prompt.` });
     }
 
     if (!rule.toolPalette.length) {
@@ -2470,7 +2534,7 @@ function validateEffectiveConfig(
       for (let i = 0; i < linearSync.autoDispatch.rules.length; i += 1) {
         const rule = linearSync.autoDispatch.rules[i]!;
         const rp = `${p}.autoDispatch.rules[${i}]`;
-        if (rule.action !== "auto" && rule.action !== "escalate" && rule.action !== "queue-night-shift") {
+        if (rule.action !== "auto" && rule.action !== "escalate") {
           issues.push({ path: `${rp}.action`, message: `Unknown action '${String(rule.action)}'` });
         }
       }

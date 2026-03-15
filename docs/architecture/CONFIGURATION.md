@@ -556,7 +556,6 @@ computeBackends:
     enabled: false
     relayAddress: ""
     sshKeyPath: "~/.ssh/ade_vps"
-    nightShiftAgentDefault: false
 
   daytona:
     enabled: false  # Always opt-in

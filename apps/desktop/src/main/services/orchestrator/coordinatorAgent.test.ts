@@ -81,6 +81,7 @@ function createTestCoordinatorAgent(args?: {
   missionInterventions?: Array<{ metadata_json: string | null }>;
   onCoordinatorEvent?: (event: any) => void;
   onPlanningStartupFailure?: (failure: any) => void;
+  onCoordinatorRuntimeFailure?: (failure: any) => void;
   phases?: any[];
   runStatus?: string;
 }) {
@@ -177,6 +178,7 @@ function createTestCoordinatorAgent(args?: {
     onDagMutation: vi.fn(),
     onCoordinatorEvent: args?.onCoordinatorEvent,
     onPlanningStartupFailure: args?.onPlanningStartupFailure,
+    onCoordinatorRuntimeFailure: args?.onCoordinatorRuntimeFailure,
     phases: args?.phases,
   });
 }
@@ -398,6 +400,112 @@ describe("CoordinatorAgent planning-startup guardrails", () => {
         recoveryOptions: ["cancel_run"],
       }));
       expect(agent.planningStartupState).toBe("failed");
+    } finally {
+      agent.shutdown();
+    }
+  });
+});
+
+describe("CoordinatorAgent runtime failures", () => {
+  it("promotes short provider failure replies to the primary runtime failure", async () => {
+    streamTextMock.mockImplementationOnce(() =>
+      createStreamResult([
+        {
+          type: "text-delta",
+          text: "Your account does not have access to Claude. Please login again or contact your administrator.",
+        },
+      ]));
+
+    const onCoordinatorEvent = vi.fn();
+    const onCoordinatorRuntimeFailure = vi.fn();
+    const onPlanningStartupFailure = vi.fn();
+    const agent = createTestCoordinatorAgent({
+      onCoordinatorEvent,
+      onCoordinatorRuntimeFailure,
+      onPlanningStartupFailure,
+      phases: createPlanningPhases(),
+    }) as any;
+
+    try {
+      agent.injectMessage("Start the run.");
+      await agent.processBatch();
+
+      expect(onCoordinatorRuntimeFailure).toHaveBeenCalledWith(expect.objectContaining({
+        category: "provider_unreachable",
+        reasonCode: "coordinator_runtime_provider_auth_failed",
+        interventionType: "provider_unreachable",
+        turnId: "coord-turn-1",
+      }));
+      expect(onPlanningStartupFailure).not.toHaveBeenCalled();
+      expect(agent.eventQueue).toHaveLength(0);
+      expect(agent.isAlive).toBe(false);
+    } finally {
+      agent.shutdown();
+    }
+  });
+
+  it("treats coordinator CLI exits as unrecoverable turn failures without requeueing the batch", async () => {
+    streamTextMock.mockImplementationOnce(() => {
+      throw new Error("Codex CLI exited with code 1");
+    });
+
+    const onCoordinatorEvent = vi.fn();
+    const onCoordinatorRuntimeFailure = vi.fn();
+    const agent = createTestCoordinatorAgent({
+      onCoordinatorEvent,
+      onCoordinatorRuntimeFailure,
+    }) as any;
+
+    try {
+      agent.injectMessage("Start the run.");
+      await agent.processBatch();
+
+      expect(onCoordinatorRuntimeFailure).toHaveBeenCalledWith(expect.objectContaining({
+        category: "cli_runtime_failure",
+        reasonCode: "coordinator_runtime_cli_exit",
+        interventionType: "unrecoverable_error",
+        turnId: "coord-turn-1",
+      }));
+      expect(onCoordinatorEvent).toHaveBeenCalledWith(expect.objectContaining({
+        type: "error",
+        message: "Codex CLI exited with code 1",
+        turnId: "coord-turn-1",
+      }));
+      expect(agent.eventQueue).toHaveLength(0);
+      expect(agent.isAlive).toBe(false);
+    } finally {
+      agent.shutdown();
+    }
+  });
+
+  it("treats planner watchdog failures as planning startup failures instead of generic coordinator crashes", async () => {
+    streamTextMock.mockImplementationOnce(() =>
+      createStreamResult([
+        {
+          type: "text-delta",
+          text: "I need to inspect the repo before planning.",
+        },
+      ]));
+
+    const onPlanningStartupFailure = vi.fn();
+    const onCoordinatorRuntimeFailure = vi.fn();
+    const agent = createTestCoordinatorAgent({
+      onPlanningStartupFailure,
+      onCoordinatorRuntimeFailure,
+      phases: createPlanningPhases(),
+    }) as any;
+
+    try {
+      agent.injectMessage("Start the run.");
+      await agent.processBatch();
+
+      expect(onPlanningStartupFailure).toHaveBeenCalledWith(expect.objectContaining({
+        category: "unknown",
+        reasonCode: "planner_not_started",
+        interventionType: "failed_step",
+      }));
+      expect(onCoordinatorRuntimeFailure).not.toHaveBeenCalled();
+      expect(agent.eventQueue).toHaveLength(0);
     } finally {
       agent.shutdown();
     }

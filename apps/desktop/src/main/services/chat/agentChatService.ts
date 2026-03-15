@@ -29,6 +29,7 @@ import type { createSessionService } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createPackService } from "../packs/packService";
 import { runGit } from "../git/git";
+import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
 import { nowIso, fileSizeOrZero } from "../shared/utils";
 import type { EpisodicSummaryService } from "../memory/episodicSummaryService";
 import {
@@ -50,6 +51,7 @@ import type {
   AgentChatProvider,
   AgentChatSession,
   AgentChatSessionSummary,
+  AgentChatSurface,
   AgentChatSteerArgs,
   AgentChatSendArgs,
   AgentChatUpdateSessionArgs,
@@ -74,6 +76,12 @@ import { createUniversalToolSet, type PermissionMode } from "../ai/tools/univers
 import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { buildCodingAgentSystemPrompt, composeSystemPrompt } from "../ai/tools/systemPrompt";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
+import {
+  getProviderRuntimeHealth,
+  reportProviderRuntimeAuthFailure,
+  reportProviderRuntimeFailure,
+  reportProviderRuntimeReady,
+} from "../ai/providerRuntimeHealth";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import type { createMemoryService } from "../memory/memoryService";
@@ -119,6 +127,9 @@ type PersistedChatState = {
   executionMode?: AgentChatExecutionMode | null;
   permissionMode?: AgentChatSession["permissionMode"];
   identityKey?: AgentChatIdentityKey;
+  surface?: AgentChatSurface;
+  automationId?: string | null;
+  automationRunId?: string | null;
   capabilityMode?: CtoCapabilityMode;
   computerUse?: ComputerUsePolicy;
   completion?: AgentChatCompletionReport | null;
@@ -730,6 +741,17 @@ function composeLaunchDirectives(baseText: string, directives: Array<string | nu
   return `${filtered.join("\n\n")}\n\nUser request:\n${baseText}`;
 }
 
+function extractSlashCommand(text: string): string | null {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("/")) return null;
+  const [command] = trimmed.split(/\s+/, 1);
+  return command?.trim().toLowerCase() || null;
+}
+
+function isLiteralSlashCommand(text: string): boolean {
+  return extractSlashCommand(text) != null;
+}
+
 function buildComputerUseDirective(policy: ComputerUsePolicy | null | undefined): string | null {
   const effective = createDefaultComputerUsePolicy(policy ?? undefined);
   if (effective.mode === "off") {
@@ -1070,6 +1092,10 @@ export function createAgentChatService(args: {
     const sections: string[] = [];
 
     if (managed.session.identityKey === "cto" && ctoStateService) {
+      sections.push([
+        "CTO Runtime Identity",
+        ctoStateService.previewSystemPrompt().prompt,
+      ].join("\n"));
       sections.push(ctoStateService.buildReconstructionContext(8));
     } else {
       const workerAgentId = resolveWorkerIdentityAgentId(managed.session.identityKey);
@@ -1373,6 +1399,9 @@ export function createAgentChatService(args: {
       ...(managed.session.executionMode ? { executionMode: managed.session.executionMode } : {}),
       ...(managed.session.permissionMode ? { permissionMode: managed.session.permissionMode } : {}),
       ...(managed.session.identityKey ? { identityKey: managed.session.identityKey } : {}),
+      ...(managed.session.surface ? { surface: managed.session.surface } : {}),
+      ...(managed.session.automationId ? { automationId: managed.session.automationId } : {}),
+      ...(managed.session.automationRunId ? { automationRunId: managed.session.automationRunId } : {}),
       ...(managed.session.capabilityMode ? { capabilityMode: managed.session.capabilityMode } : {}),
       ...(managed.session.computerUse ? { computerUse: managed.session.computerUse } : {}),
       ...(managed.session.completion ? { completion: managed.session.completion } : {}),
@@ -1415,6 +1444,7 @@ export function createAgentChatService(args: {
       const executionMode = normalizePersistedExecutionMode(record.executionMode);
       const permissionMode = normalizePersistedPermissionMode(record.permissionMode);
       const identityKey = normalizeIdentityKey(record.identityKey);
+      const surface = record.surface === "automation" ? "automation" : "work";
       const capabilityMode = normalizeCapabilityMode(record.capabilityMode);
       const computerUse = normalizePersistedComputerUse(record.computerUse);
       const completion = normalizePersistedCompletion(record.completion);
@@ -1441,6 +1471,13 @@ export function createAgentChatService(args: {
         ...(executionMode ? { executionMode } : {}),
         ...(permissionMode ? { permissionMode } : {}),
         ...(identityKey ? { identityKey } : {}),
+        surface,
+        ...(typeof record.automationId === "string" && record.automationId.trim().length
+          ? { automationId: record.automationId.trim() }
+          : {}),
+        ...(typeof record.automationRunId === "string" && record.automationRunId.trim().length
+          ? { automationRunId: record.automationRunId.trim() }
+          : {}),
         ...(capabilityMode ? { capabilityMode } : {}),
         ...(computerUse ? { computerUse } : {}),
         ...(completion ? { completion } : {}),
@@ -2297,6 +2334,15 @@ export function createAgentChatService(args: {
           // Re-inject identity context after compaction so the CTO doesn't lose
           // its persona, core memory, or memory protocol instructions.
           if (managed.session.identityKey) {
+            if (managed.session.identityKey === "cto" && ctoStateService) {
+              ctoStateService.appendContinuityCheckpoint({
+                reason: "compaction",
+                entries: managed.recentConversationEntries.map((entry) => ({
+                  role: entry.role,
+                  text: entry.text,
+                })),
+              });
+            }
             refreshReconstructionContext(managed);
           }
           continue;
@@ -2349,10 +2395,11 @@ export function createAgentChatService(args: {
         if (msg.type === "auth_status") {
           const authMsg = msg as any;
           if (authMsg.error) {
+            reportProviderRuntimeAuthFailure("claude", CLAUDE_RUNTIME_AUTH_ERROR);
             emitChatEvent(managed, {
               type: "system_notice",
               noticeKind: "auth",
-              message: `Authentication error: ${authMsg.error}`,
+              message: CLAUDE_RUNTIME_AUTH_ERROR,
               turnId,
             });
           } else if (authMsg.isAuthenticating) {
@@ -2607,6 +2654,7 @@ export function createAgentChatService(args: {
       runtime.busy = false;
       runtime.activeTurnId = null;
       managed.session.status = "idle";
+      reportProviderRuntimeReady("claude");
 
       const finalStatus = runtime.interrupted ? "interrupted" : "completed";
       emitChatEvent(managed, { type: "status", turnStatus: finalStatus, turnId });
@@ -2664,9 +2712,18 @@ export function createAgentChatService(args: {
         });
       } else {
         managed.session.status = "idle";
+        const isAuthFailure = isClaudeRuntimeAuthError(error);
+        const errorMessage = isAuthFailure
+          ? CLAUDE_RUNTIME_AUTH_ERROR
+          : (error instanceof Error ? error.message : String(error));
+        if (isAuthFailure) {
+          reportProviderRuntimeAuthFailure("claude", CLAUDE_RUNTIME_AUTH_ERROR);
+        } else {
+          reportProviderRuntimeFailure("claude", errorMessage);
+        }
         emitChatEvent(managed, {
           type: "error",
-          message: error instanceof Error ? error.message : String(error),
+          message: errorMessage,
           turnId,
         });
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
@@ -2680,9 +2737,7 @@ export function createAgentChatService(args: {
 
         appendWorkerActivityToCto(managed, {
           activityType: "chat_turn",
-          summary: error instanceof Error
-            ? `Turn failed: ${error.message}`
-            : `Turn failed: ${String(error)}`,
+          summary: `Turn failed: ${errorMessage}`,
         });
 
         // If resume failed, clear sessionId and the caller can retry fresh
@@ -4011,6 +4066,20 @@ export function createAgentChatService(args: {
                 .filter((cmd: unknown) => typeof cmd === "string" && cmd.length > 0)
                 .map((cmd: string) => ({ name: cmd.startsWith("/") ? cmd : `/${cmd}`, description: "" }));
             }
+            try {
+              const sessionImpl = runtime.v2Session as any;
+              if (typeof sessionImpl?.supportedCommands === "function") {
+                sessionImpl.supportedCommands().then((cmds: any[]) => {
+                  if (Array.isArray(cmds) && cmds.length > 0) {
+                    runtime.slashCommands = cmds.map((c: any) => ({
+                      name: typeof c.name === "string" ? (c.name.startsWith("/") ? c.name : `/${c.name}`) : String(c),
+                      description: typeof c.description === "string" ? c.description : "",
+                      argumentHint: typeof c.argumentHint === "string" ? c.argumentHint : undefined,
+                    }));
+                  }
+                }).catch(() => { /* not available */ });
+              }
+            } catch { /* ignore */ }
           }
           if (msg.type === "result") break;
         }
@@ -4026,6 +4095,7 @@ export function createAgentChatService(args: {
           sessionId: managed.session.id,
           sdkSessionId: runtime.sdkSessionId,
         });
+        reportProviderRuntimeReady("claude");
         emitChatEvent(managed, {
           type: "system_notice",
           noticeKind: "info",
@@ -4033,6 +4103,19 @@ export function createAgentChatService(args: {
         });
       } catch (error) {
         if (runtime.v2WarmupCancelled) return; // expected — teardown killed the session
+        if (isClaudeRuntimeAuthError(error)) {
+          reportProviderRuntimeAuthFailure("claude", CLAUDE_RUNTIME_AUTH_ERROR);
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "auth",
+            message: CLAUDE_RUNTIME_AUTH_ERROR,
+          });
+        } else {
+          reportProviderRuntimeFailure(
+            "claude",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
         logger.warn("agent_chat.claude_v2_prewarm_failed", {
           sessionId: managed.session.id,
           error: error instanceof Error ? error.message : String(error),
@@ -4189,6 +4272,10 @@ export function createAgentChatService(args: {
   };
 
   const listClaudeModelsFromSdk = async (): Promise<AgentChatModelInfo[]> => {
+    const health = getProviderRuntimeHealth("claude");
+    if (health?.state === "auth-failed") {
+      return [];
+    }
     const mapped = listModelDescriptorsForProvider("claude")
       .map((descriptor): AgentChatModelInfo => {
         const id = descriptor.sdkModelId;
@@ -4227,6 +4314,9 @@ export function createAgentChatService(args: {
     reasoningEffort,
     permissionMode: requestedPermMode,
     identityKey,
+    surface,
+    automationId,
+    automationRunId,
     computerUse,
   }: AgentChatCreateArgs): Promise<AgentChatSession> => {
     const lane = laneService.getLaneBaseAndBranch(laneId);
@@ -4314,6 +4404,9 @@ export function createAgentChatService(args: {
         ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
         ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}),
         ...(identityKey ? { identityKey } : {}),
+        surface: surface ?? "work",
+        automationId: automationId?.trim() ? automationId.trim() : null,
+        automationRunId: automationRunId?.trim() ? automationRunId.trim() : null,
         capabilityMode,
         computerUse: computerUsePolicy,
         completion: null,
@@ -4366,8 +4459,13 @@ export function createAgentChatService(args: {
       sessionService.setHeadShaStart(sessionId, headStart);
     }
 
-    // Lazy runtime boot: keep new-chat creation fast and start runtime/thread
-    // on first send/resume instead of blocking UI during session creation.
+    if (effectiveProvider === "claude") {
+      ensureClaudeSessionRuntime(managed);
+      prewarmClaudeV2Session(managed);
+    }
+
+    // Eager pre-warm: spawn the Claude runtime so it's ready by the time the
+    // user sends their first message (the ~30s cold-start runs in background).
     persistChatState(managed);
     return managed.session;
   };
@@ -4382,9 +4480,21 @@ export function createAgentChatService(args: {
   }: AgentChatSendArgs): Promise<void> => {
     const trimmed = text.trim();
     if (!trimmed.length) return;
+    const slashCommand = extractSlashCommand(trimmed);
     const visibleText = displayText?.trim().length ? displayText.trim() : trimmed;
 
     const managed = ensureManagedSession(sessionId);
+    const allowClaudeLoginCommand = managed.session.provider === "claude" && slashCommand === "/login";
+    const claudeRuntimeHealth = managed.session.provider === "claude"
+      ? getProviderRuntimeHealth("claude")
+      : null;
+    if (
+      managed.session.provider === "claude"
+      && claudeRuntimeHealth?.state === "auth-failed"
+      && !allowClaudeLoginCommand
+    ) {
+      throw new Error(claudeRuntimeHealth.message ?? CLAUDE_RUNTIME_AUTH_ERROR);
+    }
 
     if (managed.session.status === "ended") {
       sessionService.reopen(sessionId);
@@ -4402,10 +4512,12 @@ export function createAgentChatService(args: {
         latestUserText: visibleText,
       });
     }
-    const promptText = composeLaunchDirectives(trimmed, [
-      buildExecutionModeDirective(executionMode, managed.session.provider),
-      buildComputerUseDirective(managed.session.computerUse),
-    ]);
+    const promptText = isLiteralSlashCommand(trimmed)
+      ? trimmed
+      : composeLaunchDirectives(trimmed, [
+          buildExecutionModeDirective(executionMode, managed.session.provider),
+          buildComputerUseDirective(managed.session.computerUse),
+        ]);
     if (executionMode) {
       managed.session.executionMode = executionMode;
     } else if (managed.session.executionMode == null) {
@@ -4696,43 +4808,65 @@ export function createAgentChatService(args: {
     return managed.session;
   };
 
-  const listSessions = async (laneId?: string): Promise<AgentChatSessionSummary[]> => {
+  const summarizeSessionRow = (
+    row: ReturnType<ReturnType<typeof createSessionService>["list"]>[number],
+  ): AgentChatSessionSummary => {
+    const persisted = readPersistedState(row.id);
+    const provider = persisted?.provider ?? providerFromToolType(row.toolType);
+    const fallbackModel = persisted?.model ?? fallbackModelForProvider(provider);
+    const hydratedModelId = persisted?.modelId
+      ?? resolveModelIdFromStoredValue(fallbackModel, provider)
+      ?? (provider === "unified" ? DEFAULT_UNIFIED_MODEL_ID : undefined);
+    const model = provider === "unified" ? (hydratedModelId ?? fallbackModel) : fallbackModel;
+    return {
+      sessionId: row.id,
+      laneId: row.laneId,
+      provider,
+      model,
+      ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
+      title: row.title ?? null,
+      goal: row.goal ?? null,
+      reasoningEffort: persisted?.reasoningEffort ?? null,
+      executionMode: persisted?.executionMode ?? null,
+      ...(persisted?.permissionMode ? { permissionMode: persisted.permissionMode } : {}),
+      ...(persisted?.identityKey ? { identityKey: persisted.identityKey } : {}),
+      surface: persisted?.surface ?? "work",
+      automationId: persisted?.automationId ?? null,
+      automationRunId: persisted?.automationRunId ?? null,
+      capabilityMode: persisted?.capabilityMode ?? inferCapabilityMode(provider),
+      computerUse: normalizePersistedComputerUse(persisted?.computerUse),
+      completion: persisted?.completion ?? null,
+      status: row.status === "running" ? "idle" : "ended",
+      startedAt: row.startedAt,
+      endedAt: row.endedAt,
+      lastActivityAt: persisted?.updatedAt ?? row.endedAt ?? row.startedAt,
+      lastOutputPreview: row.lastOutputPreview,
+      summary: row.summary ?? persisted?.completion?.summary ?? null,
+      ...(persisted?.threadId ? { threadId: persisted.threadId } : {})
+    } satisfies AgentChatSessionSummary;
+  };
+
+  const listSessions = async (
+    laneId?: string,
+    options?: { includeIdentity?: boolean; includeAutomation?: boolean },
+  ): Promise<AgentChatSessionSummary[]> => {
     const rows = sessionService.list({ ...(laneId ? { laneId } : {}), limit: 500 });
     const chatRows = rows.filter((row) => isChatToolType(row.toolType));
+    const includeIdentity = options?.includeIdentity === true;
+    const includeAutomation = options?.includeAutomation === true;
 
-    return chatRows.map((row) => {
-      const persisted = readPersistedState(row.id);
-      const provider = persisted?.provider ?? providerFromToolType(row.toolType);
-      const fallbackModel = persisted?.model ?? fallbackModelForProvider(provider);
-      const hydratedModelId = persisted?.modelId
-        ?? resolveModelIdFromStoredValue(fallbackModel, provider)
-        ?? (provider === "unified" ? DEFAULT_UNIFIED_MODEL_ID : undefined);
-      const model = provider === "unified" ? (hydratedModelId ?? fallbackModel) : fallbackModel;
-      return {
-        sessionId: row.id,
-        laneId: row.laneId,
-        provider,
-        model,
-        ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
-        title: row.title ?? null,
-        goal: row.goal ?? null,
-        reasoningEffort: persisted?.reasoningEffort ?? null,
-        executionMode: persisted?.executionMode ?? null,
-        ...(persisted?.permissionMode ? { permissionMode: persisted.permissionMode } : {}),
-        ...(persisted?.identityKey ? { identityKey: persisted.identityKey } : {}),
-        capabilityMode: persisted?.capabilityMode ?? inferCapabilityMode(provider),
-        computerUse: normalizePersistedComputerUse(persisted?.computerUse),
-        completion: persisted?.completion ?? null,
-        status: row.status === "running" ? "idle" : "ended",
-        startedAt: row.startedAt,
-        endedAt: row.endedAt,
-        lastActivityAt: persisted?.updatedAt ?? row.endedAt ?? row.startedAt,
-        lastOutputPreview: row.lastOutputPreview,
-        summary: row.summary ?? persisted?.completion?.summary ?? null,
-        ...(persisted?.threadId ? { threadId: persisted.threadId } : {})
-      } satisfies AgentChatSessionSummary;
-    // CTO and worker identity sessions are managed separately — exclude from Work tab
-    }).filter((summary) => !summary.identityKey);
+    return chatRows
+      .map((row) => summarizeSessionRow(row))
+      .filter((summary) => includeIdentity || !summary.identityKey)
+      .filter((summary) => includeAutomation || summary.surface !== "automation");
+  };
+
+  const getSessionSummary = async (sessionId: string): Promise<AgentChatSessionSummary | null> => {
+    const trimmed = sessionId.trim();
+    if (!trimmed.length) return null;
+    const row = sessionService.get(trimmed);
+    if (!row || !isChatToolType(row.toolType)) return null;
+    return summarizeSessionRow(row);
   };
 
   const ensureIdentitySession = async (args: {
@@ -4750,7 +4884,7 @@ export function createAgentChatService(args: {
 
     const existing = args.reuseExisting === false
       ? []
-      : (await listSessions())
+      : (await listSessions(undefined, { includeIdentity: true }))
           .filter((entry) => entry.identityKey === args.identityKey)
           .sort((a, b) => Date.parse(b.lastActivityAt) - Date.parse(a.lastActivityAt));
 
@@ -5233,6 +5367,13 @@ export function createAgentChatService(args: {
     const localCommands: import("../../../shared/types").AgentChatSlashCommand[] = [
       { name: "/clear", description: "Clear chat history", source: "local" },
     ];
+    if (provider === "claude") {
+      localCommands.push({
+        name: "/login",
+        description: "Sign in to Claude Code for this chat runtime",
+        source: "local",
+      });
+    }
 
     // Claude SDK commands
     if (provider === "claude" && managed.runtime?.kind === "claude") {
@@ -5353,6 +5494,7 @@ export function createAgentChatService(args: {
     interrupt,
     resumeSession,
     listSessions,
+    getSessionSummary,
     ensureIdentitySession,
     approveToolUse,
     getAvailableModels,

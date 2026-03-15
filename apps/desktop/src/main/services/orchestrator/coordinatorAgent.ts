@@ -132,6 +132,7 @@ export type CoordinatorAgentDeps = {
   /** Callback to create a new lane branching from the mission's base lane. */
   provisionLane?: (name: string, description?: string) => Promise<{ laneId: string; name: string }>;
   onPlanningStartupFailure?: (failure: CoordinatorPlanningStartupFailure) => void;
+  onCoordinatorRuntimeFailure?: (failure: CoordinatorRuntimeFailure) => void;
 };
 
 export type PlanningStartupState =
@@ -153,6 +154,25 @@ export type CoordinatorPlanningStartupFailure = {
   requestedAction: string;
   toolName?: string | null;
   retryCount: number;
+};
+
+export type CoordinatorRuntimeFailureCategory =
+  | "provider_unreachable"
+  | "permission_denied"
+  | "cli_runtime_failure"
+  | "unknown";
+
+export type CoordinatorRuntimeFailure = {
+  category: CoordinatorRuntimeFailureCategory;
+  reasonCode: string;
+  interventionType: MissionInterventionType;
+  retryable: boolean;
+  recoveryOptions: Array<"retry" | "switch_to_fallback_model" | "cancel_run">;
+  message: string;
+  title: string;
+  body: string;
+  requestedAction: string;
+  turnId: string;
 };
 
 type QueuedEvent = {
@@ -303,8 +323,146 @@ function formatStreamError(error: unknown): string {
   }
 }
 
+function looksLikeProviderAuthOrAccessFailure(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  if (!normalized.length) return false;
+  return (
+    normalized.includes("does not have access to")
+    || normalized.includes("please login again")
+    || normalized.includes("please log in again")
+    || normalized.includes("please sign in again")
+    || normalized.includes("contact your administrator")
+    || normalized.includes("oauth token has been revoked")
+    || normalized.includes("obtain a new token")
+    || normalized.includes("permission_error")
+    || normalized.includes("loadapikeyerror")
+    || normalized.includes("token revoked")
+  );
+}
+
+function looksLikeProviderFailureReply(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  if (!normalized.length || normalized.length > 500) return false;
+  if (looksLikeProviderAuthOrAccessFailure(message)) return true;
+  return (
+    normalized.includes("rate limit")
+    || normalized.includes("try again later")
+    || normalized.includes("temporarily unavailable")
+    || normalized.includes("service unavailable")
+    || normalized.includes("model is overloaded")
+    || normalized.includes("quota exceeded")
+    || normalized.includes("request failed with status code 429")
+    || normalized.includes("request failed with status code 503")
+    || normalized.includes("request failed with status code 500")
+    || normalized.includes("request failed with status code 403")
+    || normalized.includes("request failed with status code 401")
+    || normalized.includes("unauthorized")
+    || normalized.includes("forbidden")
+    || normalized.includes("invalid api key")
+    || normalized.includes("authentication failed")
+  );
+}
+
+function classifyCoordinatorRuntimeFailure(error: unknown): Omit<CoordinatorRuntimeFailure, "message" | "turnId"> {
+  const message = formatStreamError(error).trim();
+  const normalized = message.toLowerCase();
+
+  if (looksLikeProviderAuthOrAccessFailure(message)) {
+    return {
+      category: "provider_unreachable",
+      reasonCode: "coordinator_runtime_provider_auth_failed",
+      interventionType: "provider_unreachable",
+      retryable: true,
+      recoveryOptions: ["retry", "switch_to_fallback_model", "cancel_run"],
+      title: "Coordinator could not authenticate with the selected provider",
+      body: `ADE paused the run because the selected provider rejected the coordinator credentials. Error: ${message || "No additional detail was provided."}`,
+      requestedAction: "Reconnect or sign in to the selected provider again, then resume the run. If that still fails, switch the mission to a different model before retrying.",
+    };
+  }
+
+  if (
+    normalized.includes("requires approval")
+    || normalized.includes("permission denied")
+    || normalized.includes("policy block")
+    || normalized.includes("not allowed")
+    || normalized.includes("approval denied")
+    || normalized.includes("eacces")
+    || normalized.includes("eperm")
+  ) {
+    return {
+      category: "permission_denied",
+      reasonCode: "coordinator_runtime_permission_denied",
+      interventionType: "policy_block",
+      retryable: false,
+      recoveryOptions: ["retry", "cancel_run"],
+      title: "Coordinator was blocked by permissions",
+      body: `ADE paused the run because the coordinator hit a permission or policy block. Error: ${message || "No additional detail was provided."}`,
+      requestedAction: "Adjust the permission or tool policy, then resume the run to retry the same coordinator.",
+    };
+  }
+
+  if (
+    normalized.includes("rate limit")
+    || normalized.includes("timed out")
+    || normalized.includes("timeout")
+    || normalized.includes("temporarily unavailable")
+    || normalized.includes("connection refused")
+    || normalized.includes("network")
+    || normalized.includes("provider")
+    || normalized.includes("api key")
+    || normalized.includes("authentication")
+    || normalized.includes("unauthorized")
+  ) {
+    return {
+      category: "provider_unreachable",
+      reasonCode: "coordinator_runtime_provider_unreachable",
+      interventionType: "provider_unreachable",
+      retryable: true,
+      recoveryOptions: ["retry", "switch_to_fallback_model", "cancel_run"],
+      title: "Coordinator lost contact with the selected provider",
+      body: `ADE paused the run because the coordinator could not keep talking to the selected provider. Error: ${message || "No additional detail was provided."}`,
+      requestedAction: "Check provider health, then resume the run to retry the same provider. If the provider remains unhealthy, switch the mission to a different model before retrying.",
+    };
+  }
+
+  if (
+    /\b(?:codex|claude) cli exited with code\b/i.test(message)
+    || /\bexited with code\b/i.test(message)
+    || normalized.includes("session ended unexpectedly")
+    || normalized.includes("process exited")
+  ) {
+    return {
+      category: "cli_runtime_failure",
+      reasonCode: "coordinator_runtime_cli_exit",
+      interventionType: "unrecoverable_error",
+      retryable: false,
+      recoveryOptions: ["retry", "cancel_run"],
+      title: "Coordinator runtime exited unexpectedly",
+      body: `ADE paused the run because the coordinator process exited during execution. Error: ${message || "No additional detail was provided."}`,
+      requestedAction: "Inspect coordinator runtime health, then resume the run to retry the same provider and mission state.",
+    };
+  }
+
+  return {
+    category: "unknown",
+    reasonCode: "coordinator_runtime_failed",
+    interventionType: "unrecoverable_error",
+    retryable: false,
+    recoveryOptions: ["retry", "cancel_run"],
+    title: "Coordinator stopped unexpectedly",
+    body: `ADE paused the run because the coordinator stopped unexpectedly. Error: ${message || "No additional detail was provided."}`,
+    requestedAction: "Inspect the coordinator failure, then resume the run if you want to retry from this state.",
+  };
+}
+
 class CoordinatorFatalError extends Error {
   readonly nonRetryable = true;
+  readonly runtimeFailure: CoordinatorRuntimeFailure | null;
+
+  constructor(message: string, runtimeFailure?: CoordinatorRuntimeFailure | null) {
+    super(message);
+    this.runtimeFailure = runtimeFailure ?? null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -913,6 +1071,29 @@ export class CoordinatorAgent {
     };
   }
 
+  private buildCoordinatorRuntimeFailure(error: unknown, turnId: string): CoordinatorRuntimeFailure {
+    const message = formatStreamError(error).trim();
+    const classification = classifyCoordinatorRuntimeFailure(message);
+    return {
+      ...classification,
+      message,
+      turnId,
+      body: `${classification.body} ADE did not auto-fail over to another provider or silently retry the same failed turn.`,
+    };
+  }
+
+  private buildAssistantReplyRuntimeFailure(
+    assistantText: string,
+    turnId: string,
+    streamedStepCount: number,
+  ): CoordinatorRuntimeFailure | null {
+    const message = assistantText.trim();
+    if (!message.length) return null;
+    if (streamedStepCount > 0) return null;
+    if (!looksLikeProviderFailureReply(message)) return null;
+    return this.buildCoordinatorRuntimeFailure(message, turnId);
+  }
+
   private schedulePlanningStartupRetry(failure: CoordinatorPlanningStartupFailure): void {
     this.planningStartupRetryCount += 1;
     if (this.pendingPlannerDelegationContract) {
@@ -1157,19 +1338,21 @@ export class CoordinatorAgent {
       message:
         "Coordinator first turn did not create the planning worker. ADE stopped planning and opened an explicit failure instead of silently spawning a replacement planner.",
     });
-    this.deps.missionService.addIntervention({
-      missionId: this.deps.missionId,
+    const failure: CoordinatorPlanningStartupFailure = {
+      category: "unknown",
+      reasonCode: "planner_not_started",
       interventionType: "failed_step",
+      retryable: false,
+      recoveryOptions: ["retry", "cancel_run"],
+      message: "The coordinator did not spawn the required planning worker on its first turn.",
       title: "Planner was never started",
       body: "The coordinator did not spawn the required planning worker on its first turn, so ADE stopped instead of silently starting a replacement planner.",
       requestedAction: "Decide whether to retry planning explicitly or cancel this run.",
-      metadata: {
-        runId: this.deps.runId,
-        phaseKey: "planning",
-        reasonCode: "planner_not_started",
-      },
-    });
-    throw new Error("Planning watchdog stopped the run because the planner was never started.");
+      toolName: null,
+      retryCount: this.planningStartupRetryCount,
+    };
+    this.handlePlanningStartupFailure(failure);
+    throw new CoordinatorFatalError("Planning watchdog stopped the run because the planner was never started.");
   }
 
   private async runTurn(): Promise<void> {
@@ -1411,6 +1594,15 @@ export class CoordinatorAgent {
         throw new CoordinatorFatalError(planningStartupFailure?.message ?? "Planner launch failed during planning startup.");
       }
 
+      const assistantReplyFailure = this.buildAssistantReplyRuntimeFailure(
+        assistantText,
+        turnId,
+        streamedStepCount,
+      );
+      if (assistantReplyFailure) {
+        throw new CoordinatorFatalError(assistantReplyFailure.message, assistantReplyFailure);
+      }
+
       await this.enforcePlanningFirstTurnDelegation(turnId);
 
       // Record token usage for compaction monitoring
@@ -1507,6 +1699,19 @@ export class CoordinatorAgent {
         aborted,
         error: error instanceof Error ? error.message : String(error),
       });
+      if (error instanceof CoordinatorFatalError) {
+        if (!aborted && error.runtimeFailure) {
+          this.shutdown();
+          this.deps.onCoordinatorRuntimeFailure?.(error.runtimeFailure);
+        }
+        throw error;
+      }
+      if (!aborted) {
+        const runtimeFailure = this.buildCoordinatorRuntimeFailure(error, turnId);
+        this.shutdown();
+        this.deps.onCoordinatorRuntimeFailure?.(runtimeFailure);
+        throw new CoordinatorFatalError(runtimeFailure.message, runtimeFailure);
+      }
       throw error;
     } finally {
       if (this.activeAbortController === abortController) {

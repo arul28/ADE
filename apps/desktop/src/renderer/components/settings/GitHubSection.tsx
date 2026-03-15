@@ -168,7 +168,7 @@ export function GitHubSection() {
             >
               <div>
                 <div style={LABEL_STYLE}>USER</div>
-                <div style={{ marginTop: 4, fontSize: 13, fontFamily: MONO_FONT, color: COLORS.textPrimary }}>
+            <div style={{ marginTop: 4, fontSize: 13, fontFamily: MONO_FONT, color: COLORS.textPrimary }}>
                   {githubStatus.userLogin}
                 </div>
               </div>
@@ -176,6 +176,12 @@ export function GitHubSection() {
                 <div style={LABEL_STYLE}>REPOSITORY</div>
                 <div style={{ marginTop: 4, fontSize: 13, fontFamily: MONO_FONT, color: COLORS.textPrimary }}>
                   {githubStatus.repo ? `${githubStatus.repo.owner}/${githubStatus.repo.name}` : "N/A"}
+                </div>
+              </div>
+              <div>
+                <div style={LABEL_STYLE}>TOKEN SCOPE</div>
+                <div style={{ marginTop: 4, fontSize: 13, fontFamily: MONO_FONT, color: COLORS.textPrimary }}>
+                  {githubStatus.storageScope === "app" ? "App-wide" : "Project"}
                 </div>
               </div>
             </div>
@@ -213,7 +219,11 @@ export function GitHubSection() {
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <div style={infoBoxStyle}>
-              Paste a GitHub personal access token to enable PR creation, review actions, and repository sync from ADE.
+              Paste one GitHub personal access token to enable PR creation, review actions, and repository sync across the ADE app. The same encrypted token is reused across projects unless you replace it here.
+            </div>
+
+            <div style={infoBoxStyle}>
+              Required classic PAT scopes: <strong>`repo`</strong>, <strong>`workflow`</strong>, <strong>`read:org`</strong>.
             </div>
 
             <label style={{ display: "flex", flexDirection: "column", gap: 8 }}>

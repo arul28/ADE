@@ -1,3 +1,12 @@
 {
-  "rewrites": []
+  "rewrites": [
+    {
+      "source": "/docs",
+      "destination": "https://ade-ac1c6011.mintlify.dev/docs"
+    },
+    {
+      "source": "/docs/:match*",
+      "destination": "https://ade-ac1c6011.mintlify.dev/docs/:match*"
+    }
+  ]
 }

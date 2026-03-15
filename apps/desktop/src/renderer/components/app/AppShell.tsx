@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { CommandPalette } from "./CommandPalette";
 import { TabNav } from "./TabNav";
 import { TopBar } from "./TopBar";
@@ -7,11 +7,21 @@ import { RightEdgeFloatingPane } from "./RightEdgeFloatingPane";
 import { TabBackground } from "../ui/TabBackground";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
-import type { ContextStatus, LinearWorkflowEventPayload, PrEventPayload, TerminalSessionSummary } from "../../../shared/types";
+import type {
+  AiSettingsStatus,
+  ContextStatus,
+  GitHubStatus,
+  LinearWorkflowEventPayload,
+  OnboardingStatus,
+  PrEventPayload,
+  TerminalSessionSummary,
+} from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { listSessionsCached } from "../../lib/sessionListCache";
+import { isRunOwnedSession } from "../../lib/sessions";
 import { summarizeTerminalAttention } from "../../lib/terminalAttention";
 import { getStoredZoomLevel, displayZoomToLevel } from "../../lib/zoom";
+import { ONBOARDING_STATUS_UPDATED_EVENT } from "../../lib/onboardingStatusEvents";
 import { cn } from "../ui/cn";
 
 type PrToast = {
@@ -48,6 +58,7 @@ function shortId(id: string): string {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const location = useLocation();
+  const navigate = useNavigate();
   const setProject = useAppStore((s) => s.setProject);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const refreshProviderMode = useAppStore((s) => s.refreshProviderMode);
@@ -73,10 +84,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const linearToastTimersRef = useRef<Map<string, number>>(new Map());
   const [aiFailure, setAiFailure] = useState<AiBannerState | null>(null);
   const [aiMockProvider, setAiMockProvider] = useState<{ createdAt: string } | null>(null);
-  const [onboardingIncomplete, setOnboardingIncomplete] = useState(false);
+  const [aiStatus, setAiStatus] = useState<AiSettingsStatus | null>(null);
+  const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
+  const [onboardingStatus, setOnboardingStatus] = useState<OnboardingStatus | null>(null);
+  const [onboardingStatusLoading, setOnboardingStatusLoading] = useState(false);
   const [contextStatus, setContextStatus] = useState<ContextStatus | null>(null);
   const [projectMissing, setProjectMissing] = useState(false);
-  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
+  const isOnboardingRoute = location.pathname === "/onboarding";
   const shouldTrackTerminalAttention =
     Boolean(project?.rootPath)
     && !showWelcome
@@ -152,7 +166,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       if (document.visibilityState !== "visible") return;
       refreshInFlight = true;
       try {
-        const sessions: TerminalSessionSummary[] = await listSessionsCached({ limit: 150 });
+        const sessions: TerminalSessionSummary[] = (await listSessionsCached({ limit: 150 }))
+          .filter((session) => !isRunOwnedSession(session));
         setTerminalAttention(summarizeTerminalAttention(sessions));
       } catch {
         // best effort
@@ -205,31 +220,42 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     if (!project?.rootPath || showWelcome) {
-      setOnboardingIncomplete(false);
-      setOnboardingDismissed(false);
+      setOnboardingStatus(null);
+      setOnboardingStatusLoading(false);
       return () => {
         cancelled = true;
       };
     }
-    const timer = window.setTimeout(() => {
-      void window.ade.onboarding
-        .getStatus()
-        .then((status) => {
-          if (cancelled) return;
-          setOnboardingIncomplete(Boolean(status && !status.completedAt));
-          setOnboardingDismissed(Boolean(status?.dismissedAt) && !status?.completedAt);
-        })
-        .catch(() => {
-          if (cancelled) return;
-          setOnboardingIncomplete(false);
-          setOnboardingDismissed(false);
-        });
-    }, 1_200);
+    setOnboardingStatusLoading(true);
+    void window.ade.onboarding
+      .getStatus()
+      .then((status) => {
+        if (cancelled) return;
+        setOnboardingStatus(status);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setOnboardingStatus(null);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setOnboardingStatusLoading(false);
+      });
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
     };
-  }, [project?.rootPath, showWelcome]);
+  }, [location.pathname, project?.rootPath, showWelcome]);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<OnboardingStatus>).detail;
+      if (!detail) return;
+      setOnboardingStatus(detail);
+      setOnboardingStatusLoading(false);
+    };
+    window.addEventListener(ONBOARDING_STATUS_UPDATED_EVENT, handler);
+    return () => window.removeEventListener(ONBOARDING_STATUS_UPDATED_EVENT, handler);
+  }, []);
 
   // Track visited tabs — mark after a short delay so stagger animation can play on first visit
   useEffect(() => {
@@ -259,19 +285,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     if (!project?.rootPath) {
       setContextStatus(null);
+      setAiStatus(null);
+      setGithubStatus(null);
       return;
     }
     const timer = window.setTimeout(() => {
-      void window.ade.context
-        .getStatus()
-        .then((next) => {
-          if (cancelled) return;
-          setContextStatus(next);
-        })
-        .catch(() => {
-          if (cancelled) return;
-          setContextStatus(null);
-        });
+      void Promise.allSettled([
+        window.ade.context.getStatus(),
+        window.ade.ai.getStatus(),
+        window.ade.github.getStatus(),
+      ]).then((results) => {
+        if (cancelled) return;
+        const [contextResult, aiResult, githubResult] = results;
+        setContextStatus(contextResult.status === "fulfilled" ? contextResult.value : null);
+        setAiStatus(aiResult.status === "fulfilled" ? aiResult.value : null);
+        setGithubStatus(githubResult.status === "fulfilled" ? githubResult.value : null);
+      });
     }, 1_000);
     return () => {
       cancelled = true;
@@ -280,9 +309,39 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [project?.rootPath]);
 
   useEffect(() => {
+    if (!project?.rootPath || showWelcome) return;
+    if (isOnboardingRoute) return;
+    if (onboardingStatusLoading) return;
+    if (!onboardingStatus?.freshProject || onboardingStatus.completedAt || onboardingStatus.dismissedAt) return;
+    navigate("/onboarding", { replace: true });
+  }, [
+    isOnboardingRoute,
+    navigate,
+    onboardingStatus?.completedAt,
+    onboardingStatus?.dismissedAt,
+    onboardingStatus?.freshProject,
+    onboardingStatusLoading,
+    project?.rootPath,
+    showWelcome,
+  ]);
+
+  useEffect(() => {
     setAiFailure(null);
     setAiMockProvider(null);
   }, [providerMode]);
+
+  const hasAnyAiProvider = useMemo(() => {
+    if (!aiStatus) return false;
+    const runtimeOrLocal =
+      aiStatus.providerConnections?.claude.authAvailable
+      || aiStatus.providerConnections?.codex.authAvailable;
+    return Boolean(runtimeOrLocal || (aiStatus.detectedAuth?.length ?? 0) > 0);
+  }, [aiStatus]);
+
+  const missingContextDocs = useMemo(
+    () => contextStatus?.docs?.filter((doc) => !doc.exists) ?? [],
+    [contextStatus],
+  );
 
   const commandPaletteBinding = useMemo(
     () => getEffectiveBinding(keybindings, "commandPalette.open", "Mod+K"),
@@ -372,11 +431,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       "/history": "tab-tint-history",
       "/automations": "tab-tint-automations",
       "/missions": "tab-tint-missions",
-      "/test": "tab-tint-missions",
       "/settings": "tab-tint-settings",
     };
     return tintMap[location.pathname] ?? "";
   }, [location.pathname]);
+
+  const shouldHoldProjectRouteForOnboarding =
+    Boolean(project?.rootPath)
+    && !showWelcome
+    && location.pathname === "/project"
+    && onboardingStatusLoading;
+  const hideSidebar = isOnboardingRoute || shouldHoldProjectRouteForOnboarding;
 
   return (
     <div className="h-screen w-screen text-fg overflow-hidden flex flex-col bg-bg">
@@ -384,7 +449,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <TopBar />
       </div>
 
-      {projectMissing && project?.rootPath ? (
+      {!hideSidebar && projectMissing && project?.rootPath ? (
         <div className="shrink-0 mx-2 mt-1 rounded bg-red-500/8 px-3 py-1.5 text-[11px] font-mono text-red-800">
           <span className="font-semibold">Project directory not found</span> — it may have been moved or deleted.
           <span className="ml-2 inline-flex items-center gap-2">
@@ -437,27 +502,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       ) : null}
 
-      {project?.rootPath && !showWelcome && providerMode === "guest" ? (
+      {!hideSidebar && project?.rootPath && !showWelcome && !hasAnyAiProvider ? (
         <div className="shrink-0 mx-2 mt-1 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
-          Running in Guest Mode - AI details disabled. <Link to="/settings?tab=ai" className="underline">Set up provider</Link>
+          No AI provider is configured yet. <Link to="/settings?tab=ai" className="underline">Set up AI</Link>
         </div>
       ) : null}
 
-      {project?.rootPath && !showWelcome && contextStatus?.docs?.some((doc) => !doc.exists) ? (
+      {!hideSidebar && project?.rootPath && !showWelcome && !(githubStatus?.tokenStored) ? (
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
-          Missing ADE context docs:
-          {contextStatus.docs.filter((doc) => !doc.exists).map((doc) => ` ${doc.label}`).join(", ")}.
-          <Link to="/settings?tab=workspace" className="ml-2 underline">Generate Docs</Link>
+          GitHub is not connected for this ADE app yet. <Link to="/settings?tab=integrations" className="underline">Connect GitHub</Link>
         </div>
       ) : null}
 
-      {providerMode === "subscription" && aiMockProvider ? (
+      {!hideSidebar && providerMode === "subscription" && aiMockProvider ? (
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
           LLM provider is "mock" — AI will return placeholder content. <Link to="/settings?tab=ai" className="underline">Open AI settings</Link>
         </div>
       ) : null}
 
-      {providerMode === "subscription" && aiFailure ? (
+      {!hideSidebar && providerMode === "subscription" && aiFailure ? (
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-red-500/6 px-3 py-1.5 text-[11px] font-mono text-red-800">
           <span className="font-semibold">Last AI job failed:</span>{" "}
           {aiFailure.jobId ? `job ${shortId(aiFailure.jobId)} · ` : ""}
@@ -491,40 +554,47 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       ) : null}
 
-      {onboardingIncomplete && !onboardingDismissed && location.pathname !== "/onboarding" ? (
-        <div className="shrink-0 mx-3 mt-1.5 rounded bg-card/50 px-3 py-1.5 text-[11px] font-mono text-fg">
-          <span className="font-semibold">Project setup is incomplete.</span>{" "}
-          Finish it in{" "}
-          <Link to="/onboarding" className="underline">Project Setup</Link>.
-          <button
-            type="button"
-            className="ml-2 text-muted-fg hover:text-fg"
-            onClick={() => {
-              void window.ade.onboarding.setDismissed(true).then((status) => {
-                setOnboardingIncomplete(Boolean(status && !status.completedAt));
-                setOnboardingDismissed(Boolean(status.dismissedAt) && !status.completedAt);
-              }).catch(() => {});
-            }}
-            title="Dismiss"
-          >
-            ×
-          </button>
+      {!hideSidebar && project?.rootPath && !showWelcome && contextStatus?.generation.state === "running" ? (
+        <div className="shrink-0 mx-3 mt-1.5 rounded bg-sky-500/6 px-3 py-1.5 text-[11px] font-mono text-sky-800">
+          ADE context docs are generating in the background. <Link to="/settings?tab=workspace" className="underline">Open context settings</Link>
+        </div>
+      ) : null}
+
+      {!hideSidebar && project?.rootPath && !showWelcome && contextStatus?.generation.state === "failed" ? (
+        <div className="shrink-0 mx-3 mt-1.5 rounded bg-red-500/6 px-3 py-1.5 text-[11px] font-mono text-red-800">
+          Context doc generation failed{contextStatus.generation.error ? `: ${contextStatus.generation.error}` : "."} <Link to="/settings?tab=workspace" className="underline">Retry generation</Link>
+        </div>
+      ) : null}
+
+      {!hideSidebar && project?.rootPath && !showWelcome && contextStatus?.generation.state !== "running" && missingContextDocs.length > 0 ? (
+        <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
+          Missing ADE context docs:
+          {missingContextDocs.map((doc) => ` ${doc.label}`).join(", ")}.
+          <Link to="/settings?tab=workspace" className="ml-2 underline">Generate docs</Link>
         </div>
       ) : null}
 
       <div className="flex-1 flex min-h-0">
-        <aside
-          className="ade-sidebar-clip shrink-0 z-10 border-r"
-        >
-          <div className="ade-sidebar flex flex-col py-2 h-full">
-            <TabNav />
-          </div>
-        </aside>
+        {hideSidebar ? null : (
+          <aside
+            className="ade-sidebar-clip shrink-0 z-10 border-r"
+          >
+            <div className="ade-sidebar flex flex-col py-2 h-full">
+              <TabNav />
+            </div>
+          </aside>
+        )}
 
         <main className={cn("relative flex min-h-0 min-w-0 flex-1", tintClass)}>
           <TabBackground />
           <div className="relative z-[1] h-full min-h-0 w-full" data-tab-revisit={!isFirstVisit || undefined}>
-            {children}
+            {shouldHoldProjectRouteForOnboarding ? (
+              <div className="flex h-full w-full items-center justify-center">
+                <div className="text-xs font-mono text-muted-fg/70">Opening project setup...</div>
+              </div>
+            ) : (
+              children
+            )}
           </div>
           <RightEdgeFloatingPane />
 

@@ -14,14 +14,10 @@ import type {
   AutomationIngressEventRecord,
   AutomationIngressStatus,
   AutomationManualTriggerRequest,
-  NightShiftQueueMutationRequest,
   AutomationRuleSummary,
   AutomationRun,
   AutomationRunDetail,
   AutomationRunListArgs,
-  AutomationQueueActionRequest,
-  AutomationQueueItem,
-  AutomationQueueListArgs,
   AutomationParseNaturalLanguageRequest,
   AutomationParseNaturalLanguageResult,
   AutomationValidateDraftRequest,
@@ -30,9 +26,6 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
-  NightShiftBriefing,
-  NightShiftState,
-  UpdateNightShiftSettingsRequest,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -214,6 +207,7 @@ import type {
   AgentChatCreateArgs,
   AgentChatDisposeArgs,
   AgentChatEventEnvelope,
+  AgentChatGetSummaryArgs,
   AgentChatInterruptArgs,
   AgentChatListArgs,
   AgentChatModelInfo,
@@ -584,7 +578,7 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.keybindingsSet, { overrides })
   },
   ai: {
-    getStatus: async (): Promise<AiSettingsStatus> => ipcRenderer.invoke(IPC.aiGetStatus),
+    getStatus: async (args?: { force?: boolean }): Promise<AiSettingsStatus> => ipcRenderer.invoke(IPC.aiGetStatus, args),
     storeApiKey: async (provider: string, key: string): Promise<void> =>
       ipcRenderer.invoke(IPC.aiStoreApiKey, { provider, key }),
     deleteApiKey: async (provider: string): Promise<void> =>
@@ -655,20 +649,6 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.automationsListRuns, args ?? {}),
     getRunDetail: async (runId: string): Promise<AutomationRunDetail | null> =>
       ipcRenderer.invoke(IPC.automationsGetRunDetail, { runId }),
-    listQueueItems: async (args?: AutomationQueueListArgs): Promise<AutomationQueueItem[]> =>
-      ipcRenderer.invoke(IPC.automationsListQueueItems, args ?? {}),
-    updateQueueItem: async (args: AutomationQueueActionRequest): Promise<AutomationQueueItem | null> =>
-      ipcRenderer.invoke(IPC.automationsUpdateQueueItem, args),
-    getNightShiftState: async (): Promise<NightShiftState> =>
-      ipcRenderer.invoke(IPC.automationsGetNightShiftState),
-    updateNightShiftSettings: async (args: UpdateNightShiftSettingsRequest): Promise<NightShiftState> =>
-      ipcRenderer.invoke(IPC.automationsUpdateNightShiftSettings, args),
-    mutateNightShiftQueue: async (args: NightShiftQueueMutationRequest): Promise<NightShiftState> =>
-      ipcRenderer.invoke(IPC.automationsMutateNightShiftQueue, args),
-    getMorningBriefing: async (): Promise<NightShiftBriefing | null> =>
-      ipcRenderer.invoke(IPC.automationsGetMorningBriefing),
-    acknowledgeMorningBriefing: async (args: { id: string }): Promise<NightShiftBriefing | null> =>
-      ipcRenderer.invoke(IPC.automationsAcknowledgeMorningBriefing, args),
     getIngressStatus: async (): Promise<AutomationIngressStatus> =>
       ipcRenderer.invoke(IPC.automationsGetIngressStatus),
     listIngressEvents: async (args?: { limit?: number }): Promise<AutomationIngressEventRecord[]> =>
@@ -1088,6 +1068,8 @@ contextBridge.exposeInMainWorld("ade", {
   agentChat: {
     list: async (args: AgentChatListArgs = {}): Promise<AgentChatSessionSummary[]> =>
       ipcRenderer.invoke(IPC.agentChatList, args),
+    getSummary: async (args: AgentChatGetSummaryArgs): Promise<AgentChatSessionSummary | null> =>
+      ipcRenderer.invoke(IPC.agentChatGetSummary, args),
     create: async (args: AgentChatCreateArgs): Promise<AgentChatSession> =>
       ipcRenderer.invoke(IPC.agentChatCreate, args),
     send: async (args: AgentChatSendArgs): Promise<void> =>
@@ -1490,7 +1472,7 @@ contextBridge.exposeInMainWorld("ade", {
       projectId?: string;
       scope?: "user" | "project" | "lane" | "mission" | "agent";
       scopeOwnerId?: string;
-      category: "fact" | "preference" | "pattern" | "decision" | "gotcha";
+      category: "fact" | "preference" | "pattern" | "decision" | "gotcha" | "convention";
       content: string;
       importance?: "low" | "medium" | "high";
       sourceRunId?: string;

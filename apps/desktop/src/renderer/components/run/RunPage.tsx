@@ -290,8 +290,9 @@ export function RunPage() {
             laneId: effectiveLaneId,
             cols: 120,
             rows: 30,
-            title: def.name,
+            title: `${def.name} inspector`,
             tracked: true,
+            toolType: "run-shell",
           });
         } catch {
           // Terminal creation is best-effort
@@ -812,6 +813,7 @@ export function RunPage() {
 
       {/* ── Process Monitor (bottom bar) ── */}
       <ProcessMonitor
+        laneId={effectiveLaneId}
         runtimes={runtime}
         processNames={processNames}
         onKill={handleKill}

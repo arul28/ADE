@@ -17,9 +17,13 @@ function formatWhen(ts: string | null): string {
   return new Date(parsed).toLocaleString();
 }
 
-function summarizeActions(rule: AutomationRuleSummary): string {
-  if (!rule.actions.length) return "(no actions)";
-  return rule.actions.map((a) => a.type).join(", ");
+function summarizeExecution(rule: AutomationRuleSummary): string {
+  if (rule.execution?.kind === "mission") return "Launch mission";
+  if (rule.execution?.kind === "built-in") {
+    const actions = rule.execution.builtIn?.actions ?? rule.actions;
+    return actions.length ? actions.map((action) => action.type).join(", ") : "Built-in task";
+  }
+  return "Automation thread";
 }
 
 export function AutomationsSection() {
@@ -156,11 +160,10 @@ export function AutomationsSection() {
                     {rule.trigger.type === "schedule" && rule.trigger.cron ? ` (${rule.trigger.cron})` : ""}
                     {rule.trigger.branch ? ` · branch: ${rule.trigger.branch}` : ""}
                   </div>
-                  <div className="mt-0.5 text-[11px] text-muted-fg">actions: {summarizeActions(rule)}</div>
+                  <div className="mt-0.5 text-[11px] text-muted-fg">does: {summarizeExecution(rule)}</div>
                   <div className="mt-0.5 text-[11px] text-muted-fg">last run: {formatWhen(rule.lastRunAt)}</div>
                   <div className="mt-0.5 text-[11px] text-muted-fg">
-                    executor: <span className="font-mono">{rule.executor.mode}</span>
-                    {rule.executor.targetId ? ` · target ${rule.executor.targetId}` : ""}
+                    execution: <span className="font-mono">{rule.execution?.kind ?? (rule.actions.length ? "built-in" : "mission")}</span>
                     {rule.modelConfig?.orchestratorModel.modelId ? ` · ${rule.modelConfig.orchestratorModel.modelId}` : ""}
                   </div>
                 </div>
@@ -259,11 +262,6 @@ export function AutomationsSection() {
                   <RunDetailPanel
                     detail={historyDialog.detail}
                     loading={historyDialog.detailBusy}
-                    onActionComplete={() => {
-                      if (historyDialog.selectedRunId) {
-                        void loadRunDetail(historyDialog.selectedRunId);
-                      }
-                    }}
                   />
                 </div>
               </div>

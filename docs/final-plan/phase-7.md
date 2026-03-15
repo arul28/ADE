@@ -2,7 +2,7 @@
 
 ## Phase 7 -- Full iOS & Advanced Remote (6-8 weeks)
 
-Goal: Complete the iOS app by adding all remaining desktop tabs (Missions, CTO/Chat, Automations, Graph, History, Settings) and ship advanced multi-device features. Phase 6 proved the sync architecture and delivered project management from the phone — Phase 7 brings the full AI orchestration experience to mobile and adds VPS provider integrations, Night Shift, and advanced notification routing.
+Goal: Complete the iOS app by adding all remaining desktop tabs (Missions, CTO/Chat, Automations, Graph, History, Settings) and ship advanced multi-device features. Phase 6 proved the sync architecture and delivered project management from the phone — Phase 7 brings the full AI orchestration experience to mobile and adds VPS provider integrations and advanced notification routing.
 
 ### Reference docs
 
@@ -24,7 +24,7 @@ Phase 7 does not introduce new sync infrastructure. All 103 tables already sync 
 
 1. **Remaining iOS tabs** — Missions, CTO/Chat, Automations, Graph, History, full Settings. Each tab reads from the already-synced local SQLite database and sends commands to the brain via the existing WebSocket protocol.
 2. **VPS provider integrations** — one-click brain provisioning on Hetzner, DigitalOcean, or any SSH-accessible machine.
-3. **Advanced remote workflows** — Night Shift mobile briefings, push notifications for AI events, computer-use artifact viewing, and cross-device notification routing.
+3. **Advanced remote workflows** — mobile automation controls, push notifications for AI events, computer-use artifact viewing, and cross-device notification routing.
 4. **iOS polish** — animations, dark mode, iPad support, widgets, Spotlight integration.
 
 Because the sync layer is complete from Phase 6, adding each new iOS tab follows a consistent pattern:
@@ -67,10 +67,10 @@ Combined CTO management and agent chat interface for iOS.
 Remaining desktop tabs brought to iOS.
 
 **Automations tab:**
-- Automation rule list with status (enabled/disabled), trigger type, last run.
-- Automation detail: trigger config, action config, run history.
+- Automation rule list with status (enabled/disabled), trigger class (`time-based` or `action-based`), and last run.
+- Automation detail: trigger config, execution type (`agent-session`, `mission`, `built-in task`), and run history.
 - Enable/disable automations from phone.
-- View automation run results.
+- View automation run results in Automations history and mission-linked outcomes in Missions.
 
 **Graph tab:**
 - Workspace topology visualization adapted for mobile (simplified layout, tap to zoom).
@@ -91,7 +91,7 @@ Complete Settings implementation for iOS (Phase 6 shipped minimal connection set
 - **Notifications**: per-event-type toggles, DND schedule, notification priority levels.
 - **General**: appearance (dark mode), behavior preferences.
 - **Context & Docs**: view context docs status, trigger regeneration (routes to brain).
-- **Usage & Budget**: usage overview, budget caps, pacing status.
+- **Usage**: usage overview, centralized budget policy (Settings > Usage), pacing status.
 
 #### W5: Push Notifications & Notification Routing
 
@@ -106,7 +106,7 @@ Complete Settings implementation for iOS (Phase 6 shipped minimal connection set
   - Agent error requiring attention
   - Budget threshold reached
   - Brain status change (went offline, transferred)
-  - Night Shift morning briefing ready
+  - Automation run digest ready
 - Notification tap → deep link to relevant screen (mission detail, intervention, chat).
 - **Cross-device notification routing**: if the user is actively using ADE on their Mac, suppress duplicate push notifications on iOS (brain tracks which device is "active" via WebSocket activity).
 - **Do Not Disturb schedule**: set quiet hours per device. Brain respects DND and queues non-critical notifications.
@@ -130,18 +130,17 @@ Built-in integrations for provisioning always-on brain machines with one click.
 - Auto-reconnect: if VPS reboots, systemd restarts ADE, devices reconnect automatically.
 - Available from both desktop Settings and iOS Settings.
 
-#### W7: Night Shift & Mobile Briefings
+#### W7: Mobile automations execution and digest
 
-- **Night Shift**: schedule agent work to run overnight on the brain. Define a list of missions or tasks to execute during a time window (e.g., 11pm-6am). Brain runs them sequentially. Results are ready in the morning.
-- **Morning briefing (iOS)**: on first app open after Night Shift completes, show a structured summary:
-  - Missions completed / failed
-  - Key changes per lane (diffstat, file summary)
+- Configure and monitor time-based and action-based automations from iOS.
+- Show a structured run digest in Automations history:
+  - Runs completed / failed
+  - Execution type used (`agent-session`, `mission`, `built-in task`)
   - Interventions that need attention
-  - Budget consumed
-  - CTO recommendations for the day
-- Morning briefing is a single scrollable card — not a chat conversation. Tap any section to dive into the detail view.
-- Push notification when Night Shift completes: "Night Shift finished — 3 missions completed, 1 needs attention."
-- Night Shift configuration available from both desktop and iOS Settings.
+  - Usage summary from Settings > Usage policy context
+- Digest is a single scrollable card. Tap any section to open Automations history or the linked mission.
+- Push notification when digest is ready: "Automations digest ready — 3 runs completed, 1 needs attention."
+- Automation configuration remains available from desktop and iOS Settings/Automations surfaces.
 
 #### W8: Computer-Use Artifact Viewing (iOS)
 
@@ -203,9 +202,9 @@ Phase 6 shipped basic offline state and command queuing. This workstream hardens
 - Generic SSH: configure → install → pair → verify.
 - VPS reboot → ADE auto-restarts → devices auto-reconnect.
 
-**Night Shift:**
-- Schedule missions → brain executes overnight → morning briefing on phone.
-- Night Shift interrupted → partial results shown with clear status.
+**Automations digest:**
+- Schedule time-based automations and action-based automations → brain executes → digest on phone.
+- Interrupted runs show partial results with clear status and linked run records.
 
 **Offline resilience:**
 - Extended offline (hours) → reconnect → catch-up summary → queued actions replay.
@@ -233,7 +232,7 @@ Phase 6 shipped basic offline state and command queuing. This workstream hardens
 8. Cross-device notification routing suppresses duplicates when desktop is active.
 9. DND schedule works with priority-based notification levels.
 10. VPS provider integration allows one-click brain provisioning for at least two providers (Hetzner + Generic SSH).
-11. Night Shift allows scheduling overnight work with a structured morning briefing on iOS.
+11. iOS supports time-based and action-based automations with a structured run digest.
 12. CTO daily summary viewable as a timeline on the phone.
 13. Computer-use artifacts (screenshots, proof chains) browsable from the phone.
 14. Offline actions use optimistic UI with pending indicators that resolve on reconnect.

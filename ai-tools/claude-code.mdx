@@ -1,43 +1,52 @@
 ---
-title: "Claude Code setup"
-description: "Configure Claude Code for your documentation workflow"
-icon: "asterisk"
+title: "Claude Code"
+description: "Use Claude Code as a CLI coding agent inside ADE lanes."
+icon: "terminal"
 ---
 
-Set up Claude Code to help you write and maintain your Mintlify documentation.
+## Overview
 
-## Prerequisites
+ADE integrates with [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Anthropic's CLI agent for coding tasks. When Claude Code is installed on your machine, ADE can launch it as a managed session inside any lane.
 
-- Active Claude subscription (Pro, Max, or API access)
+## Requirements
 
-## Setup
+- Claude Code installed (`npm install -g @anthropic-ai/claude-code`)
+- An active Anthropic API key or Claude subscription
+
+## How ADE uses Claude Code
+
+ADE launches Claude Code as a subprocess inside a lane's worktree. The session inherits the lane's environment variables, working directory, and port assignments.
+
+Claude Code sessions are used in several places:
+
+- **Agent Chat** -- when you select Claude Code as the executor in a lane chat session
+- **Missions** -- as a worker executor (`claude_cli`) during mission execution phases
+- **CTO workers** -- when the CTO delegates a task to an employee agent using Claude Code
+- **Automations** -- as the execution backend for automation rules
+
+## Launching Claude Code from ADE
 
 <Steps>
-<Step title="Install Claude Code">
-  ```bash
-  npm install -g @anthropic-ai/claude-code
-  ```
-</Step>
-
-<Step title="Install the Mintlify skill">
-  In your docs directory, run:
-
-  ```bash
-  npx skills add https://mintlify.com/docs
-  ```
-
-  This gives Claude Code Mintlify's component reference, writing standards,
-  and workflow guidance.
-</Step>
-
-<Step title="Customize project instructions">
-  Edit `AGENTS.md` in your project root to add project-specific terminology,
-  style preferences, and content boundaries.
-</Step>
-
-<Step title="Start writing with Claude Code">
-  ```bash
-  claude
-  ```
-</Step>
+  <Step title="Open a lane">
+    Navigate to the lane where you want to run Claude Code.
+  </Step>
+  <Step title="Open the Run tab">
+    Click the **Run** tab or use the AI tool launcher in Project Home.
+  </Step>
+  <Step title="Launch Claude Code">
+    Click the **Claude Code** launcher. ADE starts a managed session with the lane's context pack injected as initial context.
+  </Step>
 </Steps>
+
+## Permission modes
+
+ADE supports several permission modes for Claude Code sessions:
+
+| Mode | Behavior |
+|------|----------|
+| `default` | Standard Claude Code permissions |
+| `plan` | Planning only, no file writes |
+| `acceptEdits` | Auto-accept file edits |
+| `bypassPermissions` | Skip all permission prompts |
+
+Configure the default permission mode in **Settings > AI Providers** or per-mission in the mission creation dialog.

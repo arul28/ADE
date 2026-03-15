@@ -1,94 +1,100 @@
 ---
-title: "Executor Modes"
-description: "Choose the right executor mode for your automation — from lightweight stateless bots to persistent workers, CTO routing, and deferred Night Shift processing."
+title: "Execution surfaces"
+description: "Choose between automation-only agent sessions, Missions, and built-in tasks for each automation rule."
 icon: "robot"
 ---
 
-## Executor Modes
+## Execution surfaces for Automations
 
-Each automation uses one of four executor modes. Choosing the right mode affects cost, persistence, and scheduling.
+An Automation execution is always one of three surfaces:
+
+- **agent-session**: persistent chat thread for a single automation run
+- **mission**: full multi-step mission runtime with workers, gates, and artifacts
+- **built-in-task**: ADE-native synchronous job without a full mission lifecycle
+
+Each surface is selected per automation so you can match the right cost and visibility model.
 
 <AccordionGroup>
-  <Accordion title="automation-bot — Lightweight Stateless Executor" icon="robot">
-    A fast, lightweight executor designed for simple, contained tasks. Each run starts fresh with no memory of previous executions. Ideal for tasks that are self-contained and predictable.
+  <Accordion title="agent-session" icon="message-circle">
+    A lightweight, single-thread session created for the automation run.
 
-    **Best for:** Running tests on every commit, summarizing new commits to a Slack message, formatting changed files, generating changelog entries.
+    - Starts from a single prompt and optional system context
+    - Runs through the normal chat runtime with ADE-scoped tool access
+    - Produces normal agent messages and tool events
+    - Best when you need direct, low-latency automation output
 
-    **Characteristics:**
-    - Stateless — each run is independent
-    - Low latency startup
-    - Best cost efficiency for repetitive tasks
+    <Info>Agent-session runs are recorded as **automation-only chat threads**. These threads are visible from **Automations → History**.</Info>
   </Accordion>
 
-  <Accordion title="employee — Persistent Worker Agent" icon="user-tie">
-    A persistent agent assigned to own a specific type of task. The employee has a memory store and remembers what it has seen across multiple runs. Use this when you need continuity — the agent should accumulate knowledge over time.
+  <Accordion title="mission" icon="bullseye">
+    A full mission runtime for work that needs validation gates, parallel workers, or durable workflow history.
 
-    **Best for:** Reviewing all CSS changes (the agent learns your style preferences over time), maintaining the test suite, tracking dependency debt.
+    - Planner and phase logic
+    - Retry and intervention handling
+    - Worker lifecycle and lane-affinity tracking
+    - Artifacts, step events, and intervention feed
 
-    **Characteristics:**
-    - Stateful memory across runs
-    - Builds domain knowledge over time
-    - Higher initial cost, but more accurate over time
+    Mission outputs and status are visible in **Missions**, which is the canonical place to monitor multi-step execution.
   </Accordion>
 
-  <Accordion title="cto-route — CTO Agent Decision Routing" icon="arrow-up-right-from-square">
-    Routes the trigger event to the CTO agent for high-level decision making. The CTO agent processes the event using its full project context and persistent memory, then decides what to do: spawn a mission, update a plan, comment on a PR, or do nothing.
+  <Accordion title="built-in-task" icon="gear">
+    A structured ADE-native task for short, deterministic work that does not require agent memory.
 
-    **Best for:** Linear issue triage (CTO decides priority and assignment), milestone risk assessment, cross-lane coordination decisions.
+    - No full mission thread
+    - Useful for refreshes, status checks, and prebuilt operations
+    - Strongly typed inputs/outputs
+    - Consistent with other background ADE tasks
 
-    **Characteristics:**
-    - Leverages the CTO's full project memory
-    - Produces high-context, high-quality decisions
-    - Higher cost per execution
-  </Accordion>
-
-  <Accordion title="night-shift — Off-Hours Deferred Execution" icon="moon">
-    Queues the automation to run during off-hours when your machine is idle. ADE batches Night Shift tasks and processes them overnight. This mode is ideal for expensive, non-urgent tasks that do not need immediate results.
-
-    **Best for:** Weekly dependency updates, large codebase refactoring sweeps, generating comprehensive documentation, model evaluation runs.
-
-    **Characteristics:**
-    - Deferred to idle time (default: 15 minutes of inactivity)
-    - Tasks processed one at a time to avoid resource contention
-    - Results available when you return the next morning
+    This keeps small tasks fast and predictable while still respecting the same guardrails.
   </Accordion>
 </AccordionGroup>
 
 ---
 
-## Creating Your First Automation
+## Choosing a surface
 
-<Info>**📸 Screenshot needed:** The "New Automation" dialog showing the trigger type selector, executor mode radio buttons, the automation prompt text area, and the tool palette dropdown. The form should look partially filled-in.</Info>
+Pick the surface based on required control and operational cost:
 
-<Steps>
-  <Step title="Open the Automations Tab">
-    Click the **Automations** icon in the left sidebar (the lightning bolt icon). Then click **New Automation** in the top-right corner.
-  </Step>
-  <Step title="Choose a Trigger">
-    Select a trigger family from the dropdown, then configure its filters. For example, for `git.pr_opened`, you can filter to only fire when the source branch matches `feat/*`.
-  </Step>
-  <Step title="Select an Executor Mode">
-    Choose between `automation-bot`, `employee`, `cto-route`, or `night-shift` based on the nature of the task. When in doubt, start with `automation-bot`.
-  </Step>
-  <Step title="Write the Automation Prompt">
-    This is the instruction the executor receives when the trigger fires. Be specific about what the agent should produce. Example:
+| Surface | Best for |
+|---|---|
+| `agent-session` | lightweight checks, short summaries, deterministic text outputs |
+| `mission` | multi-step code changes, PR/open/merge flows, long-running workflows |
+| `built-in-task` | one-off built-in operations and maintenance checks |
 
-    ```
-    A PR was just opened. Review the diff for:
-    1. Any hardcoded credentials or secrets
-    2. Missing error handling in async functions
-    3. Files that changed but have no corresponding test changes
+Use **agent-session** when you want quick chat-like automation output, **mission** when execution needs reliability and intervention support, and **built-in-task** when you are just invoking a known ADE operation.
 
-    Post a PR comment summarizing your findings. If you find secrets, mark the PR as "Needs Changes".
-    ```
-  </Step>
-  <Step title="Configure Tool Palette">
-    Choose which tools the executor can access. For a PR reviewer, `read-only` is sufficient — the agent needs to read files but should not write anything. See [Tool Palette Security](/automations/guardrails#tool-palette-security) for details.
-  </Step>
-  <Step title="Set Guardrails & Budget">
-    Set a maximum token budget and execution time limit. Enable **Approval Mode** if you want the automation to pause before any write operations.
-  </Step>
-  <Step title="Save and Enable">
-    Click **Save**. The automation is now active. Toggle the enable switch to pause it at any time without deleting it.
-  </Step>
-</Steps>
+---
+
+## Building automation rules
+
+When creating a rule:
+
+1. Pick a **time-based** or **action-based** trigger.
+2. Pick one execution surface for the initial run:
+   - `agent-session` for quick AI outputs
+   - `mission` for complex or risky workflows
+   - `built-in-task` for internal operations
+3. Set a tool palette and memory policy.
+4. Configure guardrails and budget mode in Settings defaults.
+5. Add verification behavior and output routing.
+
+If you use `agent-session`, you can still attach outputs to artifacts, PR notes, or Linear updates through output routing options.
+
+---
+
+## Example flows
+
+- **PR reviewer**
+  - Trigger: `git.pr_opened`
+  - Execution: `agent-session`
+  - Output: Automation thread in history + optional PR comment
+
+- **Nightly test sweep**
+  - Trigger: `schedule` (`0 8 * * 1-5`)
+  - Execution: `mission`
+  - Output: Mission artifacts + validation findings
+
+- **Cache cleanup**
+  - Trigger: `github.webhook`
+  - Execution: `built-in-task`
+  - Output: Internal usage and history marker with a status event

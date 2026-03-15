@@ -20,10 +20,6 @@ import type {
   AutomationIngressEventRecord,
   AutomationIngressStatus,
   AutomationManualTriggerRequest,
-  NightShiftQueueMutationRequest,
-  AutomationQueueActionRequest,
-  AutomationQueueItem,
-  AutomationQueueListArgs,
   AutomationRuleSummary,
   AutomationRun,
   AutomationRunDetail,
@@ -36,9 +32,6 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
-  NightShiftBriefing,
-  NightShiftState,
-  UpdateNightShiftSettingsRequest,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   ConflictProposal,
@@ -152,6 +145,7 @@ import type {
   AgentChatChangePermissionModeArgs,
   AgentChatCreateArgs,
   AgentChatDisposeArgs,
+  AgentChatGetSummaryArgs,
   AgentChatInterruptArgs,
   AgentChatListArgs,
   AgentChatModelInfo,
@@ -696,6 +690,30 @@ function getUnavailableAiStatus(): AiSettingsStatus {
       codex: [],
     },
     detectedAuth: [],
+    providerConnections: {
+      claude: {
+        provider: "claude",
+        authAvailable: false,
+        runtimeDetected: false,
+        runtimeAvailable: false,
+        usageAvailable: false,
+        path: null,
+        blocker: "AI integration service unavailable.",
+        lastCheckedAt: new Date(0).toISOString(),
+        sources: [],
+      },
+      codex: {
+        provider: "codex",
+        authAvailable: false,
+        runtimeDetected: false,
+        runtimeAvailable: false,
+        usageAvailable: false,
+        path: null,
+        blocker: "AI integration service unavailable.",
+        lastCheckedAt: new Date(0).toISOString(),
+        sources: [],
+      },
+    },
     features: AI_USAGE_FEATURE_KEYS.map((feature) => ({
       feature,
       enabled: false,
@@ -1173,11 +1191,16 @@ async function buildLinearConnectionStatus(
   }
 
   const status = await ctx.linearIssueTracker.getConnectionStatus();
+  const projects = status.connected
+    ? await ctx.linearIssueTracker.listProjects().catch(() => [])
+    : [];
   return {
     tokenStored,
     connected: status.connected,
     viewerId: status.viewerId,
     viewerName: status.viewerName,
+    projectCount: projects.length,
+    projectPreview: projects.slice(0, 3).map((project) => project.name),
     checkedAt: nowIso(),
     authMode: credentialStatus.authMode,
     oauthAvailable: credentialStatus.oauthConfigured,
@@ -1856,13 +1879,13 @@ export function registerIpc({
     return ctx.keybindingsService.set({ overrides: arg?.overrides ?? [] });
   });
 
-  ipcMain.handle(IPC.aiGetStatus, async (): Promise<AiSettingsStatus> => {
+  ipcMain.handle(IPC.aiGetStatus, async (_event, arg?: { force?: boolean }): Promise<AiSettingsStatus> => {
     const ctx = getCtx();
     if (!ctx.aiIntegrationService) {
       return getUnavailableAiStatus();
     }
     try {
-      const status = await ctx.aiIntegrationService.getStatus();
+      const status = await ctx.aiIntegrationService.getStatus({ force: arg?.force === true });
       // Single query for all feature daily usage instead of N individual queries
       const usageBatch = ctx.aiIntegrationService.getDailyUsageBatch(AI_USAGE_FEATURE_KEYS);
       return {
@@ -1870,6 +1893,7 @@ export function registerIpc({
         availableProviders: status.availableProviders,
         models: status.models,
         detectedAuth: status.detectedAuth,
+        providerConnections: status.providerConnections,
         availableModelIds: status.availableModelIds,
         apiKeyStore: status.apiKeyStore,
         features: AI_USAGE_FEATURE_KEYS.map((feature) => ({
@@ -2097,7 +2121,6 @@ export function registerIpc({
       id: arg?.id ?? "",
       laneId: arg?.laneId ?? null,
       reviewProfileOverride: arg?.reviewProfileOverride ?? null,
-      queueInstead: Boolean(arg?.queueInstead),
       verboseTrace: Boolean(arg?.verboseTrace),
     });
   });
@@ -2115,41 +2138,6 @@ export function registerIpc({
   ipcMain.handle(IPC.automationsGetRunDetail, async (_event, arg: { runId: string }): Promise<AutomationRunDetail | null> => {
     const ctx = getCtx();
     return ctx.automationService.getRunDetail({ runId: arg?.runId ?? "" });
-  });
-
-  ipcMain.handle(IPC.automationsListQueueItems, async (_event, arg: AutomationQueueListArgs = {}): Promise<AutomationQueueItem[]> => {
-    const ctx = getCtx();
-    return ctx.automationService.listQueueItems(arg);
-  });
-
-  ipcMain.handle(IPC.automationsUpdateQueueItem, async (_event, arg: AutomationQueueActionRequest): Promise<AutomationQueueItem | null> => {
-    const ctx = getCtx();
-    return await ctx.automationService.updateQueueItem(arg);
-  });
-
-  ipcMain.handle(IPC.automationsGetNightShiftState, async (): Promise<NightShiftState> => {
-    const ctx = getCtx();
-    return ctx.automationService.getNightShiftState();
-  });
-
-  ipcMain.handle(IPC.automationsUpdateNightShiftSettings, async (_event, arg: UpdateNightShiftSettingsRequest): Promise<NightShiftState> => {
-    const ctx = getCtx();
-    return ctx.automationService.updateNightShiftSettings(arg ?? {});
-  });
-
-  ipcMain.handle(IPC.automationsMutateNightShiftQueue, async (_event, arg: NightShiftQueueMutationRequest): Promise<NightShiftState> => {
-    const ctx = getCtx();
-    return await ctx.automationService.mutateNightShiftQueue(arg);
-  });
-
-  ipcMain.handle(IPC.automationsGetMorningBriefing, async (): Promise<NightShiftBriefing | null> => {
-    const ctx = getCtx();
-    return ctx.automationService.getMorningBriefing();
-  });
-
-  ipcMain.handle(IPC.automationsAcknowledgeMorningBriefing, async (_event, arg: { id: string }): Promise<NightShiftBriefing | null> => {
-    const ctx = getCtx();
-    return ctx.automationService.acknowledgeMorningBriefing({ id: arg?.id ?? "" });
   });
 
   ipcMain.handle(IPC.automationsGetIngressStatus, async (): Promise<AutomationIngressStatus> => {
@@ -3520,14 +3508,23 @@ export function registerIpc({
       ctx,
       "sessions.list",
       async () => {
-        const sessions = ctx.ptyService.enrichSessions(ctx.sessionService.list(arg));
+        let sessions = ctx.ptyService.enrichSessions(ctx.sessionService.list(arg));
         const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
-        let chats: AgentChatSessionSummary[] = [];
+        let allChats: AgentChatSessionSummary[] = [];
         try {
-          chats = await ctx.agentChatService.listSessions(laneId || undefined);
+          allChats = await ctx.agentChatService.listSessions(laneId || undefined, { includeIdentity: true });
         } catch {
-          chats = [];
+          allChats = [];
         }
+        const identitySessionIds = new Set(
+          allChats
+            .filter((chat) => Boolean(chat.identityKey))
+            .map((chat) => chat.sessionId),
+        );
+        if (identitySessionIds.size > 0) {
+          sessions = sessions.filter((session) => !identitySessionIds.has(session.id));
+        }
+        const chats = allChats.filter((chat) => !chat.identityKey);
         if (chats.length === 0) return sessions;
         const chatStatusBySessionId = new Map(chats.map((chat) => [chat.sessionId, chat.status] as const));
         return sessions.map((session) => {
@@ -3581,7 +3578,12 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatList, async (_event, arg: AgentChatListArgs = {}): Promise<AgentChatSessionSummary[]> => {
     const ctx = getCtx();
     const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
-    return ctx.agentChatService.listSessions(laneId || undefined);
+    return ctx.agentChatService.listSessions(laneId || undefined, { includeAutomation: Boolean(arg?.includeAutomation) });
+  });
+
+  ipcMain.handle(IPC.agentChatGetSummary, async (_event, arg: AgentChatGetSummaryArgs): Promise<AgentChatSessionSummary | null> => {
+    const ctx = getCtx();
+    return await ctx.agentChatService.getSessionSummary(arg?.sessionId ?? "");
   });
 
   ipcMain.handle(IPC.agentChatCreate, async (_event, arg: AgentChatCreateArgs): Promise<AgentChatSession> => {
@@ -4986,7 +4988,7 @@ export function registerIpc({
         projectId?: string;
         scope?: "user" | "project" | "lane" | "mission" | "agent";
         scopeOwnerId?: string;
-        category: "fact" | "preference" | "pattern" | "decision" | "gotcha";
+        category: "fact" | "preference" | "pattern" | "decision" | "gotcha" | "convention";
         content: string;
         importance?: "low" | "medium" | "high";
         sourceRunId?: string;

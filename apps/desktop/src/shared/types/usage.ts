@@ -131,14 +131,12 @@ export type UsageSnapshot = {
 };
 
 // ---------------------------------------------------------------------------
-// Budget cap types (automation + Night Shift enforcement)
+// Budget cap types for shared automation usage enforcement
 // ---------------------------------------------------------------------------
 
 export type BudgetCapScope =
   | "global"
-  | "automation-rule"
-  | "night-shift-run"
-  | "night-shift-global";
+  | "automation-rule";
 
 export type BudgetCapType =
   | "weekly-percent"
@@ -191,7 +189,6 @@ export type BudgetCapConfig = {
     limit: number;
     action: BudgetCapAction;
   }>;
-  nightShiftReservePercent?: number;
   alertAtWeeklyPercent?: number;
   preset?: BudgetPreset;
 };

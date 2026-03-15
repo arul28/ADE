@@ -30,6 +30,8 @@ export type ChatSurfacePresentation = {
   title?: string | null;
   subtitle?: string | null;
   accentColor?: string | null;
+  assistantLabel?: string | null;
+  messagePlaceholder?: string | null;
   chips?: ChatSurfaceChip[];
   showMcpStatus?: boolean;
 };
@@ -285,6 +287,7 @@ export type AgentChatEventEnvelope = {
 export type AgentChatPermissionMode = "default" | "plan" | "edit" | "full-auto" | "config-toml";
 export type AgentChatExecutionMode = "focused" | "parallel" | "subagents" | "teams";
 export type AgentChatIdentityKey = "cto" | `agent:${string}`;
+export type AgentChatSurface = "work" | "automation";
 
 export type AgentChatSession = {
   id: string;
@@ -297,6 +300,9 @@ export type AgentChatSession = {
   executionMode?: AgentChatExecutionMode | null;
   permissionMode?: AgentChatPermissionMode;
   identityKey?: AgentChatIdentityKey;
+  surface?: AgentChatSurface;
+  automationId?: string | null;
+  automationRunId?: string | null;
   capabilityMode?: CtoCapabilityMode;
   computerUse?: ComputerUsePolicy;
   completion?: AgentChatCompletionReport | null;
@@ -319,6 +325,9 @@ export type AgentChatSessionSummary = {
   executionMode?: AgentChatExecutionMode | null;
   permissionMode?: AgentChatPermissionMode;
   identityKey?: AgentChatIdentityKey;
+  surface?: AgentChatSurface;
+  automationId?: string | null;
+  automationRunId?: string | null;
   capabilityMode?: CtoCapabilityMode;
   computerUse?: ComputerUsePolicy;
   completion?: AgentChatCompletionReport | null;
@@ -355,11 +364,19 @@ export type AgentChatCreateArgs = {
   reasoningEffort?: string | null;
   permissionMode?: AgentChatPermissionMode;
   identityKey?: AgentChatIdentityKey;
+  surface?: AgentChatSurface;
+  automationId?: string | null;
+  automationRunId?: string | null;
   computerUse?: ComputerUsePolicy | null;
 };
 
 export type AgentChatListArgs = {
   laneId?: string;
+  includeAutomation?: boolean;
+};
+
+export type AgentChatGetSummaryArgs = {
+  sessionId: string;
 };
 
 export type AgentChatSendArgs = {

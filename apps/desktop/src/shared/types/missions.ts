@@ -843,6 +843,8 @@ export type MissionRunViewWorkerSummary = {
   completedAt: string | null;
 };
 
+export type MissionRunViewProgressAudience = "mission_feed" | "timeline" | "thread";
+
 export type MissionRunViewProgressItem = {
   id: string;
   at: string;
@@ -850,6 +852,8 @@ export type MissionRunViewProgressItem = {
   title: string;
   detail: string;
   severity: MissionRunViewSeverity;
+  audience?: MissionRunViewProgressAudience;
+  source?: "timeline" | "runtime" | "intervention" | "mission";
   stepId?: string | null;
   stepKey?: string | null;
   attemptId?: string | null;

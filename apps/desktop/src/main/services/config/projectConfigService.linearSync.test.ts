@@ -51,7 +51,7 @@ describe("projectConfigService linearSync", () => {
           pollingIntervalSec: 120,
           routing: { byLabel: { feature: "frontend-dev" } },
           autoDispatch: {
-            rules: [{ id: "rule-local", action: "queue-night-shift", match: { labels: ["night"] } }],
+            rules: [{ id: "rule-local", action: "escalate", match: { labels: ["night"] } }],
           },
         },
       },
@@ -68,7 +68,7 @@ describe("projectConfigService linearSync", () => {
     expect(effective.linearSync?.autoDispatch?.rules).toEqual([
       {
         id: "rule-local",
-        action: "queue-night-shift",
+        action: "escalate",
         match: { labels: ["night"] },
       },
     ]);

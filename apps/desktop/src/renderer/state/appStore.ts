@@ -235,7 +235,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Auto-elevate to subscription if any AI provider is configured
     const hasProvider =
       aiStatus != null &&
-      (aiStatus.availableProviders.claude ||
+      (aiStatus.providerConnections?.claude.authAvailable ||
+        aiStatus.providerConnections?.codex.authAvailable ||
+        aiStatus.availableProviders.claude ||
         aiStatus.availableProviders.codex ||
         (aiStatus.detectedAuth != null && aiStatus.detectedAuth.length > 0));
     set({ providerMode: configMode === "subscription" || hasProvider ? "subscription" : "guest" });

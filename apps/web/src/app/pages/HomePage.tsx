@@ -1,263 +1,430 @@
-import { motion, useScroll, useTransform } from "framer-motion";
-import { ArrowRight, BookOpen, Download, Github, Shield, Terminal, GitMerge, LayoutGrid, Zap } from "lucide-react";
-import { useRef } from "react";
+import {
+  ArrowUpRight,
+  BookOpen,
+  Bot,
+  Copy,
+  Download,
+  GitBranch,
+  Github,
+  Layers,
+  MonitorCheck,
+  Package,
+  Play,
+  Settings2,
+  Target,
+  Terminal,
+  Zap,
+} from "lucide-react";
+import { useCallback, useState } from "react";
+import { Container } from "../../components/Container";
+import { Card } from "../../components/Card";
 import { LinkButton } from "../../components/LinkButton";
+import { Reveal } from "../../components/Reveal";
 import { Page } from "../../components/Page";
 import { cn } from "../../lib/cn";
 import { LINKS } from "../../lib/links";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
 
-export function HomePage() {
-  useDocumentTitle("ADE — Agentic Development Environment");
-  const scrollRef = useRef(null);
-  const { scrollYProgress } = useScroll();
-  const scaleX = useTransform(scrollYProgress, [0, 1], [0, 1]);
+/* ──────────────────────────────────────────────
+   Feature data
+   ────────────────────────────────────────────── */
+
+const FEATURES = [
+  {
+    icon: GitBranch,
+    name: "Lanes",
+    tagline: "Parallel worktrees with conflict detection",
+    description:
+      "Each agent works in its own isolated git worktree. Run builds, tests, and installs simultaneously across branches without touching main.",
+    color: "text-violet-400",
+    bgColor: "bg-violet-500/10",
+    borderColor: "border-violet-500/20",
+    screenshotLabel: "Lanes View",
+  },
+  {
+    icon: Target,
+    name: "Missions",
+    tagline: "Multi-step orchestrated execution",
+    description:
+      "Break complex tasks into planned steps. Review the execution plan, approve it, then watch agents work through each step with full visibility.",
+    color: "text-amber-400",
+    bgColor: "bg-amber-500/10",
+    borderColor: "border-amber-500/20",
+    screenshotLabel: "Mission Planner",
+  },
+  {
+    icon: Bot,
+    name: "CTO Agent",
+    tagline: "Persistent AI project lead with memory",
+    description:
+      "A long-lived agent that understands your project architecture, remembers past decisions, and delegates work to coding agents via Linear integration.",
+    color: "text-emerald-400",
+    bgColor: "bg-emerald-500/10",
+    borderColor: "border-emerald-500/20",
+    screenshotLabel: "CTO Agent Chat",
+  },
+  {
+    icon: Terminal,
+    name: "Agent Chat",
+    tagline: "Multi-provider coding agents",
+    description:
+      "Chat with Claude, Codex, or local models. Every agent gets its own terminal, file access, and tool suite. BYOK or use any provider.",
+    color: "text-sky-400",
+    bgColor: "bg-sky-500/10",
+    borderColor: "border-sky-500/20",
+    screenshotLabel: "Agent Chat Session",
+  },
+  {
+    icon: Zap,
+    name: "Automations",
+    tagline: "Event-driven background execution",
+    description:
+      "Define rules that trigger agents on events like push, PR creation, or schedule. Set budget caps and guardrails per automation.",
+    color: "text-rose-400",
+    bgColor: "bg-rose-500/10",
+    borderColor: "border-rose-500/20",
+    screenshotLabel: "Automation Rules",
+  },
+  {
+    icon: Package,
+    name: "Context Packs",
+    tagline: "Structured context for agents",
+    description:
+      "Bundle project docs, architecture decisions, and conventions into packs that agents consume automatically. No more repeating yourself.",
+    color: "text-indigo-400",
+    bgColor: "bg-indigo-500/10",
+    borderColor: "border-indigo-500/20",
+    screenshotLabel: "Context Pack Editor",
+  },
+] as const;
+
+const CAPABILITIES = [
+  { icon: MonitorCheck, label: "Computer Use", detail: "Screenshot-based verification of agent output" },
+  { icon: Layers, label: "35+ MCP Tools", detail: "Built-in server for file ops, git, search, and more" },
+  { icon: Settings2, label: "Multi-Provider", detail: "Claude, Codex, Gemini, local models via BYOK" },
+  { icon: Play, label: "Process Monitor", detail: "Track every terminal command and its output" },
+];
+
+/* ──────────────────────────────────────────────
+   Quickstart copy command
+   ────────────────────────────────────────────── */
+
+function QuickstartBlock() {
+  const [copied, setCopied] = useState(false);
+
+  const xattrCmd = 'xattr -dr com.apple.quarantine /Applications/ADE.app';
+
+  const onCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(xattrCmd);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // no-op
+    }
+  }, [xattrCmd]);
 
   return (
-    <Page className="overflow-x-hidden bg-bg text-fg font-sans min-h-screen">
-      
-      {/* --- SCROLL PROGRESS --- */}
-      <motion.div
-        className="fixed top-0 left-0 right-0 h-1 bg-gradient-to-r from-accent to-accent-2 origin-left z-[100]"
-        style={{ scaleX }}
-      />
-
-      {/* --- FLOATING HEADER --- */}
-      <header className="fixed top-0 left-0 right-0 z-50 px-6 py-4 flex justify-between items-center bg-black/40 backdrop-blur-2xl border-b border-white/5">
-        <div className="flex items-center gap-3">
-          <img src="/logo.svg" alt="ADE Logo" className="w-8 h-8 text-accent mix-blend-screen" />
-          <span className="font-bold text-xl tracking-tight text-white">ADE</span>
-          <span className="ml-2 px-2 py-0.5 rounded-full bg-accent/10 border border-accent/20 text-accent text-[10px] font-mono font-semibold tracking-widest uppercase">
-            v1.0 Beta
-          </span>
+    <div className="space-y-6">
+      <div className="space-y-3">
+        <div className="flex items-center gap-2 text-sm font-medium text-fg">
+          <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/15 text-xs font-bold text-accent">1</span>
+          Download the latest release
         </div>
-        <div className="flex items-center gap-6">
-          <a href={LINKS.github} target="_blank" rel="noreferrer" className="text-sm font-medium text-muted-fg hover:text-white transition-colors flex items-center gap-2">
-            <Github className="w-4 h-4" /> GitHub
-          </a>
-          <a href={LINKS.docs} target="_blank" rel="noreferrer" className="text-sm font-medium text-muted-fg hover:text-white transition-colors flex items-center gap-2">
-            <BookOpen className="w-4 h-4" /> Docs
-          </a>
-          <LinkButton to="/download" className="h-10 px-5 rounded-full text-sm font-semibold bg-white text-black hover:bg-white/90 shadow-[0_0_20px_rgba(255,255,255,0.15)] transition-all hover:scale-105">
-            Download free 
-          </LinkButton>
-        </div>
-      </header>
-
-      {/* --- MAIN CANVAS --- */}
-      <div className="relative pt-32 pb-32">
-        
-        {/* Massive Animated Background Gradients */}
-        <div className="absolute inset-0 overflow-hidden pointer-events-none z-0">
-           <motion.div 
-             animate={{ 
-               scale: [1, 1.1, 1],
-               opacity: [0.3, 0.4, 0.3],
-               x: [0, 100, 0],
-             }}
-             transition={{ duration: 15, repeat: Infinity, ease: "linear" }}
-             className="absolute -top-[20%] -right-[10%] w-[800px] h-[800px] rounded-full bg-accent/20 blur-[120px]" 
-           />
-           <motion.div 
-             animate={{ 
-               scale: [1, 1.2, 1],
-               opacity: [0.2, 0.3, 0.2],
-               x: [0, -100, 0],
-             }}
-             transition={{ duration: 20, repeat: Infinity, ease: "linear", delay: 2 }}
-             className="absolute top-[20%] -left-[10%] w-[600px] h-[600px] rounded-full bg-indigo-500/10 blur-[150px]" 
-           />
-        </div>
-
-        {/* --- HERO SECTION --- */}
-        <div className="relative z-10 container mx-auto px-6 text-center max-w-5xl mb-32">
-            <motion.div 
-              initial={{ opacity: 0, y: 30 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
-            >
-              <h1 className="text-6xl sm:text-7xl md:text-[90px] font-bold tracking-tight text-white leading-[1.05] mb-8">
-                Orchestrate your <br/>
-                <span className="text-transparent bg-clip-text bg-gradient-to-r from-white via-accent/90 to-accent-2">AI agents.</span>
-              </h1>
-              
-              <p className="text-xl sm:text-2xl md:text-3xl text-muted-fg font-light max-w-3xl mx-auto leading-relaxed mb-12">
-                ADE is a local-first desktop environment built to tame parallel coding agents. Isolate tasks into lanes, track every terminal command, and resolve conflicts before they break main.
-              </p>
-
-              <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-                 <LinkButton 
-                  to="/download" 
-                  size="lg" 
-                  className="w-full sm:w-auto rounded-full px-10 h-16 text-lg bg-accent text-accent-fg hover:bg-accent/90 shadow-[0_0_40px_rgba(167,139,250,0.3)] font-semibold transition-all hover:scale-105"
-                >
-                  <Download className="mr-3 h-6 w-6" /> Download for macOS
-                </LinkButton>
-                 <LinkButton
-                  to={LINKS.docs}
-                  variant="secondary"
-                  size="lg"
-                  className="w-full sm:w-auto rounded-full px-10 h-16 text-lg border-white/10 bg-surface/50 hover:bg-surface text-white backdrop-blur-md transition-all font-medium"
-                >
-                  <BookOpen className="mr-3 h-5 w-5 opacity-70" /> View Documentation
-                </LinkButton>
-              </div>
-            </motion.div>
-
-            {/* 3D App Mockup Placeholder */}
-            <motion.div
-              initial={{ opacity: 0, y: 100, rotateX: 10, scale: 0.9 }}
-              animate={{ opacity: 1, y: 0, rotateX: 0, scale: 1 }}
-              transition={{ duration: 1.2, delay: 0.2, ease: [0.16, 1, 0.3, 1] }}
-              className="mt-24 w-full perspective-[2000px]"
-            >
-               <div className="relative rounded-[24px] overflow-hidden ade-floating-pane aspect-[16/10] shadow-[0_40px_100px_-20px_rgba(0,0,0,1)] float-slow border-accent/20">
-                 
-                 {/* Mock App Header */}
-                 <div className="absolute top-0 w-full h-12 bg-black/40 backdrop-blur-md border-b border-white/10 flex items-center px-4 z-20">
-                    <div className="flex gap-2">
-                       <div className="w-3 h-3 rounded-full bg-red-500/80" />
-                       <div className="w-3 h-3 rounded-full bg-yellow-500/80" />
-                       <div className="w-3 h-3 rounded-full bg-green-500/80" />
-                    </div>
-                    <div className="mx-auto text-xs font-mono text-muted-fg/70 bg-white/5 px-24 py-1 rounded">ade-desktop-v1.0-alpha</div>
-                 </div>
-
-                 {/* Mock Content */}
-                 <div className="absolute inset-0 bg-surface/40 flex items-center justify-center z-10">
-                     <div className="text-center p-12 bg-black/50 backdrop-blur-xl border border-white/5 rounded-3xl">
-                       <LayoutGrid className="w-16 h-16 text-accent/50 mx-auto mb-6" />
-                       <p className="text-white text-xl font-medium mb-2">Workspace Overview</p>
-                       <p className="text-muted-fg font-mono text-sm max-w-sm mx-auto">Drop an actual high-res 16:10 screenshot of the ADE Desktop App interface here.</p>
-                     </div>
-                 </div>
-               </div>
-            </motion.div>
-        </div>
-
-        {/* --- ALTERNATING FEATURE SECTIONS --- */}
-        <div className="container mx-auto px-6 max-w-6xl space-y-32">
-           
-           {/* Feature 1: Lanes */}
-           <div className="flex flex-col lg:flex-row items-center gap-16">
-              <div className="flex-1 space-y-6">
-                 <div className="w-16 h-16 rounded-3xl bg-accent/10 flex items-center justify-center border border-accent/20">
-                   <GitMerge className="w-8 h-8 text-accent" />
-                 </div>
-                 <h2 className="text-4xl md:text-5xl font-bold text-white tracking-tight leading-tight">
-                   Parallel worktrees. <br/> <span className="text-muted-fg">Zero conflicts.</span>
-                 </h2>
-                 <p className="text-xl text-muted-fg leading-relaxed">
-                   Every task is isolated in its own git-backed lane. Agents can build, install dependencies, and run failing tests simultaneously without ever stepping on your main branch.
-                 </p>
-                 <ul className="space-y-4 pt-4">
-                   {["Isolated git worktrees per agent.", "Conflict resolution before merging.", "Visual tree history mapping."].map((item, i) => (
-                     <li key={i} className="flex items-center gap-3 text-white text-lg font-medium">
-                       <Zap className="w-5 h-5 text-accent" /> {item}
-                     </li>
-                   ))}
-                 </ul>
-              </div>
-              <div className="flex-1 w-full relative">
-                 <div className="absolute inset-0 bg-accent/20 blur-[100px] rounded-full pointer-events-none" />
-                 <div className="relative ade-floating-pane rounded-[24px] aspect-square flex flex-col overflow-hidden shadow-2xl">
-                    <div className="ade-floating-pane-header">
-                      <span className="ade-pane-title">lane-inspector.tsx</span>
-                    </div>
-                    <div className="flex-1 p-8 bg-surface/50 flex flex-col gap-4">
-                        <div className="p-4 rounded-xl border border-white/10 bg-black/40 flex justify-between items-center">
-                           <div>
-                              <div className="text-white font-medium">Mission: Add Auth</div>
-                              <div className="text-muted-fg text-xs font-mono mt-1">Status: Running Tests...</div>
-                           </div>
-                           <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center">
-                             <div className="w-2 h-2 rounded-full bg-accent animate-pulse" />
-                           </div>
-                        </div>
-                        <div className="p-4 rounded-xl border border-white/5 bg-black/20 flex justify-between items-center opacity-50">
-                           <div>
-                              <div className="text-white font-medium">Mission: Refactor API</div>
-                              <div className="text-muted-fg text-xs font-mono mt-1">Status: Complete</div>
-                           </div>
-                           <div className="w-8 h-8 rounded-full bg-green-500/20 flex items-center justify-center">
-                             <div className="w-2 h-2 rounded-full bg-green-500" />
-                           </div>
-                        </div>
-                    </div>
-                 </div>
-              </div>
-           </div>
-
-           {/* Feature 2: Terminal / CTO */}
-           <div className="flex flex-col lg:flex-row-reverse items-center gap-16">
-              <div className="flex-1 space-y-6">
-                 <div className="w-16 h-16 rounded-3xl bg-blue-500/10 flex items-center justify-center border border-blue-500/20">
-                   <Terminal className="w-8 h-8 text-blue-400" />
-                 </div>
-                 <h2 className="text-4xl md:text-5xl font-bold text-white tracking-tight leading-tight">
-                   Rich terminal sessions. <br/> <span className="text-muted-fg">Total visibility.</span>
-                 </h2>
-                 <p className="text-xl text-muted-fg leading-relaxed">
-                   Every command, every output, and every intent is recorded. Your CTO agent delegates complex requirements into manageable steps trackable via specific terminal views.
-                 </p>
-                 <ul className="space-y-4 pt-4">
-                   {["Multi-terminal split views.", "Real-time execution cost tracking.", "Interactive process intervention."].map((item, i) => (
-                     <li key={i} className="flex items-center gap-3 text-white text-lg font-medium">
-                       <Zap className="w-5 h-5 text-blue-400" /> {item}
-                     </li>
-                   ))}
-                 </ul>
-              </div>
-              <div className="flex-1 w-full relative">
-                 <div className="absolute inset-0 bg-blue-500/15 blur-[100px] rounded-full pointer-events-none" />
-                 <div className="relative ade-floating-pane border-blue-500/20 rounded-[24px] aspect-square flex flex-col overflow-hidden shadow-2xl">
-                    <div className="ade-floating-pane-header border-blue-500/10 bg-blue-500/5">
-                      <span className="ade-pane-title">terminal.tsx</span>
-                    </div>
-                    <div className="flex-1 p-6 bg-[#09080C] font-mono text-[13px] leading-relaxed flex flex-col gap-2">
-                        <div className="text-muted-fg opacity-50">Last login: {new Date().toLocaleDateString()} on ttys001</div>
-                        <div className="flex gap-2 text-white">
-                           <span className="text-blue-400">~/ade-project $</span> ade agent cto prompt "Set up authentication"
-                        </div>
-                        <div className="text-green-400">✅ CTO Activated. Planning execution...</div>
-                        <div className="text-muted-fg">↳ Creating new lane: feat/setup-auth</div>
-                        <div className="text-muted-fg">↳ Spawning 2 worker agents...</div>
-                        <div className="text-accent mt-4">Worker 1 (Frontend): Generating login components...</div>
-                    </div>
-                 </div>
-              </div>
-           </div>
-
-        </div>
-
-        {/* --- BOTTOM CTA --- */}
-        <div className="container mx-auto px-6 max-w-5xl mt-40">
-           <div className="relative rounded-[40px] p-16 md:p-24 text-center overflow-hidden border border-white/10 shadow-2xl group">
-             {/* Dynamic background effect */}
-             <div className="absolute inset-0 bg-surface" />
-             <div className="absolute inset-0 bg-[radial-gradient(circle_at_bottom,_var(--tw-gradient-stops))] from-accent/20 via-transparent to-transparent opacity-80 group-hover:opacity-100 transition-opacity duration-1000" />
-             
-             <Shield className="w-16 h-16 text-white mx-auto mb-8 relative z-10" />
-             <h2 className="text-5xl md:text-6xl font-bold text-white mb-6 tracking-tight relative z-10">
-               Build locally. Stay private.
-             </h2>
-             <p className="text-xl md:text-2xl text-muted-fg max-w-2xl mx-auto mb-12 relative z-10 font-light">
-               Your source code and context packs never leave your machine. Models interact with logic via strictly isolated read-only orchestrations.
-             </p>
-             
-             <div className="relative z-10 flex flex-col sm:flex-row justify-center gap-6">
-                <LinkButton 
-                  to="/download" 
-                  size="lg" 
-                  className="rounded-full px-12 h-16 text-lg font-semibold bg-white text-black hover:bg-white/90 shadow-xl transition-transform hover:scale-105"
-                >
-                  Download complete package
-                </LinkButton>
-             </div>
-           </div>
-        </div>
-
+        <LinkButton to={LINKS.releases} variant="secondary" size="md" target="_blank" rel="noreferrer">
+          <Download className="h-4 w-4" /> Download DMG from GitHub <ArrowUpRight className="h-3.5 w-3.5 text-muted-fg" />
+        </LinkButton>
       </div>
+
+      <div className="space-y-3">
+        <div className="flex items-center gap-2 text-sm font-medium text-fg">
+          <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/15 text-xs font-bold text-accent">2</span>
+          Clear Gatekeeper (unsigned build)
+        </div>
+        <div className="group relative rounded-xl border border-border/70 bg-[#0c0a10] p-4">
+          <code className="block text-sm leading-relaxed text-muted-fg select-all">
+            {xattrCmd}
+          </code>
+          <button
+            type="button"
+            onClick={onCopy}
+            className="absolute right-3 top-3 rounded-md border border-border/70 bg-card/70 p-1.5 text-muted-fg opacity-0 transition-opacity group-hover:opacity-100 hover:text-fg"
+            aria-label="Copy command"
+          >
+            {copied ? <span className="text-xs px-1">Copied</span> : <Copy className="h-3.5 w-3.5" />}
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <div className="flex items-center gap-2 text-sm font-medium text-fg">
+          <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/15 text-xs font-bold text-accent">3</span>
+          Open ADE and point it at your project
+        </div>
+        <p className="text-sm text-muted-fg">
+          No account needed. Add your own API keys for Claude, Codex, or other providers in settings.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────
+   Screenshot placeholder
+   ────────────────────────────────────────────── */
+
+function ScreenshotPlaceholder({
+  label,
+  aspectClass = "aspect-video",
+  className,
+}: {
+  label: string;
+  aspectClass?: string;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "relative overflow-hidden rounded-2xl border border-border/70 bg-surface/60",
+        aspectClass,
+        className
+      )}
+    >
+      <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6">
+        <div className="h-10 w-10 rounded-xl bg-accent/10 border border-accent/20 flex items-center justify-center">
+          <MonitorCheck className="h-5 w-5 text-accent/60" />
+        </div>
+        <span className="text-sm font-medium text-muted-fg/70 text-center">
+          Screenshot: {label}
+        </span>
+      </div>
+      {/* Subtle grid pattern */}
+      <div
+        className="absolute inset-0 opacity-[0.03]"
+        style={{
+          backgroundImage:
+            "linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px)",
+          backgroundSize: "40px 40px",
+        }}
+      />
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────
+   Page
+   ────────────────────────────────────────────── */
+
+export function HomePage() {
+  useDocumentTitle("ADE — Agentic Development Environment");
+
+  return (
+    <Page>
+      {/* ── HERO ─────────────────────────────── */}
+      <section className="relative overflow-hidden">
+        {/* Background accent blobs */}
+        <div className="pointer-events-none absolute inset-0 overflow-hidden">
+          <div className="absolute -top-[300px] left-1/2 -translate-x-1/2 h-[600px] w-[900px] rounded-full bg-accent/8 blur-[120px]" />
+          <div className="absolute top-[200px] -right-[200px] h-[400px] w-[400px] rounded-full bg-indigo-500/6 blur-[100px]" />
+        </div>
+
+        <Container className="relative pt-20 pb-16 sm:pt-28 sm:pb-24">
+          <Reveal>
+            <h1 className="max-w-3xl text-4xl font-bold tracking-tight text-fg sm:text-5xl lg:text-6xl leading-[1.1]">
+              Orchestrate parallel AI agents from your desktop.
+            </h1>
+          </Reveal>
+
+          <Reveal delay={0.05}>
+            <p className="mt-6 max-w-2xl text-lg leading-relaxed text-muted-fg sm:text-xl">
+              ADE is a local-first Electron app that isolates coding agents into git worktrees,
+              plans multi-step missions, and tracks every command they run.
+              Your code stays on your machine.
+            </p>
+          </Reveal>
+
+          <Reveal delay={0.1}>
+            <div className="mt-8 flex flex-wrap gap-3">
+              <LinkButton to="/download" variant="primary" size="lg">
+                <Download className="h-5 w-5" /> Download for macOS
+              </LinkButton>
+              <LinkButton to={LINKS.github} variant="secondary" size="lg" target="_blank" rel="noreferrer">
+                <Github className="h-5 w-5" /> View on GitHub
+              </LinkButton>
+              <LinkButton to={LINKS.docs} variant="secondary" size="lg" target="_blank" rel="noreferrer">
+                <BookOpen className="h-4 w-4" /> Docs <ArrowUpRight className="h-3.5 w-3.5 text-muted-fg" />
+              </LinkButton>
+            </div>
+          </Reveal>
+
+          {/* Hero screenshot placeholder */}
+          <Reveal delay={0.15}>
+            <div className="mt-14">
+              <div className="rounded-2xl border border-border/70 bg-card/40 p-2 shadow-glass-md">
+                {/* Mock window chrome */}
+                <div className="flex items-center gap-2 px-3 py-2">
+                  <div className="flex gap-1.5">
+                    <div className="h-3 w-3 rounded-full bg-[#ff5f57]" />
+                    <div className="h-3 w-3 rounded-full bg-[#febc2e]" />
+                    <div className="h-3 w-3 rounded-full bg-[#28c840]" />
+                  </div>
+                  <div className="mx-auto text-xs text-muted-fg/50">ADE Desktop</div>
+                </div>
+                <ScreenshotPlaceholder
+                  label="ADE Workspace Overview"
+                  aspectClass="aspect-[16/9]"
+                />
+              </div>
+            </div>
+          </Reveal>
+        </Container>
+      </section>
+
+      {/* ── FEATURES ──────────────────────────── */}
+      <section id="features" className="scroll-mt-20 py-16 sm:py-24">
+        <Container>
+          <Reveal>
+            <h2 className="text-3xl font-bold tracking-tight text-fg sm:text-4xl">
+              What you get
+            </h2>
+            <p className="mt-3 max-w-xl text-base text-muted-fg">
+              Everything needed to run multiple AI coding agents in parallel, safely.
+            </p>
+          </Reveal>
+
+          <div className="mt-12 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            {FEATURES.map((f, idx) => (
+              <Reveal key={f.name} delay={idx * 0.04}>
+                <Card className="group flex h-full flex-col p-6 transition-all duration-300 hover:border-border hover:bg-card/70 hover:shadow-glass-md">
+                  <div className="flex items-start gap-4">
+                    <div className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border", f.bgColor, f.borderColor)}>
+                      <f.icon className={cn("h-5 w-5", f.color)} />
+                    </div>
+                    <div>
+                      <h3 className="text-base font-semibold text-fg">{f.name}</h3>
+                      <p className="mt-0.5 text-sm text-muted-fg">{f.tagline}</p>
+                    </div>
+                  </div>
+                  <p className="mt-4 flex-1 text-sm leading-relaxed text-muted-fg">
+                    {f.description}
+                  </p>
+                  <div className="mt-5">
+                    <ScreenshotPlaceholder
+                      label={f.screenshotLabel}
+                      aspectClass="aspect-[4/3]"
+                    />
+                  </div>
+                </Card>
+              </Reveal>
+            ))}
+          </div>
+        </Container>
+      </section>
+
+      {/* ── MORE CAPABILITIES ─────────────────── */}
+      <section className="border-y border-border/70 bg-card/20 py-16 sm:py-20">
+        <Container>
+          <Reveal>
+            <h2 className="text-2xl font-bold tracking-tight text-fg sm:text-3xl">
+              Also built in
+            </h2>
+          </Reveal>
+
+          <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {CAPABILITIES.map((cap, idx) => (
+              <Reveal key={cap.label} delay={idx * 0.04}>
+                <div className="rounded-xl border border-border/70 bg-card/40 p-5 transition-colors hover:bg-card/60">
+                  <cap.icon className="h-5 w-5 text-accent" />
+                  <div className="mt-3 text-sm font-semibold text-fg">{cap.label}</div>
+                  <div className="mt-1 text-sm text-muted-fg">{cap.detail}</div>
+                </div>
+              </Reveal>
+            ))}
+          </div>
+        </Container>
+      </section>
+
+      {/* ── QUICKSTART ────────────────────────── */}
+      <section id="quickstart" className="scroll-mt-20 py-16 sm:py-24">
+        <Container>
+          <div className="grid gap-12 lg:grid-cols-2 lg:items-start">
+            <div>
+              <Reveal>
+                <h2 className="text-3xl font-bold tracking-tight text-fg sm:text-4xl">
+                  Get started in 30 seconds
+                </h2>
+                <p className="mt-3 max-w-lg text-base text-muted-fg">
+                  Download the DMG, clear Gatekeeper, and open. No account required.
+                </p>
+              </Reveal>
+
+              <Reveal delay={0.05}>
+                <div className="mt-8">
+                  <QuickstartBlock />
+                </div>
+              </Reveal>
+            </div>
+
+            <Reveal delay={0.08}>
+              <Card className="p-6">
+                <h3 className="text-base font-semibold text-fg">Or build from source</h3>
+                <p className="mt-2 text-sm text-muted-fg">
+                  Clone the repo and run with Vite + Electron. Also the fastest way to contribute.
+                </p>
+                <div className="mt-4 rounded-xl border border-border/70 bg-[#0c0a10] p-4 font-mono text-sm leading-relaxed text-muted-fg">
+                  <div><span className="text-accent/70">$</span> git clone https://github.com/{LINKS.repo}.git</div>
+                  <div><span className="text-accent/70">$</span> cd ADE/apps/desktop</div>
+                  <div><span className="text-accent/70">$</span> npm install</div>
+                  <div><span className="text-accent/70">$</span> npm run dev</div>
+                </div>
+
+                <div className="mt-6 flex flex-wrap gap-3">
+                  <LinkButton to={LINKS.docs} variant="secondary" size="sm" target="_blank" rel="noreferrer">
+                    <BookOpen className="h-4 w-4" /> Docs <ArrowUpRight className="h-3.5 w-3.5 text-muted-fg" />
+                  </LinkButton>
+                  <LinkButton to={LINKS.github} variant="secondary" size="sm" target="_blank" rel="noreferrer">
+                    <Github className="h-4 w-4" /> Repo <ArrowUpRight className="h-3.5 w-3.5 text-muted-fg" />
+                  </LinkButton>
+                </div>
+              </Card>
+            </Reveal>
+          </div>
+        </Container>
+      </section>
+
+      {/* ── LINKS / CTA ───────────────────────── */}
+      <section className="py-16 sm:py-24">
+        <Container>
+          <Reveal>
+            <Card className="relative overflow-hidden p-10 sm:p-14 text-center">
+              {/* Subtle radial gradient */}
+              <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--color-accent)_0%,_transparent_70%)] opacity-[0.04]" />
+
+              <div className="relative">
+                <h2 className="text-3xl font-bold tracking-tight text-fg sm:text-4xl">
+                  Local-first. Open source.
+                </h2>
+                <p className="mt-3 mx-auto max-w-lg text-base text-muted-fg">
+                  Your source code never leaves your machine. ADE orchestrates agents locally
+                  and treats all output as diffs you explicitly apply.
+                </p>
+
+                <div className="mt-8 flex flex-wrap justify-center gap-3">
+                  <LinkButton to="/download" variant="primary" size="lg">
+                    <Download className="h-5 w-5" /> Download ADE
+                  </LinkButton>
+                  <LinkButton to={LINKS.github} variant="secondary" size="lg" target="_blank" rel="noreferrer">
+                    <Github className="h-5 w-5" /> Star on GitHub
+                  </LinkButton>
+                  <LinkButton to={LINKS.docs} variant="secondary" size="lg" target="_blank" rel="noreferrer">
+                    <BookOpen className="h-4 w-4" /> Documentation
+                  </LinkButton>
+                </div>
+              </div>
+            </Card>
+          </Reveal>
+        </Container>
+      </section>
     </Page>
   );
 }

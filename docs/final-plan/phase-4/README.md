@@ -2,7 +2,7 @@
 
 ## Phase 4 -- CTO + Ecosystem (4-5 weeks)
 
-Goal: Add the CTO agent as a persistent project-aware assistant with a configurable org chart of worker agents. Absorb Night Shift into Automations. Complete the memory architecture upgrade. Expand external ecosystem integration.
+Goal: Add the CTO agent as a persistent project-aware assistant with a configurable org chart of worker agents. Deliver the updated Automations model (time-based/action-based triggers and execution routing). Complete the memory architecture upgrade. Expand external ecosystem integration.
 
 ### Workstream Index
 
@@ -12,7 +12,7 @@ Goal: Add the CTO agent as a persistent project-aware assistant with a configura
 | W2: Worker Agents & Org Chart | [W1-W4.md](W1-W4.md) | ✅ Complete |
 | W3: Heartbeat & Activation | [W1-W4.md](W1-W4.md) | ✅ Complete |
 | W4: Bidirectional Linear Sync | [W1-W4.md](W1-W4.md) | ✅ Complete |
-| W5: Automations Platform + Night Shift | [W5.md](W5.md) | ✅ Complete |
+| W5: Automations Platform | [W5.md](W5.md) | ✅ Complete |
 | W6: Unified Memory System | [W6.md](W6.md) | ✅ Complete |
 | W6½: Memory Engine Hardening | [W6-half.md](W6-half.md) | ✅ Complete |
 | W-UX: CTO + Org Experience Overhaul | [W-UX.md](W-UX.md) | ✅ Complete |
@@ -31,7 +31,7 @@ Goal: Add the CTO agent as a persistent project-aware assistant with a configura
 
 - [features/CTO.md](../../features/CTO.md) — CTO agent design, memory architecture, OpenClaw integration architecture
 - [features/MISSIONS.md](../../features/MISSIONS.md) — mission launch flow, executor policy, autopilot mode
-- [features/AUTOMATIONS.md](../../features/AUTOMATIONS.md) — automation rules, trigger-action engine (Night Shift absorbed here)
+- [features/AUTOMATIONS.md](../../features/AUTOMATIONS.md) — automation rules, trigger categories, execution routing
 - [features/ONBOARDING_AND_SETTINGS.md](../../features/ONBOARDING_AND_SETTINGS.md) — AI usage dashboard and budget controls
 - [architecture/AI_INTEGRATION.md](../../architecture/AI_INTEGRATION.md) — per-task-type configuration, MCP permission/policy layer
 - [architecture/SECURITY_AND_PRIVACY.md](../../architecture/SECURITY_AND_PRIVACY.md) — trust model for unattended execution
@@ -208,8 +208,8 @@ Phase 4 should enable a "tech department" loop: one persistent agent per employe
 
 **W5b — Automations Full: ✅ Complete (2026-03-12)**
 - ✅ Legacy and modern triggers are normalized through one runtime path, including config sync, ingress dispatch, and scheduler registration.
-- ✅ `automation-bot`, `employee`, and `cto-route` rules now dispatch through the mission/orchestrator path with stable queue/runtime bridges.
-- ✅ Night Shift queue controls, ingress status, billing attribution, publish gating, and runtime typing are green in the app and tests.
+- ✅ Automation execution now routes through supported execution types (`agent-session`, `mission`, `built-in task`) with stable runtime bridges.
+- ✅ Time-based/action-based trigger routing, ingress status, billing attribution, publish gating, and runtime typing are green in the app and tests.
 - ✅ CTO-owned Linear intake remains separate while automations retain programmable triggers and Linear follow-up actions.
 
 **W8 — External MCP Consumption: Implemented baseline**

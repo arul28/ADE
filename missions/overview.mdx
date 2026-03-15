@@ -4,7 +4,7 @@ description: "Understand what a Mission is, how it progresses through phases, an
 icon: "bullseye"
 ---
 
-<Info>Screenshot needed: Full Missions page showing the mission list with status badges and an open mission detail view with the Plan tab active.</Info>
+<Info>Screenshot: Full Missions page showing the mission list with status badges and an open mission detail view with the Plan tab active.</Info>
 
 ## What is a Mission?
 
@@ -43,7 +43,7 @@ Every Mission passes through four phases in order. The phase boundary is a hard 
 
     Before planning starts, you can open the **Planning Prompt Preview** to see — and optionally edit — the exact prompt the orchestrator will receive.
 
-    <Info>Screenshot needed: Planning phase in progress showing the Plan tab with a generating plan skeleton state.</Info>
+    <Info>Screenshot: Planning phase in progress showing the Plan tab with a generating plan skeleton state.</Info>
   </Step>
   <Step title="Approval Gate">
     The completed plan is presented to you for review. This is a **hard stop** — the mission cannot advance without your explicit approval.
@@ -61,9 +61,8 @@ Every Mission passes through four phases in order. The phase boundary is a hard 
     | Strategy | When used |
     |---|---|
     | `sequential` | Tasks have strict dependencies; one worker must finish before the next starts |
-    | `parallel` | Tasks are independent; all workers run simultaneously |
-    | `wave` | Groups of tasks run in parallel within each wave; waves are synchronized before advancing |
-    | `adaptive` | Strategy shifts based on runtime signals — a worker failure can trigger a strategy change mid-mission |
+    | `parallel-lite` | A small number of independent tasks run simultaneously |
+    | `parallel-first` | Tasks are independent; all workers start at the same time and run concurrently in their own lanes |
 
     The Plan tab shows a live activity feed with per-worker status, elapsed time, and token consumption. You can chat with the orchestrator in the **Chat tab** at any point without interrupting execution.
   </Step>
@@ -74,27 +73,23 @@ Every Mission passes through four phases in order. The phase boundary is a hard 
 
 ---
 
-## The AI Meta-Reasoner
+## Execution Strategy Selection
 
-Before the Planning phase begins, ADE's **meta-reasoner** analyzes the mission description and selects the optimal execution strategy. The meta-reasoner considers:
+Before the Planning phase begins, ADE's planner analyzes the mission description and selects an execution strategy. The planner considers:
 
 - Task dependency graph (does step B require step A's output?)
 - Number of independent work units
 - Estimated context size per worker
-- Historical performance of each strategy for similar task shapes
 
 <AccordionGroup>
   <Accordion title="sequential — one worker at a time">
     Used for tasks with tight dependencies. Worker 2 only starts after Worker 1 has completed and its output has been verified. Slower overall, but safe when outputs feed inputs.
   </Accordion>
-  <Accordion title="parallel — all workers simultaneously">
+  <Accordion title="parallel-lite — limited parallelism">
+    A small number of independent tasks run simultaneously. The planner sets a `parallelismCap` to limit how many workers execute at once.
+  </Accordion>
+  <Accordion title="parallel-first — all workers simultaneously">
     Used for independent tasks. All workers start at the same time and run concurrently in their own lanes. Fastest option when there are no inter-worker dependencies.
-  </Accordion>
-  <Accordion title="wave — parallel groups with sync points">
-    A hybrid strategy. Workers in Wave 1 all run in parallel. Once all Wave 1 workers succeed, Wave 2 begins. Useful for tasks where some upfront work (e.g., scaffolding) must complete before downstream work can start, but the downstream work is itself parallelizable.
-  </Accordion>
-  <Accordion title="adaptive — runtime-adjusted">
-    ADE starts with one strategy and switches based on signals: if a worker fails repeatedly, the orchestrator may switch remaining work to sequential for safety. If a sequential run produces independent sub-tasks, it may spawn parallel branches.
   </Accordion>
 </AccordionGroup>
 

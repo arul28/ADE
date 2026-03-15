@@ -4,7 +4,7 @@ description: "An infinite-canvas visualization of your entire project topology â
 icon: "diagram-project"
 ---
 
-<Info>Screenshot needed: Full Workspace Graph view showing lane nodes in a hierarchical tree, color-coded by status, with PR nodes and merge simulation edge annotations.</Info>
+<Info>Screenshot: Full Workspace Graph view showing lane nodes in a hierarchical tree, color-coded by status, with PR nodes and merge simulation edge annotations.</Info>
 
 ## Overview
 
@@ -87,7 +87,7 @@ Edges represent relationships between nodes.
 - **PR target edges**: A lane's PR targets the main branch (or another lane's branch). Shown as a dashed line connecting the PR node to its target.
 - **Merge simulation overlays**: After running a simulation, edges gain annotation badges showing predicted merge outcome, conflict count, and risk level.
 
-<Info>Screenshot needed: Close-up of lane nodes connected by edges with merge simulation annotations showing conflict counts and risk levels.</Info>
+<Info>Screenshot: Close-up of lane nodes connected by edges with merge simulation annotations showing conflict counts and risk levels.</Info>
 
 ---
 
@@ -133,7 +133,7 @@ The toolbar at the top of the graph provides three view modes. Switch between th
 
 The merge simulation feature predicts what would happen if each lane's branch were merged into the base branch, in sequence. ADE uses `git merge-tree` under the hood â€” the same algorithm Git uses for real merges, but without touching any branch on disk.
 
-<Info>Screenshot needed: Workspace Graph after running merge simulation showing edge annotation badges and simulation timestamp in the toolbar.</Info>
+<Info>Screenshot: Workspace Graph after running merge simulation showing edge annotation badges and simulation timestamp in the toolbar.</Info>
 
 ### Running a Simulation
 

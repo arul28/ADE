@@ -390,6 +390,13 @@ export type ContextDocGenerationWarning = {
   actionPath?: string;
 };
 
+export type ContextDocGenerationStatus = {
+  state: "idle" | "running" | "failed";
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string | null;
+};
+
 export type ContextStatus = {
   docs: ContextDocStatus[];
   canonicalDocsPresent: number;
@@ -406,6 +413,7 @@ export type ContextStatus = {
   fallbackWrites: number;
   insufficientContextCount: number;
   warnings: ContextDocGenerationWarning[];
+  generation: ContextDocGenerationStatus;
 };
 
 export type ContextDocProvider = "codex" | "claude" | "unified";

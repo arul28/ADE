@@ -1,39 +1,19 @@
 ---
-title: "Windsurf setup"
-description: "Configure Windsurf for your documentation workflow"
+title: "Windsurf"
+description: "Open your project in Windsurf from ADE and track the session."
 icon: "water"
 ---
 
-Set up Windsurf's Cascade AI assistant to help you write and maintain your Mintlify documentation.
+## Overview
 
-## Prerequisites
+ADE can launch [Windsurf](https://codeium.com/windsurf) for your project directly from the Run tab. When launched through ADE, the session is tracked as a managed session in the lane for visibility in the History view.
 
-- Windsurf editor installed
+## Requirements
 
-## Setup
+- Windsurf installed on your machine
 
-<Steps>
-<Step title="Open your docs directory in Windsurf">
-  Open the root of your documentation repository where `docs.json` is located.
-</Step>
+## Launching Windsurf from ADE
 
-<Step title="Install the Mintlify skill">
-  In the integrated terminal, run:
+Open the **Run** tab or **Project Home** and click the **Windsurf** launcher (if configured). ADE opens the current project (or the selected lane's worktree) in Windsurf as a separate application window.
 
-  ```bash
-  npx skills add https://mintlify.com/docs
-  ```
-
-  This gives Windsurf Mintlify's component reference, writing standards,
-  and workflow guidance.
-</Step>
-
-<Step title="Customize project instructions">
-  Edit `AGENTS.md` in your project root to add project-specific terminology,
-  style preferences, and content boundaries.
-</Step>
-
-<Step title="Start writing with Cascade">
-  Open a file and use Cascade to draft and edit documentation.
-</Step>
-</Steps>
+Configure custom CLI launchers in **Settings > Project Home > Custom CLI Launchers** if Windsurf does not appear by default.

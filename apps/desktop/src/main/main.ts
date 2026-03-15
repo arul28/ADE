@@ -51,7 +51,6 @@ import { createOnboardingService } from "./services/onboarding/onboardingService
 import { createAutomationService } from "./services/automations/automationService";
 import { createAutomationPlannerService } from "./services/automations/automationPlannerService";
 import { createAutomationSecretService } from "./services/automations/automationSecretService";
-import { createAutomationRoutingService } from "./services/automations/automationRoutingService";
 import { createAutomationIngressService } from "./services/automations/automationIngressService";
 import { createUsageTrackingService } from "./services/usage/usageTrackingService";
 import { createBudgetCapService } from "./services/usage/budgetCapService";
@@ -538,6 +537,7 @@ app.whenReady().then(async () => {
     recordRecent?: boolean;
     userSelectedProject?: boolean;
   }): Promise<AppContext> => {
+    const hadAdeDir = fs.existsSync(path.join(projectRoot, ".ade"));
     const adePaths = ensureAdeDirs(projectRoot);
     const { initApiKeyStore } = await import("./services/ai/apiKeyStore");
     initApiKeyStore(projectRoot);
@@ -705,7 +705,8 @@ app.whenReady().then(async () => {
     const aiIntegrationService = createAiIntegrationService({
       db,
       logger,
-      projectConfigService
+      projectConfigService,
+      projectRoot,
     });
 
     const packService = createPackService({
@@ -728,6 +729,7 @@ app.whenReady().then(async () => {
       projectRoot,
       projectId,
       baseRef,
+      freshProject: !hadAdeDir,
       laneService,
       projectConfigService
     });
@@ -753,7 +755,8 @@ app.whenReady().then(async () => {
 
     const githubService = createGithubService({
       logger,
-      projectRoot
+      projectRoot,
+      appDataDir: app.getPath("userData"),
     });
 
     const conflictService = createConflictService({
@@ -922,10 +925,17 @@ app.whenReady().then(async () => {
       embeddingService,
       logger,
     });
+    let ctoStateServiceRef: ReturnType<typeof createCtoStateService> | null = null;
+    let syncMemoryDocsTimer: ReturnType<typeof setTimeout> | null = null;
+    const debouncedSyncMemoryDocs = () => {
+      if (syncMemoryDocsTimer) clearTimeout(syncMemoryDocsTimer);
+      syncMemoryDocsTimer = setTimeout(() => { ctoStateServiceRef?.syncDerivedMemoryDocs(); }, 2_000);
+    };
     const memoryService = createUnifiedMemoryService(db, {
       hybridSearchService,
       onMemoryMutated: () => {
         batchConsolidationServiceRef?.scheduleAutoConsolidationCheck();
+        debouncedSyncMemoryDocs();
       },
       onMemoryUpserted: (event) => {
         if ((event.created || event.contentChanged) && embeddingService.isAvailable()) {
@@ -1023,8 +1033,10 @@ app.whenReady().then(async () => {
     const ctoStateService = createCtoStateService({
       db,
       projectId,
-      adeDir: adePaths.adeDir
+      adeDir: adePaths.adeDir,
+      memoryService,
     });
+    ctoStateServiceRef = ctoStateService;
 
     const workerAgentService = createWorkerAgentService({
       db,
@@ -1094,9 +1106,6 @@ app.whenReady().then(async () => {
     const automationSecretService = createAutomationSecretService({
       adeDir: adePaths.adeDir,
       logger,
-    });
-    const automationRoutingService = createAutomationRoutingService({
-      workerAgentService,
     });
 
     const linearCredentialService = createLinearCredentialService({
@@ -1245,6 +1254,7 @@ app.whenReady().then(async () => {
       projectConfigService,
       conflictService,
       testService,
+      agentChatService,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.automationsEvent, event)
     });
     const automationIngressService = createAutomationIngressService({
@@ -1714,7 +1724,6 @@ app.whenReady().then(async () => {
       proceduralLearningService,
       budgetCapService,
       workerHeartbeatService,
-      automationRoutingService,
     });
     scheduleBackgroundProjectTask(
       "automations.ingress_start",

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { createUnifiedMemoryService } from "../memory/unifiedMemoryService";
 import { openKvDb } from "../state/kvDb";
 import { createCtoStateService } from "./ctoStateService";
 
@@ -24,6 +25,16 @@ async function createFixture() {
   return { root, adeDir, db, projectId };
 }
 
+async function createFixtureWithMemory() {
+  const fixture = await createFixture();
+  fixture.db.run(
+    `INSERT OR IGNORE INTO projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) VALUES (?, ?, ?, ?, ?, ?)`,
+    [fixture.projectId, fixture.root, "test-project", "main", new Date().toISOString(), new Date().toISOString()]
+  );
+  const memoryService = createUnifiedMemoryService(fixture.db);
+  return { ...fixture, memoryService };
+}
+
 describe("ctoStateService", () => {
   it("creates default CTO identity/core memory when absent", async () => {
     const fixture = await createFixture();
@@ -40,6 +51,8 @@ describe("ctoStateService", () => {
 
     expect(fs.existsSync(path.join(fixture.adeDir, "cto", "identity.yaml"))).toBe(true);
     expect(fs.existsSync(path.join(fixture.adeDir, "cto", "core-memory.json"))).toBe(true);
+    expect(fs.existsSync(path.join(fixture.adeDir, "cto", "MEMORY.md"))).toBe(true);
+    expect(fs.existsSync(path.join(fixture.adeDir, "cto", "CURRENT.md"))).toBe(true);
     expect(fs.existsSync(path.join(fixture.adeDir, "cto", "sessions.jsonl"))).toBe(false);
 
     fixture.db.close();
@@ -299,9 +312,44 @@ describe("ctoStateService", () => {
     expect(snapshot.recentSubordinateActivity[0]?.summary).toContain("navigation regressions");
 
     const reconstruction = service.buildReconstructionContext(10);
-    expect(reconstruction).toContain("Recent Employee Activity");
+    expect(reconstruction).toContain("Layer 3 — Current working context");
+    expect(reconstruction).toContain("Recent worker activity");
     expect(reconstruction).toContain("Mobile Dev");
     expect(reconstruction).toContain("task:navigation-fix");
+
+    fixture.db.close();
+  });
+
+  it("generates long-term memory docs from core memory and promoted durable memories", async () => {
+    const fixture = await createFixtureWithMemory();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+      memoryService: fixture.memoryService,
+    });
+
+    service.updateCoreMemory({
+      projectSummary: "ADE is a local-first orchestration desktop app.",
+      criticalConventions: ["Never force-push shared branches"],
+      activeFocus: ["CTO continuity"],
+    });
+    fixture.memoryService.addMemory({
+      projectId: fixture.projectId,
+      scope: "project",
+      category: "decision",
+      content: "Decision: keep CTO memory layered as identity, brief, current context, and searchable durable memory.",
+      importance: "high",
+    });
+
+    service.syncDerivedMemoryDocs();
+
+    const memoryDoc = fs.readFileSync(path.join(fixture.adeDir, "cto", "MEMORY.md"), "utf8");
+    const currentDoc = fs.readFileSync(path.join(fixture.adeDir, "cto", "CURRENT.md"), "utf8");
+    expect(memoryDoc).toContain("ADE is a local-first orchestration desktop app.");
+    expect(memoryDoc).toContain("Never force-push shared branches");
+    expect(memoryDoc).toContain("keep CTO memory layered");
+    expect(currentDoc).toContain("CTO continuity");
 
     fixture.db.close();
   });
@@ -412,6 +460,32 @@ describe("ctoStateService", () => {
 
     const dates = service.listDailyLogs(2);
     expect(dates).toEqual(["2026-03-12", "2026-03-11"]);
+
+    fixture.db.close();
+  });
+
+  it("appendContinuityCheckpoint writes a compaction carry-forward into the daily log", async () => {
+    const fixture = await createFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    service.appendContinuityCheckpoint({
+      reason: "compaction",
+      entries: [
+        { role: "user", text: "We should make the CTO remember the project brief more explicitly." },
+        { role: "assistant", text: "I’ll split the memory model into long-term brief, current context, and durable searchable memory." },
+      ],
+    });
+
+    const latestDate = service.listDailyLogs(1)[0];
+    expect(latestDate).toBeTruthy();
+    const content = service.readDailyLog(latestDate);
+    expect(content).toContain("Compaction checkpoint");
+    expect(content).toContain("project brief");
+    expect(content).toContain("durable searchable memory");
 
     fixture.db.close();
   });

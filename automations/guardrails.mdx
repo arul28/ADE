@@ -1,48 +1,49 @@
 ---
 title: "Guardrails & Security"
-description: "Secure your automations with tool palette restrictions, memory modes, budget caps, and Night Shift deferred processing. Includes troubleshooting for common issues."
+description: "Secure your automations with tool palette restrictions, memory modes, budget caps, and preflight controls. Covers agent-session, mission, and built-in-task execution."
 icon: "shield-check"
 ---
 
 ## Tool Palette Security
 
-Every automation runs with a restricted set of tools called a **palette**. This is a security best practice — an automation that runs unattended should only have access to exactly what it needs.
+Every automation can restrict its ADE tool surface with a **tool palette**. This is the primary safety mechanism for unattended execution.
 
 | Palette | Capabilities | When to Use |
 |---|---|---|
-| `read-only` | Read files, read git history, read context packs | PR review, summarization, analysis |
-| `write-files` | Everything in read-only + write and create files | Auto-formatting, documentation generation |
-| `full-git` | Everything in write-files + all git operations | Auto-committing, branch management |
-| `full-ade` | All ADE tools including Linear and mission management | Complex orchestration automations |
-| Custom | Explicitly listed tools | Fine-grained control |
+| `read-only` | Read files, read git history, read context packs | Review, summarization, analysis |
+| `write-files` | `read-only` + write and create files | Code/document edits, lightweight maintenance |
+| `full-git` | `write-files` + all git operations | Commit/branch automation, PR prep |
+| `full-ade` | All ADE tools including mission/Linear/gh actions | Complex orchestration automation |
+| Custom | Explicitly listed tools | Precise scope for a specific workflow |
 
 <Warning>
-Avoid granting `full-ade` permissions to automations that run on external triggers like `linear.issue_created`. A malformed or adversarial issue body could attempt prompt injection. Use the minimum palette required for the task.
+Avoid granting `full-ade` permissions unless the workflow needs end-to-end orchestration.
+Start with the narrowest palette that can complete the task.
 </Warning>
 
 ---
 
 ## Memory Modes
 
-Control how much state an automation carries between runs.
+Control how much context an automation carries between runs.
 
 <Tabs>
   <Tab title="stateless">
-    Each execution starts completely fresh. The automation has no knowledge of previous runs. This is the default and the safest option.
+    Each execution starts fresh with no history carried forward. This is the default and safest for infrequent, security-sensitive automations.
 
     ```yaml
     memory: stateless
     ```
   </Tab>
   <Tab title="stateful">
-    The automation has a persistent memory store scoped to that automation. Useful for tracking state across executions — for example, "remember the last PR you reviewed so you don't repeat yourself."
+    Automation state is retained per rule for this execution family. Useful for watchlists or recurring hygiene tasks.
 
     ```yaml
     memory: stateful
     ```
   </Tab>
   <Tab title="project">
-    The automation reads from and writes to the project-level memory shared with the CTO and other automations. Use this when your automation needs to coordinate with other agents or influence CTO decisions.
+    Reads and writes from the shared project memory pool, aligned with the CTO and mission ecosystem.
 
     ```yaml
     memory: project
@@ -52,40 +53,33 @@ Control how much state an automation carries between runs.
 
 ---
 
-## Night Shift Queue
+## Built-in budget controls
 
-<Info>**📸 Screenshot needed:** The Automations → Night Shift tab showing a queue of pending tasks with their estimated cost, priority order, and a "Run Night Shift Now" button. One task should show as "Completed at 2:14 AM" with a green checkmark.</Info>
+Automation budgets are enforced from shared settings in **Settings > Usage** and apply across:
 
-The Night Shift system allows you to defer expensive, non-urgent automations to run while your machine is idle.
+- Background automations
+- Missions
+- Chat and terminal automation helpers
+- Linear and GitHub maintenance jobs
 
-**How it works:**
+Budget controls include:
 
-1. Any automation with executor mode `night-shift` adds to the queue when its trigger fires.
-2. ADE monitors system idle time. After **15 minutes** of no keyboard or mouse input, Night Shift processing begins.
-3. Tasks are processed **one at a time** to avoid CPU/memory contention with background processes.
-4. Results (commits, PRs, comments, notifications) are available when you return.
+- **Per-rule budget cap** for token or USD spend
+- **Global budget cap** for project-wide usage policy
+- **Daily / weekly policy** tied to the user-selected spending model
 
-**Managing the Queue:**
-
-- Navigate to **Automations → Night Shift** to see the current queue, estimated costs, and history of past runs.
-- Click **Run Night Shift Now** to process the queue immediately, regardless of idle state.
-- Individual tasks can be removed from the queue or reprioritized by dragging.
-
-<Tip>
-Schedule resource-intensive tasks like dependency updates or full test suite runs as Night Shift automations. They will complete overnight without competing with your daytime work.
-</Tip>
+When caps are reached, ADE stops new queueing and marks runs as budget-gated. You can resume by increasing the shared budget or re-running the rule manually when limits reset.
 
 ---
 
-## Guardrails Reference
+## Verification controls
 
-| Guardrail | Description |
-|---|---|
-| Budget Cap | Maximum token cost per execution. Automation halts if exceeded. |
-| Time Limit | Maximum wall-clock execution time. Halts and reports timeout. |
-| File Path Restriction | Automation can only read/write files matching a specified glob pattern. |
-| Dry-Run Mode | Shows what the automation would do without performing any writes. |
-| Approval Mode | Automation pauses and requests your approval before any write operation. |
+Automations can run at different confidence levels:
+
+- **Automatic**: proceed when clear output is produced.
+- **Manual verify**: pause before side-effect actions such as committing, opening PRs, changing branch state, or sending external updates.
+
+Verification settings should be configured per automation and are visible in the rule's run options.
 
 ---
 
@@ -93,38 +87,38 @@ Schedule resource-intensive tasks like dependency updates or full test suite run
 
 <AccordionGroup>
   <Accordion title="Automation is not firing" icon="circle-question">
-    1. Confirm the automation is **enabled** — check the toggle in the Automations list.
-    2. Verify the trigger filter is not too restrictive. For example, a `git.push` trigger with `branch: release/*` will not fire on pushes to `main`.
-    3. For Linear triggers, confirm the Linear integration is connected and the webhook is registered: **Settings → Integrations → Linear → Webhook Status**.
-    4. Check the automation's **Run History** tab for any error entries — trigger evaluation errors are logged there even if the executor never ran.
+    1. Confirm the automation is **enabled** in the Automations list.
+    2. Verify the trigger definition and trigger filters.
+    3. Check the **Run History** in Automations for errors in trigger evaluation.
+    4. Confirm required connectors are healthy in Settings (webhook secret, GitHub auth, etc.).
+    5. Review the trigger event shape if using `webhook` or `github.webhook`.
   </Accordion>
 
-  <Accordion title="Budget exceeded — automation halted" icon="circle-dollar-to-slot">
-    The automation hit its configured token budget cap and stopped mid-execution. To resolve:
+  <Accordion title="Budget exceeded" icon="circle-dollar-to-slot">
+    The rule hit a shared budget limit and stopped execution.
 
-    1. Review the partial results in **Run History** to understand how far it got.
-    2. Increase the budget cap in the automation's settings if the task genuinely requires more tokens.
-    3. Alternatively, break the automation's prompt into a smaller, more focused task.
-    4. For recurring budget overruns, switch to `night-shift` mode which has a separate, higher default budget ceiling.
+    1. Open **Automations → History** and find the blocked run.
+    2. Review how much budget was consumed.
+    3. Adjust shared budget policy under **Settings > Usage**, or
+       move this automation to a smaller-scope execution surface.
+    4. Re-run if the work is still needed.
   </Accordion>
 
   <Accordion title="Guardrail blocked a file write" icon="lock">
-    The automation attempted to write a file outside its configured file path restriction. This is the guardrail working as intended.
+    The execution attempted a file change outside its configured tool scope.
+    This is working as designed.
 
-    If the write was legitimate, update the **File Path Restriction** glob in the automation settings to include the path that was blocked. If unexpected, investigate the automation prompt — the agent may be hallucinating file paths.
+    - Expand the tool palette to include the specific operation.
+    - Or switch to a workflow that writes in a narrower directory.
   </Accordion>
 
-  <Accordion title="Night Shift queue is not processing" icon="moon">
-    Night Shift requires your machine to be idle for 15 minutes (configurable in **Settings → Automations → Idle Threshold**). Common reasons the queue does not process:
+  <Accordion title="Linear action failed" icon="list">
+    For action-based triggers or outputs that call Linear:
 
-    - A background process (e.g., video call, build process) is keeping the machine active.
-    - The ADE app was closed before idle threshold was reached.
-    - Manual "Run Night Shift Now" button is always available as an override.
-  </Accordion>
-
-  <Accordion title="Linear automation writing without permission" icon="triangle-exclamation">
-    By default, automations can only **read** Linear data. To allow writes (comments, status changes, assignments), you must explicitly enable the `linear.write` permission in the automation's settings under **Permissions → External Services**.
+    1. Ensure the project connector is healthy in Settings.
+    2. Confirm the workflow only requests actions within allowed scopes.
+    3. Run with a tighter action palette before broadening to full Linear access.
   </Accordion>
 </AccordionGroup>
 
-<Info>**📸 Screenshot needed:** The Automation Run History panel for a single automation — showing a table of recent runs with timestamps, trigger event, executor mode, token cost, duration, and status (success/halted/error). One row should be expanded to show the execution log.</Info>
+<Info>**Screenshot:** Automation run history showing a run that was paused for manual verification before an external write action.</Info>

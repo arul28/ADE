@@ -215,7 +215,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Missions Home Dashboard (aggregate stats, history) | Phase 3 | Phase 3 | Implemented (Task 4) |
 | Budget Management (subscription + API key) | Phase 3 | Phase 3 | Implemented (Task 6) |
 | CTO Agent (persistent project-aware assistant) | Phase 4 | Phase 3 | Complete (W1) |
-| Automations Platform + Night Shift | Phase 4 | Phase 3 | Complete (W5) |
+| Automations Platform (time-based/action-based triggers + execution routing) | Phase 4 | Phase 3 | Complete (W5) |
 | Learning Packs (auto-curated knowledge) | Phase 4 | Phase 3 | Complete |
 | Memory Architecture Upgrade (vector search, tiers) | Phase 4 | Phase 3 | Complete |
 | Candidate Memory Triage Automation (auto-promote + stale archive sweep) | Phase 4 | Phase 3 memory lifecycle baseline | Complete (W6 + W6½) |
@@ -258,7 +258,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | iOS full Settings tab | Phase 7 | Phase 6 | Planned |
 | Push notifications & notification routing | Phase 7 | Phase 6 | Planned |
 | VPS provider integrations (Hetzner, DO, SSH) | Phase 7 | Phase 6 | Planned |
-| Night Shift & mobile briefings | Phase 7 | Phase 6 | Planned |
+| Mobile automations execution + digest | Phase 7 | Phase 6 | Planned |
 | Advanced offline resilience | Phase 7 | Phase 6 | Planned |
 | Computer-use artifact viewing (iOS) | Phase 7 | Phase 6 | Planned |
 | iPad support, widgets, Spotlight, polish | Phase 7 | Phase 6 | Planned |
@@ -280,7 +280,7 @@ Phase 3 ──┬──→ Phase 4 (CTO + Ecosystem) ──→ Phase 6 (Sync + i
 
 **Phase 6** builds the full sync infrastructure (all 103 tables, all device types) and ships 4 high-parity iOS tabs (Lanes, Files, Work, PRs) — complete project management from your phone.
 
-**Phase 7** adds the remaining iOS tabs (Missions, CTO/Chat, Automations, Graph, History, Settings), push notifications, VPS provider integrations, Night Shift, and iOS polish. Because Phase 6 syncs all tables to all devices, Phase 7 iOS tabs are pure SwiftUI work — zero sync layer changes needed.
+**Phase 7** adds the remaining iOS tabs (Missions, CTO/Chat, Automations, Graph, History, Settings), push notifications, VPS provider integrations, and iOS polish. Because Phase 6 syncs all tables to all devices, Phase 7 iOS tabs are pure SwiftUI work — zero sync layer changes needed.
 
 Each phase doc includes an **Execution Order** section showing which workstreams can run in parallel and which must be sequential.
 

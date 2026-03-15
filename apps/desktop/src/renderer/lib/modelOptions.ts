@@ -25,22 +25,17 @@ function addKnownModelIds(ids: Set<ModelId>, family: string, includeCliWrapped: 
 export function deriveConfiguredModelIds(status: AiSettingsStatus | null | undefined): ModelId[] {
   if (!status) return [];
 
-  const ids = new Set<ModelId>(status.availableModelIds ?? []);
-
-  for (const model of status.models.claude ?? []) {
-    const rawId = String(model.id ?? "").trim();
-    if (rawId.length) ids.add(rawId);
-  }
-
-  for (const model of status.models.codex ?? []) {
-    const rawId = String(model.id ?? "").trim();
-    if (rawId.length) ids.add(rawId);
-  }
+  // Derive available models entirely from detectedAuth — do NOT trust
+  // status.availableModelIds or status.models.* from the backend, as those
+  // may be populated before auth is fully confirmed.
+  const ids = new Set<ModelId>();
 
   for (const auth of status.detectedAuth ?? []) {
-    if (auth.type === "cli-subscription" && auth.authenticated) {
-      if (auth.cli === "claude") addKnownModelIds(ids, "anthropic", true);
-      if (auth.cli === "codex") addKnownModelIds(ids, "openai", true);
+    if (auth.type === "cli-subscription") {
+      if (!auth.authenticated) continue;
+      const familyMap: Record<string, string> = { claude: "anthropic", codex: "openai" };
+      const family = auth.cli ? familyMap[auth.cli] : undefined;
+      if (family) addKnownModelIds(ids, family, true);
       continue;
     }
 

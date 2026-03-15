@@ -414,7 +414,13 @@ export function readContextStatus(deps: {
     },
     fallbackWrites: fallbackCount,
     insufficientContextCount,
-    warnings: latestWarnings
+    warnings: latestWarnings,
+    generation: {
+      state: "idle",
+      startedAt: null,
+      finishedAt: null,
+      error: null,
+    },
   };
 }
 

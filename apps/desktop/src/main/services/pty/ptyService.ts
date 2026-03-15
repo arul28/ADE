@@ -103,10 +103,12 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
   if (!value) return null;
   const allowed: TerminalToolType[] = [
     "shell",
+    "run-shell",
     "claude",
     "codex",
     "claude-orchestrated",
     "codex-orchestrated",
+    "ai-orchestrated",
     "codex-chat",
     "claude-chat",
     "ai-chat",

@@ -1007,9 +1007,9 @@ export function getModelById(id: string): ModelDescriptor | undefined {
 }
 
 export function getAvailableModels(
-  detectedAuth: Array<{ type: AuthType; cli?: string; provider?: string }>,
+  detectedAuth: Array<{ type: AuthType; cli?: string; provider?: string; authenticated?: boolean }>,
 ): ModelDescriptor[] {
-  const hasAuth = (matcher: (auth: { type: AuthType; cli?: string; provider?: string }) => boolean): boolean =>
+  const hasAuth = (matcher: (auth: { type: AuthType; cli?: string; provider?: string; authenticated?: boolean }) => boolean): boolean =>
     detectedAuth.some((auth) => matcher(auth));
 
   const FAMILY_TO_CLI: Partial<Record<ProviderFamily, string>> = {
@@ -1020,9 +1020,9 @@ export function getAvailableModels(
 
   const hasMappedCli = (family: ProviderFamily): boolean => {
     const requiredCli = FAMILY_TO_CLI[family] ?? null;
-    if (!requiredCli) return hasAuth((auth) => auth.type === "cli-subscription");
+    if (!requiredCli) return hasAuth((auth) => auth.type === "cli-subscription" && auth.authenticated !== false);
     return hasAuth(
-      (auth) => auth.type === "cli-subscription" && (!auth.cli || auth.cli === requiredCli)
+      (auth) => auth.type === "cli-subscription" && auth.authenticated !== false && (!auth.cli || auth.cli === requiredCli)
     );
   };
 

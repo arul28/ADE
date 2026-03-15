@@ -2,6 +2,7 @@ import React from "react";
 import { useNavigate } from "react-router-dom";
 import type { ContextStatus, ContextRefreshEvents, ContextDocPrefs, SkillIndexEntry } from "../../../shared/types";
 import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
+import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { EmptyState } from "../ui/EmptyState";
 import { relativeTime } from "../context/contextShared";
 import {
@@ -99,13 +100,10 @@ export function ContextSection() {
     // Load available models
     let cancelled = false;
     setLoadingModels(true);
-    window.ade.agentChat.models({ provider: "unified" })
-      .then((models) => {
+    window.ade.ai.getStatus()
+      .then((status) => {
         if (cancelled) return;
-        const ids = models
-          .map((entry) => String(entry.modelId ?? entry.id ?? "").trim())
-          .filter((entry) => entry.length > 0);
-        setAvailableModelIds([...new Set(ids)]);
+        setAvailableModelIds(deriveConfiguredModelIds(status));
       })
       .catch(() => {
         if (!cancelled) setAvailableModelIds([]);
@@ -168,6 +166,18 @@ export function ContextSection() {
             Canonical docs remain the stable source for bootstrap and memory ingestion.
           </div>
 
+          {docsStatus?.generation.state === "running" ? (
+            <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.info }}>
+              Context doc generation is currently running in the background.
+            </div>
+          ) : null}
+
+          {docsStatus?.generation.state === "failed" ? (
+            <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.danger }}>
+              Last generation failed{docsStatus.generation.error ? `: ${docsStatus.generation.error}` : "."}
+            </div>
+          ) : null}
+
           {docsLoading ? (
             <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>Loading docs status...</div>
           ) : docsStatus?.docs?.length ? (
@@ -213,7 +223,7 @@ export function ContextSection() {
             <UnifiedModelSelector
               value={modelId}
               onChange={setModelId}
-              availableModelIds={availableModelIds.length > 0 ? availableModelIds : undefined}
+              availableModelIds={availableModelIds}
               showReasoning
               reasoningEffort={reasoningEffort}
               onReasoningEffortChange={setReasoningEffort}

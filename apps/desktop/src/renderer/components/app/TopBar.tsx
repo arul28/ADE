@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowsClockwise, Folder, FolderOpen, Plus, Minus, Trash, X } from "@phosphor-icons/react";
 
 import { useAppStore } from "../../state/appStore";
+import { isRunOwnedSession } from "../../lib/sessions";
 import {
   ZOOM_LEVEL_KEY,
   MIN_ZOOM_LEVEL,
@@ -96,7 +97,9 @@ export function TopBar() {
       const activeProcesses = laneRuntimes
         .flat()
         .filter((runtime) => RUNNING_LANE_PROCESS_STATES.includes(runtime.status));
-      const activeSessionCount = runningSessions.filter((session) => session.status === "running").length;
+      const activeSessionCount = runningSessions.filter(
+        (session) => session.status === "running" && !isRunOwnedSession(session),
+      ).length;
       const activeChatCount = agentChats.filter((chat) => chat.status === "active").length;
 
       const warnings: string[] = [];

@@ -9,6 +9,7 @@ const LINEAR_OAUTH_DOCS_URL = "https://linear.app/developers/oauth-authenticatio
 export function LinearSection() {
   const [connection, setConnection] = useState<LinearConnectionStatus | null>(null);
   const [panelReloadToken, setPanelReloadToken] = useState(0);
+  const [showAdvancedOAuth, setShowAdvancedOAuth] = useState(false);
   const [clientIdDraft, setClientIdDraft] = useState("");
   const [clientSecretDraft, setClientSecretDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -122,7 +123,7 @@ export function LinearSection() {
                 Linear connection
               </div>
               <div style={{ marginTop: 4, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-                Connect Linear once here, then use the CTO Linear workspace for routing and automation.
+                Connect Linear for this project. Browser sign-in is the primary path; API key is still available if you prefer it.
               </div>
             </div>
           </div>
@@ -150,9 +151,14 @@ export function LinearSection() {
             </div>
             <div style={{ marginTop: 8, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textSecondary, lineHeight: "18px" }}>
               {isConnected
-                ? `Connected${connection?.viewerName ? ` as ${connection.viewerName}` : ""}${authModeLabel ? ` via ${authModeLabel}` : ""}.`
-                : "Use API key or browser sign-in below. The CTO Linear tab will pick this up automatically."}
+                ? `Connected${connection?.viewerName ? ` as ${connection.viewerName}` : ""}${authModeLabel ? ` via ${authModeLabel}` : ""}${connection?.projectCount ? ` · ${connection.projectCount} project${connection.projectCount === 1 ? "" : "s"} visible` : ""}.`
+                : "Use browser sign-in below, or fall back to an API key if that fits your setup better."}
             </div>
+            {isConnected && (connection?.projectPreview?.length ?? 0) > 0 ? (
+              <div style={{ marginTop: 8, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                Visible projects: {connection?.projectPreview?.join(", ")}
+              </div>
+            ) : null}
           </div>
           <div style={{
             minWidth: 220,
@@ -161,13 +167,13 @@ export function LinearSection() {
             padding: 14,
             borderRadius: 0,
           }}>
-            <div style={LABEL_STYLE}>OAUTH APP</div>
+            <div style={LABEL_STYLE}>BROWSER SIGN-IN</div>
             <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 8, fontFamily: MONO_FONT, fontSize: 12, color: oauthConfigured ? COLORS.success : COLORS.textMuted }}>
               {oauthConfigured ? <CheckCircle size={14} weight="fill" /> : <XCircle size={14} />}
               {oauthConfigured ? "READY" : "NOT CONFIGURED"}
             </div>
             <div style={{ marginTop: 8, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textSecondary, lineHeight: "18px" }}>
-              Linear’s browser OAuth flow uses an app client ID. For public clients, PKCE is supported, so the client secret is optional.
+              ADE can open Linear in the browser and complete sign-in locally. The raw OAuth app settings below are only needed for advanced or self-managed setups.
             </div>
           </div>
         </div>
@@ -182,59 +188,64 @@ export function LinearSection() {
         <div style={{ marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
           <div>
             <div style={{ fontSize: 14, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-              Browser OAuth app
+              Advanced browser OAuth app
             </div>
             <div style={{ marginTop: 4, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: "18px" }}>
-              This replaces the old secret-file setup. Paste the Linear OAuth app details here once and ADE will use them for browser sign-in.
+              Only use this if you need to override the built-in browser sign-in setup for this project.
             </div>
           </div>
-          {oauthConfigured ? (
-            <button type="button" style={outlineButton()} disabled={busy} onClick={() => void handleClearOAuthClient()}>
-              CLEAR OAUTH APP
-            </button>
-          ) : null}
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <label>
-            <div style={LABEL_STYLE}>CLIENT ID</div>
-            <input
-              value={clientIdDraft}
-              onChange={(event) => setClientIdDraft(event.target.value)}
-              placeholder="lin_oauth_client_..."
-              style={{ ...inputStyle, marginTop: 6 }}
-            />
-          </label>
-          <label>
-            <div style={LABEL_STYLE}>CLIENT SECRET (OPTIONAL)</div>
-            <input
-              value={clientSecretDraft}
-              onChange={(event) => setClientSecretDraft(event.target.value)}
-              placeholder="Leave blank for PKCE / public client flows"
-              style={{ ...inputStyle, marginTop: 6 }}
-              type="password"
-            />
-          </label>
-        </div>
-
-        <div style={{ marginTop: 12, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textSecondary, lineHeight: "18px" }}>
-          Create the OAuth app in Linear, set the redirect URI to the local callback ADE opens during sign-in, then click save here. ADE opens the browser and completes the token exchange locally.
-        </div>
-
-        <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
-          <button type="button" style={primaryButton()} disabled={busy || !clientIdDraft.trim()} onClick={() => void handleSaveOAuthClient()}>
-            SAVE OAUTH APP
+          <button type="button" style={outlineButton()} onClick={() => setShowAdvancedOAuth((value) => !value)}>
+            {showAdvancedOAuth ? "HIDE ADVANCED" : "SHOW ADVANCED"}
           </button>
-          {!oauthConfigured ? (
-            <button
-              type="button"
-              style={outlineButton()}
-              onClick={() => void window.ade.app.openExternal(LINEAR_OAUTH_DOCS_URL)}
-            >
-              <ArrowSquareOut size={12} weight="bold" /> OPEN DOCS
-            </button>
-          ) : null}
         </div>
+
+        {showAdvancedOAuth ? (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <label>
+                <div style={LABEL_STYLE}>CLIENT ID</div>
+                <input
+                  value={clientIdDraft}
+                  onChange={(event) => setClientIdDraft(event.target.value)}
+                  placeholder="lin_oauth_client_..."
+                  style={{ ...inputStyle, marginTop: 6 }}
+                />
+              </label>
+              <label>
+                <div style={LABEL_STYLE}>CLIENT SECRET (OPTIONAL)</div>
+                <input
+                  value={clientSecretDraft}
+                  onChange={(event) => setClientSecretDraft(event.target.value)}
+                  placeholder="Leave blank for PKCE / public client flows"
+                  style={{ ...inputStyle, marginTop: 6 }}
+                  type="password"
+                />
+              </label>
+            </div>
+
+            <div style={{ marginTop: 12, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textSecondary, lineHeight: "18px" }}>
+              Create the OAuth app in Linear, set the redirect URI to the local callback ADE opens during sign-in, then save it here if you need ADE to use your own client credentials.
+            </div>
+
+            <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
+              <button type="button" style={primaryButton()} disabled={busy || !clientIdDraft.trim()} onClick={() => void handleSaveOAuthClient()}>
+                SAVE OAUTH APP
+              </button>
+              {oauthConfigured ? (
+                <button type="button" style={outlineButton()} disabled={busy} onClick={() => void handleClearOAuthClient()}>
+                  CLEAR OAUTH APP
+                </button>
+              ) : null}
+              <button
+                type="button"
+                style={outlineButton()}
+                onClick={() => void window.ade.app.openExternal(LINEAR_OAUTH_DOCS_URL)}
+              >
+                <ArrowSquareOut size={12} weight="bold" /> OPEN DOCS
+              </button>
+            </div>
+          </>
+        ) : null}
       </div>
     </div>
   );
