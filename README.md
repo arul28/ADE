@@ -25,7 +25,7 @@
 </p>
 
 <p align="center">
-  <a href="https://docs.ade-app.dev"><strong>Documentation</strong></a> &nbsp;|&nbsp;
+  <a href="https://www.ade-app.dev/docs"><strong>Documentation</strong></a> &nbsp;|&nbsp;
   <a href="https://www.ade-app.dev"><strong>Website</strong></a> &nbsp;|&nbsp;
   <a href="https://github.com/arul28/ADE/releases"><strong>Download</strong></a>
 </p>
