@@ -4,6 +4,13 @@
 
 Goal: Complete the iOS app by adding all remaining desktop tabs (Missions, CTO/Chat, Automations, Graph, History, Settings) and ship advanced multi-device features. Phase 6 proved the sync architecture and delivered project management from the phone — Phase 7 brings the full AI orchestration experience to mobile and adds VPS provider integrations and advanced notification routing.
 
+Phase 7 continues the two operating modes established in Phase 6:
+
+- **portable desktop brain mode** for brain-capable desktops that move between machines using git plus tracked portable ADE intelligence
+- **remote controller mode** for phones and secondary desktops that attach to a live brain for real-time control and visibility
+
+Phase 7 is primarily about deepening the remote controller story on iOS and VPS-backed brains. It does not change the rule that a connected live cluster has one execution brain at a time.
+
 ### Reference docs
 
 - Phase 6 workstreams — cr-sqlite sync, WebSocket protocol, iOS app, device registry
@@ -32,6 +39,12 @@ Because the sync layer is complete from Phase 6, adding each new iOS tab follows
 - Render SwiftUI views
 - Send commands to brain via WebSocket for execution operations
 - Zero sync layer changes required
+
+Phase 7 also assumes the Phase 6 portability contract is already in place for desktop brains:
+
+- another desktop can recover important durable ADE project intelligence after clone/pull
+- phones still depend on a live reachable brain
+- Phase 7 does not attempt multi-brain active-active execution
 
 ---
 

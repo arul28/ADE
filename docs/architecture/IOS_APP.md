@@ -25,7 +25,13 @@ This document describes the architecture of the ADE iOS companion app. The iOS a
 
 ## Overview
 
-The iOS app is a native SwiftUI application that acts as a viewer/controller for an ADE brain (a Mac or VPS running the full desktop app). It maintains a local cr-sqlite database that syncs all 103 tables from the brain in real time. The phone never runs agents -- it reads synced state and sends commands to the brain for execution.
+The iOS app is a native SwiftUI application that acts as a viewer/controller for an ADE brain (a Mac or VPS running the full desktop app). It maintains a local cr-sqlite database that syncs live cluster state from the brain in real time. The phone never runs agents -- it reads synced state and sends commands to the brain for execution.
+
+Desktop portability note:
+
+- iOS depends on ADE sync and a live/reachable brain
+- desktop-to-desktop portability also depends on tracked portable ADE project intelligence in the repo
+- that portable desktop layer is not an iOS concern because phones are never standalone brains
 
 ---
 

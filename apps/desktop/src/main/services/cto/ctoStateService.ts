@@ -421,6 +421,8 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
   const logIntegrityService = createLogIntegrityService();
   const ctoDir = path.join(args.adeDir, "cto");
   const identityPath = path.join(ctoDir, "identity.yaml");
+  // Only identity.yaml belongs to the shared Git-tracked ADE scaffold in W3.
+  // The remaining files here are generated local/runtime state.
   const coreMemoryPath = path.join(ctoDir, "core-memory.json");
   const memoryDocPath = path.join(ctoDir, "MEMORY.md");
   const currentContextDocPath = path.join(ctoDir, "CURRENT.md");

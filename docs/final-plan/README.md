@@ -238,10 +238,10 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Memory Consolidation | Phase 4 | Phase 3 | Complete (W6½) |
 | Episodic + Procedural Memory | Phase 4 | Phase 3 | Complete |
 | Play runtime isolation | Phase 5 | Phase 3 (parallel with Phase 4) | Complete |
-| cr-sqlite multi-device sync (all 103 tables) | Phase 6 | Phases 1-5 | Planned |
-| Device registry & brain management | Phase 6 | Phases 1-5 | Planned |
+| cr-sqlite multi-device sync (all 103 tables) | Phase 6 | Phases 1-5 | Implemented on desktop; desktop portability expansion still in progress |
+| Device registry & brain management | Phase 6 | Phases 1-5 | Implemented on desktop |
 | Tailscale integration | Phase 6 | Phases 1-5 | Planned |
-| WebSocket sync server & protocol | Phase 6 | Phases 1-5 | Planned |
+| WebSocket sync server & protocol | Phase 6 | Phases 1-5 | Implemented on desktop |
 | Device pairing & configuration | Phase 6 | Phases 1-5 | Planned |
 | File access & terminal stream protocols | Phase 6 | Phases 1-5 | Planned |
 | VPS headless deployment | Phase 6 | Phases 1-5 | Planned |
@@ -278,7 +278,7 @@ Phase 3 ──┬──→ Phase 4 (CTO + Ecosystem) ──→ Phase 6 (Sync + i
 
 **Critical path**: Phase 3 → 4 → 6 → 7. Phases 1-5 are complete.
 
-**Phase 6** builds the full sync infrastructure (all 103 tables, all device types) and ships 4 high-parity iOS tabs (Lanes, Files, Work, PRs) — complete project management from your phone.
+**Phase 6** builds the full sync infrastructure (all 103 tables, all device types), the desktop portability layer for durable ADE project intelligence, and ships 4 high-parity iOS tabs (Lanes, Files, Work, PRs) — complete project management from your phone.
 
 **Phase 7** adds the remaining iOS tabs (Missions, CTO/Chat, Automations, Graph, History, Settings), push notifications, VPS provider integrations, and iOS polish. Because Phase 6 syncs all tables to all devices, Phase 7 iOS tabs are pure SwiftUI work — zero sync layer changes needed.
 

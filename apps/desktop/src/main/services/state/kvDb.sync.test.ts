@@ -133,6 +133,81 @@ describe("kvDb sync foundation", () => {
     repaired.close();
   });
 
+  it("reloads crsqlite before rerunning migrations after a legacy repair on a CRR database", async () => {
+    const dbPath = makeDbPath("ade-kvdb-sync-projects-crr-repair-");
+    const seeded = await openKvDb(dbPath, createLogger() as any);
+    seeded.run(
+      `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)
+       values (?, ?, ?, ?, ?, ?)`,
+      ["project-crr", "/repo/crr", "Repo CRR", "main", "2026-03-15T00:00:00.000Z", "2026-03-15T00:00:00.000Z"],
+    );
+    seeded.run(
+      `insert into unified_memories(
+        id, project_id, scope, scope_owner_id, tier, category, content, importance, confidence, observation_count,
+        status, source_type, source_id, source_session_id, source_pack_key, source_run_id, file_scope_pattern,
+        agent_id, pinned, access_score, composite_score, write_gate_reason, dedupe_key, created_at, updated_at,
+        last_accessed_at, access_count, promoted_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "mem-crr",
+        "project-crr",
+        "project",
+        null,
+        1,
+        "note",
+        "legacy repair should keep crsqlite loaded",
+        "medium",
+        1,
+        1,
+        "promoted",
+        "agent",
+        "agent-crr",
+        null,
+        null,
+        null,
+        null,
+        null,
+        0,
+        0,
+        0,
+        null,
+        "legacy repair should keep crsqlite loaded",
+        "2026-03-15T00:00:00.000Z",
+        "2026-03-15T00:00:00.000Z",
+        "2026-03-15T00:00:00.000Z",
+        0,
+        null,
+      ],
+    );
+    seeded.close();
+
+    const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (path: string) => { exec: (sql: string) => void; close: () => void } };
+    const rawDb = new DatabaseSync(dbPath);
+    rawDb.exec(`
+      alter table projects rename to projects_old;
+      create table projects (
+        id text primary key,
+        root_path text not null unique,
+        display_name text not null,
+        default_base_ref text not null,
+        created_at text not null,
+        last_opened_at text not null
+      );
+      insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)
+      select id, root_path, display_name, default_base_ref, created_at, last_opened_at from projects_old;
+      drop table projects_old;
+    `);
+    rawDb.close();
+
+    const repaired = await openKvDb(dbPath, createLogger() as any);
+    expect(
+      repaired.get<{ count: number }>("select count(*) as count from unified_memories where id = ?", ["mem-crr"])?.count,
+    ).toBe(1);
+    const indexes = repaired.all<{ name: string; unique: number; origin: string }>("pragma index_list('projects')");
+    expect(indexes.filter((index) => Number(index.unique) === 1 && index.origin !== "pk")).toHaveLength(0);
+    repaired.close();
+  });
+
   it("rebuilds unified memory FTS after remote changes are applied", async () => {
     const db1 = await openKvDb(makeDbPath("ade-kvdb-sync-mem-a-"), createLogger() as any);
     const db2 = await openKvDb(makeDbPath("ade-kvdb-sync-mem-b-"), createLogger() as any);

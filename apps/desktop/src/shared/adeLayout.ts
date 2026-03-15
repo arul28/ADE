@@ -16,6 +16,8 @@ export type AdeLayoutPaths = {
   ctoDir: string;
   agentsDir: string;
   templatesDir: string;
+  workflowsDir: string;
+  linearWorkflowsDir: string;
   contextDir: string;
   memoryDir: string;
   historyDir: string;
@@ -52,13 +54,15 @@ export const ADE_LAYOUT_DEFINITIONS: AdePathEntryDefinition[] = [
   { relativePath: ".gitignore", kind: "tracked", pathType: "file" },
   { relativePath: "ade.yaml", kind: "tracked", pathType: "file" },
   { relativePath: "cto", kind: "tracked", pathType: "directory" },
-  { relativePath: "agents", kind: "tracked", pathType: "directory" },
   { relativePath: "templates", kind: "tracked", pathType: "directory" },
-  { relativePath: "context", kind: "tracked", pathType: "directory" },
-  { relativePath: "memory", kind: "tracked", pathType: "directory" },
-  { relativePath: "history", kind: "tracked", pathType: "directory" },
-  { relativePath: "reflections", kind: "tracked", pathType: "directory" },
   { relativePath: "skills", kind: "tracked", pathType: "directory" },
+  { relativePath: "workflows", kind: "tracked", pathType: "directory", notes: ["Repo-backed workflow/config files live here when present."] },
+  { relativePath: "workflows/linear", kind: "tracked", pathType: "directory", notes: ["Stable Linear workflow definitions are tracked when authored."] },
+  { relativePath: "agents", kind: "ignored", pathType: "directory" },
+  { relativePath: "context", kind: "ignored", pathType: "directory" },
+  { relativePath: "memory", kind: "ignored", pathType: "directory" },
+  { relativePath: "history", kind: "ignored", pathType: "directory" },
+  { relativePath: "reflections", kind: "ignored", pathType: "directory" },
   { relativePath: "local.yaml", kind: "ignored", pathType: "file" },
   { relativePath: "local.secret.yaml", kind: "ignored", pathType: "file" },
   { relativePath: "ade.db", kind: "ignored", pathType: "file" },
@@ -94,6 +98,8 @@ export function resolveAdeLayout(projectRoot: string): AdeLayoutPaths {
     ctoDir: path.join(adeDir, "cto"),
     agentsDir: path.join(adeDir, "agents"),
     templatesDir: path.join(adeDir, "templates"),
+    workflowsDir: path.join(adeDir, "workflows"),
+    linearWorkflowsDir: path.join(adeDir, "workflows", "linear"),
     contextDir: path.join(adeDir, "context"),
     memoryDir: path.join(adeDir, "memory"),
     historyDir: path.join(adeDir, "history"),
@@ -144,6 +150,21 @@ export function buildAdeGitignore(): string {
     "cache/",
     "worktrees/",
     "secrets/",
+    "",
+    "# Local-only generated runtime docs/state",
+    "agents/",
+    "cto/CURRENT.md",
+    "cto/MEMORY.md",
+    "cto/core-memory.json",
+    "cto/daily/",
+    "cto/sessions.jsonl",
+    "cto/subordinate-activity.jsonl",
+    "cto/openclaw-device.json",
+    "context/",
+    "memory/",
+    "history/",
+    "reflections/",
+    "context/*.ade.md",
     "",
   ].join("\n");
 }

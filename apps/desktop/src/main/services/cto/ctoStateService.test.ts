@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { buildAdeGitignore } from "../../../shared/adeLayout";
 import { createUnifiedMemoryService } from "../memory/unifiedMemoryService";
 import { openKvDb } from "../state/kvDb";
 import { createCtoStateService } from "./ctoStateService";
@@ -54,6 +55,9 @@ describe("ctoStateService", () => {
     expect(fs.existsSync(path.join(fixture.adeDir, "cto", "MEMORY.md"))).toBe(true);
     expect(fs.existsSync(path.join(fixture.adeDir, "cto", "CURRENT.md"))).toBe(true);
     expect(fs.existsSync(path.join(fixture.adeDir, "cto", "sessions.jsonl"))).toBe(false);
+    expect(buildAdeGitignore()).not.toContain("cto/identity.yaml");
+    expect(buildAdeGitignore()).toContain("cto/core-memory.json");
+    expect(buildAdeGitignore()).toContain("cto/CURRENT.md");
 
     fixture.db.close();
   });

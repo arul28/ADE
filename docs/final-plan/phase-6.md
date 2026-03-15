@@ -4,6 +4,13 @@
 
 Goal: Ship end-to-end multi-device ADE with a polished iOS app for project management. Any Mac can be a brain (runs agents), any other Mac or iPhone can be a viewer/controller. Sync is peer-to-peer via cr-sqlite CRDTs over WebSocket — no cloud. By the end of this phase a user can pick up their iPhone and manage their project with high-parity Lanes, Files, Work, and PRs tabs while their Mac Studio runs agents in the background.
 
+Important 2026-03-15 scope clarification:
+
+- W3 is no longer only "live brain/viewer sync + handoff".
+- W3 also owns the narrow **shared ADE scaffold/config layer** for brain-capable desktops.
+- Another desktop that clones/pulls the repo must be able to open the project with the shared ADE scaffold/config/identity files already present, without first attaching to a live brain.
+- One connected cluster still has exactly one live execution brain at a time, and this Git-tracked layer does not replace live sync for runtime state.
+
 ### Reference docs
 
 - [architecture/DESKTOP_APP.md](../architecture/DESKTOP_APP.md) — main process service graph, database, startup contract
@@ -25,8 +32,34 @@ Goal: Ship end-to-end multi-device ADE with a polished iOS app for project manag
 - One machine per project is the **brain** — it runs agents, missions, orchestrator processes, CTO heartbeats, Linear sync, and all AI compute.
 - Any Mac (laptop, Mac Studio, Mac Mini) or VPS can be a brain. Phones cannot.
 - All other connected devices are **viewers/controllers** — they see full state in real-time and can issue commands. The brain does the work.
-- Brain designation is explicit: the user chooses which machine is the brain in Settings > Devices. Only one brain per project at a time.
+- Brain designation is explicit: the user chooses which machine is the brain in Settings > Devices. Only one brain per connected live cluster at a time.
 - Brain can be transferred between machines via a structured handoff protocol.
+- Multiple desktops may exist for the same repo, but only one device is the execution brain inside a connected sync cluster.
+- Desktop portability is still a first-class requirement: a second Mac that simply pulls the repo should recover the shared ADE scaffold/config layer from tracked state even before it joins a live cluster.
+
+#### Two operating modes
+
+Phase 6 is built around two distinct user stories:
+
+1. **Portable desktop brain mode**
+   - A user alternates between brain-capable desktops (for example, Mac Studio and laptop).
+   - Each desktop has its own local clone, local worktrees, and local machine runtime.
+   - Code portability happens through git.
+   - Shared ADE scaffold/config portability happens through tracked `.ade/`.
+   - The desktops do not need to be in the same live sync cluster just to let the user continue work on another machine later.
+   - This mode is intentionally tolerant of "only one machine is actively doing work right now"; it does not require active-active multi-brain runtime sync.
+
+2. **Remote controller mode**
+   - One machine or VPS is the live execution brain.
+   - Another desktop or phone attaches as a viewer/controller.
+   - In this mode, work happens on the brain only.
+   - The controller needs live ADE sync because it must see current state, output, agent activity, and command results in real time.
+   - This is the primary model for iPhone/iPad and for controlling a more powerful or always-on brain remotely.
+
+These modes solve different problems and both are first-class:
+
+- portable desktop brain mode solves "pick this project up on another development machine"
+- remote controller mode solves "control and observe a live execution machine from somewhere else"
 
 #### Sync Architecture
 
@@ -69,16 +102,46 @@ This means Phase 6 sync work is a one-time investment. Phase 7 iOS tabs are pure
   - Terminal session metadata, session deltas
   - Process definitions, test suites, test runs
   - All other tables in `kvDb.ts`
-- **Syncs via git** (code, desktop peers only):
+- **Syncs via git** (portable repo state, desktop peers only):
   - Source code files in working trees
-  - `.ade/agents/*.yaml`, `.ade/context/`, `.ade/local.yaml`
+  - ADE scaffold and shared config under tracked `.ade/`
+  - Shared ADE scaffold/config: committed low-churn ADE config and identity artifacts that make another desktop clone look like an existing ADE project
 - **Does NOT sync** (machine-specific):
   - `.ade/local.secret.yaml` (API keys, external MCP configs)
   - Worktree physical directories
   - PTY processes and terminal output streams
-  - `.ade/cto/daily-logs/` files (brain-only, summaries sync via cr-sqlite)
-  - Transcript files, cache, embedding model weights
+  - Raw transcript/session log files, cache, embedding model weights
   - Running process state, mcp.sock
+
+#### Portability contract for brain-capable desktops
+
+W3 now owns a second portability layer beyond live CRDT sync:
+
+- **Live cluster state** continues to move through ADE sync (`.ade/ade.db` via cr-sqlite + WebSocket).
+- **Shared ADE scaffold/config** must move through tracked ADE files so another desktop clone sees the shared ADE setup after a normal `git pull`.
+- **Local runtime** stays local.
+
+The rule is simple:
+
+- if the file is low-churn, human-authored, and clearly shared, it can live in tracked `.ade/`
+- if the state is hot operational/runtime state, it belongs in ADE sync
+- if the state is machine-bound execution state, it stays local
+
+Examples of the tracked shared ADE layer:
+
+- `.ade/.gitignore`
+- `.ade/ade.yaml`
+- `.ade/cto/identity.yaml`
+- human-authored files under `.ade/templates/**`
+- human-authored files under `.ade/skills/**`
+- stable repo-backed workflow/config files when present
+
+Examples that remain ADE-sync-only:
+
+- live mission/chat runtime state
+- device registry and cluster state
+- active queue/process/PTY ownership
+- other operational tables that matter for a connected live cluster
 
 #### CTO & Worker Agent Reachability
 
@@ -91,17 +154,26 @@ This means Phase 6 sync work is a one-time investment. Phase 7 iOS tabs are pure
 
 ```
 .ade/
-├── agents/            # Git-tracked: agent identity YAML files
-├── identities/        # Git-tracked: user identity configs
-├── context/           # Git-tracked: PRD.ade.md, ARCHITECTURE.ade.md
-├── local.yaml         # Git-tracked: project config (no secrets)
+├── .gitignore         # Git-tracked: canonical ADE ignore contract
+├── ade.yaml           # Git-tracked: shared ADE config
+├── cto/
+│   ├── identity.yaml     # Git-tracked: shared CTO identity
+│   ├── core-memory.json  # Local/generated CTO runtime memory (gitignored)
+│   └── daily-logs/       # Raw operational logs (gitignored)
+├── templates/         # Git-tracked: human-authored templates
+├── skills/            # Git-tracked: human-authored skills
+├── workflows/
+│   └── linear/        # Git-tracked when stable repo-backed workflow files exist
+├── local.yaml         # Gitignored: machine-local overrides
 ├── local.secret.yaml  # Gitignored: machine-specific secrets
-├── ade.db             # cr-sqlite synced: ALL app state (gitignored)
+├── ade.db             # cr-sqlite synced live cluster state (gitignored)
 ├── ade.db-wal         # WAL file (gitignored)
 ├── mcp.sock           # Runtime socket (gitignored)
-├── cto/
-│   ├── core-memory.json  # Dual-persisted (also in cr-sqlite)
-│   └── daily-logs/       # Brain-only markdown logs (gitignored)
+├── agents/            # Local/generated worker state (gitignored)
+├── context/           # Generated local context docs (gitignored)
+├── memory/            # Local/generated memory exports (gitignored)
+├── history/           # Local/generated history summaries (gitignored)
+├── reflections/       # Local/generated reflection state (gitignored)
 ├── transcripts/       # Machine-specific logs (gitignored)
 ├── cache/             # Machine-specific cache (gitignored)
 ├── worktrees/         # Machine-specific lane checkouts (gitignored)
@@ -199,9 +271,10 @@ Status: Implemented on desktop + headless MCP.
 - **Terminal stream sub-protocol**: subscribe to terminal session output from brain. Used by iOS Work tab for read-only terminal viewing and by agent chat sessions for inline terminal output.
 - Validation scaffolding pulled forward from W10: W2 also carries one narrow command path, `work.runQuickCommand`, so remote terminal launch and stream round-trips can be proven before full command routing ships. All other execution commands remain W10 work.
 
-#### W3: Device Registry & Brain Management
+#### W3: Device Registry, Brain Management, and portable desktop state
 
-- Implemented desktop-only in W3.
+- W3 live cluster sync and handoff are implemented on desktop.
+- W3 scope includes the shared ADE scaffold/config layer for desktop brains.
 - Synced `devices` table stores durable device metadata: `device_id`, `site_id`, `name`, `platform`, `device_type`, `last_seen`, `last_host`, `last_port`, `ip_addresses`, `tailscale_ip`, and metadata JSON.
 - Brain authority lives in synced singleton `sync_cluster_state` with `brain_device_id` and `brain_epoch`. We do not use a per-row `is_brain` flag because CRDT replication would make split-brain edge cases harder to reason about.
 - Local desktop auto-registers on startup from the existing `.ade/secrets/sync-site-id` identity and a stable machine-local `sync-device-id`.
@@ -221,6 +294,10 @@ Status: Implemented on desktop + headless MCP.
   - Block on active missions, running chat turns, live PTY sessions, and running managed lane processes
   - Allow paused missions, CTO history and idle threads, and idle or ended agent chats to survive handoff as durable synced state
 - Brain status broadcast now carries connected peers and sync metrics to viewers.
+- W3 shared-config portability requirements:
+  - Another desktop that pulls the repo should no longer feel like a fresh ADE project bootstrap.
+  - The tracked `.ade/` layer is limited to low-churn, human-authored, team-sharable config and identity artifacts.
+  - Live runtime state, DB-derived state, and generated high-churn files remain in ADE sync or machine-local storage.
 - Discovery, QR pairing, keychain storage, Tailscale selection, and secure revoke are not W3. They move to W4.
 
 #### W4: Device Pairing & Network
@@ -483,7 +560,7 @@ Key dependencies:
 
 **Wave 1: Sync Infrastructure (W1-W4) -- ~3-4 weeks**
 
-The foundation. cr-sqlite integration, WebSocket protocol, device registry, and pairing. Nothing else can start until this wave proves the sync architecture works. W1-W3 are now implemented on desktop using Node.js native `node:sqlite` with a vendored cr-sqlite extension (not WASM).
+The foundation. cr-sqlite integration, WebSocket protocol, device registry, pairing, and the narrow shared ADE scaffold/config portability layer. Nothing else can start until this wave proves the sync architecture works. W1-W3 are now implemented on desktop using Node.js native `node:sqlite` with a vendored cr-sqlite extension (not WASM).
 
 **Wave 2: iOS Shell (W5) -- ~1-2 weeks**
 
@@ -519,6 +596,10 @@ Before or during W4, keep these explicit carry-overs in scope:
 - Revisit host network posture after pairing lands:
   - current W3 desktop transport is trusted-LAN-only scaffolding
   - current host binding/auth model should not be treated as the final network posture
+- Preserve the W3 shared-config portability contract:
+  - keep the low-churn shared ADE scaffold/config layer as the only Git-tracked ADE portability surface by default
+  - another desktop should continue to recover that scaffold after clone/pull without depending on a live brain
+  - future workstreams should not promote generated/high-churn runtime state into Git by default
 - Keep the W3 transfer contract intact:
   - paused missions survive handoff and stay paused
   - CTO history and idle threads survive handoff
@@ -536,23 +617,24 @@ Before or during W4, keep these explicit carry-overs in scope:
 1. cr-sqlite extension loads and all 103 tables are CRR-marked with zero SQL code changes.
 2. All devices (desktop + iOS) sync full database state in real-time via WebSocket.
 3. Brain designation is explicit and transferable between Macs.
-4. Devices pair with a one-time QR/code scan and reconnect automatically (macOS Keychain + iOS Keychain).
-5. Tailscale integration works for cross-network reachability (optional, not required).
-6. VPS headless brain deployment works via `xvfb-run`.
-7. iOS Lanes tab has high parity with desktop: lane list, detail, create, archive, availability states.
-8. iOS Files tab has high parity with desktop: file tree, syntax-highlighted viewer, search, basic editing.
-9. iOS Work tab shows terminal sessions with real-time output streaming from brain.
-10. iOS PRs tab has high parity with desktop: PR list, detail, diff viewer, create, merge, close.
-11. Commands from any non-brain device route to brain and execute correctly.
-12. Offline command queue replays correctly on reconnect.
-13. Connection status visible on both desktop (status bar) and iOS (header).
-14. Device management UI in Settings shows all paired devices with type, role, status, and sync lag.
-15. Lane availability states computed and displayed correctly on non-brain Macs.
-16. Auto-push policy works with all three modes.
-17. One-click lane sync orchestrates push → fetch → worktree creation.
-18. Agent-running guard prevents concurrent writes across devices.
-19. Remote file access works from both desktop viewers and iOS — including media files (images, videos) served via the file access sub-protocol.
-20. Terminal output streaming works from iOS to brain.
-21. Agent activity is visible on iOS Work tab: active agent list, tool call result cards, and process indicators.
-22. Computer use artifacts (screenshots, videos, traces) are viewable on iOS via proof panel — fetched on-demand from brain.
-23. iOS app uses native SwiftUI components, SF Pro typography, project purple (#7C3AED) accent, and SF Symbols throughout — no web-view ports or custom UI frameworks.
+4. A fresh desktop clone that pulls the repo recovers the shared ADE scaffold/config layer without re-running full project bootstrap or depending on a live brain.
+5. Devices pair with a one-time QR/code scan and reconnect automatically (macOS Keychain + iOS Keychain).
+6. Tailscale integration works for cross-network reachability (optional, not required).
+7. VPS headless brain deployment works via `xvfb-run`.
+8. iOS Lanes tab has high parity with desktop: lane list, detail, create, archive, availability states.
+9. iOS Files tab has high parity with desktop: file tree, syntax-highlighted viewer, search, basic editing.
+10. iOS Work tab shows terminal sessions with real-time output streaming from brain.
+11. iOS PRs tab has high parity with desktop: PR list, detail, diff viewer, create, merge, close.
+12. Commands from any non-brain device route to brain and execute correctly.
+13. Offline command queue replays correctly on reconnect.
+14. Connection status visible on both desktop (status bar) and iOS (header).
+15. Device management UI in Settings shows all paired devices with type, role, status, and sync lag.
+16. Lane availability states computed and displayed correctly on non-brain Macs.
+17. Auto-push policy works with all three modes.
+18. One-click lane sync orchestrates push → fetch → worktree creation.
+19. Agent-running guard prevents concurrent writes across devices.
+20. Remote file access works from both desktop viewers and iOS — including media files (images, videos) served via the file access sub-protocol.
+21. Terminal output streaming works from iOS to brain.
+22. Agent activity is visible on iOS Work tab: active agent list, tool call result cards, and process indicators.
+23. Computer use artifacts (screenshots, videos, traces) are viewable on iOS via proof panel — fetched on-demand from brain.
+24. iOS app uses native SwiftUI components, SF Pro typography, project purple (#7C3AED) accent, and SF Symbols throughout — no web-view ports or custom UI frameworks.

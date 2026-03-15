@@ -539,6 +539,8 @@ app.whenReady().then(async () => {
     recordRecent?: boolean;
     userSelectedProject?: boolean;
   }): Promise<AppContext> => {
+    // Any pre-existing .ade directory, whether from the tracked shared scaffold or
+    // a prior local open, means this repo should not feel like a brand-new ADE bootstrap.
     const hadAdeDir = fs.existsSync(path.join(projectRoot, ".ade"));
     const adePaths = ensureAdeDirs(projectRoot);
     const { initApiKeyStore } = await import("./services/ai/apiKeyStore");

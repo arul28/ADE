@@ -4,7 +4,7 @@
 
 > Last updated: 2026-03-15
 
-> Status: **Phase 6 W1-W3 implemented on desktop. W3 ships device registry, desktop peer connection, manual bootstrap-token connect, and safe brain handoff.**
+> Status: **Phase 6 W1-W3 live cluster sync is implemented on desktop. W3 closes with a narrow Git-tracked ADE scaffold/config layer for desktop clones.**
 
 This document describes ADE's multi-device sync architecture: cr-sqlite CRDT replication, the WebSocket sync protocol, the brain/viewer device model, and the security model for device communication.
 
@@ -24,12 +24,12 @@ This document describes ADE's multi-device sync architecture: cr-sqlite CRDT rep
 
 ## Overview
 
-ADE syncs all application state across devices using **cr-sqlite** (a SQLite CRDT extension) over a **WebSocket transport**. The design is local-first with zero cloud dependency:
+ADE syncs application state across devices using **cr-sqlite** (a SQLite CRDT extension) over a **WebSocket transport**. The design is local-first with zero cloud dependency:
 
-- One machine per project is the **brain** (runs agents, missions, orchestrator, AI compute).
+- One machine per connected cluster is the **brain** (runs agents, missions, orchestrator, AI compute).
 - All other connected devices are **viewers/controllers** (real-time state, issue commands).
 - State replication uses conflict-free replicated relations (CRRs) with last-writer-wins per column.
-- Code syncs via git. App state syncs via cr-sqlite. Secrets never sync.
+- Code syncs via git. Live app state syncs via cr-sqlite. A small shared ADE scaffold/config layer also travels through tracked ADE files so another desktop clone does not look like a brand-new ADE project. Secrets never sync.
 
 ---
 
@@ -144,8 +144,14 @@ Brain authority is stored separately in a synced singleton `sync_cluster_state` 
 ### Brain Designation
 
 - Explicit user action: "Make this device the brain" in Settings > Sync.
-- Only one brain per project at a time.
+- Only one brain per connected live cluster at a time.
 - W3 supports desktop brains and desktop viewers. iOS remains future work.
+
+Desktop nuance:
+
+- A Mac that opens the repo independently without connecting is still a standalone desktop brain for its own local execution.
+- That does **not** make it part of the same live cluster as another Mac.
+- W3's portability requirement is therefore not "multi-brain active-active execution". It is only "a desktop clone should inherit the shared ADE scaffold/config layer from Git even before it connects to a live brain."
 
 ### Brain Transfer Protocol
 
@@ -168,11 +174,66 @@ Brain authority is stored separately in a synced singleton `sync_cluster_state` 
 
 | Data Category | Sync Mechanism | Devices |
 |---|---|---|
-| All 103 database tables | cr-sqlite CRRs | All devices (desktop + iOS) |
+| All replicated ADE runtime tables in `.ade/ade.db` | cr-sqlite CRRs | All connected devices |
 | Source code files | git push/pull | Desktop peers only |
-| `.ade/agents/`, `.ade/context/`, `.ade/local.yaml` | git | Desktop peers only |
-| `.ade/local.secret.yaml` | **Never syncs** | Machine-specific |
-| PTY processes, worktree dirs, cache, transcripts | **Never syncs** | Machine-specific |
+| Shared ADE scaffold/config (`.ade/.gitignore`, `.ade/ade.yaml`, `cto/identity.yaml`, human-authored templates/skills, repo-backed workflow files when present) | git | Desktop peers only |
+| Local overrides (`.ade/local.yaml`, `.ade/local.secret.yaml`) | **Never syncs** | Machine-specific |
+| Worktrees, PTY processes, cache, transcripts, artifacts, sockets, secrets | **Never syncs** | Machine-specific |
+
+Two connected devices therefore do **not** have identical `.ade/` folders:
+
+- Git gives them the same tracked project scaffold.
+- ADE sync gives them the same replicated application state.
+- Each device still keeps its own local runtime directories.
+
+Two disconnected desktop brains also do **not** have a shared live cluster by default:
+
+- code convergence happens through git
+- the narrow shared ADE scaffold/config layer converges through tracked `.ade/`
+- live mission/chat/process state converges only when they join the same ADE sync cluster
+
+In W3, the recommended multi-desktop posture is:
+
+- one machine acts as the **brain** and owns execution plus local worktrees
+- other desktops attach as **viewers/controllers**
+- brain handoff is optional, not required for day-to-day second-device use
+
+That is not the entire desktop story anymore. W3 also requires a small "pick this repo up on another desktop without ADE bootstrap confusion" posture:
+
+- a desktop that clones or pulls the repo should inherit the shared ADE scaffold/config/identity files from tracked `.ade/`
+- joining a live brain should improve freshness and expose live runtime state
+- but it remains the only way another desktop learns the current live runtime state
+
+### Shared ADE scaffold/config layer
+
+The Git-tracked ADE layer in W3 is intentionally narrow. It exists so a normal desktop clone/pull carries the shared ADE setup without trying to make all ADE runtime state portable through Git.
+
+This layer exists because:
+
+- git is the portability mechanism for desktop code work
+- WebSocket sync is the live-cluster mechanism for real-time ADE runtime state
+- users still need the shared ADE setup on another desktop after a normal clone/pull
+
+Examples that belong in this tracked layer:
+
+- `.ade/.gitignore`
+- `.ade/ade.yaml`
+- `.ade/cto/identity.yaml`
+- human-authored files under `.ade/templates/**`
+- human-authored files under `.ade/skills/**`
+- stable repo-backed workflow/config files under `.ade/workflows/linear/**` when present
+
+Examples that do **not** belong in this tracked layer:
+
+- DB-derived runtime rows
+- generated CTO/context docs such as `cto/CURRENT.md`, `cto/MEMORY.md`, `cto/core-memory.json`, and `.ade/context/*.ade.md`
+- agent/session logs, handoff logs, transcripts, caches, artifacts, worktrees, secrets, and connection state
+
+Rule for future workstreams:
+
+- if a new ADE feature creates low-churn, human-authored shared config or identity, it can define a tracked representation under `.ade/`
+- if a feature only matters for a connected live cluster, keep it in ADE sync
+- if a feature is machine-bound, keep it local
 
 ### Changeset Flow Diagram
 
@@ -241,12 +302,13 @@ Brain authority is stored separately in a synced singleton `sync_cluster_state` 
 | Device registry table | Implemented (desktop) | Phase 6 W3 |
 | Desktop peer client + manual connect | Implemented (desktop) | Phase 6 W3 |
 | Brain election + transfer | Implemented (desktop) | Phase 6 W3 |
+| Shared ADE scaffold/config portability for desktop clones | Implemented | Phase 6 W3 |
 | Device pairing (QR + keychain) | Planned — W2 currently uses bootstrap-token scaffolding only | Phase 6 W4 |
 | Tailscale integration | Planned | Phase 6 W4 |
 | Command routing | Planned — W2 ships `work.runQuickCommand` only for transport validation | Phase 6 W10 |
 | Lane portability (desktop-to-desktop) | Planned | Phase 6 W11 |
 
-**Overall status**: W1-W3 are now in place on desktop. ADE has a sync-capable local database, desktop WebSocket transport, device registry, Settings-based manual desktop peer connection, and safe brain handoff with explicit blocker rules. Real pairing, discovery, Tailscale, iOS clients, and broader command routing remain future Phase 6 work.
+**Overall status**: W1-W3 are now in place on desktop. ADE has a sync-capable local database, desktop WebSocket transport, device registry, Settings-based manual desktop peer connection, safe brain handoff with explicit blocker rules, and the narrow shared ADE scaffold/config layer for desktop clones. Real pairing, discovery, Tailscale, iOS clients, and broader command routing remain future Phase 6 work.
 
 ### Deferred follow-up
 

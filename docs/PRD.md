@@ -752,7 +752,7 @@ Development baseline: ADE assumes a modern Git CLI (worktrees, `git restore`, `g
 
 ### 10.11 Cross-Machine Portability
 
-ADE now ships a canonical `.ade` contract. The tracked/shareable subset is committed alongside the repo, while machine-local runtime state is ignored by the tracked `.ade/.gitignore`. Real-time multi-device replication is still Phase 6 work.
+ADE now ships a canonical `.ade` contract. The tracked/shareable subset is committed alongside the repo, while machine-local runtime state is ignored by the tracked `.ade/.gitignore`. Real-time multi-device replication is Phase 6 work, and Phase 6 also adds a portable durable ADE layer so another desktop can recover important project intelligence after a normal clone/pull.
 
 Current baseline:
 - Git is the reliable cross-machine transport for code and tracked ADE state.
@@ -761,7 +761,7 @@ Current baseline:
 - Machine-specific credentials remain local-only, either in ignored files or encrypted local storage.
 
 Roadmap direction:
-- Phase 6 adds cr-sqlite state sync, device registry, brain/viewer model, iOS companion app, and push notifications.
+- Phase 6 adds cr-sqlite state sync, device registry, brain/viewer model, portable durable desktop project intelligence, iOS companion app, and push notifications.
 - Phase 7 adds mobile polish, VPS provider integrations, and advanced offline resilience.
 
 ### 10.12 External Agent Bridge
@@ -872,6 +872,21 @@ ADE configuration lives in the `.ade/` folder at the project root. The current r
 | `.ade/transcripts/logs/` | Process and test logs | No |
 | `.ade/cache/` | Local cache | No |
 
+**Two operating modes**:
+
+1. **Portable desktop brain mode**
+   - A user may work on the same repo from multiple brain-capable desktops at different times.
+   - Each machine keeps its own local runtime state and worktrees.
+   - Code moves through git.
+   - Important durable ADE project intelligence moves through tracked `.ade/`.
+   - This avoids requiring a live remote brain just to continue work on another desktop.
+
+2. **Remote controller mode**
+   - One machine or VPS is the live execution brain.
+   - Other devices attach as viewers/controllers.
+   - The controller needs live sync because work is happening on the brain and must be observed and controlled in real time.
+   - This is the core model for phones and for controlling a more powerful always-on machine from another device.
+
 **Config layering** (load order):
 
 1. Application defaults
@@ -908,7 +923,7 @@ When a configured CLI tool is not installed or not authenticated, ADE falls back
 - **ADE does not manage AI service accounts or billing directly.** Users bring their own providers (CLI subscriptions, API keys/OpenRouter, or local endpoints). ADE tracks local usage telemetry and displays provider status, but does not interact with billing systems or enforce provider-side limits.
 - **Mobile/relay support is roadmap scope, not a non-goal.** Desktop is the current primary runtime, while relay + iOS capabilities are planned in `docs/final-plan/README.md`.
 - **No multi-repo support in V1.** Each ADE instance manages a single git repository. Multi-repo orchestration may be considered post-V1.
-- **No real-time collaboration.** ADE is a single-user tool per desktop instance. Team features are limited to shared config and stacked PR workflows.
+- **No active-active multi-user runtime collaboration.** ADE is not trying to let multiple humans co-own one live execution brain/cluster at the same time like Google Docs for agents. Team use still happens primarily through git, branches, shared tracked `.ade/` project intelligence, and normal review/merge workflows. Remote controller mode is primarily for one user's own devices, not a generalized simultaneous multi-operator control plane.
 
 ---
 

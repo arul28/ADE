@@ -8,6 +8,12 @@ The CTO is ADE's always-on, project-aware agent. It owns persistent identity, sh
 
 The current runtime is optimized around a simple rule: **make the CTO usable before every optional subsystem is fully hydrated**.
 
+2026-03-15 portability clarification:
+
+- the CTO is not only a live-brain runtime concept
+- a normal clone/pull should recover the shared CTO identity/config layer
+- raw runtime/session logs, generated docs, and CTO runtime memory remain local or ADE-sync-only in this W3 pass
+
 ---
 
 ## What the CTO owns
@@ -182,6 +188,13 @@ Current system behavior separates:
 - worker-specific core memory
 - recent subordinate activity and session logs
 - daily logs (append-only per-day markdown logs under `.ade/cto/daily-logs/`)
+
+For desktop portability, treat these differently:
+
+- CTO identity is part of the shared Git-tracked ADE scaffold
+- CTO core memory and generated context docs remain local/generated in this W3 pass
+- recent subordinate activity and live session state are ADE-sync/runtime concerns
+- raw daily logs remain operational history unless promoted into portable summaries or memory
 
 ### Identity system prompt
 

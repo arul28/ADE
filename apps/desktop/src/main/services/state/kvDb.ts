@@ -2632,15 +2632,15 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     if (retrofitLegacyPrimaryKeyNotNullSchema(db)) {
       db.close();
       db = openRawDatabase(dbPath);
+      if (hadCrsqlMetadata) {
+        db.enableLoadExtension(true);
+        db.loadExtension(extensionPath);
+      }
       migrate({
         run: (sql: string, params: SqlValue[] = []) => {
           runStatement(db, sql, params);
         },
       });
-      if (hadCrsqlMetadata) {
-        db.enableLoadExtension(true);
-        db.loadExtension(extensionPath);
-      }
     }
 
     if (!hadCrsqlMetadata) {
