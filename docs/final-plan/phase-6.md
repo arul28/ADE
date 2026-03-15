@@ -38,6 +38,10 @@ Goal: Ship end-to-end multi-device ADE with a polished iOS app for project manag
 - The FTS4 virtual table (`unified_memories_fts`) is **not** marked as a CRR — each device rebuilds its FTS index from the synced `unified_memories` table.
 - **All 103 tables are synced to all devices** (desktop and iOS alike). The sync layer is comprehensive — what varies between devices is the UI, not the data. This keeps the sync protocol simple and ensures any future iOS tab can read its data immediately without sync changes.
 
+#### Design Principle: Mobile as Desktop Parity
+
+The iOS app is fundamentally a 1:1 wrap of the desktop chat/workspace experience in an iOS form factor. Every capability that works on desktop — tool calls, streaming UI, terminal output, chat attachments, computer use artifacts — must work on mobile via the sync protocol. The mobile app is not a "lite" companion; it is a full peer that happens to run on a phone. Where the desktop renders a tool call result inline, the phone renders the same data with native SwiftUI components. Where the desktop streams terminal output into a pane, the phone streams the same output via the terminal sub-protocol. No feature is desktop-only by design — only by phase scoping (Phase 6 ships four tabs, Phase 7 adds the rest).
+
 #### Future-Proofing: Sync Once, UI Later
 
 The sync infrastructure syncs all tables to all device types. This is a deliberate architectural choice:
@@ -126,6 +130,39 @@ The Phase 6 iOS app ships **four high-parity tabs** that provide complete projec
 
 This scoping is intentional: Lanes + Files + Work + PRs give full project management from the phone. The AI orchestration tabs (Missions, CTO, Chat) come in Phase 7 once the project management foundation is proven.
 
+#### iOS Design Direction
+
+- **Native SwiftUI throughout** — the iOS app uses native SwiftUI components and follows iOS Human Interface Guidelines. No embedded web views for core UI. Components should feel native to the platform.
+- **Color palette**: project purple (`#7C3AED`) as the primary accent color, with iOS-standard system backgrounds (`Color(.systemBackground)`, `Color(.secondarySystemBackground)`). Dark mode support via system appearance.
+- **Typography**: SF Pro (the iOS system font) exclusively. No custom fonts, no monospace outside of code/terminal contexts. Use standard Dynamic Type size categories for accessibility.
+- **Navigation**: standard `TabView` with four tabs (Lanes, Files, Work, PRs). Each tab uses `NavigationStack` for drill-down. No hamburger menus, no custom tab bars.
+- **Aesthetic**: clean, functional, slightly opinionated. Avoid generic AI app aesthetics — no gradient blobs, no floating orbs, no "chat with your AI" landing screens. The app opens to real project state, not decoration.
+- **Chat bubbles, tool call cards, and proof panels** (Phase 7 and forward-looking W8 elements): these must feel native to iOS, not web-view ports. Use `List` rows, `DisclosureGroup` for expandable content, `Sheet` for detail panels. No custom scroll views where SwiftUI native components suffice.
+- **Iconography**: SF Symbols exclusively. No custom icon sets.
+
+#### iOS Chat & Agent Visibility Requirements (Forward-Looking)
+
+While the full Chat tab is scoped for Phase 7, certain agent interaction patterns appear in Phase 6 tabs (Work tab terminal streaming, command routing feedback) and must be designed with the following in mind for continuity:
+
+- **Streaming message rendering**: chat messages from agents must render incrementally as tokens arrive, not after completion. The sync protocol delivers message deltas via cr-sqlite; the UI appends content on each changeset.
+- **Tool call results visible inline**: when an agent executes a tool (file write, terminal command, git operation), the result must be visible inline in chat context. Use expandable/collapsible `DisclosureGroup` cards — collapsed by default showing tool name + status, expandable to show full output.
+- **Terminal output streaming to iOS**: terminal output from agent sessions on the brain must be streamable to iOS in real-time via the terminal stream sub-protocol (W2). This is already used by the W8 Work tab, but must also feed into chat context when agents run commands.
+- **Persistent process indicator**: when agents are running commands, a persistent indicator must be visible — similar to a terminal-above-prompt pattern. On iOS, this is a sticky banner or inline card at the top of the chat/work view showing: agent name, current tool/command, elapsed time, and a pulsing activity indicator.
+- **Chat attachments (images, files)**: all attachments sent or received in chat must render on iOS. Images render inline with tap-to-fullscreen. Files show metadata with a tap-to-view action that fetches content via the file access sub-protocol.
+
+#### iOS Computer Use & Proof Requirements
+
+Proof that agents are working is critical to user trust. The desktop app has a proof drawer pattern (screenshots, videos, traces from computer use sessions). The iOS app needs equivalent visibility:
+
+- **Computer use artifacts (screenshots, videos, traces) must be viewable on iOS**: these are stored as file references in the database (paths in artifact records). The artifact metadata syncs via cr-sqlite like all other tables. The actual media files are served by the brain over the existing WebSocket file access sub-protocol (W2) — the same mechanism the Files tab uses to fetch file contents.
+- **No separate media backend needed**: the brain device serves media files (screenshots, screen recordings, trace logs) over the existing WebSocket connection. No S3, no CDN, no cloud relay. The phone requests a file by path, the brain reads it from disk and sends the bytes. This is the same flow as the Files tab viewing a source file — just with an image or video MIME type.
+- **Proof panel on iOS**: the desktop proof drawer pattern translates to a SwiftUI `Sheet` or `NavigationLink` detail view. Tapping an artifact card in chat or in a mission step opens the proof panel showing:
+  - Screenshots: full-resolution image with pinch-to-zoom
+  - Videos: inline video player (`AVKit` `VideoPlayer`)
+  - Traces: scrollable log view with timestamp + action pairs
+- **Artifact timeline**: within a mission step or agent chat session, artifacts are displayed in chronological order so the user can follow what the agent did step by step.
+- **Media sync path**: artifact metadata (file path, timestamp, type, associated step/session) syncs via cr-sqlite. Media files themselves are fetched on-demand from the brain via the file access sub-protocol — not eagerly synced. This keeps the cr-sqlite changeset stream lightweight. Thumbnails can be cached locally on iOS after first fetch.
+
 ---
 
 ### Workstreams
@@ -156,8 +193,8 @@ This scoping is intentional: Lanes + Files + Work + PRs give full project manage
 - Automatic reconnection with version-based catch-up on connection drops.
 - Changeset compression (zlib) for batches over slow or metered connections.
 - Heartbeat ping/pong (30s interval) for connection health monitoring.
-- **File access sub-protocol**: request/response for on-demand file reads, directory listings, and file writes. Used by iOS Files tab and desktop remote file viewing.
-- **Terminal stream sub-protocol**: subscribe to terminal session output from brain. Used by iOS Work tab for read-only terminal viewing.
+- **File access sub-protocol**: request/response for on-demand file reads, directory listings, and file writes. Used by iOS Files tab, desktop remote file viewing, and media/artifact retrieval. Supports any file type — source code, images, videos, logs — by path. Content-type is inferred from file extension. This single sub-protocol is the transport for all file-like data including computer use screenshots and screen recordings (no separate media backend needed).
+- **Terminal stream sub-protocol**: subscribe to terminal session output from brain. Used by iOS Work tab for read-only terminal viewing and by agent chat sessions for inline terminal output.
 
 #### W3: Device Registry & Brain Management
 
@@ -237,7 +274,7 @@ High-parity SwiftUI implementation of the desktop Files page.
 
 #### W8: iOS Work Tab
 
-High-parity SwiftUI implementation of the desktop Work page.
+High-parity SwiftUI implementation of the desktop Work page, including agent activity visibility.
 
 - **Terminal session list**: all active and recent terminal sessions from the brain, showing session name, lane, status (running/exited), last output timestamp.
 - **Read-only terminal output**: tap a session to view its output streamed in real-time from the brain via the terminal stream sub-protocol. Monospace rendering with ANSI color support.
@@ -245,6 +282,9 @@ High-parity SwiftUI implementation of the desktop Work page.
 - **Quick-launch actions**: predefined commands (e.g., "npm test", "npm run build") that route to the brain for execution. Brain spawns the process, output streams back to the phone.
 - **Session search**: search across session output (search request routes to brain).
 - **Pull-to-refresh**: refreshes session list and reconnects any dropped terminal streams.
+- **Agent activity feed**: when agents are running on the brain, the Work tab shows a persistent activity section at the top of the session list. Each active agent shows: agent name, current action (tool call name or terminal command), lane, elapsed time, and a pulsing activity dot. Tapping an active agent opens its terminal session output. This gives the user immediate proof that work is happening without navigating to a separate tab.
+- **Tool call result cards**: when an agent session includes tool calls (file writes, git operations, test runs), these appear as inline cards in the terminal stream — collapsed by default (tool name + pass/fail badge), expandable to show full output. This mirrors the desktop chat experience where tool call results are visible inline.
+- **Computer use artifact previews**: if an agent session produces computer use artifacts (screenshots, screen recordings), thumbnail previews appear inline in the session view. Tap to open the proof panel (full-resolution image or video player). Artifacts are fetched on-demand from the brain via the file access sub-protocol.
 
 #### W9: iOS PRs Tab
 
@@ -360,6 +400,10 @@ Lane portability makes multi-device desktop development seamless. This workstrea
 - Terminal session list matches desktop session list.
 - Terminal output streams in real-time from brain.
 - Quick-launch command executes on brain and output appears on phone.
+- Agent activity feed shows active agents with correct status, tool name, and elapsed time.
+- Tool call result cards render inline and expand/collapse correctly.
+- Computer use artifact thumbnails appear inline; tapping opens proof panel with full-resolution media.
+- Media files (screenshots, videos) load correctly via file access sub-protocol from brain.
 
 **iOS app — PRs tab:**
 - PR list matches GitHub state.
@@ -371,6 +415,7 @@ Lane portability makes multi-device desktop development seamless. This workstrea
 - Pairing flow: QR scan → token storage → auto-reconnect.
 - Offline: view cached state, queue commands, reconnect and replay.
 - Background refresh keeps state fresh.
+- Design audit: all screens use SF Pro, SF Symbols, project purple accent, native SwiftUI components. No web views, no custom fonts, no generic AI aesthetics.
 
 **Desktop-to-desktop:**
 - Lane availability state computation for all 6 states.
@@ -385,6 +430,70 @@ Lane portability makes multi-device desktop development seamless. This workstrea
 - Action on Mac A → verify on Mac B (both non-brain).
 - Brain dies after auto-push → viewer syncs normally.
 - Network drop during sync → retry succeeds.
+
+---
+
+### Execution Order
+
+#### Dependency Graph
+
+```
+W1 (cr-sqlite) ──► W2 (WebSocket sync) ──► W3 (device registry) ──► W4 (pairing & network)
+                                                    │
+                                                    ▼
+                                              W5 (iOS shell) ──┬──► W6 (Lanes tab)
+                                                               ├──► W7 (Files tab)
+                                                               ├──► W8 (Work tab)
+                                                               └──► W9 (PRs tab)
+                                                                        │
+                                              W11 (lane portability) ◄──┤  (W11 needs W2-W4, not iOS)
+                                                                        │
+                                                                        ▼
+                                              W10 (command routing + connection status)
+                                                                        │
+                                                                        ▼
+                                              W12 (validation)
+```
+
+Key dependencies:
+- W1 (cr-sqlite) is the foundational dependency -- everything else builds on it.
+- W2 requires W1 (changesets to transport).
+- W3 requires W2 (device table needs sync, brain status needs WebSocket).
+- W4 requires W3 (pairing writes to device registry).
+- W5 requires W1-W4 proven (iOS app depends on working sync infrastructure).
+- W6-W9 require W5 (each tab builds on the iOS shell) and can run in parallel.
+- W10 requires W6-W9 (command routing surfaces across all tabs).
+- W11 requires W2-W4 (desktop-to-desktop lane sync) but is independent of iOS work.
+- W12 requires all other workstreams (validation covers everything).
+
+#### Wave Groupings
+
+**Wave 1: Sync Infrastructure (W1-W4) -- ~3-4 weeks**
+
+The foundation. cr-sqlite integration, WebSocket protocol, device registry, and pairing. Nothing else can start until this wave proves the sync architecture works. A **cr-sqlite spike** (load extension, mark tables as CRRs, generate and apply changesets between two databases) should be the very first step -- budget 2-3 days to validate WASM compatibility and merge correctness before committing to the full protocol implementation.
+
+**Wave 2: iOS Shell (W5) -- ~1-2 weeks**
+
+Xcode project setup, SQLite.swift + cr-sqlite native integration, WebSocket client, pairing flow, tab navigation scaffold. This wave produces an iOS app that connects to the brain and syncs state but has no functional tabs yet. W11 (lane portability) can start in parallel here since it only needs desktop sync infrastructure.
+
+**Wave 3: iOS Tabs (W6-W9) in Parallel -- ~3-4 weeks**
+
+Four tabs built in parallel by separate developers or sequentially by one. Each tab follows the same pattern: read from local cr-sqlite database, render SwiftUI views, send commands to brain. W10 (command routing + connection status) is woven in as tabs need it.
+
+**Wave 4: Integration and Validation (W10-W12) -- ~1-2 weeks**
+
+Command routing hardening, connection status UI on both platforms, lane portability finalization, and comprehensive cross-device validation.
+
+#### Rough Effort Estimates
+
+| Wave | Workstreams | Duration | Risk |
+|---|---|---|---|
+| Wave 1 | W1-W4 | 3-4 weeks | High (cr-sqlite WASM compatibility is the main risk) |
+| Wave 2 | W5, W11 (parallel) | 1-2 weeks | Medium (iOS project setup, native cr-sqlite loading) |
+| Wave 3 | W6-W9, W10 | 3-4 weeks | Low (pattern is well-defined, each tab is independent) |
+| Wave 4 | W10 finalization, W12 | 1-2 weeks | Low (validation, polish) |
+
+**Total: 8-10 weeks** (matches phase estimate). Critical path is Wave 1 -- if cr-sqlite works cleanly, the rest is execution.
 
 ---
 
@@ -408,5 +517,8 @@ Lane portability makes multi-device desktop development seamless. This workstrea
 16. Auto-push policy works with all three modes.
 17. One-click lane sync orchestrates push → fetch → worktree creation.
 18. Agent-running guard prevents concurrent writes across devices.
-19. Remote file access works from both desktop viewers and iOS.
+19. Remote file access works from both desktop viewers and iOS — including media files (images, videos) served via the file access sub-protocol.
 20. Terminal output streaming works from iOS to brain.
+21. Agent activity is visible on iOS Work tab: active agent list, tool call result cards, and process indicators.
+22. Computer use artifacts (screenshots, videos, traces) are viewable on iOS via proof panel — fetched on-demand from brain.
+23. iOS app uses native SwiftUI components, SF Pro typography, project purple (#7C3AED) accent, and SF Symbols throughout — no web-view ports or custom UI frameworks.

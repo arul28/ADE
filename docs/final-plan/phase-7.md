@@ -220,6 +220,66 @@ Phase 6 shipped basic offline state and command queuing. This workstream hardens
 
 ---
 
+### Execution Order
+
+#### Dependency Graph
+
+```
+W1 (Missions tab) ──────────────┐
+W2 (CTO/Chat tab) ──────────────┤
+W3 (Automations/Graph/History) ──┼──► W5 (push notifications) ──► W9 (offline resilience)
+W4 (full Settings tab) ──────────┘          │
+                                            ▼
+W6 (VPS providers) ◄── W4 (Settings)   W7 (mobile automations)
+                                            │
+W8 (computer-use artifacts)                 ▼
+                                       W10 (polish)
+                                            │
+                                            ▼
+                                       W11 (validation)
+```
+
+Key dependencies:
+- W1-W4 are largely independent of each other (all read from already-synced cr-sqlite data) and can run in parallel.
+- W5 (push notifications) depends on at least one tab being functional to have notification sources.
+- W6 (VPS providers) depends on W4 (Settings UI for provider configuration).
+- W7 (mobile automations) depends on W3 (Automations tab) and W5 (push for digest notifications).
+- W8 (computer-use artifacts) is independent -- can run anytime after Phase 6.
+- W9 (offline resilience) depends on W5 (notification queuing) and core tabs being functional.
+- W10 (polish) depends on all tabs being feature-complete.
+- W11 (validation) depends on everything.
+
+#### Wave Groupings
+
+**Wave 1: Remaining iOS Tabs (W1-W4) in Parallel -- ~3-4 weeks**
+
+Four workstreams built in parallel. Each follows the same Phase 6 pattern: read from local cr-sqlite database (data already synced), render SwiftUI views, send commands to brain. No sync layer changes needed. Missions and CTO/Chat are the highest-effort tabs (streaming tokens, inline diffs, intervention flows).
+
+**Wave 2: Infrastructure (W5-W6) -- ~1-2 weeks**
+
+Push notifications (APNs relay or FCM) and VPS provider integrations (Hetzner, DigitalOcean, generic SSH). These are backend-heavy workstreams that can run in parallel with late Wave 1 tab work.
+
+**Wave 3: Advanced Features (W7-W9) -- ~1-2 weeks**
+
+Mobile automations digest, computer-use artifact viewing, and advanced offline resilience (optimistic UI, conflict resolution, background sync hardening). These refine the experience built in Waves 1-2.
+
+**Wave 4: Polish and Validation (W10-W11) -- ~1-2 weeks**
+
+Animations, dark mode, iPad adaptive layout, widgets, Spotlight, haptics, and comprehensive cross-platform validation.
+
+#### Rough Effort Estimates
+
+| Wave | Workstreams | Duration | Risk |
+|---|---|---|---|
+| Wave 1 | W1-W4 | 3-4 weeks | Low (pattern proven in Phase 6, data already synced) |
+| Wave 2 | W5-W6 | 1-2 weeks | Medium (APNs infrastructure, provider API integrations) |
+| Wave 3 | W7-W9 | 1-2 weeks | Low (refinement work, well-scoped) |
+| Wave 4 | W10-W11 | 1-2 weeks | Low (polish, validation) |
+
+**Total: 6-8 weeks** (matches phase estimate). Phase 7 is lower risk than Phase 6 because the sync layer is complete and the iOS tab pattern is proven. The main effort is SwiftUI UI work.
+
+---
+
 ### Exit criteria
 
 1. iOS Missions tab provides full mission management: list, detail, launch, intervention approval, history, budget.

@@ -9,7 +9,7 @@ This plan has been split into individual phase files for maintainability. Each p
 - [Phase 4: CTO + Ecosystem (Complete)](phase-4.md)
 - [Phase 5: Play Runtime Isolation (Complete)](phase-5.md)
 - [Phase 6: Multi-Device Sync & iOS Companion](phase-6.md)
-- [Phase 7: Mobile Polish & Advanced Remote](phase-7.md)
+- [Phase 7: Full iOS & Advanced Remote](phase-7.md)
 - [Phase 8: Core Extraction + SpacetimeDB Evaluation (Deferred/Optional)](phase-8.md)
 - [Appendix: Rules, Risks, KPIs](appendix.md)
 
