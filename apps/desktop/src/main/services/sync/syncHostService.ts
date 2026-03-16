@@ -22,21 +22,25 @@ import type {
   SyncFileRequest,
   SyncFileResponsePayload,
   SyncHelloPayload,
+  SyncPairingRequestPayload,
   SyncPeerConnectionState,
   SyncPeerMetadata,
-  SyncRunQuickCommandArgs,
+  SyncPairingSession,
   SyncTerminalSnapshotPayload,
-  TerminalToolType,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { createFileService } from "../files/fileService";
+import type { createLaneService } from "../lanes/laneService";
 import type { createPtyService } from "../pty/ptyService";
+import type { createPrService } from "../prs/prService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import type { AdeDb } from "../state/kvDb";
 import { hasNullByte, isWithinDir, normalizeRelative, nowIso, toOptionalString } from "../shared/utils";
 import type { DeviceRegistryService } from "./deviceRegistryService";
+import { createSyncPairingStore } from "./syncPairingStore";
 import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, encodeSyncEnvelope, mapPlatform, parseSyncEnvelope, wsDataToText } from "./syncProtocol";
+import { createSyncRemoteCommandService } from "./syncRemoteCommandService";
 const DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS = 30_000;
 const DEFAULT_SYNC_POLL_INTERVAL_MS = 400;
 const DEFAULT_BRAIN_STATUS_INTERVAL_MS = 5_000;
@@ -62,6 +66,8 @@ type SyncHostServiceArgs = {
   logger: Logger;
   projectRoot: string;
   fileService: ReturnType<typeof createFileService>;
+  laneService: ReturnType<typeof createLaneService>;
+  prService: ReturnType<typeof createPrService>;
   sessionService: ReturnType<typeof createSessionService>;
   ptyService: ReturnType<typeof createPtyService>;
   computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService>;
@@ -79,28 +85,6 @@ function sanitizeRemoteAddress(remoteAddress: string | null | undefined): string
   const value = toOptionalString(remoteAddress);
   if (!value) return null;
   return value.startsWith("::ffff:") ? value.slice("::ffff:".length) : value;
-}
-
-function normalizeToolType(raw: string | null | undefined): TerminalToolType | null {
-  const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-  if (!value) return null;
-  const allowed: TerminalToolType[] = [
-    "shell",
-    "run-shell",
-    "claude",
-    "codex",
-    "claude-orchestrated",
-    "codex-orchestrated",
-    "ai-orchestrated",
-    "codex-chat",
-    "claude-chat",
-    "ai-chat",
-    "cursor",
-    "aider",
-    "continue",
-    "other",
-  ];
-  return (allowed as string[]).includes(value) ? (value as TerminalToolType) : "other";
 }
 
 function ensureBootstrapToken(filePath: string): string {
@@ -187,14 +171,51 @@ function toSyncPeerConnectionState(peer: PeerState, currentServerDbVersion: numb
 
 function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
   const value = payload as SyncHelloPayload | null;
-  const token = toOptionalString(value?.token);
   const peer = value?.peer;
-  if (!token || !peer || typeof peer !== "object") return null;
+  if (!peer || typeof peer !== "object") return null;
+  if (!toOptionalString(peer.deviceId) || !toOptionalString(peer.deviceName) || !toOptionalString(peer.siteId)) {
+    return null;
+  }
+  const auth = value?.auth;
+  let normalizedAuth = auth ?? null;
+  if (!normalizedAuth) {
+    const token = toOptionalString(value?.token);
+    if (!token) return null;
+    normalizedAuth = {
+      kind: "bootstrap",
+      token,
+    };
+  }
+  if (normalizedAuth.kind === "bootstrap") {
+    if (!toOptionalString(normalizedAuth.token)) return null;
+  } else if (normalizedAuth.kind === "paired") {
+    if (!toOptionalString(normalizedAuth.deviceId) || !toOptionalString(normalizedAuth.secret)) return null;
+  } else {
+    return null;
+  }
+  return {
+    peer: {
+      deviceId: String(peer.deviceId).trim(),
+      deviceName: String(peer.deviceName).trim(),
+      platform: peer.platform ?? "unknown",
+      deviceType: peer.deviceType ?? "unknown",
+      siteId: String(peer.siteId).trim(),
+      dbVersion: Number(peer.dbVersion ?? 0),
+    },
+    auth: normalizedAuth,
+  };
+}
+
+function parsePairingRequestPayload(payload: unknown): SyncPairingRequestPayload | null {
+  const value = payload as SyncPairingRequestPayload | null;
+  const code = toOptionalString(value?.code);
+  const peer = value?.peer;
+  if (!code || !peer || typeof peer !== "object") return null;
   if (!toOptionalString(peer.deviceId) || !toOptionalString(peer.deviceName) || !toOptionalString(peer.siteId)) {
     return null;
   }
   return {
-    token,
+    code,
     peer: {
       deviceId: String(peer.deviceId).trim(),
       deviceName: String(peer.deviceName).trim(),
@@ -206,25 +227,21 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
   };
 }
 
-function parseQuickCommandArgs(value: Record<string, unknown>): SyncRunQuickCommandArgs | null {
-  const laneId = toOptionalString(value.laneId);
-  const title = toOptionalString(value.title);
-  const startupCommand = toOptionalString(value.startupCommand);
-  if (!laneId || !title || !startupCommand) return null;
-  return {
-    laneId,
-    title,
-    startupCommand,
-    cols: Number.isFinite(value.cols) ? Number(value.cols) : undefined,
-    rows: Number.isFinite(value.rows) ? Number(value.rows) : undefined,
-    toolType: toOptionalString(value.toolType),
-  };
-}
-
 export function createSyncHostService(args: SyncHostServiceArgs) {
   const layout = resolveAdeLayout(args.projectRoot);
   const bootstrapTokenPath = args.bootstrapTokenPath ?? path.join(layout.secretsDir, "sync-bootstrap-token");
+  const pairingSecretsPath = path.join(layout.secretsDir, "sync-paired-devices.json");
   const bootstrapToken = ensureBootstrapToken(bootstrapTokenPath);
+  const pairingStore = createSyncPairingStore({
+    filePath: pairingSecretsPath,
+  });
+  const remoteCommandService = createSyncRemoteCommandService({
+    laneService: args.laneService,
+    prService: args.prService,
+    ptyService: args.ptyService,
+    sessionService: args.sessionService,
+    logger: args.logger,
+  });
   const heartbeatIntervalMs = Math.max(5_000, Math.floor(args.heartbeatIntervalMs ?? DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS));
   const pollIntervalMs = Math.max(100, Math.floor(args.pollIntervalMs ?? DEFAULT_SYNC_POLL_INTERVAL_MS));
   const brainStatusIntervalMs = Math.max(1_000, Math.floor(args.brainStatusIntervalMs ?? DEFAULT_BRAIN_STATUS_INTERVAL_MS));
@@ -508,14 +525,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       send(peer.ws, "command_result", result, requestId);
     };
 
-    if (payload.action !== "work.runQuickCommand") {
-      reject(`Command ${payload.action} is reserved for future W10 work; only work.runQuickCommand is enabled in W2.`);
+    const policy = remoteCommandService.getPolicy(payload.action);
+    if (!policy) {
+      reject(`Unsupported remote command: ${payload.action}.`);
       return;
     }
-
-    const parsedArgs = parseQuickCommandArgs(payload.args);
-    if (!parsedArgs) {
-      reject("work.runQuickCommand requires laneId, title, and startupCommand.", "invalid_command");
+    if (!policy.viewerAllowed) {
+      reject(`Remote command ${payload.action} is not available to paired controller devices.`, "forbidden_command");
       return;
     }
 
@@ -523,19 +539,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       commandId,
       accepted: true,
       status: "accepted",
-      message: "Launching remote terminal session.",
+      message: `Executing ${payload.action}.`,
     }, requestId);
 
     try {
-      const created = await args.ptyService.create({
-        laneId: parsedArgs.laneId,
-        title: parsedArgs.title,
-        startupCommand: parsedArgs.startupCommand,
-        tracked: true,
-        cols: parsedArgs.cols ?? 120,
-        rows: parsedArgs.rows ?? 36,
-        toolType: normalizeToolType(parsedArgs.toolType) ?? "run-shell",
-      });
+      const created = await remoteCommandService.execute(payload);
       send(peer.ws, "command_result", {
         commandId,
         ok: true,
@@ -559,10 +567,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     peer.lastSeenAt = nowIso();
 
     if (!peer.authenticated) {
-      if (envelope.type !== "hello") {
+      if (envelope.type !== "hello" && envelope.type !== "pairing_request") {
         send(peer.ws, "hello_error", {
           code: "invalid_hello",
-          message: "Authenticate with a hello envelope before sending other messages.",
+          message: "Authenticate with hello or pairing_request before sending other messages.",
         }, envelope.requestId);
         try {
           peer.ws.close(4003, "Authentication required");
@@ -571,11 +579,69 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         }
         return;
       }
+      if (envelope.type === "pairing_request") {
+        const pairing = parsePairingRequestPayload(envelope.payload);
+        if (!pairing) {
+          send(peer.ws, "pairing_result", {
+            ok: false,
+            error: {
+              code: "pairing_failed",
+              message: "Invalid pairing request payload.",
+            },
+          }, envelope.requestId);
+          return;
+        }
+        try {
+          const result = pairingStore.pairPeer(pairing.peer, pairing.code);
+          args.deviceRegistryService?.upsertPeerMetadata(pairing.peer, {
+            lastSeenAt: nowIso(),
+            lastHost: peer.remoteAddress,
+            lastPort: peer.remotePort,
+          });
+          send(peer.ws, "pairing_result", {
+            ok: true,
+            deviceId: result.deviceId,
+            secret: result.secret,
+          }, envelope.requestId);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          send(peer.ws, "pairing_result", {
+            ok: false,
+            error: {
+              code: /expired/i.test(message) ? "expired_code" : "invalid_code",
+              message,
+            },
+          }, envelope.requestId);
+        }
+        return;
+      }
       const hello = parseHelloPayload(envelope.payload);
-      if (!hello || hello.token !== bootstrapToken) {
+      if (!hello) {
+        send(peer.ws, "hello_error", {
+          code: "invalid_hello",
+          message: "Invalid hello payload.",
+        }, envelope.requestId);
+        try {
+          peer.ws.close(4003, "Authentication failed");
+        } catch {
+          // ignore
+        }
+        return;
+      }
+      const authFailed = (() => {
+        if (hello.auth?.kind === "bootstrap") {
+          return hello.auth.token !== bootstrapToken;
+        }
+        if (hello.auth?.kind === "paired") {
+          if (hello.auth.deviceId !== hello.peer.deviceId) return true;
+          return !pairingStore.authenticate(hello.auth.deviceId, hello.auth.secret);
+        }
+        return true;
+      })();
+      if (authFailed) {
         send(peer.ws, "hello_error", {
           code: "auth_failed",
-          message: "Bootstrap token authentication failed.",
+          message: "Sync authentication failed.",
         }, envelope.requestId);
         try {
           peer.ws.close(4003, "Authentication failed");
@@ -603,9 +669,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           fileAccess: true,
           terminalStreaming: true,
           bootstrapAuth: true,
+          pairingAuth: {
+            enabled: true,
+            codeTtlMs: pairingStore.getCodeTtlMs(),
+          },
           commandRouting: {
-            mode: "minimal",
-            supportedActions: ["work.runQuickCommand"],
+            mode: "allowlisted",
+            supportedActions: remoteCommandService.getSupportedActions(),
           },
         },
       }, envelope.requestId);
@@ -707,6 +777,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
     getBootstrapToken(): string {
       return bootstrapToken;
+    },
+
+    getPairingSession(): SyncPairingSession {
+      return pairingStore.getActiveSession();
+    },
+
+    revokePairedDevice(deviceId: string): void {
+      pairingStore.revoke(deviceId);
     },
 
     getPeerStates(): SyncPeerConnectionState[] {

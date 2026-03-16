@@ -12,8 +12,10 @@ import type { Logger } from "../logging/logger";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import type { createFileService } from "../files/fileService";
+import type { createLaneService } from "../lanes/laneService";
 import type { createMissionService } from "../missions/missionService";
 import type { createProcessService } from "../processes/processService";
+import type { createPrService } from "../prs/prService";
 import type { createPtyService } from "../pty/ptyService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { AdeDb } from "../state/kvDb";
@@ -28,6 +30,8 @@ type SyncServiceArgs = {
   logger: Logger;
   projectRoot: string;
   fileService: ReturnType<typeof createFileService>;
+  laneService: ReturnType<typeof createLaneService>;
+  prService: ReturnType<typeof createPrService>;
   sessionService: ReturnType<typeof createSessionService>;
   ptyService: ReturnType<typeof createPtyService>;
   computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService>;
@@ -52,6 +56,8 @@ function sanitizeDraft(raw: unknown, token: string | null): SyncDesktopConnectio
     host,
     port: Math.floor(port),
     token,
+    authKind: row.authKind === "paired" ? "paired" : "bootstrap",
+    pairedDeviceId: typeof row.pairedDeviceId === "string" ? row.pairedDeviceId : null,
     lastRemoteDbVersion: Number.isFinite(row.lastRemoteDbVersion) ? Number(row.lastRemoteDbVersion) : 0,
     lastBrainDeviceId: typeof row.lastBrainDeviceId === "string" ? row.lastBrainDeviceId : null,
   };
@@ -105,6 +111,8 @@ export function createSyncService(args: SyncServiceArgs) {
       `${JSON.stringify({
         host: draft.host,
         port: draft.port,
+        authKind: draft.authKind ?? "bootstrap",
+        pairedDeviceId: draft.pairedDeviceId ?? null,
         lastRemoteDbVersion: draft.lastRemoteDbVersion ?? 0,
         lastBrainDeviceId: draft.lastBrainDeviceId ?? null,
       }, null, 2)}\n`,
@@ -123,6 +131,8 @@ export function createSyncService(args: SyncServiceArgs) {
             host: status.savedDraft.host,
             port: status.savedDraft.port,
             token,
+            authKind: status.savedDraft.authKind ?? "bootstrap",
+            pairedDeviceId: status.savedDraft.pairedDeviceId ?? null,
             lastRemoteDbVersion: status.savedDraft.lastRemoteDbVersion ?? 0,
             lastBrainDeviceId: status.savedDraft.lastBrainDeviceId ?? null,
           });
@@ -158,6 +168,8 @@ export function createSyncService(args: SyncServiceArgs) {
       logger: args.logger,
       projectRoot: args.projectRoot,
       fileService: args.fileService,
+      laneService: args.laneService,
+      prService: args.prService,
       sessionService: args.sessionService,
       ptyService: args.ptyService,
       computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
@@ -303,7 +315,7 @@ export function createSyncService(args: SyncServiceArgs) {
         kind: "terminal_session",
         id: session.id,
         label: session.title,
-        detail: "Running terminal sessions must stop before the brain role can move.",
+        detail: "Running terminal sessions must stop before the host role can move.",
       });
     }
 
@@ -315,7 +327,7 @@ export function createSyncService(args: SyncServiceArgs) {
           kind: "managed_process",
           id: `${lane.id}:${runtime.processId}`,
           label: runtime.processId,
-          detail: "Managed run processes must stop before the brain role can move.",
+          detail: "Managed run processes must stop before the host role can move.",
         });
       }
     }
@@ -324,9 +336,9 @@ export function createSyncService(args: SyncServiceArgs) {
       ready: blockers.length === 0,
       blockers,
       survivableState: [
-        "Paused missions remain paused and can resume on the new brain.",
-        "CTO history and idle threads remain available on the new brain.",
-        "Idle and ended agent chats remain available and resumable on the new brain.",
+        "Paused missions remain paused and can resume on the new host.",
+        "CTO history and idle threads remain available on the new host.",
+        "Idle and ended agent chats remain available and resumable on the new host.",
       ],
     };
   };
@@ -355,12 +367,13 @@ export function createSyncService(args: SyncServiceArgs) {
         currentBrain,
         clusterState: cluster,
         bootstrapToken: role === "brain" ? readToken() : null,
+        pairingSession: role === "brain" && hostService ? hostService.getPairingSession() : null,
         connectedPeers: hostService
           ? hostService.getPeerStates()
           : (syncPeerService.getLatestBrainStatus()?.connectedPeers ?? []),
         client,
         transferReadiness: await getTransferReadiness(),
-        survivableStateText: "Paused/idle state will remain available on the new brain.",
+        survivableStateText: "Paused and idle state will remain available on the new host.",
         blockingStateText: "Live missions, chats, terminals, or run processes must stop first.",
       };
     },
@@ -404,6 +417,7 @@ export function createSyncService(args: SyncServiceArgs) {
     },
 
     async forgetDevice(deviceId: string): Promise<SyncRoleSnapshot> {
+      hostService?.revokePairedDevice(deviceId);
       deviceRegistryService.forgetDevice(deviceId);
       await emitStatus();
       return await this.getStatus();
@@ -417,7 +431,7 @@ export function createSyncService(args: SyncServiceArgs) {
       const current = await this.getStatus();
       if (current.role === "brain") return current;
       if (!current.transferReadiness.ready) {
-        throw new Error("Stop live missions, chats, terminals, and run processes before transferring the brain role.");
+        throw new Error("Stop live missions, chats, terminals, and run processes before transferring the host role.");
       }
       const localDevice = deviceRegistryService.ensureLocalDevice();
       const currentCluster = deviceRegistryService.getClusterState();

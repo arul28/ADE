@@ -6,6 +6,7 @@ import type {
   SyncCommandAckPayload,
   SyncCommandResultPayload,
   SyncDesktopConnectionDraft,
+  SyncRemoteCommandAction,
   SyncPeerMetadata,
   SyncRunQuickCommandArgs,
 } from "../../../shared/types";
@@ -55,7 +56,7 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
     syncLag: null,
     lastRemoteDbVersion: 0,
     brainDeviceId: null,
-    brainName: null,
+    hostName: null,
     error: null,
     message: null,
     savedDraft: null,
@@ -99,6 +100,8 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
           host: draft.host.trim(),
           port: Math.max(1, Math.floor(draft.port)),
           token: draft.token,
+          authKind: draft.authKind ?? "bootstrap",
+          pairedDeviceId: draft.pairedDeviceId ?? null,
           lastRemoteDbVersion: Math.max(0, Math.floor(draft.lastRemoteDbVersion ?? 0)),
           lastBrainDeviceId: draft.lastBrainDeviceId ?? null,
         }
@@ -190,7 +193,7 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
     status.latencyMs = null;
     status.syncLag = null;
     status.brainDeviceId = null;
-    status.brainName = null;
+    status.hostName = null;
     status.message = message;
     status.error = error;
     clearPendingRequests(error ?? message ?? "Sync peer disconnected.");
@@ -210,10 +213,10 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
         latestRemoteDbVersion = Math.max(0, Math.floor(payload.serverDbVersion ?? 0));
         status.state = "connected";
         status.connectedAt = nowIso();
-        status.message = `Connected to ${payload.brain.deviceName}.`;
+        status.message = `Connected to host ${payload.brain.deviceName}.`;
         status.error = null;
         status.brainDeviceId = payload.brain.deviceId;
-        status.brainName = payload.brain.deviceName;
+        status.hostName = payload.brain.deviceName;
         if (connectionDraft) {
           connectionDraft.lastRemoteDbVersion = latestRemoteDbVersion;
           connectionDraft.lastBrainDeviceId = payload.brain.deviceId;
@@ -250,7 +253,7 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
         latestBrainStatus = payload;
         latestBrainMetadata = payload.brain;
         status.brainDeviceId = payload.brain.deviceId;
-        status.brainName = payload.brain.deviceName;
+        status.hostName = payload.brain.deviceName;
         const localDeviceId = args.deviceRegistryService.getLocalDeviceId();
         const localPeer = payload.connectedPeers.find((peer) => peer.deviceId === localDeviceId) ?? null;
         status.latencyMs = localPeer?.latencyMs ?? null;
@@ -338,13 +341,23 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
         const onOpen = () => {
           cleanup();
           const peer = currentLocalPeerMetadata();
+          const auth = draft.authKind === "paired" && draft.pairedDeviceId
+            ? {
+                kind: "paired" as const,
+                deviceId: draft.pairedDeviceId,
+                secret: draft.token,
+              }
+            : {
+                kind: "bootstrap" as const,
+                token: draft.token,
+              };
           socket.send(
             encodeSyncEnvelope({
               type: "hello",
               requestId: "hello",
               payload: {
-                token: draft.token,
                 peer,
+                auth,
               },
               compressionThresholdBytes: DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
             }),
@@ -375,14 +388,14 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
             pendingConnect.reject(new Error("Connection closed before authentication completed."));
             pendingConnect = null;
           }
-          disconnectInternal("disconnected", "Disconnected from brain.", null);
+          disconnectInternal("disconnected", "Disconnected from host.", null);
         });
       });
     },
 
     disconnect(options: { preserveDraft?: boolean } = {}): void {
       const nextDraft = options.preserveDraft ? connectionDraft : null;
-      disconnectInternal("disconnected", connectionDraft ? "Disconnected from brain." : null, null);
+      disconnectInternal("disconnected", connectionDraft ? "Disconnected from host." : null, null);
       if (!options.preserveDraft) {
         applyDraft(null);
       } else {
@@ -410,9 +423,9 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
       sendLocalChanges();
     },
 
-    async runQuickCommand(argsIn: SyncRunQuickCommandArgs): Promise<unknown> {
+    async executeRemoteCommand(action: SyncRemoteCommandAction | (string & {}), commandArgs: Record<string, unknown>): Promise<unknown> {
       if (!ws || ws.readyState !== WebSocket.OPEN) {
-        throw new Error("Not connected to a brain device.");
+        throw new Error("Not connected to a host device.");
       }
       const requestId = `sync-command-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       const promise = new Promise<unknown>((resolve, reject) => {
@@ -428,13 +441,17 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
           requestId,
           payload: {
             commandId: requestId,
-            action: "work.runQuickCommand",
-            args: argsIn,
+            action,
+            args: commandArgs,
           },
           compressionThresholdBytes: DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
         }),
       );
       return await promise;
+    },
+
+    async runQuickCommand(argsIn: SyncRunQuickCommandArgs): Promise<unknown> {
+      return await this.executeRemoteCommand("work.runQuickCommand", argsIn);
     },
 
     async dispose(): Promise<void> {

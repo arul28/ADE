@@ -234,12 +234,17 @@ export function ContextSection() {
           ) : docsStatus?.docs?.length ? (
             docsStatus.docs.map((doc) => {
               const isGenerating = docsStatus.generation.state === "running";
-              const statusColor = isGenerating ? COLORS.info : doc.exists ? COLORS.success : COLORS.warning;
+              const MIN_DOC_SIZE = 200;
+              const hasContent = doc.exists && doc.sizeBytes >= MIN_DOC_SIZE;
+              const statusColor = isGenerating ? COLORS.info : hasContent ? COLORS.success : COLORS.warning;
               const statusText = isGenerating
                 ? "generating..."
-                : doc.exists
+                : hasContent
                   ? `ready \u00b7 updated ${relativeTime(doc.updatedAt)}`
-                  : "not generated";
+                  : doc.exists
+                    ? "incomplete \u00b7 regenerate recommended"
+                    : "not generated";
+              const canOpen = hasContent && !isGenerating;
               return (
                 <div key={doc.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, borderRadius: 10, padding: "10px 12px" }}>
                   <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
@@ -257,7 +262,7 @@ export function ContextSection() {
                   <button
                     type="button"
                     style={outlineButton({ height: 26, padding: "0 10px", fontSize: 10, borderRadius: 8 })}
-                    disabled={isGenerating}
+                    disabled={!canOpen}
                     onClick={() => {
                       navigate("/files", { state: { openFilePath: doc.preferredPath } });
                     }}

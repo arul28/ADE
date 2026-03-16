@@ -150,8 +150,8 @@ Phase 4 should enable a "tech department" loop: one persistent agent per employe
   - If accepted, bootstrap sequence runs:
     1. Project fingerprint pass (stack/manifest detection, lane layout, CI, changelog signals).
     2. Context-pack ingestion (`.ade/context/PRD.ade.md`, `.ade/context/ARCHITECTURE.ade.md`, prior mission/context artifacts where available).
-    3. Memory pack creation: project summary + conventions + conventions-to-enforce + known hotspots + recommended worker routing defaults.
-    4. CTO-first default org suggestion (editable): suggested workers + per-worker default roles, adapters, and policies.
+    3. CTO memory creation: long-term brief, conventions, known hotspots, and routing defaults.
+    4. Personality selection on top of an ADE-owned immutable doctrine.
     5. Default auto-dispatch policy presented as editable templates before activation.
   - If skipped, ADE creates minimal `.ade/cto/` scaffold and keeps onboarding as a persistent in-chat task in the CTO tab (`needsSetup` state) until confirmed.
 
@@ -159,7 +159,7 @@ Phase 4 should enable a "tech department" loop: one persistent agent per employe
 
 **Completed (W1-W4, W5a, W6):**
 - ✅ CTO tab provides a persistent project-aware agent interface with layered memory (CTO core memory, employee core memory, shared project memory, subordinate activity feed) and org chart sidebar.
-- ✅ CTO agent has access to all ADE MCP tools.
+- ✅ CTO chat has a curated ADE operator tool surface for supervising lanes, chats, missions, workers, and Linear workflows.
 - ✅ Worker agents can be created, configured, and managed under the CTO in an org hierarchy.
 - ✅ Each worker has its own identity, core memory, adapter config, heartbeat policy, and budget while sharing durable project memory with the CTO.
 - ✅ Heartbeat system activates agents on schedule or demand, with coalescing, deferred promotion, and orphan reaping.

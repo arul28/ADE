@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawnAsync } from "../shared/utils";
 
 type CliName = "claude" | "codex";
 
@@ -121,29 +121,12 @@ function findExplicitCommandPath(command: string): string | null {
   return match ? path.join(match, command) : null;
 }
 
-/** Run a command asynchronously and return { status, stdout, stderr }. */
-function spawnAsync(
-  command: string,
-  args: string[],
-  timeoutMs: number,
-): Promise<{ status: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs });
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
-    child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
-    child.on("error", () => resolve({ status: null, stdout, stderr }));
-    child.on("close", (code) => resolve({ status: code, stdout, stderr }));
-  });
-}
-
 async function commandExists(command: string): Promise<boolean> {
   // Strategy 1: Direct spawn — bypasses shell init (.zshrc errors, slow profiles).
   // If the binary exists, --version will produce *some* exit code.
   // A spawn error (ENOENT) means the binary isn't on PATH → status is null.
   try {
-    const direct = await spawnAsync(command, ["--version"], 5_000);
+    const direct = await spawnAsync(command, ["--version"], { timeout: 5_000 });
     if (direct.status !== null) return true;
   } catch {
     // fall through to shell-based check
@@ -155,10 +138,10 @@ async function commandExists(command: string): Promise<boolean> {
   // Strategy 2: Shell-based lookup (fallback for edge cases)
   try {
     if (process.platform === "win32") {
-      const result = await spawnAsync("where", [command], 5_000);
+      const result = await spawnAsync("where", [command], { timeout: 5_000 });
       return result.status === 0;
     }
-    const result = await spawnAsync(getLookupShell(), ["-lc", 'command -v "$1" >/dev/null 2>&1', "--", command], 5_000);
+    const result = await spawnAsync(getLookupShell(), ["-lc", 'command -v "$1" >/dev/null 2>&1', "--", command], { timeout: 5_000 });
     return result.status === 0;
   } catch {
     // fall through to explicit common-path lookup
@@ -170,11 +153,11 @@ async function commandExists(command: string): Promise<boolean> {
 async function commandPath(command: string): Promise<string> {
   try {
     if (process.platform === "win32") {
-      const result = await spawnAsync("where", [command], 5_000);
+      const result = await spawnAsync("where", [command], { timeout: 5_000 });
       return result.stdout?.trim().split(/\r?\n/)[0] ?? command;
     }
     // Try which first (simpler, doesn't load full login shell)
-    const which = await spawnAsync("which", [command], 3_000);
+    const which = await spawnAsync("which", [command], { timeout: 3_000 });
     if (which.status === 0 && which.stdout?.trim()) {
       return which.stdout.trim();
     }
@@ -183,7 +166,7 @@ async function commandPath(command: string): Promise<string> {
       return explicitPath;
     }
     // Fallback to login shell lookup
-    const result = await spawnAsync(getLookupShell(), ["-lc", 'command -v "$1"', "--", command], 5_000);
+    const result = await spawnAsync(getLookupShell(), ["-lc", 'command -v "$1"', "--", command], { timeout: 5_000 });
     return result.stdout?.trim() || command;
   } catch {
     return findExplicitCommandPath(command) ?? command;
@@ -196,7 +179,7 @@ async function refreshProcessPathFromShell(): Promise<void> {
   const loginShell = process.env.SHELL || "/bin/zsh";
 
   try {
-    const resolved = await spawnAsync(loginShell, ["-lc", "printf '%s' \"$PATH\""], 5_000);
+    const resolved = await spawnAsync(loginShell, ["-lc", "printf '%s' \"$PATH\""], { timeout: 5_000 });
     const nextPath = resolved.stdout.trim();
     if (resolved.status === 0 && nextPath.length > 0) {
       process.env.PATH = nextPath;
@@ -250,7 +233,7 @@ async function inspectCliAuthentication(
 
   for (const args of probes) {
     try {
-      const result = await spawnAsync(command, args, 8_000);
+      const result = await spawnAsync(command, args, { timeout: 8_000 });
       const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
       const normalized = output.toLowerCase();
 

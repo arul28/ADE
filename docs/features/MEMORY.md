@@ -92,7 +92,7 @@ These protocols ensure consistent behavior across sessions and are re-injected a
 
 ### Daily Logs
 
-The CTO state service maintains append-only daily logs under `.ade/cto/daily-logs/<YYYY-MM-DD>.md`. These are automatically included in the CTO reconstruction context for the current day, providing within-day session-to-session continuity.
+The CTO state service maintains append-only daily logs under `.ade/cto/daily/<YYYY-MM-DD>.md`. These are automatically included in the CTO continuity context for the current day, providing within-day session-to-session continuity.
 
 ### Post-Compaction Identity Re-injection
 

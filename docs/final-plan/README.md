@@ -151,7 +151,7 @@ Baseline derived from code in `apps/desktop`.
 - Runtime execution flow is single-path (`aiIntegrationService` -> executor/unified runtime); no legacy hosted/BYOK migration branch remains in call flow.
 - Developer baseline assumes modern Git CLI semantics (worktrees, `restore`, `merge-tree --write-tree`, `--ignore-other-worktrees`).
 - **Codebase modularized (2026-03-02)**: AI orchestrator decomposed into 9 domain modules (42% size reduction), pack service decomposed into 4 builder modules (45% reduction), type system split into 17 domain files, frontend components decomposed (MissionsPage 60% reduction). Shared utilities consolidated. This decomposition directly enables Phase 8 core extraction if needed.
-- **cr-sqlite integration (Phase 6 W1-W3 shipped)**: Multi-device sync uses Node.js native `node:sqlite` + vendored cr-sqlite extension for CRDT-based state replication. W1 (cr-sqlite integration), W2 (WebSocket sync protocol), and W3 (device registry + brain management) are implemented on desktop. If cr-sqlite proves insufficient long-term, Phase 8 evaluates SpacetimeDB as an alternative.
+- **cr-sqlite integration (Phase 6 W1-W3 shipped)**: Multi-device sync uses Node.js native `node:sqlite` + vendored cr-sqlite extension for CRDT-based state replication. W1 (cr-sqlite integration), W2 (WebSocket sync protocol), and W3 (device registry + host management) are implemented on desktop. If cr-sqlite proves insufficient long-term, Phase 8 evaluates SpacetimeDB as an alternative.
 
 ### 2.4 Confirmed gaps
 
@@ -159,7 +159,7 @@ Not fully implemented yet:
 
 - Automatic PR proof embedding still needs follow-through, but ADE-local proof capture now auto-ingests and links `screenshot_environment` / `record_environment` artifacts at creation time
 - Multi-device sync (cr-sqlite + WebSocket real-time replication) — Phase 6
-- Device registry and brain management (which machine runs agents) — Phase 6
+- Device registry and host management (which machine runs agents) — Phase 6
 - iOS companion app (agent chat, mission management, push notifications) — Phase 6
 - VPS headless deployment (headless ADE on remote machines) — Phase 6
 - Provider usage telemetry parity (CLI/API/local) and budget UX refinements
@@ -184,7 +184,7 @@ ADE becomes the execution control plane for parallel agentic development:
 6. All core features work in `guest` mode (no AI) -- AI orchestration is additive, never mandatory.
 7. ADE state syncs across devices in real-time via cr-sqlite CRDTs -- no cloud backend needed. Git tracks code, cr-sqlite syncs app state.
 8. CTO agent leads a configurable org of worker agents (Backend Dev, QA, etc.), each with persistent identity memory plus access to shared project memory. Bidirectional Linear sync enables autonomous work intake. External agent systems connect via MCP server and OpenClaw bridge.
-9. Any machine (except phones) can be the "brain" that runs agents; all other devices are real-time viewers/controllers.
+9. Any desktop-class machine (except phones) can be the live host that runs agents; all other devices are real-time controllers.
 
 ---
 
@@ -220,7 +220,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Memory Architecture Upgrade (vector search, tiers) | Phase 4 | Phase 3 | Complete |
 | Candidate Memory Triage Automation (auto-promote + stale archive sweep) | Phase 4 | Phase 3 memory lifecycle baseline | Complete (W6 + W6½) |
 | Mem0 Sidecar Integration (optional semantic index) | Post-Phase 4 | Phase 4 memory foundation | Deferred (evaluate after native memory upgrade + CTO baseline) |
-| Skill Library (recipe extraction + `.ade/skills/` materialization) | Phase 4 | Phase 4 Learning Packs + PROJ-039 viewer baseline | Complete |
+| Skill Library (recipe extraction + `.ade/skills/` materialization) | Phase 4 | Phase 4 Learning Packs + PROJ-039 controller baseline | Complete |
 | .ade/ Portable State (canonical tracked/shareable contract) | Phase 4 | Phase 3 | Implemented |
 | .ade/ State Sync (cr-sqlite database sync) | Phase 6 | Phase 4 | Planned |
 | External MCP Consumption | Phase 4 | Phase 3 | Implemented baseline; ADE-managed external MCP substrate shipped |
@@ -239,7 +239,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Episodic + Procedural Memory | Phase 4 | Phase 3 | Complete |
 | Play runtime isolation | Phase 5 | Phase 3 (parallel with Phase 4) | Complete |
 | cr-sqlite multi-device sync (all 103 tables) | Phase 6 | Phases 1-5 | Implemented on desktop; desktop portability expansion still in progress |
-| Device registry & brain management | Phase 6 | Phases 1-5 | Implemented on desktop |
+| Device registry & host management | Phase 6 | Phases 1-5 | Implemented on desktop |
 | Tailscale integration | Phase 6 | Phases 1-5 | Planned |
 | WebSocket sync server & protocol | Phase 6 | Phases 1-5 | Implemented on desktop |
 | Device pairing & configuration | Phase 6 | Phases 1-5 | Planned |

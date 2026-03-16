@@ -51,10 +51,12 @@ export type SyncPeerConnectionState = SyncPeerMetadata & {
   remotePort: number | null;
   latencyMs: number | null;
   syncLag: number;
+  // Legacy internal/wire flag. User-facing copy should say "host".
   isBrain: boolean;
   isAuthenticated: boolean;
 };
 
+// Legacy internal/wire role names kept for sync protocol compatibility.
 export type SyncConnectionState = "disconnected" | "connecting" | "connected" | "error";
 
 export type SyncRole = "brain" | "viewer";
@@ -79,6 +81,7 @@ export type SyncDeviceRecord = {
 
 export type SyncClusterState = {
   clusterId: string;
+  // Legacy storage field name for the current host machine.
   brainDeviceId: string;
   brainEpoch: number;
   updatedAt: string;
@@ -89,7 +92,10 @@ export type SyncDesktopConnectionDraft = {
   host: string;
   port: number;
   token: string;
+  authKind?: "bootstrap" | "paired";
+  pairedDeviceId?: string | null;
   lastRemoteDbVersion?: number;
+  // Legacy draft field name retained to match the desktop/iOS saved contract.
   lastBrainDeviceId?: string | null;
 };
 
@@ -102,8 +108,10 @@ export type SyncClientStatus = {
   latencyMs: number | null;
   syncLag: number | null;
   lastRemoteDbVersion: number;
+  // Legacy internal naming. This points to the current host device.
   brainDeviceId: string | null;
-  brainName: string | null;
+  // User-facing display field for the current host name.
+  hostName: string | null;
   error: string | null;
   message: string | null;
   savedDraft: Omit<SyncDesktopConnectionDraft, "token"> | null;
@@ -130,6 +138,7 @@ export type SyncTransferReadiness = {
 
 export type SyncDeviceRuntimeState = SyncDeviceRecord & {
   isLocal: boolean;
+  // Legacy internal/wire flag. User-facing copy should say "host".
   isBrain: boolean;
   connectionState: "self" | "connected" | "disconnected";
   connectedAt: string | null;
@@ -144,9 +153,11 @@ export type SyncRoleSnapshot = {
   mode: SyncMode;
   role: SyncRole;
   localDevice: SyncDeviceRecord;
+  // Legacy internal naming for the current host device.
   currentBrain: SyncDeviceRecord | null;
   clusterState: SyncClusterState | null;
   bootstrapToken: string | null;
+  pairingSession: SyncPairingSession | null;
   connectedPeers: SyncPeerConnectionState[];
   client: SyncClientStatus;
   transferReadiness: SyncTransferReadiness;
@@ -163,16 +174,25 @@ export type SyncFeatureFlags = {
   fileAccess: true;
   terminalStreaming: true;
   bootstrapAuth: true;
+  pairingAuth: {
+    enabled: true;
+    codeTtlMs: number;
+  };
   commandRouting: {
-    mode: "minimal";
+    mode: "allowlisted";
     supportedActions: string[];
   };
 };
 
 export type SyncHelloPayload = {
-  token: string;
   peer: SyncPeerMetadata;
+  token?: string;
+  auth?: SyncHelloAuth;
 };
+
+export type SyncHelloAuth =
+  | { kind: "bootstrap"; token: string }
+  | { kind: "paired"; deviceId: string; secret: string };
 
 export type SyncHelloOkPayload = {
   peer: SyncPeerMetadata;
@@ -186,6 +206,27 @@ export type SyncHelloOkPayload = {
 export type SyncHelloErrorPayload = {
   code: "auth_failed" | "invalid_hello" | "already_authenticated" | "unsupported_version";
   message: string;
+};
+
+export type SyncPairingSession = {
+  code: string;
+  issuedAt: string;
+  expiresAt: string;
+};
+
+export type SyncPairingRequestPayload = {
+  code: string;
+  peer: SyncPeerMetadata;
+};
+
+export type SyncPairingResultPayload = {
+  ok: boolean;
+  deviceId?: string;
+  secret?: string;
+  error?: {
+    code: "invalid_code" | "expired_code" | "pairing_unavailable" | "pairing_failed";
+    message: string;
+  };
 };
 
 export type SyncChangesetBatchPayload = {
@@ -289,9 +330,37 @@ export type SyncRunQuickCommandArgs = {
   toolType?: string | null;
 };
 
+export type SyncRemoteCommandAction =
+  | "lanes.list"
+  | "lanes.refreshSnapshots"
+  | "lanes.create"
+  | "lanes.archive"
+  | "lanes.unarchive"
+  | "work.listSessions"
+  | "work.runQuickCommand"
+  | "prs.list"
+  | "prs.refresh"
+  | "prs.getDetail"
+  | "prs.getStatus"
+  | "prs.getChecks"
+  | "prs.getReviews"
+  | "prs.getComments"
+  | "prs.getFiles"
+  | "prs.createFromLane"
+  | "prs.land"
+  | "prs.close"
+  | "prs.requestReviewers";
+
+export type SyncRemoteCommandPolicy = {
+  viewerAllowed: boolean;
+  requiresApproval?: boolean;
+  localOnly?: boolean;
+  queueable?: boolean;
+};
+
 export type SyncCommandPayload = {
   commandId: string;
-  action: "work.runQuickCommand";
+  action: SyncRemoteCommandAction | (string & {});
   args: Record<string, unknown>;
 };
 
@@ -334,6 +403,8 @@ type SyncEnvelopeWithPayload<TType extends string, TPayload> =
 export type SyncHelloEnvelope = SyncEnvelopeWithPayload<"hello", SyncHelloPayload>;
 export type SyncHelloOkEnvelope = SyncEnvelopeWithPayload<"hello_ok", SyncHelloOkPayload>;
 export type SyncHelloErrorEnvelope = SyncEnvelopeWithPayload<"hello_error", SyncHelloErrorPayload>;
+export type SyncPairingRequestEnvelope = SyncEnvelopeWithPayload<"pairing_request", SyncPairingRequestPayload>;
+export type SyncPairingResultEnvelope = SyncEnvelopeWithPayload<"pairing_result", SyncPairingResultPayload>;
 export type SyncChangesetBatchEnvelope = SyncEnvelopeWithPayload<"changeset_batch", SyncChangesetBatchPayload>;
 export type SyncHeartbeatEnvelope = SyncEnvelopeWithPayload<"heartbeat", SyncHeartbeatPayload>;
 export type SyncFileRequestEnvelope = SyncEnvelopeWithPayload<"file_request", SyncFileRequest>;
@@ -352,6 +423,8 @@ export type SyncEnvelope =
   | SyncHelloEnvelope
   | SyncHelloOkEnvelope
   | SyncHelloErrorEnvelope
+  | SyncPairingRequestEnvelope
+  | SyncPairingResultEnvelope
   | SyncChangesetBatchEnvelope
   | SyncHeartbeatEnvelope
   | SyncFileRequestEnvelope

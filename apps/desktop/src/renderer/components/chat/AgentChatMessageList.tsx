@@ -71,10 +71,10 @@ function formatTokenCount(value: number | null | undefined): string | null {
 }
 
 const GLASS_CARD_CLASS =
-  "overflow-hidden rounded-[var(--chat-radius-card)] border border-white/[0.04] bg-white/[0.03] backdrop-blur-xl";
+  "overflow-hidden rounded-[14px] border border-white/[0.08] bg-[#121216]";
 
 const RECESSED_BLOCK_CLASS =
-  "overflow-auto whitespace-pre-wrap break-words rounded-[calc(var(--chat-radius-card)-6px)] border border-white/[0.04] bg-black/15 px-4 py-3 font-mono text-[11px] leading-[1.55] text-fg/70";
+  "overflow-auto whitespace-pre-wrap break-words rounded-[10px] border border-white/[0.05] bg-[#09090b] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/76";
 
 function toolSourceChip(toolName: string): { label: string; tone: ChatSurfaceChipTone } | null {
   if (toolName.startsWith("mcp__")) {
@@ -97,15 +97,15 @@ function toolSourceChip(toolName: string): { label: string; tone: ChatSurfaceChi
 
 function messageCardStyle(_accentAlpha = 0.18): React.CSSProperties {
   return {
-    borderColor: "rgba(251, 191, 36, 0.08)",
-    background: "rgba(251, 191, 36, 0.03)",
+    borderColor: "rgba(245, 158, 11, 0.16)",
+    background: "#171412",
   };
 }
 
 function surfaceInlineCardStyle(): React.CSSProperties {
   return {
-    borderColor: "rgba(94, 234, 212, 0.06)",
-    background: "rgba(94, 234, 212, 0.02)",
+    borderColor: "rgba(255, 255, 255, 0.08)",
+    background: "#14161a",
   };
 }
 
@@ -185,6 +185,10 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
     if (!keepStatus) {
       return;
     }
+  }
+
+  if (event.type === "system_notice" && event.noticeKind === "info" && event.message.trim().toLowerCase() === "session ready") {
+    return;
   }
 
   if (event.type === "delegation_state") {
@@ -433,6 +437,7 @@ function collapseEventsIncremental(
 
 type ToolGroup = {
   type: "tool_group";
+  toolKey: string;
   tools: Array<RenderEnvelope & { event: Extract<RenderEnvelope["event"], { type: "tool_invocation" }> }>;
 };
 
@@ -448,21 +453,26 @@ function groupConsecutiveTools(rows: RenderEnvelope[]): GroupedRenderEnvelope[] 
   while (i < rows.length) {
     const row = rows[i]!;
     if (row.event.type === "tool_invocation") {
-      // Collect consecutive tool invocations
+      const meta = getToolMeta(row.event.tool);
+      const display = describeToolIdentifier(row.event.tool);
+      const toolKey = `${meta.label}::${display.secondaryLabel ?? ""}`;
       const group: Array<RenderEnvelope & { event: Extract<RenderEnvelope["event"], { type: "tool_invocation" }> }> = [];
       while (i < rows.length && rows[i]!.event.type === "tool_invocation") {
-        group.push(rows[i] as any);
+        const next = rows[i] as RenderEnvelope & { event: Extract<RenderEnvelope["event"], { type: "tool_invocation" }> };
+        const nextMeta = getToolMeta(next.event.tool);
+        const nextDisplay = describeToolIdentifier(next.event.tool);
+        const nextToolKey = `${nextMeta.label}::${nextDisplay.secondaryLabel ?? ""}`;
+        if (nextToolKey !== toolKey) break;
+        group.push(next);
         i++;
       }
       if (group.length === 1) {
-        // Single tool call - render normally
         result.push(group[0]!);
       } else {
-        // Multiple consecutive tool calls - group them
         result.push({
           key: `group:${group[0]!.key}`,
           timestamp: group[group.length - 1]!.timestamp,
-          event: { type: "tool_group", tools: group },
+          event: { type: "tool_group", toolKey, tools: group },
         });
       }
     } else {
@@ -492,10 +502,23 @@ function PlanStepIcon({ status }: { status: string }) {
 
 const MarkdownBlock = React.memo(function MarkdownBlock({ markdown }: { markdown: string }) {
   return (
-    <div className="prose max-w-none text-[12.5px] leading-[1.68] text-fg/82 prose-headings:mb-2 prose-headings:mt-3 prose-headings:font-sans prose-headings:text-fg/88 prose-p:my-1.5 prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0 prose-strong:text-fg/92">
+    <div className="prose prose-invert max-w-none text-[13px] leading-[1.72] text-fg/92 prose-headings:mb-2 prose-headings:mt-4 prose-headings:font-sans prose-headings:font-semibold prose-headings:tracking-tight prose-headings:text-fg prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-strong:text-fg prose-blockquote:border-l-white/12 prose-blockquote:text-fg/78 prose-hr:border-white/[0.06] prose-table:my-3 prose-th:border-white/[0.08] prose-th:bg-white/[0.03] prose-th:px-3 prose-th:py-2 prose-td:border-white/[0.06] prose-td:px-3 prose-td:py-2">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
+          h1: ({ children }) => <h1 className="text-[1rem]">{children}</h1>,
+          h2: ({ children }) => <h2 className="text-[0.95rem]">{children}</h2>,
+          h3: ({ children }) => <h3 className="text-[0.9rem]">{children}</h3>,
+          blockquote: ({ children }) => (
+            <blockquote className="border-l border-white/[0.1] pl-3 italic">
+              {children}
+            </blockquote>
+          ),
+          table: ({ children }) => (
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-[12px]">{children}</table>
+            </div>
+          ),
           pre: ({ children }) => (
             <pre className={cn("my-2.5 max-h-80", RECESSED_BLOCK_CLASS)}>
               {children}
@@ -505,9 +528,9 @@ const MarkdownBlock = React.memo(function MarkdownBlock({ markdown }: { markdown
             const text = String(children ?? "");
             const isBlock = /\n/.test(text) || (typeof className === "string" && className.length > 0);
             return isBlock ? (
-              <code className="font-mono text-[11px] text-fg/75">{children}</code>
+              <code className="font-mono text-[11px] text-fg/82">{children}</code>
             ) : (
-              <code className="rounded-[var(--chat-radius-pill)] border border-white/8 bg-black/20 px-1.5 py-0.5 font-mono text-[11px] text-accent/80">{children}</code>
+              <code className="rounded-md border border-white/[0.08] bg-black/30 px-1.5 py-0.5 font-mono text-[11px] text-fg/90">{children}</code>
             );
           },
           a: ({ children, href }) => (
@@ -772,18 +795,18 @@ function renderEvent(
       <div className="flex justify-end">
         <div className={cn(GLASS_CARD_CLASS, "max-w-[82%] px-4 py-3")} style={messageCardStyle(0.18)}>
           <div className="mb-2 flex items-center gap-2">
-            <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-amber-400/12 bg-amber-400/[0.06]">
-              <User size={10} weight="regular" className="text-amber-300/70" />
+            <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-amber-300/20 bg-amber-400/[0.10]">
+              <User size={10} weight="regular" className="text-amber-200/90" />
             </span>
-            <span className="font-sans text-[11px] font-medium text-amber-200/60">You</span>
+            <span className="font-sans text-[11px] font-medium text-amber-100/92">You</span>
             {deliveryChip ? (
               <span className={cn("inline-flex items-center border px-1.5 py-0.5 font-sans text-[9px] font-medium", deliveryChip.className)}>
                 {deliveryChip.label}
               </span>
             ) : null}
-            <span className="ml-auto font-sans text-[10px] text-amber-300/20">{formatTime(envelope.timestamp)}</span>
+            <span className="ml-auto font-sans text-[10px] text-amber-100/55">{formatTime(envelope.timestamp)}</span>
           </div>
-          <div className="whitespace-pre-wrap break-words text-[12.5px] leading-[1.65] text-fg/85">{event.text}</div>
+          <div className="whitespace-pre-wrap break-words text-[13px] leading-[1.7] text-fg/96">{event.text}</div>
           {event.attachments?.length ? (
             <ChatAttachmentTray attachments={event.attachments} mode={options?.surfaceMode ?? "standard"} className="mt-1 px-0 py-0" />
           ) : null}
@@ -798,20 +821,20 @@ function renderEvent(
       <div className="flex justify-start">
         <div className={cn(GLASS_CARD_CLASS, "max-w-[94%] px-4 py-3")} style={surfaceInlineCardStyle()}>
           <div className="mb-2 flex items-center gap-2">
-            <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-teal-400/12 bg-teal-400/[0.06]">
+            <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-teal-300/18 bg-teal-400/[0.10]">
               <ModelGlyph
                 size={10}
                 modelId={options?.turnModel?.modelId}
                 model={options?.turnModel?.model ?? options?.turnModel?.label ?? undefined}
-                className="text-teal-300/70"
+                className="text-teal-200/90"
               />
             </span>
-            <span className="font-sans text-[11px] font-medium text-teal-200/60">{options?.assistantLabel ?? "Agent"}</span>
-            <span className="ml-auto font-sans text-[10px] text-teal-300/18">{formatTime(envelope.timestamp)}</span>
+            <span className="font-sans text-[11px] font-medium text-teal-100/90">{options?.assistantLabel ?? "Agent"}</span>
+            <span className="ml-auto font-sans text-[10px] text-fg/52">{formatTime(envelope.timestamp)}</span>
           </div>
           <MarkdownBlock markdown={event.text} />
           {options?.turnModel?.label ? (
-            <div className="mt-3 border-t border-teal-400/[0.06] pt-2 font-sans text-[10px] text-teal-300/20">
+            <div className="mt-3 border-t border-white/[0.08] pt-2 font-sans text-[10px] text-fg/52">
               {options.turnModel.label}
             </div>
           ) : null}
@@ -1593,21 +1616,28 @@ function renderEvent(
 function ToolGroupCard({ group }: { group: ToolGroup }) {
   const [expanded, setExpanded] = useState(false);
   const runningCount = group.tools.filter((t) => t.event.status === "running").length;
+  const failedCount = group.tools.filter((t) => t.event.status === "failed").length;
+  const meta = getToolMeta(group.tools[0]!.event.tool);
+  const display = describeToolIdentifier(group.tools[0]!.event.tool);
+  const ToolIcon = meta.icon;
 
   return (
-    <div className="overflow-hidden">
+    <div className="overflow-hidden rounded-lg border border-white/[0.05] bg-[#0d0d10] px-3 py-2">
       <button
         type="button"
-        className="flex w-full items-center gap-2 py-1 text-left font-mono text-[12px] text-fg/50 transition-colors hover:text-fg/70"
+        className="flex w-full items-center gap-2 py-1 text-left font-mono text-[12px] text-fg/58 transition-colors hover:text-fg/76"
         onClick={() => setExpanded((v) => !v)}
       >
         {expanded ? <CaretDown size={10} weight="bold" className="text-fg/30" /> : <CaretRight size={10} weight="bold" className="text-fg/30" />}
+        <ToolIcon size={13} weight="regular" className="text-fg/44" />
         {runningCount > 0 ? <ThinkingDots /> : null}
-        <span>{group.tools.length} tool calls</span>
+        <span className="truncate">{meta.label}{display.secondaryLabel ? ` ${display.secondaryLabel}` : ""}</span>
+        <span className="text-[10px] text-fg/38">{group.tools.length} calls</span>
+        {failedCount > 0 ? <span className="text-[10px] text-red-300/80">{failedCount} failed</span> : null}
       </button>
 
       {expanded && (
-        <div className="space-y-1 pl-4 pt-1">
+        <div className="space-y-1 border-t border-white/[0.05] pl-4 pt-3">
           {group.tools.map((tool) => {
             const meta = getToolMeta(tool.event.tool);
             const ToolIcon = meta.icon;
@@ -1654,7 +1684,7 @@ function deriveLatestActivity(events: AgentChatEventEnvelope[]): { activity: str
 /* ── Main component ── */
 
 type EventRowProps = {
-  envelope: RenderEnvelope;
+  envelope: GroupedRenderEnvelope;
   showTurnDivider: boolean;
   turnDividerLabel: string | null;
   turnModel: { label: string; modelId?: string; model?: string } | null;
@@ -1687,7 +1717,9 @@ const EventRow = React.memo(function EventRow({
           <div className="h-px flex-1 bg-white/[0.06]" />
         </div>
       ) : null}
-      {renderEvent(envelope, { onApproval, turnModel, surfaceMode, surfaceProfile, assistantLabel, turnActive })}
+      {envelope.event.type === "tool_group"
+        ? <ToolGroupCard group={envelope.event} />
+        : renderEvent(envelope as RenderEnvelope, { onApproval, turnModel, surfaceMode, surfaceProfile, assistantLabel, turnActive })}
     </div>
   );
 });
@@ -1807,7 +1839,7 @@ export function AgentChatMessageList({
       el.scrollTop = el.scrollHeight;
     });
     return () => cancelAnimationFrame(raf);
-  }, [rows, stickToBottom, showStreamingIndicator]);
+  }, [groupedRows, stickToBottom, showStreamingIndicator]);
 
   // Auto-scroll when content mutates (streaming text, images loading, etc.)
   useEffect(() => {
@@ -1862,22 +1894,22 @@ export function AgentChatMessageList({
     }
   }, []);
 
-  const shouldVirtualize = rows.length >= VIRTUALIZATION_THRESHOLD;
+  const shouldVirtualize = groupedRows.length >= VIRTUALIZATION_THRESHOLD;
 
   // Compute the visible window of rows when virtualization is active.
   const { startIndex, endIndex, totalHeight, offsetTop } = useMemo(() => {
     if (!shouldVirtualize) {
-      return { startIndex: 0, endIndex: rows.length, totalHeight: 0, offsetTop: 0 };
+      return { startIndex: 0, endIndex: groupedRows.length, totalHeight: 0, offsetTop: 0 };
     }
 
-    // Build cumulative offset array for each row's top position.
+    // Build cumulative offset array for each rendered grouped row's top position.
     let cumulative = 0;
-    const offsets: number[] = new Array(rows.length);
-    for (let i = 0; i < rows.length; i++) {
+    const offsets: number[] = new Array(groupedRows.length);
+    for (let i = 0; i < groupedRows.length; i++) {
       offsets[i] = cumulative;
       cumulative += rowHeight(i) + ROW_GAP;
     }
-    const totalH = cumulative - (rows.length > 0 ? ROW_GAP : 0); // last row has no trailing gap
+    const totalH = cumulative - (groupedRows.length > 0 ? ROW_GAP : 0);
 
     // Determine visible range from scrollTop / containerHeight.
     const viewTop = scrollTop;
@@ -1885,7 +1917,7 @@ export function AgentChatMessageList({
 
     // Binary search for the first row visible.
     let lo = 0;
-    let hi = rows.length - 1;
+    let hi = groupedRows.length - 1;
     while (lo < hi) {
       const mid = (lo + hi) >>> 1;
       const rowBottom = offsets[mid]! + rowHeight(mid);
@@ -1899,13 +1931,13 @@ export function AgentChatMessageList({
 
     // Walk forward to find the last visible row.
     let lastVisible = firstVisible;
-    while (lastVisible < rows.length - 1 && offsets[lastVisible + 1]! < viewBottom) {
+    while (lastVisible < groupedRows.length - 1 && offsets[lastVisible + 1]! < viewBottom) {
       lastVisible++;
     }
 
     // Apply overscan
     const start = Math.max(0, firstVisible - OVERSCAN);
-    const end = Math.min(rows.length, lastVisible + 1 + OVERSCAN);
+    const end = Math.min(groupedRows.length, lastVisible + 1 + OVERSCAN);
 
     return {
       startIndex: start,
@@ -1913,7 +1945,7 @@ export function AgentChatMessageList({
       totalHeight: totalH,
       offsetTop: offsets[start] ?? 0,
     };
-  }, [shouldVirtualize, rows.length, scrollTop, containerHeight, rowHeight]);
+  }, [shouldVirtualize, groupedRows.length, scrollTop, containerHeight, rowHeight]);
 
   const handleScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
     const target = event.currentTarget;
@@ -1929,10 +1961,16 @@ export function AgentChatMessageList({
   }, [shouldVirtualize]);
 
   /** Renders a single row with turn-divider logic. Used by both paths. */
-  const renderRow = useCallback((envelope: RenderEnvelope, index: number, virtualized: boolean) => {
-    const currentTurn = "turnId" in envelope.event ? envelope.event.turnId ?? null : null;
-    const previous = rows[index - 1];
-    const previousTurn = previous && "turnId" in previous.event ? previous.event.turnId ?? null : null;
+  const renderRow = useCallback((envelope: GroupedRenderEnvelope, index: number, virtualized: boolean) => {
+    const currentTurn = envelope.event.type === "tool_group"
+      ? envelope.event.tools[0]?.event.turnId ?? null
+      : ("turnId" in envelope.event ? envelope.event.turnId ?? null : null);
+    const previous = groupedRows[index - 1];
+    const previousTurn = previous
+      ? previous.event.type === "tool_group"
+        ? previous.event.tools[0]?.event.turnId ?? null
+        : ("turnId" in previous.event ? previous.event.turnId ?? null : null)
+      : null;
     const showTurnDivider = currentTurn && currentTurn !== previousTurn;
     const turnDividerLabel = showTurnDivider
       ? formatTime(envelope.timestamp)
@@ -1972,19 +2010,19 @@ export function AgentChatMessageList({
         turnActive={showStreamingIndicator}
       />
     );
-  }, [assistantLabel, surfaceMode, surfaceProfile, rows, turnModelMap, handleApproval, handleMeasure, showStreamingIndicator]);
+  }, [assistantLabel, surfaceMode, surfaceProfile, groupedRows, turnModelMap, handleApproval, handleMeasure, showStreamingIndicator]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
     if (!shouldVirtualize) return 0;
     let h = 0;
-    for (let i = endIndex; i < rows.length; i++) {
+    for (let i = endIndex; i < groupedRows.length; i++) {
       h += rowHeight(i) + ROW_GAP;
     }
     // Remove trailing gap
-    if (rows.length > endIndex) h -= ROW_GAP;
+    if (groupedRows.length > endIndex) h -= ROW_GAP;
     return Math.max(0, h);
-  }, [shouldVirtualize, endIndex, rows.length, rowHeight]);
+  }, [shouldVirtualize, endIndex, groupedRows.length, rowHeight]);
 
   const streamingIndicator = showStreamingIndicator && !latestRowIsActivity ? (
     latestActivity ? (
@@ -2000,7 +2038,7 @@ export function AgentChatMessageList({
   return (
     <div
       ref={scrollRef}
-      className={cn("h-full min-h-0 overflow-auto px-4 pt-5 pb-8", className)}
+      className={cn("h-full min-h-0 overflow-auto bg-[#09090b] px-4 pt-5 pb-8", className)}
       onScroll={handleScroll}
     >
       {rows.length === 0 ? (
@@ -2022,12 +2060,9 @@ export function AgentChatMessageList({
           {/* Top spacer pushes rendered rows to their correct scroll position */}
           <div style={{ height: offsetTop }} aria-hidden />
           <div className="space-y-3">
-            {groupedRows.slice(startIndex, Math.min(endIndex, groupedRows.length)).map((envelope, i) => {
-              if (envelope.event.type === "tool_group") {
-                return <ToolGroupCard key={envelope.key} group={envelope.event} />;
-              }
-              return renderRow(envelope as RenderEnvelope, startIndex + i, true);
-            })}
+            {groupedRows.slice(startIndex, Math.min(endIndex, groupedRows.length)).map((envelope, i) =>
+              renderRow(envelope, startIndex + i, true)
+            )}
           </div>
           {/* Bottom spacer fills remaining scroll area */}
           <div style={{ height: bottomSpacerHeight }} aria-hidden />
@@ -2036,12 +2071,7 @@ export function AgentChatMessageList({
       ) : (
         /* ── Non-virtualized path: render all rows (small conversation) ── */
         <div className="space-y-3">
-          {groupedRows.map((envelope, index) => {
-            if (envelope.event.type === "tool_group") {
-              return <ToolGroupCard key={envelope.key} group={envelope.event} />;
-            }
-            return renderRow(envelope as RenderEnvelope, index, false);
-          })}
+          {groupedRows.map((envelope, index) => renderRow(envelope, index, false))}
           {streamingIndicator}
         </div>
       )}

@@ -33,7 +33,7 @@ const STEP_META: Record<SetupStep, { title: string; subtitle: string }> = {
   },
   embeddings: {
     title: "Smart search",
-    subtitle: "Optional local model for memory search.",
+    subtitle: "Optional local embedding model for semantic memory search.",
   },
   linear: {
     title: "Linear",
@@ -49,8 +49,8 @@ const STEP_META: Record<SetupStep, { title: string; subtitle: string }> = {
 const STEP_HEADERS: Record<SetupStep, { heading: string; sub: string }> = {
   tools: { heading: "Dev tools check", sub: "ADE needs git installed. GitHub CLI is recommended for PR workflows." },
   ai: { heading: "Connect AI", sub: "Choose a provider and model defaults for this project." },
-  github: { heading: "Connect GitHub", sub: "Add a personal access token so lane PRs and reviews work." },
-  embeddings: { heading: "Smart search", sub: "Download a small local model to power meaning-based memory search." },
+  github: { heading: "Connect GitHub", sub: "Add a personal access token (classic or fine-grained) so lane PRs and reviews work." },
+  embeddings: { heading: "Local embedding model", sub: "Download all-MiniLM-L6-v2 (~31 MB) to enable semantic memory search. Runs entirely on your machine." },
   linear: { heading: "Connect Linear", sub: "Optional — connect for issue routing and CTO workflows." },
   context: { heading: "Generate context docs", sub: "Pick a model and triggers, then kick off generation." },
 };

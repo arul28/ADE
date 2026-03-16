@@ -363,18 +363,18 @@ Memories follow a lifecycle: `candidate` --> `promoted` --> `archived`. This pre
 
 ---
 
-## Brain Deployment Trust Model
+## Host Deployment Trust Model
 
 Compute-backend abstraction was dropped with Phase 5.5. The current and planned trust model is simpler:
 
 | Deployment | Trust Level | Data Location | Network Access | Credential Handling |
 |-----------|-------------|---------------|----------------|-------------------|
-| Local brain | Full trust | On-device | Host network | OS keychain / local secret files |
-| User-owned VPS brain (planned Phase 6) | Controlled trust | Remote machine the user operates | User-managed network path (for example Tailscale) | Machine-local secret files / keychain equivalent |
+| Local host | Full trust | On-device | Host network | OS keychain / local secret files |
+| User-owned VPS host (planned Phase 6) | Controlled trust | Remote machine the user operates | User-managed network path (for example Tailscale) | Machine-local secret files / keychain equivalent |
 
 Current guidance:
-- Sensitive/proprietary code: local brain by default.
-- Always-on unattended execution: future user-owned VPS brain, not a managed ADE compute backend.
+- Sensitive/proprietary code: local host by default.
+- Always-on unattended execution: future user-owned VPS host, not a managed ADE compute backend.
 - Third-party managed sandboxes such as Daytona are not part of the active ADE architecture or roadmap.
 
 ## Per-Lane Proxy Security

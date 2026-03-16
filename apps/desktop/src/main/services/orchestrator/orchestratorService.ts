@@ -7643,7 +7643,23 @@ export function createOrchestratorService({
 	        Number.isFinite(aiRetryBackoffRaw) && aiRetryBackoffRaw >= 0
 	          ? Math.min(10 * 60_000, Math.floor(aiRetryBackoffRaw))
 	          : null;
-	      const computedBackoff = shouldRetry ? (aiRetryBackoffMs ?? 0) : 0;
+	      // Exponential backoff: base 10s, multiplier 2, cap 5min (300s).
+	      // Priority: explicit caller backoff > AI-suggested > exponential default.
+	      const RETRY_BASE_MS = 10_000;
+	      const RETRY_MULTIPLIER = 2;
+	      const RETRY_MAX_MS = 300_000;
+	      const exponentialBackoffMs = Math.min(
+	        RETRY_MAX_MS,
+	        Math.floor(RETRY_BASE_MS * Math.pow(RETRY_MULTIPLIER, step.retryCount))
+	      );
+	      const callerBackoffRaw = Number(args.retryBackoffMs ?? Number.NaN);
+	      const callerBackoffMs =
+	        Number.isFinite(callerBackoffRaw) && callerBackoffRaw >= 0
+	          ? Math.min(RETRY_MAX_MS, Math.floor(callerBackoffRaw))
+	          : null;
+	      const computedBackoff = shouldRetry
+	        ? (callerBackoffMs ?? aiRetryBackoffMs ?? exponentialBackoffMs)
+	        : 0;
 	      const reportedFilesChanged = Array.isArray(lastResultReport?.filesChanged)
 	        ? lastResultReport.filesChanged
 	            .map((entry) => String(entry ?? "").trim())

@@ -2,9 +2,9 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 >
-> Last updated: 2026-03-14
+> Last updated: 2026-03-16
 
-The CTO is ADE's always-on, project-aware agent. It owns persistent identity, shared project understanding, worker management, Linear workflow coordination, and the operator-facing chat surface for project-level requests.
+The CTO is ADE's always-on, project-aware agent. It is one persistent ADE project operator, not a family of interchangeable chats. It owns persistent identity, shared project understanding, worker management, Linear workflow coordination, and the operator-facing chat surface for project-level requests.
 
 The current runtime is optimized around a simple rule: **make the CTO usable before every optional subsystem is fully hydrated**.
 
@@ -34,13 +34,16 @@ The CTO is still a persistent agent, but the UI and runtime no longer assume tha
 
 CTO onboarding now focuses on:
 
-1. identity
-2. project context
-3. optional Linear connection
+1. model selection
+2. personality selection
+3. project context
+4. optional Linear connection
 
 Important current behavior:
 
-- the prompt preview for identity/persona is debounced
+- ADE owns the immutable CTO doctrine in code
+- the editable identity UI is now only personality presets plus one custom overlay option
+- onboarding shows the effective prompt as three sections: doctrine, personality overlay, and memory model
 - setup can finish without Linear
 - the UI recommends a personal Linear API key as the fastest path
 - OAuth stays available when configured
@@ -187,7 +190,7 @@ Current system behavior separates:
 - shared project knowledge (unified memory with project/agent/mission scopes)
 - worker-specific core memory
 - recent subordinate activity and session logs
-- daily logs (append-only per-day markdown logs under `.ade/cto/daily-logs/`)
+- daily logs (append-only per-day markdown logs under `.ade/cto/daily/`)
 
 For desktop portability, treat these differently:
 
@@ -198,13 +201,15 @@ For desktop portability, treat these differently:
 
 ### Identity system prompt
 
-The CTO system prompt now includes a rich, multi-line persona and three baked-in protocol sections that survive across sessions:
+The CTO prompt model is now explicit and split into three layers:
 
-- **Memory Protocol** -- instructs the CTO to search memory before non-trivial work, save corrections and decisions immediately, and flush key findings when context is large. Includes explicit DO-NOT-SAVE guidance (no file paths, raw errors, task status, or git-derivable information).
-- **Daily Context** -- a startup self-orientation protocol: search memory for active focus areas, check subordinate activity, review relevant conventions and gotchas. This gives the CTO continuity without starting fresh.
-- **Decision Framework** -- make autonomous decisions when safe and reversible, escalate when risky or ambiguous, search before asking, state reasoning concisely.
+- **Immutable ADE doctrine** -- defines who the CTO is, what ADE is, how memory/compaction work, and that the CTO is the project's technical/operator lead. This layer is ADE-owned, always present, and not compacted away.
+- **Personality overlay** -- selected from presets or one custom personality field. This is the only user-editable identity layer.
+- **Memory and continuity model** -- explains the long-term CTO brief, current working context, and durable searchable memory.
 
-These protocol sections are part of the CTO's identity and are injected into the system prompt via `buildReconstructionContext()`.
+Project-specific summary, conventions, focus, and recent continuity live in memory layers, not inside the immutable doctrine.
+
+The prompt preview in onboarding and settings reflects those same three sections so the UI now matches the actual runtime model.
 
 ### Daily logs
 
@@ -214,13 +219,33 @@ The CTO state service supports append-only daily logs:
 - `readDailyLog(date?)` -- reads the full log for a given day
 - `listDailyLogs(limit?)` -- lists available daily log dates (most recent first)
 
-Daily logs are stored as markdown files under `.ade/cto/daily-logs/<YYYY-MM-DD>.md`. Today's daily log is automatically included in the CTO's reconstruction context, providing session-to-session continuity about what happened earlier in the day.
+Daily logs are stored as markdown files under `.ade/cto/daily/<YYYY-MM-DD>.md`. They are part of the CTO continuity layer, not part of the immutable doctrine.
 
 ### Post-compaction identity re-injection
 
-When a CTO or worker identity session undergoes context compaction, the service automatically re-injects the identity context (persona, core memory, memory protocol instructions) via `refreshReconstructionContext()`. This prevents identity loss after compaction -- the CTO does not lose its persona, memory protocol, or decision framework just because the context window was compressed.
+When a CTO or worker identity session undergoes context compaction, the service automatically re-injects the identity context via `refreshReconstructionContext()`. This prevents identity loss after compaction. The CTO keeps its ADE doctrine and personality overlay even when the working context is compressed.
 
-Memory browsing and management are consolidated in Settings > Memory tab. The CTO tab no longer has its own Memory surface. CTO core memory (identity, persona, project context) is edited in CTO Settings; all other memory scopes are managed through the unified Settings > Memory tab.
+Memory browsing and management are consolidated in Settings > Memory tab. The CTO tab no longer has its own Memory surface. CTO core memory and personality configuration are edited in CTO Settings; all other memory scopes are managed through the unified Settings > Memory tab.
+
+---
+
+## CTO operator surface
+
+The CTO is now a persistent supervisor with a curated ADE operator tool layer in chat. It can inspect and act across:
+
+- lanes
+- work chats
+- missions
+- worker agents
+- Linear workflow state
+
+Important boundary:
+
+- this is a curated operator surface backed by stable ADE services
+- it is not a raw dump of every internal IPC or mission-coordinator tool
+- orchestrator coordinator tools remain mission-run specific and separate from the CTO chat tool surface
+
+Today the CTO can supervise ADE directly, but it is still not a full "everything in ADE is model-callable" surface. Remaining expansion work should continue by adding stable operator tools rather than exposing raw internals.
 
 ---
 

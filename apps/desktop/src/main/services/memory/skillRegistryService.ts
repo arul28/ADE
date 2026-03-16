@@ -453,6 +453,12 @@ export function createSkillRegistryService(args: {
         });
       }
     };
+    watcher.on("error", () => {
+      // EMFILE or other watcher error — close gracefully, skills can still be reindexed manually
+      const w = watcher;
+      watcher = null;
+      void w?.close().catch(() => {});
+    });
     watcher.on("add", reindexOne);
     watcher.on("change", reindexOne);
     watcher.on("unlink", reindexOne);

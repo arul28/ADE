@@ -871,7 +871,7 @@ See also: `docs/final-plan/phase-5.md`
 The older per-lane "compute backend" concept is no longer the active ADE model.
 
 - **Current baseline**: lanes run on the active ADE machine alongside local worktrees, terminals, and previews.
-- **Phase 6 direction**: other devices become viewers/controllers of the brain machine rather than choosing a different backend per lane.
+- **Phase 6 direction**: other devices become controllers of the host machine rather than choosing a different backend per lane.
 - **Dropped direction**: Daytona-style managed cloud backends are not part of the active lanes roadmap.
 
 ---
@@ -891,17 +891,17 @@ When multiple devices are connected, lanes gain a per-device **availability stat
 | State | Icon | Meaning | User Actions |
 |-------|------|---------|--------------|
 | **Local** | ✓ | Branch synced, worktree exists locally, no remote agents running | Full local dev |
-| **Behind** | ⚠ | Brain has commits not yet pulled to this device | "Sync to this Mac" (one-click) |
-| **Live on [device]** | 🔵 | Agent actively running on this lane on the brain | View remotely, chat with agent, auto-sync when done |
-| **Remote only** | ☁ | Lane exists on brain, never been pulled here | "Bring to this machine" (one-click) |
-| **Push pending** | ⏳ | Brain has commits but hasn't pushed to remote yet | "Request push" or wait |
-| **Offline** | ○ | Brain unreachable, code state unknown | View cached metadata only |
+| **Behind** | ⚠ | Host has commits not yet pulled to this device | "Sync to this Mac" (one-click) |
+| **Live on [device]** | 🔵 | Agent actively running on this lane on the host | View remotely, chat with agent, auto-sync when done |
+| **Remote only** | ☁ | Lane exists on the host, never been pulled here | "Bring to this machine" (one-click) |
+| **Push pending** | ⏳ | Host has commits but hasn't pushed to remote yet | "Request push" or wait |
+| **Offline** | ○ | Host unreachable, code state unknown | View cached metadata only |
 
-On the brain device itself, all lanes are inherently "local" — standard dirty/ahead/behind indicators apply.
+On the host machine itself, all lanes are inherently "local" — standard dirty/ahead/behind indicators apply.
 
 ### Auto-Push Policy
 
-Brain auto-pushes lane branches to the remote so other devices can access code without manual intervention:
+The host auto-pushes lane branches to the remote so other devices can access code without manual intervention:
 
 - `on-commit` (default): Push after every commit. Code available on other devices within seconds.
 - `on-agent-complete`: Push when agent finishes work on the lane.
@@ -915,18 +915,18 @@ Configurable per-project in Settings → Sync → Auto-push policy.
 
 ### Agent-Running Guard
 
-While an agent is actively running on a lane on the brain, other devices **cannot create a local worktree** for that lane. This prevents divergent writes to the same branch. Users can:
+While an agent is actively running on a lane on the host, other devices **cannot create a local worktree** for that lane. This prevents divergent writes to the same branch. Users can:
 
 - View agent work remotely (file contents via File Access Protocol, agent chat via cr-sqlite)
-- Send messages to the agent from the viewer device
+- Send messages to the agent from a controller device
 - Register "Auto-sync when done" — ADE auto-syncs the lane when the agent finishes
 - Register "Notify me" — lighter, just a notification when done
 
-**Reverse guard**: If a lane is checked out locally and the user tries to launch an agent on the brain for that lane, ADE warns about divergent changes and offers to push local changes first.
+**Reverse guard**: If a lane is checked out locally and the user tries to launch an agent on the host for that lane, ADE warns about divergent changes and offers to push local changes first.
 
 ### Device Sync Summary
 
-On first connection to a brain (e.g., opening laptop at a coffee shop), ADE shows a summary overlay listing all lanes with their availability states, offering bulk sync for all ready lanes. Also accessible from the status bar.
+On first connection to a host (for example, opening a laptop away from the primary machine), ADE shows a summary overlay listing all lanes with their availability states, offering bulk sync for all ready lanes. Also accessible from the status bar.
 
 Full design details: `docs/final-plan/phase-6.md` → W10.
 

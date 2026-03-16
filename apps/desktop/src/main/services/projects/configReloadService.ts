@@ -108,6 +108,14 @@ export function createConfigReloadService(args: ConfigReloadServiceArgs) {
         },
       );
 
+      watcher.on("error", () => {
+        // EMFILE or other watcher error — close gracefully, config will still work via manual reload
+        if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
+        const w = watcher;
+        watcher = null;
+        void w?.close().catch(() => {});
+      });
+
       const onFsEvent = (filePath: string) => scheduleChange(filePath);
       watcher.on("add", onFsEvent);
       watcher.on("change", onFsEvent);

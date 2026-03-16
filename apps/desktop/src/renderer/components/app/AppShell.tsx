@@ -308,6 +308,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
   }, [project?.rootPath]);
 
+  // Poll context status while generation is running so banners update in real-time
+  useEffect(() => {
+    if (!project?.rootPath) return;
+    if (contextStatus?.generation.state !== "running") return;
+    const poll = window.setInterval(() => {
+      void window.ade.context.getStatus().then((status) => {
+        setContextStatus(status);
+      }).catch(() => {});
+    }, 3_000);
+    return () => window.clearInterval(poll);
+  }, [project?.rootPath, contextStatus?.generation.state]);
+
   useEffect(() => {
     if (!project?.rootPath || showWelcome) return;
     if (isOnboardingRoute) return;
@@ -339,7 +351,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [aiStatus]);
 
   const missingContextDocs = useMemo(
-    () => contextStatus?.docs?.filter((doc) => !doc.exists) ?? [],
+    () => contextStatus?.docs?.filter((doc) => !doc.exists || doc.sizeBytes < 200) ?? [],
     [contextStatus],
   );
 
@@ -508,7 +520,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       ) : null}
 
-      {!hideSidebar && project?.rootPath && !showWelcome && !(githubStatus?.tokenStored) ? (
+      {!hideSidebar && project?.rootPath && !showWelcome && !isOnboardingRoute && githubStatus !== null && !githubStatus.tokenStored ? (
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
           GitHub is not connected for this ADE app yet. <Link to="/settings?tab=integrations" className="underline">Connect GitHub</Link>
         </div>

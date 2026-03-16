@@ -843,6 +843,7 @@ app.whenReady().then(async () => {
 
     let orchestratorServiceRef: ReturnType<typeof createOrchestratorService> | null = null;
     let aiOrchestratorServiceRef: ReturnType<typeof createAiOrchestratorService> | null = null;
+    let linearDispatcherServiceRef: ReturnType<typeof createLinearDispatcherService> | null = null;
     let openclawBridgeServiceRef: ReturnType<typeof createOpenclawBridgeService> | null = null;
     let linearSyncServiceRef: ReturnType<typeof createLinearSyncService> | null = null;
     let agentChatServiceRef: ReturnType<typeof createAgentChatService> | null = null;
@@ -1173,6 +1174,14 @@ app.whenReady().then(async () => {
       memoryService,
       packService,
       workerAgentService,
+      workerHeartbeatService,
+      linearIssueTracker,
+      flowPolicyService,
+      getMissionService: () => missionServiceRef,
+      getAiOrchestratorService: () => aiOrchestratorServiceRef,
+      getLinearDispatcherService: () => linearDispatcherServiceRef,
+      linearClient,
+      linearCredentials: linearCredentialService,
       prService,
       episodicSummaryService,
       laneService,
@@ -1562,6 +1571,8 @@ app.whenReady().then(async () => {
       logger,
       projectRoot,
       fileService,
+      laneService,
+      prService,
       sessionService,
       ptyService,
       computerUseArtifactBrokerService,
@@ -1625,6 +1636,7 @@ app.whenReady().then(async () => {
         }
       },
     });
+    linearDispatcherServiceRef = linearDispatcherService;
 
     logger.info("project.init_stage", { projectRoot, stage: "linear_sync_init" });
     const linearSyncService = createLinearSyncService({
@@ -2469,13 +2481,25 @@ app.whenReady().then(async () => {
   dormantContext = createDormantProjectContext();
 
   process.on("uncaughtException", (err) => {
+    // Suppress repeated EMFILE errors to avoid log flooding
+    if ((err as NodeJS.ErrnoException).code === "EMFILE" || (err as NodeJS.ErrnoException).code === "ENFILE") return;
     getActiveContext().logger.error("process.uncaught_exception", {
       err: String(err),
       stack: err instanceof Error ? err.stack : undefined
     });
   });
+  let emfileWarned = false;
   process.on("unhandledRejection", (reason) => {
-    getActiveContext().logger.error("process.unhandled_rejection", { reason: String(reason) });
+    // Suppress repeated EMFILE errors to avoid log flooding
+    const msg = String(reason);
+    if (msg.includes("EMFILE") || msg.includes("ENFILE")) {
+      if (!emfileWarned) {
+        emfileWarned = true;
+        getActiveContext().logger.warn("process.emfile_detected", { reason: msg });
+      }
+      return;
+    }
+    getActiveContext().logger.error("process.unhandled_rejection", { reason: msg });
   });
   app.on("child-process-gone", (_event, details) => {
     getActiveContext().logger.warn("app.child_process_gone", {

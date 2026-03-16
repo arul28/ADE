@@ -33,6 +33,7 @@ export function LinearConnectionPanel({
   const [oauthSessionId, setOauthSessionId] = useState<string | null>(null);
   const [oauthRedirectUri, setOauthRedirectUri] = useState<string | null>(null);
   const [projects, setProjects] = useState<CtoLinearProject[]>([]);
+  const [projectsLoading, setProjectsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const onStatusChangeRef = useRef(onStatusChange);
   const onProjectsChangeRef = useRef(onProjectsChange);
@@ -57,10 +58,13 @@ export function LinearConnectionPanel({
 
   const loadProjects = useCallback(async () => {
     if (!window.ade?.cto) return;
+    setProjectsLoading(true);
     try {
       updateProjects(await window.ade.cto.getLinearProjects());
     } catch {
       updateProjects([]);
+    } finally {
+      setProjectsLoading(false);
     }
   }, [updateProjects]);
 
@@ -70,7 +74,7 @@ export function LinearConnectionPanel({
       const status = await window.ade.cto.getLinearConnectionStatus();
       updateConnection(status);
       if (status.connected) {
-        await loadProjects();
+        void loadProjects();
       } else {
         updateProjects([]);
       }
@@ -101,7 +105,11 @@ export function LinearConnectionPanel({
           resetOAuth();
           updateConnection(session.connection ?? null);
           setError(null);
-          await loadStatus();
+          if (session.connection?.connected) {
+            void loadProjects();
+          } else {
+            void loadStatus();
+          }
           return;
         }
         if (session.status === "failed" || session.status === "expired") {
@@ -140,7 +148,7 @@ export function LinearConnectionPanel({
       const status = await window.ade.cto.setLinearToken({ token: tokenInput.trim() });
       updateConnection(status);
       if (status.connected) {
-        await loadProjects();
+        void loadProjects();
       } else {
         updateProjects([]);
         setError(status.message ?? "Token validation failed.");
@@ -311,7 +319,10 @@ export function LinearConnectionPanel({
 
       {projects.length > 0 && !compact && (
         <div>
-          <div className="mb-1 text-[10px] font-medium text-muted-fg/35 uppercase tracking-wider">Projects ({projects.length})</div>
+          <div className="mb-1 flex items-center justify-between gap-2 text-[10px] font-medium uppercase tracking-wider text-muted-fg/35">
+            <span>Projects ({projects.length})</span>
+            {projectsLoading ? <span className="text-[9px] text-muted-fg/28">Refreshing...</span> : null}
+          </div>
           <div className="space-y-0.5 overflow-y-auto max-h-32">
             {projects.map((project) => (
               <div
@@ -326,6 +337,12 @@ export function LinearConnectionPanel({
           </div>
         </div>
       )}
+
+      {connection?.connected && projects.length === 0 && !compact ? (
+        <div className="text-[10px] text-muted-fg/32">
+          {projectsLoading ? "Loading project access..." : "Connected. Project list is still empty or has not loaded yet."}
+        </div>
+      ) : null}
     </div>
   );
 }

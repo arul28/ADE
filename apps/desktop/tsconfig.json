@@ -10,6 +10,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src"]
+  "include": ["src", "scripts/**/*.d.ts", "scripts/**/*.d.mts"]
 }
-

@@ -126,7 +126,7 @@ This dual-persistence pattern is currently used for runtime robustness and conne
 
 ### Daily Logs
 
-The CTO state service supports append-only daily logs stored as markdown files under `.ade/cto/daily-logs/<YYYY-MM-DD>.md`:
+The CTO state service supports append-only daily logs stored as markdown files under `.ade/cto/daily/<YYYY-MM-DD>.md`:
 
 - `appendDailyLog(entry, date?)` -- appends a timestamped `- [HH:MM:SS] entry` line
 - `readDailyLog(date?)` -- reads the full log for a given day
@@ -136,15 +136,15 @@ Raw daily logs are still operational history rather than Git-tracked ADE state. 
 
 ### Injection
 
-`buildReconstructionContext()` in `ctoStateService.ts` serializes the CTO snapshot (identity, core memory, recent session logs, recent subordinate activity, and today's daily log) into a text block. This is injected as the first message in every CTO chat session. The reconstruction context also includes three baked-in protocol sections (Memory Protocol, Daily Context, Decision Framework) that are part of the CTO identity and survive across sessions.
+`buildReconstructionContext()` in `ctoStateService.ts` serializes the CTO snapshot (identity, core memory, recent session logs, recent subordinate activity, and continuity state) into a text block. This is injected into CTO identity chat sessions as the continuity layer, separate from the immutable ADE-owned doctrine in the system prompt.
 
-When a CTO or worker identity session undergoes context compaction, `refreshReconstructionContext()` is called automatically to re-inject the full identity context into the harness system prompt. This prevents identity loss after compaction.
+When a CTO or worker identity session undergoes context compaction, `refreshReconstructionContext()` is called automatically to re-inject the full continuity layer. The immutable doctrine and selected personality overlay stay in the system prompt, while reconstruction restores project-specific continuity.
 
 ### Worker Agents
 
 Worker agents follow the same pattern via `AgentCoreMemory` (defined in `apps/desktop/src/shared/types/agents.ts`), with identical fields to `CtoCoreMemory`. Persisted in `.ade/agents/<slug>/core-memory.json`. Injected via `buildReconstructionContext()` in `workerAgentService.ts`.
 
-That worker core-memory file remains local/runtime state in this W3 pass. Another desktop learns live worker memory by connecting to the brain, not by pulling it from Git.
+That worker core-memory file remains local/runtime state in this W3 pass. Another desktop learns live worker memory by connecting to the host, not by pulling it from Git.
 
 ## Portability contract
 

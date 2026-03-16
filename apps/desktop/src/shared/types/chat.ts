@@ -340,6 +340,35 @@ export type AgentChatSessionSummary = {
   threadId?: string;
 };
 
+export type AgentChatSubagentSnapshot = {
+  taskId: string;
+  description: string;
+  status: "running" | "completed" | "failed" | "stopped";
+  turnId?: string;
+  startTimestamp?: string;
+  endTimestamp?: string;
+  summary?: string;
+  usage?: {
+    totalTokens?: number;
+    toolUses?: number;
+    durationMs?: number;
+  };
+};
+
+export type AgentChatSubagentListArgs = {
+  sessionId: string;
+};
+
+export type AgentChatSessionCapabilities = {
+  supportsSubagentInspection: boolean;
+  supportsSubagentControl: boolean;
+  supportsReviewMode: boolean;
+};
+
+export type AgentChatSessionCapabilitiesArgs = {
+  sessionId: string;
+};
+
 export type AgentChatModelInfo = {
   id: string;
   displayName: string;
@@ -423,6 +452,7 @@ export type AgentChatChangePermissionModeArgs = {
 
 export type AgentChatUpdateSessionArgs = {
   sessionId: string;
+  title?: string | null;
   modelId?: ModelId;
   reasoningEffort?: string | null;
   permissionMode?: AgentChatPermissionMode;

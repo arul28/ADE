@@ -35,9 +35,14 @@ release-stable/
 .env*
 !.env.example
 *.key
+.env.local
 
 # Docs / binary assets
 *.pdf
+
+# Xcode user data
+xcuserdata/
+*.xcuserstate
 
 # Tool configs (personal)
 .claude/

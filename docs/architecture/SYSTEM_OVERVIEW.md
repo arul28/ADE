@@ -57,7 +57,7 @@ The main process owns:
 - consolidated unified memory system (SQLite-backed with local embeddings), digests, and embedding services
 - CTO state, Linear sync/dispatch/ingress, and OpenClaw bridge
 - dev tools detection (git, gh CLI availability checks)
-- multi-device sync (cr-sqlite CRDT replication, WebSocket host/peer, device registry, brain/viewer model)
+- multi-device sync (cr-sqlite CRDT replication, WebSocket host/peer, device registry, host/controller model with legacy `brain*` wire/storage naming)
 
 Background startup is routed through one helper in `main.ts`, which gives every task an explicit label, delay, env gate, and timing log.
 
@@ -204,7 +204,17 @@ This logging model is now essential to the architecture because it exposes wheth
 
 ### CTO
 
-The CTO is now a chat-first, persistent project agent with optional Linear and OpenClaw integrations. First-run setup focuses on identity, project context, and optional Linear setup; it no longer front-loads OpenClaw or blocks completion on disconnected integrations. The CTO system prompt includes baked-in Memory Protocol, Daily Context, and Decision Framework sections that survive across sessions. Daily logs (append-only per-day markdown files) provide within-day continuity. Post-compaction identity re-injection ensures the CTO does not lose its persona or protocol instructions after context compaction.
+The CTO is now a chat-first, persistent project operator with optional Linear and OpenClaw integrations. First-run setup focuses on model selection, personality selection, project context, and optional Linear setup; it no longer front-loads OpenClaw or blocks completion on disconnected integrations.
+
+The CTO prompt architecture is now explicit:
+
+- immutable ADE doctrine
+- user-selected personality overlay
+- memory/continuity model
+
+Project-specific summary, conventions, active focus, and recent continuity are memory layers, not part of the immutable doctrine. Post-compaction identity re-injection ensures the CTO does not lose its doctrine or personality overlay after context compaction.
+
+The CTO chat runtime also has a curated ADE operator tool surface for lanes, work chats, missions, workers, and Linear workflow supervision. This is intentionally separate from mission-coordinator tooling; the CTO gets stable supervisor operations rather than the raw internal orchestrator surface.
 
 ### Missions
 
@@ -246,7 +256,7 @@ The v1 closeout completed the final integration gaps:
 
 Current architecture work:
 
-- **Multi-device sync (Phase 6 W1-W3 in progress)**: cr-sqlite CRDT integration, WebSocket sync protocol, device registry, and brain/viewer model are implemented on desktop. See [MULTI_DEVICE_SYNC.md](./MULTI_DEVICE_SYNC.md) for details.
+- **Multi-device sync (Phase 6 W1-W4 foundation in place)**: desktop host/controller sync, pairing, and device registry are implemented on desktop. iOS shell and local-first contracts exist, but the current vendored `crsqlite.xcframework` still blocks replicated DB boot on iOS. See [MULTI_DEVICE_SYNC.md](./MULTI_DEVICE_SYNC.md) for the canonical architecture and current blocker.
 
 Future architecture work focuses on:
 

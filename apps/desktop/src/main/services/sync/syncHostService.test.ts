@@ -212,6 +212,24 @@ describe("syncHostService", () => {
       projectRoot,
       port: 0,
       fileService: createStubFileService(workspaceRoot) as any,
+      laneService: {
+        list: vi.fn().mockResolvedValue([]),
+        create: vi.fn(),
+        archive: vi.fn(),
+      } as any,
+      prService: {
+        listAll: vi.fn().mockResolvedValue([]),
+        getDetail: vi.fn(),
+        getStatus: vi.fn(),
+        getChecks: vi.fn(),
+        getReviews: vi.fn(),
+        getComments: vi.fn(),
+        getFiles: vi.fn(),
+        createFromLane: vi.fn(),
+        land: vi.fn(),
+        closePr: vi.fn(),
+        requestReviewers: vi.fn(),
+      } as any,
       sessionService: {
         list: () => [],
         get: () => null,
@@ -295,6 +313,24 @@ describe("syncHostService", () => {
       projectRoot,
       port: 0,
       fileService: createStubFileService(workspaceRoot) as any,
+      laneService: {
+        list: vi.fn().mockResolvedValue([]),
+        create: vi.fn(),
+        archive: vi.fn(),
+      } as any,
+      prService: {
+        listAll: vi.fn().mockResolvedValue([]),
+        getDetail: vi.fn(),
+        getStatus: vi.fn(),
+        getChecks: vi.fn(),
+        getReviews: vi.fn(),
+        getComments: vi.fn(),
+        getFiles: vi.fn(),
+        createFromLane: vi.fn(),
+        land: vi.fn(),
+        closePr: vi.fn(),
+        requestReviewers: vi.fn(),
+      } as any,
       sessionService: {
         list: () => [],
         get: () => null,
@@ -386,6 +422,24 @@ describe("syncHostService", () => {
       projectRoot,
       port: 0,
       fileService: createStubFileService(workspaceRoot) as any,
+      laneService: {
+        list: vi.fn().mockResolvedValue([]),
+        create: vi.fn(),
+        archive: vi.fn(),
+      } as any,
+      prService: {
+        listAll: vi.fn().mockResolvedValue([]),
+        getDetail: vi.fn(),
+        getStatus: vi.fn(),
+        getChecks: vi.fn(),
+        getReviews: vi.fn(),
+        getComments: vi.fn(),
+        getFiles: vi.fn(),
+        createFromLane: vi.fn(),
+        land: vi.fn(),
+        closePr: vi.fn(),
+        requestReviewers: vi.fn(),
+      } as any,
       sessionService: {
         list: () => [],
         get: () => ({
@@ -480,5 +534,115 @@ describe("syncHostService", () => {
     const rejectedResult = await client.queue.next("command_result");
     expect((rejectedResult.payload as { ok: boolean; error?: { code: string } }).ok).toBe(false);
     expect((rejectedResult.payload as { ok: boolean; error?: { code: string } }).error?.code).toBe("unsupported_command");
+  });
+
+  it("pairs a phone peer with a short-lived code and allows paired reconnect auth", async () => {
+    const brainDb = await openKvDb(makeDbPath("ade-sync-pairing-"), createLogger() as any);
+    const projectRoot = makeProjectRoot("ade-sync-pairing-project-");
+    const workspaceRoot = path.join(projectRoot, "workspace");
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+
+    const host = createSyncHostService({
+      db: brainDb,
+      logger: createLogger() as any,
+      projectRoot,
+      port: 0,
+      fileService: createStubFileService(workspaceRoot) as any,
+      laneService: {
+        list: vi.fn().mockResolvedValue([]),
+        create: vi.fn(),
+        archive: vi.fn(),
+      } as any,
+      prService: {
+        listAll: vi.fn().mockResolvedValue([]),
+        getDetail: vi.fn(),
+        getStatus: vi.fn(),
+        getChecks: vi.fn(),
+        getReviews: vi.fn(),
+        getComments: vi.fn(),
+        getFiles: vi.fn(),
+        createFromLane: vi.fn(),
+        land: vi.fn(),
+        closePr: vi.fn(),
+        requestReviewers: vi.fn(),
+      } as any,
+      sessionService: {
+        list: () => [],
+        get: () => null,
+        readTranscriptTail: async () => "",
+      } as any,
+      ptyService: {
+        create: vi.fn(),
+      } as any,
+      computerUseArtifactBrokerService: {
+        listArtifacts: () => [],
+      } as any,
+    });
+    activeDisposers.push(async () => {
+      await host.dispose();
+      brainDb.close();
+    });
+
+    const port = await host.waitUntilListening();
+    const pairWs = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((resolve, reject) => {
+      pairWs.once("open", () => resolve());
+      pairWs.once("error", reject);
+    });
+    const pairQueue = createMessageQueue(pairWs);
+    const pairingSession = host.getPairingSession();
+    pairWs.send(encodeSyncEnvelope({
+      type: "pairing_request",
+      requestId: "pair-me",
+      payload: {
+        code: pairingSession.code,
+        peer: {
+          deviceId: "ios-phone-1",
+          deviceName: "Arul iPhone",
+          platform: "iOS",
+          deviceType: "phone",
+          siteId: "ios-site-1",
+          dbVersion: 0,
+        },
+      },
+    }));
+    const pairingResponse = await pairQueue.next("pairing_result");
+    const pairingPayload = pairingResponse.payload as { ok: boolean; deviceId?: string; secret?: string };
+    expect(pairingPayload.ok).toBe(true);
+    expect(pairingPayload.deviceId).toBe("ios-phone-1");
+    expect(pairingPayload.secret).toBeTruthy();
+    pairWs.close();
+    await new Promise((resolve) => pairWs.once("close", resolve));
+
+    const authWs = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((resolve, reject) => {
+      authWs.once("open", () => resolve());
+      authWs.once("error", reject);
+    });
+    const authQueue = createMessageQueue(authWs);
+    authWs.send(encodeSyncEnvelope({
+      type: "hello",
+      requestId: "hello-paired",
+      payload: {
+        peer: {
+          deviceId: "ios-phone-1",
+          deviceName: "Arul iPhone",
+          platform: "iOS",
+          deviceType: "phone",
+          siteId: "ios-site-1",
+          dbVersion: 0,
+        },
+        auth: {
+          kind: "paired",
+          deviceId: "ios-phone-1",
+          secret: pairingPayload.secret,
+        },
+      },
+    }));
+    const helloOk = await authQueue.next("hello_ok");
+    const helloPayload = helloOk.payload as { features: { pairingAuth: { enabled: boolean } } };
+    expect(helloPayload.features.pairingAuth.enabled).toBe(true);
+    authWs.close();
+    await new Promise((resolve) => authWs.once("close", resolve));
   });
 });

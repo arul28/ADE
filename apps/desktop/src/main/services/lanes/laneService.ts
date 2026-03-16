@@ -271,6 +271,43 @@ export function createLaneService({
   onHeadChanged?: (args: { laneId: string; reason: string; preHeadSha: string | null; postHeadSha: string | null }) => void;
   onRebaseEvent?: (event: RebaseRunEventPayload) => void;
 }) {
+  const upsertLaneStateSnapshot = (args: {
+    laneId: string;
+    status: LaneStatus;
+    agentSummary?: Record<string, unknown> | null;
+    missionSummary?: Record<string, unknown> | null;
+    updatedAt?: string;
+  }): void => {
+    db.run(
+      `
+        insert into lane_state_snapshots(
+          lane_id, dirty, ahead, behind, remote_behind, rebase_in_progress,
+          agent_summary_json, mission_summary_json, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(lane_id) do update set
+          dirty = excluded.dirty,
+          ahead = excluded.ahead,
+          behind = excluded.behind,
+          remote_behind = excluded.remote_behind,
+          rebase_in_progress = excluded.rebase_in_progress,
+          agent_summary_json = excluded.agent_summary_json,
+          mission_summary_json = excluded.mission_summary_json,
+          updated_at = excluded.updated_at
+      `,
+      [
+        args.laneId,
+        args.status.dirty ? 1 : 0,
+        args.status.ahead,
+        args.status.behind,
+        args.status.remoteBehind,
+        args.status.rebaseInProgress ? 1 : 0,
+        args.agentSummary == null ? null : JSON.stringify(args.agentSummary),
+        args.missionSummary == null ? null : JSON.stringify(args.missionSummary),
+        args.updatedAt ?? new Date().toISOString(),
+      ],
+    );
+  };
+
   const getLaneRow = (laneId: string) =>
     db.get<LaneRow>("select * from lanes where id = ? and project_id = ? limit 1", [laneId, projectId]);
 
@@ -574,6 +611,13 @@ export function createLaneService({
             stackDepth
           })
         );
+        if (includeStatus) {
+          upsertLaneStateSnapshot({
+            laneId: row.id,
+            status,
+            updatedAt: new Date().toISOString(),
+          });
+        }
       } catch (err) {
         // If building the summary for a single lane fails entirely, skip it
         // rather than crashing the whole list operation.
@@ -675,6 +719,14 @@ export function createLaneService({
 
     async list(args: ListLanesArgs = {}): Promise<LaneSummary[]> {
       return await listLanes(args);
+    },
+
+    async refreshSnapshots(args: ListLanesArgs = {}): Promise<{ refreshedCount: number }> {
+      const summaries = await listLanes({
+        includeArchived: args.includeArchived ?? true,
+        includeStatus: true,
+      });
+      return { refreshedCount: summaries.length };
     },
 
     invalidateListCache(): void {
@@ -1509,6 +1561,13 @@ export function createLaneService({
 
       const now = new Date().toISOString();
       db.run("update lanes set status = 'archived', archived_at = ? where id = ? and project_id = ?", [now, laneId, projectId]);
+      invalidateLaneListCache();
+    },
+
+    unarchive({ laneId }: { laneId: string }): void {
+      const row = getLaneRow(laneId);
+      if (!row) throw new Error(`Lane not found: ${laneId}`);
+      db.run("update lanes set status = 'active', archived_at = null where id = ? and project_id = ?", [laneId, projectId]);
       invalidateLaneListCache();
     },
 

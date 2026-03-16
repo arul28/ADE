@@ -304,6 +304,28 @@ function rebuildUnifiedMemoriesFts(db: DatabaseSyncType): void {
   }
 }
 
+function ensureUnifiedMemoriesSearchTable(db: { run: (sql: string, params?: SqlValue[]) => void }): void {
+  try {
+    db.run(`
+      create virtual table if not exists unified_memories_fts using fts4(
+        content,
+        content='unified_memories'
+      )
+    `);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/no such module: fts4/i.test(message) && !/no such module: fts5/i.test(message)) {
+      throw error;
+    }
+    db.run(`
+      create table if not exists unified_memories_fts (
+        rowid integer primary key,
+        content text not null
+      )
+    `);
+  }
+}
+
 function parseAlterTableTarget(sql: string): string | null {
   const match = sql.match(/^\s*alter\s+table\s+([`"'[\]A-Za-z0-9_]+)\s+add\s+column\s+/i);
   if (!match?.[1]) return null;
@@ -353,6 +375,22 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
   db.run("create index if not exists idx_lanes_project_id on lanes(project_id)");
   db.run("create index if not exists idx_lanes_project_type on lanes(project_id, lane_type)");
   db.run("create index if not exists idx_lanes_project_parent on lanes(project_id, parent_lane_id)");
+
+  db.run(`
+    create table if not exists lane_state_snapshots (
+      lane_id text primary key,
+      dirty integer not null default 0,
+      ahead integer not null default 0,
+      behind integer not null default 0,
+      remote_behind integer not null default -1,
+      rebase_in_progress integer not null default 0,
+      agent_summary_json text,
+      mission_summary_json text,
+      updated_at text not null,
+      foreign key(lane_id) references lanes(id)
+    )
+  `);
+  db.run("create index if not exists idx_lane_state_snapshots_updated_at on lane_state_snapshots(updated_at)");
 
   db.run(`
     create table if not exists terminal_sessions (
@@ -651,6 +689,21 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
   `);
   db.run("create index if not exists idx_pull_requests_lane_id on pull_requests(lane_id)");
   db.run("create index if not exists idx_pull_requests_project_id on pull_requests(project_id)");
+
+  db.run(`
+    create table if not exists pull_request_snapshots (
+      pr_id text primary key,
+      detail_json text,
+      status_json text,
+      checks_json text,
+      reviews_json text,
+      comments_json text,
+      files_json text,
+      updated_at text not null,
+      foreign key(pr_id) references pull_requests(id)
+    )
+  `);
+  db.run("create index if not exists idx_pull_request_snapshots_updated_at on pull_request_snapshots(updated_at)");
 
   // Phase 8 pack versioning + checkpoints.
   db.run(`
@@ -1693,12 +1746,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
     end
   `);
 
-  db.run(`
-    create virtual table if not exists unified_memories_fts using fts4(
-      content,
-      content='unified_memories'
-    )
-  `);
+  ensureUnifiedMemoriesSearchTable(db);
   db.run(`
     create trigger if not exists unified_memories_fts_ai after insert on unified_memories begin
       insert into unified_memories_fts(rowid, content)

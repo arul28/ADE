@@ -155,6 +155,10 @@ import type {
   AgentChatSendArgs,
   AgentChatSession,
   AgentChatSessionSummary,
+  AgentChatSubagentSnapshot,
+  AgentChatSubagentListArgs,
+  AgentChatSessionCapabilities,
+  AgentChatSessionCapabilitiesArgs,
   AgentChatSteerArgs,
   AgentChatUpdateSessionArgs,
   AgentChatSlashCommand,
@@ -1197,16 +1201,13 @@ async function buildLinearConnectionStatus(
   }
 
   const status = await ctx.linearIssueTracker.getConnectionStatus();
-  const projects = status.connected
-    ? await ctx.linearIssueTracker.listProjects().catch(() => [])
-    : [];
   return {
     tokenStored,
     connected: status.connected,
     viewerId: status.viewerId,
     viewerName: status.viewerName,
-    projectCount: projects.length,
-    projectPreview: projects.slice(0, 3).map((project) => project.name),
+    projectCount: undefined,
+    projectPreview: undefined,
     checkedAt: nowIso(),
     authMode: credentialStatus.authMode,
     oauthAvailable: credentialStatus.oauthConfigured,
@@ -3756,6 +3757,16 @@ export function registerIpc({
       path: match.path,
       score: match.score,
     }));
+  });
+
+  ipcMain.handle(IPC.agentChatListSubagents, async (_event, arg: AgentChatSubagentListArgs): Promise<AgentChatSubagentSnapshot[]> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.listSubagents(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatGetSessionCapabilities, async (_event, arg: AgentChatSessionCapabilitiesArgs): Promise<AgentChatSessionCapabilities> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.getSessionCapabilities(arg);
   });
 
   ipcMain.handle(IPC.agentChatSaveTempAttachment, async (_event, arg: { data: string; filename: string }): Promise<{ path: string }> => {

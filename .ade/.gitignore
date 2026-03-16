@@ -12,14 +12,17 @@ cache/
 worktrees/
 secrets/
 
-# Sync-backed or generated runtime docs/state
+# Local-only generated runtime docs/state
+agents/
 cto/CURRENT.md
 cto/MEMORY.md
 cto/core-memory.json
+cto/daily/
 cto/sessions.jsonl
 cto/subordinate-activity.jsonl
 cto/openclaw-device.json
-agents/*/core-memory.json
-agents/*/sessions.jsonl
-agents/*/task-sessions.jsonl
+context/
+memory/
+history/
+reflections/
 context/*.ade.md

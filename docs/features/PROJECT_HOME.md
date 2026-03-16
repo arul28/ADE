@@ -554,6 +554,6 @@ The Project Home dashboard will surface preview URLs for active lanes:
 - **Preview URL Column**: Each lane row shows its preview URL (if proxy is enabled)
 - **Quick Launch**: Click to open preview in browser (uses isolated browser profile if configured)
 - **Copy Link**: Copy preview URL to clipboard for sharing
-- **Runtime/host status**: Visual indicator showing whether the lane is running on the local ADE machine now, and later whether it belongs to the synced brain machine in Phase 6.
+- **Runtime/host status**: Visual indicator showing whether the lane is running on the local ADE machine now, and later whether it belongs to the synced host machine in Phase 6.
 
 Managed Daytona sandbox controls are not part of the active Project Home roadmap.

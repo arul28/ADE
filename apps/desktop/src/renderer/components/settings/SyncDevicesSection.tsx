@@ -89,6 +89,17 @@ function roleColor(mode: SyncRoleSnapshot["mode"]): string {
   }
 }
 
+function modeLabel(mode: SyncRoleSnapshot["mode"]): string {
+  switch (mode) {
+    case "brain":
+      return "host";
+    case "viewer":
+      return "controller";
+    default:
+      return "independent";
+  }
+}
+
 function connectionColor(state: SyncDeviceRuntimeState["connectionState"]): string {
   switch (state) {
     case "self":
@@ -195,13 +206,13 @@ export function SyncDevicesSection() {
     void runAction(async () => {
       const port = Number(connectPort);
       if (!connectHost.trim()) {
-        throw new Error("Enter the brain host or IP address.");
+        throw new Error("Enter the host address or IP.");
       }
       if (!Number.isFinite(port) || port <= 0) {
         throw new Error("Enter a valid port.");
       }
       if (!connectToken.trim()) {
-        throw new Error("Enter the bootstrap token from the current brain.");
+        throw new Error("Enter the bootstrap token from the current host.");
       }
       const draft: SyncDesktopConnectionDraft = {
         host: connectHost.trim(),
@@ -209,21 +220,21 @@ export function SyncDevicesSection() {
         token: connectToken.trim(),
       };
       await window.ade.sync.connectToBrain(draft);
-      setNotice("Connected to the current brain.");
+      setNotice("Connected to the current host.");
     });
   }, [connectHost, connectPort, connectToken, runAction]);
 
   const handleDisconnect = useCallback(() => {
     void runAction(async () => {
       await window.ade.sync.disconnectFromBrain();
-      setNotice("Disconnected. This desktop is now running standalone brain mode.");
+      setNotice("Disconnected. This desktop is now running in independent desktop mode.");
     });
   }, [runAction]);
 
   const handleTransfer = useCallback(() => {
     void runAction(async () => {
       await window.ade.sync.transferBrainToLocal();
-      setNotice("This desktop is now the brain.");
+      setNotice("This desktop is now the host machine.");
     });
   }, [runAction]);
 
@@ -242,6 +253,16 @@ export function SyncDevicesSection() {
     setNotice("Manual connect details copied to the clipboard.");
   }, [status]);
 
+  const handleCopyPairingInfo = useCallback(async () => {
+    if (!status?.pairingSession) return;
+    const host = status.localDevice.lastHost ?? "127.0.0.1";
+    const port = status.localDevice.lastPort ?? 8787;
+    await window.ade.app.writeClipboardText(
+      `Host: ${host}\nPort: ${port}\nPairing code: ${status.pairingSession.code}\nExpires: ${status.pairingSession.expiresAt}`,
+    );
+    setNotice("Pairing code copied to the clipboard.");
+  }, [status]);
+
   if (loading) {
     return <div style={helperTextStyle}>Loading sync status…</div>;
   }
@@ -257,16 +278,16 @@ export function SyncDevicesSection() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
       <section>
-        <div style={sectionLabelStyle}>SYNC MODE</div>
+        <div style={sectionLabelStyle}>HOST MACHINE</div>
         <div style={{ ...cardStyle(), display: "grid", gap: 16 }}>
           <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
-            <span style={badgeStyle(roleColor(status.mode))}>{status.mode}</span>
+            <span style={badgeStyle(roleColor(status.mode))}>{modeLabel(status.mode)}</span>
             <span style={badgeStyle(status.client.state === "connected" ? COLORS.success : status.client.state === "error" ? COLORS.danger : COLORS.textMuted)}>
-              client {status.client.state}
+              link {status.client.state}
             </span>
             {status.currentBrain ? (
               <span style={badgeStyle(COLORS.textMuted)}>
-                brain {status.currentBrain.name}
+                host {status.currentBrain.name}
               </span>
             ) : null}
           </div>
@@ -279,7 +300,7 @@ export function SyncDevicesSection() {
               <div style={{ ...helperTextStyle, marginTop: 6 }}>Last seen: {formatTimestamp(status.localDevice.lastSeenAt)}</div>
             </div>
             <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 12 }}>
-              <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>Current brain</div>
+              <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>Current host machine</div>
               <div style={{ color: COLORS.textPrimary, fontWeight: 700, fontFamily: SANS_FONT }}>
                 {status.currentBrain?.name ?? "Not assigned yet"}
               </div>
@@ -288,11 +309,11 @@ export function SyncDevicesSection() {
                 {status.currentBrain?.lastPort ? `:${status.currentBrain.lastPort}` : ""}
               </div>
               <div style={{ ...helperTextStyle, marginTop: 6 }}>
-                Epoch: {status.clusterState?.brainEpoch ?? 0}
+                Ownership epoch: {status.clusterState?.brainEpoch ?? 0}
               </div>
             </div>
             <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 12 }}>
-              <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>Transfer rules</div>
+              <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>Live execution ownership</div>
               <div style={{ ...helperTextStyle, color: COLORS.textPrimary }}>{status.survivableStateText}</div>
               <div style={{ ...helperTextStyle, marginTop: 6, color: COLORS.warning }}>{status.blockingStateText}</div>
             </div>
@@ -330,21 +351,38 @@ export function SyncDevicesSection() {
             </button>
           </div>
           <div style={helperTextStyle}>
-            Device identity is operational metadata in W3. Secure pairing, revocation, keychain storage, and discovery ship in W4.
+            Device identity is synced operational metadata. Pairing codes mint per-device secrets for controllers, while bootstrap tokens remain available for manual desktop controller connects. Legacy internal sync fields still use brain naming for compatibility.
           </div>
         </div>
       </section>
 
       <section>
-        <div style={sectionLabelStyle}>MANUAL DESKTOP CONNECT</div>
+        <div style={sectionLabelStyle}>CONNECT CONTROLLER</div>
         <div style={{ ...cardStyle(), display: "grid", gap: 16 }}>
           <div style={helperTextStyle}>
-            Use this to connect a viewer desktop to the current brain with a host, port, and bootstrap token. Paused missions, CTO history, and idle or ended chats remain available after handoff. Live missions, chats, terminals, or run processes must stop first.
+            Pair phones and other remote controllers with the short-lived code below. A second desktop can either connect as a controller to this host or stay independent and use Git plus the tracked ADE scaffold/config layer. Paused missions, CTO history, and idle or ended chats remain available after host handoff. Live missions, chats, terminals, or run processes must stop first.
           </div>
+
+          {(status.mode === "brain" || status.mode === "standalone") && status.pairingSession ? (
+            <div style={{ border: `1px solid ${COLORS.info}33`, borderRadius: 12, padding: 12, background: `${COLORS.info}14` }}>
+              <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>Controller pairing code</div>
+              <div style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT, fontSize: 12, lineHeight: 1.8 }}>
+                <div>Host: {status.localDevice.lastHost ?? "127.0.0.1"}</div>
+                <div>Port: {status.localDevice.lastPort ?? 8787}</div>
+                <div>Code: {status.pairingSession.code}</div>
+                <div>Expires: {formatTimestamp(status.pairingSession.expiresAt)}</div>
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <button type="button" style={outlineButton()} disabled={busy} onClick={() => void handleCopyPairingInfo()}>
+                  Copy pairing details
+                </button>
+              </div>
+            </div>
+          ) : null}
 
           {(status.mode === "brain" || status.mode === "standalone") && status.bootstrapToken ? (
             <div style={{ border: `1px solid ${COLORS.accentBorder}`, borderRadius: 12, padding: 12, background: COLORS.accentSubtle }}>
-              <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>Current brain connect details</div>
+              <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>Current host connect details</div>
               <div style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT, fontSize: 12, lineHeight: 1.8 }}>
                 <div>Host: {status.localDevice.lastHost ?? "127.0.0.1"}</div>
                 <div>Port: {status.localDevice.lastPort ?? 8787}</div>
@@ -360,7 +398,7 @@ export function SyncDevicesSection() {
 
           <div style={{ display: "grid", gridTemplateColumns: "minmax(180px, 1fr) 140px minmax(240px, 1fr)", gap: 12 }}>
             <label style={{ display: "grid", gap: 6 }}>
-              <span style={LABEL_STYLE}>Brain host or IP</span>
+              <span style={LABEL_STYLE}>Host address or IP</span>
               <input value={connectHost} onChange={(event) => setConnectHost(event.target.value)} style={inputStyle} placeholder="127.0.0.1" />
             </label>
             <label style={{ display: "grid", gap: 6 }}>
@@ -369,17 +407,25 @@ export function SyncDevicesSection() {
             </label>
             <label style={{ display: "grid", gap: 6 }}>
               <span style={LABEL_STYLE}>Bootstrap token</span>
-              <input value={connectToken} onChange={(event) => setConnectToken(event.target.value)} style={inputStyle} placeholder="Paste token from the current brain" />
+              <input value={connectToken} onChange={(event) => setConnectToken(event.target.value)} style={inputStyle} placeholder="Paste token from the current host" />
             </label>
           </div>
 
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
             <button type="button" style={primaryButton()} disabled={busy} onClick={handleConnect}>
-              Connect to current brain
+              Connect as controller
             </button>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div style={sectionLabelStyle}>ADVANCED DESKTOP OPTIONS</div>
+        <div style={{ ...cardStyle(), display: "grid", gap: 12 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
             {status.role === "viewer" || status.client.state === "connected" ? (
               <button type="button" style={outlineButton()} disabled={busy} onClick={handleDisconnect}>
-                Disconnect and run standalone
+                Disconnect controller
               </button>
             ) : null}
             <button
@@ -391,23 +437,18 @@ export function SyncDevicesSection() {
               disabled={busy || status.role === "brain" || !status.transferReadiness.ready}
               onClick={handleTransfer}
             >
-              Make this device the brain
+              Take over host role
             </button>
           </div>
-        </div>
-      </section>
 
-      <section>
-        <div style={sectionLabelStyle}>TRANSFER PREFLIGHT</div>
-        <div style={{ ...cardStyle(), display: "grid", gap: 12 }}>
           <div style={{ ...helperTextStyle, color: status.transferReadiness.ready ? COLORS.success : COLORS.warning }}>
             {status.transferReadiness.ready
-              ? "This desktop is ready to take over the brain role."
-              : "Stop the live work below before handing off the brain role."}
+              ? "This desktop is ready to take over the host role."
+              : "Stop the live work below before handing off the host role."}
           </div>
 
           <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 12 }}>
-            <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>Durable state that survives handoff</div>
+            <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>Durable state that survives host handoff</div>
             <div style={{ display: "grid", gap: 6 }}>
               {status.transferReadiness.survivableState.map((line) => (
                 <div key={line} style={helperTextStyle}>• {line}</div>
@@ -452,7 +493,7 @@ export function SyncDevicesSection() {
                   </div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                     {device.isLocal ? <span style={badgeStyle(COLORS.accent)}>local</span> : null}
-                    {device.isBrain ? <span style={badgeStyle(COLORS.success)}>brain</span> : null}
+                    {device.isBrain ? <span style={badgeStyle(COLORS.success)}>host</span> : null}
                     <span style={badgeStyle(connectionColor(device.connectionState))}>{device.connectionState}</span>
                   </div>
                 </div>

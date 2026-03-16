@@ -192,7 +192,15 @@ export function createContextDocService(args: {
     db.setJson(CONTEXT_DOC_GENERATION_STATUS_KEY, next);
   };
 
+  let activeGeneration: Promise<ContextGenerateDocsResult> | null = null;
+
   const generateDocs = async (docArgs: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> => {
+    // If generation is already in-flight, wait for it instead of starting a second one
+    if (activeGeneration) {
+      logger.info("context_docs.generation_already_running", {});
+      return activeGeneration;
+    }
+
     persistContextDocRefreshPrefs(docArgs);
     writeGenerationStatus({
       state: "running",
@@ -200,24 +208,32 @@ export function createContextDocService(args: {
       finishedAt: null,
       error: null,
     });
-    try {
-      const result = await runContextDocGenerationImpl(projectPackBuilderDeps, docArgs);
-      writeGenerationStatus({
-        state: "idle",
-        startedAt: readGenerationStatus().startedAt,
-        finishedAt: result.generatedAt,
-        error: null,
-      });
-      return result;
-    } catch (error) {
-      writeGenerationStatus({
-        state: "failed",
-        startedAt: readGenerationStatus().startedAt,
-        finishedAt: nowIso(),
-        error: getErrorMessage(error),
-      });
-      throw error;
-    }
+
+    const run = async (): Promise<ContextGenerateDocsResult> => {
+      try {
+        const result = await runContextDocGenerationImpl(projectPackBuilderDeps, docArgs);
+        writeGenerationStatus({
+          state: "idle",
+          startedAt: readGenerationStatus().startedAt,
+          finishedAt: result.generatedAt,
+          error: null,
+        });
+        return result;
+      } catch (error) {
+        writeGenerationStatus({
+          state: "failed",
+          startedAt: readGenerationStatus().startedAt,
+          finishedAt: nowIso(),
+          error: getErrorMessage(error),
+        });
+        throw error;
+      } finally {
+        activeGeneration = null;
+      }
+    };
+
+    activeGeneration = run();
+    return activeGeneration;
   };
 
   /**

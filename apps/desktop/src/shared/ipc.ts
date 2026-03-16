@@ -113,6 +113,8 @@ export const IPC = {
   agentChatSlashCommands: "ade.agentChat.slashCommands",
   agentChatFileSearch: "ade.agentChat.fileSearch",
   agentChatSaveTempAttachment: "ade.agentChat.saveTempAttachment",
+  agentChatListSubagents: "ade.agentChat.listSubagents",
+  agentChatGetSessionCapabilities: "ade.agentChat.getSessionCapabilities",
   computerUseGetSettings: "ade.computerUse.getSettings",
   computerUseListArtifacts: "ade.computerUse.listArtifacts",
   computerUseGetOwnerSnapshot: "ade.computerUse.getOwnerSnapshot",

@@ -1138,6 +1138,10 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.agentChatSlashCommands, args),
     fileSearch: async (args: import("../shared/types").AgentChatFileSearchArgs): Promise<import("../shared/types").AgentChatFileSearchResult[]> =>
       ipcRenderer.invoke(IPC.agentChatFileSearch, args),
+    listSubagents: async (args: import("../shared/types").AgentChatSubagentListArgs): Promise<import("../shared/types").AgentChatSubagentSnapshot[]> =>
+      ipcRenderer.invoke(IPC.agentChatListSubagents, args),
+    getSessionCapabilities: async (args: import("../shared/types").AgentChatSessionCapabilitiesArgs): Promise<import("../shared/types").AgentChatSessionCapabilities> =>
+      ipcRenderer.invoke(IPC.agentChatGetSessionCapabilities, args),
     saveTempAttachment: async (args: { data: string; filename: string }): Promise<{ path: string }> =>
       ipcRenderer.invoke(IPC.agentChatSaveTempAttachment, args),
   },

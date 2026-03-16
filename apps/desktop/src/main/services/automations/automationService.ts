@@ -2077,6 +2077,11 @@ export function createAutomationService({
           scheduledAt: nowIso(),
         });
       };
+      watcher.on("error", () => {
+        // EMFILE or other watcher error — close gracefully
+        fileWatchers.delete(root.key);
+        void watcher.close().catch(() => {});
+      });
       watcher.on("add", (absPath) => onFileEvent("add", absPath));
       watcher.on("change", (absPath) => onFileEvent("change", absPath));
       watcher.on("unlink", (absPath) => onFileEvent("unlink", absPath));

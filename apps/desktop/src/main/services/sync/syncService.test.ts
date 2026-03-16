@@ -75,6 +75,20 @@ describe("syncService", () => {
       logger: createLogger() as any,
       projectRoot,
       fileService: { dispose: () => {} } as any,
+      laneService: { list: async () => [], create: async () => ({}), archive: async () => {} } as any,
+      prService: {
+        listAll: async () => [],
+        getDetail: async () => null,
+        getStatus: async () => null,
+        getChecks: async () => [],
+        getReviews: async () => [],
+        getComments: async () => [],
+        getFiles: async () => [],
+        createFromLane: async () => ({}),
+        land: async () => ({}),
+        closePr: async () => {},
+        requestReviewers: async () => {},
+      } as any,
       sessionService: {
         list: ({ status }: { status?: string } = {}) => {
           if (status === "running") {
@@ -152,14 +166,14 @@ describe("syncService", () => {
     );
     expect(readiness.survivableState).toEqual(
       expect.arrayContaining([
-        "Paused missions remain paused and can resume on the new brain.",
-        "CTO history and idle threads remain available on the new brain.",
-        "Idle and ended agent chats remain available and resumable on the new brain.",
+        "Paused missions remain paused and can resume on the new host.",
+        "CTO history and idle threads remain available on the new host.",
+        "Idle and ended agent chats remain available and resumable on the new host.",
       ]),
     );
   });
 
-  it("transfers the brain role to the local device when only durable state remains", async () => {
+  it("transfers the host role to the local device when only durable state remains", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-transfer-");
     const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
 
@@ -168,6 +182,20 @@ describe("syncService", () => {
       logger: createLogger() as any,
       projectRoot,
       fileService: { dispose: () => {} } as any,
+      laneService: { list: async () => [], create: async () => ({}), archive: async () => {} } as any,
+      prService: {
+        listAll: async () => [],
+        getDetail: async () => null,
+        getStatus: async () => null,
+        getChecks: async () => [],
+        getReviews: async () => [],
+        getComments: async () => [],
+        getFiles: async () => [],
+        createFromLane: async () => ({}),
+        land: async () => ({}),
+        closePr: async () => {},
+        requestReviewers: async () => {},
+      } as any,
       sessionService: { list: () => [] } as any,
       ptyService: {} as any,
       computerUseArtifactBrokerService: {} as any,
@@ -192,7 +220,7 @@ describe("syncService", () => {
       [
         "remote-brain",
         "remote-site",
-        "Remote brain",
+        "Remote host",
         "macOS",
         "desktop",
         now,

@@ -805,6 +805,8 @@ declare global {
         changePermissionMode: (args: import("../shared/types").AgentChatChangePermissionModeArgs) => Promise<void>;
         slashCommands: (args: import("../shared/types").AgentChatSlashCommandsArgs) => Promise<import("../shared/types").AgentChatSlashCommand[]>;
         fileSearch: (args: import("../shared/types").AgentChatFileSearchArgs) => Promise<import("../shared/types").AgentChatFileSearchResult[]>;
+        listSubagents: (args: import("../shared/types").AgentChatSubagentListArgs) => Promise<import("../shared/types").AgentChatSubagentSnapshot[]>;
+        getSessionCapabilities: (args: import("../shared/types").AgentChatSessionCapabilitiesArgs) => Promise<import("../shared/types").AgentChatSessionCapabilities>;
         saveTempAttachment: (args: { data: string; filename: string }) => Promise<{ path: string }>;
       };
       computerUse: {

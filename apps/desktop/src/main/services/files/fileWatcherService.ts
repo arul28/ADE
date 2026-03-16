@@ -104,6 +104,21 @@ export function createFileWatcherService() {
         });
       };
 
+      watcher.on("error", (error) => {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "EMFILE" || code === "ENFILE") {
+          // File descriptor limit reached — close this watcher gracefully
+          const pending = pendingBySub.get(key);
+          if (pending) {
+            for (const timeout of pending.values()) clearTimeout(timeout);
+            pendingBySub.delete(key);
+          }
+          subscriptions.delete(key);
+          void watcher.close().catch(() => {});
+        }
+        // Other errors are non-fatal for chokidar; ignore silently
+      });
+
       watcher.on("add", (absPath) => forward("add", absPath));
       watcher.on("change", (absPath) => forward("change", absPath));
       watcher.on("unlink", (absPath) => forward("unlink", absPath));

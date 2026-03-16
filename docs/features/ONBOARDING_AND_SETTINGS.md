@@ -83,7 +83,7 @@ Settings owns durable configuration and infrastructure concerns, organized into 
 - **Sync & Devices** — multi-device sync management (Phase 6):
   - Local device identity and rename controls
   - Manual desktop-to-desktop connection (host/port/bootstrap-token)
-  - Current brain designation and brain transfer ("Make this device the brain")
+  - Current host machine status and host-role transfer ("Make this device the host")
   - Connected peer list with live status (connection state, last seen, latency, sync lag)
   - Disconnect/forget device actions
 

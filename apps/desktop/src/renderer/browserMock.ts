@@ -1267,6 +1267,15 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         coreMemory: { version: 1, updatedAt: now, projectSummary: "Mock project summary", criticalConventions: [], userPreferences: [], activeFocus: [], notes: [] },
         recentSessions: []
       }),
+      previewSystemPrompt: resolvedArg({
+        prompt: "You are the CTO for this project inside ADE.",
+        tokenEstimate: 10,
+        sections: [
+          { id: "doctrine", title: "Immutable ADE doctrine", content: "You are the CTO for this project inside ADE." },
+          { id: "personality", title: "Selected personality overlay", content: "Operate as a strategic CTO." },
+          { id: "memory", title: "Memory and continuity model", content: "Project continuity comes from memory layers." },
+        ],
+      }),
       listAgents: resolved([]),
       saveAgent: resolvedArg({ id: "mock-agent", name: "Mock Agent", slug: "mock-agent", role: "engineer", reportsTo: null, capabilities: [], status: "idle", adapterType: "claude-local", adapterConfig: {}, runtimeConfig: {}, budgetMonthlyCents: 0, spentMonthlyCents: 0, createdAt: now, updatedAt: now, deletedAt: null }),
       removeAgent: resolvedArg(undefined),
@@ -1293,6 +1302,17 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       }),
       onLinearWorkflowEvent: noop,
       getLinearProjects: resolvedArg([]),
+      getLinearConnectionStatus: resolvedArg({
+        tokenStored: false,
+        connected: false,
+        viewerId: null,
+        viewerName: null,
+        checkedAt: now,
+        authMode: null,
+        oauthAvailable: true,
+        tokenExpiresAt: null,
+        message: "Linear token not configured.",
+      }),
       setLinearOAuthClient: resolvedArg({
         tokenStored: false,
         connected: false,

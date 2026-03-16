@@ -605,6 +605,64 @@ export function createPrService({
       [projectId]
     );
 
+  const upsertSnapshotRow = (args: {
+    prId: string;
+    detail?: PrDetail | null;
+    status?: PrStatus | null;
+    checks?: PrCheck[] | null;
+    reviews?: PrReview[] | null;
+    comments?: PrComment[] | null;
+    files?: PrFile[] | null;
+    updatedAt?: string;
+  }): void => {
+    const existing = db.get<{
+      detail_json: string | null;
+      status_json: string | null;
+      checks_json: string | null;
+      reviews_json: string | null;
+      comments_json: string | null;
+      files_json: string | null;
+    }>(
+      `select detail_json, status_json, checks_json, reviews_json, comments_json, files_json
+         from pull_request_snapshots
+        where pr_id = ?
+        limit 1`,
+      [args.prId],
+    );
+
+    const encode = (next: unknown, fallback: string | null | undefined): string | null => {
+      if (next === undefined) return fallback ?? null;
+      if (next == null) return null;
+      return JSON.stringify(next);
+    };
+
+    db.run(
+      `
+        insert into pull_request_snapshots(
+          pr_id, detail_json, status_json, checks_json, reviews_json, comments_json, files_json, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(pr_id) do update set
+          detail_json = excluded.detail_json,
+          status_json = excluded.status_json,
+          checks_json = excluded.checks_json,
+          reviews_json = excluded.reviews_json,
+          comments_json = excluded.comments_json,
+          files_json = excluded.files_json,
+          updated_at = excluded.updated_at
+      `,
+      [
+        args.prId,
+        encode(args.detail, existing?.detail_json),
+        encode(args.status, existing?.status_json),
+        encode(args.checks, existing?.checks_json),
+        encode(args.reviews, existing?.reviews_json),
+        encode(args.comments, existing?.comments_json),
+        encode(args.files, existing?.files_json),
+        args.updatedAt ?? nowIso(),
+      ],
+    );
+  };
+
   const upsertRow = (summary: Omit<PrSummary, "projectId"> & { projectId?: string }): void => {
     const now = nowIso();
     const existing = getRowForLane(summary.laneId);
@@ -1157,6 +1215,54 @@ export function createPrService({
       if (!Number.isNaN(aTs) && !Number.isNaN(bTs) && aTs !== bTs) return bTs - aTs;
       return a.id.localeCompare(b.id);
     });
+  };
+
+  const getDetailSnapshot = async (prId: string): Promise<PrDetail> => {
+    const row = requireRow(prId);
+    const repo = repoFromRow(row);
+    const { data } = await githubService.apiRequest<any>({
+      method: "GET",
+      path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}`
+    });
+    return {
+      prId,
+      body: asString(data?.body) || null,
+      labels: Array.isArray(data?.labels) ? data.labels.map(toLabel) : [],
+      assignees: Array.isArray(data?.assignees) ? data.assignees.map(toUser) : [],
+      requestedReviewers: Array.isArray(data?.requested_reviewers) ? data.requested_reviewers.map(toUser) : [],
+      author: toUser(data?.user),
+      isDraft: Boolean(data?.draft),
+      milestone: asString(data?.milestone?.title) || null,
+      linkedIssues: []
+    };
+  };
+
+  const getFilesSnapshot = async (prId: string): Promise<PrFile[]> => {
+    const row = requireRow(prId);
+    const repo = repoFromRow(row);
+    const data = await fetchAllPages<any>({
+      path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/files`
+    });
+    return data.map((f: any) => ({
+      filename: asString(f?.filename) || "",
+      status: toFileStatus(f?.status),
+      additions: Number(f?.additions) || 0,
+      deletions: Number(f?.deletions) || 0,
+      patch: asString(f?.patch) || null,
+      previousFilename: asString(f?.previous_filename) || null
+    }));
+  };
+
+  const refreshSnapshotData = async (prId: string): Promise<void> => {
+    const [detail, status, checks, reviews, comments, files] = await Promise.all([
+      getDetailSnapshot(prId).catch(() => null),
+      computeStatus(rowToSummary(requireRow(prId))).catch(() => null),
+      getChecks(prId).catch(() => null),
+      getReviews(prId).catch(() => null),
+      getComments(prId).catch(() => null),
+      getFilesSnapshot(prId).catch(() => null),
+    ]);
+    upsertSnapshotRow({ prId, detail, status, checks, reviews, comments, files });
   };
 
   const updateDescription = async (args: UpdatePrDescriptionArgs): Promise<void> => {
@@ -3445,7 +3551,9 @@ export function createPrService({
 
     async refresh(args: { prId?: string } = {}): Promise<PrSummary[]> {
       if (args.prId) {
-        return [await refreshOne(args.prId)];
+        const refreshed = await refreshOne(args.prId);
+        await refreshSnapshotData(args.prId);
+        return [refreshed];
       }
       const rows = listRows();
       const nowMs = Date.now();
@@ -3460,25 +3568,37 @@ export function createPrService({
           logger.warn("prs.refresh_failed", { prId: row.id, error: error instanceof Error ? error.message : String(error) });
         }
       }
-      return listRows().map(rowToSummary);
+      const summaries = listRows().map(rowToSummary);
+      for (const summary of summaries) {
+        await refreshSnapshotData(summary.id);
+      }
+      return summaries;
     },
 
     async getStatus(prId: string): Promise<PrStatus> {
       const row = getRow(prId);
       if (!row) throw new Error(`PR not found: ${prId}`);
-      return await computeStatus(rowToSummary(row));
+      const status = await computeStatus(rowToSummary(row));
+      upsertSnapshotRow({ prId, status });
+      return status;
     },
 
     async getChecks(prId: string): Promise<PrCheck[]> {
-      return await getChecks(prId);
+      const checks = await getChecks(prId);
+      upsertSnapshotRow({ prId, checks });
+      return checks;
     },
 
     async getComments(prId: string): Promise<PrComment[]> {
-      return await getComments(prId);
+      const comments = await getComments(prId);
+      upsertSnapshotRow({ prId, comments });
+      return comments;
     },
 
     async getReviews(prId: string): Promise<PrReview[]> {
-      return await getReviews(prId);
+      const reviews = await getReviews(prId);
+      upsertSnapshotRow({ prId, reviews });
+      return reviews;
     },
 
     async updateDescription(args: UpdatePrDescriptionArgs): Promise<void> {
@@ -3607,44 +3727,28 @@ export function createPrService({
       // Reserved for future PR<->chat linking.
     },
 
+    async refreshSnapshots(args: { prId?: string } = {}): Promise<{ refreshedCount: number }> {
+      const rows = args.prId ? [requireRow(args.prId)] : listRows();
+      for (const row of rows) {
+        await refreshSnapshotData(row.id);
+      }
+      return { refreshedCount: rows.length };
+    },
+
     // ------------------------------------------------------------------
     // PR Detail Overhaul Methods
     // ------------------------------------------------------------------
 
     async getDetail(prId: string): Promise<PrDetail> {
-      const row = requireRow(prId);
-      const repo = repoFromRow(row);
-      const { data } = await githubService.apiRequest<any>({
-        method: "GET",
-        path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}`
-      });
-      return {
-        prId,
-        body: asString(data?.body) || null,
-        labels: Array.isArray(data?.labels) ? data.labels.map(toLabel) : [],
-        assignees: Array.isArray(data?.assignees) ? data.assignees.map(toUser) : [],
-        requestedReviewers: Array.isArray(data?.requested_reviewers) ? data.requested_reviewers.map(toUser) : [],
-        author: toUser(data?.user),
-        isDraft: Boolean(data?.draft),
-        milestone: asString(data?.milestone?.title) || null,
-        linkedIssues: []
-      };
+      const detail = await getDetailSnapshot(prId);
+      upsertSnapshotRow({ prId, detail });
+      return detail;
     },
 
     async getFiles(prId: string): Promise<PrFile[]> {
-      const row = requireRow(prId);
-      const repo = repoFromRow(row);
-      const data = await fetchAllPages<any>({
-        path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/files`
-      });
-      return data.map((f: any) => ({
-        filename: asString(f?.filename) || "",
-        status: toFileStatus(f?.status),
-        additions: Number(f?.additions) || 0,
-        deletions: Number(f?.deletions) || 0,
-        patch: asString(f?.patch) || null,
-        previousFilename: asString(f?.previous_filename) || null
-      }));
+      const files = await getFilesSnapshot(prId);
+      upsertSnapshotRow({ prId, files });
+      return files;
     },
 
     async getActionRuns(prId: string): Promise<PrActionRun[]> {

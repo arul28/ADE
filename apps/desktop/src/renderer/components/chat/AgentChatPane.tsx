@@ -30,6 +30,7 @@ import { ChatSurfaceShell } from "./ChatSurfaceShell";
 import { chatChipToneClass } from "./chatSurfaceTheme";
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { normalizePermissionModeForProfile } from "../shared/permissionOptions";
+import { deriveChatSubagentSnapshots } from "./chatExecutionSummary";
 
 type PendingApproval = {
   itemId: string;
@@ -229,6 +230,45 @@ function byStartedDesc(a: AgentChatSessionSummary, b: AgentChatSessionSummary): 
   return Date.parse(b.startedAt) - Date.parse(a.startedAt);
 }
 
+export function resolveNextSelectedSessionId(args: {
+  rows: AgentChatSessionSummary[];
+  current: string | null;
+  pendingSelectedSessionId: string | null;
+  optimisticSessionIds: Set<string>;
+  draftSelectionLocked: boolean;
+  forceDraft: boolean;
+  preferDraftStart: boolean;
+}): string | null {
+  const {
+    rows,
+    current,
+    pendingSelectedSessionId,
+    optimisticSessionIds,
+    draftSelectionLocked,
+    forceDraft,
+    preferDraftStart,
+  } = args;
+
+  if (pendingSelectedSessionId) {
+    const pendingIsPersisted = rows.some((row) => row.sessionId === pendingSelectedSessionId);
+    if (pendingIsPersisted) return pendingSelectedSessionId;
+    if (current === pendingSelectedSessionId || optimisticSessionIds.has(pendingSelectedSessionId)) {
+      return pendingSelectedSessionId;
+    }
+  }
+
+  if (!current && (draftSelectionLocked || forceDraft || preferDraftStart)) {
+    return null;
+  }
+  if (current && rows.some((row) => row.sessionId === current)) {
+    return current;
+  }
+  if (current && optimisticSessionIds.has(current)) {
+    return current;
+  }
+  return rows[0]?.sessionId ?? null;
+}
+
 function resolveRegistryModelId(value: string | null | undefined): string | null {
   const normalized = (value ?? "").trim().toLowerCase();
   if (!normalized.length) return null;
@@ -403,6 +443,7 @@ export function AgentChatPane({
   const loadedHistoryRef = useRef<Set<string>>(new Set());
   const draftSelectionLockedRef = useRef(false);
   const optimisticSessionIdsRef = useRef<Set<string>>(new Set());
+  const pendingSelectedSessionIdRef = useRef<string | null>(null);
   const submitInFlightRef = useRef(false);
   const createSessionPromiseRef = useRef<Promise<string | null> | null>(null);
   const pendingEventQueueRef = useRef<AgentChatEventEnvelope[]>([]);
@@ -427,6 +468,7 @@ export function AgentChatPane({
   }, [selectedSession]);
 
   const selectedEvents = selectedSessionId ? eventsBySession[selectedSessionId] ?? [] : [];
+  const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
   const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
   const pendingApproval = selectedSessionId ? (approvalsBySession[selectedSessionId]?.[0] ?? null) : null;
   const pendingQuestion = useMemo(() => extractAskUserQuestion(pendingApproval), [pendingApproval]);
@@ -577,10 +619,20 @@ export function AgentChatPane({
     }
 
     setSelectedSessionId((current) => {
-      if (!current && (draftSelectionLockedRef.current || forceDraft || preferDraftStart)) return null;
-      if (current && rows.some((row) => row.sessionId === current)) return current;
-      if (current && optimisticSessionIdsRef.current.has(current)) return current;
-      return rows[0]?.sessionId ?? null;
+      const pendingSelectedSessionId = pendingSelectedSessionIdRef.current;
+      const nextSelectedSessionId = resolveNextSelectedSessionId({
+        rows,
+        current,
+        pendingSelectedSessionId,
+        optimisticSessionIds: optimisticSessionIdsRef.current,
+        draftSelectionLocked: draftSelectionLockedRef.current,
+        forceDraft,
+        preferDraftStart,
+      });
+      if (pendingSelectedSessionId && rows.some((row) => row.sessionId === pendingSelectedSessionId)) {
+        pendingSelectedSessionIdRef.current = null;
+      }
+      return nextSelectedSessionId;
     });
   }, [forceDraft, laneId, lockSessionId, preferDraftStart]);
 
@@ -680,6 +732,7 @@ export function AgentChatPane({
 
   useEffect(() => {
     if (lockSessionId) {
+      pendingSelectedSessionIdRef.current = null;
       draftSelectionLockedRef.current = false;
       setSelectedSessionId(lockSessionId);
     }
@@ -701,6 +754,7 @@ export function AgentChatPane({
     if (lockSessionId) return;
     if (appliedInitialSessionIdRef.current === nextInitialSessionId) return;
     appliedInitialSessionIdRef.current = nextInitialSessionId;
+    pendingSelectedSessionIdRef.current = null;
     draftSelectionLockedRef.current = false;
     setSelectedSessionId(nextInitialSessionId);
   }, [initialSessionId, lockSessionId]);
@@ -708,6 +762,7 @@ export function AgentChatPane({
   useEffect(() => {
     draftSelectionLockedRef.current = false;
     optimisticSessionIdsRef.current.clear();
+    pendingSelectedSessionIdRef.current = null;
     appliedInitialSessionIdRef.current = initialSessionId ?? null;
     if (forceDraft && !lockSessionId) {
       draftSelectionLockedRef.current = true;
@@ -717,6 +772,7 @@ export function AgentChatPane({
 
   useEffect(() => {
     if (!forceDraft || lockSessionId) return;
+    pendingSelectedSessionIdRef.current = null;
     draftSelectionLockedRef.current = true;
     setSelectedSessionId(null);
   }, [forceDraft, lockSessionId]);
@@ -1101,6 +1157,7 @@ export function AgentChatPane({
       });
       loadedHistoryRef.current.delete(created.id);
       optimisticSessionIdsRef.current.add(created.id);
+      pendingSelectedSessionIdRef.current = created.id;
       draftSelectionLockedRef.current = false;
       setSelectedSessionId(created.id);
       await onSessionCreated?.(created.id);
@@ -1155,6 +1212,7 @@ export function AgentChatPane({
         try {
           await window.ade.agentChat.dispose({ sessionId: selectedSessionId });
         } catch { /* ignore */ }
+        pendingSelectedSessionIdRef.current = null;
         setSelectedSessionId(null);
         eagerCreateFiredRef.current = false; // allow eager effect to re-fire
       }
@@ -1437,6 +1495,7 @@ export function AgentChatPane({
                       : "border-transparent text-muted-fg/40 hover:text-fg/60",
                   )}
                   onClick={() => {
+                    pendingSelectedSessionIdRef.current = null;
                     draftSelectionLockedRef.current = false;
                     syncComposerToSession(session);
                     setSelectedSessionId(session.sessionId);
@@ -1466,6 +1525,7 @@ export function AgentChatPane({
             className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-white/[0.06] text-muted-fg/30 transition-colors hover:text-fg/60"
             title="New chat"
             onClick={() => {
+              pendingSelectedSessionIdRef.current = null;
               draftSelectionLockedRef.current = true;
               setError(null);
               setSelectedSessionId(null);
@@ -1581,6 +1641,7 @@ export function AgentChatPane({
             }}
             onReasoningEffortChange={setReasoningEffort}
             onDraftChange={setDraft}
+            onClearDraft={() => setDraft("")}
             onSubmit={() => {
               void submit();
             }}
@@ -1602,6 +1663,7 @@ export function AgentChatPane({
                 setEventsBySession((prev) => ({ ...prev, [selectedSessionId]: [] }));
               }
             }}
+            subagentSnapshots={selectedSubagentSnapshots}
           />
         }
         bodyClassName="flex min-h-0 flex-col overflow-hidden"

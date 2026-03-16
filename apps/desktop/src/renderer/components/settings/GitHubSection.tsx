@@ -1,9 +1,17 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import type { GitHubStatus } from "../../../shared/types";
-import { GithubLogo, CheckCircle, Warning, XCircle, ArrowsClockwise, ShieldCheck, LinkBreak, Key } from "@phosphor-icons/react";
+import { GithubLogo, CheckCircle, Warning, ArrowsClockwise, ShieldCheck, LinkBreak, Key } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT, cardStyle, LABEL_STYLE, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 
 const REQUIRED_SCOPES = ["repo", "workflow", "read:org"];
+
+type TokenType = "classic" | "fine-grained" | "unknown";
+
+function detectTokenType(token: string): TokenType {
+  if (token.startsWith("github_pat_")) return "fine-grained";
+  if (token.startsWith("ghp_")) return "classic";
+  return "unknown";
+}
 
 export function GitHubSection() {
   const [actionError, setActionError] = useState<string | null>(null);
@@ -219,11 +227,60 @@ export function GitHubSection() {
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <div style={infoBoxStyle}>
-              Paste one GitHub personal access token to enable PR creation, review actions, and repository sync across the ADE app. The same encrypted token is reused across projects unless you replace it here.
+              Paste a GitHub personal access token to enable PR creation, review actions, and repository sync.
+              The same encrypted token is reused across projects unless you replace it here.
+              GitHub offers two token types — either works.
             </div>
 
-            <div style={infoBoxStyle}>
-              Required classic PAT scopes: <strong>`repo`</strong>, <strong>`workflow`</strong>, <strong>`read:org`</strong>.
+            {/* Token type tabs */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 0, border: `1px solid ${COLORS.border}`, borderRadius: 0, overflow: "hidden" }}>
+              {/* Classic PAT */}
+              <div style={{ padding: "12px 14px", borderRight: `1px solid ${COLORS.border}` }}>
+                <div style={{ fontSize: 12, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary, marginBottom: 8 }}>
+                  Classic token
+                </div>
+                <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, marginBottom: 8 }}>
+                  Prefix: ghp_...
+                </div>
+                <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "18px", marginBottom: 8 }}>
+                  Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token
+                </div>
+                <div style={{ ...LABEL_STYLE, marginBottom: 6 }}>REQUIRED SCOPES</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {REQUIRED_SCOPES.map((scope) => (
+                    <div key={scope} style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textSecondary }}>
+                      ● {scope}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Fine-grained PAT */}
+              <div style={{ padding: "12px 14px" }}>
+                <div style={{ fontSize: 12, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary, marginBottom: 8 }}>
+                  Fine-grained token
+                </div>
+                <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, marginBottom: 8 }}>
+                  Prefix: github_pat_...
+                </div>
+                <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "18px", marginBottom: 8 }}>
+                  Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token
+                </div>
+                <div style={{ ...LABEL_STYLE, marginBottom: 6 }}>REQUIRED PERMISSIONS</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {[
+                    "Contents: Read & Write",
+                    "Pull requests: Read & Write",
+                    "Metadata: Read",
+                    "Workflows: Read & Write",
+                    "Members (org): Read",
+                  ].map((perm) => (
+                    <div key={perm} style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textSecondary }}>
+                      ● {perm}
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
 
             <label style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -232,9 +289,14 @@ export function GitHubSection() {
                 type="password"
                 value={githubTokenDraft}
                 onChange={(event) => setGithubTokenDraft(event.target.value)}
-                placeholder="ghp_..."
+                placeholder="ghp_... or github_pat_..."
                 style={inputStyle}
               />
+              {githubTokenDraft.trim() ? (
+                <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
+                  Detected: {detectTokenType(githubTokenDraft.trim()) === "classic" ? "Classic token" : detectTokenType(githubTokenDraft.trim()) === "fine-grained" ? "Fine-grained token" : "Unknown format"}
+                </span>
+              ) : null}
             </label>
 
             <div style={{ display: "flex", gap: 8 }}>
@@ -253,11 +315,18 @@ export function GitHubSection() {
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
           <ShieldCheck size={18} color={COLORS.info} weight="fill" />
           <span style={{ fontSize: 13, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-            Required token access
+            Why these permissions?
           </span>
         </div>
-        <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textSecondary, lineHeight: "18px" }}>
-          ADE expects <span style={{ color: COLORS.textPrimary }}>repo</span>, <span style={{ color: COLORS.textPrimary }}>workflow</span>, and <span style={{ color: COLORS.textPrimary }}>read:org</span> so it can create PRs, inspect checks, and request reviewers without falling back to manual CLI work.
+        <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textSecondary, lineHeight: "20px" }}>
+          ADE uses your token to create PRs, inspect CI checks, and request reviewers.{" "}
+          <strong style={{ color: COLORS.textPrimary }}>Classic tokens</strong> use broad scopes
+          (<span style={{ color: COLORS.textPrimary }}>repo</span>,{" "}
+          <span style={{ color: COLORS.textPrimary }}>workflow</span>,{" "}
+          <span style={{ color: COLORS.textPrimary }}>read:org</span>).{" "}
+          <strong style={{ color: COLORS.textPrimary }}>Fine-grained tokens</strong> let you grant narrower,
+          per-repository permissions — they are the newer GitHub recommendation.
+          Either type works; fine-grained tokens won't show traditional scopes in the verification above.
         </div>
       </div>
     </div>

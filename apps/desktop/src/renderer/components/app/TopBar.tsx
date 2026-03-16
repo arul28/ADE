@@ -11,7 +11,7 @@ import {
   getStoredZoomLevel,
 } from "../../lib/zoom";
 import { cn } from "../ui/cn";
-import type { ProcessRuntime, RecentProjectSummary } from "../../../shared/types";
+import type { ProcessRuntime, RecentProjectSummary, SyncRoleSnapshot } from "../../../shared/types";
 
 const RUNNING_LANE_PROCESS_STATES: ProcessRuntime["status"][] = ["starting", "running", "degraded"];
 
@@ -26,6 +26,7 @@ export function TopBar() {
   const [zoom, setZoom] = useState(getStoredZoomLevel);
   const [updateState, setUpdateState] = useState<"idle" | "downloading" | "ready">("idle");
   const [updateVersion, setUpdateVersion] = useState<string>();
+  const [syncSnapshot, setSyncSnapshot] = useState<SyncRoleSnapshot | null>(null);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dropIdx, setDropIdx] = useState<number | null>(null);
   const dragCounterRef = useRef(0);
@@ -77,6 +78,22 @@ export function TopBar() {
       }
     });
     return unsub;
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void window.ade.sync.getStatus().then((snapshot) => {
+      if (!cancelled) setSyncSnapshot(snapshot);
+    }).catch(() => {});
+    const dispose = window.ade.sync.onEvent((event) => {
+      if (!cancelled && event.type === "sync-status") {
+        setSyncSnapshot(event.snapshot);
+      }
+    });
+    return () => {
+      cancelled = true;
+      dispose();
+    };
   }, []);
 
   const checkForActiveWorkloads = useCallback(async (projectRootPath: string): Promise<boolean> => {
@@ -208,6 +225,16 @@ export function TopBar() {
     setDragIdx(null);
     setDropIdx(null);
   }, []);
+
+  const syncLabel = syncSnapshot
+    ? syncSnapshot.mode === "brain"
+      ? `Hosting locally · ${syncSnapshot.connectedPeers.length} controller${syncSnapshot.connectedPeers.length === 1 ? "" : "s"}`
+      : syncSnapshot.client.state === "connected"
+        ? `Connected to host · ${syncSnapshot.currentBrain?.name ?? "host"}`
+        : syncSnapshot.client.state === "connecting"
+          ? "Syncing…"
+          : "Offline"
+    : null;
 
   return (
     <header
@@ -388,6 +415,34 @@ export function TopBar() {
           <Plus size={12} weight="regular" />
         </button>
       </div>
+
+      {syncSnapshot && syncLabel ? (
+        <button
+          type="button"
+          className={cn(
+            "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
+            "text-[11px] font-medium transition-colors duration-150"
+          )}
+          data-variant="ghost"
+          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          title={`Sync mode: ${syncSnapshot.mode}`}
+          onClick={() => {
+            window.location.hash = "#/settings";
+          }}
+        >
+          <span
+            className={cn(
+              "ade-status-dot h-1.5 w-1.5 shrink-0",
+              syncSnapshot.client.state === "error"
+                ? "ade-status-dot-error"
+                : syncSnapshot.client.state === "connected" || syncSnapshot.mode === "brain"
+                  ? "ade-status-dot-active"
+                  : "ade-status-dot-warning"
+            )}
+          />
+          {syncLabel}
+        </button>
+      ) : null}
 
       {/* Update indicator */}
       {updateState !== "idle" && (

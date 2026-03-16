@@ -22,12 +22,11 @@ export function ChatComposerShell({
   return (
     <div
       className={cn(
-        "relative border border-white/[0.06] bg-white/[0.03] shadow-[var(--chat-composer-shadow)] backdrop-blur-2xl transition-colors",
+        "relative border border-white/[0.06] bg-[#0d0d10] shadow-[0_18px_48px_-30px_rgba(0,0,0,0.78)] transition-colors",
         className,
       )}
       data-chat-composer-mode={mode}
     >
-      <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[inherit] bg-[radial-gradient(ellipse_at_70%_0%,rgba(255,255,255,0.015),transparent_60%)] opacity-50" />
       {pendingBanner ? <div className="relative border-b border-white/[0.04]">{pendingBanner}</div> : null}
       {trays ? <div className="relative border-b border-white/[0.04]">{trays}</div> : null}
       <div className="relative">
