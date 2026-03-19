@@ -21,8 +21,58 @@ jobs:
           git fetch origin main --depth=1
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
 
-  release:
+  build-mac-app:
     needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+            app_dir: mac-arm64
+          - arch: x64
+            runner: macos-15-intel
+            app_dir: mac
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install desktop dependencies
+        run: cd apps/desktop && npm ci
+
+      - name: Stamp release version
+        env:
+          ADE_RELEASE_TAG: ${{ github.ref_name }}
+        run: cd apps/desktop && npm run version:release
+
+      - name: Build unsigned macOS app bundle
+        run: cd apps/desktop && npm run dist:mac:dir -- --${{ matrix.arch }}
+
+      - name: Archive app bundle
+        run: |
+          APP_PATH="apps/desktop/release/${{ matrix.app_dir }}/ADE.app"
+          ARCHIVE_PATH="apps/desktop/release/ADE-${{ matrix.arch }}.app.zip"
+          test -d "$APP_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ARCHIVE_PATH"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-app-${{ matrix.arch }}
+          path: apps/desktop/release/ADE-${{ matrix.arch }}.app.zip
+          if-no-files-found: error
+
+  release:
+    needs:
+      - verify
+      - build-mac-app
     runs-on: macos-latest
     concurrency:
       group: release-${{ github.ref_name }}
@@ -36,20 +86,50 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: |
-            apps/desktop/package-lock.json
-            apps/mcp-server/package-lock.json
+          cache-dependency-path: apps/desktop/package-lock.json
 
       - name: Install desktop dependencies
         run: cd apps/desktop && npm ci
-
-      - name: Install MCP server dependencies
-        run: cd apps/mcp-server && npm ci
 
       - name: Stamp release version
         env:
           ADE_RELEASE_TAG: ${{ github.ref_name }}
         run: cd apps/desktop && npm run version:release
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: mac-app-arm64
+          path: apps/desktop/release/_ci/downloads/arm64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: mac-app-x64
+          path: apps/desktop/release/_ci/downloads/x64
+
+      - name: Expand architecture app bundles
+        run: |
+          rm -rf apps/desktop/release/_ci/arm64 apps/desktop/release/_ci/x64
+          mkdir -p apps/desktop/release/_ci/arm64 apps/desktop/release/_ci/x64
+          ditto -x -k apps/desktop/release/_ci/downloads/arm64/ADE-arm64.app.zip apps/desktop/release/_ci/arm64
+          ditto -x -k apps/desktop/release/_ci/downloads/x64/ADE-x64.app.zip apps/desktop/release/_ci/x64
+
+      - name: Merge universal app bundle
+        run: cd apps/desktop && npm run merge:mac:universal
+
+      - name: Materialize App Store Connect API key
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+        run: |
+          if [ -z "$APPLE_API_KEY_P8" ] || [ -z "$APPLE_API_KEY_ID" ]; then
+            echo "::error::Missing APPLE_API_KEY_P8 or APPLE_API_KEY_ID GitHub secret."
+            exit 1
+          fi
+
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "$APPLE_API_KEY_P8" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          echo "APPLE_API_KEY=$KEY_PATH" >> "$GITHUB_ENV"
 
       - name: Create draft GitHub release with generated notes
         env:
@@ -64,4 +144,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ELECTRON_CACHE: ${{ runner.temp }}/electron
           ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/electron-builder
-        run: cd apps/desktop && npm run release:mac
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: cd apps/desktop && npm run release:mac:universal

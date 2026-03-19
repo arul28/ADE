@@ -121,7 +121,7 @@ export type CtoOnboardingState = {
 };
 
 export type CtoSystemPromptPreviewSection = {
-  id: "doctrine" | "personality" | "memory";
+  id: "doctrine" | "personality" | "memory" | "capabilities";
   title: string;
   content: string;
 };

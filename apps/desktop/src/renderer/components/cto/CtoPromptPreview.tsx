@@ -48,7 +48,8 @@ export function CtoPromptPreview({
     return () => {
       cancelled = true;
     };
-  }, [identityOverride, overrideKey]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- overrideKey serializes identityOverride for stable comparison
+  }, [overrideKey]);
 
   return (
     <div className={cn(cardCls, compact ? "space-y-3 p-4" : "space-y-4 p-4")}>

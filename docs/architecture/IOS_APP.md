@@ -2,9 +2,9 @@
 
 > Roadmap reference: `docs/final-plan/phase-6.md` (Phase 6) and `docs/final-plan/phase-7.md` (Phase 7).
 
-> Last updated: 2026-03-16
+> Last updated: 2026-03-19
 
-> Status: **Phase 6 W4 foundation partially implemented. The app exists under `apps/ios/`, uses native SwiftUI + SQLite3, and the four project-management tabs are wired against a real local replicated database contract. The current blocker is the vendored iOS `crsqlite.xcframework`, which is not safely embeddable in its current form and prevents the sync database from booting.**
+> Status: **Phase 6 W5 hardening is shipped as the baseline iPhone controller contract, and Phase 6 W6 shipped full live-desktop parity for the iPhone Lanes tab. The app exists under `apps/ios/`, uses native SwiftUI + SQLite3, and the current shipped phone surface is Lanes / Files / Work / PRs plus a dedicated sync Settings tab.**
 
 This document describes the architecture of the ADE iOS companion app. The iOS app provides real-time project management and (in Phase 7) full AI orchestration control from an iPhone or iPad.
 
@@ -79,13 +79,13 @@ This is enough for the current Phase 6 scope. The code can be split into finer-g
 
 ### Navigation
 
-- `TabView` at the root with four tabs (Phase 6) expanding to more (Phase 7).
+- `TabView` at the root with the five shipped Phase 6 tabs: Lanes, Files, Work, PRs, and Settings. Phase 7 adds the remaining desktop surfaces.
 - `NavigationStack` within each tab for push/pop navigation.
 - Deep links from push notifications navigate to specific screens.
 
 ### Target
 
-- iOS 17+.
+- iOS 26+.
 - iPhone and iPad (adaptive layouts in Phase 7).
 
 ---
@@ -119,13 +119,13 @@ This is enough for the current Phase 6 scope. The code can be split into finer-g
 
 The iOS app uses the same table schema as the desktop app through a generated canonical bootstrap SQL artifact checked in at `apps/ios/ADE/Resources/DatabaseBootstrap.sql`. Desktop `kvDb.ts` remains the schema source of truth.
 
-Current blocker:
+Current Phase 6 stance:
 
-- The vendored iOS `crsqlite.xcframework` exports `sqlite3_crsqlite_init` plus `sqlite3_api`, which indicates a SQLite loadable-extension-style entrypoint.
-- Direct `sqlite3_crsqlite_init(db, &err, nil)` crashes because the SQLite API thunk is nil.
-- `sqlite3_auto_extension(...)` is deprecated and rejected on Apple platforms.
-- iOS system SQLite does not expose `sqlite3_load_extension(...)` as a usable fallback.
-- W5 therefore starts with replacing this framework or adding a native wrapper library that links cr-sqlite against SQLite in an iOS-safe way.
+- The iOS local database now boots under the native SQLite3 path used by the app and remains the source of truth for offline reads on the phone.
+- W5 shipped the hardening baseline: host-side CRR integrity repair for phone-critical tables, explicit Lanes / Work / PR hydration, authoritative lane/workspace metadata persistence, read-only protections, reconnect/revoke/forget correctness, and the dedicated Settings tab.
+- W6 expanded the lane projections beyond simple summaries. The phone now persists lane list snapshots plus cached lane-detail payloads keyed by lane ID so the Lanes tab can render the desktop stack/git/diff/manage/work surfaces without reconstructing them client-side.
+- The host now exposes command-policy metadata and richer lane payloads through the sync command path, so iPhone queueing and action gating follow host-declared rules instead of hardcoded mobile assumptions.
+- The remaining risk is validation, not architecture: simulator/device runs still need to prove the full Lanes surface, create/manage flows, git/rebase actions, and reconnect behavior against live desktop data.
 
 ---
 
@@ -194,10 +194,11 @@ Current blocker:
 
 | Tab | Icon | Desktop Equivalent | Capabilities |
 |---|---|---|---|
-| **Lanes** | `rectangle.3.group` | `/lanes` | Lane list, detail, create, archive, availability states, agent status |
-| **Files** | `doc.text` | `/files` | File tree, syntax-highlighted viewer, search, basic editing, diff viewer |
-| **Work** | `terminal` | `/work` | Terminal session list, read-only output streaming, quick-launch actions |
-| **PRs** | `arrow.triangle.pull` | `/prs` | PR list, detail, diff viewer, create, merge, close, stacked PR view |
+| **Lanes** | `rectangle.3.group` | `/lanes` | Full live-desktop lane surface: search/filter chips, open lanes, create/attach/manage, stack, git/diff/rebase/conflicts, lane-scoped sessions and AI chats |
+| **Files** | `doc.text` | `/files` | Lane-backed workspace picker, live file tree/search/read, protected-workspace read-only parity |
+| **Work** | `terminal` | `/work` | Terminal session list, cached history with persisted lane names, read-only output streaming, quick-launch actions |
+| **PRs** | `arrow.triangle.pull` | `/prs` | PR list, detail, state-gated merge/close/reopen/request-reviewer baseline, diff viewer |
+| **Settings** | `gearshape` | `/settings` (sync subset) | Pairing, reconnect, host identity, per-domain sync state, disconnect/forget |
 
 ### Phase 7 (Full AI Orchestration)
 
@@ -210,7 +211,7 @@ Additional tabs added in Phase 7:
 | **Automations** | `/automations` | Rule list, enable/disable, run history, digest |
 | **Graph** | `/graph` | Workspace topology, overlays, node navigation |
 | **History** | `/history` | Operation history, filters, search |
-| **Settings** | `/settings` | Devices, providers, notifications, general, context, usage |
+| **Settings parity expansion** | `/settings` | Devices, providers, notifications, general, context, usage beyond the Phase 6 sync shell |
 
 ---
 
@@ -219,20 +220,21 @@ Additional tabs added in Phase 7:
 | Component | Status | Phase |
 |---|---|---|
 | Xcode project setup | Implemented | Phase 6 W4 |
-| Native SQLite3 + cr-sqlite integration | Blocked on vendored iOS artifact shape | Phase 6 W4/W5 |
+| Native SQLite3 + cr-sqlite integration | Implemented | Phase 6 W4 |
 | WebSocket client | Implemented | Phase 6 W4 |
-| Numeric-code pairing flow | Implemented (initial) | Phase 6 W4 |
-| QR pairing flow | Planned | Phase 6 W5 |
-| Lanes tab | Implemented (initial local-first) | Phase 6 W4 |
-| Files tab | Implemented (workspace metadata local-first, file IO remote) | Phase 6 W4 |
-| Work tab | Implemented (local sessions + terminal subscribe) | Phase 6 W4 |
-| PRs tab | Implemented (initial local-first) | Phase 6 W4 |
+| Numeric-code pairing flow | Implemented | Phase 6 W4 |
+| QR pairing flow | Implemented in the phone shell; still needs repeated live validation coverage | Phase 6 W5 |
+| Lanes tab | Implemented to live desktop parity on iPhone | Phase 6 W6 |
+| Files tab | Implemented to W5 dogfood baseline | Phase 6 W5 |
+| Work tab | Implemented to W5 dogfood baseline | Phase 6 W5 |
+| PRs tab | Implemented to W5 dogfood baseline | Phase 6 W5 |
+| Sync Settings tab | Implemented (pairing, reconnect, status, disconnect/forget) | Phase 6 W5 |
 | Missions tab | Planned | Phase 7 W1 |
 | CTO/Chat tab | Planned | Phase 7 W2 |
 | Automations, Graph, History tabs | Planned | Phase 7 W3 |
-| Full Settings tab | Planned | Phase 7 W4 |
+| Full Settings parity | Planned | Phase 7 W4 |
 | Push notifications (APNs) | Planned | Phase 7 W5 |
 | iPad adaptive layout | Planned | Phase 7 W10 |
 | Widgets + Spotlight | Planned | Phase 7 W10 |
 
-**Overall status**: The app shell and local-first data contract are in place, but the current vendored iOS `crsqlite` framework blocks the replicated database from initializing. W5 starts with fixing that artifact/integration problem, then continues with real-device dogfooding, QR/discovery UX, and broader network/pairing hardening.
+**Overall status**: The Phase 6 controller architecture is shipped. W5 delivered the hardening baseline that made Lanes / Files / Work / PRs plus Settings trustworthy for day-to-day phone use, and W6 brought the iPhone Lanes tab up to the full live desktop surface using richer host-backed lane payloads and command routing. The main remaining work is validation breadth on simulator/device and the Phase 7 tabs that have not shipped yet.

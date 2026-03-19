@@ -206,8 +206,8 @@ export function DownloadPage() {
             />
             <div className="mt-8 grid gap-4 text-sm text-muted-fg md:grid-cols-2">
               <Card tone="solid" className="p-4 shadow-glass-sm">
-                ADE is a desktop app (Electron). If your OS blocks the binary (unsigned builds, Gatekeeper, SmartScreen), use
-                the official release instructions for your platform.
+                Official macOS releases are intended to be signed and notarized so ADE can open normally and keep using
+                in-app updates. Older beta artifacts may still need the legacy Gatekeeper workaround.
               </Card>
               <Card tone="solid" className="p-4 shadow-glass-sm">
                 Cloud features are optional. ADE is designed to keep the repo authoritative and treat hosted results as

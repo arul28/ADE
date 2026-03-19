@@ -367,6 +367,9 @@ type PainPointCounter = Map<string, { label: string; count: number }>;
 const RETROSPECTIVE_PATTERN_PROMOTION_THRESHOLD = 2;
 const RETROSPECTIVE_TREND_LOOKBACK_LIMIT = 50;
 const ISO_8601_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
+const RETRY_BASE_MS = 10_000;
+const RETRY_MULTIPLIER = 2;
+const RETRY_MAX_MS = 300_000;
 
 function normalizeReflectionSignalType(value: string): OrchestratorReflectionEntry["signalType"] | null {
   if (
@@ -7310,7 +7313,7 @@ export function createOrchestratorService({
           if (sessionId && managedLaunch && agentChatService) {
             void (async () => {
               try {
-                await agentChatService.sendMessage({
+                await agentChatService.runSessionTurn({
                   sessionId,
                   text: managedLaunch.prompt,
                   displayText: managedLaunch.displayText,
@@ -7643,11 +7646,7 @@ export function createOrchestratorService({
 	        Number.isFinite(aiRetryBackoffRaw) && aiRetryBackoffRaw >= 0
 	          ? Math.min(10 * 60_000, Math.floor(aiRetryBackoffRaw))
 	          : null;
-	      // Exponential backoff: base 10s, multiplier 2, cap 5min (300s).
-	      // Priority: explicit caller backoff > AI-suggested > exponential default.
-	      const RETRY_BASE_MS = 10_000;
-	      const RETRY_MULTIPLIER = 2;
-	      const RETRY_MAX_MS = 300_000;
+	      // Exponential backoff with priority: caller backoff > AI-suggested > exponential default.
 	      const exponentialBackoffMs = Math.min(
 	        RETRY_MAX_MS,
 	        Math.floor(RETRY_BASE_MS * Math.pow(RETRY_MULTIPLIER, step.retryCount))

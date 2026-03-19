@@ -67,7 +67,10 @@ function statusMeta(status: ChatSubagentSnapshot["status"]): {
 function previewText(snapshot: ChatSubagentSnapshot): string {
   if (snapshot.summary?.trim()) return snapshot.summary.trim();
   if (snapshot.status === "running") {
-    return "Live subagent transcript is not exposed by the current runtime yet. The parent turn can still be interrupted from the composer.";
+    if (snapshot.lastToolName?.trim()) {
+      return `Running. Last tool: ${snapshot.lastToolName.trim()}.`;
+    }
+    return "Running. Waiting for the next progress update.";
   }
   return "No summary was returned for this subagent.";
 }
@@ -117,6 +120,9 @@ function PreviewCard({
         </div>
         <div className="flex flex-wrap items-center gap-2 font-mono text-[10px] text-fg/42">
           <span>Task {snapshot.taskId}</span>
+          {snapshot.status === "running" && snapshot.lastToolName?.trim() ? (
+            <span>Tool {snapshot.lastToolName.trim()}</span>
+          ) : null}
           <button
             type="button"
             className="inline-flex items-center gap-1 rounded-md border border-white/[0.06] px-2 py-1 transition-colors hover:text-fg/70"

@@ -322,12 +322,12 @@ Rule for future workstreams:
 | Device pairing secrets + numeric-code pairing | Implemented (initial) | Phase 6 W4 |
 | iOS local replicated database peer | Implemented (initial) | Phase 6 W4 |
 | iOS Lanes / Files / Work / PRs local-first reads | Implemented (initial) | Phase 6 W4 |
-| QR pairing UX | Planned | Phase 6 W5 |
-| Tailscale integration | Planned | Phase 6 W5 |
+| QR pairing UX | Implemented (initial) | Phase 6 W5 |
+| Tailscale integration | Planned | Phase 6 W6+ |
 | Command routing | Implemented (allowlisted subset for current phone tabs) | Phase 6 W4-W10 |
 | Lane portability (desktop-to-desktop) | Planned | Phase 6 W11 |
 
-**Overall status**: W1-W4 foundation is now in place on desktop, and the iOS data/service code has been rewritten to match the real replicated-state contract. The remaining blocking gap is the vendored iOS `crsqlite` artifact: until it is replaced or wrapped, the phone app cannot initialize the replicated database. After that, W5 continues with pairing/discovery/network polish and real-device dogfooding.
+**Overall status**: W1-W5 foundation is in place on desktop (live host/controller sync, device pairing, QR pairing UX). The iOS data/service code has been rewritten to match the real replicated-state contract, but the vendored iOS `crsqlite` artifact is not safely embeddable and blocks app startup until replaced or wrapped. W6+ continues with Tailscale integration, network hardening, and real-device dogfooding.
 
 ### Deferred follow-up
 

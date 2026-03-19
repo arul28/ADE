@@ -18,6 +18,17 @@ export type ChatModelSwitchPolicy = "same-family-after-launch" | "any-after-laun
 
 export type ChatSurfaceChipTone = "accent" | "success" | "warning" | "danger" | "info" | "muted";
 
+export type OperatorNavigationSurface = "work" | "missions" | "lanes" | "cto";
+
+export type OperatorNavigationSuggestion = {
+  surface: OperatorNavigationSurface;
+  label: string;
+  href: string;
+  laneId?: string | null;
+  sessionId?: string | null;
+  missionId?: string | null;
+};
+
 export type ChatSurfaceChip = {
   label: string;
   tone?: ChatSurfaceChipTone;
@@ -224,6 +235,19 @@ export type AgentChatEvent =
       turnId?: string;
     }
   | {
+      type: "subagent_progress";
+      taskId: string;
+      description?: string;
+      summary: string;
+      usage?: {
+        totalTokens?: number;
+        toolUses?: number;
+        durationMs?: number;
+      };
+      lastToolName?: string;
+      turnId?: string;
+    }
+  | {
       type: "subagent_result";
       taskId: string;
       status: "completed" | "failed" | "stopped";
@@ -340,6 +364,13 @@ export type AgentChatSessionSummary = {
   threadId?: string;
 };
 
+export type AgentChatTranscriptEntry = {
+  role: "user" | "assistant";
+  text: string;
+  timestamp: string;
+  turnId?: string;
+};
+
 export type AgentChatSubagentSnapshot = {
   taskId: string;
   description: string;
@@ -348,6 +379,7 @@ export type AgentChatSubagentSnapshot = {
   startTimestamp?: string;
   endTimestamp?: string;
   summary?: string;
+  lastToolName?: string;
   usage?: {
     totalTokens?: number;
     toolUses?: number;

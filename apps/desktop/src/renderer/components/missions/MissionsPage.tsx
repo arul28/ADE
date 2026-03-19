@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useEffect, useRef, useState } from "react";
 import { LazyMotion, domAnimation } from "motion/react";
 import { Group, Panel, Separator } from "react-resizable-panels";
+import { useSearchParams } from "react-router-dom";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
@@ -67,8 +68,10 @@ const selectPageData = (s: MissionsStore) => ({
 /* ════════════════════ MAIN COMPONENT ════════════════════ */
 
 export default function MissionsPage() {
+  const [searchParams] = useSearchParams();
   const lanes = useAppStore((s) => s.lanes);
   const mappedLanes = useMemo(() => lanes.map((l) => ({ id: l.id, name: l.name })), [lanes]);
+  const appliedQueryMissionIdRef = useRef<string | null>(null);
 
   /* ── Fine-grained store slice via useShallow (VAL-ARCH-008) ── */
   const {
@@ -171,6 +174,17 @@ export default function MissionsPage() {
   useEffect(() => {
     void useMissionsStore.getState().selectMission(selectedMissionId);
   }, [selectedMissionId]);
+
+  useEffect(() => {
+    const missionParam = (searchParams.get("missionId") ?? "").trim();
+    if (!missionParam) {
+      appliedQueryMissionIdRef.current = null;
+      return;
+    }
+    if (appliedQueryMissionIdRef.current === missionParam) return;
+    appliedQueryMissionIdRef.current = missionParam;
+    void useMissionsStore.getState().selectMission(missionParam);
+  }, [searchParams]);
 
   /* ── Checkpoint polling via shared coordinator ── */
   const runGraph = useMissionsStore((s) => s.runGraph);

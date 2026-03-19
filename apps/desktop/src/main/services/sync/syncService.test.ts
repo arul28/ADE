@@ -251,4 +251,86 @@ describe("syncService", () => {
     expect(transferred.currentBrain?.deviceId).toBe(localDevice.deviceId);
     expect(transferred.transferReadiness.ready).toBe(true);
   });
+
+  it("builds pairing QR payloads with LAN-first address candidates and tailscale fallback", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-pairing-");
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      fileService: { dispose: () => {} } as any,
+      laneService: { list: async () => [], create: async () => ({}), archive: async () => {} } as any,
+      prService: {
+        listAll: async () => [],
+        getDetail: async () => null,
+        getStatus: async () => null,
+        getChecks: async () => [],
+        getReviews: async () => [],
+        getComments: async () => [],
+        getFiles: async () => [],
+        createFromLane: async () => ({}),
+        land: async () => ({}),
+        closePr: async () => {},
+        requestReviewers: async () => {},
+      } as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      missionService: { list: () => [] } as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      processService: { listRuntime: () => [] } as any,
+    });
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    await service.initialize();
+    const initialStatus = await service.getStatus();
+    const localDeviceId = initialStatus.localDevice.deviceId;
+    const now = "2026-03-17T00:00:00.000Z";
+    db.run(
+      `update devices
+         set ip_addresses_json = ?,
+             last_host = ?,
+             last_port = ?,
+             tailscale_ip = ?,
+             updated_at = ?,
+             last_seen_at = ?
+       where device_id = ?`,
+      [
+        JSON.stringify(["192.168.0.5", "192.168.0.8"]),
+        "192.168.0.20",
+        8787,
+        "100.100.12.4",
+        now,
+        now,
+        localDeviceId,
+      ],
+    );
+
+    const status = await service.getStatus();
+    expect(status.mode === "brain" || status.mode === "standalone").toBe(true);
+    expect(status.pairingSession).toBeTruthy();
+    expect(status.pairingConnectInfo).toBeTruthy();
+    const addressCandidates = status.pairingConnectInfo?.addressCandidates ?? [];
+    const savedCandidateIndex = addressCandidates.findIndex((entry) => entry.kind === "saved" && entry.host === "192.168.0.20");
+    const tailscaleCandidateIndex = addressCandidates.findIndex((entry) => entry.kind === "tailscale" && entry.host === "100.100.12.4");
+    expect(savedCandidateIndex).toBeGreaterThanOrEqual(0);
+    expect(tailscaleCandidateIndex).toBeGreaterThan(savedCandidateIndex);
+    expect(addressCandidates.slice(0, Math.max(savedCandidateIndex, 0)).every((entry) => entry.kind === "lan")).toBe(true);
+
+    const encodedPayload = status.pairingConnectInfo?.qrPayloadText.split("payload=")[1] ?? "";
+    const parsedPayload = JSON.parse(decodeURIComponent(encodedPayload)) as {
+      hostIdentity: { deviceId: string };
+      pairingCode: string;
+      expiresAt: string;
+    };
+    expect(parsedPayload.hostIdentity.deviceId).toBe(localDeviceId);
+    expect(parsedPayload.pairingCode).toBe(status.pairingSession?.code);
+    expect(parsedPayload.expiresAt).toBe(status.pairingSession?.expiresAt);
+  });
 });

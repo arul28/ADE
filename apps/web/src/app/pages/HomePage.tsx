@@ -2,7 +2,6 @@ import {
   ArrowUpRight,
   BookOpen,
   Bot,
-  Copy,
   Download,
   GitBranch,
   Github,
@@ -15,7 +14,7 @@ import {
   Terminal,
   Zap,
 } from "lucide-react";
-import { Fragment, useCallback, useState } from "react";
+import { Fragment } from "react";
 import { Container } from "../../components/Container";
 import { Card } from "../../components/Card";
 import { LinkButton } from "../../components/LinkButton";
@@ -164,20 +163,6 @@ function ScreenshotSlot({
    ────────────────────────────────────────────── */
 
 function QuickstartBlock() {
-  const [copied, setCopied] = useState(false);
-
-  const xattrCmd = "xattr -dr com.apple.quarantine /Applications/ADE.app";
-
-  const onCopy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(xattrCmd);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // no-op
-    }
-  }, [xattrCmd]);
-
   return (
     <div className="space-y-6">
       <div className="space-y-3">
@@ -198,23 +183,12 @@ function QuickstartBlock() {
           <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/15 text-xs font-bold text-accent">
             2
           </span>
-          Clear Gatekeeper (unsigned build)
+          Move ADE into Applications
         </div>
-        <div className="group relative rounded-xl border border-border/70 bg-[#0c0a10] p-4">
-          <code className="block text-sm leading-relaxed text-muted-fg select-all">{xattrCmd}</code>
-          <button
-            type="button"
-            onClick={onCopy}
-            className="absolute right-3 top-3 rounded-md border border-border/70 bg-card/70 p-1.5 text-muted-fg opacity-0 transition-opacity group-hover:opacity-100 hover:text-fg"
-            aria-label="Copy command"
-          >
-            {copied ? (
-              <span className="text-xs px-1">Copied</span>
-            ) : (
-              <Copy className="h-3.5 w-3.5" />
-            )}
-          </button>
-        </div>
+        <p className="text-sm text-muted-fg">
+          Drag <strong>ADE</strong> into your Applications folder before first launch so macOS can
+          keep it on the normal update path.
+        </p>
       </div>
 
       <div className="space-y-3">
@@ -437,7 +411,7 @@ export function HomePage() {
                   Get started in 30 seconds
                 </h2>
                 <p className="mt-3 max-w-lg text-base text-muted-fg">
-                  Download the DMG, clear Gatekeeper, and open. No account required.
+                  Download the DMG, move ADE into Applications, and open. No account required.
                 </p>
               </Reveal>
 

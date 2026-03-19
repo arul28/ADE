@@ -55,6 +55,7 @@ type PersistedDoc<T> = {
 
 const CTO_LONG_TERM_MEMORY_RELATIVE_PATH = ".ade/cto/MEMORY.md";
 const CTO_CURRENT_CONTEXT_RELATIVE_PATH = ".ade/cto/CURRENT.md";
+const CTO_REQUIRED_ONBOARDING_STEPS = ["identity"] as const;
 const DURABLE_MEMORY_CATEGORY_ORDER: MemoryCategory[] = [
   "decision",
   "convention",
@@ -81,16 +82,34 @@ const IMMUTABLE_CTO_DOCTRINE = [
 const CTO_MEMORY_OPERATING_MODEL = [
   "ADE continuity model:",
   "1. Immutable doctrine: ADE always re-applies this CTO doctrine. It is not user-editable and it is not compacted away.",
-  `2. Long-term CTO brief: ${CTO_LONG_TERM_MEMORY_RELATIVE_PATH}. This stores project summary, conventions, preferences, focus, and standing notes.`,
-  `3. Current working context: ${CTO_CURRENT_CONTEXT_RELATIVE_PATH}. This carries recent sessions, worker activity, and active carry-forward context.`,
+  `2. Long-term CTO brief: ${CTO_LONG_TERM_MEMORY_RELATIVE_PATH}. ADE maintains this project-level state for summary, conventions, preferences, focus, and standing notes.`,
+  `3. Current working context: ${CTO_CURRENT_CONTEXT_RELATIVE_PATH}. ADE maintains this project-level state for recent sessions, worker activity, and active carry-forward context.`,
   "4. Durable searchable project memory. Use memorySearch to retrieve reusable context and memoryAdd to store stable lessons, decisions, patterns, gotchas, and preferences.",
   "",
   "Compaction and recovery rules:",
   "- Treat memory as mandatory operating infrastructure, not optional notes.",
-  "- Before non-trivial work, re-ground yourself in the long-term brief, current context, and durable memory.",
-  "- When the project brief changes, update Layer 2 with memoryUpdateCore.",
-  "- When you learn something reusable, store it with memoryAdd immediately.",
-  "- Distill important session context before compaction removes detail.",
+  "- Before non-trivial work, before asking the user to restate context, and before entering an unfamiliar subsystem, re-ground yourself in the long-term brief, current context, and durable memory.",
+  "- ADE already injects reconstructed CTO state into the session. Do not spend turns shell-reading relative .ade/cto files from the workspace unless an explicit absolute file path is required.",
+  "- Use memoryUpdateCore only when the standing project brief changes: summary, conventions, preferences, active focus, or standing notes.",
+  "- Use memoryAdd for reusable decisions, patterns, gotchas, and stable preferences that are likely to matter again.",
+  "- Do not write ephemeral turn-by-turn status, scratch notes, or one-off observations that can be recovered from the repo or recent chat history.",
+  "- Distill important session context before compaction removes detail, but persist only durable insights.",
+].join("\n");
+
+const CTO_CAPABILITY_MANIFEST = [
+  "ADE operator capability manifest:",
+  "- Work chats: create, list, inspect, read transcripts, send follow-ups, interrupt, and end supervised sessions through ADE services.",
+  "- Lanes: list, inspect, create, and archive lanes, then hand back explicit navigation suggestions for opening them in ADE.",
+  "- Missions: create, inspect, launch, steer, read logs, export context, and route work into mission execution without exposing raw coordinator internals.",
+  "- Run / processes: inspect managed lane processes, start them, stop them, and read bounded log tails through ADE's process service.",
+  "- Pull requests and GitHub: inspect PR state, create PRs from lanes, update PR metadata, and post review-facing comments through stable PR services.",
+  "- Files and context: enumerate workspaces, read files, search text, and export bounded ADE context packs for project, lane, mission, conflict, plan, and feature scopes.",
+  "- Workers and Linear: supervise worker agents, trigger wakeups, inspect workflow runs, and route Linear issues into CTO, mission, or worker paths.",
+  "",
+  "Operating rules:",
+  "- Internal ADE actions run through service-backed tools even when no renderer click occurs.",
+  "- UI navigation is suggestion-only. When an action should be opened in ADE, return an explicit navigation suggestion instead of silently switching tabs.",
+  "- Treat ADE as your operating environment. Do not describe yourself as blocked on renderer button clicks when an internal tool can do the work.",
 ].join("\n");
 
 function asStringArray(value: unknown): string[] {
@@ -140,6 +159,11 @@ function normalizePersonalityPreset(value: unknown): CtoIdentity["personality"] 
     || value === "custom"
     ? value
     : undefined;
+}
+
+function hasCompletedRequiredOnboardingSteps(state: CtoOnboardingState | null | undefined): boolean {
+  const completedSteps = state?.completedSteps ?? [];
+  return CTO_REQUIRED_ONBOARDING_STEPS.every((stepId) => completedSteps.includes(stepId));
 }
 
 function resolvePersonalityOverlay(identity: CtoIdentity): string {
@@ -947,10 +971,12 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     const snapshot = getSnapshot(recentLimit);
     const sections: string[] = [];
     sections.push("CTO Memory Stack");
+    sections.push("The CTO state below is already reconstructed by ADE for this session. Do not burn turns trying to rediscover it by shelling into relative .ade/cto paths.");
     sections.push(`- Layer 1 — runtime identity and operating doctrine. Hidden system instructions and identity.yaml keep you in the CTO role.`);
     sections.push(`- Layer 2 — long-term CTO brief at ${CTO_LONG_TERM_MEMORY_RELATIVE_PATH}. Update this layer with memoryUpdateCore when the project summary, conventions, preferences, focus, or standing notes change.`);
     sections.push(`- Layer 3 — current working context at ${CTO_CURRENT_CONTEXT_RELATIVE_PATH}. This layer carries active focus, recent sessions, worker activity, and daily logs through compaction.`);
     sections.push("- Layer 4 — searchable durable project memory. Use memorySearch before non-trivial work and memoryAdd for reusable decisions, conventions, patterns, gotchas, and stable preferences.");
+    sections.push("- Memory write policy: use memoryUpdateCore for standing brief changes, use memoryAdd for durable reusable lessons, and skip ephemeral status notes.");
     sections.push("");
     sections.push("CTO Identity");
     sections.push(`- Name: ${snapshot.identity.name}`);
@@ -973,20 +999,8 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     return identity.onboardingState ?? { completedSteps: [] };
   };
 
-  const completeOnboardingStep = (stepId: string): CtoOnboardingState => {
+  const persistOnboardingState = (next: CtoOnboardingState): CtoOnboardingState => {
     const identity = getIdentity();
-    const current = identity.onboardingState ?? { completedSteps: [] };
-    if (current.completedSteps.includes(stepId)) return current;
-
-    const next: CtoOnboardingState = {
-      ...current,
-      completedSteps: [...current.completedSteps, stepId],
-    };
-    // If all 3 steps complete, mark completed
-    if (next.completedSteps.length >= 3 && !next.completedAt) {
-      next.completedAt = nowIso();
-    }
-
     const updated: CtoIdentity = {
       ...identity,
       onboardingState: next,
@@ -997,37 +1011,35 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     writeIdentityToDb(updated);
     syncDerivedMemoryDocs();
     return next;
+  };
+
+  const maybeMarkOnboardingComplete = (state: CtoOnboardingState): CtoOnboardingState => {
+    if (hasCompletedRequiredOnboardingSteps(state) && !state.completedAt) {
+      return { ...state, completedAt: nowIso() };
+    }
+    return state;
+  };
+
+  const completeOnboardingStep = (stepId: string): CtoOnboardingState => {
+    const current = getOnboardingState();
+    if (current.completedSteps.includes(stepId)) {
+      const patched = maybeMarkOnboardingComplete(current);
+      if (patched !== current) return persistOnboardingState(patched);
+      return current;
+    }
+    const next = maybeMarkOnboardingComplete({
+      ...current,
+      completedSteps: [...current.completedSteps, stepId],
+    });
+    return persistOnboardingState(next);
   };
 
   const dismissOnboarding = (): CtoOnboardingState => {
-    const identity = getIdentity();
-    const current = identity.onboardingState ?? { completedSteps: [] };
-    const next: CtoOnboardingState = { ...current, dismissedAt: nowIso() };
-    const updated: CtoIdentity = {
-      ...identity,
-      onboardingState: next,
-      version: identity.version + 1,
-      updatedAt: nowIso(),
-    };
-    writeIdentityToFile(updated);
-    writeIdentityToDb(updated);
-    syncDerivedMemoryDocs();
-    return next;
+    return persistOnboardingState({ ...getOnboardingState(), dismissedAt: nowIso() });
   };
 
   const resetOnboarding = (): CtoOnboardingState => {
-    const identity = getIdentity();
-    const next: CtoOnboardingState = { completedSteps: [] };
-    const updated: CtoIdentity = {
-      ...identity,
-      onboardingState: next,
-      version: identity.version + 1,
-      updatedAt: nowIso(),
-    };
-    writeIdentityToFile(updated);
-    writeIdentityToDb(updated);
-    syncDerivedMemoryDocs();
-    return next;
+    return persistOnboardingState({ completedSteps: [] });
   };
 
   /* ── Identity update (full patch) ── */
@@ -1074,6 +1086,11 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
         id: "memory",
         title: "Memory and continuity model",
         content: CTO_MEMORY_OPERATING_MODEL,
+      },
+      {
+        id: "capabilities",
+        title: "ADE operator capability manifest",
+        content: CTO_CAPABILITY_MANIFEST,
       },
     ];
 

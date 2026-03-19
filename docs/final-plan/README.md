@@ -25,7 +25,7 @@ The following phase files are superseded by the new roadmap and should be consid
 
 ---
 
-Last updated: 2026-03-14
+Last updated: 2026-03-19
 Owner: ADE
 Status: Active
 
@@ -158,10 +158,9 @@ Baseline derived from code in `apps/desktop`.
 Not fully implemented yet:
 
 - Automatic PR proof embedding still needs follow-through, but ADE-local proof capture now auto-ingests and links `screenshot_environment` / `record_environment` artifacts at creation time
-- Multi-device sync (cr-sqlite + WebSocket real-time replication) — Phase 6
-- Device registry and host management (which machine runs agents) — Phase 6
-- iOS companion app (agent chat, mission management, push notifications) — Phase 6
-- VPS headless deployment (headless ADE on remote machines) — Phase 6
+- Desktop portability expansion beyond the current tracked ADE intelligence contract — Phase 6 follow-through
+- Tailscale integration and VPS headless deployment — Phase 6 follow-through
+- Remaining iOS tabs and advanced remote workflows (Missions, CTO/Chat, Automations, Graph, History, push notifications) — Phase 7
 - Provider usage telemetry parity (CLI/API/local) and budget UX refinements
 
 ### 2.5 Phase 3 Status Snapshot (Complete)
@@ -242,20 +241,20 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Device registry & host management | Phase 6 | Phases 1-5 | Implemented on desktop |
 | Tailscale integration | Phase 6 | Phases 1-5 | Planned |
 | WebSocket sync server & protocol | Phase 6 | Phases 1-5 | Implemented on desktop |
-| Device pairing & configuration | Phase 6 | Phases 1-5 | Planned |
-| File access & terminal stream protocols | Phase 6 | Phases 1-5 | Planned |
+| Device pairing & configuration | Phase 6 | Phases 1-5 | Implemented on desktop + iPhone; W5 hardening baseline shipped |
+| File access & terminal stream protocols | Phase 6 | Phases 1-5 | Implemented baseline for the iPhone controller path |
 | VPS headless deployment | Phase 6 | Phases 1-5 | Planned |
-| iOS app shell & navigation | Phase 6 | Phases 1-5 | Planned |
-| iOS Lanes tab (high parity) | Phase 6 | Phases 1-5 | Planned |
-| iOS Files tab (high parity) | Phase 6 | Phases 1-5 | Planned |
-| iOS Work tab (high parity) | Phase 6 | Phases 1-5 | Planned |
-| iOS PRs tab (high parity) | Phase 6 | Phases 1-5 | Planned |
+| iOS app shell & navigation | Phase 6 | Phases 1-5 | Implemented; W5 hardening baseline shipped |
+| iOS Lanes tab (high parity) | Phase 6 | Phases 1-5 | Implemented to live desktop parity on iPhone; W6 shipped |
+| iOS Files tab (high parity) | Phase 6 | Phases 1-5 | Implemented to W5 dogfood baseline |
+| iOS Work tab (high parity) | Phase 6 | Phases 1-5 | Implemented to W5 dogfood baseline |
+| iOS PRs tab (high parity) | Phase 6 | Phases 1-5 | Implemented to W5 dogfood baseline |
 | Lane portability (desktop-to-desktop) | Phase 6 | Phases 1-5 | Planned |
-| Command routing & connection status | Phase 6 | Phases 1-5 | Planned |
+| Command routing & connection status | Phase 6 | Phases 1-5 | Implemented for W5 baseline and W6 lane parity surfaces; broader Phase 7 expansion still planned |
 | iOS Missions tab | Phase 7 | Phase 6 | Planned |
 | iOS CTO & Agent Chat tab | Phase 7 | Phase 6 | Planned |
 | iOS Automations, Graph, History tabs | Phase 7 | Phase 6 | Planned |
-| iOS full Settings tab | Phase 7 | Phase 6 | Planned |
+| iOS full Settings parity | Phase 7 | Phase 6 | Planned |
 | Push notifications & notification routing | Phase 7 | Phase 6 | Planned |
 | VPS provider integrations (Hetzner, DO, SSH) | Phase 7 | Phase 6 | Planned |
 | Mobile automations execution + digest | Phase 7 | Phase 6 | Planned |

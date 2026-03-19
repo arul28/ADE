@@ -20,8 +20,6 @@
 		6BDC22C6450AF0B3CBDB2650 /* FilesTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EBFB65019F4C3F8A89428CE /* FilesTabView.swift */; };
 		7B70BE6839672E5D2D006B28 /* ADETests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */; };
 		889573D8A5ED468D3BD12894 /* PRsTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EE4D463D21266B62B422D11 /* PRsTabView.swift */; };
-		CCFC87F158224D26C5687983 /* crsqlite.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 60EC56ADDD1DDA74A86BA38F /* crsqlite.xcframework */; };
-		E3A974F7363C3F2572064BB6 /* crsqlite.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 60EC56ADDD1DDA74A86BA38F /* crsqlite.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		E689F42D41A500BB8CA233E4 /* LanesTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9270CF8A67F3FA79089F39C1 /* LanesTabView.swift */; };
 		FBEEF09EFB4911FEAC6A7E87 /* RemoteModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483C5F1818BAE74B19B84617 /* RemoteModels.swift */; };
 /* End PBXBuildFile section */
@@ -33,7 +31,6 @@
 			dstPath = "";
 			dstSubfolderSpec = 10;
 			files = (
-				E3A974F7363C3F2572064BB6 /* crsqlite.xcframework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -66,7 +63,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				60F4CDDB763C0A9F0E650B40 /* Foundation.framework in Frameworks */,
-				CCFC87F158224D26C5687983 /* crsqlite.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -227,7 +223,6 @@
 				73ED0BCB9618AA29B41D84DA /* Sources */,
 				DE00988229EE6003DBF8D8FA /* Frameworks */,
 				7A00A99FE2965CB60C5BE5BF /* Resources */,
-				01C868B7CC863B3508E975E2 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
@@ -323,7 +318,7 @@
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGNING_ALLOWED = NO;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ade.ios.tests;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
@@ -341,7 +336,7 @@
 				CODE_SIGNING_ALLOWED = NO;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = ADE/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
 				PRODUCT_BUNDLE_IDENTIFIER = com.ade.ios;
 				SDKROOT = iphoneos;
@@ -413,7 +408,7 @@
 				CODE_SIGNING_ALLOWED = NO;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = ADE/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
 				PRODUCT_BUNDLE_IDENTIFIER = com.ade.ios;
 				SDKROOT = iphoneos;
@@ -491,7 +486,7 @@
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGNING_ALLOWED = NO;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ade.ios.tests;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;

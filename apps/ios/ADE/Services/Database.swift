@@ -2,19 +2,31 @@ import Foundation
 import SQLite3
 
 private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-private let crsqliteUnsupportedMessage = """
-The vendored crsqlite.xcframework is not currently embeddable on iOS in the way ADE needs. \
-Direct sqlite3_crsqlite_init(db, &err, nil) crashes because the SQLite API thunk is nil, \
-sqlite3_auto_extension(...) is deprecated and rejected on Apple platforms, and the iOS SQLite SDK \
-does not expose sqlite3_load_extension(...) as a usable fallback. Replace this xcframework with an \
-iOS-safe embeddable crsqlite build, or add a native wrapper library that links crsqlite against SQLite.
-"""
+private let localDeleteColumnId = "-1"
+private let legacyDeleteColumnId = "__ade_deleted"
 
 extension Notification.Name {
   static let adeDatabaseDidChange = Notification.Name("ADE.DatabaseDidChange")
 }
 
 final class DatabaseService {
+  private struct SyncColumnInfo {
+    let name: String
+    let declaredType: String
+    let notNull: Bool
+    let defaultValue: String?
+    let pkIndex: Int
+  }
+
+  private struct SyncTableInfo {
+    let name: String
+    let columns: [SyncColumnInfo]
+
+    var primaryKeyColumn: String? {
+      columns.sorted { $0.pkIndex < $1.pkIndex }.first(where: { $0.pkIndex > 0 })?.name
+    }
+  }
+
   private struct LaneRow {
     let id: String
     let name: String
@@ -23,9 +35,16 @@ final class DatabaseService {
     let baseRef: String
     let branchRef: String
     let worktreePath: String
+    let attachedRootPath: String?
     let parentLaneId: String?
+    let isEditProtected: Bool
+    let color: String?
+    let icon: LaneIcon?
+    let tags: [String]
+    let folder: String?
     let createdAt: String
     let archivedAt: String?
+    let parentStatus: LaneStatus?
     let dirty: Bool
     let ahead: Int
     let behind: Int
@@ -55,6 +74,18 @@ final class DatabaseService {
     let resumeCommand: String?
   }
 
+  private struct LaneListSnapshotRow {
+    let laneId: String
+    let snapshotJson: String
+    let updatedAt: String
+  }
+
+  private struct LaneDetailSnapshotRow {
+    let laneId: String
+    let detailJson: String
+    let updatedAt: String
+  }
+
   private struct PullRequestSnapshotRow {
     let detailJson: String?
     let statusJson: String?
@@ -72,6 +103,11 @@ final class DatabaseService {
   private let dbURL: URL
   private let siteIdURL: URL
   private let bootstrapSQLOverride: String?
+  private var localDbVersion = 0
+  private var cachedSiteIdHex = ""
+  private var cachedSiteIdBlob = Data()
+  private var shouldCaptureLocalChanges = true
+  private var syncTableInfoCache: [String: SyncTableInfo] = [:]
   private(set) var initializationError: NSError?
 
   var isReady: Bool {
@@ -85,6 +121,8 @@ final class DatabaseService {
     dbURL = appURL.appendingPathComponent("ade.db")
     siteIdURL = appURL.appendingPathComponent("secrets", isDirectory: true).appendingPathComponent("sync-site-id")
     bootstrapSQLOverride = bootstrapSQL
+    cachedSiteIdHex = localSiteId()
+    cachedSiteIdBlob = Data(hex: cachedSiteIdHex) ?? Data()
 
     do {
       try fileManager.createDirectory(at: appURL, withIntermediateDirectories: true)
@@ -121,7 +159,7 @@ final class DatabaseService {
   }
 
   func currentDbVersion() -> Int {
-    Int(queryInt64("select crsql_db_version()") ?? 0)
+    localDbVersion
   }
 
   func exportChangesSince(version: Int) -> [CrsqlChangeRow] {
@@ -162,13 +200,15 @@ final class DatabaseService {
     }
     var appliedCount = 0
     var touchedTables = Set<String>()
+    var acceptedChanges: [CrsqlChangeRow] = []
     try exec("begin")
     do {
       let sql = """
         insert or ignore into crsql_changes ([table], pk, cid, val, col_version, db_version, site_id, cl, seq)
         values (?, ?, ?, ?, ?, ?, ?, ?, ?)
       """
-      for change in changes {
+      for rawChange in changes {
+        let change = normalizeIncomingChange(rawChange)
         let changed = try execute(sql) { statement in
           try bindText(change.table, to: statement, index: 1)
           try bindScalar(change.pk, to: statement, index: 2)
@@ -181,8 +221,13 @@ final class DatabaseService {
           sqlite3_bind_int64(statement, 9, sqlite3_int64(change.seq))
         }
         appliedCount += changed
-        touchedTables.insert(change.table)
+        if changed > 0 {
+          acceptedChanges.append(change)
+          touchedTables.insert(change.table)
+          localDbVersion = max(localDbVersion, change.dbVersion)
+        }
       }
+      try applyAcceptedRemoteChanges(acceptedChanges)
       try exec("commit")
     } catch {
       try? exec("rollback")
@@ -201,7 +246,7 @@ final class DatabaseService {
 
     return ApplyRemoteChangesResult(
       appliedCount: appliedCount,
-      dbVersion: currentDbVersion(),
+      dbVersion: localDbVersion,
       touchedTables: touchedTables.sorted(),
       rebuiltFts: rebuiltFts,
     )
@@ -210,14 +255,21 @@ final class DatabaseService {
   func fetchLanes(includeArchived: Bool) -> [LaneSummary] {
     let sql = """
       select l.id, l.name, l.description, l.lane_type, l.base_ref, l.branch_ref, l.worktree_path,
-             l.parent_lane_id, l.created_at, l.archived_at,
+             l.attached_root_path, l.parent_lane_id, l.is_edit_protected, l.color, l.icon, l.tags_json, l.folder,
+             l.created_at, l.archived_at,
              coalesce(s.dirty, 0) as dirty,
              coalesce(s.ahead, 0) as ahead,
              coalesce(s.behind, 0) as behind,
              coalesce(s.remote_behind, -1) as remote_behind,
-             coalesce(s.rebase_in_progress, 0) as rebase_in_progress
+             coalesce(s.rebase_in_progress, 0) as rebase_in_progress,
+             ps.dirty,
+             ps.ahead,
+             ps.behind,
+             ps.remote_behind,
+             ps.rebase_in_progress
         from lanes l
         left join lane_state_snapshots s on s.lane_id = l.id
+        left join lane_state_snapshots ps on ps.lane_id = l.parent_lane_id
        where (? = 1 or l.archived_at is null)
        order by l.created_at asc
     """
@@ -232,14 +284,27 @@ final class DatabaseService {
         baseRef: stringValue(statement, index: 4) ?? "",
         branchRef: stringValue(statement, index: 5) ?? "",
         worktreePath: stringValue(statement, index: 6) ?? "",
-        parentLaneId: stringValue(statement, index: 7),
-        createdAt: stringValue(statement, index: 8) ?? "",
-        archivedAt: stringValue(statement, index: 9),
-        dirty: sqlite3_column_int(statement, 10) == 1,
-        ahead: Int(sqlite3_column_int64(statement, 11)),
-        behind: Int(sqlite3_column_int64(statement, 12)),
-        remoteBehind: Int(sqlite3_column_int64(statement, 13)),
-        rebaseInProgress: sqlite3_column_int(statement, 14) == 1
+        attachedRootPath: stringValue(statement, index: 7),
+        parentLaneId: stringValue(statement, index: 8),
+        isEditProtected: sqlite3_column_int(statement, 9) == 1,
+        color: stringValue(statement, index: 10),
+        icon: stringValue(statement, index: 11).flatMap(LaneIcon.init(rawValue:)),
+        tags: decodeJson(stringValue(statement, index: 12), as: [String].self) ?? [],
+        folder: stringValue(statement, index: 13),
+        createdAt: stringValue(statement, index: 14) ?? "",
+        archivedAt: stringValue(statement, index: 15),
+        parentStatus: columnIsNull(statement, index: 21) ? nil : LaneStatus(
+          dirty: sqlite3_column_int(statement, 21) == 1,
+          ahead: Int(sqlite3_column_int64(statement, 22)),
+          behind: Int(sqlite3_column_int64(statement, 23)),
+          remoteBehind: Int(sqlite3_column_int64(statement, 24)),
+          rebaseInProgress: sqlite3_column_int(statement, 25) == 1
+        ),
+        dirty: sqlite3_column_int(statement, 16) == 1,
+        ahead: Int(sqlite3_column_int64(statement, 17)),
+        behind: Int(sqlite3_column_int64(statement, 18)),
+        remoteBehind: Int(sqlite3_column_int64(statement, 19)),
+        rebaseInProgress: sqlite3_column_int(statement, 20) == 1
       )
     }
 
@@ -268,9 +333,12 @@ final class DatabaseService {
           baseRef: row.baseRef,
           branchRef: row.branchRef,
           worktreePath: row.worktreePath,
+          attachedRootPath: row.attachedRootPath,
           parentLaneId: row.parentLaneId,
           childCount: childCounts[row.id, default: 0],
           stackDepth: stackDepth(for: row.id, visited: &visited),
+          parentStatus: row.parentStatus,
+          isEditProtected: row.isEditProtected,
           status: LaneStatus(
             dirty: row.dirty,
             ahead: row.ahead,
@@ -278,10 +346,390 @@ final class DatabaseService {
             remoteBehind: row.remoteBehind,
             rebaseInProgress: row.rebaseInProgress
           ),
+          color: row.color,
+          icon: row.icon,
+          tags: row.tags,
+          folder: row.folder,
           createdAt: row.createdAt,
           archivedAt: row.archivedAt
         )
       }
+  }
+
+  func replaceLaneSnapshots(_ lanes: [LaneSummary], snapshots: [LaneListSnapshot]? = nil) throws {
+    guard db != nil else { return }
+    guard let projectId = currentProjectId() else {
+      throw sqliteError("Unable to hydrate lanes because no project row is available yet.")
+    }
+
+    shouldCaptureLocalChanges = false
+    defer { shouldCaptureLocalChanges = true }
+
+    let orderedLanes = lanes.sorted {
+      if $0.stackDepth != $1.stackDepth {
+        return $0.stackDepth < $1.stackDepth
+      }
+      return $0.createdAt < $1.createdAt
+    }
+    let snapshotUpdatedAt = ISO8601DateFormatter().string(from: Date())
+    let hydratedSnapshots = snapshots ?? orderedLanes.map { lane in
+      LaneListSnapshot(
+        lane: lane,
+        runtime: LaneRuntimeSummary(bucket: "none", runningCount: 0, awaitingInputCount: 0, endedCount: 0, sessionCount: 0),
+        rebaseSuggestion: nil,
+        autoRebaseStatus: nil,
+        conflictStatus: nil,
+        stateSnapshot: nil,
+        adoptableAttached: lane.laneType == "attached" && lane.archivedAt == nil
+      )
+    }
+
+    try exec("begin")
+    do {
+      try exec("delete from lane_state_snapshots")
+      try exec("delete from lanes")
+      try exec("delete from lane_list_snapshots")
+
+      for lane in orderedLanes {
+        _ = try execute("""
+          insert into lanes (
+            id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+            attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder,
+            status, created_at, archived_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """) { statement in
+          try bindText(lane.id, to: statement, index: 1)
+          try bindText(projectId, to: statement, index: 2)
+          try bindText(lane.name, to: statement, index: 3)
+          if let description = lane.description {
+            try bindText(description, to: statement, index: 4)
+          } else {
+            sqlite3_bind_null(statement, 4)
+          }
+          try bindText(lane.laneType, to: statement, index: 5)
+          try bindText(lane.baseRef, to: statement, index: 6)
+          try bindText(lane.branchRef, to: statement, index: 7)
+          try bindText(lane.worktreePath, to: statement, index: 8)
+          if let attachedRootPath = lane.attachedRootPath {
+            try bindText(attachedRootPath, to: statement, index: 9)
+          } else {
+            sqlite3_bind_null(statement, 9)
+          }
+          sqlite3_bind_int(statement, 10, lane.isEditProtected ? 1 : 0)
+          if let parentLaneId = lane.parentLaneId {
+            try bindText(parentLaneId, to: statement, index: 11)
+          } else {
+            sqlite3_bind_null(statement, 11)
+          }
+          if let color = lane.color {
+            try bindText(color, to: statement, index: 12)
+          } else {
+            sqlite3_bind_null(statement, 12)
+          }
+          if let icon = lane.icon?.rawValue {
+            try bindText(icon, to: statement, index: 13)
+          } else {
+            sqlite3_bind_null(statement, 13)
+          }
+          if lane.tags.isEmpty {
+            sqlite3_bind_null(statement, 14)
+          } else {
+            try bindOptionalJson(lane.tags, to: statement, index: 14)
+          }
+          if let folder = lane.folder {
+            try bindText(folder, to: statement, index: 15)
+          } else {
+            sqlite3_bind_null(statement, 15)
+          }
+          try bindText(lane.archivedAt == nil ? "active" : "archived", to: statement, index: 16)
+          try bindText(lane.createdAt, to: statement, index: 17)
+          if let archivedAt = lane.archivedAt {
+            try bindText(archivedAt, to: statement, index: 18)
+          } else {
+            sqlite3_bind_null(statement, 18)
+          }
+        }
+
+        _ = try execute("""
+          insert into lane_state_snapshots (
+            lane_id, dirty, ahead, behind, remote_behind, rebase_in_progress,
+            agent_summary_json, mission_summary_json, updated_at
+          ) values (?, ?, ?, ?, ?, ?, null, null, ?)
+        """) { statement in
+          try bindText(lane.id, to: statement, index: 1)
+          sqlite3_bind_int(statement, 2, lane.status.dirty ? 1 : 0)
+          sqlite3_bind_int64(statement, 3, sqlite3_int64(lane.status.ahead))
+          sqlite3_bind_int64(statement, 4, sqlite3_int64(lane.status.behind))
+          sqlite3_bind_int64(statement, 5, sqlite3_int64(lane.status.remoteBehind))
+          sqlite3_bind_int(statement, 6, lane.status.rebaseInProgress ? 1 : 0)
+          try bindText(snapshotUpdatedAt, to: statement, index: 7)
+        }
+      }
+
+      for snapshot in hydratedSnapshots {
+        let encodedSnapshot = try encodeJsonString(snapshot)
+        _ = try execute("""
+          insert into lane_list_snapshots(
+            lane_id, snapshot_json, updated_at
+          ) values (?, ?, ?)
+          on conflict(lane_id) do update set
+            snapshot_json = excluded.snapshot_json,
+            updated_at = excluded.updated_at
+        """) { statement in
+          try bindText(snapshot.lane.id, to: statement, index: 1)
+          try bindText(encodedSnapshot, to: statement, index: 2)
+          try bindText(snapshotUpdatedAt, to: statement, index: 3)
+        }
+      }
+
+      let laneIds = orderedLanes.map(\.id)
+      if laneIds.isEmpty {
+        try exec("delete from lane_detail_snapshots")
+      } else {
+        let placeholders = Array(repeating: "?", count: laneIds.count).joined(separator: ", ")
+        _ = try execute("delete from lane_detail_snapshots where lane_id not in (\(placeholders))") { statement in
+          for (index, laneId) in laneIds.enumerated() {
+            try bindText(laneId, to: statement, index: Int32(index + 1))
+          }
+        }
+      }
+
+      try exec("commit")
+      notifyDidChange()
+    } catch {
+      try? exec("rollback")
+      throw error
+    }
+  }
+
+  func fetchLaneListSnapshots(includeArchived: Bool) -> [LaneListSnapshot] {
+    let sql = """
+      select s.lane_id, s.snapshot_json, s.updated_at
+        from lane_list_snapshots s
+        join lanes l on l.id = s.lane_id
+       where (? = 1 or l.archived_at is null)
+       order by l.created_at desc
+    """
+    return query(sql, bind: { statement in
+      sqlite3_bind_int(statement, 1, includeArchived ? 1 : 0)
+    }) { statement in
+      LaneListSnapshotRow(
+        laneId: stringValue(statement, index: 0) ?? "",
+        snapshotJson: stringValue(statement, index: 1) ?? "",
+        updatedAt: stringValue(statement, index: 2) ?? ""
+      )
+    }.compactMap { row in
+      decodeJson(row.snapshotJson, as: LaneListSnapshot.self)
+    }
+  }
+
+  func replaceLaneDetail(_ detail: LaneDetailPayload) throws {
+    guard db != nil else { return }
+    let updatedAt = ISO8601DateFormatter().string(from: Date())
+    let encodedDetail = try encodeJsonString(detail)
+    _ = try execute("""
+      insert into lane_detail_snapshots(
+        lane_id, detail_json, updated_at
+      ) values (?, ?, ?)
+      on conflict(lane_id) do update set
+        detail_json = excluded.detail_json,
+        updated_at = excluded.updated_at
+    """) { statement in
+      try bindText(detail.lane.id, to: statement, index: 1)
+      try bindText(encodedDetail, to: statement, index: 2)
+      try bindText(updatedAt, to: statement, index: 3)
+    }
+    notifyDidChange()
+  }
+
+  func fetchLaneDetail(laneId: String) -> LaneDetailPayload? {
+    let sql = """
+      select lane_id, detail_json, updated_at
+        from lane_detail_snapshots
+       where lane_id = ?
+       limit 1
+    """
+    guard let row = querySingle(sql, bind: { [self] statement in
+      try self.bindText(laneId, to: statement, index: 1)
+    }, map: { statement in
+      LaneDetailSnapshotRow(
+        laneId: stringValue(statement, index: 0) ?? "",
+        detailJson: stringValue(statement, index: 1) ?? "",
+        updatedAt: stringValue(statement, index: 2) ?? ""
+      )
+    }) else {
+      return nil
+    }
+    return decodeJson(row.detailJson, as: LaneDetailPayload.self)
+  }
+
+  func replaceTerminalSessions(_ sessions: [TerminalSessionSummary]) throws {
+    guard db != nil else { return }
+
+    shouldCaptureLocalChanges = false
+    defer { shouldCaptureLocalChanges = true }
+
+    try exec("begin")
+    do {
+      if hasTable(named: "session_deltas") {
+        try exec("delete from session_deltas")
+      }
+      try exec("delete from terminal_sessions")
+
+      for session in sessions {
+        _ = try execute("""
+          insert into terminal_sessions(
+            id, lane_id, lane_name, pty_id, tracked, goal, tool_type, pinned, title, started_at, ended_at,
+            exit_code, transcript_path, head_sha_start, head_sha_end, status, last_output_preview,
+            last_output_at, summary, resume_command
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """) { statement in
+          try bindText(session.id, to: statement, index: 1)
+          try bindText(session.laneId, to: statement, index: 2)
+          try bindText(session.laneName, to: statement, index: 3)
+          if let ptyId = session.ptyId {
+            try bindText(ptyId, to: statement, index: 4)
+          } else {
+            sqlite3_bind_null(statement, 4)
+          }
+          sqlite3_bind_int(statement, 5, session.tracked ? 1 : 0)
+          if let goal = session.goal {
+            try bindText(goal, to: statement, index: 6)
+          } else {
+            sqlite3_bind_null(statement, 6)
+          }
+          if let toolType = session.toolType {
+            try bindText(toolType, to: statement, index: 7)
+          } else {
+            sqlite3_bind_null(statement, 7)
+          }
+          sqlite3_bind_int(statement, 8, session.pinned ? 1 : 0)
+          try bindText(session.title, to: statement, index: 9)
+          try bindText(session.startedAt, to: statement, index: 10)
+          if let endedAt = session.endedAt {
+            try bindText(endedAt, to: statement, index: 11)
+          } else {
+            sqlite3_bind_null(statement, 11)
+          }
+          if let exitCode = session.exitCode {
+            sqlite3_bind_int64(statement, 12, sqlite3_int64(exitCode))
+          } else {
+            sqlite3_bind_null(statement, 12)
+          }
+          try bindText(session.transcriptPath, to: statement, index: 13)
+          if let headShaStart = session.headShaStart {
+            try bindText(headShaStart, to: statement, index: 14)
+          } else {
+            sqlite3_bind_null(statement, 14)
+          }
+          if let headShaEnd = session.headShaEnd {
+            try bindText(headShaEnd, to: statement, index: 15)
+          } else {
+            sqlite3_bind_null(statement, 15)
+          }
+          try bindText(session.status, to: statement, index: 16)
+          if let preview = session.lastOutputPreview {
+            try bindText(preview, to: statement, index: 17)
+          } else {
+            sqlite3_bind_null(statement, 17)
+          }
+          try bindText(session.endedAt ?? session.startedAt, to: statement, index: 18)
+          if let summary = session.summary {
+            try bindText(summary, to: statement, index: 19)
+          } else {
+            sqlite3_bind_null(statement, 19)
+          }
+          if let resumeCommand = session.resumeCommand {
+            try bindText(resumeCommand, to: statement, index: 20)
+          } else {
+            sqlite3_bind_null(statement, 20)
+          }
+        }
+      }
+
+      try exec("commit")
+      notifyDidChange()
+    } catch {
+      try? exec("rollback")
+      throw error
+    }
+  }
+
+  func replacePullRequestHydration(_ payload: PullRequestRefreshPayload) throws {
+    guard db != nil else { return }
+    guard let projectId = currentProjectId() else {
+      throw sqliteError("Unable to hydrate pull requests because no project row is available yet.")
+    }
+
+    shouldCaptureLocalChanges = false
+    defer { shouldCaptureLocalChanges = true }
+
+    try exec("begin")
+    do {
+      try exec("delete from pull_request_snapshots")
+      try exec("delete from pull_requests")
+
+      for pr in payload.prs {
+        _ = try execute("""
+          insert into pull_requests(
+            id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url, github_node_id,
+            title, state, base_branch, head_branch, checks_status, review_status, additions, deletions,
+            last_synced_at, created_at, updated_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """) { statement in
+          try bindText(pr.id, to: statement, index: 1)
+          try bindText(pr.projectId.isEmpty ? projectId : pr.projectId, to: statement, index: 2)
+          try bindText(pr.laneId, to: statement, index: 3)
+          try bindText(pr.repoOwner, to: statement, index: 4)
+          try bindText(pr.repoName, to: statement, index: 5)
+          sqlite3_bind_int64(statement, 6, sqlite3_int64(pr.githubPrNumber))
+          try bindText(pr.githubUrl, to: statement, index: 7)
+          if let githubNodeId = pr.githubNodeId {
+            try bindText(githubNodeId, to: statement, index: 8)
+          } else {
+            sqlite3_bind_null(statement, 8)
+          }
+          try bindText(pr.title, to: statement, index: 9)
+          try bindText(pr.state, to: statement, index: 10)
+          try bindText(pr.baseBranch, to: statement, index: 11)
+          try bindText(pr.headBranch, to: statement, index: 12)
+          try bindText(pr.checksStatus, to: statement, index: 13)
+          try bindText(pr.reviewStatus, to: statement, index: 14)
+          sqlite3_bind_int64(statement, 15, sqlite3_int64(pr.additions))
+          sqlite3_bind_int64(statement, 16, sqlite3_int64(pr.deletions))
+          if let lastSyncedAt = pr.lastSyncedAt {
+            try bindText(lastSyncedAt, to: statement, index: 17)
+          } else {
+            sqlite3_bind_null(statement, 17)
+          }
+          try bindText(pr.createdAt, to: statement, index: 18)
+          try bindText(pr.updatedAt, to: statement, index: 19)
+        }
+      }
+
+      for snapshot in payload.snapshots {
+        _ = try execute("""
+          insert into pull_request_snapshots(
+            pr_id, detail_json, status_json, checks_json, reviews_json, comments_json, files_json, updated_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?)
+        """) { statement in
+          try bindText(snapshot.prId, to: statement, index: 1)
+          try bindOptionalJson(snapshot.detail, to: statement, index: 2)
+          try bindOptionalJson(snapshot.status, to: statement, index: 3)
+          try bindOptionalJson(snapshot.checks, to: statement, index: 4)
+          try bindOptionalJson(snapshot.reviews, to: statement, index: 5)
+          try bindOptionalJson(snapshot.comments, to: statement, index: 6)
+          try bindOptionalJson(snapshot.files, to: statement, index: 7)
+          try bindText(snapshot.updatedAt ?? ISO8601DateFormatter().string(from: Date()), to: statement, index: 8)
+        }
+      }
+
+      try exec("commit")
+      notifyDidChange()
+    } catch {
+      try? exec("rollback")
+      throw error
+    }
   }
 
   func listWorkspaces() -> [FilesWorkspace] {
@@ -291,19 +739,19 @@ final class DatabaseService {
         kind: lane.laneType,
         laneId: lane.id,
         name: lane.name,
-        rootPath: lane.worktreePath,
-        isReadOnlyByDefault: false
+        rootPath: lane.attachedRootPath ?? lane.worktreePath,
+        isReadOnlyByDefault: lane.isEditProtected
       )
     }
   }
 
   func fetchSessions() -> [TerminalSessionSummary] {
     let sql = """
-      select s.id, s.lane_id, l.name, s.pty_id, s.tracked, s.pinned, s.goal, s.tool_type,
+      select s.id, s.lane_id, coalesce(nullif(s.lane_name, ''), l.name, s.lane_id), s.pty_id, s.tracked, s.pinned, s.goal, s.tool_type,
              s.title, s.status, s.started_at, s.ended_at, s.exit_code, s.transcript_path,
              s.head_sha_start, s.head_sha_end, s.last_output_preview, s.summary, s.resume_command
         from terminal_sessions s
-        join lanes l on l.id = s.lane_id
+        left join lanes l on l.id = s.lane_id
        order by s.started_at desc
        limit 200
     """
@@ -426,6 +874,13 @@ final class DatabaseService {
     notifyDidChange()
   }
 
+  func hasHydratedControllerData() -> Bool {
+    let laneCount = queryInt64("select count(*) from lanes") ?? 0
+    let sessionCount = queryInt64("select count(*) from terminal_sessions") ?? 0
+    let pullRequestCount = queryInt64("select count(*) from pull_requests") ?? 0
+    return laneCount > 0 || sessionCount > 0 || pullRequestCount > 0
+  }
+
   private func migrateAndPrepare() throws {
     try exec("pragma journal_mode = wal")
     try exec("pragma synchronous = normal")
@@ -433,9 +888,13 @@ final class DatabaseService {
 
     let bootstrapSQL = try loadBootstrapSQL()
     try executeBootstrapSQL(bootstrapSQL)
+    try ensureHydrationProjectionColumns()
+    try ensureSyncMetadataTables()
     try ensureCrrTables()
 
     let desiredSiteId = localSiteId()
+    cachedSiteIdHex = desiredSiteId
+    cachedSiteIdBlob = Data(hex: desiredSiteId) ?? Data()
     try forceSiteId(desiredSiteId)
     if readCurrentSiteId() != desiredSiteId {
       close()
@@ -443,12 +902,90 @@ final class DatabaseService {
       try exec("pragma journal_mode = wal")
       try exec("pragma synchronous = normal")
       try exec("pragma busy_timeout = 5000")
+      try ensureSyncMetadataTables()
       try forceSiteId(desiredSiteId)
     }
+    localDbVersion = readMaxDbVersion()
+  }
+
+  private func ensureHydrationProjectionColumns() throws {
+    try ensureColumn(
+      tableName: "lanes",
+      columnName: "attached_root_path",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "lanes",
+      columnName: "is_edit_protected",
+      definition: "integer not null default 0"
+    )
+    try ensureColumn(
+      tableName: "lanes",
+      columnName: "color",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "lanes",
+      columnName: "icon",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "lanes",
+      columnName: "tags_json",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "lanes",
+      columnName: "folder",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "lane_name",
+      definition: "text not null default ''"
+    )
+    try exec("""
+      create table if not exists lane_list_snapshots (
+        lane_id text primary key,
+        snapshot_json text not null,
+        updated_at text not null,
+        foreign key(lane_id) references lanes(id)
+      )
+    """)
+    try exec("create index if not exists idx_lane_list_snapshots_updated_at on lane_list_snapshots(updated_at)")
+    try exec("""
+      create table if not exists lane_detail_snapshots (
+        lane_id text primary key,
+        detail_json text not null,
+        updated_at text not null,
+        foreign key(lane_id) references lanes(id)
+      )
+    """)
+    try exec("create index if not exists idx_lane_detail_snapshots_updated_at on lane_detail_snapshots(updated_at)")
+  }
+
+  private func ensureColumn(tableName: String, columnName: String, definition: String) throws {
+    guard hasTable(named: tableName) else { return }
+    let existingColumns = Set(
+      query("pragma table_info('\(tableName.replacingOccurrences(of: "'", with: "''"))')") { statement in
+        stringValue(statement, index: 1) ?? ""
+      }
+    )
+    guard !existingColumns.contains(columnName) else { return }
+    try exec("alter table \(tableName) add column \(columnName) \(definition)")
   }
 
   private func openConnection(at url: URL) throws {
-    throw sqliteError(crsqliteUnsupportedMessage)
+    var opened: OpaquePointer?
+    let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
+    guard sqlite3_open_v2(url.path, &opened, flags, nil) == SQLITE_OK, let opened else {
+      let message = sqlite3_errmsg(opened).map { String(cString: $0) } ?? "Unable to open SQLite database."
+      sqlite3_close(opened)
+      throw sqliteError(message)
+    }
+    db = opened
+    try registerInternalFunctions()
+    localDbVersion = readMaxDbVersion()
   }
 
   private func loadBootstrapSQL() throws -> String {
@@ -467,15 +1004,24 @@ final class DatabaseService {
   }
 
   private func executeBootstrapSQL(_ sql: String) throws {
-    for rawStatement in sql.split(separator: ";") {
-      let trimmed = rawStatement.trimmingCharacters(in: .whitespacesAndNewlines)
+    var currentStatement = ""
+    for line in sql.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
+      currentStatement.append(contentsOf: line)
+      currentStatement.append("\n")
+
+      let trimmed = currentStatement.trimmingCharacters(in: .whitespacesAndNewlines)
       guard !trimmed.isEmpty else { continue }
-      let statement = "\(trimmed);"
-      do {
-        try runMigratingStatement(statement)
-      } catch {
-        throw error
-      }
+
+      let isComplete = trimmed.withCString { sqlite3_complete($0) == 1 }
+      guard isComplete else { continue }
+
+      try runMigratingStatement(trimmed)
+      currentStatement.removeAll(keepingCapacity: true)
+    }
+
+    let trailing = currentStatement.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !trailing.isEmpty {
+      throw sqliteError("Database bootstrap SQL ended with an incomplete statement.")
     }
   }
 
@@ -507,9 +1053,7 @@ final class DatabaseService {
       if hasTable(named: "\(tableName)__crsql_clock") {
         continue
       }
-      _ = queryInt64("select crsql_as_crr(?)", bind: { [self] statement in
-        try self.bindText(tableName, to: statement, index: 1)
-      })
+      try enableCrr(for: tableName)
     }
   }
 
@@ -553,7 +1097,7 @@ final class DatabaseService {
   }
 
   private func readCurrentSiteId() -> String? {
-    queryString("select lower(hex(crsql_site_id()))")
+    queryString("select lower(hex(site_id)) from crsql_site_id where ordinal = 0 limit 1")
   }
 
   private func rebuildUnifiedMemoriesFts() throws {
@@ -596,7 +1140,8 @@ final class DatabaseService {
     }
     let hasCrrMetadata = tableNames.contains(where: { $0 == "crsql_master" || $0 == "crsql_site_id" || $0.hasSuffix("__crsql_clock") })
     let isLegacyCacheOnly = Set(tableNames).isSubset(of: ["cached_json", "sync_metadata", "sqlite_sequence"])
-    guard isLegacyCacheOnly || !hasCrrMetadata else { return }
+    let hasMalformedReplicaRows = hasMalformedTextPrimaryKeys(in: scratch)
+    guard isLegacyCacheOnly || !hasCrrMetadata || hasMalformedReplicaRows else { return }
 
     let backupURL = url.appendingPathExtension("phase6-backup")
     if !fileManager.fileExists(atPath: backupURL.path) {
@@ -609,6 +1154,52 @@ final class DatabaseService {
     try? fileManager.removeItem(at: URL(fileURLWithPath: "\(url.path)-wal"))
   }
 
+  private func hasMalformedTextPrimaryKeys(in handle: OpaquePointer?) -> Bool {
+    let tableNames = query(with: handle, """
+      select name
+        from sqlite_master
+       where type = 'table'
+         and name not like 'sqlite_%'
+         and name not like 'crsql_%'
+         and name not like '%__crsql_clock'
+         and name not like '%__crsql_pks'
+    """) { statement in
+      stringValue(statement, index: 0) ?? ""
+    }
+
+    for tableName in tableNames {
+      let columns = query(with: handle, "pragma table_info('\(tableName.replacingOccurrences(of: "'", with: "''"))')") { statement in
+        (
+          name: stringValue(statement, index: 1) ?? "",
+          declaredType: (stringValue(statement, index: 2) ?? "").uppercased(),
+          pkIndex: Int(sqlite3_column_int(statement, 5))
+        )
+      }
+      guard let primaryKey = columns.sorted(by: { $0.pkIndex < $1.pkIndex }).first(where: { $0.pkIndex > 0 }) else {
+        continue
+      }
+      let looksText = primaryKey.declaredType.isEmpty
+        || primaryKey.declaredType.contains("TEXT")
+        || primaryKey.declaredType.contains("CHAR")
+        || primaryKey.declaredType.contains("CLOB")
+      guard looksText else {
+        continue
+      }
+
+      let malformed = !query(with: handle, """
+        select 1
+          from \(quoteIdentifier(tableName))
+         where typeof(\(quoteIdentifier(primaryKey.name))) = 'blob'
+         limit 1
+      """) { _ in true }.isEmpty
+      if malformed {
+        return true
+      }
+    }
+
+    return false
+  }
+
   private func runtimeState(for status: String) -> String {
     switch status {
     case "running":
@@ -618,6 +1209,10 @@ final class DatabaseService {
     default:
       return "exited"
     }
+  }
+
+  private func currentProjectId() -> String? {
+    queryString("select id from projects order by created_at asc limit 1")
   }
 
   private func hasTable(named tableName: String) -> Bool {
@@ -639,6 +1234,26 @@ final class DatabaseService {
     return try? decoder.decode(T.self, from: data)
   }
 
+  private func bindOptionalJson<T: Encodable>(_ value: T?, to statement: OpaquePointer, index: Int32) throws {
+    guard let value else {
+      sqlite3_bind_null(statement, index)
+      return
+    }
+    let data = try encoder.encode(value)
+    guard let json = String(data: data, encoding: .utf8) else {
+      throw sqliteError("Unable to encode JSON for local hydration.")
+    }
+    try bindText(json, to: statement, index: index)
+  }
+
+  private func encodeJsonString<T: Encodable>(_ value: T) throws -> String {
+    let data = try encoder.encode(value)
+    guard let json = String(data: data, encoding: .utf8) else {
+      throw sqliteError("Unable to encode JSON for local hydration.")
+    }
+    return json
+  }
+
   private func run(_ sql: String) throws {
     guard let db else { throw sqliteError("Database is not open.") }
     var errMsg: UnsafeMutablePointer<Int8>?
@@ -654,17 +1269,13 @@ final class DatabaseService {
   private func exec(_ sql: String) throws {
     let alterTable = parseAlterTableTarget(sql)
     if let alterTable, hasTable(named: "\(alterTable)__crsql_clock") {
-      _ = queryInt64("select crsql_begin_alter(?)", bind: { [self] statement in
-        try self.bindText(alterTable, to: statement, index: 1)
-      })
+      try beginCrrAlter(tableName: alterTable)
       do {
         try run(sql)
       } catch {
         throw error
       }
-      _ = queryInt64("select crsql_commit_alter(?)", bind: { [self] statement in
-        try self.bindText(alterTable, to: statement, index: 1)
-      })
+      try commitCrrAlter(tableName: alterTable)
       return
     }
     try run(sql)
@@ -822,6 +1433,501 @@ final class DatabaseService {
       return nil
     }
     return sql[resultRange].replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "").replacingOccurrences(of: "`", with: "").replacingOccurrences(of: "[", with: "").replacingOccurrences(of: "]", with: "")
+  }
+
+  private func ensureSyncMetadataTables() throws {
+    try run("""
+      create table if not exists crsql_master (
+        tbl_name text primary key,
+        created_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      )
+    """)
+    try run("""
+      create table if not exists crsql_site_id (
+        ordinal integer primary key,
+        site_id blob not null
+      )
+    """)
+    try run("""
+      create table if not exists crsql_changes (
+        [table] text not null,
+        pk,
+        cid text not null,
+        val,
+        col_version integer not null,
+        db_version integer not null,
+        site_id blob not null,
+        cl integer not null default 0,
+        seq integer not null default 0
+      )
+    """)
+    try run("create unique index if not exists idx_crsql_changes_unique on crsql_changes([table], pk, cid, db_version, site_id, cl, seq)")
+    try run("create index if not exists idx_crsql_changes_version on crsql_changes(db_version, cl, seq)")
+    try run("create index if not exists idx_crsql_changes_table_pk on crsql_changes([table], pk)")
+  }
+
+  private func registerInternalFunctions() throws {
+    guard let db else { throw sqliteError("Database is not open.") }
+    let context = Unmanaged.passUnretained(self).toOpaque()
+
+    guard sqlite3_create_function_v2(
+      db,
+      "ade_next_db_version",
+      0,
+      SQLITE_UTF8,
+      context,
+      { rawContext, _, _ in
+        guard let rawContext, let raw = sqlite3_user_data(rawContext) else {
+          return
+        }
+        let service = Unmanaged<DatabaseService>.fromOpaque(raw).takeUnretainedValue()
+        sqlite3_result_int64(rawContext, sqlite3_int64(service.nextLocalDbVersion()))
+      },
+      nil,
+      nil,
+      nil
+    ) == SQLITE_OK else {
+      throw sqliteError(sqliteMessage(db))
+    }
+
+    guard sqlite3_create_function_v2(
+      db,
+      "ade_capture_local_changes",
+      0,
+      SQLITE_UTF8 | SQLITE_DETERMINISTIC,
+      context,
+      { rawContext, _, _ in
+        guard let rawContext, let raw = sqlite3_user_data(rawContext) else {
+          return
+        }
+        let service = Unmanaged<DatabaseService>.fromOpaque(raw).takeUnretainedValue()
+        sqlite3_result_int(rawContext, service.shouldCaptureLocalChanges ? 1 : 0)
+      },
+      nil,
+      nil,
+      nil
+    ) == SQLITE_OK else {
+      throw sqliteError(sqliteMessage(db))
+    }
+
+    guard sqlite3_create_function_v2(
+      db,
+      "ade_local_site_id",
+      0,
+      SQLITE_UTF8 | SQLITE_DETERMINISTIC,
+      context,
+      { rawContext, _, _ in
+        guard let rawContext, let raw = sqlite3_user_data(rawContext) else {
+          return
+        }
+        let service = Unmanaged<DatabaseService>.fromOpaque(raw).takeUnretainedValue()
+        service.cachedSiteIdBlob.withUnsafeBytes { rawBuffer in
+          let bytes = rawBuffer.baseAddress
+          sqlite3_result_blob(rawContext, bytes, Int32(service.cachedSiteIdBlob.count), sqliteTransient)
+        }
+      },
+      nil,
+      nil,
+      nil
+    ) == SQLITE_OK else {
+      throw sqliteError(sqliteMessage(db))
+    }
+  }
+
+  private func nextLocalDbVersion() -> Int {
+    localDbVersion += 1
+    return localDbVersion
+  }
+
+  private func readMaxDbVersion() -> Int {
+    Int(queryInt64("select coalesce(max(db_version), 0) from crsql_changes") ?? 0)
+  }
+
+  private func enableCrr(for tableName: String) throws {
+    try ensureSyncMetadataTables()
+    guard let tableInfo = syncTableInfo(for: tableName), let primaryKeyColumn = tableInfo.primaryKeyColumn else { return }
+
+    try run("""
+      create table if not exists \(quoteIdentifier("\(tableName)__crsql_clock")) (
+        key text primary key,
+        col_name text not null,
+        col_version integer not null default 0,
+        db_version integer not null default 0,
+        site_id blob,
+        seq integer not null default 0
+      )
+    """)
+
+    _ = try execute(
+      """
+      insert into crsql_master(tbl_name) values (?)
+      on conflict(tbl_name) do nothing
+      """
+    ) { statement in
+      try bindText(tableName, to: statement, index: 1)
+    }
+
+    try dropCrrTriggers(for: tableName)
+
+    let trackedColumns = tableInfo.columns.filter { $0.name != primaryKeyColumn }
+    guard !trackedColumns.isEmpty else { return }
+
+    let insertStatements = trackedColumns.map { column in
+      """
+      insert into crsql_changes([table], pk, cid, val, col_version, db_version, site_id, cl, seq)
+      select \(sqlStringLiteral(tableName)), NEW.\(quoteIdentifier(primaryKeyColumn)), \(sqlStringLiteral(column.name)), NEW.\(quoteIdentifier(column.name)), 1, ade_next_db_version(), ade_local_site_id(), 0, 0
+      where ade_capture_local_changes() = 1
+      """
+    }.joined(separator: ";\n")
+
+    let updateStatements = trackedColumns.map { column in
+      """
+      insert into crsql_changes([table], pk, cid, val, col_version, db_version, site_id, cl, seq)
+      select \(sqlStringLiteral(tableName)), NEW.\(quoteIdentifier(primaryKeyColumn)), \(sqlStringLiteral(column.name)), NEW.\(quoteIdentifier(column.name)), 1, ade_next_db_version(), ade_local_site_id(), 0, 0
+      where ade_capture_local_changes() = 1 and (OLD.\(quoteIdentifier(column.name)) is not NEW.\(quoteIdentifier(column.name)))
+      """
+    }.joined(separator: ";\n")
+
+    let deleteStatement = """
+      insert into crsql_changes([table], pk, cid, val, col_version, db_version, site_id, cl, seq)
+      select \(sqlStringLiteral(tableName)), OLD.\(quoteIdentifier(primaryKeyColumn)), \(sqlStringLiteral(localDeleteColumnId)), null, 1, ade_next_db_version(), ade_local_site_id(), 0, 0
+      where ade_capture_local_changes() = 1
+      """
+
+    try run("""
+      create trigger if not exists \(quoteIdentifier(insertTriggerName(for: tableName)))
+      after insert on \(quoteIdentifier(tableName))
+      begin
+      \(insertStatements);
+      end
+    """)
+
+    try run("""
+      create trigger if not exists \(quoteIdentifier(updateTriggerName(for: tableName)))
+      after update on \(quoteIdentifier(tableName))
+      begin
+      \(updateStatements);
+      end
+    """)
+
+    try run("""
+      create trigger if not exists \(quoteIdentifier(deleteTriggerName(for: tableName)))
+      after delete on \(quoteIdentifier(tableName))
+      begin
+      \(deleteStatement);
+      end
+    """)
+  }
+
+  private func beginCrrAlter(tableName: String) throws {
+    try dropCrrTriggers(for: tableName)
+  }
+
+  private func commitCrrAlter(tableName: String) throws {
+    syncTableInfoCache.removeValue(forKey: tableName)
+    try enableCrr(for: tableName)
+  }
+
+  private func dropCrrTriggers(for tableName: String) throws {
+    try run("drop trigger if exists \(quoteIdentifier(insertTriggerName(for: tableName)))")
+    try run("drop trigger if exists \(quoteIdentifier(updateTriggerName(for: tableName)))")
+    try run("drop trigger if exists \(quoteIdentifier(deleteTriggerName(for: tableName)))")
+  }
+
+  private func insertTriggerName(for tableName: String) -> String {
+    "ade_crsql_ai_\(sanitizedIdentifier(tableName))"
+  }
+
+  private func updateTriggerName(for tableName: String) -> String {
+    "ade_crsql_au_\(sanitizedIdentifier(tableName))"
+  }
+
+  private func deleteTriggerName(for tableName: String) -> String {
+    "ade_crsql_ad_\(sanitizedIdentifier(tableName))"
+  }
+
+  private func sanitizedIdentifier(_ value: String) -> String {
+    value.map { $0.isLetter || $0.isNumber ? $0 : "_" }.reduce(into: "") { partialResult, character in
+      partialResult.append(character)
+    }
+  }
+
+  private func quoteIdentifier(_ value: String) -> String {
+    "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
+  }
+
+  private func sqlStringLiteral(_ value: String) -> String {
+    "'\(value.replacingOccurrences(of: "'", with: "''"))'"
+  }
+
+  private func syncTableInfo(for tableName: String) -> SyncTableInfo? {
+    if let cached = syncTableInfoCache[tableName] {
+      return cached
+    }
+    let rows = query("pragma table_info('\(tableName.replacingOccurrences(of: "'", with: "''"))')") { statement in
+      SyncColumnInfo(
+        name: stringValue(statement, index: 1) ?? "",
+        declaredType: (stringValue(statement, index: 2) ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+        notNull: sqlite3_column_int(statement, 3) == 1,
+        defaultValue: stringValue(statement, index: 4),
+        pkIndex: Int(sqlite3_column_int(statement, 5))
+      )
+    }
+    guard !rows.isEmpty else { return nil }
+    let info = SyncTableInfo(name: tableName, columns: rows)
+    syncTableInfoCache[tableName] = info
+    return info
+  }
+
+  private func applyAcceptedRemoteChanges(_ changes: [CrsqlChangeRow]) throws {
+    guard !changes.isEmpty else { return }
+
+    var orderedKeys: [String] = []
+    var groups: [String: [CrsqlChangeRow]] = [:]
+
+    for change in changes {
+      let key = groupedChangeKey(table: change.table, pk: change.pk)
+      if groups[key] == nil {
+        orderedKeys.append(key)
+        groups[key] = []
+      }
+      groups[key, default: []].append(change)
+    }
+
+    shouldCaptureLocalChanges = false
+    defer { shouldCaptureLocalChanges = true }
+
+    for key in orderedKeys {
+      guard let rowChanges = groups[key], let first = rowChanges.first,
+            let tableInfo = syncTableInfo(for: first.table),
+            let primaryKeyColumn = tableInfo.primaryKeyColumn
+      else { continue }
+
+      let existingRow = try fetchRow(in: tableInfo, pk: first.pk)
+      if rowChangesRepresentDeletedRow(rowChanges, in: tableInfo, primaryKeyColumn: primaryKeyColumn) {
+        if existingRow != nil {
+          try deleteRow(in: tableInfo, pk: first.pk)
+        }
+        continue
+      }
+
+      var finalRow = existingRow
+      var sawDelete = false
+
+      for change in rowChanges.sorted(by: sortChanges) {
+        if isDeleteColumnId(change.cid) {
+          finalRow = nil
+          sawDelete = true
+          continue
+        }
+        if finalRow == nil {
+          finalRow = [primaryKeyColumn: change.pk]
+        }
+        finalRow?[change.cid] = change.val
+      }
+
+      if finalRow == nil {
+        if existingRow != nil {
+          try deleteRow(in: tableInfo, pk: first.pk)
+        }
+        continue
+      }
+
+      if existingRow == nil || sawDelete {
+        if existingRow != nil {
+          try deleteRow(in: tableInfo, pk: first.pk)
+        }
+        try insertRow(finalRow!, in: tableInfo)
+      } else {
+        try updateRow(finalRow!, in: tableInfo)
+      }
+    }
+  }
+
+  private func sortChanges(_ lhs: CrsqlChangeRow, _ rhs: CrsqlChangeRow) -> Bool {
+    if lhs.dbVersion != rhs.dbVersion {
+      return lhs.dbVersion < rhs.dbVersion
+    }
+    if lhs.cl != rhs.cl {
+      return lhs.cl < rhs.cl
+    }
+    return lhs.seq < rhs.seq
+  }
+
+  private func groupedChangeKey(table: String, pk: SyncScalarValue) -> String {
+    "\(table)|\(scalarStorageKey(pk))"
+  }
+
+  private func isDeleteColumnId(_ cid: String) -> Bool {
+    cid == localDeleteColumnId || cid == legacyDeleteColumnId
+  }
+
+  private func rowChangesRepresentDeletedRow(
+    _ rowChanges: [CrsqlChangeRow],
+    in tableInfo: SyncTableInfo,
+    primaryKeyColumn: String
+  ) -> Bool {
+    if rowChanges.contains(where: { isDeleteColumnId($0.cid) }) {
+      return true
+    }
+
+    let materializedChanges = rowChanges.filter { !isDeleteColumnId($0.cid) }
+    guard !materializedChanges.isEmpty else { return false }
+    guard materializedChanges.allSatisfy({ $0.val == .null }) else { return false }
+
+    let changedColumns = Set(materializedChanges.map(\.cid))
+    let nonPrimaryColumns = Set(tableInfo.columns.map(\.name).filter { $0 != primaryKeyColumn })
+    return changedColumns == nonPrimaryColumns
+  }
+
+  private func normalizeIncomingChange(_ change: CrsqlChangeRow) -> CrsqlChangeRow {
+    guard let tableInfo = syncTableInfo(for: change.table),
+          let primaryKeyColumn = tableInfo.primaryKeyColumn,
+          let primaryKeyInfo = tableInfo.columns.first(where: { $0.name == primaryKeyColumn })
+    else {
+      return change
+    }
+
+    let normalizedPk = normalizePrimaryKeyScalar(change.pk, declaredType: primaryKeyInfo.declaredType)
+    guard normalizedPk != change.pk else {
+      return change
+    }
+
+    return CrsqlChangeRow(
+      table: change.table,
+      pk: normalizedPk,
+      cid: change.cid,
+      val: change.val,
+      colVersion: change.colVersion,
+      dbVersion: change.dbVersion,
+      siteId: change.siteId,
+      cl: change.cl,
+      seq: change.seq
+    )
+  }
+
+  private func normalizePrimaryKeyScalar(_ value: SyncScalarValue, declaredType: String) -> SyncScalarValue {
+    guard case .bytes(let bytesValue) = value else { return value }
+    guard primaryKeyAffinityLooksText(declaredType) else { return value }
+    guard let data = Data(base64Encoded: bytesValue.base64) else { return value }
+
+    if let decodedPackedText = decodePackedTextPrimaryKey(data) {
+      return .string(decodedPackedText)
+    }
+    if let plainText = String(data: data, encoding: .utf8) {
+      return .string(plainText)
+    }
+    return value
+  }
+
+  private func primaryKeyAffinityLooksText(_ declaredType: String) -> Bool {
+    let normalized = declaredType.uppercased()
+    if normalized.isEmpty {
+      return true
+    }
+    return normalized.contains("TEXT") || normalized.contains("CHAR") || normalized.contains("CLOB")
+  }
+
+  private func decodePackedTextPrimaryKey(_ data: Data) -> String? {
+    let bytes = [UInt8](data)
+    guard bytes.count >= 4 else { return nil }
+    guard bytes[0] == 0x01, bytes[1] == 0x0b else { return nil }
+    let textLength = Int(bytes[2])
+    guard bytes.count >= 3 + textLength else { return nil }
+    return String(bytes: bytes[3..<(3 + textLength)], encoding: .utf8)
+  }
+
+  private func scalarStorageKey(_ value: SyncScalarValue) -> String {
+    switch value {
+    case .string(let stringValue):
+      return "s:\(stringValue)"
+    case .number(let numberValue):
+      return "n:\(numberValue)"
+    case .bytes(let bytesValue):
+      return "b:\(bytesValue.base64)"
+    case .null:
+      return "null"
+    }
+  }
+
+  private func fetchRow(in tableInfo: SyncTableInfo, pk: SyncScalarValue) throws -> [String: SyncScalarValue]? {
+    guard let primaryKeyColumn = tableInfo.primaryKeyColumn else { return nil }
+    let selectColumns = tableInfo.columns.map { quoteIdentifier($0.name) }.joined(separator: ", ")
+    let sql = """
+      select \(selectColumns)
+        from \(quoteIdentifier(tableInfo.name))
+       where \(quoteIdentifier(primaryKeyColumn)) = ?
+       limit 1
+    """
+    return try querySingleThrowing(sql, bind: { [self] statement in
+      try self.bindScalar(pk, to: statement, index: 1)
+    }) { statement in
+      var row: [String: SyncScalarValue] = [:]
+      for (index, column) in tableInfo.columns.enumerated() {
+        row[column.name] = scalarValue(statement, index: Int32(index))
+      }
+      return row
+    }
+  }
+
+  private func insertRow(_ row: [String: SyncScalarValue], in tableInfo: SyncTableInfo) throws {
+    let orderedColumns = tableInfo.columns.map(\.name).filter { row[$0] != nil }
+    let placeholders = Array(repeating: "?", count: orderedColumns.count).joined(separator: ", ")
+    let sql = """
+      insert into \(quoteIdentifier(tableInfo.name)) (\(orderedColumns.map(quoteIdentifier).joined(separator: ", ")))
+      values (\(placeholders))
+    """
+    _ = try execute(sql) { statement in
+      for (offset, column) in orderedColumns.enumerated() {
+        try bindScalar(row[column] ?? .null, to: statement, index: Int32(offset + 1))
+      }
+    }
+  }
+
+  private func updateRow(_ row: [String: SyncScalarValue], in tableInfo: SyncTableInfo) throws {
+    guard let primaryKeyColumn = tableInfo.primaryKeyColumn else { return }
+    let orderedColumns = tableInfo.columns.map(\.name).filter { $0 != primaryKeyColumn && row[$0] != nil }
+    let assignments = orderedColumns.map { "\(quoteIdentifier($0)) = ?" }.joined(separator: ", ")
+    let sql = """
+      update \(quoteIdentifier(tableInfo.name))
+         set \(assignments)
+       where \(quoteIdentifier(primaryKeyColumn)) = ?
+    """
+    _ = try execute(sql) { statement in
+      for (offset, column) in orderedColumns.enumerated() {
+        try bindScalar(row[column] ?? .null, to: statement, index: Int32(offset + 1))
+      }
+      try bindScalar(row[primaryKeyColumn] ?? .null, to: statement, index: Int32(orderedColumns.count + 1))
+    }
+  }
+
+  private func deleteRow(in tableInfo: SyncTableInfo, pk: SyncScalarValue) throws {
+    guard let primaryKeyColumn = tableInfo.primaryKeyColumn else { return }
+    let sql = """
+      delete from \(quoteIdentifier(tableInfo.name))
+       where \(quoteIdentifier(primaryKeyColumn)) = ?
+    """
+    _ = try execute(sql) { statement in
+      try bindScalar(pk, to: statement, index: 1)
+    }
+  }
+
+  private func querySingleThrowing<T>(_ sql: String, bind: ((OpaquePointer) throws -> Void)? = nil, map: (OpaquePointer) -> T) throws -> T? {
+    guard let db else { throw sqliteError("Database is not open.") }
+    var statement: OpaquePointer?
+    guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+      throw sqliteError(sqliteMessage(db))
+    }
+    defer { sqlite3_finalize(statement) }
+    try bind?(statement)
+    let result = sqlite3_step(statement)
+    if result == SQLITE_ROW {
+      return map(statement)
+    }
+    if result == SQLITE_DONE {
+      return nil
+    }
+    throw sqliteError(sqliteMessage(db), code: result)
   }
 }
 

@@ -881,6 +881,16 @@ app.whenReady().then(async () => {
       }
     });
 
+    const processService = createProcessService({
+      db,
+      projectId,
+      processLogsDir: adePaths.processLogsDir,
+      logger,
+      laneService,
+      projectConfigService,
+      broadcastEvent: (ev) => emitProjectEvent(projectRoot, IPC.processesEvent, ev)
+    });
+
     const onTrackedSessionEnded = ({ laneId, sessionId, exitCode }: { laneId: string; sessionId: string; exitCode: number | null }) => {
       jobEngine?.onSessionEnded({ laneId, sessionId });
       automationService?.onSessionEnded({ laneId, sessionId });
@@ -1173,6 +1183,7 @@ app.whenReady().then(async () => {
       projectId,
       memoryService,
       packService,
+      fileService,
       workerAgentService,
       workerHeartbeatService,
       linearIssueTracker,
@@ -1183,6 +1194,7 @@ app.whenReady().then(async () => {
       linearClient,
       linearCredentials: linearCredentialService,
       prService,
+      processService,
       episodicSummaryService,
       laneService,
       sessionService,
@@ -1247,16 +1259,6 @@ app.whenReady().then(async () => {
         jobEngine.onLaneDirtyChanged({ laneId, reason });
       },
       onHeadChanged: handleHeadChanged
-    });
-
-    const processService = createProcessService({
-      db,
-      projectId,
-      processLogsDir: adePaths.processLogsDir,
-      logger,
-      laneService,
-      projectConfigService,
-      broadcastEvent: (ev) => emitProjectEvent(projectRoot, IPC.processesEvent, ev)
     });
 
     const testService = createTestService({
@@ -1572,9 +1574,18 @@ app.whenReady().then(async () => {
       projectRoot,
       fileService,
       laneService,
+      gitService,
+      diffService,
+      conflictService,
       prService,
       sessionService,
       ptyService,
+      projectConfigService,
+      portAllocationService,
+      laneEnvironmentService,
+      laneTemplateService,
+      rebaseSuggestionService,
+      autoRebaseService,
       computerUseArtifactBrokerService,
       missionService,
       agentChatService,
@@ -2026,10 +2037,19 @@ app.whenReady().then(async () => {
       missionService,
       ptyService,
       testService,
+      agentChatService,
       prService,
+      fileService,
       memoryService,
       ctoStateService,
       workerAgentService,
+      flowPolicyService,
+      linearDispatcherService,
+      linearIssueTracker,
+      linearSyncService,
+      linearIngressService,
+      linearRoutingService,
+      processService,
       externalMcpService,
       computerUseArtifactBrokerService,
       orchestratorService,
@@ -2480,17 +2500,16 @@ app.whenReady().then(async () => {
 
   dormantContext = createDormantProjectContext();
 
+  const FILE_LIMIT_CODES = new Set(["EMFILE", "ENFILE"]);
+  let emfileWarned = false;
   process.on("uncaughtException", (err) => {
-    // Suppress repeated EMFILE errors to avoid log flooding
-    if ((err as NodeJS.ErrnoException).code === "EMFILE" || (err as NodeJS.ErrnoException).code === "ENFILE") return;
+    if (FILE_LIMIT_CODES.has((err as NodeJS.ErrnoException).code ?? "")) return;
     getActiveContext().logger.error("process.uncaught_exception", {
       err: String(err),
       stack: err instanceof Error ? err.stack : undefined
     });
   });
-  let emfileWarned = false;
   process.on("unhandledRejection", (reason) => {
-    // Suppress repeated EMFILE errors to avoid log flooding
     const msg = String(reason);
     if (msg.includes("EMFILE") || msg.includes("ENFILE")) {
       if (!emfileWarned) {

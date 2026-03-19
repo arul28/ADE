@@ -389,7 +389,7 @@ lanes (
 | Path | Description |
 |------|-------------|
 | `.ade/worktrees/<name>/` | Worktree directory for managed lanes |
-| `.ade/db/ade.db` | SQLite database containing lane records |
+| `.ade/ade.db` | SQLite database containing lane records |
 
 ---
 

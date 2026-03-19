@@ -97,4 +97,53 @@ describe("deriveChatSubagentSnapshots", () => {
       }),
     ]);
   });
+
+  it("updates running snapshots from progress events before the final result arrives", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "task-1",
+          description: "Inspect desktop IPC path",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:02.000Z",
+        event: {
+          type: "subagent_progress",
+          taskId: "task-1",
+          summary: "Traced the send handler and found the blocking await.",
+          usage: {
+            totalTokens: 800,
+            toolUses: 2,
+          },
+          lastToolName: "functions.exec_command",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:04.000Z",
+        event: {
+          type: "subagent_result",
+          taskId: "task-1",
+          status: "completed",
+          summary: "Switched the IPC path to dispatch immediately.",
+        },
+      },
+    ];
+
+    expect(deriveChatSubagentSnapshots(events)).toEqual([
+      expect.objectContaining({
+        taskId: "task-1",
+        description: "Inspect desktop IPC path",
+        status: "completed",
+        summary: "Switched the IPC path to dispatch immediately.",
+        lastToolName: "functions.exec_command",
+        usage: expect.objectContaining({ totalTokens: 800, toolUses: 2 }),
+      }),
+    ]);
+  });
 });

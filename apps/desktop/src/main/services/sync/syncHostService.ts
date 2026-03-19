@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
+import { Bonjour, type Service as BonjourService } from "bonjour-service";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type {
@@ -29,8 +30,18 @@ import type {
   SyncTerminalSnapshotPayload,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
+import type { createAgentChatService } from "../chat/agentChatService";
+import type { createProjectConfigService } from "../config/projectConfigService";
+import type { createConflictService } from "../conflicts/conflictService";
 import type { createFileService } from "../files/fileService";
+import type { createDiffService } from "../diffs/diffService";
+import type { createGitOperationsService } from "../git/gitOperationsService";
+import type { createAutoRebaseService } from "../lanes/autoRebaseService";
+import type { createLaneEnvironmentService } from "../lanes/laneEnvironmentService";
 import type { createLaneService } from "../lanes/laneService";
+import type { createLaneTemplateService } from "../lanes/laneTemplateService";
+import type { createPortAllocationService } from "../lanes/portAllocationService";
+import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
 import type { createPtyService } from "../pty/ptyService";
 import type { createPrService } from "../prs/prService";
 import type { createSessionService } from "../sessions/sessionService";
@@ -45,11 +56,14 @@ const DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS = 30_000;
 const DEFAULT_SYNC_POLL_INTERVAL_MS = 400;
 const DEFAULT_BRAIN_STATUS_INTERVAL_MS = 5_000;
 const DEFAULT_TERMINAL_SNAPSHOT_BYTES = 220_000;
+const SYNC_MDNS_SERVICE_TYPE = "ade-sync";
 
 type PeerState = {
   ws: WebSocket;
   metadata: SyncPeerMetadata | null;
   authenticated: boolean;
+  authKind: "bootstrap" | "paired" | null;
+  pairedDeviceId: string | null;
   connectedAt: string;
   lastSeenAt: string;
   lastAppliedAt: string | null;
@@ -67,9 +81,19 @@ type SyncHostServiceArgs = {
   projectRoot: string;
   fileService: ReturnType<typeof createFileService>;
   laneService: ReturnType<typeof createLaneService>;
+  gitService?: ReturnType<typeof createGitOperationsService>;
+  diffService?: ReturnType<typeof createDiffService>;
+  conflictService?: ReturnType<typeof createConflictService>;
   prService: ReturnType<typeof createPrService>;
   sessionService: ReturnType<typeof createSessionService>;
   ptyService: ReturnType<typeof createPtyService>;
+  agentChatService?: ReturnType<typeof createAgentChatService>;
+  projectConfigService?: ReturnType<typeof createProjectConfigService>;
+  portAllocationService?: ReturnType<typeof createPortAllocationService>;
+  laneEnvironmentService?: ReturnType<typeof createLaneEnvironmentService>;
+  laneTemplateService?: ReturnType<typeof createLaneTemplateService>;
+  rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService>;
+  autoRebaseService?: ReturnType<typeof createAutoRebaseService>;
   computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService>;
   bootstrapTokenPath?: string;
   port?: number;
@@ -240,6 +264,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     prService: args.prService,
     ptyService: args.ptyService,
     sessionService: args.sessionService,
+    fileService: args.fileService,
+    gitService: args.gitService,
+    diffService: args.diffService,
+    conflictService: args.conflictService,
+    agentChatService: args.agentChatService,
+    projectConfigService: args.projectConfigService,
+    portAllocationService: args.portAllocationService,
+    laneEnvironmentService: args.laneEnvironmentService,
+    laneTemplateService: args.laneTemplateService,
+    rebaseSuggestionService: args.rebaseSuggestionService,
+    autoRebaseService: args.autoRebaseService,
     logger: args.logger,
   });
   const heartbeatIntervalMs = Math.max(5_000, Math.floor(args.heartbeatIntervalMs ?? DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS));
@@ -267,6 +302,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   });
 
   let disposed = false;
+  let bonjourInstance: Bonjour | null = null;
+  let bonjourAnnouncement: BonjourService | null = null;
+  let bonjourPort: number | null = null;
   let lastBroadcastAt: string | null = null;
   const startedAtMs = Date.now();
   const pollTimer = setInterval(() => {
@@ -299,6 +337,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       ws,
       metadata: null,
       authenticated: false,
+      authKind: null,
+      pairedDeviceId: null,
       connectedAt: nowIso(),
       lastSeenAt: nowIso(),
       lastAppliedAt: null,
@@ -330,6 +370,53 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       });
     });
   });
+
+  const publishLanDiscovery = (port: number): void => {
+    if (disposed) return;
+    if (bonjourAnnouncement && bonjourPort === port) return;
+    const localDevice = args.deviceRegistryService?.ensureLocalDevice() ?? null;
+    const hostName = localDevice?.name ?? os.hostname();
+    const ipAddresses = (localDevice?.ipAddresses ?? []).filter((value) => value.trim().length > 0);
+    const txt = {
+      version: "1",
+      deviceId: localDevice?.deviceId ?? "",
+      siteId: localDevice?.siteId ?? "",
+      deviceName: hostName,
+      port: String(port),
+      host: localDevice?.lastHost ?? "",
+      addresses: ipAddresses.join(","),
+      tailscaleIp: localDevice?.tailscaleIp ?? "",
+    };
+    if (!bonjourInstance) {
+      bonjourInstance = new Bonjour(undefined, (error: unknown) => {
+        args.logger.warn("sync_host.discovery_error", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+    if (bonjourAnnouncement) {
+      try {
+        bonjourAnnouncement.stop?.();
+      } catch {
+        // ignore cleanup failures
+      }
+      bonjourAnnouncement = null;
+    }
+    bonjourPort = port;
+    bonjourAnnouncement = bonjourInstance.publish({
+      name: `ADE Sync ${hostName} ${port}`,
+      type: SYNC_MDNS_SERVICE_TYPE,
+      protocol: "tcp",
+      port,
+      txt,
+      disableIPv6: true,
+    });
+    bonjourAnnouncement.on("error", (error: unknown) => {
+      args.logger.warn("sync_host.discovery_publish_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
 
   function send<TPayload>(ws: WebSocket, type: SyncEnvelope["type"], payload: TPayload, requestId?: string | null): void {
     ws.send(encodeSyncEnvelope({ type, payload, requestId, compressionThresholdBytes }));
@@ -653,6 +740,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
       peer.authenticated = true;
       peer.metadata = hello.peer;
+      const auth = hello.auth ?? { kind: "bootstrap", token: "" };
+      peer.authKind = auth.kind;
+      peer.pairedDeviceId = auth.kind === "paired" ? auth.deviceId : null;
       peer.lastKnownServerDbVersion = Math.max(0, Math.floor(hello.peer.dbVersion));
       args.deviceRegistryService?.upsertPeerMetadata(hello.peer, {
         lastSeenAt: nowIso(),
@@ -676,6 +766,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           commandRouting: {
             mode: "allowlisted",
             supportedActions: remoteCommandService.getSupportedActions(),
+            actions: remoteCommandService.getDescriptors(),
           },
         },
       }, envelope.requestId);
@@ -761,13 +852,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     async waitUntilListening(): Promise<number> {
       if (server.address()) {
         const address = server.address();
-        return typeof address === "object" && address ? address.port : DEFAULT_SYNC_HOST_PORT;
+        const port = typeof address === "object" && address ? address.port : DEFAULT_SYNC_HOST_PORT;
+        publishLanDiscovery(port);
+        return port;
       }
       await new Promise<void>((resolve) => {
         server.once("listening", () => resolve());
       });
       const address = server.address();
-      return typeof address === "object" && address ? address.port : DEFAULT_SYNC_HOST_PORT;
+      const port = typeof address === "object" && address ? address.port : DEFAULT_SYNC_HOST_PORT;
+      publishLanDiscovery(port);
+      return port;
     },
 
     getPort(): number | null {
@@ -785,6 +880,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
     revokePairedDevice(deviceId: string): void {
       pairingStore.revoke(deviceId);
+      let revokedConnectedPeer = false;
+      for (const peer of peers) {
+        if (!peer.authenticated || peer.authKind !== "paired" || peer.pairedDeviceId !== deviceId) continue;
+        revokedConnectedPeer = true;
+        peer.authenticated = false;
+        peer.metadata = null;
+        peer.authKind = null;
+        peer.pairedDeviceId = null;
+        try {
+          peer.ws.close(4003, "Pairing revoked");
+        } catch {
+          // ignore close failures
+        }
+      }
+      if (revokedConnectedPeer) {
+        args.onStateChanged?.();
+        broadcastBrainStatus();
+      }
     },
 
     getPeerStates(): SyncPeerConnectionState[] {
@@ -840,6 +953,22 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         }
         server.close(() => resolve());
       });
+      if (bonjourAnnouncement) {
+        try {
+          bonjourAnnouncement.stop?.();
+        } catch {
+          // ignore cleanup failures
+        }
+        bonjourAnnouncement = null;
+      }
+      if (bonjourInstance) {
+        try {
+          bonjourInstance.destroy();
+        } catch {
+          // ignore cleanup failures
+        }
+        bonjourInstance = null;
+      }
     },
   };
 }

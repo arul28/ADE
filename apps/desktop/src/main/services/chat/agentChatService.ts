@@ -27,7 +27,9 @@ import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
+import type { createFileService } from "../files/fileService";
 import type { createPackService } from "../packs/packService";
+import type { createProcessService } from "../processes/processService";
 import { runGit } from "../git/git";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
 import { nowIso, fileSizeOrZero } from "../shared/utils";
@@ -196,6 +198,8 @@ type ClaudeRuntime = {
   v2StreamGen: AsyncGenerator<any, void> | null;
   /** Resolves when the subprocess is initialized (system:init received). */
   v2WarmupDone: Promise<void> | null;
+  /** Resolves the current warmup race so waiters can stop blocking immediately. */
+  v2WarmupCancel: (() => void) | null;
   /** Set to true when teardown runs to cancel an in-flight warmup. */
   v2WarmupCancelled: boolean;
   activeSubagents: Map<string, { taskId: string; description: string }>;
@@ -298,6 +302,15 @@ type SessionTurnCollector = {
   };
   lastError: string | null;
   timeout: NodeJS.Timeout;
+};
+
+type PreparedSendMessage = {
+  sessionId: string;
+  managed: ManagedChatSession;
+  promptText: string;
+  visibleText: string;
+  attachments: AgentChatFileRef[];
+  reasoningEffort?: string | null;
 };
 
 type ResolvedChatConfig = {
@@ -988,6 +1001,7 @@ export function createAgentChatService(args: {
   projectId?: string;
   memoryService?: ReturnType<typeof createMemoryService> | null;
   packService?: ReturnType<typeof createPackService> | null;
+  fileService?: ReturnType<typeof createFileService> | null;
   episodicSummaryService?: EpisodicSummaryService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
@@ -1000,6 +1014,7 @@ export function createAgentChatService(args: {
   linearClient?: import("../cto/linearClient").LinearClient | null;
   linearCredentials?: import("../cto/linearCredentialService").LinearCredentialService | null;
   prService?: ReturnType<typeof createPrService> | null;
+  processService?: ReturnType<typeof createProcessService> | null;
   computerUseArtifactBrokerService?: ComputerUseArtifactBrokerService | null;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
@@ -1015,6 +1030,7 @@ export function createAgentChatService(args: {
     projectId,
     memoryService,
     packService,
+    fileService,
     episodicSummaryService,
     ctoStateService,
     workerAgentService,
@@ -1027,6 +1043,7 @@ export function createAgentChatService(args: {
     linearClient: linearClientRef,
     linearCredentials: linearCredentialsRef,
     prService,
+    processService,
     computerUseArtifactBrokerService,
     laneService,
     sessionService,
@@ -1064,7 +1081,7 @@ export function createAgentChatService(args: {
   };
 
   const trackSubagentEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
-    if (event.type !== "subagent_started" && event.type !== "subagent_result") return;
+    if (event.type !== "subagent_started" && event.type !== "subagent_progress" && event.type !== "subagent_result") return;
     const map = ensureSubagentSnapshotMap(managed.session.id);
     if (event.type === "subagent_started") {
       map.set(event.taskId, {
@@ -1073,6 +1090,20 @@ export function createAgentChatService(args: {
         status: "running",
         turnId: event.turnId ?? undefined,
         startTimestamp: nowIso(),
+      });
+      return;
+    }
+    if (event.type === "subagent_progress") {
+      const previous = map.get(event.taskId);
+      map.set(event.taskId, {
+        taskId: event.taskId,
+        description: event.description?.trim() || previous?.description || "Subagent task",
+        status: "running",
+        turnId: event.turnId ?? previous?.turnId,
+        startTimestamp: previous?.startTimestamp ?? nowIso(),
+        summary: event.summary.trim() || previous?.summary,
+        lastToolName: event.lastToolName ?? previous?.lastToolName,
+        usage: event.usage ?? previous?.usage,
       });
       return;
     }
@@ -1090,6 +1121,7 @@ export function createAgentChatService(args: {
       startTimestamp: previous?.startTimestamp,
       endTimestamp: nowIso(),
       summary: event.summary ?? previous?.summary,
+      lastToolName: previous?.lastToolName,
       usage: event.usage ?? previous?.usage,
     });
   };
@@ -1948,7 +1980,7 @@ export function createAgentChatService(args: {
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "claude") {
-      managed.runtime.v2WarmupCancelled = true;
+      cancelClaudeWarmup(managed, managed.runtime, "teardown");
       managed.runtime.activeQuery?.close();
       managed.runtime.activeQuery = null;
       try { managed.runtime.v2Session?.close(); } catch { /* ignore */ }
@@ -2432,6 +2464,19 @@ export function createAgentChatService(args: {
     let assistantText = "";
     let usage: { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheCreationTokens?: number | null } | undefined;
     let costUsd: number | null = null;
+    const turnStartedAt = Date.now();
+    let firstStreamEventLogged = false;
+    const markFirstStreamEvent = (kind: string): void => {
+      if (firstStreamEventLogged) return;
+      firstStreamEventLogged = true;
+      logger.info("agent_chat.turn_first_event", {
+        sessionId: managed.session.id,
+        provider: "claude",
+        turnId,
+        kind,
+        latencyMs: Date.now() - turnStartedAt,
+      });
+    };
 
     try {
       const claudeDescriptor = resolveSessionModelDescriptor(managed.session);
@@ -2440,7 +2485,20 @@ export function createAgentChatService(args: {
       // ── V2 persistent session with background pre-warming ──
       // The pre-warm was kicked off in ensureClaudeSessionRuntime. Wait for it.
       if (runtime.v2WarmupDone) {
+        const warmupWaitStartedAt = Date.now();
+        logger.info("agent_chat.claude_v2_turn_waiting_for_warmup", {
+          sessionId: managed.session.id,
+          turnId,
+        });
         await runtime.v2WarmupDone;
+        logger.info("agent_chat.claude_v2_turn_warmup_wait_done", {
+          sessionId: managed.session.id,
+          turnId,
+          waitedMs: Date.now() - warmupWaitStartedAt,
+        });
+      }
+      if (runtime.interrupted) {
+        throw new Error("Claude turn interrupted during warmup.");
       }
       // Fallback: if pre-warm failed or didn't run, create session on the fly
       if (!runtime.v2Session) {
@@ -2467,6 +2525,7 @@ export function createAgentChatService(args: {
 
       for await (const msg of runtime.v2Session.stream()) {
         if (runtime.interrupted) break;
+        markFirstStreamEvent(msg.type);
 
         // Capture session_id from any message
         if (!runtime.sdkSessionId && (msg as any).session_id) {
@@ -2479,20 +2538,14 @@ export function createAgentChatService(args: {
           const initMsg = msg as any;
           runtime.sdkSessionId = initMsg.session_id ?? runtime.sdkSessionId;
           if (Array.isArray(initMsg.slash_commands)) {
-            runtime.slashCommands = initMsg.slash_commands
-              .filter((cmd: unknown) => typeof cmd === "string" && cmd.length > 0)
-              .map((cmd: string) => ({ name: cmd.startsWith("/") ? cmd : `/${cmd}`, description: "" }));
+            applyClaudeSlashCommands(runtime, initMsg.slash_commands);
           }
           try {
             const sessionImpl = runtime.v2Session as any;
             if (typeof sessionImpl?.supportedCommands === "function") {
               sessionImpl.supportedCommands().then((cmds: any[]) => {
                 if (Array.isArray(cmds) && cmds.length > 0) {
-                  runtime.slashCommands = cmds.map((c: any) => ({
-                    name: typeof c.name === "string" ? (c.name.startsWith("/") ? c.name : `/${c.name}`) : String(c),
-                    description: typeof c.description === "string" ? c.description : "",
-                    argumentHint: typeof c.argumentHint === "string" ? c.argumentHint : undefined,
-                  }));
+                  applyClaudeSlashCommands(runtime, cmds);
                 }
               }).catch(() => { /* not available */ });
             }
@@ -2603,6 +2656,31 @@ export function createAgentChatService(args: {
               turnId,
             });
           }
+          continue;
+        }
+
+        // system:task_progress — running subagent summary/usage
+        if (msg.type === "system" && (msg as any).subtype === "task_progress") {
+          const taskMsg = msg as any;
+          const taskId = String(taskMsg.task_id ?? "");
+          const existing = runtime.activeSubagents.get(taskId);
+          const description = String(taskMsg.description ?? existing?.description ?? "");
+          if (taskId.length) {
+            runtime.activeSubagents.set(taskId, { taskId, description });
+          }
+          emitChatEvent(managed, {
+            type: "subagent_progress",
+            taskId,
+            description,
+            summary: String(taskMsg.summary ?? ""),
+            usage: taskMsg.usage ? {
+              totalTokens: typeof taskMsg.usage.total_tokens === "number" ? taskMsg.usage.total_tokens : undefined,
+              toolUses: typeof taskMsg.usage.tool_uses === "number" ? taskMsg.usage.tool_uses : undefined,
+              durationMs: typeof taskMsg.usage.duration_ms === "number" ? taskMsg.usage.duration_ms : undefined,
+            } : undefined,
+            lastToolName: typeof taskMsg.last_tool_name === "string" ? taskMsg.last_tool_name : undefined,
+            turnId,
+          });
           continue;
         }
 
@@ -3031,6 +3109,19 @@ export function createAgentChatService(args: {
     let assistantText = "";
     let usage: { inputTokens?: number | null; outputTokens?: number | null } | undefined;
     let streamedStepCount = 0;
+    const turnStartedAt = Date.now();
+    let firstStreamEventLogged = false;
+    const markFirstStreamEvent = (kind: string): void => {
+      if (firstStreamEventLogged) return;
+      firstStreamEventLogged = true;
+      logger.info("agent_chat.turn_first_event", {
+        sessionId: managed.session.id,
+        provider: managed.session.provider,
+        turnId,
+        kind,
+        latencyMs: Date.now() - turnStartedAt,
+      });
+    };
 
     try {
       const lightweight = isLightweightSession(managed.session);
@@ -3168,6 +3259,9 @@ export function createAgentChatService(args: {
             workerHeartbeatService: workerHeartbeatService ?? null,
             linearDispatcherService: getLinearDispatcherService?.() ?? null,
             flowPolicyService: flowPolicyService ?? null,
+            prService: prService ?? null,
+            fileService: fileService ?? null,
+            processService: processService ?? null,
             issueTracker: linearIssueTracker ?? null,
             listChats: listSessions,
             getChatStatus: getSessionSummary,
@@ -3176,6 +3270,8 @@ export function createAgentChatService(args: {
             updateChatSession: updateSession,
             sendChatMessage: sendMessage,
             interruptChat: interrupt,
+            resumeChat: resumeSession,
+            disposeChat: dispose,
             ensureCtoSession: async ({ laneId, modelId, reasoningEffort, reuseExisting }) =>
               ensureIdentitySession({
                 identityKey: "cto",
@@ -3185,6 +3281,8 @@ export function createAgentChatService(args: {
                 reuseExisting,
                 permissionMode: "full-auto",
               }),
+            listContextPacks,
+            fetchContextPack,
             fetchMissionContext: async (missionId) => {
               const result = await fetchContextPack({ scope: "mission", missionId, level: "standard" });
               return {
@@ -3237,6 +3335,7 @@ export function createAgentChatService(args: {
       const streamSupportsReasoning = runtime.modelDescriptor.capabilities.reasoning;
       for await (const part of stream.fullStream as AsyncIterable<any>) {
         if (!part || typeof part !== "object") continue;
+        markFirstStreamEvent(String(part.type ?? "unknown"));
 
         if (part.type === "start-step") {
           streamedStepCount += 1;
@@ -4217,6 +4316,7 @@ export function createAgentChatService(args: {
       cwd: managed.laneWorktreePath,
       permissionMode: claudePermissionMode as any,
       includePartialMessages: true,
+      agentProgressSummaries: true,
       maxBudgetUsd: chatConfig.sessionBudgetUsd ?? undefined,
       model: resolveClaudeCliModel(managed.session.model),
     };
@@ -4264,11 +4364,49 @@ export function createAgentChatService(args: {
     return { ...opts, model };
   };
 
+  const cancelClaudeWarmup = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    reason: "interrupt" | "teardown" | "session_reset",
+  ): void => {
+    if (!runtime.v2WarmupDone) return;
+    runtime.v2WarmupCancelled = true;
+    runtime.v2WarmupCancel?.();
+    logger.info("agent_chat.claude_v2_prewarm_cancel", {
+      sessionId: managed.session.id,
+      reason,
+    });
+  };
+
+  const applyClaudeSlashCommands = (
+    runtime: ClaudeRuntime,
+    commands: Array<string | { name?: string; description?: string; argumentHint?: string }>,
+  ): void => {
+    runtime.slashCommands = commands
+      .map((command) => {
+        if (typeof command === "string") {
+          const normalized = command.trim();
+          if (!normalized.length) return null;
+          return {
+            name: normalized.startsWith("/") ? normalized : `/${normalized}`,
+            description: "",
+          };
+        }
+        const normalized = typeof command.name === "string" ? command.name.trim() : "";
+        if (!normalized.length) return null;
+        return {
+          name: normalized.startsWith("/") ? normalized : `/${normalized}`,
+          description: typeof command.description === "string" ? command.description : "",
+          argumentHint: typeof command.argumentHint === "string" ? command.argumentHint : undefined,
+        };
+      })
+      .filter((command): command is { name: string; description: string; argumentHint?: string } => Boolean(command));
+  };
+
   /**
    * Pre-warm the Claude V2 session in the background.
-   * Creates the session and sends a warmup turn so the subprocess + MCP servers
-   * are fully initialized by the time the user sends their first real message.
-   * The warmup turn (~30s cold start) runs while the user is composing their message.
+   * Creates the persistent session and runs a silent warmup turn because the
+   * public V2 session API does not expose an init-only readiness handshake.
    */
   const prewarmClaudeV2Session = (managed: ManagedChatSession): void => {
     const runtime = managed.runtime;
@@ -4276,8 +4414,18 @@ export function createAgentChatService(args: {
     if (runtime.v2Session || runtime.v2WarmupDone) return;
 
     runtime.v2WarmupCancelled = false;
+    const warmupStartedAt = Date.now();
+    let settleWarmupWaiters: (() => void) | null = null;
+    const waitForCancel = new Promise<void>((resolve) => {
+      settleWarmupWaiters = resolve;
+    });
+    const cancelWarmup = () => {
+      settleWarmupWaiters?.();
+      settleWarmupWaiters = null;
+    };
+    runtime.v2WarmupCancel = cancelWarmup;
 
-    runtime.v2WarmupDone = (async () => {
+    const warmupTask = (async () => {
       try {
         const v2Opts = buildClaudeV2SessionOpts(managed, runtime);
         logger.info("agent_chat.claude_v2_prewarm_start", {
@@ -4300,9 +4448,6 @@ export function createAgentChatService(args: {
           return;
         }
 
-        // Send a warmup turn — this triggers the ~30s subprocess cold start.
-        // The response is consumed silently. By the time the user types and sends
-        // their first real message, the subprocess is already running.
         await runtime.v2Session.send("System initialization check. Respond with only the word READY.");
         for await (const msg of runtime.v2Session.stream()) {
           if (runtime.v2WarmupCancelled) break;
@@ -4313,20 +4458,14 @@ export function createAgentChatService(args: {
             const initMsg = msg as any;
             runtime.sdkSessionId = initMsg.session_id ?? runtime.sdkSessionId;
             if (Array.isArray(initMsg.slash_commands)) {
-              runtime.slashCommands = initMsg.slash_commands
-                .filter((cmd: unknown) => typeof cmd === "string" && cmd.length > 0)
-                .map((cmd: string) => ({ name: cmd.startsWith("/") ? cmd : `/${cmd}`, description: "" }));
+              applyClaudeSlashCommands(runtime, initMsg.slash_commands);
             }
             try {
               const sessionImpl = runtime.v2Session as any;
               if (typeof sessionImpl?.supportedCommands === "function") {
                 sessionImpl.supportedCommands().then((cmds: any[]) => {
                   if (Array.isArray(cmds) && cmds.length > 0) {
-                    runtime.slashCommands = cmds.map((c: any) => ({
-                      name: typeof c.name === "string" ? (c.name.startsWith("/") ? c.name : `/${c.name}`) : String(c),
-                      description: typeof c.description === "string" ? c.description : "",
-                      argumentHint: typeof c.argumentHint === "string" ? c.argumentHint : undefined,
-                    }));
+                    applyClaudeSlashCommands(runtime, cmds);
                   }
                 }).catch(() => { /* not available */ });
               }
@@ -4375,6 +4514,23 @@ export function createAgentChatService(args: {
         runtime.v2Session = null;
       }
     })();
+
+    const warmupPromise = Promise.race([warmupTask, waitForCancel]);
+    runtime.v2WarmupDone = warmupPromise;
+
+    void warmupPromise.finally(() => {
+      if (runtime.v2WarmupDone === warmupPromise) {
+        runtime.v2WarmupDone = null;
+      }
+      if (runtime.v2WarmupCancel === cancelWarmup) {
+        runtime.v2WarmupCancel = null;
+      }
+      logger.info("agent_chat.claude_v2_prewarm_settled", {
+        sessionId: managed.session.id,
+        cancelled: runtime.v2WarmupCancelled,
+        durationMs: Date.now() - warmupStartedAt,
+      });
+    });
   };
 
   const ensureClaudeSessionRuntime = (managed: ManagedChatSession): ClaudeRuntime => {
@@ -4389,6 +4545,7 @@ export function createAgentChatService(args: {
       v2Session: null,
       v2StreamGen: null,
       v2WarmupDone: null,
+      v2WarmupCancel: null,
       v2WarmupCancelled: false,
       activeSubagents: new Map(),
       slashCommands: [],
@@ -4721,16 +4878,16 @@ export function createAgentChatService(args: {
     return managed.session;
   };
 
-  const sendMessage = async ({
+  const prepareSendMessage = ({
     sessionId,
     text,
     displayText,
     attachments = [],
     reasoningEffort,
     executionMode,
-  }: AgentChatSendArgs): Promise<void> => {
+  }: AgentChatSendArgs): PreparedSendMessage | null => {
     const trimmed = text.trim();
-    if (!trimmed.length) return;
+    if (!trimmed.length) return null;
     const slashCommand = extractSlashCommand(trimmed);
     const visibleText = displayText?.trim().length ? displayText.trim() : trimmed;
 
@@ -4774,6 +4931,75 @@ export function createAgentChatService(args: {
     } else if (managed.session.executionMode == null) {
       managed.session.executionMode = "focused";
     }
+
+    return {
+      sessionId,
+      managed,
+      promptText,
+      visibleText,
+      attachments,
+      reasoningEffort,
+    };
+  };
+
+  const emitDispatchedSendFailure = (prepared: PreparedSendMessage, error: unknown): void => {
+    const { managed } = prepared;
+    if (managed.closed) return;
+
+    const message = error instanceof Error ? error.message : String(error);
+    const turnId = randomUUID();
+    managed.session.status = "idle";
+
+    if (managed.runtime?.kind === "codex") {
+      managed.runtime.activeTurnId = null;
+      managed.runtime.startedTurnId = null;
+    }
+    if (managed.runtime?.kind === "unified") {
+      managed.runtime.busy = false;
+      managed.runtime.activeTurnId = null;
+      managed.runtime.abortController = null;
+    }
+    if (managed.runtime?.kind === "claude") {
+      managed.runtime.busy = false;
+      managed.runtime.activeTurnId = null;
+      managed.runtime.activeQuery = null;
+    }
+
+    emitChatEvent(managed, {
+      type: "error",
+      message,
+      turnId,
+    });
+    emitChatEvent(managed, {
+      type: "status",
+      turnStatus: "failed",
+      message,
+      turnId,
+    });
+    emitChatEvent(managed, {
+      type: "done",
+      turnId,
+      status: "failed",
+      model: managed.session.model,
+      ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+    });
+
+    appendWorkerActivityToCto(managed, {
+      activityType: "chat_turn",
+      summary: `Turn failed before execution: ${message}`,
+    });
+    persistChatState(managed);
+  };
+
+  const executePreparedSendMessage = async (prepared: PreparedSendMessage): Promise<void> => {
+    const {
+      sessionId,
+      managed,
+      promptText,
+      visibleText,
+      attachments,
+      reasoningEffort,
+    } = prepared;
 
     // Unified runtime dispatch
     if (managed.session.provider === "unified") {
@@ -4866,6 +5092,28 @@ export function createAgentChatService(args: {
     await runClaudeTurn(managed, { promptText, displayText: visibleText, attachments });
   };
 
+  const sendMessage = async (args: AgentChatSendArgs): Promise<void> => {
+    const dispatchStartedAt = Date.now();
+    const prepared = prepareSendMessage(args);
+    if (!prepared) return;
+
+    logger.info("agent_chat.turn_dispatch_ack", {
+      sessionId: prepared.sessionId,
+      provider: prepared.managed.session.provider,
+      model: prepared.managed.session.model,
+      durationMs: Date.now() - dispatchStartedAt,
+    });
+
+    void executePreparedSendMessage(prepared).catch((error) => {
+      logger.warn("agent_chat.turn_dispatch_failed", {
+        sessionId: prepared.sessionId,
+        provider: prepared.managed.session.provider,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      emitDispatchedSendFailure(prepared, error);
+    });
+  };
+
   const steer = async ({ sessionId, text }: AgentChatSteerArgs): Promise<void> => {
     const trimmed = text.trim();
     if (!trimmed.length) return;
@@ -4951,13 +5199,27 @@ export function createAgentChatService(args: {
     }
 
     const runtime = ensureClaudeSessionRuntime(managed);
+    logger.info("agent_chat.turn_interrupt_requested", {
+      sessionId,
+      provider: "claude",
+      turnId: runtime.activeTurnId,
+      busy: runtime.busy,
+      warmupInFlight: Boolean(runtime.v2WarmupDone),
+    });
     runtime.interrupted = true;
+    cancelClaudeWarmup(managed, runtime, "interrupt");
     runtime.activeQuery?.interrupt().catch(() => {});
     // Close the V2 session on interrupt — it will be recreated on the next turn
     try { runtime.v2Session?.close(); } catch { /* ignore */ }
     runtime.v2Session = null;
     runtime.v2StreamGen = null;
-    runtime.v2WarmupDone = null;
+    runtime.activeSubagents.clear();
+    logger.info("agent_chat.turn_interrupt_completed", {
+      sessionId,
+      provider: "claude",
+      turnId: runtime.activeTurnId,
+      busy: runtime.busy,
+    });
   };
 
   const resumeSession = async ({ sessionId }: { sessionId: string }): Promise<AgentChatSession> => {
@@ -5459,8 +5721,9 @@ export function createAgentChatService(args: {
       // When reasoning effort changes on a Claude session with an active V2
       // session, invalidate the V2 session so it is recreated on the next turn
       // with the updated thinking configuration.
-      if (prev !== next && managed.runtime?.kind === "claude" && managed.runtime.v2Session) {
-        managed.runtime.v2Session.close();
+      if (prev !== next && managed.runtime?.kind === "claude" && (managed.runtime.v2Session || managed.runtime.v2WarmupDone)) {
+        cancelClaudeWarmup(managed, managed.runtime, "session_reset");
+        try { managed.runtime.v2Session?.close(); } catch { /* ignore */ }
         managed.runtime.v2Session = null;
         managed.runtime.v2WarmupDone = null;
       }
@@ -5514,7 +5777,7 @@ export function createAgentChatService(args: {
     if (!isAnthropicCli) return;
 
     // Only prewarm if the session is idle (not mid-turn) and not already warmed
-    if (managed.runtime?.kind === "claude" && managed.runtime.v2WarmupDone) return;
+    if (managed.runtime?.kind === "claude" && (managed.runtime.v2Session || managed.runtime.v2WarmupDone)) return;
 
     // Apply the selected model to the session so buildClaudeV2SessionOpts
     // picks up the correct model for warmup.
@@ -5542,11 +5805,17 @@ export function createAgentChatService(args: {
 
     packs.push(
       {
+        scope: "feature",
+        label: "Feature",
+        description: "Feature-scoped export requires an explicit feature key",
+        available: Boolean(packService)
+      },
+      {
         scope: "mission",
         label: "Mission",
-        description: "Mission-scoped export requires an explicit mission selection and is not wired into this picker yet",
-        available: false
-      }
+        description: "Mission-scoped export requires an explicit mission selection",
+        available: Boolean(packService)
+      },
     );
 
     return packs;
@@ -5721,8 +5990,40 @@ export function createAgentChatService(args: {
     threadId?: string;
     sdkSessionId?: string | null;
   }> => {
+    const managed = ensureManagedSession(sessionId);
+    const trimmed = text.trim();
+    if (!trimmed.length) {
+      return {
+        sessionId,
+        provider: managed.session.provider,
+        model: managed.session.model,
+        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        outputText: "",
+        ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
+        ...(managed.runtime?.kind === "claude" ? { sdkSessionId: managed.runtime.sdkSessionId ?? null } : {}),
+      };
+    }
     if (sessionTurnCollectors.has(sessionId)) {
       throw new Error(`Session '${sessionId}' already has an active background turn.`);
+    }
+    const prepared = prepareSendMessage({
+      sessionId,
+      text,
+      displayText,
+      attachments,
+      reasoningEffort,
+      executionMode,
+    });
+    if (!prepared) {
+      return {
+        sessionId,
+        provider: managed.session.provider,
+        model: managed.session.model,
+        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        outputText: "",
+        ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
+        ...(managed.runtime?.kind === "claude" ? { sdkSessionId: managed.runtime.sdkSessionId ?? null } : {}),
+      };
     }
 
     const safeTimeoutMs = Math.max(15_000, Math.floor(timeoutMs));
@@ -5740,14 +6041,7 @@ export function createAgentChatService(args: {
         timeout,
       });
 
-      void sendMessage({
-        sessionId,
-        text,
-        displayText,
-        attachments,
-        reasoningEffort,
-        executionMode,
-      }).catch((error) => {
+      void executePreparedSendMessage(prepared).catch((error) => {
         clearTimeout(timeout);
         sessionTurnCollectors.delete(sessionId);
         reject(error instanceof Error ? error : new Error(String(error)));

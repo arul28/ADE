@@ -63,28 +63,18 @@ ADE is built for people who want agents to operate inside a real development wor
 
 1. Download the latest `.dmg` from [**Releases**](https://github.com/arul28/ADE/releases)
 2. Open the `.dmg` and drag **ADE** into your Applications folder
-3. Move **ADE** into your Applications folder before trying to launch it
-4. Clear macOS quarantine for the installed app bundle:
-
-```bash
-xattr -dr com.apple.quarantine /Applications/ADE.app
-```
-
-5. Launch ADE, open a project, and configure your AI provider in Settings
+3. Launch ADE from Applications
+4. Open a project and configure your AI provider in Settings
 
 ## Early beta notes
 
 ADE is still a very early beta. Expect rough edges, incomplete workflows, and occasional breaking changes between releases.
 
-The macOS app is not code signed or notarized yet, so Gatekeeper may block it on first launch. Install the app by dragging it into `Applications` first, then if macOS still refuses to open it, run:
+Official macOS releases are intended to ship as Developer ID-signed and notarized builds so Gatekeeper accepts them normally and ADE can apply future in-app updates without the quarantine workaround.
 
-```bash
-xattr -dr com.apple.quarantine /Applications/ADE.app
-```
+Older pre-signing beta builds may still need the manual `xattr -dr com.apple.quarantine /Applications/ADE.app` step if you are testing an older release artifact.
 
-That removes the quarantine attribute Apple adds to downloaded apps and allows ADE to launch locally. Only do this for builds you downloaded from the ADE releases page and trust.
-
-ADE auto-updates. When a new version is available, an update button appears in the header bar -- click it to restart and apply.
+ADE auto-updates. When a new version is available, an update button appears in the header bar. Click it to restart and apply the signed update.
 
 ## Contributing
 

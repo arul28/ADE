@@ -32,7 +32,7 @@ describe("CtoPage chat surface", () => {
     globalThis.window.ade = {
       cto: {
         getState: vi.fn(() => Promise.resolve({ identity: null, coreMemory: null, recentSessions: [], recentSubordinateActivity: [] })),
-        getOnboardingState: vi.fn(() => Promise.resolve({ completedSteps: ["step"], dismissedAt: null, completedAt: null })),
+        getOnboardingState: vi.fn(() => Promise.resolve({ completedSteps: ["identity"], dismissedAt: null, completedAt: "2026-03-01T00:00:00.000Z" })),
         listAgents: vi.fn(() => Promise.resolve([])),
         getBudgetSnapshot: vi.fn(() => Promise.resolve({})),
         ensureSession: vi.fn(() => Promise.resolve({

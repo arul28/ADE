@@ -19,6 +19,7 @@ vi.mock("./providerRuntimeHealth", () => ({
 
 let probeClaudeRuntimeHealth: typeof import("./claudeRuntimeProbe").probeClaudeRuntimeHealth;
 let resetClaudeRuntimeProbeCache: typeof import("./claudeRuntimeProbe").resetClaudeRuntimeProbeCache;
+let isClaudeRuntimeAuthError: typeof import("./claudeRuntimeProbe").isClaudeRuntimeAuthError;
 
 function makeStream(messages: unknown[]) {
   const close = vi.fn();
@@ -42,6 +43,7 @@ beforeEach(async () => {
   const mod = await import("./claudeRuntimeProbe");
   probeClaudeRuntimeHealth = mod.probeClaudeRuntimeHealth;
   resetClaudeRuntimeProbeCache = mod.resetClaudeRuntimeProbeCache;
+  isClaudeRuntimeAuthError = mod.isClaudeRuntimeAuthError;
   resetClaudeRuntimeProbeCache();
 });
 
@@ -55,6 +57,46 @@ describe("claudeRuntimeProbe", () => {
         error: "login required",
         uuid: "uuid-1",
         session_id: "session-1",
+      },
+    ]);
+    mockState.query.mockReturnValue(query.stream);
+
+    await probeClaudeRuntimeHealth({ projectRoot: "/tmp/project", force: true });
+
+    expect(query.close).toHaveBeenCalledTimes(1);
+    expect(mockState.reportProviderRuntimeAuthFailure).toHaveBeenCalledTimes(1);
+    expect(mockState.reportProviderRuntimeFailure).not.toHaveBeenCalled();
+  });
+
+  it("treats Anthropic 401 invalid credentials responses as auth failures", async () => {
+    expect(
+      isClaudeRuntimeAuthError(
+        'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"Invalid authentication credentials"}}',
+      ),
+    ).toBe(true);
+
+    const query = makeStream([
+      {
+        type: "result",
+        subtype: "success",
+        duration_ms: 12,
+        duration_api_ms: 12,
+        is_error: true,
+        num_turns: 1,
+        result: "",
+        session_id: "session-401",
+        total_cost_usd: 0,
+        usage: {
+          input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+          output_tokens: 0,
+          server_tool_use: { web_search_requests: 0 },
+          service_tier: "standard",
+        },
+        errors: [
+          'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"Invalid authentication credentials"}}',
+        ],
       },
     ]);
     mockState.query.mockReturnValue(query.stream);

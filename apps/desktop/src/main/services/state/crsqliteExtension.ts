@@ -15,7 +15,7 @@ function platformArchDir(): string {
   return `${process.platform}-${process.arch}`;
 }
 
-export function resolveCrsqliteExtensionPath(): string {
+export function resolveCrsqliteExtensionPath(): string | null {
   const relativePath = path.join("vendor", "crsqlite", platformArchDir(), extensionFileName());
   const candidates = [
     process.resourcesPath ? path.join(process.resourcesPath, "app.asar.unpacked", relativePath) : null,
@@ -32,5 +32,9 @@ export function resolveCrsqliteExtensionPath(): string {
     }
   }
 
-  throw new Error(`Unable to locate cr-sqlite extension for ${platformArchDir()}`);
+  return null;
+}
+
+export function isCrsqliteAvailable(): boolean {
+  return resolveCrsqliteExtensionPath() != null;
 }

@@ -16,11 +16,18 @@ import { createDiffService } from "../../desktop/src/main/services/diffs/diffSer
 import { createMissionService } from "../../desktop/src/main/services/missions/missionService";
 import { createPtyService } from "../../desktop/src/main/services/pty/ptyService";
 import { createTestService } from "../../desktop/src/main/services/tests/testService";
+import type { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
 import { createMemoryService } from "../../desktop/src/main/services/memory/memoryService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createWorkerAgentService } from "../../desktop/src/main/services/cto/workerAgentService";
 import { createWorkerBudgetService } from "../../desktop/src/main/services/cto/workerBudgetService";
+import type { createFlowPolicyService } from "../../desktop/src/main/services/cto/flowPolicyService";
+import type { createLinearDispatcherService } from "../../desktop/src/main/services/cto/linearDispatcherService";
+import type { createLinearIssueTracker } from "../../desktop/src/main/services/cto/linearIssueTracker";
+import type { createLinearIngressService } from "../../desktop/src/main/services/cto/linearIngressService";
+import type { createLinearRoutingService } from "../../desktop/src/main/services/cto/linearRoutingService";
+import type { createLinearSyncService } from "../../desktop/src/main/services/cto/linearSyncService";
 import { createOrchestratorService } from "../../desktop/src/main/services/orchestrator/orchestratorService";
 import { createAiOrchestratorService } from "../../desktop/src/main/services/orchestrator/aiOrchestratorService";
 import { createAiIntegrationService } from "../../desktop/src/main/services/ai/aiIntegrationService";
@@ -30,6 +37,8 @@ import {
   createComputerUseArtifactBrokerService,
   type ComputerUseArtifactBrokerService,
 } from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
+import type { createFileService } from "../../desktop/src/main/services/files/fileService";
+import type { createProcessService } from "../../desktop/src/main/services/processes/processService";
 
 // ── Event Buffer ─────────────────────────────────────────────────
 // In-memory ring buffer for event streaming (10K cap, FIFO eviction).
@@ -117,10 +126,19 @@ export type AdeMcpRuntime = {
   missionService: ReturnType<typeof createMissionService>;
   ptyService: ReturnType<typeof createPtyService>;
   testService: ReturnType<typeof createTestService>;
+  agentChatService?: ReturnType<typeof createAgentChatService> | null;
   prService?: ReturnType<typeof createPrService>;
+  fileService?: ReturnType<typeof createFileService> | null;
   memoryService: ReturnType<typeof createMemoryService>;
   ctoStateService: ReturnType<typeof createCtoStateService>;
   workerAgentService: ReturnType<typeof createWorkerAgentService>;
+  flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
+  linearDispatcherService?: ReturnType<typeof createLinearDispatcherService> | null;
+  linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
+  linearSyncService?: ReturnType<typeof createLinearSyncService> | null;
+  linearIngressService?: ReturnType<typeof createLinearIngressService> | null;
+  linearRoutingService?: ReturnType<typeof createLinearRoutingService> | null;
+  processService?: ReturnType<typeof createProcessService> | null;
   externalMcpService: ExternalMcpService;
   computerUseArtifactBrokerService: ComputerUseArtifactBrokerService;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
@@ -296,6 +314,10 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
 
   const eventBuffer = createEventBuffer();
 
+  function pushEvent(category: BufferedEvent["category"], payload: Record<string, unknown>): void {
+    eventBuffer.push({ timestamp: new Date().toISOString(), category, payload });
+  }
+
   const memoryService = createMemoryService(db);
   const ctoStateService = createCtoStateService({
     db,
@@ -366,26 +388,18 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
     projectConfigService,
     memoryService,
     onEvent: (e) => {
-      eventBuffer.push({
-        timestamp: new Date().toISOString(),
-        category: "orchestrator",
-        payload: e as unknown as Record<string, unknown>
-      });
+      pushEvent("orchestrator", e as unknown as Record<string, unknown>);
       if (
         e.reason === "validation_contract_unfulfilled" ||
         e.reason === "validation_self_check_reminder" ||
         e.reason === "validation_auto_spawned" ||
         e.reason === "validation_gate_blocked"
       ) {
-        eventBuffer.push({
-          timestamp: new Date().toISOString(),
-          category: "runtime",
-          payload: {
-            type: e.reason,
-            runId: e.runId ?? null,
-            stepId: e.stepId ?? null,
-            attemptId: e.attemptId ?? null,
-          }
+        pushEvent("runtime", {
+          type: e.reason,
+          runId: e.runId ?? null,
+          stepId: e.stepId ?? null,
+          attemptId: e.attemptId ?? null,
         });
       }
     }
@@ -412,20 +426,8 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
     aiIntegrationService,
     prService: undefined,
     projectRoot,
-    onThreadEvent: (e) => {
-      eventBuffer.push({
-        timestamp: new Date().toISOString(),
-        category: "runtime",
-        payload: e as unknown as Record<string, unknown>
-      });
-    },
-    onDagMutation: (e) => {
-      eventBuffer.push({
-        timestamp: new Date().toISOString(),
-        category: "dag_mutation",
-        payload: e as unknown as Record<string, unknown>
-      });
-    }
+    onThreadEvent: (e) => pushEvent("runtime", e as unknown as Record<string, unknown>),
+    onDagMutation: (e) => pushEvent("dag_mutation", e as unknown as Record<string, unknown>)
   });
 
   return {
@@ -447,46 +449,32 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
     missionService,
     ptyService,
     testService,
+    agentChatService: null,
     memoryService,
     ctoStateService,
     workerAgentService,
+    flowPolicyService: null,
+    linearDispatcherService: null,
+    linearIssueTracker: null,
+    linearSyncService: null,
+    linearIngressService: null,
+    linearRoutingService: null,
+    fileService: null,
+    processService: null,
     externalMcpService,
     computerUseArtifactBrokerService,
     orchestratorService,
     aiOrchestratorService,
     eventBuffer,
     dispose: () => {
-      try {
-        externalMcpConfigWatcher?.close();
-      } catch {
-        // ignore
-      }
+      const swallow = (fn: () => void) => { try { fn(); } catch { /* ignore */ } };
+      swallow(() => externalMcpConfigWatcher?.close());
       void externalMcpService.dispose().catch(() => {});
-      try {
-        aiOrchestratorService.dispose();
-      } catch {
-        // ignore
-      }
-      try {
-        testService.disposeAll();
-      } catch {
-        // ignore
-      }
-      try {
-        ptyService.disposeAll();
-      } catch {
-        // ignore
-      }
-      try {
-        db.flushNow();
-      } catch {
-        // ignore
-      }
-      try {
-        db.close();
-      } catch {
-        // ignore
-      }
+      swallow(() => aiOrchestratorService.dispose());
+      swallow(() => testService.disposeAll());
+      swallow(() => ptyService.disposeAll());
+      swallow(() => db.flushNow());
+      swallow(() => db.close());
     }
   };
 }

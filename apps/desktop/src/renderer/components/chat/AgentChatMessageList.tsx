@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useNavigate } from "react-router-dom";
 import {
   CaretDown,
   CaretRight,
@@ -27,6 +28,7 @@ import type {
   ChatSurfaceChipTone,
   ChatSurfaceProfile,
   ChatSurfaceMode,
+  OperatorNavigationSuggestion,
 } from "../../../shared/types";
 import { getModelById, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
@@ -52,6 +54,38 @@ function readRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+const NAVIGATION_SURFACES = new Set(["work", "missions", "lanes", "cto"]);
+
+function readOperatorNavigationSuggestion(value: unknown): OperatorNavigationSuggestion | null {
+  const record = readRecord(value);
+  if (!record) return null;
+  const surface = typeof record.surface === "string" ? record.surface : "";
+  const href = typeof record.href === "string" ? record.href : "";
+  const label = typeof record.label === "string" ? record.label : "";
+  if (!NAVIGATION_SURFACES.has(surface) || !href.trim() || !label.trim()) return null;
+  const result: OperatorNavigationSuggestion = { surface: surface as OperatorNavigationSuggestion["surface"], href, label };
+  if (typeof record.laneId === "string") result.laneId = record.laneId;
+  if (typeof record.sessionId === "string") result.sessionId = record.sessionId;
+  if (typeof record.missionId === "string") result.missionId = record.missionId;
+  return result;
+}
+
+function readNavigationSuggestions(value: unknown): OperatorNavigationSuggestion[] {
+  const record = readRecord(value);
+  if (!record) return [];
+  const suggestions: OperatorNavigationSuggestion[] = [];
+  const navigationSuggestions = Array.isArray(record.navigationSuggestions)
+    ? record.navigationSuggestions
+    : [];
+  for (const candidate of navigationSuggestions) {
+    const parsed = readOperatorNavigationSuggestion(candidate);
+    if (parsed) suggestions.push(parsed);
+  }
+  if (suggestions.length > 0) return suggestions;
+  const fallback = readOperatorNavigationSuggestion(record.navigation);
+  return fallback ? [fallback] : [];
+}
+
 function summarizeStructuredValue(value: unknown, maxChars = 160): string {
   const text = formatStructuredValue(value).replace(/\s+/g, " ").trim();
   return text.length > maxChars ? `${text.slice(0, maxChars)}...` : text;
@@ -68,6 +102,27 @@ function formatTokenCount(value: number | null | undefined): string | null {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
   return String(Math.round(value));
+}
+
+function renderSubagentUsage(usage: {
+  totalTokens?: number;
+  toolUses?: number;
+  durationMs?: number;
+} | undefined): React.ReactNode {
+  if (!usage) return null;
+  return (
+    <div className="flex flex-wrap gap-3 border-t border-violet-500/8 pt-2.5 font-mono text-[10px] text-muted-fg/45">
+      {usage.totalTokens != null ? (
+        <span>{formatTokenCount(usage.totalTokens)} tokens</span>
+      ) : null}
+      {usage.toolUses != null ? (
+        <span>{usage.toolUses} tool use{usage.toolUses === 1 ? "" : "s"}</span>
+      ) : null}
+      {usage.durationMs != null ? (
+        <span>{(usage.durationMs / 1000).toFixed(1)}s</span>
+      ) : null}
+    </div>
+  );
 }
 
 const GLASS_CARD_CLASS =
@@ -328,6 +383,31 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
 
   // subagent_started and subagent_result: push normally, no collapsing
   if (event.type === "subagent_started" || event.type === "subagent_result") {
+    out.push({
+      key: `${envelope.sessionId}:${sequence}:${envelope.timestamp}`,
+      timestamp: envelope.timestamp,
+      event,
+    });
+    return;
+  }
+
+  if (event.type === "subagent_progress") {
+    const matchIndex = [...out]
+      .reverse()
+      .findIndex((candidate) =>
+        candidate.event.type === "subagent_progress"
+        && candidate.event.taskId === event.taskId
+        && (candidate.event.turnId ?? null) === (event.turnId ?? null),
+      );
+    if (matchIndex >= 0) {
+      const actualIndex = out.length - 1 - matchIndex;
+      out[actualIndex] = {
+        ...out[actualIndex]!,
+        timestamp: envelope.timestamp,
+        event,
+      };
+      return;
+    }
     out.push({
       key: `${envelope.sessionId}:${sequence}:${envelope.timestamp}`,
       timestamp: envelope.timestamp,
@@ -667,11 +747,13 @@ function ActivityIndicator({ activity, detail }: { activity: string; detail?: st
 const TOOL_RESULT_TRUNCATE_LIMIT = 500;
 
 function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "tool_result" }> }) {
+  const navigate = useNavigate();
   const [expanded, setExpanded] = useState(false);
   const meta = getToolMeta(event.tool);
   const ToolIcon = meta.icon;
   const toolDisplay = describeToolIdentifier(event.tool);
   const sourceChip = toolSourceChip(event.tool);
+  const navigationSuggestions = readNavigationSuggestions(event.result);
   const resultStr = formatStructuredValue(event.result);
   const isTruncated = resultStr.length > TOOL_RESULT_TRUNCATE_LIMIT;
   const displayStr = !expanded && isTruncated ? `${resultStr.slice(0, TOOL_RESULT_TRUNCATE_LIMIT)}...` : resultStr;
@@ -679,7 +761,6 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
 
   return (
     <CollapsibleCard
-      defaultOpen={false}
       summary={
         <div className="flex items-center gap-2 font-mono text-[11px]">
           <StatusIcon status={event.status ?? "completed"} />
@@ -706,8 +787,23 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
           ) : null}
         </div>
       }
+      defaultOpen={navigationSuggestions.length > 0}
       className="border-transparent"
     >
+      {navigationSuggestions.length > 0 ? (
+        <div className="mb-2 flex flex-wrap gap-2">
+          {navigationSuggestions.map((suggestion) => (
+            <button
+              key={`${suggestion.surface}:${suggestion.href}`}
+              type="button"
+              className="rounded-[8px] border border-accent/20 bg-accent/[0.08] px-2.5 py-1 font-mono text-[10px] font-semibold text-accent/85 transition-colors hover:bg-accent/[0.14] hover:text-accent"
+              onClick={() => navigate(suggestion.href)}
+            >
+              {suggestion.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
       <pre className={cn("max-h-52", RECESSED_BLOCK_CLASS)}>
         {displayStr}
       </pre>
@@ -1045,6 +1141,38 @@ function renderEvent(
     );
   }
 
+  /* ── Subagent Progress ── */
+  if (event.type === "subagent_progress") {
+    const summaryText = summarizeInlineText(event.summary, 140);
+    return (
+      <CollapsibleCard
+        defaultOpen={false}
+        summary={
+          <div className="flex items-center gap-2 font-mono text-[11px]">
+            <SpinnerGap size={13} weight="bold" className="animate-spin text-violet-300/80" />
+            <span className="inline-flex items-center border border-violet-400/18 bg-violet-500/[0.08] px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-violet-300/80">
+              Subagent running
+            </span>
+            {summaryText ? <span className="flex-1 truncate text-[10px] text-fg/45">{summaryText}</span> : null}
+          </div>
+        }
+        className="border-violet-500/12"
+      >
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2 font-mono text-[10px] text-muted-fg/45">
+            <span>Task {event.taskId}</span>
+            {event.description?.trim() ? <span>{event.description.trim()}</span> : null}
+            {event.lastToolName?.trim() ? <span>Tool {event.lastToolName.trim()}</span> : null}
+          </div>
+          <div className="text-[12px] leading-relaxed text-fg/70">
+            {event.summary.trim() || "Waiting for the next progress update."}
+          </div>
+          {renderSubagentUsage(event.usage)}
+        </div>
+      </CollapsibleCard>
+    );
+  }
+
   /* ── Subagent Result ── */
   if (event.type === "subagent_result") {
     const isSuccess = event.status === "completed";
@@ -1070,19 +1198,7 @@ function renderEvent(
       >
         <div className="space-y-3">
           <div className="text-[12px] leading-relaxed text-fg/70">{event.summary}</div>
-          {event.usage ? (
-            <div className="flex flex-wrap gap-3 border-t border-violet-500/8 pt-2.5 font-mono text-[10px] text-muted-fg/45">
-              {event.usage.totalTokens != null ? (
-                <span>{formatTokenCount(event.usage.totalTokens)} tokens</span>
-              ) : null}
-              {event.usage.toolUses != null ? (
-                <span>{event.usage.toolUses} tool use{event.usage.toolUses === 1 ? "" : "s"}</span>
-              ) : null}
-              {event.usage.durationMs != null ? (
-                <span>{(event.usage.durationMs / 1000).toFixed(1)}s</span>
-              ) : null}
-            </div>
-          ) : null}
+          {renderSubagentUsage(event.usage)}
         </div>
       </CollapsibleCard>
     );

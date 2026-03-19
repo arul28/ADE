@@ -34,11 +34,18 @@ export function isClaudeRuntimeAuthError(input: unknown): boolean {
     lower.includes("not authenticated")
     || lower.includes("not logged in")
     || lower.includes("authentication required")
+    || lower.includes("authentication error")
+    || lower.includes("authentication_error")
     || lower.includes("login required")
     || lower.includes("sign in")
     || lower.includes("claude auth login")
     || lower.includes("/login")
     || lower.includes("authentication_failed")
+    || lower.includes("invalid authentication credentials")
+    || lower.includes("invalid api key")
+    || lower.includes("api error: 401")
+    || lower.includes("status code: 401")
+    || lower.includes("status 401")
   );
 }
 
