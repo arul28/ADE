@@ -2407,12 +2407,13 @@ describe("orchestratorService", () => {
         stepId: step.id,
         ownerId: "owner"
       });
+      // Explicit caller backoff of 0 overrides exponential default
       await fixture.service.completeAttempt({
         attemptId: attempt.id,
         status: "failed",
         errorClass: "transient",
         errorMessage: "transient failure",
-        retryBackoffMs: 15_000
+        retryBackoffMs: 0
       });
 
       const afterFailure = fixture.service.listSteps(started.run.id)[0];
@@ -2426,12 +2427,12 @@ describe("orchestratorService", () => {
     }
   });
 
-  it("uses zero retry backoff when no AI retry metadata is provided", async () => {
+  it("uses exponential backoff when no explicit backoff is provided", async () => {
     const fixture = await createFixture();
     try {
       const started = fixture.service.startRun({
         missionId: fixture.missionId,
-        steps: [{ stepKey: "retry-default-zero", title: "Retry Default Zero", stepIndex: 0, retryLimit: 1 }]
+        steps: [{ stepKey: "retry-default-exp", title: "Retry Exponential", stepIndex: 0, retryLimit: 1 }]
       });
       const step = fixture.service.listSteps(started.run.id)[0];
       if (!step) throw new Error("Missing step");
@@ -2441,6 +2442,7 @@ describe("orchestratorService", () => {
         stepId: step.id,
         ownerId: "owner"
       });
+      // No retryBackoffMs or aiRetryBackoffMs — should use exponential default (10s base)
       await fixture.service.completeAttempt({
         attemptId: attempt.id,
         status: "failed",
@@ -2449,18 +2451,15 @@ describe("orchestratorService", () => {
       });
 
       const afterFailure = fixture.service.listSteps(started.run.id)[0];
-      expect(["pending", "ready"]).toContain(afterFailure?.status);
-      expect(Number((afterFailure?.metadata?.lastRetryBackoffMs as number | undefined) ?? -1)).toBe(0);
-
-      fixture.service.tick({ runId: started.run.id });
-      const retryReady = fixture.service.listSteps(started.run.id)[0];
-      expect(retryReady?.status).toBe("ready");
+      expect(afterFailure?.status).toBe("pending");
+      // Exponential backoff: 10_000 * 2^0 = 10_000 for first retry
+      expect(Number((afterFailure?.metadata?.lastRetryBackoffMs as number | undefined) ?? -1)).toBe(10_000);
     } finally {
       fixture.dispose();
     }
   });
 
-  it("uses aiRetryBackoffMs metadata for retry scheduling", async () => {
+  it("uses aiRetryBackoffMs metadata for retry scheduling when no caller backoff", async () => {
     const fixture = await createFixture();
     try {
       const started = fixture.service.startRun({
@@ -2485,12 +2484,12 @@ describe("orchestratorService", () => {
         stepId: step.id,
         ownerId: "owner"
       });
+      // No caller retryBackoffMs — AI metadata (42s) should take precedence over exponential default
       await fixture.service.completeAttempt({
         attemptId: attempt.id,
         status: "failed",
         errorClass: "transient",
-        errorMessage: "temporary outage",
-        retryBackoffMs: 5_000
+        errorMessage: "temporary outage"
       });
 
       const afterFailure = fixture.service.listSteps(started.run.id)[0];

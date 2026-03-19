@@ -368,7 +368,7 @@ export function createLinearWorkflowFileService(args: {
   projectRoot: string;
 }) {
   const layout = resolveAdeLayout(args.projectRoot);
-  const workflowDir = path.join(layout.adeDir, "workflows", "linear");
+  const workflowDir = layout.linearWorkflowsDir;
   const cacheDir = path.join(layout.cacheDir, "workflows", "linear");
   const settingsPath = path.join(workflowDir, SETTINGS_FILE);
   const cacheIndexPath = path.join(cacheDir, "index.json");

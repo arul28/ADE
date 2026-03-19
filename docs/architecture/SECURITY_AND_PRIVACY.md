@@ -168,8 +168,11 @@ ADE implements multiple layers of protection to prevent secrets from being expos
 |-------------|-----------------|------------|
 | GitHub PAT (local) | `.ade/secrets/github/github-token.v1.bin` | Encrypted with Electron `safeStorage` |
 | API provider keys | `.ade/secrets/api-keys.json` | Plaintext on disk with `0600` permissions |
+| Sync site identity | `.ade/secrets/sync-site-id` | Plaintext (never syncs, used as cr-sqlite site ID) |
+| Sync device identity | `.ade/secrets/sync-device-id` | Plaintext (stable machine-local device ID) |
+| Sync bootstrap token | `.ade/secrets/sync-bootstrap-token` | Plaintext (shared pairing token for desktop-to-desktop connection) |
 
-ADE keeps CLI-backed authentication with the tools themselves (Claude Code, Codex). When ADE stores local secrets for secret-backed integrations, they remain on disk under the machine-local `.ade/secrets/` area or in `.ade/local.secret.yaml`.
+ADE keeps CLI-backed authentication with the tools themselves (Claude Code, Codex). When ADE stores local secrets for secret-backed integrations, they remain on disk under the machine-local `.ade/secrets/` area or in `.ade/local.secret.yaml`. Sync-related secrets (site ID, device ID, bootstrap token) are machine-specific and never replicated via cr-sqlite. See [MULTI_DEVICE_SYNC.md](./MULTI_DEVICE_SYNC.md) for the full sync security model.
 
 #### AI Context Exports (Bounded Payloads)
 
@@ -360,18 +363,18 @@ Memories follow a lifecycle: `candidate` --> `promoted` --> `archived`. This pre
 
 ---
 
-## Brain Deployment Trust Model
+## Host Deployment Trust Model
 
 Compute-backend abstraction was dropped with Phase 5.5. The current and planned trust model is simpler:
 
 | Deployment | Trust Level | Data Location | Network Access | Credential Handling |
 |-----------|-------------|---------------|----------------|-------------------|
-| Local brain | Full trust | On-device | Host network | OS keychain / local secret files |
-| User-owned VPS brain (planned Phase 6) | Controlled trust | Remote machine the user operates | User-managed network path (for example Tailscale) | Machine-local secret files / keychain equivalent |
+| Local host | Full trust | On-device | Host network | OS keychain / local secret files |
+| User-owned VPS host (planned Phase 6) | Controlled trust | Remote machine the user operates | User-managed network path (for example Tailscale) | Machine-local secret files / keychain equivalent |
 
 Current guidance:
-- Sensitive/proprietary code: local brain by default.
-- Always-on unattended execution: future user-owned VPS brain, not a managed ADE compute backend.
+- Sensitive/proprietary code: local host by default.
+- Always-on unattended execution: future user-owned VPS host, not a managed ADE compute backend.
 - Third-party managed sandboxes such as Daytona are not part of the active ADE architecture or roadmap.
 
 ## Per-Lane Proxy Security

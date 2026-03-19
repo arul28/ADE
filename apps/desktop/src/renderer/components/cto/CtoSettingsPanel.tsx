@@ -9,11 +9,19 @@ import { inputCls, labelCls, textareaCls, cardCls, ACCENT } from "./shared/desig
 import { ExternalMcpAccessEditor } from "../shared/ExternalMcpAccessEditor";
 import { OpenclawConnectionPanel } from "./OpenclawConnectionPanel";
 import { getCtoPersonalityPreset } from "./identityPresets";
+import { CtoPromptPreview } from "./CtoPromptPreview";
 
 /* ── Helpers ── */
 
 function splitTrimmed(val: string): string[] {
   return val.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+function describeIdentityPersonality(identity: CtoIdentity): string {
+  if (identity.personality === "custom") {
+    return identity.customPersonality?.trim() || identity.persona || "Custom personality configured.";
+  }
+  return getCtoPersonalityPreset(identity.personality ?? "strategic").description;
 }
 
 type CoreMemoryPatch = Partial<{
@@ -188,7 +196,7 @@ export function CtoSettingsPanel({
               <span className="text-sm font-semibold text-fg">CTO</span>
               <span className="text-[10px] text-muted-fg/35">v{identity.version}</span>
             </div>
-            <div className="text-xs text-muted-fg/55 leading-relaxed line-clamp-3">{identity.persona}</div>
+            <div className="text-xs text-muted-fg/55 leading-relaxed line-clamp-3">{describeIdentityPersonality(identity)}</div>
             <div className="flex flex-wrap gap-1.5 mt-1">
               {[
                 { label: identity.modelPreferences.provider, color: ACCENT.blue },
@@ -205,6 +213,12 @@ export function CtoSettingsPanel({
         ) : (
           <div className="px-4 pb-4 text-xs text-muted-fg/40">Loading...</div>
         )}
+      </CollapsibleSection>
+
+      <CollapsibleSection title="Prompt preview" color={ACCENT.blue} defaultOpen={false}>
+        <div className="px-4 pb-4">
+          <CtoPromptPreview compact />
+        </div>
       </CollapsibleSection>
 
       {/* Core Memory */}

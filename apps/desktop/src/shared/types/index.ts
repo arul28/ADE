@@ -26,6 +26,8 @@ export * from "./budget";
 export * from "./usage";
 export * from "./memory";
 export * from "./projectState";
+export * from "./sync";
+export * from "./devTools";
 export * from "./externalMcp";
 
 export * from "./linearSync";

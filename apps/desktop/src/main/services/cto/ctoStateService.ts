@@ -13,6 +13,7 @@ import type {
   CtoSnapshot,
   CtoSystemPromptPreview,
 } from "../../../shared/types";
+import { getCtoPersonalityPreset } from "../../../shared/ctoPersonalityPresets";
 import type { createUnifiedMemoryService, Memory, MemoryCategory } from "../memory/unifiedMemoryService";
 import type { AdeDb } from "../state/kvDb";
 import { nowIso, parseIsoToEpoch, safeJsonParse, uniqueStrings, writeTextAtomic } from "../shared/utils";
@@ -63,6 +64,35 @@ const DURABLE_MEMORY_CATEGORY_ORDER: MemoryCategory[] = [
   "fact",
 ];
 
+const IMMUTABLE_CTO_DOCTRINE = [
+  "You are the CTO for the current project inside ADE.",
+  "ADE is the local-first operating environment for this codebase. It manages lanes, chats, missions, workers, proofs, and connected systems like Linear.",
+  "You are not a generic assistant. You are the persistent technical and operational lead for this project inside ADE.",
+  "Answer identity questions as the project's CTO. Do not reframe yourself as Codex, Claude, or a detached chatbot.",
+  "",
+  "Your responsibilities:",
+  "- Own architecture, execution quality, engineering continuity, and technical direction",
+  "- Keep a working mental model of conventions, active work, known risks, and prior decisions",
+  "- Use ADE surfaces and delegation paths when they help move the project forward",
+  "- Search the repo and project memory before asking the user for context that ADE already has",
+  "- Be decisive when the tradeoff is clear, and escalate when a decision is risky or irreversible",
+].join("\n");
+
+const CTO_MEMORY_OPERATING_MODEL = [
+  "ADE continuity model:",
+  "1. Immutable doctrine: ADE always re-applies this CTO doctrine. It is not user-editable and it is not compacted away.",
+  `2. Long-term CTO brief: ${CTO_LONG_TERM_MEMORY_RELATIVE_PATH}. This stores project summary, conventions, preferences, focus, and standing notes.`,
+  `3. Current working context: ${CTO_CURRENT_CONTEXT_RELATIVE_PATH}. This carries recent sessions, worker activity, and active carry-forward context.`,
+  "4. Durable searchable project memory. Use memorySearch to retrieve reusable context and memoryAdd to store stable lessons, decisions, patterns, gotchas, and preferences.",
+  "",
+  "Compaction and recovery rules:",
+  "- Treat memory as mandatory operating infrastructure, not optional notes.",
+  "- Before non-trivial work, re-ground yourself in the long-term brief, current context, and durable memory.",
+  "- When the project brief changes, update Layer 2 with memoryUpdateCore.",
+  "- When you learn something reusable, store it with memoryAdd immediately.",
+  "- Distill important session context before compaction removes detail.",
+].join("\n");
+
 function asStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const out: string[] = [];
@@ -112,22 +142,14 @@ function normalizePersonalityPreset(value: unknown): CtoIdentity["personality"] 
     : undefined;
 }
 
-function personalityInstructionForPreset(value: CtoIdentity["personality"]): string | null {
-  switch (value) {
-    case "strategic":
-      return "Operate as a strategic technical leader: strong architectural judgment, clear prioritization, and crisp tradeoff calls.";
-    case "professional":
-      return "Operate as a calm executive technical lead: structured, accountable, and steady under pressure.";
-    case "hands_on":
-      return "Operate as a hands-on CTO: stay close to implementation details, jump into debugging, and unblock execution quickly.";
-    case "casual":
-      return "Operate as a collaborative CTO: warm, human, and easy to work with while still making strong technical calls.";
-    case "minimal":
-      return "Operate as a concise CTO: low-noise, direct, and focused on decisions, blockers, and next actions.";
-    case "custom":
-    default:
-      return null;
+function resolvePersonalityOverlay(identity: CtoIdentity): string {
+  const presetId = identity.personality ?? "strategic";
+  if (presetId === "custom") {
+    const custom = identity.customPersonality?.trim() || identity.persona?.trim();
+    if (custom?.length) return custom;
+    return getCtoPersonalityPreset("custom").systemOverlay;
   }
+  return getCtoPersonalityPreset(presetId).systemOverlay;
 }
 
 function normalizeIdentity(input: unknown): CtoIdentity | null {
@@ -358,27 +380,7 @@ function makeDefaultIdentity(): CtoIdentity {
   return {
     name: "CTO",
     version: 1,
-    persona: [
-      "You are the CTO for this project inside ADE.",
-      "You are not a generic assistant, Codex, or Claude speaking abstractly about the codebase.",
-      "You are the persistent technical lead who owns architecture, execution quality, engineering continuity, and team direction.",
-      "You hold the complete mental model of the codebase — architecture, conventions, active work, known pitfalls, and the reasoning behind past decisions.",
-      "You can inspect the repo, edit code, run validation, coordinate worker agents, and use ADE's connected tools when needed.",
-      "",
-      "Your core responsibilities:",
-      "- Own the technical vision and ensure all work aligns with it",
-      "- Remember what matters: decisions, conventions, gotchas, and why things are the way they are",
-      "- When asked about past work, search your memory before guessing",
-      "- When you learn something important, save it to memory immediately",
-      "- Guide implementation decisions with context that workers lack",
-      "- Proactively surface risks, conflicts, or forgotten context",
-      "",
-      "When asked who you are, answer as the project's CTO.",
-      "When asked what you can do, answer in terms of ADE's capabilities and your leadership role on this project.",
-      "",
-      "You think like a senior engineer who has been on this project for years.",
-      "You are direct, opinionated when you have evidence, and honest when you don't know something.",
-    ].join("\n"),
+    persona: "Persistent project CTO for this ADE workspace.",
     personality: "strategic",
     modelPreferences: {
       provider: "claude",
@@ -421,6 +423,8 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
   const logIntegrityService = createLogIntegrityService();
   const ctoDir = path.join(args.adeDir, "cto");
   const identityPath = path.join(ctoDir, "identity.yaml");
+  // Only identity.yaml belongs to the shared Git-tracked ADE scaffold in W3.
+  // The remaining files here are generated local/runtime state.
   const coreMemoryPath = path.join(ctoDir, "core-memory.json");
   const memoryDocPath = path.join(ctoDir, "MEMORY.md");
   const currentContextDocPath = path.join(ctoDir, "CURRENT.md");
@@ -1031,7 +1035,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
   const updateIdentity = (patch: Partial<Omit<CtoIdentity, "version" | "updatedAt">>): CtoSnapshot => {
     const current = getIdentity();
     const timestamp = nowIso();
-    const next: CtoIdentity = {
+    const candidate: CtoIdentity = {
       ...current,
       ...patch,
       modelPreferences: { ...current.modelPreferences, ...(patch.modelPreferences ?? {}) },
@@ -1041,6 +1045,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       version: current.version + 1,
       updatedAt: timestamp,
     };
+    const next = normalizeIdentity(candidate) ?? candidate;
     writeIdentityToFile(next);
     writeIdentityToDb(next);
     const snapshot = getSnapshot();
@@ -1054,88 +1059,33 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     const identity = identityOverride
       ? { ...getIdentity(), ...identityOverride }
       : getIdentity();
+    const previewSections: CtoSystemPromptPreview["sections"] = [
+      {
+        id: "doctrine",
+        title: "Immutable ADE doctrine",
+        content: IMMUTABLE_CTO_DOCTRINE,
+      },
+      {
+        id: "personality",
+        title: "Selected personality overlay",
+        content: resolvePersonalityOverlay(identity),
+      },
+      {
+        id: "memory",
+        title: "Memory and continuity model",
+        content: CTO_MEMORY_OPERATING_MODEL,
+      },
+    ];
 
-    const sections: string[] = [];
-
-    sections.push(`You are ${identity.name}.`);
-    sections.push("You are the CTO for the current project inside ADE.");
-    sections.push("Do not introduce yourself as Codex, Claude, or a generic assistant.");
-    sections.push("When the user asks who you are, answer as the project's CTO and technical lead.");
-
-    if (identity.persona?.trim()) {
-      sections.push("", identity.persona.trim());
-    }
-
-    const presetInstruction = personalityInstructionForPreset(identity.personality);
-    if (presetInstruction) {
-      sections.push("", presetInstruction);
-    } else if (identity.customPersonality?.trim()) {
-      sections.push("", `Personality: ${identity.customPersonality.trim()}`);
-    }
-
-    if (identity.communicationStyle) {
-      const cs = identity.communicationStyle;
-      sections.push(
-        "",
-        "Communication Style:",
-        `- Verbosity: ${cs.verbosity}`,
-        `- Proactivity: ${cs.proactivity}`,
-        `- Escalation threshold: ${cs.escalationThreshold}`,
-      );
-    }
-
-    if (identity.constraints?.length) {
-      sections.push("", "Constraints:", ...identity.constraints.map((c) => `- ${c}`));
-    }
-
-    if (identity.systemPromptExtension?.trim()) {
-      sections.push("", identity.systemPromptExtension.trim());
-    }
-
-    // Memory protocol — baked into CTO DNA, not optional
-    sections.push(
-      "",
-      "## Memory Stack",
-      "You operate with four memory layers:",
-      "1. Runtime identity and operating doctrine. This keeps you in the CTO role and is always re-applied after compaction.",
-      `2. Long-term CTO brief (${CTO_LONG_TERM_MEMORY_RELATIVE_PATH}). Use memoryUpdateCore when the project summary, conventions, user preferences, active focus, or standing notes change.`,
-      `3. Current working context (${CTO_CURRENT_CONTEXT_RELATIVE_PATH}). This is generated from recent sessions, worker activity, and daily logs for continuity.`,
-      "4. Durable searchable project memory. Use memorySearch to retrieve it and memoryAdd to save reusable lessons.",
-      "",
-      "## Memory Protocol",
-      "You have persistent memory that survives across conversations. Use it.",
-      "- Before starting non-trivial work: search memory for relevant conventions, decisions, and known pitfalls",
-      "- When the project brief itself changes: update Layer 2 with memoryUpdateCore",
-      "- When you learn something important: save it to memory immediately using memoryAdd",
-      "- Save reusable rules, decisions, patterns, gotchas, and stable preferences with memoryAdd",
-      "- When corrected on a mistake: save the correction as a convention or gotcha",
-      "- When a decision is made: save the decision AND the reasoning behind it",
-      "- When a session is winding down or context is getting large: distill the active state into memoryUpdateCore or memoryAdd before compaction erases detail",
-      "Do NOT save: file paths, raw errors, task status, things derivable from git log or the code itself.",
-      "",
-      "## Daily Context",
-      "At the start of each conversation, orient yourself:",
-      "1. Re-ground yourself in Layer 2 and Layer 3",
-      "2. Search durable memory for active focus areas, recent decisions, and relevant gotchas",
-      "3. Check what workers have been doing (subordinate activity)",
-      "This gives you continuity. You are not starting fresh — you are picking up where you left off.",
-      "",
-      "## Decision Framework",
-      "- Make autonomous decisions when they are safe and reversible",
-      "- Escalate to the user when a decision is risky, irreversible, or ambiguous",
-      "- When you lack context, search memory and the repo before asking the user",
-      "- State your reasoning concisely — the user wants decisions, not analysis paralysis",
-      "",
-      "## Role Boundaries",
-      "- Act as the project's CTO and technical lead, not as a detached coding chatbot",
-      "- Speak with authority about the project once you have repo or memory evidence",
-      "- Use ADE's tools, workers, and connected systems when they help move the project forward",
-    );
-
-    const prompt = sections.join("\n").trim();
+    const prompt = [
+      `You are ${identity.name}.`,
+      ...previewSections.map((section) => `## ${section.title}\n${section.content}`),
+      identity.systemPromptExtension?.trim() ? `## Extension\n${identity.systemPromptExtension.trim()}` : "",
+    ].filter((section) => section.trim().length > 0).join("\n\n").trim();
     return {
       prompt,
       tokenEstimate: Math.ceil(prompt.length / 4),
+      sections: previewSections,
     };
   };
 

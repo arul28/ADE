@@ -1,48 +1,92 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { CheckCircle, Circle, GithubLogo, Plugs, RocketLaunch } from "@phosphor-icons/react";
+import { CheckCircle, Circle } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
-import type { ContextStatus } from "../../../shared/types";
+import type { ContextRefreshEvents, ContextStatus } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { AiSettingsSection } from "../settings/AiSettingsSection";
 import { GitHubSection } from "../settings/GitHubSection";
 import { LinearSection } from "../settings/LinearSection";
+import { DevToolsSection } from "./DevToolsSection";
+import { EmbeddingsSection } from "./EmbeddingsSection";
+import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
+import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { useAppStore } from "../../state/appStore";
-import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { publishOnboardingStatusUpdated } from "../../lib/onboardingStatusEvents";
 
-type SetupStep = "ai" | "github" | "linear" | "context";
+type SetupStep = "tools" | "ai" | "github" | "embeddings" | "linear" | "context";
 
-const STEP_ORDER: SetupStep[] = ["ai", "github", "linear", "context"];
+const STEP_ORDER: SetupStep[] = ["tools", "ai", "github", "embeddings", "linear", "context"];
 
-const STEP_META: Record<SetupStep, { title: string; description: string }> = {
+const STEP_META: Record<SetupStep, { title: string; subtitle: string }> = {
+  tools: {
+    title: "Dev tools",
+    subtitle: "Check for git and GitHub CLI.",
+  },
   ai: {
     title: "AI setup",
-    description: "Connect a provider and choose the defaults you want ADE to use on day one.",
+    subtitle: "Connect a provider and choose defaults.",
   },
   github: {
     title: "GitHub",
-    description: "Add a token so lane PRs, reviews, and repository actions can work immediately.",
+    subtitle: "Add a token for PRs, reviews, and repo actions.",
+  },
+  embeddings: {
+    title: "Smart search",
+    subtitle: "Optional local embedding model for semantic memory search.",
   },
   linear: {
     title: "Linear",
-    description: "Optional. Connect Linear now if you want issue links and later CTO routing.",
+    subtitle: "Optional. Connect for issue links and CTO routing.",
   },
   context: {
     title: "Context docs",
-    description: "Kick off context doc generation so ADE can build project memory and better first-session context.",
+    subtitle: "Generate PRD and architecture docs from your repo.",
   },
 };
+
+/* Step header — short title on top, subtitle below */
+const STEP_HEADERS: Record<SetupStep, { heading: string; sub: string }> = {
+  tools: { heading: "Dev tools check", sub: "ADE needs git installed. GitHub CLI is recommended for PR workflows." },
+  ai: { heading: "Connect AI", sub: "Choose a provider and model defaults for this project." },
+  github: { heading: "Connect GitHub", sub: "Add a personal access token (classic or fine-grained) so lane PRs and reviews work." },
+  embeddings: { heading: "Local embedding model", sub: "Download all-MiniLM-L6-v2 (~31 MB) to enable semantic memory search. Runs entirely on your machine." },
+  linear: { heading: "Connect Linear", sub: "Optional — connect for issue routing and CTO workflows." },
+  context: { heading: "Generate context docs", sub: "Pick a model and triggers, then kick off generation." },
+};
+
+const EVENT_TOGGLES: { key: keyof ContextRefreshEvents; label: string; help: string }[] = [
+  { key: "onSessionEnd", label: "Session end", help: "When a terminal/agent session ends" },
+  { key: "onCommit", label: "Commit", help: "When a commit is created" },
+  { key: "onPrCreate", label: "PR create", help: "When a PR is created or updated" },
+  { key: "onPrLand", label: "PR land", help: "When a PR is merged" },
+  { key: "onMissionStart", label: "Mission start", help: "When a mission launches" },
+  { key: "onMissionEnd", label: "Mission end", help: "When a mission completes" },
+  { key: "onLaneCreate", label: "Lane create", help: "When a new lane is created" },
+];
+
+const DEFAULT_EVENTS: ContextRefreshEvents = { onPrCreate: true, onMissionStart: true };
 
 export function ProjectSetupPage() {
   const navigate = useNavigate();
   const project = useAppStore((s) => s.project);
-  const [step, setStep] = useState<SetupStep>("ai");
+  const [step, setStep] = useState<SetupStep>("tools");
   const [status, setStatus] = useState<{ completedAt: string | null; dismissedAt: string | null; freshProject?: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [gitInstalled, setGitInstalled] = useState<boolean | null>(null);
+
+  // Context docs state
   const [contextStatus, setContextStatus] = useState<ContextStatus | null>(null);
   const [contextLoading, setContextLoading] = useState(false);
   const [contextLaunchNotice, setContextLaunchNotice] = useState<string | null>(null);
   const [contextLaunchError, setContextLaunchError] = useState<string | null>(null);
+
+  // Context doc generation config (same as settings ContextSection)
+  const [contextModelId, setContextModelId] = useState("");
+  const [contextReasoningEffort, setContextReasoningEffort] = useState<string | null>(null);
+  const [contextEvents, setContextEvents] = useState<ContextRefreshEvents>({ ...DEFAULT_EVENTS });
+  const [availableModelIds, setAvailableModelIds] = useState<string[]>([]);
+  const [prefsLoaded, setPrefsLoaded] = useState(false);
 
   const stepIndex = STEP_ORDER.indexOf(step);
   const isLastStep = stepIndex === STEP_ORDER.length - 1;
@@ -57,9 +101,29 @@ export function ProjectSetupPage() {
       .catch(() => {
         if (!cancelled) setStatus({ completedAt: null, dismissedAt: null });
       });
-    return () => {
-      cancelled = true;
-    };
+
+    // Load available models
+    window.ade.ai.getStatus()
+      .then((aiStatus) => {
+        if (!cancelled) setAvailableModelIds(deriveConfiguredModelIds(aiStatus));
+      })
+      .catch(() => {});
+
+    // Load saved context doc prefs
+    window.ade.context?.getPrefs?.()
+      .then((prefs) => {
+        if (cancelled) return;
+        if (prefs.modelId) setContextModelId(prefs.modelId);
+        if (prefs.reasoningEffort) setContextReasoningEffort(prefs.reasoningEffort);
+        if (prefs.events) {
+          const hasAny = Object.values(prefs.events).some(Boolean);
+          if (hasAny) setContextEvents(prefs.events);
+        }
+        setPrefsLoaded(true);
+      })
+      .catch(() => { setPrefsLoaded(true); });
+
+    return () => { cancelled = true; };
   }, []);
 
   const reloadContextStatus = React.useCallback(async () => {
@@ -78,6 +142,19 @@ export function ProjectSetupPage() {
     if (step !== "context") return;
     void reloadContextStatus();
   }, [reloadContextStatus, step]);
+
+  // Poll while generating
+  const pollRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => {
+    if (contextStatus?.generation.state === "running" && !pollRef.current) {
+      pollRef.current = setInterval(() => { void reloadContextStatus(); }, 2500);
+    }
+    if (contextStatus?.generation.state !== "running" && pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+  }, [contextStatus?.generation.state, reloadContextStatus]);
 
   const progressLabel = useMemo(() => `${stepIndex + 1} / ${STEP_ORDER.length}`, [stepIndex]);
 
@@ -118,108 +195,161 @@ export function ProjectSetupPage() {
     setContextLaunchError(null);
     setContextLaunchNotice(null);
     try {
-      const prefs = await window.ade.context.getPrefs();
+      // Save prefs first (same flow as settings)
+      await window.ade.context.savePrefs({
+        provider: "unified",
+        modelId: contextModelId,
+        reasoningEffort: contextReasoningEffort,
+        events: contextEvents,
+      });
+
+      // Fire and forget generation
       void window.ade.context.generateDocs({
-        provider: prefs.provider ?? "unified",
-        modelId: prefs.modelId ?? undefined,
-        reasoningEffort: prefs.reasoningEffort ?? null,
-        events: prefs.events,
+        provider: "unified",
+        modelId: contextModelId,
+        reasoningEffort: contextReasoningEffort,
+        events: contextEvents,
       }).catch(() => {});
-      setContextLaunchNotice("Context doc generation started. ADE will keep running it in the background while you finish setup.");
-      window.setTimeout(() => {
-        void reloadContextStatus();
-      }, 500);
+
+      setContextLaunchNotice("Generation started in the background. You can finish setup now.");
+      window.setTimeout(() => { void reloadContextStatus(); }, 800);
     } catch (error) {
       setContextLaunchError(error instanceof Error ? error.message : String(error));
     }
   };
 
+  // Auto-save prefs when config changes (after initial load)
+  const saveTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  React.useEffect(() => {
+    if (!prefsLoaded) return;
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(() => {
+      void window.ade.context?.savePrefs?.({
+        provider: "unified",
+        modelId: contextModelId,
+        reasoningEffort: contextReasoningEffort,
+        events: contextEvents,
+      }).catch(() => {});
+    }, 400);
+    return () => { if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current); };
+  }, [prefsLoaded, contextModelId, contextReasoningEffort, contextEvents]);
+
+  const isGenerating = contextStatus?.generation.state === "running";
+
   const stepContent = (() => {
+    if (step === "tools") return <DevToolsSection onStatusChange={setGitInstalled} />;
     if (step === "ai") return <AiSettingsSection forceProviderRefreshOnMount />;
     if (step === "github") return <GitHubSection />;
+    if (step === "embeddings") return <EmbeddingsSection />;
     if (step === "linear") return <LinearSection />;
-    return (
-      <div style={{ display: "grid", gap: 18 }}>
-        <div
-          style={{
-            padding: 18,
-            background: COLORS.cardBg,
-            border: `1px solid ${COLORS.border}`,
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-            <RocketLaunch size={18} color={COLORS.accent} />
-            <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.textPrimary }}>
-              Finish by kicking off context docs
-            </div>
-          </div>
-          <div style={{ fontSize: 12, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.7 }}>
-            Context docs improve first-message context, memory ingestion, and project-level summaries. You can launch generation now and ADE will continue it while you start working.
-          </div>
-        </div>
+    const canGenerate = contextModelId.trim().length > 0 && !isGenerating;
 
-        <div
-          style={{
-            padding: 18,
-            background: COLORS.recessedBg,
-            border: `1px solid ${COLORS.border}`,
-            display: "grid",
-            gap: 10,
-            fontSize: 11,
-            fontFamily: MONO_FONT,
-            color: COLORS.textMuted,
-          }}
-        >
-          <div>
+    return (
+      <div style={{ display: "grid", gap: 20 }}>
+        {/* Model + Generate — grouped together */}
+        <div style={cardBox()}>
+          <div style={{ fontSize: 13, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary, marginBottom: 4 }}>
+            Model
+          </div>
+          <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, marginBottom: 12, lineHeight: "18px" }}>
+            Select the model that will generate your PRD and Architecture docs.
+          </div>
+          <UnifiedModelSelector
+            value={contextModelId}
+            onChange={setContextModelId}
+            availableModelIds={availableModelIds}
+            showReasoning
+            reasoningEffort={contextReasoningEffort}
+            onReasoningEffortChange={setContextReasoningEffort}
+            className="w-full"
+          />
+
+          {/* Status */}
+          <div style={{ marginTop: 16, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "18px" }}>
             {contextLoading
-              ? "Checking context doc status..."
-              : contextStatus?.generation.state === "running"
-                ? "Context doc generation is already running."
+              ? "Checking status..."
+              : isGenerating
+                ? "Generating docs — this can take a minute or two depending on your model and repo size."
                 : contextStatus?.generation.state === "failed"
                   ? `Last generation failed${contextStatus.generation.error ? `: ${contextStatus.generation.error}` : "."}`
-                  : `Missing docs: ${(contextStatus?.docs?.filter((doc) => !doc.exists).map((doc) => doc.label).join(", ") || "none")}.`}
+                  : contextStatus?.docs?.every((d) => d.exists)
+                    ? "Both docs are present. You can regenerate if needed."
+                    : !contextModelId.trim()
+                      ? "Select a model above to generate docs."
+                      : `Missing: ${contextStatus?.docs?.filter((d) => !d.exists).map((d) => d.label).join(", ") || "checking..."}`}
           </div>
-          <div>Once generation is launched, you can finish setup immediately and let ADE handle the rest in the background.</div>
-          <div>Settings later lets you change the model, triggers, or rerun generation manually.</div>
+
+          {isGenerating ? (
+            <div style={{ ...statusBox(COLORS.info), marginTop: 10 }}>
+              Generating in the background — you can continue setup or finish now.
+            </div>
+          ) : null}
+
+          {contextLaunchNotice && !isGenerating ? (
+            <div style={{ ...statusBox(COLORS.success), marginTop: 10 }}>{contextLaunchNotice}</div>
+          ) : null}
+
+          {contextLaunchError ? (
+            <div style={{ ...statusBox(COLORS.danger), marginTop: 10 }}>{contextLaunchError}</div>
+          ) : null}
+
+          {/* Generate + refresh buttons */}
+          <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+            <Button size="md" variant="primary" onClick={() => void handleLaunchContextGeneration()} disabled={!canGenerate}>
+              {isGenerating ? "Generating..." : "Generate now"}
+            </Button>
+            <Button size="md" variant="outline" onClick={() => void reloadContextStatus()}>
+              Refresh status
+            </Button>
+          </div>
         </div>
 
-        {contextLaunchNotice ? (
-          <div style={{
-            padding: "10px 12px",
-            border: `1px solid ${COLORS.success}30`,
-            background: `${COLORS.success}12`,
-            fontSize: 11,
-            fontFamily: MONO_FONT,
-            color: COLORS.success,
-          }}>
-            {contextLaunchNotice}
+        {/* Auto-refresh events — secondary config */}
+        <div style={cardBox()}>
+          <div style={{ fontSize: 13, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary, marginBottom: 4 }}>
+            Auto-refresh triggers
           </div>
-        ) : null}
-
-        {contextLaunchError ? (
-          <div style={{
-            padding: "10px 12px",
-            border: `1px solid ${COLORS.danger}30`,
-            background: `${COLORS.danger}12`,
-            fontSize: 11,
-            fontFamily: MONO_FONT,
-            color: COLORS.danger,
-          }}>
-            {contextLaunchError}
+          <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, marginBottom: 12, lineHeight: "18px" }}>
+            Choose when docs regenerate automatically. Editable later in Settings.
           </div>
-        ) : null}
-
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <Button size="md" variant="outline" onClick={() => void reloadContextStatus()}>
-            Refresh status
-          </Button>
-          <Button size="md" variant="primary" onClick={() => void handleLaunchContextGeneration()}>
-            {contextStatus?.generation.state === "running" ? "Restart generation" : "Start generation in background"}
-          </Button>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            {EVENT_TOGGLES.map((toggle) => {
+              const checked = !!contextEvents[toggle.key];
+              return (
+                <label
+                  key={toggle.key}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "8px 12px",
+                    borderRadius: 10,
+                    cursor: "pointer",
+                    transition: "all 0.15s ease",
+                    border: `1px solid ${checked ? `${COLORS.accent}30` : COLORS.border}`,
+                    background: checked ? `${COLORS.accent}08` : "transparent",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => setContextEvents((prev) => ({ ...prev, [toggle.key]: !prev[toggle.key] }))}
+                    style={{ accentColor: COLORS.accent }}
+                  />
+                  <div>
+                    <div style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>{toggle.label}</div>
+                    <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted }}>{toggle.help}</div>
+                  </div>
+                </label>
+              );
+            })}
+          </div>
         </div>
       </div>
     );
   })();
+
+  const header = STEP_HEADERS[step];
 
   return (
     <div
@@ -240,6 +370,7 @@ export function ProjectSetupPage() {
           gap: 20,
         }}
       >
+        {/* ── Sidebar ── */}
         <aside
           style={{
             alignSelf: "start",
@@ -248,37 +379,38 @@ export function ProjectSetupPage() {
             padding: 20,
             background: "rgba(18, 17, 24, 0.88)",
             border: `1px solid ${COLORS.border}`,
+            borderRadius: 16,
             backdropFilter: "blur(20px)",
           }}
         >
-          <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.accent, letterSpacing: "1px", textTransform: "uppercase" }}>
+          <div style={{ fontSize: 10, fontFamily: SANS_FONT, fontWeight: 600, color: COLORS.accent, letterSpacing: "0.08em", textTransform: "uppercase" }}>
             Project setup
           </div>
-          <div style={{ marginTop: 10, fontSize: 22, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+          <div style={{ marginTop: 10, fontSize: 20, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
             {project?.displayName ?? "Current project"}
           </div>
-          <div style={{ marginTop: 10, fontSize: 12, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.7 }}>
-            A guided pass through the settings new contributors usually need before the app is useful.
+          <div style={{ marginTop: 8, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.6 }}>
+            Quick setup for the essentials. Everything here is editable later in Settings.
           </div>
           <div
             style={{
-              marginTop: 18,
+              marginTop: 16,
               display: "inline-flex",
               alignItems: "center",
-              padding: "4px 8px",
+              padding: "4px 10px",
               fontSize: 10,
-              fontWeight: 700,
-              fontFamily: MONO_FONT,
-              letterSpacing: "1px",
-              textTransform: "uppercase",
+              fontWeight: 600,
+              fontFamily: SANS_FONT,
+              letterSpacing: "0.04em",
               color: COLORS.textMuted,
               border: `1px solid ${COLORS.border}`,
+              borderRadius: 8,
             }}
           >
             Step {progressLabel}
           </div>
 
-          <div style={{ marginTop: 22, display: "grid", gap: 10 }}>
+          <div style={{ marginTop: 20, display: "grid", gap: 6 }}>
             {STEP_ORDER.map((stepId, index) => {
               const active = stepId === step;
               const complete = index < stepIndex || (stepId === "context" && Boolean(status?.completedAt));
@@ -293,10 +425,12 @@ export function ProjectSetupPage() {
                     alignItems: "flex-start",
                     gap: 10,
                     padding: "10px 12px",
-                    border: `1px solid ${active ? COLORS.accent : COLORS.border}`,
+                    borderRadius: 12,
+                    border: `1px solid ${active ? `${COLORS.accent}30` : COLORS.border}`,
                     background: active ? `${COLORS.accent}10` : "transparent",
                     cursor: "pointer",
                     textAlign: "left",
+                    transition: "all 0.15s ease",
                   }}
                 >
                   {complete ? (
@@ -305,11 +439,11 @@ export function ProjectSetupPage() {
                     <Circle size={16} color={active ? COLORS.accent : COLORS.textDim} weight={active ? "fill" : "regular"} style={{ flexShrink: 0, marginTop: 2 }} />
                   )}
                   <span>
-                    <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: active ? COLORS.textPrimary : COLORS.textMuted, textTransform: "uppercase", letterSpacing: "1px" }}>
+                    <div style={{ fontSize: 12, fontFamily: SANS_FONT, fontWeight: 600, color: active ? COLORS.textPrimary : COLORS.textMuted }}>
                       {STEP_META[stepId].title}
                     </div>
-                    <div style={{ marginTop: 4, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, lineHeight: 1.6 }}>
-                      {STEP_META[stepId].description}
+                    <div style={{ marginTop: 3, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim, lineHeight: 1.5 }}>
+                      {STEP_META[stepId].subtitle}
                     </div>
                   </span>
                 </button>
@@ -317,9 +451,9 @@ export function ProjectSetupPage() {
             })}
           </div>
 
-          <div style={{ marginTop: 18, display: "flex", gap: 8 }}>
+          <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
             <Button size="sm" variant="ghost" onClick={() => navigate("/settings?tab=general")}>
-              General
+              Settings
             </Button>
             <Button size="sm" variant="ghost" onClick={() => navigate("/project")}>
               Back to app
@@ -327,73 +461,36 @@ export function ProjectSetupPage() {
           </div>
         </aside>
 
+        {/* ── Main content ── */}
         <section
           style={{
             minWidth: 0,
-            padding: 22,
+            padding: 24,
             background: "rgba(18, 17, 24, 0.9)",
             border: `1px solid ${COLORS.border}`,
+            borderRadius: 16,
             backdropFilter: "blur(22px)",
           }}
         >
-          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, marginBottom: 20 }}>
+          {/* Header */}
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, marginBottom: 24 }}>
             <div>
-              <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, textTransform: "uppercase", letterSpacing: "1px" }}>
-                {STEP_META[step].title}
+              <div style={{ fontSize: 22, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+                {header.heading}
               </div>
-              <div style={{ marginTop: 8, fontSize: 24, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                {STEP_META[step].description}
+              <div style={{ marginTop: 4, fontSize: 13, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+                {header.sub}
               </div>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <Button size="sm" variant="ghost" disabled={busy} onClick={() => void handleSkip()}>
-                Skip setup
-              </Button>
-            </div>
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => void handleSkip()}>
+              Skip setup
+            </Button>
           </div>
 
-          <div style={{ marginBottom: 20, display: "flex", flexWrap: "wrap", gap: 8 }}>
-            <span
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "4px 8px",
-                fontSize: 10,
-                fontWeight: 700,
-                fontFamily: MONO_FONT,
-                letterSpacing: "1px",
-                textTransform: "uppercase",
-                color: COLORS.info,
-                border: `1px solid ${COLORS.info}30`,
-                background: `${COLORS.info}12`,
-              }}
-            >
-              <Plugs size={12} />
-              AI and integrations first
-            </span>
-            <span
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "4px 8px",
-                fontSize: 10,
-                fontWeight: 700,
-                fontFamily: MONO_FONT,
-                letterSpacing: "1px",
-                textTransform: "uppercase",
-                color: COLORS.textMuted,
-                border: `1px solid ${COLORS.border}`,
-              }}
-            >
-              <GithubLogo size={12} />
-              PRs work after GitHub is connected
-            </span>
-          </div>
-
+          {/* Step content */}
           <div style={{ minWidth: 0 }}>{stepContent}</div>
 
+          {/* Footer */}
           <div style={{ marginTop: 24, display: "flex", justifyContent: "space-between", gap: 12 }}>
             <Button size="md" variant="outline" disabled={busy || stepIndex === 0} onClick={handleBack}>
               Back
@@ -404,7 +501,12 @@ export function ProjectSetupPage() {
                   Skip ahead
                 </Button>
               ) : null}
-              <Button size="md" variant="primary" disabled={busy} onClick={() => void handleNext()}>
+              <Button
+                size="md"
+                variant="primary"
+                disabled={busy || (step === "tools" && gitInstalled !== true) || (isLastStep && gitInstalled === false)}
+                onClick={() => void handleNext()}
+              >
                 {busy ? "Saving..." : isLastStep ? "Finish setup" : "Continue"}
               </Button>
             </div>
@@ -413,4 +515,29 @@ export function ProjectSetupPage() {
       </div>
     </div>
   );
+}
+
+/* ── Helpers ── */
+
+function cardBox(): React.CSSProperties {
+  return {
+    padding: 18,
+    background: COLORS.cardBg,
+    border: `1px solid ${COLORS.border}`,
+    borderRadius: 14,
+  };
+}
+
+function statusBox(color: string): React.CSSProperties {
+  return {
+    padding: "10px 14px",
+    borderRadius: 10,
+    border: `1px solid ${color}20`,
+    background: `${color}08`,
+    fontSize: 11,
+    fontFamily: SANS_FONT,
+    color,
+    lineHeight: "18px",
+    marginBottom: 4,
+  };
 }

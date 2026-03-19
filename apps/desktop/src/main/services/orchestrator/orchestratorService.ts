@@ -1081,10 +1081,34 @@ export function createOrchestratorService({
     const occurredAt = normalizeIsoTimestamp(args.occurredAt, createdAt);
     const baseKey = `${args.runId}:${args.stepId ?? "none"}:${args.attemptId ?? "none"}:${args.sessionId ?? "none"}:${args.eventType}:${occurredAt}`;
     const eventKey = String(args.eventKey ?? baseKey).trim() || baseKey;
+    const existing = db.get<RuntimeEventRow>(
+      `
+        select
+          id,
+          run_id,
+          step_id,
+          attempt_id,
+          session_id,
+          event_type,
+          event_key,
+          occurred_at,
+          payload_json,
+          created_at
+        from orchestrator_runtime_events
+        where project_id = ?
+          and event_key = ?
+        limit 1
+      `,
+      [projectId, eventKey]
+    );
+    if (existing) {
+      return toRuntimeEvent(existing);
+    }
+
     const eventId = randomUUID();
     db.run(
       `
-        insert or ignore into orchestrator_runtime_events(
+        insert into orchestrator_runtime_events(
           id,
           project_id,
           run_id,
@@ -7619,7 +7643,23 @@ export function createOrchestratorService({
 	        Number.isFinite(aiRetryBackoffRaw) && aiRetryBackoffRaw >= 0
 	          ? Math.min(10 * 60_000, Math.floor(aiRetryBackoffRaw))
 	          : null;
-	      const computedBackoff = shouldRetry ? (aiRetryBackoffMs ?? 0) : 0;
+	      // Exponential backoff: base 10s, multiplier 2, cap 5min (300s).
+	      // Priority: explicit caller backoff > AI-suggested > exponential default.
+	      const RETRY_BASE_MS = 10_000;
+	      const RETRY_MULTIPLIER = 2;
+	      const RETRY_MAX_MS = 300_000;
+	      const exponentialBackoffMs = Math.min(
+	        RETRY_MAX_MS,
+	        Math.floor(RETRY_BASE_MS * Math.pow(RETRY_MULTIPLIER, step.retryCount))
+	      );
+	      const callerBackoffRaw = Number(args.retryBackoffMs ?? Number.NaN);
+	      const callerBackoffMs =
+	        Number.isFinite(callerBackoffRaw) && callerBackoffRaw >= 0
+	          ? Math.min(RETRY_MAX_MS, Math.floor(callerBackoffRaw))
+	          : null;
+	      const computedBackoff = shouldRetry
+	        ? (callerBackoffMs ?? aiRetryBackoffMs ?? exponentialBackoffMs)
+	        : 0;
 	      const reportedFilesChanged = Array.isArray(lastResultReport?.filesChanged)
 	        ? lastResultReport.filesChanged
 	            .map((entry) => String(entry ?? "").trim())

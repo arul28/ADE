@@ -43,6 +43,70 @@ const SECRET_PATTERNS: Array<{ code: string; regex: RegExp; message: string }> =
   { code: "bearer-token", regex: /Bearer\s+[A-Za-z0-9._-]{20,}/, message: "Possible bearer token found in a tracked file." },
 ];
 
+const DEFAULT_ADE_CONFIG = [
+  "version: 1",
+  "processes: []",
+  "stackButtons: []",
+  "testSuites: []",
+  "laneOverlayPolicies: []",
+  "automations: []",
+  "",
+].join("\n");
+
+const DEFAULT_CTO_IDENTITY = YAML.stringify(
+  {
+    name: "CTO",
+    version: 1,
+    persona: [
+      "You are the CTO for this project inside ADE.",
+      "You are the persistent technical lead who owns architecture, execution quality, engineering continuity, and team direction.",
+      "Use ADE's tools and project context to help the team move forward with clear, concrete decisions.",
+    ].join("\n"),
+    personality: "strategic",
+    modelPreferences: {
+      provider: "claude",
+      model: "sonnet",
+      reasoningEffort: "high",
+    },
+    memoryPolicy: {
+      autoCompact: true,
+      compactionThreshold: 0.7,
+      preCompactionFlush: true,
+      temporalDecayHalfLifeDays: 30,
+    },
+    externalMcpAccess: {
+      allowAll: true,
+      allowedServers: [],
+      blockedServers: [],
+    },
+    openclawContextPolicy: {
+      shareMode: "filtered",
+      blockedCategories: ["secret", "token", "system_prompt"],
+    },
+    updatedAt: "1970-01-01T00:00:00.000Z",
+  },
+  { indent: 2 },
+);
+
+const TRACKED_PLACEHOLDER_PATHS = [
+  path.join("templates", ".gitkeep"),
+  path.join("skills", ".gitkeep"),
+];
+
+function normalizeAdeRelativePath(value: string): string {
+  return value.replace(/\\/g, "/").replace(/^\.?\//, "");
+}
+
+function isTrackedAdeFile(relativePath: string): boolean {
+  const normalized = normalizeAdeRelativePath(relativePath);
+  return normalized === ".gitignore"
+    || normalized === "ade.yaml"
+    || normalized === "cto/identity.yaml"
+    || normalized.startsWith("templates/")
+    || normalized.startsWith("skills/")
+    || normalized.startsWith("workflows/");
+}
+
 function walkFiles(rootPath: string): string[] {
   if (!fs.existsSync(rootPath)) return [];
   const stat = fs.statSync(rootPath);
@@ -53,19 +117,6 @@ function walkFiles(rootPath: string): string[] {
     out.push(...walkFiles(path.join(rootPath, entry.name)));
   }
   return out;
-}
-
-function validateJsonDocument(filePath: string, requiredKeys: string[]): string | null {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Record<string, unknown>;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "Expected a JSON object.";
-    for (const key of requiredKeys) {
-      if (!(key in parsed)) return `Missing required key '${key}'.`;
-    }
-    return null;
-  } catch (error) {
-    return error instanceof Error ? error.message : String(error);
-  }
 }
 
 function validateYamlDocument(filePath: string, requiredKeys: string[]): string | null {
@@ -101,6 +152,25 @@ function scrubAdeExcludeRule(projectRoot: string): AdeSyncAction | null {
   return { kind: "scrub_exclude", relativePath: ".git/info/exclude", detail: "Removed stale .ade ignore rule." };
 }
 
+function scrubAdeRootGitignoreRule(projectRoot: string): AdeSyncAction | null {
+  const gitignorePath = path.join(projectRoot, ".gitignore");
+  if (!fs.existsSync(gitignorePath)) return null;
+  const raw = fs.readFileSync(gitignorePath, "utf8");
+  const nextLines = raw
+    .split(/\r?\n/)
+    .filter((line) => {
+      const trimmed = line.trim();
+      return trimmed !== ".ade" && trimmed !== ".ade/" && trimmed !== "/.ade" && trimmed !== "/.ade/";
+    });
+  while (nextLines.length > 0 && nextLines[nextLines.length - 1]?.trim() === "") {
+    nextLines.pop();
+  }
+  const next = `${nextLines.join("\n")}\n`;
+  if (next === raw) return null;
+  fs.writeFileSync(gitignorePath, next, "utf8");
+  return { kind: "rewrite", relativePath: ".gitignore", detail: "Removed stale root .ade ignore rule." };
+}
+
 function ensureDir(dirPath: string, relativePath: string, actions: AdeSyncAction[]): void {
   if (!fs.existsSync(dirPath)) {
     fs.mkdirSync(dirPath, { recursive: true });
@@ -120,6 +190,13 @@ function ensureFile(filePath: string, body: string, relativePath: string, action
     fs.writeFileSync(filePath, body, "utf8");
     actions.push({ kind: "rewrite", relativePath });
   }
+}
+
+function ensureFileIfMissing(filePath: string, body: string, relativePath: string, actions: AdeSyncAction[]): void {
+  if (fs.existsSync(filePath)) return;
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, body, "utf8");
+  actions.push({ kind: "create_file", relativePath });
 }
 
 function moveIfExists(sourcePath: string, destinationPath: string, relativePath: string, actions: AdeSyncAction[]): void {
@@ -183,6 +260,8 @@ export function initializeOrRepairAdeProject(projectRoot: string, options: Repai
 
   const scrubAction = scrubAdeExcludeRule(projectRoot);
   if (scrubAction) actions.push(scrubAction);
+  const scrubRootGitignoreAction = scrubAdeRootGitignoreRule(projectRoot);
+  if (scrubRootGitignoreAction) actions.push(scrubRootGitignoreAction);
 
   for (const entry of ADE_LAYOUT_DEFINITIONS) {
     const absolutePath = path.join(paths.adeDir, entry.relativePath);
@@ -192,6 +271,11 @@ export function initializeOrRepairAdeProject(projectRoot: string, options: Repai
   }
 
   ensureFile(path.join(paths.adeDir, ".gitignore"), buildAdeGitignore(), ".gitignore", actions);
+  ensureFileIfMissing(paths.sharedConfigPath, DEFAULT_ADE_CONFIG, "ade.yaml", actions);
+  ensureFileIfMissing(path.join(paths.ctoDir, "identity.yaml"), DEFAULT_CTO_IDENTITY, "cto/identity.yaml", actions);
+  for (const relativePath of TRACKED_PLACEHOLDER_PATHS) {
+    ensureFileIfMissing(path.join(paths.adeDir, relativePath), "", relativePath, actions);
+  }
 
   repairLegacyPaths(paths, actions);
 
@@ -231,8 +315,9 @@ export function createAdeProjectService(args: AdeProjectServiceArgs) {
       .flatMap((entry) => walkFiles(path.join(repair.paths.adeDir, entry.relativePath)));
     for (const absolutePath of trackedFiles) {
       if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) continue;
-      const raw = fs.readFileSync(absolutePath, "utf8");
       const relativePath = path.relative(repair.paths.adeDir, absolutePath);
+      if (!isTrackedAdeFile(relativePath)) continue;
+      const raw = fs.readFileSync(absolutePath, "utf8");
       for (const pattern of SECRET_PATTERNS) {
         if (pattern.regex.test(raw)) {
           issues.push({
@@ -257,42 +342,6 @@ export function createAdeProjectService(args: AdeProjectServiceArgs) {
         message: `cto/identity.yaml: ${ctoIdentityError}`,
         relativePath: "cto/identity.yaml",
       });
-    }
-    const ctoMemoryError = validateJsonDocument(path.join(repair.paths.ctoDir, "core-memory.json"), ["projectSummary", "updatedAt"]);
-    if (ctoMemoryError) {
-      issues.push({
-        code: "cto-memory-invalid",
-        severity: "warning",
-        message: `cto/core-memory.json: ${ctoMemoryError}`,
-        relativePath: "cto/core-memory.json",
-      });
-    }
-
-    if (fs.existsSync(repair.paths.agentsDir)) {
-      for (const slug of fs.readdirSync(repair.paths.agentsDir)) {
-        const agentDir = path.join(repair.paths.agentsDir, slug);
-        if (!fs.statSync(agentDir).isDirectory()) continue;
-        const identityPath = path.join(agentDir, "identity.yaml");
-        const coreMemoryPath = path.join(agentDir, "core-memory.json");
-        const identityError = validateYamlDocument(identityPath, ["id", "slug", "name", "updatedAt"]);
-        if (identityError) {
-          issues.push({
-            code: "worker-identity-invalid",
-            severity: "warning",
-            message: `agents/${slug}/identity.yaml: ${identityError}`,
-            relativePath: path.join("agents", slug, "identity.yaml"),
-          });
-        }
-        const memoryError = validateJsonDocument(coreMemoryPath, ["projectSummary", "updatedAt"]);
-        if (memoryError) {
-          issues.push({
-            code: "worker-memory-invalid",
-            severity: "warning",
-            message: `agents/${slug}/core-memory.json: ${memoryError}`,
-            relativePath: path.join("agents", slug, "core-memory.json"),
-          });
-        }
-      }
     }
     return issues;
   };

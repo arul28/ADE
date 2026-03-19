@@ -7,6 +7,12 @@ ADE has two distinct memory systems:
 1. **Unified memory database** -- A SQLite-backed store of categorized, tiered knowledge entries shared across all agents and missions. This is the primary memory system.
 2. **CTO core memory** -- A small structured identity document that persists the CTO's (and each worker agent's) understanding of the project. Stored as both a JSON file and a SQLite row.
 
+2026-03-15 portability clarification:
+
+- live memory state still flows through ADE sync when devices are connected to the same cluster
+- this W3 pass does **not** make unified memory or CTO/worker runtime memory Git-tracked
+- Git-tracked ADE portability in W3 is intentionally limited to the shared scaffold/config/identity layer
+
 ## Unified Memory Service
 
 ### SQLite Schema
@@ -116,23 +122,39 @@ type CtoCoreMemory = {
 
 On startup, `ctoStateService.ts` reads both sources and reconciles by version number. The higher version wins. On write, both are updated atomically.
 
+This dual-persistence pattern is currently used for runtime robustness and connected-cluster behavior. In this narrowed W3 pass, it should not be interpreted as "file means Git-tracked". `cto/core-memory.json` remains local/generated even though it is file-backed.
+
 ### Daily Logs
 
-The CTO state service supports append-only daily logs stored as markdown files under `.ade/cto/daily-logs/<YYYY-MM-DD>.md`:
+The CTO state service supports append-only daily logs stored as markdown files under `.ade/cto/daily/<YYYY-MM-DD>.md`:
 
 - `appendDailyLog(entry, date?)` -- appends a timestamped `- [HH:MM:SS] entry` line
 - `readDailyLog(date?)` -- reads the full log for a given day
 - `listDailyLogs(limit?)` -- lists available daily log dates, most recent first (default: 7)
 
+Raw daily logs are still operational history rather than Git-tracked ADE state. If downstream work needs their substance on another desktop, it should use a future explicit summary/export design rather than tracking raw append-only logs.
+
 ### Injection
 
-`buildReconstructionContext()` in `ctoStateService.ts` serializes the CTO snapshot (identity, core memory, recent session logs, recent subordinate activity, and today's daily log) into a text block. This is injected as the first message in every CTO chat session. The reconstruction context also includes three baked-in protocol sections (Memory Protocol, Daily Context, Decision Framework) that are part of the CTO identity and survive across sessions.
+`buildReconstructionContext()` in `ctoStateService.ts` serializes the CTO snapshot (identity, core memory, recent session logs, recent subordinate activity, and continuity state) into a text block. This is injected into CTO identity chat sessions as the continuity layer, separate from the immutable ADE-owned doctrine in the system prompt.
 
-When a CTO or worker identity session undergoes context compaction, `refreshReconstructionContext()` is called automatically to re-inject the full identity context into the harness system prompt. This prevents identity loss after compaction.
+When a CTO or worker identity session undergoes context compaction, `refreshReconstructionContext()` is called automatically to re-inject the full continuity layer. The immutable doctrine and selected personality overlay stay in the system prompt, while reconstruction restores project-specific continuity.
 
 ### Worker Agents
 
 Worker agents follow the same pattern via `AgentCoreMemory` (defined in `apps/desktop/src/shared/types/agents.ts`), with identical fields to `CtoCoreMemory`. Persisted in `.ade/agents/<slug>/core-memory.json`. Injected via `buildReconstructionContext()` in `workerAgentService.ts`.
+
+That worker core-memory file remains local/runtime state in this W3 pass. Another desktop learns live worker memory by connecting to the host, not by pulling it from Git.
+
+## Portability contract
+
+Memory-related ADE state now has three buckets:
+
+- **Git-tracked shared ADE layer**: this pass does not include memory exports; it is limited to shared scaffold/config/identity files such as `.ade/cto/identity.yaml`
+- **ADE-sync memory/runtime state**: connected-cluster DB state such as live mission-scoped memories, access scores, and other runtime records that benefit from real-time replication
+- **Local-only operational logs**: raw session logs, append-only runtime traces, caches, embeddings artifacts, and other machine-bound byproducts
+
+Future workstreams must choose one bucket explicitly. This narrowed W3 pass intentionally leaves memory portability out of the Git-tracked layer.
 
 ## Memory Briefing Service
 
@@ -145,6 +167,15 @@ Output: `MemoryBriefing` -- sections for l0 (pinned), l1 (active), l2 (search-ma
 Budget limits control how many entries are included per section: `lite` = 3, `standard` = 8, `deep` = 20.
 
 The briefing query is constructed from the task description, phase context, handoff summaries, and file patterns.
+
+### Direct-Source Context Injection
+
+The briefing service now supplements memory database entries with direct-source context:
+
+- **Git log**: Recent commit summaries are read directly from `git log` (via `humanWorkDigestService.getRecentCommitSummaries()` or a fallback `git log --oneline`), injected as synthetic `digest` memories. This replaces reliance on stale digest entries in the database.
+- **Instruction files**: `CLAUDE.md`, `agents.md`, and `AGENTS.md` are read from the project root and injected as synthetic `procedure` memories. This ensures agent briefings always include current instruction files regardless of memory database state.
+
+These synthetic memories are constructed with full `Memory` shape (tier 1, promoted, confidence 1.0) so they integrate seamlessly with the existing briefing budget and deduplication logic.
 
 ## Agent Prompt Guidance
 

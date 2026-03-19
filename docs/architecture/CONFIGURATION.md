@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-11
+> Last updated: 2026-03-15
 
 The ADE configuration system manages project-level and workspace-level settings through a layered YAML-based approach. It supports shared team configuration, personal local overrides, and a trust model that prevents unauthorized command execution.
 
@@ -75,11 +75,45 @@ project-root/
 │   ├── artifacts/        # Generated compatibility artifacts (ignored)
 │   ├── worktrees/        # Lane worktrees (ignored)
 │   └── secrets/          # Local secret material (ignored)
+│       ├── github/       # Encrypted GitHub tokens
+│       ├── sync-site-id  # cr-sqlite device identity (never syncs)
+│       ├── sync-device-id # Stable device identifier
+│       └── sync-bootstrap-token  # Sync pairing token (machine-local)
 ├── src/
 └── ...
 ```
 
 ADE writes a tracked `.ade/.gitignore` file that defines the ignored machine-local subset. On startup, `adeProjectService.ts` also removes stale `.git/info/exclude` rules that previously hid the entire `.ade/` directory.
+
+### Portability model
+
+ADE uses three different portability layers, and they are intentionally not the same thing:
+
+- **Git-tracked shared ADE scaffold/config**: `.ade/.gitignore`, `.ade/ade.yaml`, `.ade/cto/identity.yaml`, human-authored files under `.ade/templates/**` and `.ade/skills/**`, and other low-churn repo-backed workflow/config files such as `.ade/workflows/linear/**` when present. This is what makes a fresh clone look like an ADE project instead of an uninitialized repo.
+- **ADE sync state**: replicated database state in `.ade/ade.db` via cr-sqlite and the host/controller sync protocol. This is how lanes, missions, chats, device registry state, and other live-session runtime records move across devices without going through Git.
+- **Machine-local runtime state**: worktrees, secrets, caches, transcripts, artifacts, sockets, and local overrides. These stay local even when multiple devices are connected to the same project.
+
+Generated CTO/runtime files such as `cto/CURRENT.md`, `cto/MEMORY.md`, `cto/core-memory.json`, per-agent files under `.ade/agents/`, and generated `.ade/context/*.ade.md` exports remain gitignored by the canonical `.ade/.gitignore`.
+
+Design rule:
+
+- if the file is low-churn, human-authored, and clearly shared across the team, it can live in tracked `.ade/`
+- if the state is DB-derived, generated, append-only, or machine-bound, it should not become Git-tracked by default
+- raw runtime logs and machine-bound artifacts still stay ignored
+
+The important consequence is that two devices do **not** need byte-for-byte identical `.ade/` folders. They only need:
+
+- the same tracked scaffold from Git
+- the same replicated ADE runtime state from sync when they join the same live host/controller session
+- their own local runtime folders for execution, secrets, and caches
+
+On a second desktop, the target W3 flow is:
+
+1. clone/pull the repo so the tracked `.ade/` scaffold and shared ADE config/identity files are present
+2. open the repo in ADE, which silently creates any missing local runtime folders
+3. optionally connect that desktop to the current host in **Settings > Sync** for live runtime state and remote control
+
+That second desktop can remain a **controller** attached to the host on the primary machine. It does not need to become its own execution host unless you explicitly hand off. If it does run standalone, it should still have the shared ADE scaffold/config/identity layer from the repo.
 
 ### Config Layering
 

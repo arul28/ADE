@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawnAsync } from "../shared/utils";
 
 type CliName = "claude" | "codex";
 
@@ -64,17 +64,28 @@ const AUTH_INDICATORS = [
   /token valid/i,
 ];
 
-const UNAUTH_INDICATORS = [
+/** Strong unauth signals — explicit negations that always indicate "not logged in". */
+const STRONG_UNAUTH_INDICATORS = [
   /not logged in/i,
   /not authenticated/i,
   /login required/i,
   /sign in required/i,
-  /run .*login/i,
   /unauthorized/i,
   /forbidden/i,
   /invalid token/i,
   /expired/i,
 ];
+
+/**
+ * Weak unauth signals — patterns that can appear in help/usage text even when
+ * the user IS authenticated (e.g. "run `claude auth login` to switch accounts").
+ * These should not override a positive auth indicator.
+ */
+const WEAK_UNAUTH_INDICATORS = [
+  /run .*login/i,
+];
+
+const UNAUTH_INDICATORS = [...STRONG_UNAUTH_INDICATORS, ...WEAK_UNAUTH_INDICATORS];
 
 const UNSUPPORTED_INDICATORS = [
   /unknown command/i,
@@ -110,29 +121,12 @@ function findExplicitCommandPath(command: string): string | null {
   return match ? path.join(match, command) : null;
 }
 
-/** Run a command asynchronously and return { status, stdout, stderr }. */
-function spawnAsync(
-  command: string,
-  args: string[],
-  timeoutMs: number,
-): Promise<{ status: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs });
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
-    child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
-    child.on("error", () => resolve({ status: null, stdout, stderr }));
-    child.on("close", (code) => resolve({ status: code, stdout, stderr }));
-  });
-}
-
 async function commandExists(command: string): Promise<boolean> {
   // Strategy 1: Direct spawn — bypasses shell init (.zshrc errors, slow profiles).
   // If the binary exists, --version will produce *some* exit code.
   // A spawn error (ENOENT) means the binary isn't on PATH → status is null.
   try {
-    const direct = await spawnAsync(command, ["--version"], 5_000);
+    const direct = await spawnAsync(command, ["--version"], { timeout: 5_000 });
     if (direct.status !== null) return true;
   } catch {
     // fall through to shell-based check
@@ -144,10 +138,10 @@ async function commandExists(command: string): Promise<boolean> {
   // Strategy 2: Shell-based lookup (fallback for edge cases)
   try {
     if (process.platform === "win32") {
-      const result = await spawnAsync("where", [command], 5_000);
+      const result = await spawnAsync("where", [command], { timeout: 5_000 });
       return result.status === 0;
     }
-    const result = await spawnAsync(getLookupShell(), ["-lc", `command -v ${command} >/dev/null 2>&1`], 5_000);
+    const result = await spawnAsync(getLookupShell(), ["-lc", 'command -v "$1" >/dev/null 2>&1', "--", command], { timeout: 5_000 });
     return result.status === 0;
   } catch {
     // fall through to explicit common-path lookup
@@ -159,11 +153,11 @@ async function commandExists(command: string): Promise<boolean> {
 async function commandPath(command: string): Promise<string> {
   try {
     if (process.platform === "win32") {
-      const result = await spawnAsync("where", [command], 5_000);
+      const result = await spawnAsync("where", [command], { timeout: 5_000 });
       return result.stdout?.trim().split(/\r?\n/)[0] ?? command;
     }
     // Try which first (simpler, doesn't load full login shell)
-    const which = await spawnAsync("which", [command], 3_000);
+    const which = await spawnAsync("which", [command], { timeout: 3_000 });
     if (which.status === 0 && which.stdout?.trim()) {
       return which.stdout.trim();
     }
@@ -172,7 +166,7 @@ async function commandPath(command: string): Promise<string> {
       return explicitPath;
     }
     // Fallback to login shell lookup
-    const result = await spawnAsync(getLookupShell(), ["-lc", `command -v ${command}`], 5_000);
+    const result = await spawnAsync(getLookupShell(), ["-lc", 'command -v "$1"', "--", command], { timeout: 5_000 });
     return result.stdout?.trim() || command;
   } catch {
     return findExplicitCommandPath(command) ?? command;
@@ -185,7 +179,7 @@ async function refreshProcessPathFromShell(): Promise<void> {
   const loginShell = process.env.SHELL || "/bin/zsh";
 
   try {
-    const resolved = await spawnAsync(loginShell, ["-lc", "printf '%s' \"$PATH\""], 5_000);
+    const resolved = await spawnAsync(loginShell, ["-lc", "printf '%s' \"$PATH\""], { timeout: 5_000 });
     const nextPath = resolved.stdout.trim();
     if (resolved.status === 0 && nextPath.length > 0) {
       process.env.PATH = nextPath;
@@ -201,6 +195,35 @@ async function refreshProcessPathFromShell(): Promise<void> {
   }
 }
 
+/** JSON fields that indicate a positive login state across CLI versions. */
+const JSON_AUTH_FIELDS = ["loggedIn", "logged_in", "authenticated", "signedIn", "signed_in", "active"] as const;
+
+function parseJsonAuthStatus(stdout: string): { authenticated: boolean; verified: true } | null {
+  try {
+    const json = JSON.parse(stdout.trim() || "");
+    if (typeof json !== "object" || json === null) return null;
+
+    // Check well-known boolean fields
+    for (const field of JSON_AUTH_FIELDS) {
+      if (field in json) {
+        return { authenticated: Boolean(json[field]), verified: true };
+      }
+    }
+
+    // If the JSON has an email/account field and no explicit false auth flag,
+    // the user is likely authenticated.
+    if (
+      (typeof json.email === "string" && json.email.trim().length > 0)
+      || (typeof json.account === "string" && json.account.trim().length > 0)
+    ) {
+      return { authenticated: true, verified: true };
+    }
+  } catch {
+    // Not JSON — fall through to regex matching.
+  }
+  return null;
+}
+
 async function inspectCliAuthentication(
   cli: CliName,
   command: string = cli,
@@ -210,29 +233,45 @@ async function inspectCliAuthentication(
 
   for (const args of probes) {
     try {
-      const result = await spawnAsync(command, args, 8_000);
+      const result = await spawnAsync(command, args, { timeout: 8_000 });
       const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
       const normalized = output.toLowerCase();
 
       // Try JSON parsing first (e.g. `claude auth status --json` returns {"loggedIn": true, ...})
-      try {
-        const json = JSON.parse(result.stdout?.trim() || "");
-        if (typeof json === "object" && json !== null && "loggedIn" in json) {
-          return { authenticated: Boolean(json.loggedIn), verified: true };
-        }
-      } catch {
-        // Not JSON — fall through to regex matching.
-      }
+      const jsonResult = parseJsonAuthStatus(result.stdout ?? "");
+      if (jsonResult) return jsonResult;
 
-      if (hasPattern(normalized, UNAUTH_INDICATORS)) {
+      // Check both AUTH and UNAUTH indicators, then resolve conflicts.
+      // Help text from an authenticated CLI session can mention "run … login"
+      // (a weak unauth signal) even when the user IS logged in, so only strong
+      // unauth patterns override a positive auth indicator.
+      const matchesAuth = hasPattern(normalized, AUTH_INDICATORS);
+      const matchesStrongUnauth = hasPattern(normalized, STRONG_UNAUTH_INDICATORS);
+      const matchesWeakUnauth = hasPattern(normalized, WEAK_UNAUTH_INDICATORS);
+
+      if (matchesStrongUnauth) {
+        // Strong negative signal ("not logged in", "unauthorized", etc.) always wins.
         return { authenticated: false, verified: true };
       }
 
-      if (result.status === 0 && hasPattern(normalized, AUTH_INDICATORS)) {
+      if (matchesAuth) {
+        // Positive signal with no strong negation — authenticated.
+        // Weak unauth patterns (e.g. help text "run … login") are ignored.
         return { authenticated: true, verified: true };
       }
 
+      if (matchesWeakUnauth) {
+        // Only weak unauth with no positive signal — likely unauthenticated.
+        return { authenticated: false, verified: true };
+      }
+
+      // Exit 0 with no recognizable output → treat as authenticated
       if (result.status === 0 && normalized.length === 0) {
+        return { authenticated: true, verified: true };
+      }
+
+      // Exit 0 with unrecognized output → likely authenticated
+      if (result.status === 0 && normalized.length > 0) {
         return { authenticated: true, verified: true };
       }
 

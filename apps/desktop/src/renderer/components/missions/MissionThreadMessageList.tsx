@@ -3,6 +3,8 @@ import type { AgentChatApprovalDecision, AgentChatEvent, AgentChatEventEnvelope,
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { AgentChatMessageList } from "../chat/AgentChatMessageList";
 import { AgentQuestionModal } from "../chat/AgentQuestionModal";
+import { ChatSubagentStrip } from "../chat/ChatSubagentStrip";
+import { deriveChatSubagentSnapshots } from "../chat/chatExecutionSummary";
 import { looksLikeLowSignalNoise } from "./missionHelpers";
 import { adaptMissionThreadMessagesToAgentEvents } from "./missionThreadEventAdapter";
 import { useMissionPolling } from "./useMissionPolling";
@@ -384,26 +386,38 @@ export const MissionThreadMessageList = React.memo(function MissionThreadMessage
   const events = useMemo(() => {
     return filterLowSignalStructuredEvents(mergeMissionThreadEvents(fallbackEvents, sessionEvents));
   }, [fallbackEvents, sessionEvents]);
+  const subagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(events), [events]);
   const pendingApproval = useMemo(() => derivePendingApprovals(events)[0] ?? null, [events]);
   const pendingQuestion = useMemo(() => extractAskUserQuestion(pendingApproval), [pendingApproval]);
 
   return (
     <>
-      <AgentChatMessageList
-        events={events}
-        showStreamingIndicator={showStreamingIndicator}
-        className={className}
-        surfaceMode={sessionId ? "mission-thread" : "mission-feed"}
-        onApproval={onApproval
-          ? (itemId, decision, responseText) => {
-              const approval = pendingApproval?.itemId === itemId
-                ? pendingApproval
-                : derivePendingApprovals(events).find((entry) => entry.itemId === itemId) ?? null;
-              if (!approval) return;
-              onApproval(approval.sessionId, itemId, decision, responseText);
-            }
-          : undefined}
-      />
+      <div className="flex h-full min-h-0 flex-col">
+        <AgentChatMessageList
+          events={events}
+          showStreamingIndicator={showStreamingIndicator}
+          className={className}
+          surfaceMode={sessionId ? "mission-thread" : "mission-feed"}
+          onApproval={onApproval
+            ? (itemId, decision, responseText) => {
+                const approval = pendingApproval?.itemId === itemId
+                  ? pendingApproval
+                  : derivePendingApprovals(events).find((entry) => entry.itemId === itemId) ?? null;
+                if (!approval) return;
+                onApproval(approval.sessionId, itemId, decision, responseText);
+              }
+            : undefined}
+        />
+        {subagentSnapshots.length ? (
+          <div className="border-t border-white/[0.05] bg-[#0d0d10]">
+            <ChatSubagentStrip
+              snapshots={subagentSnapshots}
+              placement="read-only"
+              className="pb-2"
+            />
+          </div>
+        ) : null}
+      </div>
       {pendingQuestion && pendingApproval && onApproval ? (
         <AgentQuestionModal
           question={pendingQuestion}

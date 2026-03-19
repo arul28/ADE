@@ -1,6 +1,20 @@
-import { describe, expect, it } from "vitest";
+/* @vitest-environment jsdom */
+
+import React from "react";
+import { describe, expect, it, vi, beforeEach, afterEach, type Mock } from "vitest";
+import { render } from "@testing-library/react";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
-import { buildMissionThreadEventMergeKey, mergeMissionThreadEvents } from "./MissionThreadMessageList";
+import { AgentChatMessageList } from "../chat/AgentChatMessageList";
+import { MissionThreadMessageList, mergeMissionThreadEvents, buildMissionThreadEventMergeKey } from "./MissionThreadMessageList";
+import { useMissionPolling } from "./useMissionPolling";
+
+vi.mock("../chat/AgentChatMessageList", () => ({
+  AgentChatMessageList: vi.fn(() => null),
+}));
+
+vi.mock("./useMissionPolling", () => ({
+  useMissionPolling: vi.fn(() => undefined),
+}));
 
 describe("MissionThreadMessageList transcript merge", () => {
   it("merges persisted and live text events by turn instead of timestamp", () => {
@@ -113,5 +127,40 @@ describe("MissionThreadMessageList transcript merge", () => {
     ]);
 
     expect(merged).toHaveLength(0);
+  });
+});
+
+describe("MissionThreadMessageList usage", () => {
+  const agentListMock = AgentChatMessageList as unknown as Mock;
+  const originalAde = globalThis.window.ade;
+
+  beforeEach(() => {
+    agentListMock.mockReset();
+    (useMissionPolling as unknown as Mock).mockClear();
+    globalThis.window.ade = {
+      sessions: {
+        readTranscriptTail: vi.fn(() => Promise.resolve("")),
+      },
+    } as any;
+  });
+
+  afterEach(() => {
+    globalThis.window.ade = originalAde;
+  });
+
+  it("passes mission-feed mode when no session is selected", () => {
+    render(React.createElement(MissionThreadMessageList, { messages: [], className: "main-timeline" }));
+    expect(agentListMock).toHaveBeenCalledWith(
+      expect.objectContaining({ surfaceMode: "mission-feed", className: "main-timeline" }),
+      expect.anything(),
+    );
+  });
+
+  it("passes mission-thread mode when a session is provided", () => {
+    render(React.createElement(MissionThreadMessageList, { messages: [], sessionId: "session-abc" }));
+    expect(agentListMock).toHaveBeenCalledWith(
+      expect.objectContaining({ surfaceMode: "mission-thread" }),
+      expect.anything(),
+    );
   });
 });

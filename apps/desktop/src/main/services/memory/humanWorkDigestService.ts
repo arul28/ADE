@@ -1,9 +1,6 @@
 import type { ChangeDigest, KnowledgeSyncStatus } from "../../../shared/types";
 import { runGit } from "../git/git";
 import type { Logger } from "../logging/logger";
-import type { UnifiedMemoryService } from "./unifiedMemoryService";
-
-const CURSOR_SOURCE_ID = "lastSeenHeadSha";
 
 function formatDigestContent(digest: ChangeDigest): string {
   const lines: string[] = [
@@ -51,8 +48,11 @@ export function createHumanWorkDigestService(args: {
   projectId: string;
   projectRoot: string;
   logger?: Pick<Logger, "warn"> | null;
-  memoryService: Pick<UnifiedMemoryService, "addMemory" | "writeMemory" | "listMemories">;
+  memoryService?: unknown;
 }) {
+  // In-memory cursor -- no longer persisted to the memory store.
+  let inMemoryCursorSha: string | null = null;
+
   let syncState: KnowledgeSyncStatus = {
     syncing: false,
     lastSeenHeadSha: null,
@@ -64,14 +64,7 @@ export function createHumanWorkDigestService(args: {
   };
 
   const readLastSeenHeadSha = (): string | null => {
-    const cursor = args.memoryService.listMemories({
-      projectId: args.projectId,
-      categories: ["digest"],
-      sourceType: "system",
-      sourceId: CURSOR_SOURCE_ID,
-      limit: 1,
-    })[0] ?? null;
-    return cursor ? cursor.content.trim() || null : null;
+    return inMemoryCursorSha;
   };
 
   const readCurrentHeadSha = async (): Promise<string | null> => {
@@ -82,17 +75,7 @@ export function createHumanWorkDigestService(args: {
   };
 
   const writeCursor = (headSha: string) => {
-    args.memoryService.writeMemory({
-      projectId: args.projectId,
-      scope: "project",
-      category: "digest",
-      content: headSha,
-      importance: "low",
-      confidence: 1,
-      status: "archived",
-      sourceType: "system",
-      sourceId: CURSOR_SOURCE_ID,
-    });
+    inMemoryCursorSha = headSha;
   };
 
   const buildDigest = async (fromSha: string, toSha: string): Promise<ChangeDigest> => {
@@ -116,27 +99,17 @@ export function createHumanWorkDigestService(args: {
   };
 
   const saveDigest = (digest: ChangeDigest) => {
-    const memory = args.memoryService.addMemory({
-      projectId: args.projectId,
-      scope: "project",
-      category: "digest",
-      content: formatDigestContent(digest),
-      importance: "medium",
-      sourceType: "system",
-      sourceId: `digest:${digest.toSha}`,
-      fileScopePattern: digest.changedFiles.slice(0, 20).join(","),
-    });
+    // No longer writes to the memory store -- only updates in-memory sync state.
     writeCursor(digest.toSha);
     syncState = {
       syncing: false,
       lastSeenHeadSha: digest.toSha,
       currentHeadSha: digest.toSha,
       diverged: false,
-      lastDigestAt: memory.createdAt,
-      lastDigestMemoryId: memory.id,
+      lastDigestAt: new Date().toISOString(),
+      lastDigestMemoryId: null,
       lastError: null,
     };
-    return memory;
   };
 
   const syncKnowledge = async (): Promise<ChangeDigest | null> => {
@@ -204,10 +177,18 @@ export function createHumanWorkDigestService(args: {
     return syncState;
   };
 
+  /** Return recent commit summaries directly from git (for briefing injection). */
+  const getRecentCommitSummaries = async (count = 10): Promise<string[]> => {
+    const result = await runGit(["log", "--oneline", `--max-count=${count}`], { cwd: args.projectRoot, timeoutMs: 8_000 });
+    if (result.exitCode !== 0) return [];
+    return result.stdout.split(/\r?\n/u).map((l) => l.trim()).filter((l) => l.length > 0);
+  };
+
   return {
     syncKnowledge,
     onHeadChanged,
     getKnowledgeSyncStatus,
+    getRecentCommitSummaries,
   };
 }
 

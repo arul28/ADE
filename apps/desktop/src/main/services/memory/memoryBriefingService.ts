@@ -1,4 +1,7 @@
+import fs from "node:fs";
+import path from "node:path";
 import type { Memory, UnifiedMemoryService } from "./unifiedMemoryService";
+import type { HumanWorkDigestService } from "./humanWorkDigestService";
 
 export type MemoryBriefingLevel = "lite" | "standard" | "deep";
 
@@ -100,8 +103,64 @@ function pickLevel(mode: BuildMemoryBriefingArgs["mode"]): {
   }
 }
 
+/** Build a synthetic Memory entry for injecting direct-source context into briefings. */
+function syntheticMemory(category: Memory["category"], content: string, sourceId: string): Memory {
+  const now = new Date().toISOString();
+  return {
+    id: `synthetic:${sourceId}`,
+    projectId: "",
+    scope: "project",
+    scopeOwnerId: null,
+    tier: 1,
+    category,
+    content,
+    importance: "medium",
+    sourceSessionId: null,
+    sourcePackKey: null,
+    createdAt: now,
+    updatedAt: now,
+    lastAccessedAt: now,
+    accessCount: 0,
+    observationCount: 0,
+    status: "promoted",
+    agentId: null,
+    confidence: 1,
+    promotedAt: null,
+    sourceRunId: null,
+    sourceType: "system",
+    sourceId,
+    fileScopePattern: null,
+    pinned: false,
+    accessScore: 0,
+    compositeScore: 0,
+    writeGateReason: null,
+  };
+}
+
+/** Read instruction files (CLAUDE.md, agents.md, AGENTS.md) directly from disk. */
+function readInstructionFiles(projectRoot: string): Memory[] {
+  const names = ["CLAUDE.md", "agents.md", "AGENTS.md"];
+  const results: Memory[] = [];
+  for (const name of names) {
+    const filePath = path.join(projectRoot, name);
+    try {
+      if (fs.existsSync(filePath)) {
+        const content = fs.readFileSync(filePath, "utf8").trim();
+        if (content.length > 0) {
+          results.push(syntheticMemory("procedure", `Imported instruction file: ${name}\nSource path: ${filePath}\n\n${content}`, `instruction:${name}`));
+        }
+      }
+    } catch {
+      // Ignore read errors.
+    }
+  }
+  return results;
+}
+
 export function createMemoryBriefingService(args: {
   memoryService: Pick<UnifiedMemoryService, "getMemoryBudget" | "search" | "searchAcrossScopeOwners" | "listMemories">;
+  projectRoot?: string | null;
+  humanWorkDigestService?: Pick<HumanWorkDigestService, "getRecentCommitSummaries"> | null;
 }) {
   const { memoryService } = args;
 
@@ -128,11 +187,11 @@ export function createMemoryBriefingService(args: {
           .getMemoryBudget(input.projectId, levels.l1, { scope: "project" })
           .filter((entry) => entry.tier <= 2);
 
-    const l1 = uniqueMemories(
+    // Only include agent-decided memory categories -- digest and procedure
+    // are now sourced directly from git log / disk files below.
+    const l1FromMemory = uniqueMemories(
       l1Base.filter((entry) =>
-        entry.category === "procedure"
-        || entry.category === "digest"
-        || entry.category === "pattern"
+        entry.category === "pattern"
         || entry.category === "gotcha"
         || entry.category === "decision"
         || entry.category === "convention"
@@ -140,6 +199,25 @@ export function createMemoryBriefingService(args: {
         || entry.pinned
       )
     ).slice(0, BUDGET_LIMITS[levels.l1]);
+
+    // Inject direct-source context: recent git commits + instruction files.
+    const directSourceEntries: Memory[] = [];
+    if (args.projectRoot) {
+      // Git commit context (replaces digest memories).
+      const commitSummaries = args.humanWorkDigestService
+        ? await args.humanWorkDigestService.getRecentCommitSummaries(10)
+        : [];
+      if (commitSummaries.length > 0) {
+        directSourceEntries.push(
+          syntheticMemory("digest", `Recent commits:\n${commitSummaries.map((c) => `- ${c}`).join("\n")}`, "git-log-recent"),
+        );
+      }
+
+      // Instruction files (replaces root-doc procedure memories).
+      directSourceEntries.push(...readInstructionFiles(args.projectRoot));
+    }
+
+    const l1 = [...directSourceEntries, ...l1FromMemory].slice(0, BUDGET_LIMITS[levels.l1] + directSourceEntries.length);
 
     const l2 = input.includeAgentMemory && input.agentId
       ? await memoryService.searchAcrossScopeOwners({

@@ -120,9 +120,16 @@ export type CtoOnboardingState = {
   completedAt?: string;
 };
 
+export type CtoSystemPromptPreviewSection = {
+  id: "doctrine" | "personality" | "memory";
+  title: string;
+  content: string;
+};
+
 export type CtoSystemPromptPreview = {
   prompt: string;
   tokenEstimate: number;
+  sections: CtoSystemPromptPreviewSection[];
 };
 
 export type CtoGetOnboardingStateResult = CtoOnboardingState;

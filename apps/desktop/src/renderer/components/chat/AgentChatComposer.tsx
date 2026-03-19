@@ -24,6 +24,8 @@ import {
 } from "../shared/permissionOptions";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { ChatComposerShell } from "./ChatComposerShell";
+import { ChatSubagentStrip } from "./ChatSubagentStrip";
+import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 
 type ExecutionModeOption = {
   value: AgentChatExecutionMode;
@@ -347,6 +349,7 @@ export function AgentChatComposer({
   onModelChange,
   onReasoningEffortChange,
   onDraftChange,
+  onClearDraft,
   onSubmit,
   onInterrupt,
   onApproval,
@@ -360,7 +363,8 @@ export function AgentChatComposer({
   onIncludeProjectDocsChange,
   onComputerUsePolicyChange,
   onToggleProof,
-  onClearEvents
+  onClearEvents,
+  subagentSnapshots = [],
 }: {
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;
@@ -395,6 +399,7 @@ export function AgentChatComposer({
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
   onDraftChange: (value: string) => void;
+  onClearDraft?: () => void;
   onSubmit: () => void;
   onInterrupt: () => void;
   onApproval: (decision: AgentChatApprovalDecision) => void;
@@ -409,6 +414,7 @@ export function AgentChatComposer({
   onComputerUsePolicyChange: (policy: ComputerUsePolicy) => void;
   onToggleProof?: () => void;
   onClearEvents?: () => void;
+  subagentSnapshots?: ChatSubagentSnapshot[];
 }) {
   const isPersistentIdentitySurface = surfaceProfile === "persistent_identity";
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
@@ -697,8 +703,15 @@ export function AgentChatComposer({
         </div>
       ) : undefined}
       trays={
-        attachments.length || selectedContextPacks.length ? (
+        attachments.length || selectedContextPacks.length || subagentSnapshots.length ? (
           <div className="space-y-2 px-1 py-2">
+            {subagentSnapshots.length ? (
+              <ChatSubagentStrip
+                snapshots={subagentSnapshots}
+                placement="composer"
+                onInterruptTurn={turnActive ? onInterrupt : undefined}
+              />
+            ) : null}
             <ChatAttachmentTray
               attachments={attachments}
               mode={surfaceMode}
@@ -1025,19 +1038,31 @@ export function AgentChatComposer({
               {turnActive ? (
                 <>
                   {draft.trim().length > 0 && (
-                    <button
-                      type="button"
-                      className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] transition-all hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)]"
-                      onClick={onSubmit}
-                      title="Steer"
-                    >
-                      <PaperPlaneTilt size={11} weight="fill" />
-                    </button>
+                    <>
+                      {onClearDraft ? (
+                        <button
+                          type="button"
+                          className="inline-flex h-7 items-center justify-center rounded-md border border-white/[0.06] px-2 font-sans text-[10px] text-muted-fg/45 transition-all hover:bg-white/[0.04] hover:text-fg/72"
+                          onClick={onClearDraft}
+                          title="Clear draft only"
+                        >
+                          Clear
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] transition-all hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)]"
+                        onClick={onSubmit}
+                        title="Send steer message"
+                      >
+                        <PaperPlaneTilt size={11} weight="fill" />
+                      </button>
+                    </>
                   )}
                   <button
                     type="button"
                     className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-red-500/20 bg-red-500/[0.06] text-red-400/70 transition-all hover:border-red-500/35 hover:bg-red-500/12 hover:text-red-400"
-                    title="Interrupt (Cmd+.)"
+                    title="Stop the active turn only (Cmd+.)"
                     onClick={onInterrupt}
                   >
                     <Square size={10} weight="fill" />

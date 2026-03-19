@@ -1,0 +1,25 @@
+version: 1
+processes: []
+stackButtons: []
+testSuites: []
+laneOverlayPolicies: []
+automations: []
+ai:
+  features:
+    narratives: true
+    conflict_proposals: true
+    commit_messages: true
+    pr_descriptions: true
+    terminal_summaries: true
+    memory_consolidation: true
+    mission_planning: true
+    orchestrator: true
+    initial_context: true
+  featureModelOverrides:
+    commit_messages: openai/gpt-5.3-codex-spark
+    pr_descriptions: openai/gpt-5.3-codex-spark
+    terminal_summaries: openai/gpt-5.3-codex-spark
+  chat:
+    autoTitleEnabled: true
+    autoTitleModelId: openai/gpt-5.3-codex-spark
+    autoTitleRefreshOnComplete: true

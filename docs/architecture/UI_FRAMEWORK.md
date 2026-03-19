@@ -29,7 +29,7 @@ This document describes the renderer architecture in `apps/desktop/src/renderer`
 
 ## Overview
 
-The ADE renderer is a React SPA running inside Electron's renderer process. It provides high-density operational UI for lanes, files, terminals, conflicts, context packs, PRs, history, agents, missions, and settings.
+The ADE renderer is a React SPA running inside Electron's renderer process. It provides high-density operational UI for lanes, files, terminals, conflicts, PRs, history, agents, missions, and settings.
 
 The renderer has no direct filesystem/process/git access. All privileged operations flow through `window.ade` (preload bridge), with the Electron main process as the only trusted executor.
 

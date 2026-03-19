@@ -11,9 +11,9 @@ Goal: If cr-sqlite encounters fundamental issues (sync reliability, conflict res
 This phase activates if Phase 6 reveals any of these issues:
 - cr-sqlite changeset merge produces data corruption or silent conflicts.
 - Sync latency exceeds acceptable thresholds (>500ms for interactive state).
-- cr-sqlite WASM build is unstable or has memory issues in Electron.
+- cr-sqlite native extension is unstable or has memory issues in Electron.
 - CRR marking causes performance regression on existing SQL operations.
-- The cr-sqlite project becomes unmaintained or incompatible with sql.js updates.
+- The cr-sqlite project becomes unmaintained or incompatible with node:sqlite updates.
 
 If cr-sqlite works well, this phase is skipped entirely.
 

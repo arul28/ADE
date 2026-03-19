@@ -112,8 +112,7 @@ function SourceBadge({ source }: { source: ApiKeySource }) {
 
 function getStatusTone(connection: AiProviderConnectionStatus | null | undefined): { color: string; label: string } {
   if (connection?.runtimeAvailable) return { color: COLORS.success, label: "Connected" };
-  if (connection?.authAvailable && !connection.runtimeDetected) return { color: COLORS.info, label: "Auth Found" };
-  if (connection?.runtimeDetected) return { color: COLORS.warning, label: "Sign-In Required" };
+  if (connection?.runtimeDetected || connection?.authAvailable) return { color: COLORS.warning, label: "Sign-In Required" };
   return { color: COLORS.textDim, label: "Not Detected" };
 }
 
@@ -130,11 +129,11 @@ function buildCliMessage(tool: (typeof CLI_TOOLS)[number], connection: AiProvide
   if (connection?.runtimeAvailable) {
     return "Connection verified.";
   }
-  if (connection?.authAvailable && !connection.runtimeDetected) {
-    return `${describeCredentialSource(connection) ?? "Local auth was found."} ADE still cannot launch ${tool.cli} from this app session. Use Refresh to retry PATH detection or install ${tool.cli}.`;
+  if (connection?.runtimeDetected && !connection.authAvailable) {
+    return connection.blocker ?? `CLI detected but not signed in. Run: ${tool.loginCmd}`;
   }
-  if (connection?.runtimeDetected) {
-    return connection.blocker ?? `CLI detected but not fully signed in. Run: ${tool.loginCmd}`;
+  if (connection?.authAvailable && !connection.runtimeDetected) {
+    return `Local credentials exist but CLI not found in PATH. Install: ${tool.installHint}`;
   }
   return `CLI not found in PATH. Install: ${tool.installHint}. If already installed, ensure it is on your shell PATH and use Refresh.`;
 }

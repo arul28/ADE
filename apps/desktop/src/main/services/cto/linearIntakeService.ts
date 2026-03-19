@@ -78,20 +78,44 @@ export function createLinearIntakeService(args: {
 
   const persistSnapshot = (issue: NormalizedLinearIssue): void => {
     const now = new Date().toISOString();
+    const existing = args.db.get<{ id: string; created_at: string }>(
+      `select id, created_at from linear_issue_snapshots where project_id = ? and issue_id = ? limit 1`,
+      [args.projectId, issue.id]
+    );
+    if (existing) {
+      args.db.run(
+        `
+          update linear_issue_snapshots
+             set identifier = ?,
+                 state_type = ?,
+                 assignee_id = ?,
+                 updated_at_linear = ?,
+                 payload_json = ?,
+                 hash = ?,
+                 updated_at = ?
+           where id = ? and project_id = ?
+        `,
+        [
+          issue.identifier,
+          issue.stateType,
+          issue.assigneeId,
+          issue.updatedAt,
+          JSON.stringify(issue),
+          issueHash(issue),
+          now,
+          existing.id,
+          args.projectId,
+        ]
+      );
+      return;
+    }
+
     args.db.run(
       `
         insert into linear_issue_snapshots(
           id, project_id, issue_id, identifier, state_type, assignee_id, updated_at_linear, payload_json, hash, created_at, updated_at
         )
         values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        on conflict(project_id, issue_id) do update set
-          identifier = excluded.identifier,
-          state_type = excluded.state_type,
-          assignee_id = excluded.assignee_id,
-          updated_at_linear = excluded.updated_at_linear,
-          payload_json = excluded.payload_json,
-          hash = excluded.hash,
-          updated_at = excluded.updated_at
       `,
       [
         `${args.projectId}:${issue.id}`,

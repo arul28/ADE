@@ -1,0 +1,30 @@
+---
+title: "v1.0.2"
+description: "Release notes for ADE v1.0.2 — March 15, 2026"
+---
+
+## Added
+
+- **Provider health pipeline** — Five-module detection system (`authDetector`, `providerCredentialSources`, `providerConnectionStatus`, `providerRuntimeHealth`, `claudeRuntimeProbe`) replaces the single-pass provider check with granular CLI, credential, and runtime health detection
+- **CTO identity presets** — Built-in personality presets for the CTO agent with one-click selection in the identity editor
+- **Budget cap editor** — Inline budget cap editing in the automations UI
+
+## Changed
+
+- **Website overhaul** — Complete rewrite of the landing page with accurate feature descriptions, screenshot placeholders, quick-start instructions, and links to docs/GitHub/releases; removed marketing fluff and false claims
+- **README** — Docs, website, and download links moved to a prominent position after badges; consolidated redundant sections
+- **Documentation** — Updated Mintlify docs and internal architecture docs to match current implementation; removed references to deleted services; fixed inaccurate feature descriptions
+- **Claude runtime probe** — Cache is now scoped by project root to prevent cross-project contamination when switching projects
+- **Auth error detection** — Deduplicated `isClaudeRuntimeAuthError` and `CLAUDE_RUNTIME_AUTH_ERROR` into a single shared module
+- **GitHub token migration** — Added completion flag to skip redundant filesystem checks after first migration
+- **Memory doc sync** — Debounced `syncDerivedMemoryDocs` (2s) to avoid write storms during rapid memory mutations
+- **Automation run details** — Fixed double DB lookup for ingress events in `getRunDetail`
+- **Chat session comment** — Corrected stale "lazy boot" comment to reflect eager pre-warm behavior
+- **Docs site branding** — Updated Mintlify config with correct logo paths and canonical URL
+
+## Removed
+
+- `automationRoutingService` (routing logic consolidated into `automationService`)
+- `NightShiftTab` (deprecated automation UI)
+- `PreviewPage` and `TestPage` (unused renderer pages)
+- `infra/` directory (SST cloud infrastructure — ADE is fully local-first)

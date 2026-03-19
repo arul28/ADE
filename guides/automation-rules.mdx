@@ -1,0 +1,138 @@
+---
+title: "Setting Up Automation Rules"
+description: "Create event-driven automations that trigger AI agents in response to git pushes, PRs, cron schedules, and file changes."
+---
+
+Automations let you wire up triggers to AI execution surfaces so that work happens without manual intervention. This guide covers creating a rule, choosing triggers, selecting executors, and setting guardrails.
+
+---
+
+## 1. Open the Automations Panel
+
+Navigate to **Automations** in the sidebar. The panel has three tabs:
+
+- **Rules** — your active and paused automation rules
+- **Templates** — pre-built rule templates you can clone and customize
+- **History** — past automation runs with status, duration, and output
+
+Click **New Rule** to start creating a rule from scratch, or pick a template from the Templates tab.
+
+---
+
+## 2. Choose a Trigger
+
+Every rule starts with a trigger. Select one from the trigger type dropdown:
+
+<AccordionGroup>
+  <Accordion title="Git Push" icon="code-branch">
+    Fires when commits are pushed to a matching branch pattern.
+
+    - **Branch filter** — glob pattern (e.g., `feature/*`, `main`)
+    - **Path filter (optional)** — only fire when specific files are changed
+
+    Example: run tests on every push to `feature/*` branches.
+  </Accordion>
+  <Accordion title="Pull Request" icon="code-pull-request">
+    Fires on PR lifecycle events: opened, updated, merged, or review requested.
+
+    - **Event filter** — select which PR events to match
+    - **Label filter (optional)** — only fire for PRs with specific labels
+
+    Example: auto-review PRs labeled `needs-ai-review`.
+  </Accordion>
+  <Accordion title="Schedule (Cron)" icon="clock">
+    Fires on a cron schedule.
+
+    - **Cron expression** — standard 5-field cron syntax
+    - **Timezone** — defaults to your system timezone
+
+    Example: run a dependency audit every Monday at 9:00 AM.
+  </Accordion>
+  <Accordion title="File Change" icon="file">
+    Fires when watched files change on disk.
+
+    - **Path pattern** — glob pattern for files to watch (e.g., `src/api/**/*.ts`)
+
+    Example: regenerate API docs when any file in `src/api/` changes.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## 3. Select an Executor
+
+The executor determines how the triggered work runs. Choose one:
+
+| Executor | Best for | Output location |
+|---|---|---|
+| **Agent Session** | Quick, focused tasks (linting, reviews, small fixes) | Automations > History |
+| **Mission** | Multi-step work requiring planning, validation, and artifacts | Missions tab |
+| **Built-in Task** | Predefined ADE operations (pack refresh, conflict scan) | Automations > History |
+
+For agent sessions, you provide a **prompt template** — the instruction the agent receives when the trigger fires. Use `{{branch}}`, `{{files}}`, and `{{event}}` placeholders to inject trigger context into the prompt.
+
+*Coming soon: detailed prompt template reference with all available placeholders.*
+
+---
+
+## 4. Configure Budget Caps
+
+Every automation rule should have a budget cap to prevent runaway spend.
+
+<Steps>
+  <Step title="Set a per-run cap">
+    Navigate to the **Guardrails** section of the rule editor. Set the maximum token count or dollar amount per run.
+  </Step>
+  <Step title="Set a monthly cap (optional)">
+    Limit total spend across all runs of this rule within a calendar month.
+  </Step>
+  <Step title="Choose the over-budget action">
+    - **Pause** — stop the run and create an intervention
+    - **Skip** — cancel the run silently and log it
+  </Step>
+</Steps>
+
+---
+
+## 5. Set Guardrails
+
+Beyond budgets, guardrails control what the automation is allowed to do:
+
+- **File scope** — restrict which files the agent can read or write
+- **Branch scope** — restrict which branches the agent can push to
+- **Tool allowlist** — limit the MCP tools available to the agent
+- **Approval gate** — require human approval before the agent commits or pushes
+
+*Coming soon: detailed guardrail configuration reference.*
+
+---
+
+## 6. Enable the Rule
+
+Review your rule configuration, then toggle the **Enabled** switch. The rule is now live and will fire the next time its trigger condition is met.
+
+You can pause, edit, or delete rules at any time from the Rules tab. Paused rules retain their configuration but do not fire.
+
+---
+
+## Monitoring Runs
+
+Check **Automations > History** to see past runs. Each entry shows:
+
+- Trigger event that fired the rule
+- Executor type and run duration
+- Status (completed, failed, budget-exceeded)
+- Link to the full output (agent session transcript or mission)
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Automation Concepts" icon="bolt" href="/automations/overview">
+    Deep dive into automation architecture, trigger routing, and execution surfaces.
+  </Card>
+  <Card title="Guardrails Reference" icon="shield-check" href="/automations/guardrails">
+    Full reference for budget caps, file scopes, and approval gates.
+  </Card>
+</CardGroup>

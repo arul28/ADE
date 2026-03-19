@@ -59,7 +59,9 @@ function resultFromSdkMessage(message: SDKMessage): ClaudeRuntimeProbeResult | n
     return { state: "ready", message: null };
   }
 
-  const errors = Array.isArray(message.errors) ? message.errors.filter(Boolean).join(" ") : "";
+  const errors = "errors" in message && Array.isArray(message.errors)
+    ? message.errors.filter(Boolean).join(" ")
+    : "";
   if (isClaudeRuntimeAuthError(errors)) {
     return { state: "auth-failed", message: CLAUDE_RUNTIME_AUTH_ERROR };
   }

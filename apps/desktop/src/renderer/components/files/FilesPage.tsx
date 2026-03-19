@@ -18,6 +18,8 @@ import {
   FloppyDisk as Save,
   MagnifyingGlass as Search,
   Sparkle as Sparkles,
+  Eye,
+  EyeSlash,
   Terminal as TerminalSquare,
   FileXls as FileSpreadsheet,
   X,
@@ -97,6 +99,7 @@ function filesSessionKey(projectRoot: string, laneId: string | null): string {
   return `${projectRoot}::${laneId ?? "__primary__"}`;
 }
 const FILES_EDITOR_THEME_KEY = "ade.files.editorTheme";
+const FILES_SHOW_HIDDEN_KEY = "ade.files.showHidden";
 
 function readStoredEditorTheme(): EditorThemeMode {
   try {
@@ -111,6 +114,22 @@ function readStoredEditorTheme(): EditorThemeMode {
 function persistEditorTheme(theme: EditorThemeMode): void {
   try {
     window.localStorage.setItem(FILES_EDITOR_THEME_KEY, theme);
+  } catch {
+    // ignore
+  }
+}
+
+function readStoredShowHidden(): boolean {
+  try {
+    return window.localStorage.getItem(FILES_SHOW_HIDDEN_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function persistShowHidden(show: boolean): void {
+  try {
+    window.localStorage.setItem(FILES_SHOW_HIDDEN_KEY, show ? "true" : "false");
   } catch {
     // ignore
   }
@@ -332,6 +351,7 @@ export function FilesPage() {
   const [activeTabPath, setActiveTabPath] = useState<string | null>(initialSession?.activeTabPath ?? null);
   const [mode, setMode] = useState<EditorViewMode>(initialSession?.mode ?? "edit");
   const [editorTheme, setEditorTheme] = useState<EditorThemeMode>(initialSession?.editorTheme ?? readStoredEditorTheme());
+  const [showHidden, setShowHidden] = useState(readStoredShowHidden);
 
   const [quickOpen, setQuickOpen] = useState("");
   const [quickOpenResults, setQuickOpenResults] = useState<FilesQuickOpenItem[]>([]);
@@ -546,7 +566,8 @@ export function FilesPage() {
       const nodes = await window.ade.files.listTree({
         workspaceId,
         parentPath,
-        depth: parentPath ? 1 : 2
+        depth: parentPath ? 1 : 2,
+        includeIgnored: showHidden
       });
       if (!parentPath) {
         setTree(nodes);
@@ -563,7 +584,7 @@ export function FilesPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [workspaceId]);
+  }, [workspaceId, showHidden]);
 
   const refreshTree = useCallback(async (parentPath?: string) => {
     if (!workspaceId) return;
@@ -870,6 +891,10 @@ export function FilesPage() {
       window.ade.files.stopWatching({ workspaceId }).catch(() => {});
     };
   }, [workspaceId, refreshTree, scheduleTreeRefresh]);
+
+  useEffect(() => {
+    if (workspaceId) refreshTree().catch(() => {});
+  }, [showHidden]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -1295,7 +1320,26 @@ export function FilesPage() {
                 </button>
               ) : null}
             </div>
-            <div className="mt-1.5 flex items-center justify-end">
+            <div className="mt-1.5 flex items-center justify-between">
+              <button
+                type="button"
+                title={showHidden ? "Hide dotfiles" : "Show dotfiles"}
+                style={{
+                  ...outlineButton({ height: 22, padding: "0 8px", fontSize: 9 }),
+                  ...(showHidden ? { borderColor: COLORS.accent, color: COLORS.accent } : {}),
+                }}
+                onClick={() => {
+                  const next = !showHidden;
+                  setShowHidden(next);
+                  persistShowHidden(next);
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
+                onMouseLeave={(e) => {
+                  if (!showHidden) { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }
+                }}
+              >
+                {showHidden ? <Eye size={10} /> : <EyeSlash size={10} />} HIDDEN
+              </button>
               <button
                 type="button"
                 style={{ ...outlineButton({ height: 22, padding: "0 8px", fontSize: 9 }) }}

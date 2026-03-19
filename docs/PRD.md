@@ -141,7 +141,7 @@ The AI Integration Layer replaces the former cloud-based agent model with a full
 
 - **Unified runtime + native SDKs**: The execution layer uses provider-native SDK/runtime paths for Claude CLI, Codex CLI, and API/OpenRouter/local endpoints, normalized behind ADE's unified runtime contracts.
 - **MCP Server**: A local JSON-RPC 2.0 server (`apps/mcp-server`) that exposes ADE's infrastructure as tools to the AI orchestrator. Tools include `spawn_agent`, `read_context`, `create_lane`, `check_conflicts`, `merge_lane`, `ask_user`, `run_tests`, and others.
-- **AI Orchestrator**: A phase-aware coordinator runtime constrained to ADE coordinator tools. It receives mission prompts and context packs, hands off planning work, spawns agents in separate lanes, monitors progress, and routes interventions to the user through the ADE UI.
+- **AI Orchestrator**: A phase-aware coordinator runtime constrained to ADE coordinator tools. It receives mission prompts and memory briefings, hands off planning work, spawns agents in separate lanes, monitors progress, and routes interventions to the user through the ADE UI.
 
 The renderer never mutates the repository directly. File changes, git operations, and test runs happen through ADE's trusted local core services or through workers running inside ADE-managed worktrees under the selected permission model.
 
@@ -167,7 +167,7 @@ Users can configure which AI model and provider to use for each task type. Task 
 
 ### CTO (Always-On Project Agent)
 
-An always-on, project-aware agent that serves as ADE's intelligent entry point. The CTO has full memory and context about the project (using the three-tier memory model), can create missions, spin up lanes, check project state via MCP tools, and route external requests to the appropriate internal workflow (mission planning, agent spawning, context retrieval, or human escalation). The CTO replaces the former "Concierge Agent" concept with a richer, persistent agent that "knows" the entire project. See Section 7.10 and Section 10.12.
+An always-on, project-aware agent that serves as ADE's intelligent entry point. The CTO has full memory and context about the project (using the three-tier memory model), can create missions, spin up lanes, supervise work through a curated ADE operator surface, and route external requests to the appropriate internal workflow (mission planning, agent spawning, context retrieval, or human escalation). The CTO replaces the former "Concierge Agent" concept with a richer, persistent project operator. See Section 7.10 and Section 10.12.
 
 ### External Agent Bridge
 
@@ -207,7 +207,7 @@ ADE Desktop (Electron)
 |   |   +-- Per-task-type model routing
 |   +-- MCP Server (exposes ADE tools to AI)
 |   +-- Existing Services (unchanged)
-|   +-- SQLite (sql.js)
+|   +-- SQLite (node:sqlite + cr-sqlite)
 +-- Preload Bridge (typed IPC)
 ```
 
@@ -220,7 +220,7 @@ The Electron main process is the only component with filesystem and process acce
 - PTY sessions via node-pty
 - Managed process lifecycle (spawn, stop, restart, kill)
 - Job engine and pipeline execution
-- Local database (SQLite via sql.js)
+- Local database (SQLite via node:sqlite)
 - Pack materialization and checkpoint capture
 - AI Integration Service (unified runtime contracts, MCP server, orchestrator)
 
@@ -239,8 +239,8 @@ The preload script exposes a narrow, typed API surface to the renderer via Elect
 The AI Integration Layer runs within the main process and provides all AI capabilities. It consists of:
 
 - **Unified runtime contracts**: ADE normalizes CLI-backed and non-CLI runtimes behind one runtime surface. Claude CLI and Codex CLI use provider-native execution paths; API-key/OpenRouter/local models use in-process runtime adapters. All paths support streaming output, session management, and tool interception for ADE-owned tools.
-- **MCP Server**: A local server (`apps/mcp-server`) exposing ADE tools via JSON-RPC 2.0 over stdio transport. This gives the AI orchestrator programmatic access to ADE's lane management, context packs, conflict detection, test execution, and user intervention infrastructure.
-- **AI Orchestrator**: A phase-aware coordinator runtime constrained to ADE coordinator tools. The orchestrator receives mission prompts enriched with context packs, uses an AI meta-reasoner to select optimal dispatch strategy, enters the planning phase, hands off read-only planning work when enabled, decomposes execution into steps, spawns agents in isolated lanes, facilitates inter-agent communication via @mentions, manages context lifecycle through compaction and scoped memory, monitors execution through checkpoints and session events, and escalates decisions to the user via the intervention panel.
+- **MCP Server**: A local server (`apps/mcp-server`) exposing ADE tools via JSON-RPC 2.0 over stdio transport. This gives the AI orchestrator programmatic access to ADE's lane management, scoped memory, conflict detection, test execution, and user intervention infrastructure.
+- **AI Orchestrator**: A phase-aware coordinator runtime constrained to ADE coordinator tools. The orchestrator receives mission prompts enriched with memory briefings, uses an AI meta-reasoner to select optimal dispatch strategy, enters the planning phase, hands off read-only planning work when enabled, decomposes execution into steps, spawns agents in isolated lanes, facilitates inter-agent communication via @mentions, manages context lifecycle through compaction and scoped memory, monitors execution through checkpoints and session events, and escalates decisions to the user via the intervention panel.
 
 ### Provider Model
 
@@ -270,7 +270,7 @@ For detailed architecture, see [Architecture Documentation](#9-architecture-docu
 | UI Primitives | Radix UI (headless, accessible) |
 | Icons | Lucide |
 | State Management | Zustand (renderer) |
-| Database | SQLite via sql.js (main process) |
+| Database | SQLite via node:sqlite (main process) |
 | Terminal | xterm.js (renderer), node-pty (main process), agent chat (Codex App Server, Claude multi-turn, unified API/local runtime) |
 | Editor/Diff | Monaco Editor (lazy-loaded) |
 | Graph/Canvas | React Flow |
@@ -618,7 +618,7 @@ The AI Integration Layer provides narrative augmentation, conflict resolution pr
 
 **AI Orchestrator**: A phase-aware coordinator runtime constrained to ADE coordinator tools. The orchestrator:
 
-1. Receives a mission prompt enriched with bounded context pack exports.
+1. Receives a mission prompt enriched with scoped memory briefings.
 2. Uses the AI meta-reasoner to determine optimal dispatch strategy (sequential, parallel, wave, or adaptive fan-out).
 3. Enters the built-in planning phase and hands planning work to a read-only planner when enabled.
 4. Decomposes the mission into a step DAG with dependencies, join policies, and done criteria.
@@ -673,7 +673,7 @@ Candidate entries are promoted by relevance/confidence and policy. The Context B
 
 **Runtime call-flow contract**: Programmatic AI execution uses one modern call path (`aiIntegrationService` -> executor/unified runtime). Legacy hosted/BYOK compatibility branches are removed from runtime execution flow.
 
-**Cost controls**: Execution is tied to session boundaries, not keystrokes. Context pack exports are bounded by default. The orchestrator context profile excludes narrative text unless explicitly opted in. Content-hash caching avoids redundant work.
+**Cost controls**: Execution is tied to session boundaries, not keystrokes. Memory briefings are bounded by default. The orchestrator context profile excludes narrative text unless explicitly opted in. Content-hash caching avoids redundant work.
 
 **Usage tracking**: Every AI call is logged to a local `ai_usage_log` table with feature type, provider, model, token counts, duration, and success status. The Settings tab surfaces this data as a usage dashboard with per-feature progress bars, subscription status, and configurable budget controls. Budget policy is shared across Missions and Automations and is configured in **Settings > Usage**.
 
@@ -682,7 +682,7 @@ Candidate entries are promoted by relevance/confidence and policy. The Context B
 Mission workers execute in ADE-managed local runtime boundaries today. The active roadmap keeps that model simple:
 
 - **Local** (Default): Worker runs as a subprocess on the developer's machine, operating in a git worktree managed by ADE. Zero setup, zero cost, full access to local tools and credentials.
-- **Future user-owned VPS brain** (Phase 6): ADE itself runs on a remote machine that the user controls, and other devices connect to that brain. This is not a pluggable managed compute backend layer.
+- **Future user-owned VPS host** (Phase 6): ADE itself runs on a remote machine that the user controls, and other devices connect to that host. This is not a pluggable managed compute backend layer.
 - **Dropped / non-active direction**: Daytona, E2B, and the broader pluggable compute-backend abstraction are not part of the active ADE roadmap.
 
 ### 10.7 Worker Computer Use
@@ -752,7 +752,7 @@ Development baseline: ADE assumes a modern Git CLI (worktrees, `git restore`, `g
 
 ### 10.11 Cross-Machine Portability
 
-ADE now ships a canonical `.ade` contract. The tracked/shareable subset is committed alongside the repo, while machine-local runtime state is ignored by the tracked `.ade/.gitignore`. Real-time multi-device replication is still Phase 6 work.
+ADE now ships a canonical `.ade` contract. The tracked/shareable subset is committed alongside the repo, while machine-local runtime state is ignored by the tracked `.ade/.gitignore`. Real-time multi-device replication is Phase 6 work, and Phase 6 also adds a portable durable ADE layer so another desktop can recover important project intelligence after a normal clone/pull.
 
 Current baseline:
 - Git is the reliable cross-machine transport for code and tracked ADE state.
@@ -761,7 +761,7 @@ Current baseline:
 - Machine-specific credentials remain local-only, either in ignored files or encrypted local storage.
 
 Roadmap direction:
-- Phase 6 adds cr-sqlite state sync, device registry, brain/viewer model, iOS companion app, and push notifications.
+- Phase 6 adds cr-sqlite state sync, device registry, host/controller model, portable durable desktop project intelligence, iOS companion app, and push notifications.
 - Phase 7 adds mobile polish, VPS provider integrations, and advanced offline resilience.
 
 ### 10.12 External Agent Bridge
@@ -779,7 +779,7 @@ External agent platforms (OpenClaw, Claude Code, Codex, custom agent frameworks)
 - **User interaction**: `ask_user`, `resolve_intervention`, `commit_changes`
 - **Observability**: `get_run_graph`, `get_mission_metrics`, `get_pr_health`, `stream_events`
 
-The CTO is ADE's designated router for incoming external requests. When an external agent connects and submits a development request, the CTO analyzes the request, determines the appropriate workflow (new mission, context query, conflict check, etc.), and routes it internally. This prevents external systems from needing to understand ADE's internal orchestration model.
+The CTO is ADE's designated router for incoming external requests. When an external agent connects and submits a development request, the CTO analyzes the request, determines the appropriate workflow (new mission, context query, conflict check, etc.), and routes it internally. The CTO's chat-native operator surface is intentionally curated and service-backed rather than a raw mirror of every internal ADE control.
 
 **Outbound: ADE Workers Using External Tools**
 
@@ -872,6 +872,21 @@ ADE configuration lives in the `.ade/` folder at the project root. The current r
 | `.ade/transcripts/logs/` | Process and test logs | No |
 | `.ade/cache/` | Local cache | No |
 
+**Two operating modes**:
+
+1. **Independent desktop mode**
+   - A user may work on the same repo from multiple desktop-class ADE machines at different times.
+   - Each machine keeps its own local runtime state and worktrees.
+   - Code moves through git.
+   - Important durable ADE project intelligence moves through tracked `.ade/`.
+   - This avoids requiring a live remote host just to continue work on another desktop.
+
+2. **Controller-to-host mode**
+   - One machine or VPS is the live execution host.
+   - Other devices attach as controllers.
+   - The controller needs live sync because work is happening on the host and must be observed and controlled in real time.
+   - This is the core model for phones and for controlling a more powerful always-on machine from another device.
+
 **Config layering** (load order):
 
 1. Application defaults
@@ -908,7 +923,7 @@ When a configured CLI tool is not installed or not authenticated, ADE falls back
 - **ADE does not manage AI service accounts or billing directly.** Users bring their own providers (CLI subscriptions, API keys/OpenRouter, or local endpoints). ADE tracks local usage telemetry and displays provider status, but does not interact with billing systems or enforce provider-side limits.
 - **Mobile/relay support is roadmap scope, not a non-goal.** Desktop is the current primary runtime, while relay + iOS capabilities are planned in `docs/final-plan/README.md`.
 - **No multi-repo support in V1.** Each ADE instance manages a single git repository. Multi-repo orchestration may be considered post-V1.
-- **No real-time collaboration.** ADE is a single-user tool per desktop instance. Team features are limited to shared config and stacked PR workflows.
+- **No active-active multi-user runtime collaboration.** ADE is not trying to let multiple humans co-own one live execution host/session at the same time like Google Docs for agents. Team use still happens primarily through git, branches, shared tracked `.ade/` project intelligence, and normal review/merge workflows. Controller-to-host mode is primarily for one user's own devices, not a generalized simultaneous multi-operator control plane.
 
 ---
 

@@ -21,6 +21,7 @@ import { cn } from "../ui/cn";
 import { LinearConnectionPanel } from "./LinearConnectionPanel";
 import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
 import { CTO_PERSONALITY_PRESETS, getCtoPersonalityPreset } from "./identityPresets";
+import { CtoPromptPreview } from "./CtoPromptPreview";
 
 const CTO_DISPLAY_NAME = "CTO";
 
@@ -31,7 +32,7 @@ const STEPS: WizardStep[] = [
 ];
 
 type IdentityDraft = {
-  persona: string;
+  customPersonality: string;
   personality: CtoPersonalityPreset;
   provider: string;
   model: string;
@@ -114,7 +115,7 @@ export function OnboardingWizard({
   const [loadingModels, setLoadingModels] = useState(true);
 
   const [identity, setIdentity] = useState<IdentityDraft>({
-    persona: getCtoPersonalityPreset("strategic").persona,
+    customPersonality: "",
     personality: "strategic",
     provider: "claude",
     model: "sonnet",
@@ -155,18 +156,21 @@ export function OnboardingWizard({
       setIdentityError("Choose one of your configured models for the CTO.");
       return false;
     }
-    if (!identity.persona.trim()) {
-      setIdentityError("Add a short operating brief so the CTO knows how to lead this project.");
+    if (identity.personality === "custom" && !identity.customPersonality.trim()) {
+      setIdentityError("Add a custom personality overlay or choose one of the built-in presets.");
       return false;
     }
     const personalityPreset = getCtoPersonalityPreset(identity.personality);
     await window.ade.cto.updateIdentity({
       patch: {
         name: CTO_DISPLAY_NAME,
-        persona: identity.persona.trim(),
+        persona: identity.personality === "custom"
+          ? identity.customPersonality.trim()
+          : `Persistent project CTO with ${personalityPreset.label.toLowerCase()} personality.`,
         personality: identity.personality,
-        ...(identity.personality === "custom" ? { customPersonality: identity.persona.trim() } : {}),
-        ...(personalityPreset.communicationStyle ? { communicationStyle: personalityPreset.communicationStyle } : {}),
+        ...(identity.personality === "custom"
+          ? { customPersonality: identity.customPersonality.trim() }
+          : { customPersonality: undefined }),
         modelPreferences: {
           provider: identity.provider.trim(),
           model: identity.model.trim(),
@@ -235,7 +239,8 @@ export function OnboardingWizard({
         setDetection(detectionResult);
 
         const defaultIdentity: IdentityDraft = {
-          persona: getCtoPersonalityPreset(snapshot.identity?.personality ?? "strategic").persona,
+          customPersonality: snapshot.identity?.customPersonality
+            ?? (snapshot.identity?.personality === "custom" ? snapshot.identity?.persona ?? "" : ""),
           personality: snapshot.identity?.personality ?? "strategic",
           provider: snapshot.identity?.modelPreferences.provider || "claude",
           model: snapshot.identity?.modelPreferences.model || "sonnet",
@@ -252,7 +257,8 @@ export function OnboardingWizard({
           ? applyModelSelection(
               {
                 ...defaultIdentity,
-                persona: snapshot.identity?.persona || defaultIdentity.persona,
+                customPersonality: snapshot.identity?.customPersonality
+                  ?? (snapshot.identity?.personality === "custom" ? snapshot.identity?.persona ?? defaultIdentity.customPersonality : defaultIdentity.customPersonality),
                 personality: snapshot.identity?.personality ?? defaultIdentity.personality,
                 reasoningEffort: snapshot.identity?.modelPreferences.reasoningEffort ?? defaultIdentity.reasoningEffort,
               },
@@ -260,7 +266,8 @@ export function OnboardingWizard({
             )
           : {
               ...defaultIdentity,
-              persona: snapshot.identity?.persona || defaultIdentity.persona,
+              customPersonality: snapshot.identity?.customPersonality
+                ?? (snapshot.identity?.personality === "custom" ? snapshot.identity?.persona ?? defaultIdentity.customPersonality : defaultIdentity.customPersonality),
               personality: snapshot.identity?.personality ?? defaultIdentity.personality,
               modelId: snapshot.identity?.modelPreferences.modelId ?? null,
             };
@@ -348,8 +355,7 @@ export function OnboardingWizard({
                 Configure a durable CTO for this project
               </div>
               <div className="mt-2 max-w-[42rem] text-[13px] leading-6 text-muted-fg/42">
-                ADE will keep the CTO&apos;s identity, long-term brief, current context, and durable memory attached to the same persistent session.
-                This flow just gets the foundation right.
+                ADE owns the permanent CTO doctrine. You choose the personality overlay and the project brief that memory will carry forward through the same persistent CTO session.
               </div>
             </div>
 
@@ -433,7 +439,7 @@ export function OnboardingWizard({
                     </div>
 
                     <div>
-                      <div className="font-sans text-sm font-semibold text-fg">Pick a working style</div>
+                      <div className="font-sans text-sm font-semibold text-fg">Pick a personality</div>
                       <div className="mt-2 grid gap-2 md:grid-cols-2">
                         {CTO_PERSONALITY_PRESETS.map((preset) => (
                           <button
@@ -442,7 +448,6 @@ export function OnboardingWizard({
                             onClick={() => setIdentity((draft) => ({
                               ...draft,
                               personality: preset.id,
-                              persona: preset.id === "custom" ? draft.persona : preset.persona,
                             }))}
                             className={cn(
                               "rounded-2xl border px-3 py-3 text-left transition-all duration-200",
@@ -458,19 +463,21 @@ export function OnboardingWizard({
                       </div>
                     </div>
 
-                    <label className="space-y-1 block">
-                      <div className={labelCls}>Operating brief</div>
-                      <textarea
-                        className={cn(textareaCls, "min-h-[140px]")}
-                        rows={6}
-                        placeholder="Describe how this CTO should lead: tone, standards, decision style, and what it should optimize for."
-                        value={identity.persona}
-                        onChange={(event) => setIdentity((draft) => ({ ...draft, persona: event.target.value }))}
-                      />
-                      <div className="text-[11px] leading-5 text-muted-fg/40">
-                        This stays internal. ADE uses it to build the CTO&apos;s hidden identity prompt and to restore context after compaction.
-                      </div>
-                    </label>
+                    {identity.personality === "custom" ? (
+                      <label className="space-y-1 block">
+                        <div className={labelCls}>Custom personality overlay</div>
+                        <textarea
+                          className={cn(textareaCls, "min-h-[140px]")}
+                          rows={6}
+                          placeholder="Describe the CTO's tone, standards, and decision style."
+                          value={identity.customPersonality}
+                          onChange={(event) => setIdentity((draft) => ({ ...draft, customPersonality: event.target.value }))}
+                        />
+                        <div className="text-[11px] leading-5 text-muted-fg/40">
+                          This changes the CTO&apos;s personality only. ADE still keeps the doctrine, memory model, and compaction recovery fixed.
+                        </div>
+                      </label>
+                    ) : null}
 
                     {identityError ? (
                       <div className="rounded-lg border border-red-500/20 bg-red-500/[0.06] px-3 py-2 text-[11px] text-red-300">
@@ -504,9 +511,19 @@ export function OnboardingWizard({
                       <div className="text-xs font-medium">What stays stable</div>
                     </div>
                     <div className="mt-2 text-[11px] leading-5 text-muted-fg/45">
-                      The model can change later without changing who the CTO is. Identity, memory, and compaction recovery stay attached to the same CTO session.
+                      The model can change later without changing who the CTO is. ADE always keeps the doctrine, memory layers, and compaction recovery attached to the same CTO session.
                     </div>
                   </div>
+
+                  <CtoPromptPreview
+                    compact
+                    identityOverride={{
+                      name: CTO_DISPLAY_NAME,
+                      personality: identity.personality,
+                      customPersonality: identity.personality === "custom" ? identity.customPersonality : undefined,
+                      persona: identity.personality === "custom" ? identity.customPersonality : undefined,
+                    }}
+                  />
                 </div>
               </div>
             )}
@@ -540,7 +557,7 @@ export function OnboardingWizard({
                       <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-fg/40">Step 2</div>
                       <div className="mt-2 font-sans text-base font-semibold text-fg">Write the long-term CTO brief</div>
                       <div className="mt-1 text-xs leading-5 text-muted-fg/45">
-                        This becomes the hidden long-term brief ADE keeps reapplying between chats and after compaction.
+                        This is the project memory layer, not the CTO doctrine. ADE reloads it between chats and after compaction so the CTO keeps project continuity.
                       </div>
                     </div>
 
@@ -591,9 +608,9 @@ export function OnboardingWizard({
                     <div className="text-[10px] font-medium uppercase tracking-wider text-muted-fg/50">How ADE uses this</div>
                     <div className="mt-3 space-y-2">
                       {[
-                        "Saved into the CTO's long-term internal brief.",
-                        "Reapplied after compaction so the CTO keeps its bearings.",
-                        "Editable any time later from the CTO settings tab.",
+                        "Stored as the CTO's long-term project memory layer.",
+                        "Reloaded after compaction so the CTO keeps project bearings.",
+                        "Editable later without changing the immutable doctrine.",
                       ].map((item) => (
                         <div key={item} className="flex items-start gap-2 text-[11px] leading-5 text-fg/60">
                           <CheckCircle size={11} weight="fill" style={{ color: "#34D399", marginTop: 2 }} />

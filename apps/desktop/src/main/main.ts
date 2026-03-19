@@ -47,6 +47,7 @@ import { createMcpRequestHandler } from "../../../mcp-server/src/mcpServer";
 import { createEventBuffer, type AdeMcpRuntime, type AdeMcpPaths } from "../../../mcp-server/src/bootstrap";
 import { createKeybindingsService } from "./services/keybindings/keybindingsService";
 import { createAgentToolsService } from "./services/agentTools/agentToolsService";
+import { createDevToolsService } from "./services/devTools/devToolsService";
 import { createOnboardingService } from "./services/onboarding/onboardingService";
 import { createAutomationService } from "./services/automations/automationService";
 import { createAutomationPlannerService } from "./services/automations/automationPlannerService";
@@ -100,6 +101,7 @@ import { transitionMissionStatus } from "./services/orchestrator/missionLifecycl
 import { createExternalMcpService } from "./services/externalMcp/externalMcpService";
 import { createExternalConnectionAuthService } from "./services/externalMcp/externalConnectionAuthService";
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
+import { createSyncService } from "./services/sync/syncService";
 import { createAutoUpdateService } from "./services/updates/autoUpdateService";
 import type { Logger } from "./services/logging/logger";
 
@@ -537,6 +539,8 @@ app.whenReady().then(async () => {
     recordRecent?: boolean;
     userSelectedProject?: boolean;
   }): Promise<AppContext> => {
+    // Any pre-existing .ade directory, whether from the tracked shared scaffold or
+    // a prior local open, means this repo should not feel like a brand-new ADE bootstrap.
     const hadAdeDir = fs.existsSync(path.join(projectRoot, ".ade"));
     const adePaths = ensureAdeDirs(projectRoot);
     const { initApiKeyStore } = await import("./services/ai/apiKeyStore");
@@ -548,6 +552,7 @@ app.whenReady().then(async () => {
     const db = await openKvDb(adePaths.dbPath, logger);
     const keybindingsService = createKeybindingsService({ db });
     const agentToolsService = createAgentToolsService({ logger });
+    const devToolsService = createDevToolsService({ logger });
 
     const project = toProjectInfo(projectRoot, baseRef);
     const { projectId } = upsertProjectRow({ db, repoRoot: projectRoot, displayName: project.displayName, baseRef });
@@ -838,6 +843,7 @@ app.whenReady().then(async () => {
 
     let orchestratorServiceRef: ReturnType<typeof createOrchestratorService> | null = null;
     let aiOrchestratorServiceRef: ReturnType<typeof createAiOrchestratorService> | null = null;
+    let linearDispatcherServiceRef: ReturnType<typeof createLinearDispatcherService> | null = null;
     let openclawBridgeServiceRef: ReturnType<typeof createOpenclawBridgeService> | null = null;
     let linearSyncServiceRef: ReturnType<typeof createLinearSyncService> | null = null;
     let agentChatServiceRef: ReturnType<typeof createAgentChatService> | null = null;
@@ -890,6 +896,7 @@ app.whenReady().then(async () => {
       }
     };
 
+    let syncServiceRef: ReturnType<typeof createSyncService> | null = null;
     const ptyService = createPtyService({
       projectRoot,
       transcriptsDir: adePaths.transcriptsDir,
@@ -898,8 +905,14 @@ app.whenReady().then(async () => {
       aiIntegrationService,
       projectConfigService,
       logger,
-      broadcastData: (ev) => emitProjectEvent(projectRoot, IPC.ptyData, ev),
-      broadcastExit: (ev) => emitProjectEvent(projectRoot, IPC.ptyExit, ev),
+      broadcastData: (ev) => {
+        emitProjectEvent(projectRoot, IPC.ptyData, ev);
+        syncServiceRef?.handlePtyData(ev);
+      },
+      broadcastExit: (ev) => {
+        emitProjectEvent(projectRoot, IPC.ptyExit, ev);
+        syncServiceRef?.handlePtyExit(ev);
+      },
       onSessionEnded: onTrackedSessionEnded,
       onSessionRuntimeSignal: (signal) => {
         aiOrchestratorServiceRef?.onSessionRuntimeSignal(signal);
@@ -971,6 +984,12 @@ app.whenReady().then(async () => {
     embeddingWorkerServiceRef = embeddingWorkerService;
     const memoryBriefingService = createMemoryBriefingService({
       memoryService,
+      projectRoot,
+      humanWorkDigestService: {
+        getRecentCommitSummaries: async (count?: number) => {
+          return humanWorkDigestService?.getRecentCommitSummaries(count) ?? [];
+        },
+      },
     });
     const missionMemoryLifecycleService = createMissionMemoryLifecycleService({
       logger,
@@ -1155,6 +1174,14 @@ app.whenReady().then(async () => {
       memoryService,
       packService,
       workerAgentService,
+      workerHeartbeatService,
+      linearIssueTracker,
+      flowPolicyService,
+      getMissionService: () => missionServiceRef,
+      getAiOrchestratorService: () => aiOrchestratorServiceRef,
+      getLinearDispatcherService: () => linearDispatcherServiceRef,
+      linearClient,
+      linearCredentials: linearCredentialService,
       prService,
       episodicSummaryService,
       laneService,
@@ -1539,6 +1566,23 @@ app.whenReady().then(async () => {
       onDagMutation: (event) => emitProjectEvent(projectRoot, IPC.orchestratorDagMutation, event)
     });
     aiOrchestratorServiceRef = aiOrchestratorService;
+    const syncService = createSyncService({
+      db,
+      logger,
+      projectRoot,
+      fileService,
+      laneService,
+      prService,
+      sessionService,
+      ptyService,
+      computerUseArtifactBrokerService,
+      missionService,
+      agentChatService,
+      processService,
+      onStatusChanged: (snapshot) => emitProjectEvent(projectRoot, IPC.syncEvent, { type: "sync-status", snapshot }),
+    });
+    syncServiceRef = syncService;
+    await syncService.initialize();
     scheduleBackgroundProjectTask(
       "missions.process_queue",
       () => {
@@ -1592,6 +1636,7 @@ app.whenReady().then(async () => {
         }
       },
     });
+    linearDispatcherServiceRef = linearDispatcherService;
 
     logger.info("project.init_stage", { projectRoot, stage: "linear_sync_init" });
     const linearSyncService = createLinearSyncService({
@@ -2046,6 +2091,7 @@ app.whenReady().then(async () => {
       disposeHeadWatcher,
       keybindingsService,
       agentToolsService,
+      devToolsService,
       onboardingService,
       laneService,
       laneEnvironmentService,
@@ -2076,6 +2122,8 @@ app.whenReady().then(async () => {
       automationIngressService,
       usageTrackingService,
       budgetCapService,
+      syncHostService: syncService.getHostService(),
+      syncService,
       missionService,
       missionPreflightService,
       orchestratorService,
@@ -2140,6 +2188,7 @@ app.whenReady().then(async () => {
       disposeHeadWatcher: () => {},
       keybindingsService: null,
       agentToolsService: null,
+      devToolsService: null,
       onboardingService: null,
       laneService: null,
       laneEnvironmentService: null,
@@ -2167,6 +2216,8 @@ app.whenReady().then(async () => {
       automationIngressService: null,
       usageTrackingService: null,
       budgetCapService: null,
+      syncHostService: null,
+      syncService: null,
       missionService: null,
       missionPreflightService: null,
       orchestratorService: null,
@@ -2318,6 +2369,16 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
+      await ctx.syncService?.dispose?.();
+    } catch {
+      // ignore
+    }
+    try {
+      await ctx.syncHostService?.dispose?.();
+    } catch {
+      // ignore
+    }
+    try {
       ctx.mcpSocketServer?.close();
     } catch {
       // ignore
@@ -2420,13 +2481,25 @@ app.whenReady().then(async () => {
   dormantContext = createDormantProjectContext();
 
   process.on("uncaughtException", (err) => {
+    // Suppress repeated EMFILE errors to avoid log flooding
+    if ((err as NodeJS.ErrnoException).code === "EMFILE" || (err as NodeJS.ErrnoException).code === "ENFILE") return;
     getActiveContext().logger.error("process.uncaught_exception", {
       err: String(err),
       stack: err instanceof Error ? err.stack : undefined
     });
   });
+  let emfileWarned = false;
   process.on("unhandledRejection", (reason) => {
-    getActiveContext().logger.error("process.unhandled_rejection", { reason: String(reason) });
+    // Suppress repeated EMFILE errors to avoid log flooding
+    const msg = String(reason);
+    if (msg.includes("EMFILE") || msg.includes("ENFILE")) {
+      if (!emfileWarned) {
+        emfileWarned = true;
+        getActiveContext().logger.warn("process.emfile_detected", { reason: msg });
+      }
+      return;
+    }
+    getActiveContext().logger.error("process.unhandled_rejection", { reason: msg });
   });
   app.on("child-process-gone", (_event, details) => {
     getActiveContext().logger.warn("app.child_process_gone", {

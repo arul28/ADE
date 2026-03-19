@@ -495,7 +495,7 @@ The orchestrator adopts key patterns proven in Claude Code's multi-agent coordin
 
 3. **Context Isolation via Lane Worktrees**: Each worker agent operates in its own lane worktree — an isolated copy of the repository. This prevents file conflicts between parallel agents (a critical lesson from agent teams: "two teammates editing the same file leads to overwrites"). The orchestrator assigns file/lane ownership at the step level to guarantee isolation.
 
-4. **Scoped Agent Profiles**: Each worker receives a focused system prompt, restricted tool access, and a bounded context pack — not the orchestrator's full conversation history. This matches Claude Code's subagent pattern: workers load project context independently and receive only task-specific instructions from the leader.
+4. **Scoped Agent Profiles**: Each worker receives a focused system prompt, restricted tool access, and a scoped memory briefing — not the orchestrator's full conversation history. This matches Claude Code's subagent pattern: workers load project context independently and receive only task-specific instructions from the leader.
 
 5. **Plan Approval Gates**: For complex or risky steps, the orchestrator can require plan approval before a worker begins implementation. The worker researches and plans in read-only mode, submits a plan to the orchestrator, and the orchestrator approves or rejects with feedback. This mirrors the `plan_mode_required` pattern in agent teams.
 
@@ -506,7 +506,7 @@ The orchestrator adopts key patterns proven in Claude Code's multi-agent coordin
 #### Architecture
 
 ```
-Mission prompt + context packs
+Mission prompt + memory briefings
         │
         ▼
 ┌──────────────────────────────────────────────────┐
@@ -605,7 +605,7 @@ For each step that enters the `claimed` state, the orchestrator spawns a worker 
 
 2. **Agent Profile Construction**: The worker receives:
    - A **system prompt** built from the step's description, the mission context, and any identity policy (Phase 4).
-   - A **context pack** at the tier specified by `contextProfiles` (Lite/Standard/Deep).
+   - A **memory briefing** scoped to the mission and agent context.
    - An **ADE tool profile** — coordinator/MCP/reporting tools are restricted to those appropriate for the worker role and phase.
    - A **permission mode** — for CLI-backed models this governs native behavior (`plan`/read-only vs edit/full execution); for API-key/local models it selects ADE's planning/coding tool profiles.
 
@@ -966,7 +966,7 @@ The memory system provides agents with durable, searchable long-term memory that
 
 #### Storage Layer
 
-- **Primary store**: SQLite/sql.js with `unified_memories` as the active memory table and `unified_memory_embeddings` storing 384-dim vectors from local Xenova/all-MiniLM-L6-v2
+- **Primary store**: SQLite (node:sqlite + cr-sqlite) with `unified_memories` as the active memory table and `unified_memory_embeddings` storing 384-dim vectors from local Xenova/all-MiniLM-L6-v2
 - **Embedding model**: `@huggingface/transformers` running `Xenova/all-MiniLM-L6-v2` locally — no API calls, fully offline
 - **Background embedding**: `embeddingWorkerService.ts` processes new entries asynchronously and backfills existing ones without blocking
 - **Active retrieval path**: Hybrid FTS4 BM25 (30%) + cosine similarity (70%) + MMR re-ranking (λ=0.7), with graceful fallback to lexical/composite scoring when embeddings are unavailable
@@ -1142,14 +1142,14 @@ External MCP Request           User (CTO Tab)
 - The CTO can proactively create missions, spin up lanes, and orchestrate work based on project context without explicit user direction
 - It maintains awareness of all active missions, lane states, and recent agent outputs
 
-**CTO Identity and System Prompt**: The CTO system prompt is built by `buildReconstructionContext()` and includes the rich multi-line persona, core memory, recent session logs, subordinate activity, and today's daily log. Three protocol sections are baked into every CTO system prompt:
-- **Memory Protocol**: instructs the CTO to proactively search memory before non-trivial work, save corrections and decisions immediately, and flush key findings before context gets large.
-- **Daily Context**: a startup self-orientation protocol (search memory for focus areas, check subordinate activity, review conventions).
-- **Decision Framework**: make autonomous decisions when safe/reversible, escalate when risky, search before asking, state reasoning concisely.
+**CTO Identity and System Prompt**: The CTO system prompt is now assembled as three explicit sections by `previewSystemPrompt()` in `ctoStateService.ts`:
+- **Immutable ADE doctrine**: ADE-owned identity and operating rules for the persistent CTO project operator. This is not user-editable.
+- **Personality overlay**: selected from presets or one custom personality field. This only changes the behavioral overlay.
+- **Memory and continuity model**: explains the long-term CTO brief, current working context, durable searchable memory, and compaction behavior.
 
-These protocol sections are part of the CTO identity — they are injected into the harness system prompt so they survive across sessions and are re-injected after context compaction.
+Project-specific summary, conventions, active focus, session continuity, subordinate activity, and today's daily log are carried by the memory/continuity layers rather than by the immutable doctrine.
 
-**CTO Daily Logs**: The CTO state service supports append-only daily logs stored as markdown files under `.ade/cto/daily-logs/<YYYY-MM-DD>.md`. The `appendDailyLog`, `readDailyLog`, and `listDailyLogs` methods manage these logs. Today's daily log is automatically included in the CTO reconstruction context, providing within-day continuity.
+**CTO Daily Logs**: The CTO state service supports append-only daily logs stored as markdown files under `.ade/cto/daily/<YYYY-MM-DD>.md`. The `appendDailyLog`, `readDailyLog`, and `listDailyLogs` methods manage these logs. Today's daily log is automatically included in the CTO continuity context, providing within-day continuity.
 
 **Post-Compaction Identity Re-injection**: When a CTO or worker identity session undergoes SDK-level context compaction, the agent chat service detects the compaction event and calls `refreshReconstructionContext()` to re-inject the full identity context (persona, core memory, memory protocol, decision framework). This prevents identity loss after compaction.
 
@@ -1273,7 +1273,7 @@ Phases 1, 1.5, 2, 3, 4, and 5 are complete. The v1 closeout (2026-03-13) address
 **Not yet shipped (v1 known limitations)**:
 - Computer use runtime: The `localComputerUse.ts` capability detection module exists, screenshot capture is available as a workflow tool (depends on agent runtime support), and mission validation models screenshot/browser-verification/video evidence requirements, but the full `screenshot_environment` / `interact_gui` / `record_environment` MCP tool loop is not exposed end-to-end. Automatic PR proof embedding from computer-use artifacts is not shipped.
 - Multi-device sync (cr-sqlite + WebSocket real-time replication) is Phase 6 work.
-- Remote brain deployment (user-owned VPS) is Phase 6 work.
+- Remote host deployment (user-owned VPS) is Phase 6 work.
 - iOS companion app (core functionality) is Phase 6 work; advanced mobile features are Phase 7.
 - Mission orchestration works end-to-end but complex multi-phase flows may benefit from human guidance via interventions.
 
@@ -1281,8 +1281,8 @@ Phases 1, 1.5, 2, 3, 4, and 5 are complete. The v1 closeout (2026-03-13) address
 
 The older pluggable `ComputeBackend` abstraction is no longer part of the active ADE architecture. The current runtime model is:
 
-- **Local brain/runtime** (current baseline): agents execute as local subprocesses/worktree tasks on the active ADE machine.
-- **User-owned VPS brain** (planned Phase 6): ADE itself runs on a remote machine the user controls, and other devices connect to that brain.
+- **Local host/runtime** (current baseline): agents execute as local subprocesses/worktree tasks on the active ADE machine.
+- **User-owned VPS host** (planned Phase 6): ADE itself runs on a remote machine the user controls, and other devices connect to that host.
 - **Dropped managed backend direction**: Daytona, E2B, and similar ADE-managed cloud backends are not part of the active roadmap.
 
 ### Compute Environment Types
@@ -1330,8 +1330,8 @@ Implementation stack for desktop environments:
 Runtime capability notes:
 | Runtime placement | terminal-only | browser | desktop |
 |-------------------|:-------------:|:-------:|:-------:|
-| Local brain (current) | Yes | Yes (local Playwright) | Yes (local Xvfb) |
-| User-owned VPS brain (planned) | Planned | Planned | Planned |
+| Local host (current) | Yes | Yes (local Playwright) | Yes (local Xvfb) |
+| User-owned VPS host (planned) | Planned | Planned | Planned |
 
 ### Per-Task-Type Configuration
 
@@ -1812,7 +1812,7 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Permission/policy layer | Complete | Mutation tools enforce claim/identity policy; spawn and ask_user guards applied |
 | Chat reasoning effort (Claude) | Complete | Reasoning effort forwarded to Claude provider when supported; validated for Codex |
 | Local runtime placement | Complete | Agents run on local runtime records/worktrees on the active ADE machine |
-| Remote brain deployment | Planned | Phase 6 -- user-owned VPS brain + device routing |
+| Remote host deployment | Planned | Phase 6 -- user-owned VPS host + device routing |
 | Managed cloud compute backends (Daytona/E2B) | Dropped | Not on active roadmap |
 | Compute environment types | Partially implemented | terminal-only is active; browser and desktop environment types are defined but the full runtime loop is not shipped |
 | Computer use MCP tools | Partially implemented | Capability detection exists (`localComputerUse.ts`); mission validation models evidence requirements; full MCP tool loop (`screenshot_environment`, `interact_gui`, `record_environment`, `launch_app`, `get_environment_info`) and automatic PR proof embedding are not shipped end-to-end |
@@ -1830,7 +1830,7 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Task agents (lane artifacts) | Planned | Phase 4 -- specialized agents for artifact production within lanes |
 | Chat-to-mission escalation | Planned | Phase 4 -- promote a chat conversation into a full mission with pre-filled context |
 
-**Overall status**: Phases 1, 1.5, 2, 3, 4, and 5 are complete. All Phase 4 workstreams (W1-W10, W-UX, W6-half, W7a-c) are shipped at baseline or better. The remaining unshipped work is concentrated in computer-use runtime follow-through (the MCP tool loop for `screenshot_environment`/`interact_gui`/`record_environment` and automatic PR proof embedding) and future-phase items (multi-device sync, remote brain deployment, iOS companion). MCP dual-mode architecture is shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
+**Overall status**: Phases 1, 1.5, 2, 3, 4, and 5 are complete. All Phase 4 workstreams (W1-W10, W-UX, W6-half, W7a-c) are shipped at baseline or better. The remaining unshipped work is concentrated in computer-use runtime follow-through (the MCP tool loop for `screenshot_environment`/`interact_gui`/`record_environment` and automatic PR proof embedding) and future-phase items (multi-device sync, remote host deployment, iOS companion). MCP dual-mode architecture is shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
 
 ---
 
@@ -2012,7 +2012,7 @@ The `stream_events` tool uses an in-memory event buffer with a **10,000 event ca
 
 ### 3. Single Process Database Access
 
-ADE uses SQLite (via sql.js WASM) with a single-writer model. If the desktop app and MCP server run simultaneously against the same project database, **SQLite write conflicts** will occur. To avoid this:
+ADE uses SQLite (via node:sqlite) with a single-writer model. If the desktop app and MCP server run simultaneously against the same project database, **SQLite write conflicts** will occur. To avoid this:
 
 - Stop the desktop app before running the MCP server standalone in headless mode, or
 - Use the MCP server in embedded mode (via `.ade/mcp.sock`), which shares the same database connection as the desktop app.

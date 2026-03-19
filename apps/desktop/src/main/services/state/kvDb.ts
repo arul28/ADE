@@ -1,12 +1,22 @@
 import fs from "node:fs";
 import path from "node:path";
+import { Buffer } from "node:buffer";
+import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
-import initSqlJs from "sql.js";
-import type { Database, SqlJsStatic } from "sql.js";
+import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import type { Logger } from "../logging/logger";
 import { safeJsonParse } from "../shared/utils";
+import { resolveCrsqliteExtensionPath } from "./crsqliteExtension";
+import type { ApplyRemoteChangesResult, CrsqlChangeRow, SyncScalar } from "../../../shared/types/sync";
 
 export type SqlValue = string | number | null | Uint8Array;
+
+export type AdeDbSyncApi = {
+  getSiteId: () => string;
+  getDbVersion: () => number;
+  exportChangesSince: (version: number) => CrsqlChangeRow[];
+  applyChanges: (changes: CrsqlChangeRow[]) => ApplyRemoteChangesResult;
+};
 
 /**
  * Well-known KV key registry. Services store typed JSON under these key
@@ -44,40 +54,285 @@ export type AdeDb = {
   get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: SqlValue[]) => T | null;
   all: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: SqlValue[]) => T[];
 
+  sync: AdeDbSyncApi;
   flushNow: () => void;
   close: () => void;
 };
 
 const require = createRequire(__filename);
-const FLUSH_DEBOUNCE_MS = 500;
-
-function resolveSqlJsWasmDir(): string {
-  // Ensure the wasm file can be located regardless of cwd.
-  const wasmPath = require.resolve("sql.js/dist/sql-wasm.wasm");
-  return path.dirname(wasmPath);
-}
+const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: typeof DatabaseSyncType };
 
 function ensureParentDir(filePath: string) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
 
-
-function mapExecRows(rows: { columns: string[]; values: unknown[][] }[]): Record<string, unknown>[] {
-  const first = rows[0];
-  if (!first) return [];
-  const { columns, values } = first;
-  const out: Record<string, unknown>[] = [];
-  for (const row of values) {
-    const obj: Record<string, unknown> = {};
-    for (let i = 0; i < columns.length; i++) {
-      obj[columns[i] ?? String(i)] = row[i];
-    }
-    out.push(obj);
-  }
-  return out;
+function openRawDatabase(dbPath: string): DatabaseSyncType {
+  ensureParentDir(dbPath);
+  return new DatabaseSync(dbPath, { allowExtension: true });
 }
 
-function migrate(db: Database) {
+function toDbValue(value: SqlValue | SyncScalar): string | number | null | Uint8Array {
+  if (value == null || typeof value === "string" || typeof value === "number") {
+    return value;
+  }
+  if (value instanceof Uint8Array) {
+    return value;
+  }
+  if (typeof value === "object" && "type" in value && value.type === "bytes") {
+    return Buffer.from(value.base64, "base64");
+  }
+  throw new Error("Unsupported database value");
+}
+
+function runStatement(db: DatabaseSyncType, sql: string, params: Array<SqlValue | SyncScalar> = []): { changes: number } {
+  try {
+    return db.prepare(sql).run(...params.map((param) => toDbValue(param))) as { changes: number };
+  } catch (error) {
+    const statement = sql.replace(/\s+/g, " ").trim();
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${message} [sql=${statement}]`);
+  }
+}
+
+function getRow<T>(db: DatabaseSyncType, sql: string, params: Array<SqlValue | SyncScalar> = []): T | null {
+  return (db.prepare(sql).get(...params.map((param) => toDbValue(param))) as T | undefined) ?? null;
+}
+
+function allRows<T>(db: DatabaseSyncType, sql: string, params: Array<SqlValue | SyncScalar> = []): T[] {
+  return db.prepare(sql).all(...params.map((param) => toDbValue(param))) as T[];
+}
+
+function rawHasTable(db: DatabaseSyncType, tableName: string): boolean {
+  return Boolean(getRow(db, "select 1 as present from sqlite_master where type = 'table' and name = ? limit 1", [tableName]));
+}
+
+function defaultLiteralForType(typeName: string): string {
+  const normalized = typeName.trim().toLowerCase();
+  if (normalized.includes("int") || normalized.includes("real") || normalized.includes("floa") || normalized.includes("doub") || normalized.includes("num")) {
+    return "0";
+  }
+  if (normalized.includes("blob")) {
+    return "X''";
+  }
+  return "''";
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function quoteIdentifier(value: string): string {
+  return `"${value.replace(/"/g, "\"\"")}"`;
+}
+
+function rewriteCreateTableName(sql: string, fromName: string, toName: string): string {
+  const pattern = new RegExp(
+    `^(\\s*create\\s+table\\s+(?:if\\s+not\\s+exists\\s+)?)((?:["'\`\\[])?${escapeRegExp(fromName)}(?:["'\`\\]])?)`,
+    "i",
+  );
+  return sql.replace(pattern, `$1${quoteIdentifier(toName)}`);
+}
+
+function retrofitLegacyPrimaryKeyNotNullSchema(db: DatabaseSyncType): boolean {
+  const tables = allRows<{ name: string; sql: string }>(
+    db,
+    `select name, sql
+       from sqlite_master
+      where type = 'table'
+        and sql is not null
+        and name not like 'sqlite_%'
+        and name not like 'crsql_%'
+        and name not like '%__crsql_clock'
+        and name not like '%__crsql_pks'
+        and name not like 'unified_memories_fts%'`
+  );
+
+  let changed = false;
+  runStatement(db, "pragma foreign_keys = off");
+  try {
+    for (const table of tables) {
+      const tableInfo = allRows<{
+        name: string;
+        type: string;
+        notnull: number;
+        dflt_value: string | null;
+        pk: number;
+      }>(db, `pragma table_info('${table.name.replace(/'/g, "''")}')`);
+
+      let nextSql = table.sql;
+      for (const column of tableInfo) {
+        const columnPattern = new RegExp(`(^|[,(])\\s*${escapeRegExp(column.name)}\\s+([^,\\n\\r)]+)`, "im");
+        const match = nextSql.match(columnPattern);
+        if (!match) continue;
+        let columnDefinition = match[0];
+        if (column.pk > 0 && !/\bnot\s+null\b/i.test(columnDefinition)) {
+          columnDefinition = columnDefinition.replace(/\bprimary\s+key\b/i, "not null primary key");
+        }
+        if (column.notnull === 1 && column.dflt_value == null && !/\bdefault\b/i.test(columnDefinition)) {
+          columnDefinition = `${columnDefinition} default ${defaultLiteralForType(column.type)}`;
+        }
+        nextSql = nextSql.replace(match[0], columnDefinition);
+      }
+
+      nextSql = nextSql
+        .split("\n")
+        .filter((line) => !line.trim().toLowerCase().startsWith("foreign key("))
+        .join("\n")
+        .replace(/,\s*unique\s*\([^)]*\)(?:\s+on\s+conflict\s+\w+)?/gi, "")
+        .replace(/\bunique\b(?:\s+on\s+conflict\s+\w+)?/gi, "")
+        .replace(/,\s*\)/g, "\n    )");
+
+      const indexes = allRows<{ name: string; unique: number; origin: string }>(db, `pragma index_list('${table.name.replace(/'/g, "''")}')`);
+      const hasDisallowedUniqueIndices = indexes.some((index) => index.unique && index.origin !== "pk");
+      if (nextSql === table.sql && !hasDisallowedUniqueIndices) {
+        continue;
+      }
+
+      const repairName = `__ade_crr_repair_${table.name}`;
+      const rewrittenSql = rewriteCreateTableName(nextSql, table.name, repairName);
+      const columnsSql = tableInfo.map((column) => quoteIdentifier(column.name)).join(", ");
+
+      runStatement(db, rewrittenSql);
+      runStatement(
+        db,
+        `insert into ${quoteIdentifier(repairName)} (${columnsSql}) select ${columnsSql} from ${quoteIdentifier(table.name)}`,
+      );
+      runStatement(db, `drop table ${quoteIdentifier(table.name)}`);
+      runStatement(db, `alter table ${quoteIdentifier(repairName)} rename to ${quoteIdentifier(table.name)}`);
+      changed = true;
+    }
+  } finally {
+    runStatement(db, "pragma foreign_keys = on");
+  }
+
+  return changed;
+}
+
+function writeMigrationBackupIfNeeded(dbPath: string): void {
+  if (!fs.existsSync(dbPath)) return;
+  const backupPath = `${dbPath}.pre-crsqlite-w1.bak`;
+  if (!fs.existsSync(backupPath)) {
+    fs.copyFileSync(dbPath, backupPath);
+  }
+}
+
+function listEligibleCrrTables(db: DatabaseSyncType): string[] {
+  const tables = allRows<{ name: string; sql: string | null }>(
+    db,
+    `select name, sql
+       from sqlite_master
+      where type = 'table'
+        and sql is not null
+        and name not like 'sqlite_%'
+        and name not like 'crsql_%'
+        and name not like '%__crsql_clock'
+        and name not like '%__crsql_pks'
+        and name not like 'unified_memories_fts%'`
+  );
+  return tables
+    .filter((table) => !table.sql?.toLowerCase().startsWith("create virtual table"))
+    .filter((table) => allRows<{ pk: number }>(db, `pragma table_info('${table.name.replace(/'/g, "''")}')`).some((column) => column.pk > 0))
+    .map((table) => table.name);
+}
+
+function hasCrsqlMetadata(db: DatabaseSyncType): boolean {
+  return Boolean(
+    getRow(
+      db,
+      "select 1 as present from sqlite_master where type = 'table' and (name = 'crsql_master' or name = 'crsql_site_id' or name like '%__crsql_clock') limit 1"
+    )
+  );
+}
+
+function ensureCrrTables(db: DatabaseSyncType): void {
+  for (const tableName of listEligibleCrrTables(db)) {
+    if (rawHasTable(db, `${tableName}__crsql_clock`)) {
+      continue;
+    }
+    getRow(db, "select crsql_as_crr(?) as ok", [tableName]);
+  }
+}
+
+function ensureLocalSiteIdFile(dbPath: string): string {
+  const siteIdPath = path.join(path.dirname(dbPath), "secrets", "sync-site-id");
+  ensureParentDir(siteIdPath);
+  if (!fs.existsSync(siteIdPath)) {
+    fs.writeFileSync(siteIdPath, randomBytes(16).toString("hex"));
+  }
+  return fs.readFileSync(siteIdPath, "utf8").trim().toLowerCase();
+}
+
+function forceSiteId(db: DatabaseSyncType, siteId: string): void {
+  if (!rawHasTable(db, "crsql_site_id")) return;
+  runStatement(
+    db,
+    "insert into crsql_site_id(site_id, ordinal) values (?, 0) on conflict(ordinal) do update set site_id = excluded.site_id",
+    [Buffer.from(siteId, "hex")]
+  );
+}
+
+function readCurrentSiteId(db: DatabaseSyncType): string | null {
+  const row = getRow<{ site_id: string }>(db, "select lower(hex(crsql_site_id())) as site_id");
+  return row?.site_id ?? null;
+}
+
+function encodeSyncScalar(value: unknown): SyncScalar {
+  if (value === undefined) {
+    return null;
+  }
+  if (value == null || typeof value === "string" || typeof value === "number") {
+    return value;
+  }
+  if (value instanceof Uint8Array) {
+    return {
+      type: "bytes",
+      base64: Buffer.from(value).toString("base64"),
+    };
+  }
+  throw new Error(`Unsupported sync scalar type: ${typeof value}`);
+}
+
+function rebuildUnifiedMemoriesFts(db: DatabaseSyncType): void {
+  if (!rawHasTable(db, "unified_memories") || !rawHasTable(db, "unified_memories_fts")) {
+    return;
+  }
+  try {
+    runStatement(db, "insert into unified_memories_fts(unified_memories_fts) values ('rebuild')");
+  } catch {
+    runStatement(db, "delete from unified_memories_fts");
+    runStatement(db, "insert into unified_memories_fts(rowid, content) select rowid, content from unified_memories");
+  }
+}
+
+function ensureUnifiedMemoriesSearchTable(db: { run: (sql: string, params?: SqlValue[]) => void }): void {
+  try {
+    db.run(`
+      create virtual table if not exists unified_memories_fts using fts4(
+        content,
+        content='unified_memories'
+      )
+    `);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/no such module: fts4/i.test(message) && !/no such module: fts5/i.test(message)) {
+      throw error;
+    }
+    db.run(`
+      create table if not exists unified_memories_fts (
+        rowid integer primary key,
+        content text not null
+      )
+    `);
+  }
+}
+
+function parseAlterTableTarget(sql: string): string | null {
+  const match = sql.match(/^\s*alter\s+table\s+([`"'[\]A-Za-z0-9_]+)\s+add\s+column\s+/i);
+  if (!match?.[1]) return null;
+  return match[1].replace(/^["'`[]|["'`\]]$/g, "");
+}
+
+function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
   // Keep KV for UI layout persistence.
   db.run("create table if not exists kv (key text primary key, value text not null)");
 
@@ -85,7 +340,7 @@ function migrate(db: Database) {
   db.run(`
     create table if not exists projects (
       id text primary key,
-      root_path text not null unique,
+      root_path text not null,
       display_name text not null,
       default_base_ref text not null,
       created_at text not null,
@@ -120,6 +375,22 @@ function migrate(db: Database) {
   db.run("create index if not exists idx_lanes_project_id on lanes(project_id)");
   db.run("create index if not exists idx_lanes_project_type on lanes(project_id, lane_type)");
   db.run("create index if not exists idx_lanes_project_parent on lanes(project_id, parent_lane_id)");
+
+  db.run(`
+    create table if not exists lane_state_snapshots (
+      lane_id text primary key,
+      dirty integer not null default 0,
+      ahead integer not null default 0,
+      behind integer not null default 0,
+      remote_behind integer not null default -1,
+      rebase_in_progress integer not null default 0,
+      agent_summary_json text,
+      mission_summary_json text,
+      updated_at text not null,
+      foreign key(lane_id) references lanes(id)
+    )
+  `);
+  db.run("create index if not exists idx_lane_state_snapshots_updated_at on lane_state_snapshots(updated_at)");
 
   db.run(`
     create table if not exists terminal_sessions (
@@ -166,7 +437,6 @@ function migrate(db: Database) {
       depends_on_json text not null,
       readiness_json text not null,
       updated_at text not null,
-      unique(project_id, key),
       foreign key(project_id) references projects(id)
     )
   `);
@@ -220,7 +490,6 @@ function migrate(db: Database) {
       process_keys_json text not null,
       start_order text not null,
       updated_at text not null,
-      unique(project_id, key),
       foreign key(project_id) references projects(id)
     )
   `);
@@ -238,7 +507,6 @@ function migrate(db: Database) {
       timeout_ms integer,
       tags_json text not null,
       updated_at text not null,
-      unique(project_id, key),
       foreign key(project_id) references projects(id)
     )
   `);
@@ -415,14 +683,27 @@ function migrate(db: Database) {
       last_synced_at text,
       created_at text not null,
       updated_at text not null,
-      unique(project_id, lane_id),
-      unique(project_id, repo_owner, repo_name, github_pr_number),
       foreign key(project_id) references projects(id),
       foreign key(lane_id) references lanes(id)
     )
   `);
   db.run("create index if not exists idx_pull_requests_lane_id on pull_requests(lane_id)");
   db.run("create index if not exists idx_pull_requests_project_id on pull_requests(project_id)");
+
+  db.run(`
+    create table if not exists pull_request_snapshots (
+      pr_id text primary key,
+      detail_json text,
+      status_json text,
+      checks_json text,
+      reviews_json text,
+      comments_json text,
+      files_json text,
+      updated_at text not null,
+      foreign key(pr_id) references pull_requests(id)
+    )
+  `);
+  db.run("create index if not exists idx_pull_request_snapshots_updated_at on pull_request_snapshots(updated_at)");
 
   // Phase 8 pack versioning + checkpoints.
   db.run(`
@@ -471,7 +752,7 @@ function migrate(db: Database) {
   `);
   db.run("create index if not exists idx_pack_versions_project_pack on pack_versions(project_id, pack_key)");
   db.run(
-    "create unique index if not exists idx_pack_versions_project_pack_version on pack_versions(project_id, pack_key, version_number)"
+    "create index if not exists idx_pack_versions_project_pack_version on pack_versions(project_id, pack_key, version_number)"
   );
 
   db.run(`
@@ -714,7 +995,6 @@ function migrate(db: Database) {
       updated_at text not null,
       started_at text,
       completed_at text,
-      unique(mission_id, step_index),
       foreign key(mission_id) references missions(id),
       foreign key(project_id) references projects(id),
       foreign key(lane_id) references lanes(id)
@@ -846,7 +1126,6 @@ function migrate(db: Database) {
       archived_at text,
       created_at text not null,
       updated_at text not null,
-      unique(project_id, phase_key),
       foreign key(project_id) references projects(id)
     )
   `);
@@ -879,7 +1158,6 @@ function migrate(db: Database) {
       phases_json text not null,
       created_at text not null,
       updated_at text not null,
-      unique(project_id, mission_id),
       foreign key(mission_id) references missions(id),
       foreign key(project_id) references projects(id),
       foreign key(profile_id) references phase_profiles(id)
@@ -935,7 +1213,6 @@ function migrate(db: Database) {
       updated_at text not null,
       started_at text,
       completed_at text,
-      unique(run_id, step_key),
       foreign key(run_id) references orchestrator_runs(id),
       foreign key(project_id) references projects(id),
       foreign key(mission_step_id) references mission_steps(id),
@@ -967,7 +1244,6 @@ function migrate(db: Database) {
       created_at text not null,
       started_at text,
       completed_at text,
-      unique(step_id, attempt_number),
       foreign key(run_id) references orchestrator_runs(id),
       foreign key(step_id) references orchestrator_steps(id),
       foreign key(project_id) references projects(id),
@@ -1020,7 +1296,7 @@ function migrate(db: Database) {
   db.run("create index if not exists idx_orchestrator_runtime_events_run_occurred on orchestrator_runtime_events(run_id, occurred_at)");
   db.run("create index if not exists idx_orchestrator_runtime_events_attempt_occurred on orchestrator_runtime_events(attempt_id, occurred_at)");
   db.run("create index if not exists idx_orchestrator_runtime_events_session_occurred on orchestrator_runtime_events(session_id, occurred_at)");
-  db.run("create unique index if not exists idx_orchestrator_runtime_events_project_key on orchestrator_runtime_events(project_id, event_key)");
+  db.run("create index if not exists idx_orchestrator_runtime_events_project_key on orchestrator_runtime_events(project_id, event_key)");
 
   db.run(`
     create table if not exists orchestrator_claims (
@@ -1049,7 +1325,7 @@ function migrate(db: Database) {
   db.run("create index if not exists idx_orchestrator_claims_scope_state on orchestrator_claims(project_id, scope_kind, scope_value, state)");
   db.run("create index if not exists idx_orchestrator_claims_expires on orchestrator_claims(state, expires_at)");
   db.run(
-    "create unique index if not exists idx_orchestrator_claims_active_scope on orchestrator_claims(project_id, scope_kind, scope_value) where state = 'active'"
+    "create index if not exists idx_orchestrator_claims_active_scope on orchestrator_claims(project_id, scope_kind, scope_value) where state = 'active'"
   );
 
   db.run(`
@@ -1470,12 +1746,7 @@ function migrate(db: Database) {
     end
   `);
 
-  db.run(`
-    create virtual table if not exists unified_memories_fts using fts4(
-      content,
-      content='unified_memories'
-    )
-  `);
+  ensureUnifiedMemoriesSearchTable(db);
   db.run(`
     create trigger if not exists unified_memories_fts_ai after insert on unified_memories begin
       insert into unified_memories_fts(rowid, content)
@@ -1512,7 +1783,6 @@ function migrate(db: Database) {
       norm real,
       created_at text not null,
       updated_at text not null,
-      unique(memory_id, embedding_model),
       foreign key(memory_id) references unified_memories(id),
       foreign key(project_id) references projects(id)
     )
@@ -1568,7 +1838,7 @@ function migrate(db: Database) {
   db.run(`
     create table if not exists memory_skill_index (
       id text primary key,
-      path text not null unique,
+      path text not null,
       kind text not null,
       source text not null,
       memory_id text,
@@ -1594,7 +1864,6 @@ function migrate(db: Database) {
       metadata_json text,
       created_at text not null,
       updated_at text not null,
-      unique(project_id, source_type, source_key),
       foreign key(project_id) references projects(id),
       foreign key(memory_id) references unified_memories(id),
       foreign key(episode_memory_id) references unified_memories(id)
@@ -1865,7 +2134,6 @@ function migrate(db: Database) {
       payload_json text not null,
       schema_version integer not null default 1,
       created_at text not null,
-      unique(project_id, run_id),
       foreign key(run_id) references orchestrator_runs(id)
     )
   `);
@@ -1886,8 +2154,7 @@ function migrate(db: Database) {
       status text not null,
       previous_pain_score integer not null default 0,
       current_pain_score integer not null default 0,
-      created_at text not null,
-      unique(project_id, retrospective_id, source_retrospective_id, pain_point_key)
+      created_at text not null
     )
   `);
   db.run("create index if not exists idx_orchestrator_retrospective_trends_mission_created on orchestrator_retrospective_trends(mission_id, created_at)");
@@ -1906,8 +2173,7 @@ function migrate(db: Database) {
       last_seen_run_id text not null,
       promoted_memory_id text,
       created_at text not null,
-      updated_at text not null,
-      unique(project_id, pattern_key)
+      updated_at text not null
     )
   `);
   db.run("create index if not exists idx_orchestrator_reflection_pattern_stats_count on orchestrator_reflection_pattern_stats(project_id, occurrence_count desc, updated_at desc)");
@@ -1921,7 +2187,6 @@ function migrate(db: Database) {
       mission_id text not null,
       run_id text not null,
       created_at text not null,
-      unique(pattern_stat_id, retrospective_id),
       foreign key(pattern_stat_id) references orchestrator_reflection_pattern_stats(id)
     )
   `);
@@ -1961,6 +2226,37 @@ function migrate(db: Database) {
   `);
   db.run("create index if not exists idx_attempt_transcripts_attempt on attempt_transcripts(attempt_id)");
   db.run("create index if not exists idx_attempt_transcripts_run on attempt_transcripts(run_id)");
+
+  // Phase 6 W3: Multi-device desktop registry and brain authority state.
+  db.run(`
+    create table if not exists devices (
+      device_id text primary key,
+      site_id text not null,
+      name text not null,
+      platform text not null,
+      device_type text not null,
+      created_at text not null,
+      updated_at text not null,
+      last_seen_at text,
+      last_host text,
+      last_port integer,
+      tailscale_ip text,
+      ip_addresses_json text not null default '[]',
+      metadata_json text not null default '{}'
+    )
+  `);
+  db.run("create index if not exists idx_devices_site_id on devices(site_id)");
+  db.run("create index if not exists idx_devices_last_seen_at on devices(last_seen_at)");
+
+  db.run(`
+    create table if not exists sync_cluster_state (
+      cluster_id text primary key,
+      brain_device_id text not null,
+      brain_epoch integer not null default 1,
+      updated_at text not null,
+      updated_by_device_id text not null
+    )
+  `);
 
   // Phase 4 W2: Worker agents org chart
   db.run(`
@@ -2017,7 +2313,7 @@ function migrate(db: Database) {
     )
   `);
   db.run("create index if not exists idx_linear_ingress_events_project_created on linear_ingress_events(project_id, created_at desc)");
-  db.run("create unique index if not exists idx_linear_ingress_events_project_event on linear_ingress_events(project_id, event_id)");
+  db.run("create index if not exists idx_linear_ingress_events_project_event on linear_ingress_events(project_id, event_id)");
 
   // Phase 4 W2: Worker agent config revisions (audit trail)
   db.run(`
@@ -2125,8 +2421,7 @@ function migrate(db: Database) {
       payload_json text not null,
       hash text not null,
       created_at text not null,
-      updated_at text not null,
-      unique(project_id, issue_id)
+      updated_at text not null
     )
   `);
   db.run("create index if not exists idx_linear_issue_snapshots_project_updated_linear on linear_issue_snapshots(project_id, updated_at_linear)");
@@ -2177,7 +2472,7 @@ function migrate(db: Database) {
   `);
   db.run("drop index if exists idx_linear_issue_claims_unique");
   db.run(
-    "create unique index if not exists idx_linear_issue_claims_active_unique on linear_issue_claims(project_id, issue_id) where status = 'active'"
+    "create index if not exists idx_linear_issue_claims_active_unique on linear_issue_claims(project_id, issue_id) where status = 'active'"
   );
   db.run("create index if not exists idx_linear_issue_claims_lookup on linear_issue_claims(project_id, issue_id, status)");
 
@@ -2191,8 +2486,7 @@ function migrate(db: Database) {
       last_body_hash text,
       last_body text,
       created_at text not null,
-      updated_at text not null,
-      unique(project_id, issue_id)
+      updated_at text not null
     )
   `);
   db.run("create index if not exists idx_linear_workpads_project_issue on linear_workpads(project_id, issue_id)");
@@ -2361,101 +2655,188 @@ function migrate(db: Database) {
 
 
 export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
-  const wasmDir = resolveSqlJsWasmDir();
+  const extensionPath = resolveCrsqliteExtensionPath();
+  const desiredSiteId = ensureLocalSiteIdFile(dbPath);
+  const existedBeforeOpen = fs.existsSync(dbPath);
+  let db = openRawDatabase(dbPath);
 
-  let SQL: SqlJsStatic;
   try {
-    SQL = await initSqlJs({
-      locateFile: (file) => path.join(wasmDir, file)
+    const hadCrsqlMetadata = hasCrsqlMetadata(db);
+    if (hadCrsqlMetadata) {
+      db.enableLoadExtension(true);
+      db.loadExtension(extensionPath);
+    }
+
+    migrate({
+      run: (sql: string, params: SqlValue[] = []) => {
+        runStatement(db, sql, params);
+      },
     });
+
+    if (existedBeforeOpen && !hasCrsqlMetadata(db)) {
+      writeMigrationBackupIfNeeded(dbPath);
+    }
+
+    if (retrofitLegacyPrimaryKeyNotNullSchema(db)) {
+      db.close();
+      db = openRawDatabase(dbPath);
+      if (hadCrsqlMetadata) {
+        db.enableLoadExtension(true);
+        db.loadExtension(extensionPath);
+      }
+      migrate({
+        run: (sql: string, params: SqlValue[] = []) => {
+          runStatement(db, sql, params);
+        },
+      });
+    }
+
+    if (!hadCrsqlMetadata) {
+      db.enableLoadExtension(true);
+      db.loadExtension(extensionPath);
+    }
+    ensureCrrTables(db);
+    forceSiteId(db, desiredSiteId);
+
+    if (readCurrentSiteId(db) !== desiredSiteId) {
+      db.close();
+      db = openRawDatabase(dbPath);
+      db.enableLoadExtension(true);
+      db.loadExtension(extensionPath);
+      forceSiteId(db, desiredSiteId);
+    }
   } catch (err) {
+    try {
+      db.close();
+    } catch {
+      // best effort cleanup
+    }
     logger.error("db.init_failed", { dbPath, err: String(err) });
     throw err;
   }
 
-  ensureParentDir(dbPath);
-  const data = fs.existsSync(dbPath) ? await fs.promises.readFile(dbPath) : null;
-  const db: Database = new SQL.Database(data);
-
-  migrate(db);
-  db.run("pragma foreign_keys = on");
-
-  let dirty = false;
-  let flushTimer: NodeJS.Timeout | null = null;
-
-  const flushNow = () => {
-    if (!dirty) return;
-    let tempPath: string | null = null;
-    try {
-      const bytes = db.export();
-      ensureParentDir(dbPath);
-      const dbDir = path.dirname(dbPath);
-      const dbBase = path.basename(dbPath);
-      tempPath = path.join(dbDir, `.${dbBase}.${process.pid}.${Date.now()}.tmp`);
-      fs.writeFileSync(tempPath, Buffer.from(bytes));
-      const tempFd = fs.openSync(tempPath, "r");
-      try {
-        fs.fsyncSync(tempFd);
-      } finally {
-        fs.closeSync(tempFd);
-      }
-      fs.renameSync(tempPath, dbPath);
-      try {
-        const dirFd = fs.openSync(dbDir, "r");
-        try {
-          fs.fsyncSync(dirFd);
-        } finally {
-          fs.closeSync(dirFd);
-        }
-      } catch {
-        // Best-effort directory sync; unsupported platforms/filesystems can skip.
-      }
-      dirty = false;
-    } catch (err) {
-      if (tempPath && fs.existsSync(tempPath)) {
-        try {
-          fs.unlinkSync(tempPath);
-        } catch {
-          // best effort cleanup
-        }
-      }
-      logger.error("db.flush_failed", { dbPath, err: String(err) });
-    }
-  };
-
-  const scheduleFlush = () => {
-    dirty = true;
-    if (flushTimer) clearTimeout(flushTimer);
-    flushTimer = setTimeout(flushNow, FLUSH_DEBOUNCE_MS);
-  };
-
   const getString = (key: string): string | null => {
-    const rows = db.exec("select value from kv where key = ? limit 1", [key]);
-    const first = rows[0]?.values?.[0]?.[0];
-    return typeof first === "string" ? first : first == null ? null : String(first);
+    const row = getRow<{ value: string }>(db, "select value from kv where key = ? limit 1", [key]);
+    return row?.value ?? null;
   };
 
   const setString = (key: string, value: string) => {
-    db.run(
-      "insert into kv(key, value) values (?, ?) on conflict(key) do update set value=excluded.value",
-      [key, value]
-    );
-    scheduleFlush();
+    runStatement(db, "insert into kv(key, value) values (?, ?) on conflict(key) do update set value = excluded.value", [key, value]);
   };
 
   const run = (sql: string, params: SqlValue[] = []) => {
-    db.run(sql, params);
-    scheduleFlush();
+    const alterTable = parseAlterTableTarget(sql);
+    if (alterTable && rawHasTable(db, `${alterTable}__crsql_clock`)) {
+      getRow(db, "select crsql_begin_alter(?) as ok", [alterTable]);
+      try {
+        runStatement(db, sql, params);
+      } catch (error) {
+        throw error;
+      }
+      getRow(db, "select crsql_commit_alter(?) as ok", [alterTable]);
+      return;
+    }
+    runStatement(db, sql, params);
   };
 
   const all = <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params: SqlValue[] = []): T[] => {
-    const rows = db.exec(sql, params);
-    return mapExecRows(rows) as T[];
+    return allRows<T>(db, sql, params);
   };
 
   const get = <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params: SqlValue[] = []): T | null => {
-    const rows = all<T>(sql, params);
-    return rows[0] ?? null;
+    return getRow<T>(db, sql, params);
+  };
+
+  const sync: AdeDbSyncApi = {
+    getSiteId: () => desiredSiteId,
+    getDbVersion: () => {
+      const row = get<{ db_version: number }>("select crsql_db_version() as db_version");
+      return Number(row?.db_version ?? 0);
+    },
+    exportChangesSince: (version: number) => {
+      const rows = allRows<{
+        table_name: string;
+        pk: unknown;
+        cid: string;
+        val: unknown;
+        col_version: number;
+        db_version: number;
+        site_id: Uint8Array;
+        cl: number;
+        seq: number;
+      }>(
+        db,
+        `select [table] as table_name,
+                pk,
+                cid,
+                val,
+                col_version,
+                db_version,
+                site_id,
+                cl,
+                seq
+           from crsql_changes
+          where db_version > ?
+          order by db_version asc, cl asc, seq asc`,
+        [version]
+      );
+
+      return rows.map((row) => ({
+        table: row.table_name,
+        pk: encodeSyncScalar(row.pk),
+        cid: row.cid,
+        val: encodeSyncScalar(row.val),
+        col_version: Number(row.col_version),
+        db_version: Number(row.db_version),
+        site_id: Buffer.from(row.site_id).toString("hex"),
+        cl: Number(row.cl),
+        seq: Number(row.seq),
+      }));
+    },
+    applyChanges: (changes: CrsqlChangeRow[]) => {
+      let appliedCount = 0;
+      const touchedTables = new Set<string>();
+      runStatement(db, "begin");
+      try {
+        for (const change of changes) {
+          const result = runStatement(
+            db,
+            `insert or ignore into crsql_changes ([table], pk, cid, val, col_version, db_version, site_id, cl, seq)
+             values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              change.table,
+              change.pk,
+              change.cid,
+              change.val,
+              change.col_version,
+              change.db_version,
+              Buffer.from(change.site_id, "hex"),
+              change.cl,
+              change.seq,
+            ]
+          );
+          appliedCount += result.changes;
+          touchedTables.add(change.table);
+        }
+        runStatement(db, "commit");
+      } catch (err) {
+        runStatement(db, "rollback");
+        throw err;
+      }
+
+      let rebuiltFts = false;
+      if (touchedTables.has("unified_memories")) {
+        rebuildUnifiedMemoriesFts(db);
+        rebuiltFts = true;
+      }
+
+      return {
+        appliedCount,
+        dbVersion: sync.getDbVersion(),
+        touchedTables: Array.from(touchedTables).sort(),
+        rebuiltFts,
+      };
+    },
   };
 
   return {
@@ -2470,11 +2851,10 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     run,
     all,
     get,
-    flushNow: () => flushNow(),
+    sync,
+    flushNow: () => {},
     close: () => {
-      if (flushTimer) clearTimeout(flushTimer);
-      flushNow();
       db.close();
-    }
+    },
   };
 }

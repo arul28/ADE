@@ -38,7 +38,7 @@ Main-process responsibilities include:
 
 - project detection and switching
 - `.ade` repair/bootstrap
-- SQLite-backed local state
+- SQLite-backed local state (node:sqlite + cr-sqlite CRDT extension)
 - lane/worktree orchestration
 - PTY and transcript lifecycle
 - git operations and conflict analysis
@@ -46,6 +46,8 @@ Main-process responsibilities include:
 - PR and GitHub/Linear integration services
 - memory lifecycle, digest, and embedding services
 - external MCP, OpenClaw, and automation ingress services
+- dev tools detection (git, gh CLI availability)
+- multi-device sync service (cr-sqlite replication, WebSocket host/peer, device registry)
 
 ### Renderer process
 
@@ -125,6 +127,7 @@ The current default dev-enabled background set includes:
 - episodic summary enablement
 - head watcher
 - skill registry
+- sync service initialization (device registration, host/peer lifecycle)
 
 Three details matter for stability:
 
@@ -235,6 +238,7 @@ Shutdown continues to be defensive and best-effort:
 - dispose pollers and ingress services
 - stop file watchers, tests, and managed processes
 - dispose PTYs and agent chat sessions
+- dispose sync service (stop WebSocket host, disconnect peer client)
 - **flush SQLite before service disposal begins** (ensures durable state is persisted even if a disposal step crashes)
 - flush and close SQLite again at the end of the sequence
 

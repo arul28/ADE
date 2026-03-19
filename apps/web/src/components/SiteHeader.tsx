@@ -66,11 +66,10 @@ export function SiteHeader() {
           <div className="flex items-center gap-3">
             <Link className="focus-ring inline-flex items-center gap-3 rounded-lg" to="/">
               <img
-                src="/logo.svg"
+                src="/logo.png"
                 alt="ADE"
-                className="h-8 w-8"
+                className="h-7"
               />
-              <span className="text-sm font-semibold text-fg">ADE</span>
             </Link>
           </div>
 
@@ -109,13 +108,13 @@ export function SiteHeader() {
               <Github className="h-4 w-4" />
             </a>
 
-            <LinkButton to="/download" variant="primary" size="sm" className="ml-2">
+            <LinkButton to={LINKS.releases} variant="primary" size="sm" target="_blank" rel="noreferrer" className="ml-2">
               Download
             </LinkButton>
           </nav>
 
           <div className="flex items-center gap-2 md:hidden">
-            <LinkButton to="/download" variant="primary" size="sm">
+            <LinkButton to={LINKS.releases} variant="primary" size="sm" target="_blank" rel="noreferrer">
               Download
             </LinkButton>
             <button

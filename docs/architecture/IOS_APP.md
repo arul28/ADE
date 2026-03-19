@@ -2,9 +2,9 @@
 
 > Roadmap reference: `docs/final-plan/phase-6.md` (Phase 6) and `docs/final-plan/phase-7.md` (Phase 7).
 
-> Last updated: 2026-03-15
+> Last updated: 2026-03-16
 
-> Status: **Phase 6 planned, not yet implemented.**
+> Status: **Phase 6 W4 foundation partially implemented. The app exists under `apps/ios/`, uses native SwiftUI + SQLite3, and the four project-management tabs are wired against a real local replicated database contract. The current blocker is the vendored iOS `crsqlite.xcframework`, which is not safely embeddable in its current form and prevents the sync database from booting.**
 
 This document describes the architecture of the ADE iOS companion app. The iOS app provides real-time project management and (in Phase 7) full AI orchestration control from an iPhone or iPad.
 
@@ -25,43 +25,41 @@ This document describes the architecture of the ADE iOS companion app. The iOS a
 
 ## Overview
 
-The iOS app is a native SwiftUI application that acts as a viewer/controller for an ADE brain (a Mac or VPS running the full desktop app). It maintains a local cr-sqlite database that syncs all 103 tables from the brain in real time. The phone never runs agents -- it reads synced state and sends commands to the brain for execution.
+The iOS app is a native SwiftUI application that acts as a controller for an ADE host machine (a Mac or VPS running the full desktop app). It is intended to maintain a local cr-sqlite database that syncs live ADE state from the host in real time. The phone never runs agents -- it reads synced state and sends commands to the host for execution.
+
+Desktop portability note:
+
+- iOS depends on ADE sync and a live/reachable host
+- desktop-to-desktop portability also depends on tracked portable ADE project intelligence in the repo
+- that portable desktop layer is not an iOS concern because phones are never standalone hosts
 
 ---
 
 ## Project Structure
 
-```
-apps/ios/                          # To be created
+```text
+apps/ios/
 ├── ADE.xcodeproj/
 ├── ADE/
 │   ├── App/
-│   │   ├── ADEApp.swift           # App entry point
-│   │   └── ContentView.swift      # Root tab navigation
+│   │   ├── ADEApp.swift
+│   │   └── ContentView.swift
 │   ├── Models/
-│   │   ├── Database.swift         # SQLite.swift + cr-sqlite setup
-│   │   └── ...                    # Domain model types
+│   │   └── RemoteModels.swift
+│   ├── Resources/
+│   │   └── DatabaseBootstrap.sql
 │   ├── Services/
-│   │   ├── SyncService.swift      # WebSocket client, changeset exchange
-│   │   ├── CommandService.swift   # Send execution commands to brain
-│   │   ├── KeychainService.swift  # Pairing token and secret storage
-│   │   ├── NotificationService.swift  # Local + push notification handling
-│   │   └── BackgroundRefresh.swift    # Background app refresh
+│   │   ├── Database.swift
+│   │   ├── KeychainService.swift
+│   │   └── SyncService.swift
 │   ├── Views/
-│   │   ├── Lanes/                 # Lanes tab views
-│   │   ├── Files/                 # Files tab views
-│   │   ├── Work/                  # Work tab views
-│   │   ├── PRs/                   # PRs tab views
-│   │   ├── Missions/              # Phase 7: Missions tab
-│   │   ├── CTO/                   # Phase 7: CTO & Chat tab
-│   │   ├── Automations/           # Phase 7: Automations tab
-│   │   ├── Settings/              # Device settings, connection info
-│   │   └── Shared/                # Reusable components
-│   └── Utilities/
-│       ├── SyntaxHighlighter.swift
-│       └── ANSIRenderer.swift     # Terminal ANSI color rendering
-├── Tests/
-└── Packages/                      # SPM dependencies
+│   │   ├── LanesTabView.swift
+│   │   ├── FilesTabView.swift
+│   │   ├── WorkTabView.swift
+│   │   └── PRsTabView.swift
+│   └── Assets.xcassets/
+└── ADETests/
+    └── ADETests.swift
 ```
 
 ---
@@ -70,12 +68,14 @@ apps/ios/                          # To be created
 
 ### Pattern
 
-The app uses a standard SwiftUI architecture with `@Observable` view models (Swift 5.9+):
+The current implementation is intentionally small:
 
-- **Views**: SwiftUI views, declarative, no business logic.
-- **ViewModels**: `@Observable` classes that own state and coordinate services. One per screen or logical unit.
-- **Services**: Singletons injected via SwiftUI environment. Handle database, sync, commands, keychain.
-- **Models**: Plain Swift structs mapped from SQLite rows.
+- **Views**: SwiftUI views per top-level tab.
+- **Services**: `DatabaseService`, `SyncService`, and `KeychainService` are the core runtime pieces.
+- **Models**: Plain Swift structs in `RemoteModels.swift`.
+- **Environment injection**: `SyncService` is injected as a shared `@StateObject` / `@EnvironmentObject`.
+
+This is enough for the current Phase 6 scope. The code can be split into finer-grained view models later if Phase 7 tab complexity makes that worthwhile.
 
 ### Navigation
 
@@ -85,7 +85,7 @@ The app uses a standard SwiftUI architecture with `@Observable` view models (Swi
 
 ### Target
 
-- iOS 17+ (required for `@Observable` macro and modern SwiftUI APIs).
+- iOS 17+.
 - iPhone and iPad (adaptive layouts in Phase 7).
 
 ---
@@ -97,25 +97,35 @@ The app uses a standard SwiftUI architecture with `@Observable` view models (Swi
 | Layer | Library | Purpose |
 |---|---|---|
 | SQLite engine | System SQLite (iOS) | Native SQLite runtime |
-| Swift bindings | SQLite.swift | Type-safe query building |
+| Swift bindings | `SQLite3` C API from Swift | Direct native database access |
 | CRDT extension | cr-sqlite | Conflict-free replication |
 
 ### Database Setup
 
-1. On first launch, create the local `ade.db` with the same schema as the desktop app.
-2. Load the cr-sqlite extension into the SQLite connection.
-3. Mark all tables as CRRs (`SELECT crsql_as_crr('table_name')`).
-4. Assign a unique site ID for this device.
+1. On first launch, create `Application Support/ADE/ade.db`.
+2. Open the database with system SQLite and initialize cr-sqlite for that connection.
+3. Load the checked-in bootstrap schema generated from desktop `kvDb.ts`.
+4. Mark eligible tables as CRRs (`SELECT crsql_as_crr('table_name')`).
+5. Assign a stable local site ID stored at `Application Support/ADE/secrets/sync-site-id`.
+6. Replace the legacy disposable iOS cache DB if it is detected.
 
 ### Data Flow
 
 - All reads are local SQLite queries -- instant, offline-capable.
-- Writes from user actions are written locally first, then synced to brain via cr-sqlite changesets.
+- Writes from user actions are written locally first, then synced to the host via cr-sqlite changesets.
 - FTS index (`unified_memories_fts`) is rebuilt locally from synced `unified_memories` content.
 
 ### Schema Compatibility
 
-The iOS app uses the same table schema as the desktop app. Schema migrations are versioned and applied on both platforms. cr-sqlite handles schema evolution transparently for new columns.
+The iOS app uses the same table schema as the desktop app through a generated canonical bootstrap SQL artifact checked in at `apps/ios/ADE/Resources/DatabaseBootstrap.sql`. Desktop `kvDb.ts` remains the schema source of truth.
+
+Current blocker:
+
+- The vendored iOS `crsqlite.xcframework` exports `sqlite3_crsqlite_init` plus `sqlite3_api`, which indicates a SQLite loadable-extension-style entrypoint.
+- Direct `sqlite3_crsqlite_init(db, &err, nil)` crashes because the SQLite API thunk is nil.
+- `sqlite3_auto_extension(...)` is deprecated and rejected on Apple platforms.
+- iOS system SQLite does not expose `sqlite3_load_extension(...)` as a usable fallback.
+- W5 therefore starts with replacing this framework or adding a native wrapper library that links cr-sqlite against SQLite in an iOS-safe way.
 
 ---
 
@@ -124,8 +134,8 @@ The iOS app uses the same table schema as the desktop app. Schema migrations are
 ### Connection Lifecycle
 
 1. App launch: read pairing token from Keychain.
-2. Resolve brain address (cached IP, mDNS discovery, or Tailscale IP).
-3. Open WebSocket connection with pairing token authentication.
+2. Resolve host address from the saved draft or manual entry.
+3. Open WebSocket connection.
 4. Send local `db_version`, receive catchup changesets.
 5. Enter continuous bidirectional sync.
 6. On disconnect: automatic reconnection with exponential backoff.
@@ -134,12 +144,13 @@ The iOS app uses the same table schema as the desktop app. Schema migrations are
 
 | Type | Direction | Purpose |
 |---|---|---|
-| `changeset` | Bidirectional | cr-sqlite changeset batch |
-| `command` | Phone to brain | Execution request (create PR, run command, etc.) |
-| `command_ack` | Brain to phone | Command receipt confirmation |
-| `command_result` | Brain to phone | Command execution result or error |
+| `changeset_batch` | Bidirectional | cr-sqlite changeset batch |
+| `pairing_request` / `pairing_result` | Phone to host / host to phone | Numeric-code pairing |
+| `command` | Phone to host | Execution request (create PR, run command, etc.) |
+| `command_ack` | Host to phone | Command receipt confirmation |
+| `command_result` | Host to phone | Command execution result or error |
 | `file_request` / `file_response` | Bidirectional | On-demand file access |
-| `terminal_subscribe` / `terminal_data` | Phone to brain / brain to phone | Terminal output streaming |
+| `terminal_subscribe` / `terminal_data` | Phone to host / host to phone | Terminal output streaming |
 | `heartbeat` | Bidirectional | Connection health (30s interval) |
 
 ### Offline Behavior
@@ -154,9 +165,9 @@ The iOS app uses the same table schema as the desktop app. Schema migrations are
 
 ### Keychain (KeychainService)
 
-- Stores pairing token, shared secret, and device identity.
-- Uses iOS Keychain Services API with `kSecAttrAccessibleAfterFirstUnlock` for background access.
-- Pairing tokens are per-project.
+- Stores the paired device secret used after numeric-code pairing.
+- Stores enough connection draft metadata for reconnect.
+- Uses iOS Keychain Services API for local secret storage.
 
 ### Background App Refresh (BackgroundRefresh)
 
@@ -207,14 +218,15 @@ Additional tabs added in Phase 7:
 
 | Component | Status | Phase |
 |---|---|---|
-| Xcode project setup | Planned | Phase 6 W5 |
-| SQLite.swift + cr-sqlite integration | Planned | Phase 6 W5 |
-| WebSocket client | Planned | Phase 6 W5 |
-| Pairing flow (QR scan) | Planned | Phase 6 W5 |
-| Lanes tab | Planned | Phase 6 W6 |
-| Files tab | Planned | Phase 6 W7 |
-| Work tab | Planned | Phase 6 W8 |
-| PRs tab | Planned | Phase 6 W9 |
+| Xcode project setup | Implemented | Phase 6 W4 |
+| Native SQLite3 + cr-sqlite integration | Blocked on vendored iOS artifact shape | Phase 6 W4/W5 |
+| WebSocket client | Implemented | Phase 6 W4 |
+| Numeric-code pairing flow | Implemented (initial) | Phase 6 W4 |
+| QR pairing flow | Planned | Phase 6 W5 |
+| Lanes tab | Implemented (initial local-first) | Phase 6 W4 |
+| Files tab | Implemented (workspace metadata local-first, file IO remote) | Phase 6 W4 |
+| Work tab | Implemented (local sessions + terminal subscribe) | Phase 6 W4 |
+| PRs tab | Implemented (initial local-first) | Phase 6 W4 |
 | Missions tab | Planned | Phase 7 W1 |
 | CTO/Chat tab | Planned | Phase 7 W2 |
 | Automations, Graph, History tabs | Planned | Phase 7 W3 |
@@ -223,4 +235,4 @@ Additional tabs added in Phase 7:
 | iPad adaptive layout | Planned | Phase 7 W10 |
 | Widgets + Spotlight | Planned | Phase 7 W10 |
 
-**Overall status**: Not yet implemented. The `apps/ios/` directory does not exist yet. Work begins in Phase 6 W5 after sync infrastructure (W1-W4) is proven.
+**Overall status**: The app shell and local-first data contract are in place, but the current vendored iOS `crsqlite` framework blocks the replicated database from initializing. W5 starts with fixing that artifact/integration problem, then continues with real-device dogfooding, QR/discovery UX, and broader network/pairing hardening.

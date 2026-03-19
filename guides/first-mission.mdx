@@ -1,0 +1,100 @@
+---
+title: "Your First Mission"
+description: "A step-by-step walkthrough of creating and running a multi-step mission in ADE."
+---
+
+Missions are ADE's structured execution unit for complex, multi-step AI work. This guide walks you through creating your first mission, reviewing its plan, and monitoring workers as they execute.
+
+<Info>Before starting, make sure you have at least one AI provider configured in **Settings > AI Providers** and a project open with a valid `ade.yaml`.</Info>
+
+---
+
+## 1. Create a Mission
+
+Navigate to the **Missions** tab in the sidebar. Click **New Mission** to open the creation dialog.
+
+<Steps>
+  <Step title="Set a goal">
+    Write a clear, specific goal for your mission. The planner agent uses this to generate a structured execution plan.
+
+    Good goals are concrete: *"Add a REST endpoint for user preferences with validation, tests, and OpenAPI docs"* is better than *"work on the API."*
+  </Step>
+  <Step title="Choose a launch mode">
+    - **Supervised** — ADE pauses for your approval before executing the plan. Recommended for your first mission.
+    - **Autopilot** — planning and execution proceed without human gates.
+  </Step>
+  <Step title="Set a budget cap (optional)">
+    Set a maximum token or dollar spend for the mission. If the cap is reached, the mission pauses with a `budget_limit_reached` intervention instead of continuing.
+  </Step>
+</Steps>
+
+Click **Create** to queue the mission.
+
+---
+
+## 2. Review the Plan
+
+Once the planner agent finishes, ADE presents the generated plan for review. The plan includes:
+
+- **Steps** — numbered tasks the workers will execute
+- **Lane assignments** — which lane each step runs in
+- **Dependencies** — ordering constraints between steps
+- **Parallelism** — which steps can run simultaneously
+
+If you launched in Supervised mode, you will see an approval prompt. Review the steps, then click **Approve** to start execution or **Edit** to adjust the plan.
+
+<Tip>If the plan looks too broad or too narrow, cancel and rewrite the goal with more detail. The planner responds well to acceptance criteria and explicit constraints.</Tip>
+
+---
+
+## 3. Monitor Execution
+
+Once approved, workers begin executing the plan steps. Navigate to the **Mission Run** panel to monitor progress.
+
+- **Step list** — shows each step with its current status (queued, running, completed, failed)
+- **Live terminal** — click any running step to see its agent's terminal output in real time
+- **Artifacts** — completed steps surface artifacts (code changes, test results, summaries) in the Artifacts tab
+
+*Coming soon: detailed walkthrough of the step detail panel and artifact inspection.*
+
+---
+
+## 4. Handle Interventions
+
+If a worker gets stuck, it creates an **Intervention** and pauses. Common reasons:
+
+| Intervention | What to do |
+|---|---|
+| `approval_required` | Review the output and approve or reject |
+| `manual_input` | Provide the answer the agent needs |
+| `conflict` | Resolve the merge conflict, then resume |
+| `failed_step` | Review the error, fix if needed, then retry or skip |
+
+Navigate to the intervention banner at the top of the Mission Run panel, provide your input, and click **Resume**.
+
+---
+
+## 5. View Results
+
+When all steps complete and validation passes, the mission moves to **Completed** status.
+
+Review the results:
+- **Artifacts tab** — all proof artifacts (screenshots, test reports, summaries) collected during execution
+- **Plan tab** — the final plan with per-step outcomes
+- **Chat tab** — the full conversation history between the coordinator and workers
+- **Cost summary** — total tokens and estimated cost for the mission
+
+*Coming soon: exporting mission results and linking artifacts to PRs.*
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Mission Concepts" icon="bullseye" href="/key-concepts#mission">
+    Understand the full mission lifecycle, statuses, and intervention types.
+  </Card>
+  <Card title="Automation Rules" icon="bolt" href="/guides/automation-rules">
+    Trigger missions automatically from git events or schedules.
+  </Card>
+</CardGroup>

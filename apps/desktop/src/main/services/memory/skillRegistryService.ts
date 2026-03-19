@@ -216,23 +216,42 @@ export function createSkillRegistryService(args: {
   }): void => {
     const existing = readSkillIndexByPath(input.absolutePath);
     const now = nowIso();
+    if (existing) {
+      db.run(
+        `
+          update memory_skill_index
+             set kind = ?,
+                 source = ?,
+                 memory_id = ?,
+                 content_hash = ?,
+                 last_modified_at = ?,
+                 archived_at = ?,
+                 updated_at = ?
+           where id = ?
+        `,
+        [
+          input.kind,
+          input.source,
+          input.memoryId,
+          input.contentHash,
+          input.lastModifiedAt,
+          input.archivedAt ?? null,
+          now,
+          existing.id,
+        ],
+      );
+      return;
+    }
+
     db.run(
       `
         insert into memory_skill_index(
           id, path, kind, source, memory_id, content_hash,
           last_modified_at, archived_at, created_at, updated_at
         ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        on conflict(path) do update set
-          kind = excluded.kind,
-          source = excluded.source,
-          memory_id = excluded.memory_id,
-          content_hash = excluded.content_hash,
-          last_modified_at = excluded.last_modified_at,
-          archived_at = excluded.archived_at,
-          updated_at = excluded.updated_at
       `,
       [
-        existing?.id ?? randomUUID(),
+        randomUUID(),
         input.absolutePath,
         input.kind,
         input.source,
@@ -240,7 +259,7 @@ export function createSkillRegistryService(args: {
         input.contentHash,
         input.lastModifiedAt,
         input.archivedAt ?? null,
-        existing?.created_at ?? now,
+        now,
         now,
       ],
     );
@@ -272,59 +291,67 @@ export function createSkillRegistryService(args: {
     const title = path.basename(absolutePath).replace(/\.md$/i, "");
     const kind = inferKind(absolutePath);
     const existing = readSkillIndexByPath(absolutePath);
-    const existingMemory = existing?.memory_id ? memoryService.getMemory(existing.memory_id) : null;
-    const importedProcedureContent = buildProcedureBody(title, content, absolutePath);
     let memoryId = existing?.memory_id ?? null;
 
-    if (!existingMemory) {
-      const imported = memoryService.addMemory({
+    // Root docs (CLAUDE.md, agents.md) should be read directly from disk --
+    // do NOT import them as procedure memories.
+    if (kind !== "root_doc") {
+      const existingMemory = existing?.memory_id ? memoryService.getMemory(existing.memory_id) : null;
+      const importedProcedureContent = buildProcedureBody(title, content, absolutePath);
+
+      if (!existingMemory) {
+        const imported = memoryService.addMemory({
+          projectId,
+          scope: "project",
+          category: "procedure",
+          content: importedProcedureContent,
+          importance: "high",
+          sourceType: "user",
+          sourceId: absolutePath,
+        });
+        memoryId = imported.id;
+      } else {
+        memoryService.writeMemory({
+          projectId: existingMemory.projectId,
+          scope: existingMemory.scope,
+          scopeOwnerId: existingMemory.scopeOwnerId ?? undefined,
+          tier: existingMemory.tier,
+          category: existingMemory.category,
+          content: importedProcedureContent,
+          importance: existingMemory.importance,
+          confidence: 1,
+          status: "promoted",
+          pinned: true,
+          sourceSessionId: existingMemory.sourceSessionId ?? undefined,
+          sourcePackKey: existingMemory.sourcePackKey ?? undefined,
+          agentId: existingMemory.agentId ?? undefined,
+          sourceRunId: existingMemory.sourceRunId ?? undefined,
+          sourceType: "user",
+          sourceId: absolutePath,
+          fileScopePattern: existingMemory.fileScopePattern ?? undefined,
+        });
+        memoryId = existingMemory.id;
+      }
+
+      const duplicateSystemProcedure = memoryService.listMemories({
         projectId,
         scope: "project",
-        category: "procedure",
-        content: importedProcedureContent,
-        importance: "high",
-        sourceType: "user",
-        sourceId: absolutePath,
+        categories: ["procedure"],
+        limit: 500,
+      }).find((memory) => {
+        if (memory.id === memoryId) return false;
+        if (memory.sourceType !== "system") return false;
+        return proceduresMatch(memory.content, importedProcedureContent);
       });
-      memoryId = imported.id;
+      if (memoryId && duplicateSystemProcedure) {
+        args.proceduralLearningService?.markProcedureSuperseded?.({
+          memoryId: duplicateSystemProcedure.id,
+          supersededByMemoryId: memoryId,
+        });
+      }
     } else {
-      memoryService.writeMemory({
-        projectId: existingMemory.projectId,
-        scope: existingMemory.scope,
-        scopeOwnerId: existingMemory.scopeOwnerId ?? undefined,
-        tier: existingMemory.tier,
-        category: existingMemory.category,
-        content: importedProcedureContent,
-        importance: existingMemory.importance,
-        confidence: 1,
-        status: "promoted",
-        pinned: true,
-        sourceSessionId: existingMemory.sourceSessionId ?? undefined,
-        sourcePackKey: existingMemory.sourcePackKey ?? undefined,
-        agentId: existingMemory.agentId ?? undefined,
-        sourceRunId: existingMemory.sourceRunId ?? undefined,
-        sourceType: "user",
-        sourceId: absolutePath,
-        fileScopePattern: existingMemory.fileScopePattern ?? undefined,
-      });
-      memoryId = existingMemory.id;
-    }
-
-    const duplicateSystemProcedure = memoryService.listMemories({
-      projectId,
-      scope: "project",
-      categories: ["procedure"],
-      limit: 500,
-    }).find((memory) => {
-      if (memory.id === memoryId) return false;
-      if (memory.sourceType !== "system") return false;
-      return proceduresMatch(memory.content, importedProcedureContent);
-    });
-    if (memoryId && duplicateSystemProcedure) {
-      args.proceduralLearningService?.markProcedureSuperseded?.({
-        memoryId: duplicateSystemProcedure.id,
-        supersededByMemoryId: memoryId,
-      });
+      // Root doc -- clear any previously-imported memory reference.
+      memoryId = null;
     }
 
     upsertSkillIndex({
@@ -426,6 +453,12 @@ export function createSkillRegistryService(args: {
         });
       }
     };
+    watcher.on("error", () => {
+      // EMFILE or other watcher error — close gracefully, skills can still be reindexed manually
+      const w = watcher;
+      watcher = null;
+      void w?.close().catch(() => {});
+    });
     watcher.on("add", reindexOne);
     watcher.on("change", reindexOne);
     watcher.on("unlink", reindexOne);

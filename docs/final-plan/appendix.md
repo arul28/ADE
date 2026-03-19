@@ -64,11 +64,11 @@ Each phase must satisfy:
 | Custom phase instructions too vague for orchestrator | Orchestrator can't execute phase properly | Semantic validation during pre-flight; require minimum instruction detail |
 | Subscription budget estimation inaccuracy | User unexpectedly hits rate limits | Best-effort estimation with clear 'approximate' labeling; graceful rate-limit handling (pause/wait/retry) |
 | Phase ordering constraint conflicts | Circular dependencies in custom phases | Structural validation catches cycles during pre-flight |
-| cr-sqlite WASM compatibility | cr-sqlite extension may not load cleanly in sql.js WASM runtime | Test early in Phase 6; fallback to native SQLite binding if WASM fails; Phase 8 SpacetimeDB as ultimate fallback |
+| cr-sqlite compatibility | cr-sqlite vendored native extension loaded via node:sqlite — W1 implemented successfully on desktop | Phase 8 SpacetimeDB as fallback if long-term issues arise |
 | cr-sqlite project maturity | cr-sqlite is pre-1.0; API or merge behavior may change | Pin version; maintain fork if needed; Phase 8 provides alternative path |
 | Tailscale adoption friction | Users may resist installing a VPN tool for device sync | Tailscale is optional; LAN-only mode works without it; clear docs on privacy (peer-to-peer, no cloud relay) |
-| Brain single-point-of-failure | If brain machine goes offline, no agents run | Brain transfer protocol allows quick failover; VPS brain option for always-on; offline cached state on all devices |
-| WebSocket sync reliability | Sync connection drops may cause stale state on viewer devices | Version-based catch-up on reconnect; offline queue replay; cr-sqlite CRDTs handle eventual consistency |
+| Host single-point-of-failure | If host machine goes offline, no agents run | Host transfer protocol allows quick failover; VPS host option for always-on; offline cached state on all devices |
+| WebSocket sync reliability | Sync connection drops may cause stale state on controller devices | Version-based catch-up on reconnect; offline queue replay; cr-sqlite CRDTs handle eventual consistency |
 | SpacetimeDB migration scope | 103 tables, ~926 SQL operations across 40+ files is a significant migration | Only triggered if cr-sqlite fails; agent swarm can accelerate; repository abstraction limits blast radius |
 | iOS App Store review | Apple may reject or delay the iOS app | Submit early; follow Apple guidelines strictly; plan for review cycles in timeline |
 | Push notification infrastructure | APNs requires some server-side infrastructure | Multiple options (self-hosted, FCM, no-push fallback); minimal infra requirements |
@@ -109,7 +109,7 @@ Each phase must satisfy:
 
 - CTO response relevance and task completion rate
 - External MCP connection success rate
-- Remote mission launch success rate (from viewer device to brain)
+- Remote mission launch success rate (from controller device to host)
 
 ### Reliability KPIs
 
@@ -128,11 +128,11 @@ Each phase must satisfy:
 
 - cr-sqlite changeset sync latency (target: <100ms on LAN, <500ms over Tailscale)
 - Sync convergence accuracy (all devices reach identical state after concurrent writes)
-- Brain transfer completion time (target: <10s including agent stop/start)
+- Host transfer completion time (target: <10s including agent stop/start)
 - Device pairing success rate (QR code scan to connected state)
 - WebSocket reconnection time after network interruption
 - Offline queue replay success rate
-- VPS headless brain uptime
+- VPS headless host uptime
 
 ### Mobile KPIs
 
@@ -140,7 +140,7 @@ Each phase must satisfy:
 - Push notification delivery latency (event to phone notification)
 - Agent chat response display latency on mobile
 - Offline cached state availability (phone shows data without connection)
-- VPS provider provisioning success rate (one-click brain setup)
+- VPS provider provisioning success rate (one-click host setup)
 
 ### Adoption KPIs
 
@@ -186,7 +186,7 @@ OpenClaw is the primary external agent platform ADE is designed to interoperate 
 **Three paths considered**:
 1. Replace OpenClaw features in ADE — rejected (scope creep, different domain)
 2. Fork OpenClaw and embed — rejected (maintenance burden, security surface)
-3. **ADE as orchestration brain alongside OpenClaw** — chosen (clean separation, MCP bridge, each tool does what it's best at)
+3. **ADE as orchestration host alongside OpenClaw** — chosen (clean separation, MCP bridge, each tool does what it's best at)
 
 ### 11.2 Community Architecture Patterns
 
@@ -258,7 +258,7 @@ ADE's orchestrator achieves similar properties through:
 - **Compaction summaries**: When context is compacted, the summary is stored as a resumable checkpoint.
 - **Step-level retry**: Each step has configurable `maxRetries` with the orchestrator managing retry state.
 
-ADE does not use Temporal or Inngest directly because: (1) adding a separate durable execution runtime increases deployment complexity for a desktop app, (2) SQLite + the orchestrator state machine already provides sufficient durability for the single-machine case, and (3) the orchestrator's resume capability (`resumeUnified()`) handles the most common crash-recovery scenario (app restart during mission). For the multi-machine case (Phase 6+), cr-sqlite sync handles cross-device state replication, and the brain/viewer architecture provides execution management.
+ADE does not use Temporal or Inngest directly because: (1) adding a separate durable execution runtime increases deployment complexity for a desktop app, (2) SQLite + the orchestrator state machine already provides sufficient durability for the single-machine case, and (3) the orchestrator's resume capability (`resumeUnified()`) handles the most common crash-recovery scenario (app restart during mission). For the multi-machine case (Phase 6+), cr-sqlite sync handles cross-device state replication, and the host/controller architecture provides execution management.
 
 ### 11.7 Memory System Research Summary
 
@@ -301,9 +301,9 @@ The program is complete when:
 - CTO agent provides persistent project-aware assistance with full memory and context.
 - Automations support only time-based and action-based triggers.
 - Automations execution types are `agent-session`, `mission`, and `built-in task`.
-- Desktop, VPS, and iOS sync state in real-time via cr-sqlite. Any device can view and control; the brain runs agents.
+- Desktop, VPS, and iOS sync state in real-time via cr-sqlite. Any device can view and control; the host runs agents.
 - MCP server safely exposes ADE capabilities to the AI orchestrator and external agent ecosystems.
-- VPS deployment enables always-on brain machines for unattended agent execution.
+- VPS deployment enables always-on host machines for unattended agent execution.
 - cr-sqlite enables zero-cloud-dependency multi-device sync with CRDT conflict resolution.
 - iOS companion app provides full participation in ADE workflows from mobile.
 - Device pairing is one-time, and state is available offline on all devices.

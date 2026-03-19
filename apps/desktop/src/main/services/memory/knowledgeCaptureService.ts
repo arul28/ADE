@@ -247,27 +247,44 @@ export function createKnowledgeCaptureService(args: {
   }): void => {
     const existing = readLedger(input.sourceType, input.sourceKey);
     const now = nowIso();
+    if (existing) {
+      db.run(
+        `
+          update memory_capture_ledger
+             set memory_id = coalesce(?, memory_id),
+                 episode_memory_id = coalesce(?, episode_memory_id),
+                 metadata_json = coalesce(?, metadata_json),
+                 updated_at = ?
+           where id = ? and project_id = ?
+        `,
+        [
+          input.memoryId ?? null,
+          input.episodeMemoryId ?? null,
+          input.metadata ? JSON.stringify(input.metadata) : existing.metadata_json ?? null,
+          now,
+          existing.id,
+          projectId,
+        ],
+      );
+      return;
+    }
+
     db.run(
       `
         insert into memory_capture_ledger(
           id, project_id, source_type, source_key, memory_id, episode_memory_id,
           metadata_json, created_at, updated_at
         ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        on conflict(project_id, source_type, source_key) do update set
-          memory_id = coalesce(excluded.memory_id, memory_capture_ledger.memory_id),
-          episode_memory_id = coalesce(excluded.episode_memory_id, memory_capture_ledger.episode_memory_id),
-          metadata_json = coalesce(excluded.metadata_json, memory_capture_ledger.metadata_json),
-          updated_at = excluded.updated_at
       `,
       [
-        existing?.id ?? randomUUID(),
+        randomUUID(),
         projectId,
         input.sourceType,
         input.sourceKey,
         input.memoryId ?? null,
         input.episodeMemoryId ?? null,
-        input.metadata ? JSON.stringify(input.metadata) : existing?.metadata_json ?? null,
-        existing?.created_at ?? now,
+        input.metadata ? JSON.stringify(input.metadata) : null,
+        now,
         now,
       ],
     );

@@ -27,6 +27,7 @@ import type {
   CreateChildLaneArgs,
   DeleteLaneArgs,
   DeleteMissionArgs,
+  DevToolsCheckResult,
   DiffChanges,
   DockLayout,
   GraphPersistedState,
@@ -104,6 +105,13 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  SyncDesktopConnectionDraft,
+  SyncDeviceRecord,
+  SyncDeviceRuntimeState,
+  SyncPeerDeviceType,
+  SyncRoleSnapshot,
+  SyncStatusEventPayload,
+  SyncTransferReadiness,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
   CtoUpdateCoreMemoryArgs,
@@ -554,6 +562,17 @@ declare global {
         verifyApiKey: (provider: string) => Promise<AiApiKeyVerificationResult>;
         updateConfig: (config: Partial<AiConfig>) => Promise<void>;
       };
+      sync: {
+        getStatus: () => Promise<SyncRoleSnapshot>;
+        listDevices: () => Promise<SyncDeviceRuntimeState[]>;
+        updateLocalDevice: (args: { name?: string; deviceType?: SyncPeerDeviceType }) => Promise<SyncDeviceRecord>;
+        connectToBrain: (draft: SyncDesktopConnectionDraft) => Promise<SyncRoleSnapshot>;
+        disconnectFromBrain: () => Promise<SyncRoleSnapshot>;
+        forgetDevice: (deviceId: string) => Promise<SyncRoleSnapshot>;
+        getTransferReadiness: () => Promise<SyncTransferReadiness>;
+        transferBrainToLocal: () => Promise<SyncRoleSnapshot>;
+        onEvent: (cb: (event: SyncStatusEventPayload) => void) => () => void;
+      };
       externalMcp: {
         listServers: () => Promise<ExternalMcpServerSnapshot[]>;
         listConfigs: () => Promise<ExternalMcpServerConfig[]>;
@@ -573,6 +592,9 @@ declare global {
       };
       agentTools: {
         detect: () => Promise<AgentTool[]>;
+      };
+      devTools: {
+        detect: (force?: boolean) => Promise<DevToolsCheckResult>;
       };
       onboarding: {
         getStatus: () => Promise<OnboardingStatus>;
@@ -783,6 +805,8 @@ declare global {
         changePermissionMode: (args: import("../shared/types").AgentChatChangePermissionModeArgs) => Promise<void>;
         slashCommands: (args: import("../shared/types").AgentChatSlashCommandsArgs) => Promise<import("../shared/types").AgentChatSlashCommand[]>;
         fileSearch: (args: import("../shared/types").AgentChatFileSearchArgs) => Promise<import("../shared/types").AgentChatFileSearchResult[]>;
+        listSubagents: (args: import("../shared/types").AgentChatSubagentListArgs) => Promise<import("../shared/types").AgentChatSubagentSnapshot[]>;
+        getSessionCapabilities: (args: import("../shared/types").AgentChatSessionCapabilitiesArgs) => Promise<import("../shared/types").AgentChatSessionCapabilities>;
         saveTempAttachment: (args: { data: string; filename: string }) => Promise<{ path: string }>;
       };
       computerUse: {

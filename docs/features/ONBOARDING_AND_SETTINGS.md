@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 >
-> Last updated: 2026-03-14
+> Last updated: 2026-03-15
 
 ADE now treats onboarding and settings as two different jobs:
 
@@ -17,10 +17,11 @@ The current runtime no longer assumes first-run setup should hydrate every servi
 
 Repository onboarding still covers the initial ADE project bootstrap:
 
-1. detect common stack signals
-2. suggest config defaults
-3. optionally import existing branches as lanes
-4. prepare initial deterministic context state
+1. detect dev tools (git, gh CLI) and report availability
+2. detect common stack signals
+3. suggest config defaults
+4. optionally import existing branches as lanes
+5. prepare initial deterministic context state
 
 The main difference now is **timing**: project open favors a cheap first pass and delays secondary hydration until after the app is interactive.
 
@@ -79,6 +80,12 @@ Settings owns durable configuration and infrastructure concerns, organized into 
   - *Overview* — memory health, scope summaries, promotion status, embedding progress and health monitoring (service state, queue depth, error rates)
   - *Browse All* — full memory browser across all scopes (project, agent, mission) and tiers (Tier 1 Pinned, Tier 2 Active, Tier 3 Fading)
 - **Integrations** — GitHub, Linear, and related connectivity state; automation defaults and credentials. When a stored GitHub token cannot be decrypted (e.g., keychain migration or corruption), the service sets a `tokenDecryptionFailed` flag, logs a WARN-level message, and the UI displays a banner prompting the user to re-authenticate rather than silently failing GitHub operations.
+- **Sync & Devices** — multi-device sync management (Phase 6):
+  - Local device identity and rename controls
+  - Manual desktop-to-desktop connection (host/port/bootstrap-token)
+  - Current host machine status and host-role transfer ("Make this device the host")
+  - Connected peer list with live status (connection state, last seen, latency, sync lag)
+  - Disconnect/forget device actions
 
 Memory is no longer scattered across multiple surfaces (CTO tab, mission detail, etc.). All memory browsing and management is consolidated in the Settings > Memory tab.
 

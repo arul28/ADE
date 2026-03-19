@@ -12,15 +12,12 @@ export function SiteFooter() {
         <div className="grid gap-10 md:grid-cols-3">
           <div>
             <div className="flex items-center gap-3">
-              <img src="/logo.svg" alt="ADE" className="h-8 w-8" />
-              <div>
-                <div className="text-sm font-semibold text-fg">ADE</div>
-                <div className="text-xs text-muted-fg">Agentic Development Environment</div>
-              </div>
+              <img src="/logo.png" alt="ADE" className="h-7" />
+              <div className="text-xs text-muted-fg">Agentic Development Environment</div>
             </div>
             <p className="mt-4 max-w-sm text-sm leading-relaxed text-muted-fg">
-              Local-first desktop app for orchestrating parallel AI coding agents.
-              Lanes, missions, context packs, and 35+ built-in tools.
+              The all-in-one AI development environment. Agent chat, lanes,
+              missions, memory, automations, and 35+ built-in tools.
             </p>
           </div>
 
@@ -28,9 +25,9 @@ export function SiteFooter() {
             <div>
               <div className="text-sm font-semibold text-fg">Product</div>
               <div className="mt-3 flex flex-col gap-2 text-sm">
-                <Link className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" to="/download">
+                <a className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" href={LINKS.releases} target="_blank" rel="noreferrer">
                   Download
-                </Link>
+                </a>
                 <Link className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" to="/#features">
                   Features
                 </Link>

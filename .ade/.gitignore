@@ -1,0 +1,28 @@
+# Machine-local ADE state
+local.yaml
+local.secret.yaml
+ade.db
+ade.db-*
+ade.db-wal
+embeddings.db
+mcp.sock
+artifacts/
+transcripts/
+cache/
+worktrees/
+secrets/
+
+# Local-only generated runtime docs/state
+agents/
+cto/CURRENT.md
+cto/MEMORY.md
+cto/core-memory.json
+cto/daily/
+cto/sessions.jsonl
+cto/subordinate-activity.jsonl
+cto/openclaw-device.json
+context/
+memory/
+history/
+reflections/
+context/*.ade.md

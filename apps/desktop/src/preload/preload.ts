@@ -29,6 +29,13 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  SyncDesktopConnectionDraft,
+  SyncDeviceRecord,
+  SyncDeviceRuntimeState,
+  SyncPeerDeviceType,
+  SyncRoleSnapshot,
+  SyncStatusEventPayload,
+  SyncTransferReadiness,
   DraftPrDescriptionArgs,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
@@ -118,6 +125,7 @@ import type {
   CreateLaneArgs,
   CreateChildLaneArgs,
   DeleteLaneArgs,
+  DevToolsCheckResult,
   DiffChanges,
   DockLayout,
   GraphPersistedState,
@@ -590,6 +598,27 @@ contextBridge.exposeInMainWorld("ade", {
     updateConfig: async (config: Partial<AiConfig>): Promise<void> =>
       ipcRenderer.invoke(IPC.aiUpdateConfig, config),
   },
+  sync: {
+    getStatus: async (): Promise<SyncRoleSnapshot> => ipcRenderer.invoke(IPC.syncGetStatus),
+    listDevices: async (): Promise<SyncDeviceRuntimeState[]> => ipcRenderer.invoke(IPC.syncListDevices),
+    updateLocalDevice: async (args: { name?: string; deviceType?: SyncPeerDeviceType }): Promise<SyncDeviceRecord> =>
+      ipcRenderer.invoke(IPC.syncUpdateLocalDevice, args),
+    connectToBrain: async (draft: SyncDesktopConnectionDraft): Promise<SyncRoleSnapshot> =>
+      ipcRenderer.invoke(IPC.syncConnectToBrain, draft),
+    disconnectFromBrain: async (): Promise<SyncRoleSnapshot> =>
+      ipcRenderer.invoke(IPC.syncDisconnectFromBrain),
+    forgetDevice: async (deviceId: string): Promise<SyncRoleSnapshot> =>
+      ipcRenderer.invoke(IPC.syncForgetDevice, { deviceId }),
+    getTransferReadiness: async (): Promise<SyncTransferReadiness> =>
+      ipcRenderer.invoke(IPC.syncGetTransferReadiness),
+    transferBrainToLocal: async (): Promise<SyncRoleSnapshot> =>
+      ipcRenderer.invoke(IPC.syncTransferBrainToLocal),
+    onEvent: (cb: (event: SyncStatusEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: SyncStatusEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.syncEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.syncEvent, listener);
+    },
+  },
   externalMcp: {
     listServers: async (): Promise<ExternalMcpServerSnapshot[]> => ipcRenderer.invoke(IPC.externalMcpListServers),
     listConfigs: async (): Promise<ExternalMcpServerConfig[]> => ipcRenderer.invoke(IPC.externalMcpListConfigs),
@@ -625,6 +654,10 @@ contextBridge.exposeInMainWorld("ade", {
   },
   agentTools: {
     detect: async (): Promise<AgentTool[]> => ipcRenderer.invoke(IPC.agentToolsDetect)
+  },
+  devTools: {
+    detect: async (force?: boolean): Promise<DevToolsCheckResult> =>
+      ipcRenderer.invoke(IPC.devToolsDetect, { force }),
   },
   onboarding: {
     getStatus: async (): Promise<OnboardingStatus> => ipcRenderer.invoke(IPC.onboardingGetStatus),
@@ -1105,6 +1138,10 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.agentChatSlashCommands, args),
     fileSearch: async (args: import("../shared/types").AgentChatFileSearchArgs): Promise<import("../shared/types").AgentChatFileSearchResult[]> =>
       ipcRenderer.invoke(IPC.agentChatFileSearch, args),
+    listSubagents: async (args: import("../shared/types").AgentChatSubagentListArgs): Promise<import("../shared/types").AgentChatSubagentSnapshot[]> =>
+      ipcRenderer.invoke(IPC.agentChatListSubagents, args),
+    getSessionCapabilities: async (args: import("../shared/types").AgentChatSessionCapabilitiesArgs): Promise<import("../shared/types").AgentChatSessionCapabilities> =>
+      ipcRenderer.invoke(IPC.agentChatGetSessionCapabilities, args),
     saveTempAttachment: async (args: { data: string; filename: string }): Promise<{ path: string }> =>
       ipcRenderer.invoke(IPC.agentChatSaveTempAttachment, args),
   },

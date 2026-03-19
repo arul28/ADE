@@ -5,6 +5,7 @@
  * Import from here instead of re-declaring locally.
  */
 
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -65,6 +66,59 @@ export function asArray(value: unknown): unknown[] {
 
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ── Process helpers ────────────────────────────────────────────────
+
+/** Extract the first non-empty line from a string. */
+export function firstLine(text: string): string {
+  return text.split(/\r?\n/)[0]?.trim() ?? "";
+}
+
+/** Spawn a child process and collect stdout/stderr with a timeout. */
+export function spawnAsync(
+  command: string,
+  args: string[],
+  opts?: { timeout?: number; maxOutputBytes?: number },
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    try {
+      const child = spawn(command, args, {
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: opts?.timeout ?? 5_000,
+      });
+      let stdout = "";
+      let stderr = "";
+      const limit = opts?.maxOutputBytes ?? 10_000;
+      child.stdout?.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString("utf8").slice(0, Math.max(0, limit - stdout.length));
+      });
+      child.stderr?.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString("utf8").slice(0, Math.max(0, limit - stderr.length));
+      });
+      child.on("error", () => resolve({ status: null, stdout, stderr }));
+      child.on("close", (code) => resolve({ status: code, stdout, stderr }));
+    } catch {
+      resolve({ status: null, stdout: "", stderr: "" });
+    }
+  });
+}
+
+/** Resolve the absolute path of a command, or null if not found. */
+export async function whichCommand(command: string): Promise<string | null> {
+  try {
+    if (process.platform === "win32") {
+      const res = await spawnAsync("where", [command]);
+      if (res.status !== 0) return null;
+      const line = firstLine(res.stdout ?? "");
+      return line.length ? line : null;
+    }
+    const res = await spawnAsync("sh", ["-lc", 'command -v "$1" 2>/dev/null || true', "--", command]);
+    const line = firstLine(res.stdout ?? "");
+    return line.length ? line : null;
+  } catch {
+    return null;
+  }
 }
 
 // ── Git helpers ─────────────────────────────────────────────────────

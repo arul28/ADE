@@ -4,19 +4,16 @@ import type { CtoIdentity, CtoPersonalityPreset } from "../../../shared/types";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
-import { cardCls, inputCls, labelCls, recessedPanelCls, selectCls, textareaCls } from "./shared/designTokens";
+import { cardCls, labelCls, recessedPanelCls, textareaCls } from "./shared/designTokens";
 import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
 import { CTO_PERSONALITY_PRESETS, getCtoPersonalityPreset } from "./identityPresets";
+import { CtoPromptPreview } from "./CtoPromptPreview";
 
 const CTO_DISPLAY_NAME = "CTO";
 
 type IdentityDraft = {
-  persona: string;
+  customPersonality: string;
   personality: CtoPersonalityPreset;
-  verbosity: string;
-  proactivity: string;
-  escalationThreshold: string;
-  constraints: string;
   provider: string;
   model: string;
   modelId: string | null;
@@ -59,12 +56,8 @@ function draftFromIdentity(identity: CtoIdentity | null): IdentityDraft {
     ?? "",
   );
   const base: IdentityDraft = {
-    persona: identity?.persona ?? getCtoPersonalityPreset(identity?.personality ?? "strategic").persona,
+    customPersonality: identity?.customPersonality ?? (identity?.personality === "custom" ? identity?.persona ?? "" : ""),
     personality: identity?.personality ?? "strategic",
-    verbosity: identity?.communicationStyle?.verbosity ?? "adaptive",
-    proactivity: identity?.communicationStyle?.proactivity ?? "balanced",
-    escalationThreshold: identity?.communicationStyle?.escalationThreshold ?? "medium",
-    constraints: (identity?.constraints ?? []).join(", "),
     provider: identity?.modelPreferences.provider ?? "claude",
     model: identity?.modelPreferences.model ?? "sonnet",
     modelId: identity?.modelPreferences.modelId ?? null,
@@ -129,17 +122,19 @@ export function IdentityEditor({
       if (!draft.modelId || !availableModelIds.includes(draft.modelId)) {
         throw new Error("Choose one of your configured models for the CTO.");
       }
+      if (draft.personality === "custom" && !draft.customPersonality.trim()) {
+        throw new Error("Add custom personality guidance or pick one of the built-in presets.");
+      }
+      const selectedPreset = getCtoPersonalityPreset(draft.personality);
       await onSave({
         name: CTO_DISPLAY_NAME,
-        persona: draft.persona.trim(),
+        persona: draft.personality === "custom"
+          ? draft.customPersonality.trim()
+          : `Persistent project CTO with ${selectedPreset.label.toLowerCase()} personality.`,
         personality: draft.personality,
-        ...(draft.personality === "custom" ? { customPersonality: draft.persona.trim() } : {}),
-        communicationStyle: {
-          verbosity: draft.verbosity,
-          proactivity: draft.proactivity,
-          escalationThreshold: draft.escalationThreshold,
-        },
-        constraints: draft.constraints.split(",").map((value) => value.trim()).filter(Boolean),
+        ...(draft.personality === "custom"
+          ? { customPersonality: draft.customPersonality.trim() }
+          : { customPersonality: undefined }),
         modelPreferences: {
           provider: draft.provider,
           model: draft.model,
@@ -161,7 +156,7 @@ export function IdentityEditor({
         <div>
           <div className="font-sans text-sm font-semibold text-fg">CTO identity</div>
           <div className="mt-1 text-xs leading-5 text-muted-fg/45">
-            This updates the hidden CTO identity that ADE carries across chats and compaction. The prompt itself stays internal.
+            ADE keeps the doctrine fixed. Here you choose the model and the personality overlay that rides on top of it.
           </div>
         </div>
 
@@ -193,7 +188,7 @@ export function IdentityEditor({
         </div>
 
         <div>
-          <div className="font-sans text-sm font-semibold text-fg">Working style</div>
+          <div className="font-sans text-sm font-semibold text-fg">Personality</div>
           <div className="mt-2 grid gap-2 md:grid-cols-2">
             {CTO_PERSONALITY_PRESETS.map((preset) => (
               <button
@@ -202,10 +197,6 @@ export function IdentityEditor({
                 onClick={() => setDraft((current) => ({
                   ...current,
                   personality: preset.id,
-                  persona: preset.id === "custom" ? current.persona : preset.persona,
-                  verbosity: preset.communicationStyle?.verbosity ?? current.verbosity,
-                  proactivity: preset.communicationStyle?.proactivity ?? current.proactivity,
-                  escalationThreshold: preset.communicationStyle?.escalationThreshold ?? current.escalationThreshold,
                 }))}
                 className={cn(
                   "rounded-2xl border px-3 py-3 text-left transition-all duration-200",
@@ -221,56 +212,21 @@ export function IdentityEditor({
           </div>
         </div>
 
-        <label className="space-y-1 block">
-          <div className={labelCls}>Operating brief</div>
-          <textarea
-            className={cn(textareaCls, "min-h-[120px]")}
-            rows={5}
-            value={draft.persona}
-            placeholder="Describe how this CTO should lead, communicate, and make tradeoffs."
-            onChange={(event) => setDraft((current) => ({ ...current, persona: event.target.value }))}
-          />
-        </label>
-      </div>
-
-      <div className={cn(recessedPanelCls, "space-y-3 p-4")}>
-        <div className="font-sans text-sm font-semibold text-fg">Communication tuning</div>
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-          <label className="space-y-1">
-            <div className={labelCls}>Verbosity</div>
-            <select className={selectCls} value={draft.verbosity} onChange={(event) => setDraft((current) => ({ ...current, verbosity: event.target.value }))}>
-              <option value="concise">Concise</option>
-              <option value="detailed">Detailed</option>
-              <option value="adaptive">Adaptive</option>
-            </select>
+        {draft.personality === "custom" ? (
+          <label className="space-y-1 block">
+            <div className={labelCls}>Custom personality overlay</div>
+            <textarea
+              className={cn(textareaCls, "min-h-[120px]")}
+              rows={5}
+              value={draft.customPersonality}
+              placeholder="Describe the CTO's tone, priorities, and decision style."
+              onChange={(event) => setDraft((current) => ({ ...current, customPersonality: event.target.value }))}
+            />
+            <div className="text-[11px] leading-5 text-muted-fg/40">
+              This custom text changes the CTO's personality. ADE still owns the core doctrine and memory model.
+            </div>
           </label>
-          <label className="space-y-1">
-            <div className={labelCls}>Proactivity</div>
-            <select className={selectCls} value={draft.proactivity} onChange={(event) => setDraft((current) => ({ ...current, proactivity: event.target.value }))}>
-              <option value="reactive">Reactive</option>
-              <option value="balanced">Balanced</option>
-              <option value="proactive">Proactive</option>
-            </select>
-          </label>
-          <label className="space-y-1">
-            <div className={labelCls}>Escalation</div>
-            <select className={selectCls} value={draft.escalationThreshold} onChange={(event) => setDraft((current) => ({ ...current, escalationThreshold: event.target.value }))}>
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-            </select>
-          </label>
-        </div>
-
-        <label className="space-y-1 block">
-          <div className={labelCls}>Constraints</div>
-          <input
-            className={inputCls}
-            placeholder="never deploy without tests, always keep project memory updated"
-            value={draft.constraints}
-            onChange={(event) => setDraft((current) => ({ ...current, constraints: event.target.value }))}
-          />
-        </label>
+        ) : null}
       </div>
 
       <div className={cn(recessedPanelCls, "space-y-2 p-4")}>
@@ -288,6 +244,16 @@ export function IdentityEditor({
           ))}
         </div>
       </div>
+
+      <CtoPromptPreview
+        compact
+        identityOverride={{
+          name: CTO_DISPLAY_NAME,
+          personality: draft.personality,
+          customPersonality: draft.personality === "custom" ? draft.customPersonality : undefined,
+          persona: draft.personality === "custom" ? draft.customPersonality : undefined,
+        }}
+      />
 
       {error && <div className="text-xs text-error">{error}</div>}
 

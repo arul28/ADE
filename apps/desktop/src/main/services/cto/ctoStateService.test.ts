@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { buildAdeGitignore } from "../../../shared/adeLayout";
 import { createUnifiedMemoryService } from "../memory/unifiedMemoryService";
 import { openKvDb } from "../state/kvDb";
 import { createCtoStateService } from "./ctoStateService";
@@ -54,6 +55,9 @@ describe("ctoStateService", () => {
     expect(fs.existsSync(path.join(fixture.adeDir, "cto", "MEMORY.md"))).toBe(true);
     expect(fs.existsSync(path.join(fixture.adeDir, "cto", "CURRENT.md"))).toBe(true);
     expect(fs.existsSync(path.join(fixture.adeDir, "cto", "sessions.jsonl"))).toBe(false);
+    expect(buildAdeGitignore()).not.toContain("cto/identity.yaml");
+    expect(buildAdeGitignore()).toContain("cto/core-memory.json");
+    expect(buildAdeGitignore()).toContain("cto/CURRENT.md");
 
     fixture.db.close();
   });
@@ -525,6 +529,48 @@ describe("ctoStateService", () => {
       proactivity: "balanced",
       escalationThreshold: "low",
     });
+
+    fixture.db.close();
+  });
+
+  it("builds a structured CTO prompt preview with immutable doctrine and preset overlay", async () => {
+    const fixture = await createFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    const preview = service.previewSystemPrompt();
+    expect(preview.sections.map((section) => section.id)).toEqual(["doctrine", "personality", "memory"]);
+    expect(preview.sections[0]?.content).toContain("You are the CTO for the current project inside ADE.");
+    expect(preview.sections[1]?.content).toContain("Operate as a strategic CTO.");
+    expect(preview.sections[2]?.content).toContain("Immutable doctrine");
+    expect(preview.prompt).toContain("Immutable ADE doctrine");
+    expect(preview.prompt).toContain("Selected personality overlay");
+
+    fixture.db.close();
+  });
+
+  it("uses the custom personality overlay without removing the immutable doctrine", async () => {
+    const fixture = await createFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    const snapshot = service.updateIdentity({
+      personality: "custom",
+      customPersonality: "Be sharp, skeptical, and deeply execution-focused.",
+      persona: "Legacy custom note",
+    });
+    const preview = service.previewSystemPrompt(snapshot.identity);
+
+    expect(preview.sections[0]?.content).toContain("You are the CTO for the current project inside ADE.");
+    expect(preview.sections[1]?.content).toContain("Be sharp, skeptical, and deeply execution-focused.");
+    expect(preview.prompt).toContain("Immutable ADE doctrine");
+    expect(preview.prompt).toContain("Be sharp, skeptical, and deeply execution-focused.");
 
     fixture.db.close();
   });

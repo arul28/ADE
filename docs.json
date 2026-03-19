@@ -27,7 +27,7 @@
   "navigation": {
     "tabs": [
       {
-        "tab": "Start",
+        "tab": "Docs",
         "icon": "book",
         "groups": [
           {
@@ -40,7 +40,7 @@
             ]
           },
           {
-            "group": "Get started",
+            "group": "Getting Started",
             "icon": "flag-checkered",
             "pages": [
               "quickstart",
@@ -50,17 +50,10 @@
               "getting-started/first-lane",
               "getting-started/first-agent"
             ]
-          }
-        ]
-      },
-      {
-        "tab": "Features",
-        "icon": "sparkles",
-        "groups": [
+          },
           {
             "group": "Lanes",
             "icon": "code-branch",
-            "expanded": true,
             "pages": [
               "lanes/overview",
               "lanes/creating",
@@ -127,76 +120,72 @@
               "context-packs/structure",
               "context-packs/freshness"
             ]
-          }
-        ]
-      },
-      {
-        "tab": "Workspace",
-        "icon": "grid-2",
-        "groups": [
+          },
           {
             "group": "Workspace",
             "icon": "chart-network",
-            "expanded": true,
             "pages": [
               "tools/workspace-graph",
-              "tools/project-home"
-            ]
-          },
-          {
-            "group": "Development",
-            "icon": "code",
-            "pages": [
+              "tools/project-home",
               "tools/files-editor",
-              "tools/terminals"
-            ]
-          },
-          {
-            "group": "Workflow",
-            "icon": "arrows-rotate",
-            "pages": [
+              "tools/terminals",
               "tools/pull-requests",
               "tools/conflicts",
               "tools/history"
             ]
-          }
-        ]
-      },
-      {
-        "tab": "Setup",
-        "icon": "gear",
-        "groups": [
+          },
           {
-            "group": "Setup",
-            "icon": "play",
-            "expanded": true,
+            "group": "Configuration",
+            "icon": "gear",
             "pages": [
               "configuration/overview",
-              "configuration/ai-providers"
+              "configuration/ai-providers",
+              "configuration/mcp-servers",
+              "configuration/settings",
+              "configuration/permissions"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "AI Tools",
             "icon": "wand-magic-sparkles",
             "pages": [
               "ai-tools/claude-code",
               "ai-tools/cursor",
               "ai-tools/windsurf"
             ]
-          },
+          }
+        ]
+      },
+      {
+        "tab": "Guides",
+        "icon": "map",
+        "groups": [
           {
-            "group": "Connections",
-            "icon": "plug",
+            "group": "Workflow Guides",
+            "icon": "route",
+            "expanded": true,
             "pages": [
-              "configuration/mcp-servers"
+              "guides/first-mission",
+              "guides/automation-rules",
+              "guides/stacked-prs",
+              "guides/cto-linear-workflow",
+              "guides/multi-agent-setup"
             ]
-          },
+          }
+        ]
+      },
+      {
+        "tab": "Changelog",
+        "icon": "clock-rotate-left",
+        "groups": [
           {
-            "group": "Preferences",
-            "icon": "sliders",
+            "group": "Releases",
+            "icon": "tag",
+            "expanded": true,
             "pages": [
-              "configuration/settings",
-              "configuration/permissions"
+              "changelog/v1.0.2",
+              "changelog/v1.0.1",
+              "changelog/v1.0.0"
             ]
           }
         ]
@@ -243,7 +232,7 @@
         "items": [
           { "label": "Features", "href": "/lanes/overview" },
           { "label": "Download", "href": "https://github.com/arul28/ADE/releases" },
-          { "label": "Changelog", "href": "https://github.com/arul28/ADE/blob/main/CHANGELOG.md" }
+          { "label": "Changelog", "href": "/changelog/v1.0.2" }
         ]
       },
       {
@@ -251,7 +240,7 @@
         "items": [
           { "label": "Documentation", "href": "/introduction" },
           { "label": "Quick start", "href": "/quickstart" },
-          { "label": "Key Concepts", "href": "/key-concepts" }
+          { "label": "Guides", "href": "/guides/first-mission" }
         ]
       },
       {

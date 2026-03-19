@@ -42,7 +42,7 @@ export function createAutoUpdateService(logger: Logger) {
       updateDownloadedCallback = cb;
     },
     quitAndInstall() {
-      autoUpdater.quitAndInstall();
+      autoUpdater.quitAndInstall(false, true);
     },
     dispose() {
       clearTimeout(startupTimer);

@@ -50,7 +50,11 @@ import type {
   AgentChatModelInfo,
   AgentChatProvider,
   AgentChatSession,
+  AgentChatSessionCapabilities,
+  AgentChatSessionCapabilitiesArgs,
   AgentChatSessionSummary,
+  AgentChatSubagentListArgs,
+  AgentChatSubagentSnapshot,
   AgentChatSurface,
   AgentChatSteerArgs,
   AgentChatSendArgs,
@@ -74,6 +78,8 @@ import { detectAllAuth } from "../ai/authDetector";
 import * as providerResolver from "../ai/providerResolver";
 import { createUniversalToolSet, type PermissionMode } from "../ai/tools/universalTools";
 import { createWorkflowTools } from "../ai/tools/workflowTools";
+import { createLinearTools } from "../ai/tools/linearTools";
+import { createCtoOperatorTools } from "../ai/tools/ctoOperatorTools";
 import { buildCodingAgentSystemPrompt, composeSystemPrompt } from "../ai/tools/systemPrompt";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
 import {
@@ -87,9 +93,15 @@ import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import type { createMemoryService } from "../memory/memoryService";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { createWorkerAgentService } from "../cto/workerAgentService";
+import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService";
+import type { IssueTracker } from "../cto/issueTracker";
+import type { createFlowPolicyService } from "../cto/flowPolicyService";
+import type { createLinearDispatcherService } from "../cto/linearDispatcherService";
 import type { createPrService } from "../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { resolveAdeMcpServerLaunch } from "../orchestrator/unifiedOrchestratorAdapter";
+import type { createMissionService } from "../missions/missionService";
+import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
 
 type JsonRpcEnvelope = {
   jsonrpc?: string;
@@ -252,6 +264,13 @@ type ManagedChatSession = {
   }>;
 };
 
+type AgentChatTranscriptEntry = {
+  role: "user" | "assistant";
+  text: string;
+  timestamp: string;
+  turnId?: string;
+};
+
 type SessionTurnCollector = {
   resolve: (value: {
     sessionId: string;
@@ -304,6 +323,10 @@ const DEFAULT_REASONING_EFFORT = "medium";
 const DEFAULT_AUTO_TITLE_MODEL_ID = "anthropic/claude-haiku-4-5-api";
 const MAX_CHAT_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 const CHAT_TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] chat transcript limit reached (8MB). Further events omitted.\n";
+const DEFAULT_TRANSCRIPT_READ_LIMIT = 20;
+const MAX_TRANSCRIPT_READ_LIMIT = 100;
+const DEFAULT_TRANSCRIPT_READ_CHARS = 8_000;
+const MAX_TRANSCRIPT_READ_CHARS = 40_000;
 const AUTO_TITLE_MAX_CHARS = 48;
 const REASONING_ACTIVITY_DETAIL = "Thinking through the answer";
 const WORKING_ACTIVITY_DETAIL = "Preparing response";
@@ -968,6 +991,14 @@ export function createAgentChatService(args: {
   episodicSummaryService?: EpisodicSummaryService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
+  workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
+  linearIssueTracker?: IssueTracker | null;
+  flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
+  getMissionService?: () => ReturnType<typeof createMissionService> | null;
+  getAiOrchestratorService?: () => ReturnType<typeof createAiOrchestratorService> | null;
+  getLinearDispatcherService?: () => ReturnType<typeof createLinearDispatcherService> | null;
+  linearClient?: import("../cto/linearClient").LinearClient | null;
+  linearCredentials?: import("../cto/linearCredentialService").LinearCredentialService | null;
   prService?: ReturnType<typeof createPrService> | null;
   computerUseArtifactBrokerService?: ComputerUseArtifactBrokerService | null;
   laneService: ReturnType<typeof createLaneService>;
@@ -987,6 +1018,14 @@ export function createAgentChatService(args: {
     episodicSummaryService,
     ctoStateService,
     workerAgentService,
+    workerHeartbeatService,
+    linearIssueTracker,
+    flowPolicyService,
+    getMissionService,
+    getAiOrchestratorService,
+    getLinearDispatcherService,
+    linearClient: linearClientRef,
+    linearCredentials: linearCredentialsRef,
     prService,
     computerUseArtifactBrokerService,
     laneService,
@@ -1009,6 +1048,63 @@ export function createAgentChatService(args: {
 
   const managedSessions = new Map<string, ManagedChatSession>();
   const sessionTurnCollectors = new Map<string, SessionTurnCollector>();
+  const subagentStates = new Map<string, Map<string, AgentChatSubagentSnapshot>>();
+
+  const ensureSubagentSnapshotMap = (sessionId: string): Map<string, AgentChatSubagentSnapshot> => {
+    let collection = subagentStates.get(sessionId);
+    if (!collection) {
+      collection = new Map();
+      subagentStates.set(sessionId, collection);
+    }
+    return collection;
+  };
+
+  const clearSubagentSnapshots = (sessionId: string): void => {
+    subagentStates.delete(sessionId);
+  };
+
+  const trackSubagentEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
+    if (event.type !== "subagent_started" && event.type !== "subagent_result") return;
+    const map = ensureSubagentSnapshotMap(managed.session.id);
+    if (event.type === "subagent_started") {
+      map.set(event.taskId, {
+        taskId: event.taskId,
+        description: event.description,
+        status: "running",
+        turnId: event.turnId ?? undefined,
+        startTimestamp: nowIso(),
+      });
+      return;
+    }
+    const previous = map.get(event.taskId);
+    const status = event.status === "failed"
+      ? "failed"
+      : event.status === "stopped"
+        ? "stopped"
+        : "completed";
+    map.set(event.taskId, {
+      taskId: event.taskId,
+      description: previous?.description ?? event.summary ?? "",
+      status,
+      turnId: event.turnId ?? previous?.turnId,
+      startTimestamp: previous?.startTimestamp,
+      endTimestamp: nowIso(),
+      summary: event.summary ?? previous?.summary,
+      usage: event.usage ?? previous?.usage,
+    });
+  };
+
+  const getTrackedSubagents = (sessionId: string): AgentChatSubagentSnapshot[] => {
+    const snapshots = subagentStates.get(sessionId);
+    if (!snapshots) return [];
+    return Array.from(snapshots.values());
+  };
+
+  const deriveSessionCapabilities = (managed: ManagedChatSession | null): AgentChatSessionCapabilities => ({
+    supportsSubagentInspection: Boolean(managed && (managed.session.provider === "claude" || managed.session.provider === "codex")),
+    supportsSubagentControl: Boolean(managed && managed.runtime?.kind === "claude"),
+    supportsReviewMode: Boolean(managed && managed.session.provider === "codex"),
+  });
 
   const buildAdeMcpServers = (
     provider: "claude" | "codex",
@@ -1051,6 +1147,101 @@ export function createAgentChatService(args: {
     } catch {
       return [];
     }
+  };
+
+  const readTranscriptEntries = (managed: ManagedChatSession): AgentChatTranscriptEntry[] => {
+    try {
+      const raw = fs.readFileSync(managed.transcriptPath, "utf8");
+      const entries: AgentChatTranscriptEntry[] = [];
+      for (const entry of parseAgentChatTranscript(raw)) {
+        if (entry.sessionId !== managed.session.id) continue;
+        if (entry.event.type === "user_message") {
+          const text = entry.event.text.trim();
+          if (!text.length) continue;
+          entries.push({
+            role: "user",
+            text,
+            timestamp: entry.timestamp,
+            turnId: entry.event.turnId,
+          });
+          continue;
+        }
+        if (entry.event.type === "text") {
+          const text = entry.event.text.trim();
+          if (!text.length) continue;
+          entries.push({
+            role: "assistant",
+            text,
+            timestamp: entry.timestamp,
+            turnId: entry.event.turnId,
+          });
+        }
+      }
+      return entries;
+    } catch {
+      return [];
+    }
+  };
+
+  const getChatTranscript = async ({
+    sessionId,
+    limit = DEFAULT_TRANSCRIPT_READ_LIMIT,
+    maxChars = DEFAULT_TRANSCRIPT_READ_CHARS,
+  }: {
+    sessionId: string;
+    limit?: number;
+    maxChars?: number;
+  }): Promise<{
+    sessionId: string;
+    entries: AgentChatTranscriptEntry[];
+    truncated: boolean;
+    totalEntries: number;
+  }> => {
+    const managed = ensureManagedSession(sessionId);
+    const normalizedLimit = Math.max(1, Math.min(MAX_TRANSCRIPT_READ_LIMIT, Math.floor(limit)));
+    const normalizedMaxChars = Math.max(200, Math.min(MAX_TRANSCRIPT_READ_CHARS, Math.floor(maxChars)));
+    const transcriptEntries = readTranscriptEntries(managed);
+    const fallbackEntries = transcriptEntries.length
+      ? transcriptEntries
+      : managed.recentConversationEntries.map((entry) => ({
+          role: entry.role,
+          text: entry.text.trim(),
+          timestamp: managed.session.lastActivityAt,
+          turnId: entry.turnId,
+        })).filter((entry) => entry.text.length > 0);
+
+    const byLimit = fallbackEntries.slice(-normalizedLimit);
+    let truncated = fallbackEntries.length > byLimit.length;
+    let remainingChars = normalizedMaxChars;
+    const bounded: AgentChatTranscriptEntry[] = [];
+
+    for (let index = byLimit.length - 1; index >= 0; index -= 1) {
+      const entry = byLimit[index]!;
+      if (remainingChars <= 0) {
+        truncated = true;
+        break;
+      }
+      if (entry.text.length <= remainingChars) {
+        bounded.push(entry);
+        remainingChars -= entry.text.length;
+        continue;
+      }
+      bounded.push({
+        ...entry,
+        text: remainingChars > 3 ? `${entry.text.slice(0, remainingChars - 3).trimEnd()}...` : entry.text.slice(0, remainingChars),
+      });
+      truncated = true;
+      remainingChars = 0;
+      break;
+    }
+
+    bounded.reverse();
+    return {
+      sessionId: managed.session.id,
+      entries: bounded,
+      truncated,
+      totalEntries: fallbackEntries.length,
+    };
   };
 
   const buildRecentConversationContext = (managed: ManagedChatSession, limit = 6): string => {
@@ -1617,6 +1808,7 @@ export function createAgentChatService(args: {
 
   const commitChatEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
     managed.session.lastActivityAt = nowIso();
+    trackSubagentEvent(managed, event);
     appendRecentConversationEntry(managed, event);
 
     if (event.type === "text") {
@@ -1858,6 +2050,7 @@ export function createAgentChatService(args: {
   ): Promise<void> => {
     if (managed.endedNotified) return;
     managed.endedNotified = true;
+    clearSubagentSnapshots(managed.session.id);
 
     if (options?.summary !== undefined) {
       sessionService.setSummary(managed.session.id, options.summary);
@@ -2954,6 +3147,53 @@ export function createAgentChatService(args: {
           laneId: managed.session.laneId,
         });
         Object.assign(tools, workflowTools);
+
+        // Merge Linear tools (issue read/write, comments, state transitions)
+        const linearTools = createLinearTools({
+          linearClient: linearClientRef ?? null,
+          credentials: linearCredentialsRef ?? null,
+        });
+        Object.assign(tools, linearTools);
+
+        if (managed.session.identityKey === "cto") {
+          Object.assign(tools, createCtoOperatorTools({
+            currentSessionId: managed.session.id,
+            defaultLaneId: managed.session.laneId,
+            defaultModelId: managed.session.modelId ?? null,
+            defaultReasoningEffort: managed.session.reasoningEffort ?? null,
+            laneService,
+            missionService: getMissionService?.() ?? null,
+            aiOrchestratorService: getAiOrchestratorService?.() ?? null,
+            workerAgentService: workerAgentService ?? null,
+            workerHeartbeatService: workerHeartbeatService ?? null,
+            linearDispatcherService: getLinearDispatcherService?.() ?? null,
+            flowPolicyService: flowPolicyService ?? null,
+            issueTracker: linearIssueTracker ?? null,
+            listChats: listSessions,
+            getChatStatus: getSessionSummary,
+            getChatTranscript,
+            createChat: createSession,
+            updateChatSession: updateSession,
+            sendChatMessage: sendMessage,
+            interruptChat: interrupt,
+            ensureCtoSession: async ({ laneId, modelId, reasoningEffort, reuseExisting }) =>
+              ensureIdentitySession({
+                identityKey: "cto",
+                laneId,
+                modelId,
+                reasoningEffort,
+                reuseExisting,
+                permissionMode: "full-auto",
+              }),
+            fetchMissionContext: async (missionId) => {
+              const result = await fetchContextPack({ scope: "mission", missionId, level: "standard" });
+              return {
+                content: result.content,
+                truncated: result.truncated,
+              };
+            },
+          }));
+        }
       }
 
       const thinkingLevel = mapReasoningEffortToThinking(managed.session.reasoningEffort);
@@ -3981,7 +4221,18 @@ export function createAgentChatService(args: {
       model: resolveClaudeCliModel(managed.session.model),
     };
     if (!lightweight) {
-      opts.systemPrompt = { type: "preset", preset: "claude_code" };
+      opts.systemPrompt = {
+        type: "preset",
+        preset: "claude_code",
+        append: [
+          "## ADE Memory",
+          "You have access to ADE's persistent project memory via MCP tools (memory_search, memory_add, memory_pin).",
+          "**Search first:** Before starting non-trivial work, search memory for relevant conventions, past decisions, or known pitfalls.",
+          "**Write sparingly and well:** Only save knowledge a developer joining this project would find useful on their first day. Each memory should be a single actionable insight.",
+          "GOOD memories: \"Convention: always use snake_case for DB columns\", \"Decision: chose Postgres over Mongo for ACID transactions\", \"Pitfall: CI silently skips tests if file doesn't match *.test.ts\"",
+          "DO NOT save: file paths, raw error messages without lessons, task progress updates, information derivable from git log or the code itself, obvious patterns already visible in the codebase.",
+        ].join("\n"),
+      };
       opts.settingSources = ["user", "project", "local"];
       opts.mcpServers = buildAdeMcpServers(
         "claude",
@@ -5110,6 +5361,7 @@ export function createAgentChatService(args: {
 
   const updateSession = async ({
     sessionId,
+    title,
     modelId,
     reasoningEffort,
     permissionMode,
@@ -5227,6 +5479,14 @@ export function createAgentChatService(args: {
       managed.session.computerUse = normalizeComputerUsePolicy(computerUse, createDefaultComputerUsePolicy());
     }
 
+    if (title !== undefined) {
+      const normalizedTitle = String(title ?? "").trim();
+      sessionService.updateMeta({
+        sessionId,
+        title: normalizedTitle.length ? normalizedTitle : defaultChatSessionTitle(managed.session.provider),
+      });
+    }
+
     persistChatState(managed);
     return managed.session;
   };
@@ -5337,6 +5597,15 @@ export function createAgentChatService(args: {
     }
 
     return { scope: args.scope, content, truncated };
+  };
+
+  const listSubagents = ({ sessionId }: AgentChatSubagentListArgs): AgentChatSubagentSnapshot[] => {
+    return getTrackedSubagents(sessionId);
+  };
+
+  const getSessionCapabilities = ({ sessionId }: AgentChatSessionCapabilitiesArgs): AgentChatSessionCapabilities => {
+    const managed = managedSessions.get(sessionId) ?? null;
+    return deriveSessionCapabilities(managed);
   };
 
   const changePermissionMode = ({ sessionId, permissionMode }: import("../../../shared/types").AgentChatChangePermissionModeArgs): void => {
@@ -5495,6 +5764,7 @@ export function createAgentChatService(args: {
     resumeSession,
     listSessions,
     getSessionSummary,
+    getChatTranscript,
     ensureIdentitySession,
     approveToolUse,
     getAvailableModels,
@@ -5507,6 +5777,8 @@ export function createAgentChatService(args: {
     listContextPacks,
     fetchContextPack,
     changePermissionMode,
+    listSubagents,
+    getSessionCapabilities,
     /** Clean up temp attachment files older than 7 days. Call on app startup. */
     cleanupStaleAttachments() {
       try {

@@ -69,3 +69,36 @@ body {
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
 }
+
+/* ── Marquee animation ──────────────────────── */
+@keyframes ade-marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+.animate-marquee {
+  animation: ade-marquee 40s linear infinite;
+}
+
+.animate-marquee-reverse {
+  animation: ade-marquee 40s linear infinite reverse;
+}
+
+/* ── Gradient text shimmer ──────────────────── */
+@keyframes gradient-shift {
+  from { background-position: 0% center; }
+  to { background-position: 100% center; }
+}
+
+.animate-gradient-text {
+  background-size: 200% auto;
+  animation: gradient-shift 4s ease-in-out infinite alternate;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-marquee,
+  .animate-marquee-reverse,
+  .animate-gradient-text {
+    animation: none;
+  }
+}

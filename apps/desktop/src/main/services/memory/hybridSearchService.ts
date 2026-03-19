@@ -351,19 +351,29 @@ export function createHybridSearchService(opts: CreateHybridSearchServiceOpts) {
     const allowedStatuses = new Set(normalizeStatuses(searchOpts.status));
     if (allowedStatuses.size === 0) return [];
 
-    const rows = db.all<HybridSearchRow>(
-      `
-        SELECT m.*, e.embedding_blob, e.dimensions, matchinfo(unified_memories_fts, 'pcnalx') AS match_info
-        FROM unified_memories_fts
-        JOIN unified_memories m
-          ON m.rowid = unified_memories_fts.rowid
-        LEFT JOIN unified_memory_embeddings e
-          ON e.memory_id = m.id
-         AND e.embedding_model = ?
-        WHERE unified_memories_fts MATCH ?
-      `,
-      [embeddingService.getModelId(), matchQuery],
-    );
+    const rows = (() => {
+      try {
+        return db.all<HybridSearchRow>(
+          `
+            SELECT m.*, e.embedding_blob, e.dimensions, matchinfo(unified_memories_fts, 'pcnalx') AS match_info
+            FROM unified_memories_fts
+            JOIN unified_memories m
+              ON m.rowid = unified_memories_fts.rowid
+            LEFT JOIN unified_memory_embeddings e
+              ON e.memory_id = m.id
+             AND e.embedding_model = ?
+            WHERE unified_memories_fts MATCH ?
+          `,
+          [embeddingService.getModelId(), matchQuery],
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (/no such module: fts4/i.test(message) || /no such module: fts5/i.test(message) || /unable to use function matchinfo/i.test(message) || /unable to use function MATCH/i.test(message)) {
+          return [];
+        }
+        throw error;
+      }
+    })();
 
     return rows
       .map((row) => {

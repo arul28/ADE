@@ -1,0 +1,128 @@
+---
+title: "CTO Agent + Linear Integration"
+description: "Connect the CTO agent to Linear for automated issue triage, task delegation, and status syncing."
+---
+
+The CTO agent can sync with your Linear workspace to read incoming issues, triage them, delegate work to AI agents, and update issue statuses as work progresses. This guide walks you through connecting Linear and configuring the CTO for automated workflows.
+
+---
+
+## 1. Connect Linear
+
+<Steps>
+  <Step title="Open settings">
+    Navigate to **Settings > Linear** in ADE.
+  </Step>
+  <Step title="Authenticate">
+    Click **Connect Linear** and authorize ADE with your Linear workspace. ADE requests read/write access to issues, projects, and labels.
+  </Step>
+  <Step title="Select a team">
+    Choose the Linear team whose issues the CTO should monitor. You can change this later or add multiple teams.
+  </Step>
+</Steps>
+
+Once connected, ADE shows a sync status indicator in the Linear settings panel.
+
+---
+
+## 2. Configure the CTO Agent
+
+Navigate to **CTO** in the sidebar to access the CTO agent's settings and chat interface.
+
+<Steps>
+  <Step title="Set the CTO model">
+    In **CTO Settings**, select which AI model the CTO uses. A capable model (Claude Sonnet or Opus) is recommended for triage and planning tasks.
+  </Step>
+  <Step title="Configure Linear sync behavior">
+    - **Sync interval** — how often the CTO checks for new issues (default: 5 minutes)
+    - **Issue filters** — which issue states, labels, or priorities to include
+    - **Auto-triage** — whether the CTO should automatically triage new issues or wait for your instruction
+  </Step>
+  <Step title="Set worker spawning policy">
+    Control how aggressively the CTO delegates work:
+    - **Ask first** — the CTO proposes a plan and waits for your approval
+    - **Auto-delegate** — the CTO assigns work to agents without asking (within budget)
+  </Step>
+</Steps>
+
+*Coming soon: detailed reference for all CTO configuration options.*
+
+---
+
+## 3. Triage Incoming Issues
+
+When new issues arrive in Linear, the CTO can triage them:
+
+- **Read the issue** — the CTO reads the title, description, and any comments
+- **Assess complexity** — estimates effort and identifies which parts of the codebase are involved
+- **Propose a plan** — suggests whether the issue should be a mission, a single-lane task, or deferred
+- **Assign priority** — updates the Linear issue with a recommended priority if auto-triage is enabled
+
+In Supervised mode, you review the CTO's triage in its chat interface before any work begins. In Auto-delegate mode, the CTO proceeds directly to delegation.
+
+---
+
+## 4. Delegate to Worker Agents
+
+When the CTO decides to act on an issue, it:
+
+<Steps>
+  <Step title="Creates a lane">
+    The CTO spawns a new lane for the issue, named after the Linear issue ID (e.g., `linear/ENG-142`).
+  </Step>
+  <Step title="Spawns a worker">
+    A worker agent is launched in the new lane with context from the issue, the project pack, and any relevant code references.
+  </Step>
+  <Step title="Monitors progress">
+    The CTO tracks the worker's progress and reports status back to the Linear issue. Comments are added to the issue as work progresses.
+  </Step>
+</Steps>
+
+If the issue is complex enough to warrant a mission, the CTO creates one instead of a single worker session.
+
+---
+
+## 5. Status Syncing
+
+As work progresses, ADE keeps Linear updated:
+
+| ADE event | Linear update |
+|---|---|
+| Worker starts | Issue moves to **In Progress** |
+| PR opened | Issue linked to the PR, comment added |
+| Mission completed | Issue moves to **Done**, summary comment added |
+| Worker failed | Issue flagged with a comment describing the failure |
+| Intervention needed | Issue comment requesting human input |
+
+*Coming soon: custom status mapping between ADE states and Linear workflow states.*
+
+---
+
+## 6. Review and Close
+
+When a worker or mission completes:
+
+- The CTO posts a summary comment on the Linear issue with links to the PR and any artifacts
+- The issue status is updated based on the outcome
+- You can review the work in ADE's Mission or History views, then close the issue in Linear
+
+---
+
+## Tips
+
+- Start with **Ask first** mode until you trust the CTO's triage judgment. Switch to **Auto-delegate** once the CTO has enough project memory to make good decisions.
+- Use Linear labels to control routing — for example, label issues `ai-eligible` and filter the CTO to only triage those.
+- The CTO's project memory improves over time. Brief it on your architecture and conventions early; it will produce better triage and delegation as it learns.
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="CTO Concepts" icon="crown" href="/key-concepts#cto">
+    Understand the CTO's role, memory system, and org chart model.
+  </Card>
+  <Card title="Your First Mission" icon="bullseye" href="/guides/first-mission">
+    Learn how missions work — the execution unit the CTO uses for complex issues.
+  </Card>
+</CardGroup>
