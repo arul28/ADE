@@ -9,9 +9,6 @@ on:
 permissions:
   contents: read
 
-env:
-  CACHE_KEY: nm-linux-${{ hashFiles('apps/desktop/package-lock.json','apps/mcp-server/package-lock.json','apps/web/package-lock.json') }}
-
 jobs:
   # ── Stage 1: Install & cache ──────────────────────────────────────────
   install:
@@ -30,7 +27,7 @@ jobs:
             apps/desktop/node_modules
             apps/mcp-server/node_modules
             apps/web/node_modules
-          key: ${{ env.CACHE_KEY }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/mcp-server/package-lock.json','apps/web/package-lock.json') }}
 
       - name: Install all dependencies (parallel)
         if: steps.cache.outputs.cache-hit != 'true'
@@ -55,7 +52,7 @@ jobs:
             apps/desktop/node_modules
             apps/mcp-server/node_modules
             apps/web/node_modules
-          key: ${{ env.CACHE_KEY }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/mcp-server/package-lock.json','apps/web/package-lock.json') }}
       - run: cd apps/desktop && npm run typecheck
 
   typecheck-mcp:
@@ -72,7 +69,7 @@ jobs:
             apps/desktop/node_modules
             apps/mcp-server/node_modules
             apps/web/node_modules
-          key: ${{ env.CACHE_KEY }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/mcp-server/package-lock.json','apps/web/package-lock.json') }}
       - run: cd apps/mcp-server && npm run typecheck
 
   lint-desktop:
@@ -89,7 +86,7 @@ jobs:
             apps/desktop/node_modules
             apps/mcp-server/node_modules
             apps/web/node_modules
-          key: ${{ env.CACHE_KEY }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/mcp-server/package-lock.json','apps/web/package-lock.json') }}
       - run: cd apps/desktop && npm run lint
 
   test-desktop:
@@ -110,7 +107,7 @@ jobs:
             apps/desktop/node_modules
             apps/mcp-server/node_modules
             apps/web/node_modules
-          key: ${{ env.CACHE_KEY }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/mcp-server/package-lock.json','apps/web/package-lock.json') }}
       - run: cd apps/desktop && npx vitest run --shard=${{ matrix.shard }}/3
 
   test-mcp:
@@ -127,7 +124,7 @@ jobs:
             apps/desktop/node_modules
             apps/mcp-server/node_modules
             apps/web/node_modules
-          key: ${{ env.CACHE_KEY }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/mcp-server/package-lock.json','apps/web/package-lock.json') }}
       - run: cd apps/mcp-server && npm test
 
   build:
@@ -144,7 +141,7 @@ jobs:
             apps/desktop/node_modules
             apps/mcp-server/node_modules
             apps/web/node_modules
-          key: ${{ env.CACHE_KEY }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/mcp-server/package-lock.json','apps/web/package-lock.json') }}
       - run: cd apps/desktop && npm run build
       - run: cd apps/mcp-server && npm run build
       - run: cd apps/web && npm run build
@@ -163,7 +160,7 @@ jobs:
             apps/desktop/node_modules
             apps/mcp-server/node_modules
             apps/web/node_modules
-          key: ${{ env.CACHE_KEY }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/mcp-server/package-lock.json','apps/web/package-lock.json') }}
       - run: node scripts/validate-docs.mjs
 
   # ── Gate: all jobs must pass ──────────────────────────────────────────
