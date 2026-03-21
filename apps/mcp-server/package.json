@@ -15,7 +15,7 @@
     "node-cron": "^3.0.3",
     "node-pty": "^1.1.0",
     "sql.js": "^1.13.0",
-    "yaml": "^2.8.2"
+    "yaml": "^2.8.3"
   },
   "devDependencies": {
     "@types/node": "^20.11.30",
