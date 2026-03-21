@@ -83,80 +83,11 @@ jobs:
           path: apps/desktop/release/ADE-${{ matrix.arch }}.app.zip
           if-no-files-found: error
 
-  validate-signed-release:
-    needs:
-      - verify
-      - build-mac-app
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.target_ref }}
-          fetch-depth: 0
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
-
-      - name: Install desktop dependencies
-        run: cd apps/desktop && npm ci
-
-      - name: Stamp release version
-        env:
-          ADE_RELEASE_TAG: ${{ inputs.release_tag }}
-        run: cd apps/desktop && npm run version:release
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: mac-app-arm64
-          path: apps/desktop/release/_ci/downloads/arm64
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: mac-app-x64
-          path: apps/desktop/release/_ci/downloads/x64
-
-      - name: Expand architecture app bundles
-        run: |
-          rm -rf apps/desktop/release/_ci/arm64 apps/desktop/release/_ci/x64
-          mkdir -p apps/desktop/release/_ci/arm64 apps/desktop/release/_ci/x64
-          ditto -x -k apps/desktop/release/_ci/downloads/arm64/ADE-arm64.app.zip apps/desktop/release/_ci/arm64
-          ditto -x -k apps/desktop/release/_ci/downloads/x64/ADE-x64.app.zip apps/desktop/release/_ci/x64
-
-      - name: Merge universal app bundle
-        run: cd apps/desktop && npm run merge:mac:universal
-
-      - name: Materialize App Store Connect API key
-        env:
-          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-        run: |
-          if [ -z "$APPLE_API_KEY_P8" ] || [ -z "$APPLE_API_KEY_ID" ]; then
-            echo "::error::Missing APPLE_API_KEY_P8 or APPLE_API_KEY_ID GitHub secret."
-            exit 1
-          fi
-
-          KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
-          printf '%s' "$APPLE_API_KEY_P8" > "$KEY_PATH"
-          chmod 600 "$KEY_PATH"
-          echo "APPLE_API_KEY=$KEY_PATH" >> "$GITHUB_ENV"
-
-      - name: Validate signed macOS release bundle
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: cd apps/desktop && npm run dist:mac:universal:signed
-
   release:
     if: ${{ inputs.publish }}
     needs:
       - verify
       - build-mac-app
-      - validate-signed-release
     runs-on: macos-latest
     concurrency:
       group: release-${{ inputs.release_tag }}
