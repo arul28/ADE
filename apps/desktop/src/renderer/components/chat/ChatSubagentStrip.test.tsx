@@ -35,7 +35,7 @@ describe("ChatSubagentStrip", () => {
     fireEvent.click(screen.getByRole("button", { name: /Inspect desktop IPC path/ }));
 
     expect(screen.getByText("Traced the send handler and found the blocking await.")).not.toBeNull();
-    expect(screen.getByText("Tool functions.exec_command")).not.toBeNull();
+    expect(screen.getByText("functions.exec_command")).not.toBeNull();
   });
 
   it("falls back to the last tool when live progress text is unavailable", () => {

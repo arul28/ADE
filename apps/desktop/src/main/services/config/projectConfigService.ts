@@ -1193,10 +1193,7 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
         defaultExecutionPolicy as NonNullable<NonNullable<AiConfig["orchestrator"]>["defaultExecutionPolicy"]>;
     }
 
-    const defaultPlannerProvider = asString(orchestratorRaw.defaultPlannerProvider)?.trim();
-    if (defaultPlannerProvider === "auto" || defaultPlannerProvider === "claude" || defaultPlannerProvider === "codex") {
-      orchestrator.defaultPlannerProvider = defaultPlannerProvider;
-    }
+    // Legacy defaultPlannerProvider is ignored -- use defaultOrchestratorModel instead.
 
     const autoResolveInterventions = asBool(orchestratorRaw.autoResolveInterventions);
     if (autoResolveInterventions != null) orchestrator.autoResolveInterventions = autoResolveInterventions;
@@ -2477,7 +2474,6 @@ function validateEffectiveConfig(
         const ap = `${p}.legacy.actions[${actionIdx}]`;
         const type = action.type as AutomationActionType;
         if (
-          type !== "update-packs" &&
           type !== "predict-conflicts" &&
           type !== "run-tests" &&
           type !== "run-command"

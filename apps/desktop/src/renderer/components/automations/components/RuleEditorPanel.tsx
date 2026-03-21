@@ -247,7 +247,6 @@ function builtInActionSummary(action: AutomationAction): string {
   if (action.type === "run-tests") return "Run test suite";
   if (action.type === "run-command") return "Run shell command";
   if (action.type === "predict-conflicts") return "Predict conflicts";
-  if (action.type === "update-packs") return "Refresh packs";
   return action.type;
 }
 
@@ -729,10 +728,6 @@ export function RuleEditorPanel({
                   <Button size="sm" variant="outline" onClick={() => addBuiltInAction("predict-conflicts")}>
                     <Plus size={12} weight="regular" />
                     Conflict prediction
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={() => addBuiltInAction("update-packs")}>
-                    <Plus size={12} weight="regular" />
-                    Refresh packs
                   </Button>
                 </div>
 

@@ -100,7 +100,6 @@ async function createFixture() {
     db,
     projectId,
     projectRoot,
-    packService,
     conflictService: undefined,
     ptyService,
     projectConfigService: null as any,

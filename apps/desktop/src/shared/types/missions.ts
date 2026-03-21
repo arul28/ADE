@@ -71,6 +71,8 @@ export type MissionStatus =
   | "failed"
   | "canceled";
 
+export const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>(["completed", "failed", "canceled"]);
+
 export type MissionPriority = "urgent" | "high" | "normal" | "low";
 
 export type MissionExecutionMode = "local" | "relay";
@@ -138,18 +140,6 @@ export function resolutionKindLabel(kind: MissionInterventionResolutionKind): st
 }
 
 export type MissionPlannerEngine = "auto" | "claude_cli" | "codex_cli";
-
-export type MissionPlannerResolvedEngine =
-  | "claude_cli"
-  | "codex_cli";
-
-export type MissionPlannerReasonCode =
-  | "planner_unavailable"
-  | "planner_timeout"
-  | "planner_parse_error"
-  | "planner_schema_error"
-  | "planner_validation_error"
-  | "planner_execution_error";
 
 export type PlannerMissionDomain = "backend" | "frontend" | "infra" | "testing" | "docs" | "release" | "mixed";
 
@@ -265,39 +255,6 @@ export type PlannerPlan = {
   handoffPolicy: {
     externalConflictDefault: "intervention" | "auto_internal_retry" | "manual_merge_step";
   };
-};
-
-export type MissionPlannerAttemptStatus = "succeeded" | "failed";
-
-export type MissionPlannerAttempt = {
-  id: string;
-  engine: MissionPlannerResolvedEngine;
-  status: MissionPlannerAttemptStatus;
-  reasonCode: MissionPlannerReasonCode | null;
-  detail: string | null;
-  commandPreview: string | null;
-  rawResponse: string | null;
-  validationErrors: string[];
-  createdAt: string;
-};
-
-export type MissionPlannerRun = {
-  id: string;
-  missionId: string;
-  requestedEngine: MissionPlannerEngine;
-  resolvedEngine: MissionPlannerResolvedEngine | null;
-  status: "succeeded" | "skipped";
-  degraded: boolean;
-  reasonCode: MissionPlannerReasonCode | null;
-  reasonDetail: string | null;
-  planHash: string;
-  normalizedPlanHash: string;
-  commandPreview: string | null;
-  rawResponse: string | null;
-  createdAt: string;
-  durationMs: number;
-  validationErrors: string[];
-  attempts: MissionPlannerAttempt[];
 };
 
 export type MissionPhaseValidationTier = "none" | "self" | "dedicated";
@@ -897,29 +854,6 @@ export type MissionRunView = {
 export type GetMissionRunViewArgs = {
   missionId: string;
   runId?: string | null;
-};
-
-export type PlanMissionArgs = {
-  missionId?: string;
-  title?: string;
-  prompt: string;
-  laneId?: string | null;
-  plannerEngine?: MissionPlannerEngine;
-  planningTimeoutMs?: number;
-  allowPlanningQuestions?: boolean;
-  model?: string;
-};
-
-export type PlanMissionResult = {
-  plan: PlannerPlan;
-  run: MissionPlannerRun;
-  plannedSteps: Array<{
-    index: number;
-    title: string;
-    detail: string;
-    kind: string;
-    metadata: Record<string, unknown>;
-  }>;
 };
 
 export type UpdateMissionArgs = {

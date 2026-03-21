@@ -293,12 +293,32 @@ private struct FileTreeDirectoryView: View {
       }
       ForEach(nodes) { node in
         if node.type == "directory" {
-          NavigationLink(node.name) {
+          NavigationLink {
             FileTreeDirectoryView(workspaceId: workspaceId, parentPath: node.path, isReadOnlyByDefault: isReadOnlyByDefault)
+          } label: {
+            Label(node.name, systemImage: "folder.fill")
+              .foregroundStyle(ADEPalette.textPrimary)
           }
         } else {
-          NavigationLink(node.name) {
+          NavigationLink {
             FileEditorView(workspaceId: workspaceId, relativePath: node.path, isReadOnlyByDefault: isReadOnlyByDefault)
+          } label: {
+            HStack {
+              Label(node.name, systemImage: fileIcon(for: node.name))
+                .foregroundStyle(ADEPalette.textPrimary)
+              Spacer()
+              if let changeStatus = node.changeStatus {
+                ADEStatusPill(
+                  text: changeStatus.prefix(1).uppercased(),
+                  tint: changeStatus == "modified" ? ADEPalette.warning : ADEPalette.textSecondary
+                )
+              }
+              if let size = node.size {
+                Text(formattedFileSize(size))
+                  .font(.system(.caption2, design: .monospaced))
+                  .foregroundStyle(ADEPalette.textMuted)
+              }
+            }
           }
         }
       }
@@ -471,4 +491,32 @@ private struct FileEditorView: View {
       errorMessage = error.localizedDescription
     }
   }
+}
+
+// MARK: - File Helpers
+
+private func fileIcon(for name: String) -> String {
+  let ext = (name as NSString).pathExtension.lowercased()
+  switch ext {
+  case "swift", "ts", "tsx", "js", "jsx", "py", "rb", "go", "rs", "c", "cpp", "h", "m", "java", "kt":
+    return "chevron.left.forwardslash.chevron.right"
+  case "json", "yaml", "yml", "toml", "xml", "plist":
+    return "doc.badge.gearshape"
+  case "md", "txt", "rtf":
+    return "doc.text"
+  case "png", "jpg", "jpeg", "gif", "svg", "webp", "heic":
+    return "photo"
+  case "pdf":
+    return "doc.richtext"
+  case "zip", "tar", "gz", "bz2":
+    return "doc.zipper"
+  default:
+    return "doc"
+  }
+}
+
+private func formattedFileSize(_ bytes: Int) -> String {
+  if bytes < 1024 { return "\(bytes) B" }
+  if bytes < 1024 * 1024 { return "\(bytes / 1024) KB" }
+  return String(format: "%.1f MB", Double(bytes) / 1048576.0)
 }

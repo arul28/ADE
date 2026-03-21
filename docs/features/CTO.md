@@ -12,7 +12,7 @@ The current runtime is optimized around a simple rule: **make the CTO usable bef
 
 - the CTO is not only a live-brain runtime concept
 - a normal clone/pull should recover the shared CTO identity/config layer
-- raw runtime/session logs, generated docs, and CTO runtime memory remain local or ADE-sync-only in this W3 pass
+- raw runtime/session logs, generated docs, and CTO runtime memory remain local or ADE-sync-only in this Phase 6 W3 (portability) pass
 
 ---
 
@@ -195,7 +195,7 @@ Current system behavior separates:
 For desktop portability, treat these differently:
 
 - CTO identity is part of the shared Git-tracked ADE scaffold
-- CTO core memory and generated context docs remain local/generated in this W3 pass
+- CTO core memory and generated context docs remain local/generated in this Phase 6 W3 (portability) pass
 - recent subordinate activity and live session state are ADE-sync/runtime concerns
 - raw daily logs remain operational history unless promoted into portable summaries or memory
 

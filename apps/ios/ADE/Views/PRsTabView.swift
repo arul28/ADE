@@ -76,23 +76,31 @@ struct PRsTabView: View {
           NavigationLink {
             PrDetailView(pr: pr)
           } label: {
-            VStack(alignment: .leading, spacing: 5) {
-              HStack {
+            VStack(alignment: .leading, spacing: 6) {
+              HStack(alignment: .top) {
                 Text(pr.title)
                   .font(.headline)
-                Spacer()
+                  .lineLimit(2)
+                Spacer(minLength: 8)
                 Text("#\(pr.githubPrNumber)")
-                  .font(.caption)
+                  .font(.system(.caption, design: .monospaced))
                   .foregroundStyle(.secondary)
               }
-              Text("\(pr.headBranch) → \(pr.baseBranch)")
-                .font(.caption.monospaced())
+              Text("\(pr.headBranch) \u{2192} \(pr.baseBranch)")
+                .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.secondary)
-              HStack(spacing: 12) {
+                .lineLimit(1)
+              HStack(spacing: 8) {
                 ADEStatusPill(text: pr.checksStatus.uppercased(), tint: checksTint(for: pr.checksStatus))
                 ADEStatusPill(text: pr.reviewStatus.uppercased(), tint: reviewsTint(for: pr.reviewStatus))
+                Spacer()
+                Text("+\(pr.additions) -\(pr.deletions)")
+                  .font(.system(.caption2, design: .monospaced))
+                  .foregroundStyle(ADEPalette.textMuted)
               }
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("PR \(pr.githubPrNumber): \(pr.title), checks \(pr.checksStatus), review \(pr.reviewStatus)")
           }
         }
       }

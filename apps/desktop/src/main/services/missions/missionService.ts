@@ -5,6 +5,7 @@ import {
   isValidResolutionKind,
   createDefaultComputerUsePolicy,
   normalizeComputerUsePolicy,
+  TERMINAL_MISSION_STATUSES,
 } from "../../../shared/types";
 import type {
   AddMissionArtifactArgs,
@@ -26,7 +27,6 @@ import type {
   MissionLaneClaimCheckResult,
   MissionPhaseConfiguration,
   MissionPhaseOverride,
-  MissionPlannerRun,
   ListMissionsArgs,
   MissionArtifact,
   MissionArtifactType,
@@ -60,7 +60,6 @@ import type {
   UpdateMissionStepArgs
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
-/** Inline type — formerly in the deleted missionPlanningService module. */
 type MissionPlanStepDraft = {
   index: number;
   title: string;
@@ -80,8 +79,6 @@ import { isRecord, nowIso, safeJsonParse } from "../shared/utils";
 import { normalizeAgentRuntimeFlags } from "../orchestrator/teamRuntimeConfig";
 import { resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { normalizeMissionArtifactType as normalizeMissionArtifactTypeValue } from "../../../shared/proofArtifacts";
-
-const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>(["completed", "failed", "canceled"]);
 
 const ACTIVE_MISSION_STATUSES = new Set<MissionStatus>(["in_progress", "planning", "intervention_required"]);
 
@@ -240,7 +237,6 @@ type MissionPhaseOverrideRow = {
 
 type CreateMissionInternalArgs = CreateMissionArgs & {
   plannedSteps?: MissionPlanStepDraft[];
-  plannerRun?: MissionPlannerRun | null;
   plannerPlan?: PlannerPlan | null;
 };
 
@@ -2429,7 +2425,6 @@ export function createMissionService({
       const priority = args.priority ?? "normal";
       const executionMode = args.executionMode ?? "local";
       const targetMachineId = coerceNullableString(args.targetMachineId);
-      const plannerRun = args.plannerRun ?? null;
       const plannerPlan = args.plannerPlan ?? null;
       const launchMode = args.launchMode === "manual" ? "manual" : "autopilot";
       const autostart = args.autostart !== false;
@@ -2549,36 +2544,6 @@ export function createMissionService({
           phaseCount: selectedPhases.length,
           phases: selectedPhases
         },
-        ...(plannerRun
-          ? {
-              planner: {
-                id: plannerRun.id,
-                requestedEngine: plannerRun.requestedEngine,
-                resolvedEngine: plannerRun.resolvedEngine,
-                status: plannerRun.status,
-                degraded: plannerRun.degraded,
-                reasonCode: plannerRun.reasonCode,
-                reasonDetail: plannerRun.reasonDetail,
-                planHash: plannerRun.planHash,
-                normalizedPlanHash: plannerRun.normalizedPlanHash,
-                commandPreview: plannerRun.commandPreview,
-                rawResponse: truncateForMetadata(plannerRun.rawResponse, 200_000),
-                durationMs: plannerRun.durationMs,
-                validationErrors: plannerRun.validationErrors,
-                attempts: plannerRun.attempts.map((attempt) => ({
-                  id: attempt.id,
-                  engine: attempt.engine,
-                  status: attempt.status,
-                  reasonCode: attempt.reasonCode,
-                  detail: attempt.detail,
-                  commandPreview: attempt.commandPreview,
-                  rawResponse: truncateForMetadata(attempt.rawResponse, 50_000),
-                  validationErrors: attempt.validationErrors,
-                  createdAt: attempt.createdAt
-                }))
-              }
-            }
-          : {}),
         plannerPlan: plannerPlan
           ? {
               schemaVersion: plannerPlan.schemaVersion,
@@ -2684,13 +2649,13 @@ export function createMissionService({
           executionMode,
           targetMachineId,
           preview: summarizePrompt(prompt),
-          plannerVersion: plannerRun ? "ade.missionPlanner.v2" : "coordinator",
+          plannerVersion: "coordinator",
           plannerStrategy: plannerPlan?.missionSummary.strategy ?? "coordinator",
           plannerStepCount: stepsToPersist.length,
           plannerKeywords: [],
-          plannerEngineRequested: plannerRun?.requestedEngine ?? args.plannerEngine ?? "auto",
-          plannerEngineResolved: plannerRun?.resolvedEngine ?? null,
-          plannerDegraded: plannerRun?.degraded ?? false,
+          plannerEngineRequested: args.plannerEngine ?? "auto",
+          plannerEngineResolved: null,
+          plannerDegraded: false,
           phaseProfileId: selectedProfile?.id ?? null,
           phaseKeys: selectedPhases.map((phase) => phase.phaseKey)
         }
@@ -2707,38 +2672,6 @@ export function createMissionService({
           hasOverride: hasExplicitOverride
         }
       });
-
-      if (plannerRun) {
-        recordEvent({
-          missionId: id,
-          eventType: "mission_plan_generated",
-          actor: "system",
-          summary: `Planner completed with ${plannerRun.resolvedEngine ?? "unknown"}.`,
-          payload: {
-            plannerRunId: plannerRun.id,
-            requestedEngine: plannerRun.requestedEngine,
-            resolvedEngine: plannerRun.resolvedEngine,
-            status: plannerRun.status,
-            degraded: plannerRun.degraded,
-            reasonCode: plannerRun.reasonCode,
-            reasonDetail: plannerRun.reasonDetail,
-            planHash: plannerRun.planHash,
-            normalizedPlanHash: plannerRun.normalizedPlanHash,
-            commandPreview: plannerRun.commandPreview,
-            rawResponse: truncateForMetadata(plannerRun.rawResponse, 8_000),
-            durationMs: plannerRun.durationMs,
-            validationErrors: plannerRun.validationErrors,
-            attempts: plannerRun.attempts.map((attempt) => ({
-              id: attempt.id,
-              engine: attempt.engine,
-              status: attempt.status,
-              reasonCode: attempt.reasonCode,
-              detail: attempt.detail,
-              createdAt: attempt.createdAt
-            }))
-          }
-        });
-      }
 
       if (plannerPlan) {
         const planSummaryText = [
@@ -2764,21 +2697,6 @@ export function createMissionService({
             },
           });
         }
-      }
-
-      if (plannerRun?.rawResponse?.trim()) {
-        insertArtifact({
-          missionId: id,
-          artifactType: "note",
-          title: "Planner output",
-          description: truncateForMetadata(plannerRun.rawResponse, 20_000),
-          createdBy: "system",
-          metadata: {
-            plannerRunId: plannerRun.id,
-            resolvedEngine: plannerRun.resolvedEngine,
-            source: "planner_run",
-          },
-        });
       }
 
       db.flushNow();

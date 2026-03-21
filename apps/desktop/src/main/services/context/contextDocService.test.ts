@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
 
-vi.mock("../packs/projectPackBuilder", () => ({
+vi.mock("./contextDocBuilder", () => ({
   readContextDocMeta: vi.fn(() => ({
     contextFingerprint: "fingerprint",
     contextVersion: 1,
@@ -44,7 +44,7 @@ import { createContextDocService } from "./contextDocService";
 import {
   resolveContextDocPath,
   runContextDocGeneration,
-} from "../packs/projectPackBuilder";
+} from "./contextDocBuilder";
 
 function createLogger() {
   return {

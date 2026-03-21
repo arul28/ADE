@@ -91,7 +91,6 @@ export default function MissionsPage() {
 
   const createMissionDefaults = useMemo<CreateMissionDefaults>(
     () => ({
-      plannerProvider: missionSettingsDraft.defaultPlannerProvider,
       orchestratorModel: missionSettingsDraft.defaultOrchestratorModel,
       permissionConfig: missionSettingsDraft.permissionConfig,
     }),

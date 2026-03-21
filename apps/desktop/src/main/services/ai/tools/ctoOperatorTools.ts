@@ -9,9 +9,6 @@ import type {
   AgentChatSessionSummary,
   AgentStatus,
   AgentUpsertInput,
-  ContextPackFetchArgs,
-  ContextPackFetchResult,
-  ContextPackOption,
   CtoTriggerAgentWakeupArgs,
   LinearWorkflowConfig,
   OperatorNavigationSuggestion,
@@ -76,9 +73,6 @@ export interface CtoOperatorToolDeps {
     reasoningEffort?: string | null;
     reuseExisting?: boolean;
   }) => Promise<AgentChatSession>;
-  listContextPacks?: (args?: { laneId?: string }) => Promise<ContextPackOption[]>;
-  fetchContextPack?: (args: ContextPackFetchArgs) => Promise<ContextPackFetchResult>;
-  fetchMissionContext?: (missionId: string) => Promise<{ content: string; truncated: boolean }>;
 }
 
 const ACTIVE_LINEAR_RUN_STATUSES = new Set([
@@ -892,32 +886,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     },
   });
 
-  tools.openMissionContext = tool({
-    description: "Open the generated mission context pack so you can review the mission's live execution context.",
-    inputSchema: z.object({
-      missionId: z.string(),
-    }),
-    execute: async ({ missionId }) => {
-      if (!deps.fetchMissionContext) return { success: false, error: "Mission context export is not available." };
-      try {
-        const result = await deps.fetchMissionContext(missionId);
-        const mission = deps.missionService?.get(missionId) ?? null;
-        return {
-          success: true,
-          missionId,
-          ...result,
-          ...buildNavigationPayload(buildNavigationSuggestion({
-            surface: "missions",
-            laneId: mission?.laneId ?? null,
-            missionId,
-          })),
-        };
-      } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
-      }
-    },
-  });
-
   tools.listWorkers = tool({
     description: "List worker agents in the CTO org.",
     inputSchema: z.object({
@@ -1186,66 +1154,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           workspaceId: resolvedWorkspaceId,
           count: matches.length,
           matches,
-        };
-      } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
-      }
-    },
-  });
-
-  tools.listContextExports = tool({
-    description: "List ADE context export scopes that the CTO can request through internal services.",
-    inputSchema: z.object({
-      laneId: z.string().optional(),
-    }),
-    execute: async ({ laneId }) => {
-      if (!deps.listContextPacks) return { success: false, error: "Context export service is not available." };
-      try {
-        const packs = await deps.listContextPacks({ laneId: laneId?.trim() || undefined });
-        return { success: true, count: packs.length, packs };
-      } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
-      }
-    },
-  });
-
-  tools.exportContext = tool({
-    description: "Export a bounded ADE context pack for a project, lane, mission, conflict, plan, or feature scope.",
-    inputSchema: z.object({
-      scope: z.enum(["project", "lane", "conflict", "plan", "feature", "mission"]),
-      level: z.enum(["brief", "standard", "detailed"]).optional().default("standard"),
-      laneId: z.string().optional(),
-      missionId: z.string().optional(),
-      featureKey: z.string().optional(),
-    }),
-    execute: async ({ scope, level, laneId, missionId, featureKey }) => {
-      if (!deps.fetchContextPack) return { success: false, error: "Context export service is not available." };
-      try {
-        const result = await deps.fetchContextPack({
-          scope,
-          level,
-          laneId: laneId?.trim() || undefined,
-          missionId: missionId?.trim() || undefined,
-          featureKey: featureKey?.trim() || undefined,
-        });
-        const mission = missionId?.trim() ? deps.missionService?.get(missionId.trim()) ?? null : null;
-        return {
-          success: true,
-          ...result,
-          ...buildNavigationPayload(
-            scope === "mission"
-              ? buildNavigationSuggestion({
-                  surface: "missions",
-                  laneId: mission?.laneId ?? (laneId?.trim() || null),
-                  missionId: missionId?.trim() || null,
-                })
-              : scope === "lane"
-                ? buildNavigationSuggestion({
-                    surface: "lanes",
-                    laneId: laneId?.trim() || null,
-                  })
-                : null,
-          ),
         };
       } catch (error) {
         return { success: false, error: error instanceof Error ? error.message : String(error) };

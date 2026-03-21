@@ -335,9 +335,6 @@ function normalizeAdapterConfig(adapterType: AdapterType, config: Record<string,
   return result;
 }
 
-/** @deprecated Use stableStringify from shared/utils instead. Kept as alias. */
-const toStableJson = stableStringify;
-
 export function createWorkerAgentService(args: WorkerAgentServiceArgs) {
   const logIntegrityService = createLogIntegrityService();
   const agentsRootDir = path.join(args.adeDir, "agents");
@@ -903,7 +900,6 @@ export function createWorkerAgentService(args: WorkerAgentServiceArgs) {
     setAgentStatus,
     updateAgentSpentMonthlyCents,
     setAgentHeartbeatAt,
-    toStableJson,
   };
 }
 

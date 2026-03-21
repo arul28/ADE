@@ -26,7 +26,6 @@ import { createTestService } from "./services/tests/testService";
 import { createOperationService } from "./services/history/operationService";
 import { createGitOperationsService } from "./services/git/gitOperationsService";
 import { runGit } from "./services/git/git";
-import { createPackService } from "./services/packs/packService";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
 import { createAgentChatService } from "./services/chat/agentChatService";
@@ -714,20 +713,6 @@ app.whenReady().then(async () => {
       projectRoot,
     });
 
-    const packService = createPackService({
-      db,
-      logger,
-      projectRoot,
-      projectId,
-      packsDir: adePaths.packsDir,
-      laneService,
-      sessionService,
-      projectConfigService,
-      operationService,
-      aiIntegrationService,
-      onEvent: () => {}
-    });
-
     const onboardingService = createOnboardingService({
       db,
       logger,
@@ -1182,7 +1167,6 @@ app.whenReady().then(async () => {
       transcriptsDir: adePaths.transcriptsDir,
       projectId,
       memoryService,
-      packService,
       fileService,
       workerAgentService,
       workerHeartbeatService,
@@ -1503,7 +1487,6 @@ app.whenReady().then(async () => {
       db,
       projectId,
       projectRoot,
-      packService,
       conflictService,
       ptyService,
       agentChatService,
@@ -2030,7 +2013,6 @@ app.whenReady().then(async () => {
       sessionService,
       operationService,
       projectConfigService,
-      packService,
       conflictService,
       gitService,
       diffService,
@@ -2150,7 +2132,6 @@ app.whenReady().then(async () => {
       missionBudgetService,
       aiOrchestratorService,
       agentChatService,
-      packService,
       contextDocService,
       projectConfigService,
       processService,
@@ -2243,7 +2224,6 @@ app.whenReady().then(async () => {
       orchestratorService: null,
       missionBudgetService: null,
       aiOrchestratorService: null,
-      packService: null,
       contextDocService: null,
       projectConfigService: null,
       processService: null,

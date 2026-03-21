@@ -327,15 +327,6 @@ describe("missionBudgetService", () => {
       db,
       projectId,
       projectRoot: root,
-      packService: {
-        getLaneExport: async ({ laneId, level }: { laneId: string; level: "lite" | "standard" | "deep" }) =>
-          buildExport(`lane:${laneId}`, "lane", level),
-        refreshLanePack: async () => {},
-        getProjectExport: async ({ level }: { level: "lite" | "standard" | "deep" }) =>
-          buildExport("project", "project", level),
-        getDeltaDigest: async () => null,
-        getHeadVersion: () => ({ versionId: "pack-v1", versionNumber: 1 })
-      } as any,
     });
 
     const started = orchestratorService.startRun({

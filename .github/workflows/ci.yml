@@ -32,14 +32,26 @@ jobs:
       - name: Install web dependencies
         run: cd apps/web && npm ci
 
-      - name: Typecheck
+      - name: Typecheck desktop
         run: cd apps/desktop && npm run typecheck
+
+      - name: Typecheck MCP server
+        run: cd apps/mcp-server && npm run typecheck
+
+      - name: Lint desktop
+        run: cd apps/desktop && npm run lint
 
       - name: Test desktop
         run: cd apps/desktop && npm test
 
       - name: Test MCP server
         run: cd apps/mcp-server && npm test
+
+      - name: Build desktop
+        run: cd apps/desktop && npm run build
+
+      - name: Build MCP server
+        run: cd apps/mcp-server && npm run build
 
       - name: Build web
         run: cd apps/web && npm run build

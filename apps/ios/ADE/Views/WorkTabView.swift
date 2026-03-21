@@ -42,16 +42,22 @@ struct WorkTabView: View {
         if sessions.contains(where: { $0.status == "running" }) {
           Section("Activity") {
             ForEach(sessions.filter { $0.status == "running" }) { session in
-              HStack {
+              HStack(spacing: 12) {
                 Image(systemName: "waveform.path.ecg")
                   .foregroundStyle(ADEPalette.warning)
-                VStack(alignment: .leading) {
+                  .symbolEffect(.variableColor.iterative, isActive: true)
+                VStack(alignment: .leading, spacing: 2) {
                   Text(session.title)
-                  Text("\(session.laneName) · \(session.toolType ?? "session")")
+                    .font(.subheadline.weight(.medium))
+                  Text("\(session.laneName) \u{00B7} \(session.toolType ?? "session")")
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(ADEPalette.textSecondary)
                 }
+                Spacer()
+                ProgressView()
+                  .controlSize(.mini)
               }
+              .accessibilityLabel("\(session.title), running on \(session.laneName)")
             }
           }
         }

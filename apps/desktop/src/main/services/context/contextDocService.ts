@@ -8,7 +8,7 @@ import {
   readContextStatus as readContextStatusImpl,
   resolveContextDocPath as resolveContextDocPathImpl,
   runContextDocGeneration as runContextDocGenerationImpl,
-} from "../packs/projectPackBuilder";
+} from "./contextDocBuilder";
 import { getErrorMessage, nowIso, toOptionalString } from "../shared/utils";
 import type { AdeDb } from "../state/kvDb";
 import type {

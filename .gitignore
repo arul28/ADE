@@ -51,3 +51,4 @@ xcuserdata/
 .pnpm-store/
 /apps/desktop/.ade
 /.playwright-mcp
+/.codex-derived-data

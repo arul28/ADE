@@ -52,20 +52,6 @@ export const STATUS_CONFIG: Record<MissionStatus, {
   canceled:              { color: "#71717A", label: "Canceled",  icon: "⊘",  background: "#71717A18", border: "1px solid #71717A30" },
 };
 
-/** @deprecated Use STATUS_CONFIG instead */
-export const STATUS_BADGE_STYLES: Record<MissionStatus, { background: string; color: string; border: string }> =
-  Object.fromEntries(
-    Object.entries(STATUS_CONFIG).map(([k, v]) => [k, { background: v.background, color: v.color, border: v.border }]),
-  ) as Record<MissionStatus, { background: string; color: string; border: string }>;
-
-/** @deprecated Use STATUS_CONFIG instead */
-export const STATUS_DOT_HEX: Record<MissionStatus, string> =
-  Object.fromEntries(Object.entries(STATUS_CONFIG).map(([k, v]) => [k, v.color])) as Record<MissionStatus, string>;
-
-/** @deprecated Use STATUS_CONFIG instead */
-export const STATUS_LABELS: Record<MissionStatus, string> =
-  Object.fromEntries(Object.entries(STATUS_CONFIG).map(([k, v]) => [k, v.label])) as Record<MissionStatus, string>;
-
 export const PRIORITY_STYLES: Record<MissionPriority, { background: string; color: string; border: string }> = {
   urgent: { background: "#EF444418", color: "#EF4444", border: "1px solid #EF444430" },
   high: { background: "#F59E0B18", color: "#F59E0B", border: "1px solid #F59E0B30" },
@@ -93,7 +79,8 @@ export const EXECUTOR_BADGE_HEX: Record<string, string> = {
   manual: "#3B82F6",
 };
 
-export const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>(["completed", "failed", "canceled"]);
+import { TERMINAL_MISSION_STATUSES } from "../../../shared/types";
+export { TERMINAL_MISSION_STATUSES };
 
 export const NOISY_EVENT_TYPES = new Set([
   "scheduler_tick",
@@ -175,8 +162,6 @@ export type MissionSettingsDraft = {
   teammatePlanMode: TeammatePlanMode;
   permissionConfig: MissionPermissionConfig;
   /** @deprecated kept for backward-compat read/write */
-  defaultPlannerProvider: PlannerProvider;
-  /** @deprecated kept for backward-compat read/write */
   cliMode: MissionCliPermissionMode;
   /** @deprecated kept for backward-compat read/write */
   cliSandboxPermissions: MissionCliSandboxPermissions;
@@ -216,7 +201,6 @@ export const DEFAULT_MISSION_SETTINGS_DRAFT: MissionSettingsDraft = {
   defaultOrchestratorModel: { ...DEFAULT_ORCHESTRATOR_MODEL },
   teammatePlanMode: "auto",
   permissionConfig: { ...DEFAULT_PERMISSION_CONFIG },
-  defaultPlannerProvider: "auto",
   cliMode: "full-auto",
   cliSandboxPermissions: "workspace-write",
   inProcessMode: "full-auto",

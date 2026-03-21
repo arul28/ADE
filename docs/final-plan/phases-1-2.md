@@ -10,7 +10,7 @@ Goal: Consolidate AI execution on local-first agent SDK runtimes unified behind 
 
 ### Reference docs
 
-- [architecture/AI_INTEGRATION.md](../architecture/AI_INTEGRATION.md) — SDK strategy, AgentExecutor interface, ClaudeExecutor and CodexExecutor details, per-task-type configuration
+- [architecture/AI_INTEGRATION.md](../architecture/AI_INTEGRATION.md) — SDK strategy, AgentExecutor interface, per-task-type configuration (historical note: ClaudeExecutor and CodexExecutor class names referenced here were replaced by unified runtime adapters during the orchestrator overhaul)
 - [features/ONBOARDING_AND_SETTINGS.md](../features/ONBOARDING_AND_SETTINGS.md) — AI provider detection, task routing UI, AI feature toggles, AI usage dashboard, budget controls
 - [architecture/JOB_ENGINE.md](../architecture/JOB_ENGINE.md) — AI call sites and job-triggered augmentation paths (narratives, conflict proposals)
 - [features/PACKS.md](../features/PACKS.md) — narrative generation pipeline (§ Structured terminal summaries, § Narrative augmentation)

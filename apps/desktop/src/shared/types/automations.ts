@@ -189,7 +189,6 @@ export type AutomationDraftActionBase = {
 };
 
 export type AutomationDraftAction =
-  | (AutomationDraftActionBase & { type: "update-packs" })
   | (AutomationDraftActionBase & { type: "predict-conflicts" })
   | (AutomationDraftActionBase & { type: "run-tests"; suite: string })
   | (AutomationDraftActionBase & { type: "run-command"; command: string; cwd?: string });

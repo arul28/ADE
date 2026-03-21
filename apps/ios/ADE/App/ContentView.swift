@@ -18,35 +18,36 @@ struct ContentView: View {
 
   var body: some View {
     TabView(selection: $selectedTab) {
-        LanesTabView()
-          .tag(RootTab.lanes)
-          .tabItem {
-            Label("Lanes", systemImage: "square.stack.3d.up")
-          }
-        FilesTabView()
-          .tag(RootTab.files)
-          .tabItem {
-            Label("Files", systemImage: "doc.text")
-          }
-        WorkTabView()
-          .tag(RootTab.work)
-          .tabItem {
-            Label("Work", systemImage: "terminal")
-          }
-        PRsTabView()
-          .tag(RootTab.prs)
-          .tabItem {
-            Label("PRs", systemImage: "arrow.triangle.pull")
-          }
-        ConnectionSettingsView()
-          .tag(RootTab.settings)
-          .tabItem {
-            Label("Settings", systemImage: "gearshape")
-          }
+      LanesTabView()
+        .tag(RootTab.lanes)
+        .tabItem {
+          Label("Lanes", systemImage: "square.stack.3d.up")
+        }
+      FilesTabView()
+        .tag(RootTab.files)
+        .tabItem {
+          Label("Files", systemImage: "doc.text")
+        }
+      WorkTabView()
+        .tag(RootTab.work)
+        .tabItem {
+          Label("Work", systemImage: "terminal")
+        }
+      PRsTabView()
+        .tag(RootTab.prs)
+        .tabItem {
+          Label("PRs", systemImage: "arrow.triangle.pull")
+        }
+      ConnectionSettingsView()
+        .tag(RootTab.settings)
+        .tabItem {
+          Label("Settings", systemImage: "gearshape")
+        }
     }
     .tint(adeAccent)
     .background(ADEPalette.pageBackground.ignoresSafeArea())
     .preferredColorScheme(.dark)
+    .sensoryFeedback(.selection, trigger: selectedTab)
     .onChange(of: syncService.settingsPresented) { _, presented in
       guard presented else { return }
       selectedTab = .settings
@@ -385,12 +386,21 @@ private struct StatusBadge: View {
   let state: RemoteConnectionState
 
   var body: some View {
-    Text(label)
-      .font(.caption.weight(.semibold))
-      .padding(.horizontal, 10)
-      .padding(.vertical, 6)
-      .background(color.opacity(0.15), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-      .foregroundStyle(color)
+    HStack(spacing: 6) {
+      if state == .connecting || state == .syncing {
+        ProgressView()
+          .controlSize(.mini)
+          .tint(color)
+      }
+      Text(label)
+        .font(.caption.weight(.semibold))
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 6)
+    .background(color.opacity(0.15), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .foregroundStyle(color)
+    .animation(.easeInOut(duration: 0.3), value: state)
+    .accessibilityLabel("Connection status: \(label)")
   }
 
   private var label: String {
@@ -435,6 +445,10 @@ private struct SyncDomainStatusRow: View {
         Text(title)
           .font(.body.weight(.medium))
         Spacer()
+        if status.phase == .hydrating {
+          ProgressView()
+            .controlSize(.mini)
+        }
         ADEStatusPill(text: phaseLabel, tint: tint)
       }
 
@@ -459,6 +473,9 @@ private struct SyncDomainStatusRow: View {
       }
     }
     .padding(.vertical, 2)
+    .animation(.easeInOut(duration: 0.25), value: status.phase)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(title): \(phaseLabel). \(phaseDescription)")
   }
 
   private var title: String {
@@ -595,6 +612,7 @@ struct ADENoticeCard: View {
           Text(message)
             .font(.subheadline)
             .foregroundStyle(ADEPalette.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
         }
 
         Spacer()
@@ -604,9 +622,12 @@ struct ADENoticeCard: View {
         Button(actionTitle, action: action)
           .buttonStyle(.borderedProminent)
           .tint(ADEPalette.accent)
+          .controlSize(.small)
       }
     }
     .adeGlassCard()
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(title). \(message)")
   }
 }
 
@@ -621,6 +642,7 @@ struct ADEStatusPill: View {
       .padding(.vertical, 5)
       .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
       .foregroundStyle(tint)
+      .accessibilityLabel("Status: \(text)")
   }
 }
 
@@ -633,13 +655,17 @@ private struct ADEGlassCardModifier: ViewModifier {
       .padding(padding)
       .background(
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-          .fill(ADEPalette.surfaceBackground)
+          .fill(ADEPalette.surfaceBackground.opacity(0.92))
+          .background(
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+              .fill(.ultraThinMaterial)
+          )
           .overlay(
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-              .stroke(ADEPalette.border, lineWidth: 1)
+              .stroke(ADEPalette.border.opacity(0.7), lineWidth: 0.5)
           )
       )
-      .shadow(color: Color.black.opacity(0.18), radius: 10, x: 0, y: 4)
+      .shadow(color: Color.black.opacity(0.14), radius: 12, x: 0, y: 4)
   }
 }
 

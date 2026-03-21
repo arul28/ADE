@@ -3,7 +3,7 @@ import { X, Stop, Trash, SpinnerGap, Play, Pause } from "@phosphor-icons/react";
 import { motion, AnimatePresence } from "motion/react";
 import type { MissionSummary } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
-import { STATUS_BADGE_STYLES, STATUS_LABELS, TERMINAL_MISSION_STATUSES } from "./missionHelpers";
+import { STATUS_CONFIG, TERMINAL_MISSION_STATUSES } from "./missionHelpers";
 import { useMissionsStore } from "./useMissionsStore";
 
 /* ════════════════════ MANAGE MISSION DIALOG ════════════════════ */
@@ -131,7 +131,7 @@ export function ManageMissionDialog() {
               <button type="button" className="p-1 transition-colors" style={{ color: COLORS.textMuted }} onClick={() => closeDialog(false)} disabled={manageMissionBusy} aria-label="Close manage mission dialog"><X className="h-4 w-4" /></button>
             </div>
             <div className="mt-3 flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-              <span className="px-1.5 py-0.5 font-bold uppercase tracking-[1px]" style={{ background: STATUS_BADGE_STYLES[manageMission.status].background, color: STATUS_BADGE_STYLES[manageMission.status].color, border: STATUS_BADGE_STYLES[manageMission.status].border }}>{STATUS_LABELS[manageMission.status]}</span>
+              <span className="px-1.5 py-0.5 font-bold uppercase tracking-[1px]" style={{ background: STATUS_CONFIG[manageMission.status].background, color: STATUS_CONFIG[manageMission.status].color, border: STATUS_CONFIG[manageMission.status].border }}>{STATUS_CONFIG[manageMission.status].label}</span>
               {manageMission.laneName ? <span>BASE {manageMission.laneName}</span> : null}
             </div>
             <div className="mt-4 space-y-3">

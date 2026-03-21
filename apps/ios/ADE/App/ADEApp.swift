@@ -27,6 +27,8 @@ struct ADEApp: App {
   }
 }
 
+// MARK: - UIKit Appearance
+
 enum ADETheme {
   private static let pageBackground = UIColor(red: 13 / 255, green: 11 / 255, blue: 19 / 255, alpha: 1)
   private static let tabBarBackground = UIColor(red: 18 / 255, green: 15 / 255, blue: 25 / 255, alpha: 1)

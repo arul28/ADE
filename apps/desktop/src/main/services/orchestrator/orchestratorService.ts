@@ -76,7 +76,6 @@ import {
 import { resolveClaudeCliModel, resolveCodexCliModel } from "../ai/claudeModelUtils";
 import { runGit } from "../git/git";
 import type { AdeDb, SqlValue } from "../state/kvDb";
-import type { createPackService } from "../packs/packService";
 import type { createPtyService } from "../pty/ptyService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createConflictService } from "../conflicts/conflictService";
@@ -97,7 +96,7 @@ import {
   parseAgentChatTranscript,
 } from "../../../shared/chatTranscript";
 import { isWorkerBootstrapNoiseLine } from "../../../shared/workerRuntimeNoise";
-import { deriveSessionSummaryFromText } from "../packs/transcriptInsights";
+import { deriveSessionSummaryFromText } from "../shared/transcriptInsights";
 import {
   type RunRow, type StepRow, type AttemptRow, type ClaimRow,
   type ContextSnapshotRow, type HandoffRow, type TimelineRow,
@@ -140,8 +139,8 @@ import { resolveAdeLayout } from "../../../shared/adeLayout";
 type CreateSnapshotResult = {
   snapshotId: string;
   cursor: OrchestratorContextSnapshotCursor;
-  laneExport: PackExport | null;
-  projectExport: PackExport;
+  laneExport: { content: string; truncated: boolean } | null;
+  projectExport: { content: string; truncated: boolean };
   docsRefs: OrchestratorDocsRef[];
   fullDocs: Array<{ path: string; content: string; truncated: boolean }>;
 };
@@ -196,8 +195,8 @@ export type OrchestratorExecutorStartArgs = {
   /** All steps in the run, for building a compact plan view in the worker prompt. */
   allSteps: OrchestratorStep[];
   contextProfile: OrchestratorContextPolicyProfile;
-  laneExport: PackExport | null;
-  projectExport: PackExport;
+  laneExport: { content: string; truncated: boolean } | null;
+  projectExport: { content: string; truncated: boolean };
   docsRefs: OrchestratorDocsRef[];
   fullDocs: Array<{ path: string; content: string; truncated: boolean }>;
   createTrackedSession: (args: Omit<PtyCreateArgs, "tracked"> & { tracked?: boolean }) => Promise<{ ptyId: string; sessionId: string }>;
@@ -794,7 +793,6 @@ export function createOrchestratorService({
   db,
   projectId,
   projectRoot,
-  packService,
   conflictService,
   ptyService,
   agentChatService,
@@ -813,7 +811,6 @@ export function createOrchestratorService({
   db: AdeDb;
   projectId: string;
   projectRoot: string;
-  packService: ReturnType<typeof createPackService>;
   conflictService?: ReturnType<typeof createConflictService>;
   ptyService?: ReturnType<typeof createPtyService>;
   agentChatService?: ReturnType<typeof createAgentChatService> | null;
@@ -2508,15 +2505,8 @@ export function createOrchestratorService({
     const laneExportLevel = args.contextProfile.laneExportLevel;
     const projectExportLevel = stepType === "analysis" ? "standard" : args.contextProfile.projectExportLevel;
     const lanePackKey = args.step.laneId ? `lane:${args.step.laneId}` : null;
-    const laneExport = args.step.laneId
-      ? await packService.getLaneExport({
-          laneId: args.step.laneId,
-          level: laneExportLevel
-        })
-      : null;
-    const projectExport = await packService.getProjectExport({
-      level: projectExportLevel
-    });
+    const laneExport: { content: string; truncated: boolean } | null = null;
+    const projectExport: { content: string; truncated: boolean } = { content: "", truncated: false };
 
     const docsPaths = readDocPaths(projectRoot);
     let remainingBytes = args.contextProfile.maxDocBytes;
@@ -2898,16 +2888,16 @@ export function createOrchestratorService({
       docsRefsOnly: deepPackV2.docsRefsOnly,
       packRefs: [
         {
-          packKey: projectExport.packKey,
-          level: projectExport.level,
-          approxTokens: projectExport.approxTokens ?? null
+          packKey: "project",
+          level: projectExportLevel,
+          approxTokens: null
         },
-        ...(laneExport
+        ...(lanePackKey
           ? [
               {
-                packKey: laneExport.packKey,
-                level: laneExport.level,
-                approxTokens: laneExport.approxTokens ?? null
+                packKey: lanePackKey,
+                level: laneExportLevel,
+                approxTokens: null
               }
             ]
           : [])
@@ -2940,21 +2930,15 @@ export function createOrchestratorService({
       l2: memoryL2
     };
 
-    const laneVersionId =
-      laneExport?.header.versionId ??
-      laneExport?.header.contentHash ??
-      (laneExport ? `live:${laneExport.packKey}:${sha256(laneExport.content)}` : null);
-    const projectVersionId =
-      projectExport.header.versionId ??
-      projectExport.header.contentHash ??
-      `live:${projectExport.packKey}:${sha256(projectExport.content)}`;
+    const laneVersionId = laneExport ? `live:${lanePackKey ?? "lane"}:${sha256(Buffer.from(laneExport.content))}` : null;
+    const projectVersionId = `live:project:${sha256(Buffer.from(projectExport.content))}`;
     const cursor: OrchestratorContextSnapshotCursor = {
       lanePackKey,
       lanePackVersionId: laneVersionId,
-      lanePackVersionNumber: laneExport?.header.versionNumber ?? null,
+      lanePackVersionNumber: null,
       projectPackKey: "project",
       projectPackVersionId: projectVersionId,
-      projectPackVersionNumber: projectExport.header.versionNumber ?? null,
+      projectPackVersionNumber: null,
       packDeltaSince: previousPackDeltaSince,
 	      docs: docsRefs,
 	      packDeltaDigest,
@@ -2969,8 +2953,8 @@ export function createOrchestratorService({
 	        "execution_pack_v2",
 	        "deep_pack_v2",
           "memory_hierarchy_v1",
-	        `context_export:project:${projectExport.level}`,
-	        ...(lanePackKey ? [`context_export:${lanePackKey}:${laneExport?.level ?? laneExportLevel}`] : []),
+	        `context_export:project:${projectExportLevel}`,
+	        ...(lanePackKey ? [`context_export:${lanePackKey}:${laneExportLevel}`] : []),
         ...(packDeltaDigest ? ["delta_digest"] : []),
         ...(missionHandoffIds.length ? ["mission_handoffs"] : []),
         ...(missionHandoffDigest ? ["mission_handoff_digest"] : []),
@@ -3825,16 +3809,16 @@ export function createOrchestratorService({
             packs: {
               lane: args.laneExport
                 ? {
-                    packKey: args.laneExport.packKey,
-                    level: args.laneExport.level,
-                    approxTokens: args.laneExport.approxTokens,
+                    packKey: args.step.laneId ? `lane:${args.step.laneId}` : null,
+                    level: args.contextProfile.laneExportLevel,
+                    approxTokens: null,
                     contentPreview: clipText(args.laneExport.content, 3_000)
                   }
                 : null,
               project: {
-                packKey: args.projectExport.packKey,
-                level: args.projectExport.level,
-                approxTokens: args.projectExport.approxTokens,
+                packKey: "project",
+                level: args.contextProfile.projectExportLevel,
+                approxTokens: null,
                 contentPreview: clipText(args.projectExport.content, 2_000)
               }
             },
@@ -6589,8 +6573,8 @@ export function createOrchestratorService({
           contextSnapshotId: snapshot.snapshotId,
           docsMode: contextPolicy.docsMode,
           docsRefs: snapshot.docsRefs,
-          laneExportLevel: snapshot.laneExport?.level ?? null,
-          projectExportLevel: snapshot.projectExport.level,
+          laneExportLevel: contextPolicy.laneExportLevel ?? null,
+          projectExportLevel: contextPolicy.projectExportLevel,
           claims: acquiredClaims.map((claim) => ({
             id: claim.id,
             scopeKind: claim.scopeKind,

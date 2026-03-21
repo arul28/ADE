@@ -73,7 +73,7 @@ import type { createSessionService } from "../sessions/sessionService";
 import { normalizeConflictType, runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 import { redactSecretsDeep } from "../../utils/redaction";
 import { extractFirstJsonObject } from "../ai/utils";
-import { safeSegment } from "../packs/packUtils";
+import { safeSegment } from "../shared/packLegacyUtils";
 import { asString, isRecord, parseDiffNameOnly, safeJsonParse, uniqueSorted } from "../shared/utils";
 
 type PredictionStatus = "clean" | "conflict" | "unknown";

@@ -165,10 +165,6 @@ import type {
   AgentChatSlashCommandsArgs,
   AgentChatFileSearchArgs,
   AgentChatFileSearchResult,
-  ContextPackListArgs,
-  ContextPackOption,
-  ContextPackFetchArgs,
-  ContextPackFetchResult,
   AgentTool,
   KeybindingOverride,
   KeybindingsSnapshot,
@@ -474,7 +470,6 @@ import { mergeAiConfig, type createProjectConfigService } from "../config/projec
 import type { createProcessService } from "../processes/processService";
 import type { createTestService } from "../tests/testService";
 import type { createGitOperationsService } from "../git/gitOperationsService";
-import type { createPackService } from "../packs/packService";
 import type { createOperationService } from "../history/operationService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createJobEngine } from "../jobs/jobEngine";
@@ -586,7 +581,6 @@ export type AppContext = {
   orchestratorService: ReturnType<typeof createOrchestratorService>;
   missionBudgetService: ReturnType<typeof createMissionBudgetService>;
   aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;
-  packService: ReturnType<typeof createPackService>;
   contextDocService?: ContextDocService | null;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   processService: ReturnType<typeof createProcessService>;
@@ -734,22 +728,6 @@ function getUnavailableAiStatus(): AiSettingsStatus {
   };
 }
 
-
-async function safeRefreshMissionPack(
-  ctx: AppContext,
-  missionId: string,
-  reason: string,
-): Promise<void> {
-  try {
-    await ctx.packService.refreshMissionPack({ missionId, reason });
-  } catch (error) {
-    ctx.logger.warn("packs.refresh_mission_pack_failed", {
-      missionId,
-      reason,
-      error: getErrorMessage(error)
-    });
-  }
-}
 
 function normalizeAutopilotExecutor(value: unknown): OrchestratorExecutorKind {
   const raw = typeof value === "string" ? value.trim() : "";
@@ -2405,8 +2383,6 @@ export function registerIpc({
         autopilotExecutor: defaultExecutorKind
       });
 
-      await safeRefreshMissionPack(ctx, created.id, "mission_created");
-
       void (async () => {
         try {
           triggerAutoContextDocs(ctx, {
@@ -2468,8 +2444,6 @@ export function registerIpc({
       launchMode: "manual",
       autostart: false,
     });
-    await safeRefreshMissionPack(ctx, created.id, "mission_created");
-
     const detail = ctx.missionService.get(created.id);
     if (detail) return detail;
     return created;
@@ -2478,7 +2452,6 @@ export function registerIpc({
   ipcMain.handle(IPC.missionsUpdate, async (_event, arg: UpdateMissionArgs): Promise<MissionDetail> => {
     const ctx = getCtx();
     const updated = ctx.missionService.update(arg);
-    await safeRefreshMissionPack(ctx, updated.id, "mission_updated");
     return updated;
   });
 
@@ -2495,14 +2468,12 @@ export function registerIpc({
   ipcMain.handle(IPC.missionsUpdateStep, async (_event, arg: UpdateMissionStepArgs): Promise<MissionStep> => {
     const ctx = getCtx();
     const updated = ctx.missionService.updateStep(arg);
-    await safeRefreshMissionPack(ctx, updated.missionId, "mission_step_updated");
     return updated;
   });
 
   ipcMain.handle(IPC.missionsAddArtifact, async (_event, arg: AddMissionArtifactArgs): Promise<MissionArtifact> => {
     const ctx = getCtx();
     const artifact = ctx.missionService.addArtifact(arg);
-    await safeRefreshMissionPack(ctx, artifact.missionId, "mission_artifact_added");
     return artifact;
   });
 
@@ -2511,7 +2482,6 @@ export function registerIpc({
     async (_event, arg: AddMissionInterventionArgs): Promise<MissionIntervention> => {
       const ctx = getCtx();
       const intervention = ctx.missionService.addIntervention(arg);
-      await safeRefreshMissionPack(ctx, intervention.missionId, "mission_intervention_added");
       return intervention;
     }
   );
@@ -2521,7 +2491,6 @@ export function registerIpc({
     async (_event, arg: ResolveMissionInterventionArgs): Promise<MissionIntervention> => {
       const ctx = getCtx();
       const intervention = ctx.missionService.resolveIntervention(arg);
-      await safeRefreshMissionPack(ctx, intervention.missionId, "mission_intervention_resolved");
       return intervention;
     }
   );
@@ -3722,16 +3691,6 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatWarmupModel, async (_event, arg: { sessionId: string; modelId: string }): Promise<void> => {
     const ctx = getCtx();
     return ctx.agentChatService.warmupModel(arg);
-  });
-
-  ipcMain.handle(IPC.agentChatListContextPacks, async (_event, arg: ContextPackListArgs = {}): Promise<ContextPackOption[]> => {
-    const ctx = getCtx();
-    return ctx.agentChatService.listContextPacks(arg);
-  });
-
-  ipcMain.handle(IPC.agentChatFetchContextPack, async (_event, arg: ContextPackFetchArgs): Promise<ContextPackFetchResult> => {
-    const ctx = getCtx();
-    return ctx.agentChatService.fetchContextPack(arg);
   });
 
   ipcMain.handle(IPC.agentChatChangePermissionMode, async (_event, arg: AgentChatChangePermissionModeArgs): Promise<void> => {

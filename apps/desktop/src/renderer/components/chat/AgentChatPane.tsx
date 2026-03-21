@@ -14,7 +14,6 @@ import {
   type AgentChatSessionSummary,
   type ComputerUseOwnerSnapshot,
   type ComputerUsePolicy,
-  type ContextPackOption,
 } from "../../../shared/types";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { MODEL_REGISTRY, getModelById, type ModelDescriptor } from "../../../shared/modelRegistry";
@@ -112,10 +111,7 @@ function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
     const event = envelope.event;
 
     if (event.type === "status") {
-      if (event.turnStatus === "started") turnActive = true;
-      if (event.turnStatus === "completed" || event.turnStatus === "interrupted" || event.turnStatus === "failed") {
-        turnActive = false;
-      }
+      turnActive = event.turnStatus === "started";
       continue;
     }
 
@@ -425,7 +421,6 @@ export function AgentChatPane({
   );
   const [computerUsePolicy, setComputerUsePolicy] = useState<ComputerUsePolicy>(createDefaultComputerUsePolicy());
   const [attachments, setAttachments] = useState<AgentChatFileRef[]>([]);
-  const [selectedContextPacks, setSelectedContextPacks] = useState<ContextPackOption[]>([]);
   const [includeProjectDocs, setIncludeProjectDocs] = useState(false);
   const [sdkSlashCommands, setSdkSlashCommands] = useState<import("../../../shared/types").AgentChatSlashCommand[]>([]);
   const [sendOnEnter, setSendOnEnter] = useState(true);
@@ -438,6 +433,7 @@ export function AgentChatPane({
   const [proofDrawerOpen, setProofDrawerOpen] = useState(false);
   const [sessionDelta, setSessionDelta] = useState<{ insertions: number; deletions: number } | null>(null);
   const [sessionMutationKind, setSessionMutationKind] = useState<"model" | "permission" | "computer-use" | null>(null);
+  const [promptSuggestion, setPromptSuggestion] = useState<string | null>(null);
 
   const appliedInitialSessionIdRef = useRef<string | null>(initialSessionId ?? null);
   const loadedHistoryRef = useRef<Set<string>>(new Set());
@@ -904,6 +900,7 @@ export function AgentChatPane({
 
   useEffect(() => {
     setAttachments([]);
+    setPromptSuggestion(null);
   }, [selectedSessionId]);
 
   // Fetch SDK slash commands when session changes
@@ -1019,6 +1016,20 @@ export function AgentChatPane({
       if (lockSessionId && envelope.sessionId === lockSessionId) {
         draftSelectionLockedRef.current = false;
         setSelectedSessionId(lockSessionId);
+      }
+
+      // Wire prompt_suggestion events to state
+      if (envelope.event.type === "prompt_suggestion" && "suggestion" in envelope.event) {
+        if (envelope.sessionId === selectedSessionIdRef.current) {
+          setPromptSuggestion((envelope.event as any).suggestion);
+        }
+      }
+
+      // Clear prompt suggestion when a new turn starts
+      if (envelope.event.type === "status" && envelope.event.turnStatus === "started") {
+        if (envelope.sessionId === selectedSessionIdRef.current) {
+          setPromptSuggestion(null);
+        }
       }
 
       const shouldRefreshSlashCommands =
@@ -1226,7 +1237,6 @@ export function AgentChatPane({
     if (!text.length || !laneId) return;
     const draftSnapshot = draft;
     const attachmentsSnapshot = attachments;
-    const contextPackSnapshot = selectedContextPacks;
     const isLiteralSlashCommand = text.startsWith("/");
 
     submitInFlightRef.current = true;
@@ -1234,30 +1244,8 @@ export function AgentChatPane({
     setError(null);
     setDraft("");
     setAttachments([]);
-    setSelectedContextPacks([]);
     try {
       let finalText = text;
-      if (!isLiteralSlashCommand && contextPackSnapshot.length) {
-        const packContents: string[] = [];
-        for (const pack of contextPackSnapshot) {
-          try {
-            const result = await window.ade.agentChat.fetchContextPack({
-              scope: pack.scope,
-              laneId: laneId ?? undefined,
-              featureKey: pack.featureKey,
-              missionId: pack.missionId
-            });
-            if (result.content.trim().length) {
-              packContents.push(`[Context: ${pack.label}]\n${result.content}`);
-            }
-          } catch {
-            // Skip packs that fail to fetch
-          }
-        }
-        if (packContents.length) {
-          finalText = `${packContents.join("\n\n")}\n\n---\n\n${text}`;
-        }
-      }
 
       // Prepend project context docs if the user toggled the checkbox
       if (!isLiteralSlashCommand && includeProjectDocs) {
@@ -1314,7 +1302,6 @@ export function AgentChatPane({
     } catch (submitError) {
       setDraft((current) => (current.trim().length ? current : draftSnapshot));
       setAttachments((current) => (current.length ? current : attachmentsSnapshot));
-      setSelectedContextPacks((current) => (current.length ? current : contextPackSnapshot));
       const message = submitError instanceof Error ? submitError.message : String(submitError);
       setError(message);
       if (
@@ -1343,7 +1330,6 @@ export function AgentChatPane({
     reasoningEffort,
     refreshSessions,
     permissionMode,
-    selectedContextPacks,
     selectedEvents.length,
     selectedSessionId,
     selectedSessionModelId,
@@ -1531,7 +1517,6 @@ export function AgentChatPane({
               setSelectedSessionId(null);
               setDraft("");
               setAttachments([]);
-              setSelectedContextPacks([]);
               setComputerUsePolicy(createDefaultComputerUsePolicy());
             }}
           >
@@ -1562,7 +1547,6 @@ export function AgentChatPane({
             turnActive={turnActive}
             sendOnEnter={sendOnEnter}
             busy={busy}
-            selectedContextPacks={selectedContextPacks}
             laneId={laneId ?? undefined}
             permissionMode={permissionMode}
             sessionProvider={sessionProvider}
@@ -1573,7 +1557,7 @@ export function AgentChatPane({
             proofOpen={proofDrawerOpen}
             proofArtifactCount={computerUseSnapshot?.artifacts.length ?? 0}
             executionModeOptions={launchModeEditable ? executionModeOptions : []}
-            modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model"}
+            modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || turnActive}
             permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy}
             messagePlaceholder={messagePlaceholder}
             onExecutionModeChange={setExecutionMode}
@@ -1640,9 +1624,13 @@ export function AgentChatPane({
               }
             }}
             onReasoningEffortChange={setReasoningEffort}
-            onDraftChange={setDraft}
+            onDraftChange={(value) => {
+              setDraft(value);
+              if (value.length > 0) setPromptSuggestion(null);
+            }}
             onClearDraft={() => setDraft("")}
             onSubmit={() => {
+              setPromptSuggestion(null);
               void submit();
             }}
             onInterrupt={() => {
@@ -1654,7 +1642,6 @@ export function AgentChatPane({
             onAddAttachment={addAttachment}
             onRemoveAttachment={removeAttachment}
             onSearchAttachments={searchAttachments}
-            onContextPacksChange={setSelectedContextPacks}
             includeProjectDocs={includeProjectDocs}
             onIncludeProjectDocsChange={setIncludeProjectDocs}
             onClearEvents={() => {
@@ -1663,6 +1650,7 @@ export function AgentChatPane({
                 setEventsBySession((prev) => ({ ...prev, [selectedSessionId]: [] }));
               }
             }}
+            promptSuggestion={promptSuggestion}
             subagentSnapshots={selectedSubagentSnapshots}
           />
         }

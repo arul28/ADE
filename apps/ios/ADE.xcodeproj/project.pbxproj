@@ -24,19 +24,6 @@
 		FBEEF09EFB4911FEAC6A7E87 /* RemoteModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483C5F1818BAE74B19B84617 /* RemoteModels.swift */; };
 /* End PBXBuildFile section */
 
-/* Begin PBXCopyFilesBuildPhase section */
-		01C868B7CC863B3508E975E2 /* Embed Frameworks */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 10;
-			files = (
-			);
-			name = "Embed Frameworks";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXCopyFilesBuildPhase section */
-
 /* Begin PBXFileReference section */
 		0C6ECFA9D57E70E57A60E8AB /* WorkTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTabView.swift; path = ADE/Views/WorkTabView.swift; sourceTree = "<group>"; };
 		14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADETests.swift; path = ADETests/ADETests.swift; sourceTree = "<group>"; };
@@ -47,7 +34,6 @@
 		4EBFB65019F4C3F8A89428CE /* FilesTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesTabView.swift; path = ADE/Views/FilesTabView.swift; sourceTree = "<group>"; };
 		51942BAC0965C7D0CCE6E8B8 /* Database.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Database.swift; path = ADE/Services/Database.swift; sourceTree = "<group>"; };
 		5EE4D463D21266B62B422D11 /* PRsTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PRsTabView.swift; path = ADE/Views/PRsTabView.swift; sourceTree = "<group>"; };
-		60EC56ADDD1DDA74A86BA38F /* crsqlite.xcframework */ = {isa = PBXFileReference; includeInIndex = 1; name = crsqlite.xcframework; path = Vendor/crsqlite/crsqlite.xcframework; sourceTree = "<group>"; };
 		66B5024B0A05F3D9754101F1 /* SyncService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncService.swift; path = ADE/Services/SyncService.swift; sourceTree = "<group>"; };
 		73B17472FAC08845853BC6B4 /* ContentView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ContentView.swift; path = ADE/App/ContentView.swift; sourceTree = "<group>"; };
 		8943C47805A871A4E4A4BF68 /* Assets.xcassets */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder.assetcatalog; name = Assets.xcassets; path = ADE/Assets.xcassets; sourceTree = "<group>"; };
@@ -122,7 +108,6 @@
 				6AC81F4E8475EA47F592B212 /* Frameworks */,
 				7A6120AF79287BB301D63A58 /* ADE */,
 				C77DE76E58CC8D681F4D4619 /* ADETests */,
-				EB728D5790ACE269A24DA087 /* Vendor */,
 			);
 			sourceTree = "<group>";
 		};
@@ -178,22 +163,6 @@
 				14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */,
 			);
 			name = ADETests;
-			sourceTree = "<group>";
-		};
-		D00FFDAD06D6BB9FCB462D9C /* crsqlite */ = {
-			isa = PBXGroup;
-			children = (
-				60EC56ADDD1DDA74A86BA38F /* crsqlite.xcframework */,
-			);
-			name = crsqlite;
-			sourceTree = "<group>";
-		};
-		EB728D5790ACE269A24DA087 /* Vendor */ = {
-			isa = PBXGroup;
-			children = (
-				D00FFDAD06D6BB9FCB462D9C /* crsqlite */,
-			);
-			name = Vendor;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */

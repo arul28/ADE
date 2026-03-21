@@ -44,7 +44,7 @@ Phase 3 has already delivered 20+ workstreams across four waves. The orchestrato
 
 ### Wave 1: Core Orchestrator (W1-W12)
 
-AI orchestrator service with Claude leader session and MCP tools. Historical pre-mission planner references in this section are superseded by the current built-in planning phase runtime. PR strategies replacing the old merge phase (`integration` | `per-lane` | `queue` | `manual`). Multi-agent team synthesis with parallel lane provisioning. Recovery loops with heartbeat monitoring and stale attempt detection. Gate evaluator for step/mission completion. Execution plan preview with approval gates. Inter-agent messaging (`sendAgentMessage` IPC). Activity feed with category dropdown. Mission workspace with missionId-filtered queries. Per-mission model selection with thinking budgets. Context packs for progressive orchestrator memory.
+AI orchestrator service with Claude leader session and MCP tools. Historical pre-mission planner references in this section are superseded by the current built-in planning phase runtime. PR strategies replacing the old merge phase (`integration` | `per-lane` | `queue` | `manual`). Multi-agent team synthesis with parallel lane provisioning. Recovery loops with heartbeat monitoring and stale attempt detection. Gate evaluator for step/mission completion. Execution plan preview with approval gates. Inter-agent messaging (`sendAgentMessage` IPC). Activity feed with category dropdown. Mission workspace with missionId-filtered queries. Per-mission model selection with thinking budgets. Context packs for progressive orchestrator memory (superseded by unified memory in Phase 4 W6).
 
 ### Wave 2: Project Hivemind (HW1-HW8, shipped 2026-02-25)
 
@@ -62,7 +62,7 @@ Major structural cleanup targeting long-term maintainability and extraction read
 
 **Pack service decomposition**: `packService.ts` reduced from 5,728 to 3,176 lines (45% reduction) by extracting `packUtils.ts`, `projectPackBuilder.ts`, `missionPackBuilder.ts`, and `conflictPackBuilder.ts`.
 
-**Type system modernization**: The monolithic `src/shared/types.ts` (5,740 lines) was replaced by `src/shared/types/` directory with 17 domain-scoped modules (`core.ts`, `missions.ts`, `orchestrator.ts`, `models.ts`, `lanes.ts`, `git.ts`, `prs.ts`, `conflicts.ts`, `packs.ts`, `sessions.ts`, `chat.ts`, `config.ts`, `files.ts`, `automations.ts`, `budget.ts`, `usage.ts`) plus a barrel `index.ts`. Existing imports continue to work unchanged. 16 dead types were deleted.
+**Type system modernization**: The monolithic `src/shared/types.ts` (5,740 lines) was replaced by `src/shared/types/` directory with 27 domain-scoped modules (16 original: `core.ts`, `missions.ts`, `orchestrator.ts`, `models.ts`, `lanes.ts`, `git.ts`, `prs.ts`, `conflicts.ts`, `packs.ts`, `sessions.ts`, `chat.ts`, `config.ts`, `files.ts`, `automations.ts`, `budget.ts`, `usage.ts`; plus 11 added in later phases including `memory.ts`, `cto.ts`, `agents.ts`, `sync.ts`, etc.) plus a barrel `index.ts`. Existing imports continue to work unchanged. 16 dead types were deleted in the initial split.
 
 **Frontend decomposition**: `MissionsPage.tsx` reduced from 5,637 to 2,225 lines (60% reduction, 8 extracted components). `WorkspaceGraphPage.tsx` reduced from 4,830 to 4,139 lines (11 extracted files).
 

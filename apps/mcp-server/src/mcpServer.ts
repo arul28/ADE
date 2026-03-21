@@ -1771,12 +1771,6 @@ async function runCtoOperatorBridgeTool(
         reuseExisting,
         permissionMode: "full-auto",
       }),
-    listContextPacks: agentChatService.listContextPacks,
-    fetchContextPack: agentChatService.fetchContextPack,
-    fetchMissionContext: async (missionId: string) => {
-      const result = await agentChatService.fetchContextPack({ scope: "mission", missionId, level: "standard" });
-      return { content: result.content, truncated: result.truncated };
-    },
   });
   const toolEntry = (tools as Record<string, Tool>)[name];
   const executable = toolEntry as unknown as { execute?: (args: Record<string, unknown>) => Promise<unknown> };
@@ -4275,47 +4269,7 @@ async function runTool(args: {
     const scope = asTrimmedString(toolArgs.scope) || "project";
     const level = normalizeExportLevel(toolArgs.level, "standard");
 
-    if (scope === "project") {
-      const exportData = await runtime.packService.getProjectExport({ level });
-      return { export: exportData };
-    }
-
-    if (scope === "lane") {
-      const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
-      const exportData = await runtime.packService.getLaneExport({ laneId, level });
-      return { export: exportData };
-    }
-
-    if (scope === "feature") {
-      const featureKey = assertNonEmptyString(toolArgs.featureKey, "featureKey");
-      const exportData = await runtime.packService.getFeatureExport({ featureKey, level });
-      return { export: exportData };
-    }
-
-    if (scope === "conflict") {
-      const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
-      const peerLaneId = asOptionalTrimmedString(toolArgs.peerLaneId);
-      const exportData = await runtime.packService.getConflictExport({
-        laneId,
-        ...(peerLaneId ? { peerLaneId } : {}),
-        level
-      });
-      return { export: exportData };
-    }
-
-    if (scope === "plan") {
-      const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
-      const exportData = await runtime.packService.getPlanExport({ laneId, level });
-      return { export: exportData };
-    }
-
-    if (scope === "mission") {
-      const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
-      const exportData = await runtime.packService.getMissionExport({ missionId, level });
-      return { export: exportData };
-    }
-
-    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Unsupported read_context scope '${scope}'.`);
+    return { error: "Context packs have been removed. Use the unified memory system instead.", scope, level };
   }
 
   if (name === "spawn_agent") {
@@ -4952,101 +4906,7 @@ async function readResource(runtime: AdeMcpRuntime, uri: string): Promise<Record
   const [head, ...tail] = parsed.path;
 
   if (head === "pack") {
-    const [scope, a, b, c] = tail;
-
-    if (scope === "project" && a) {
-      const level = normalizeExportLevel(a, "standard");
-      const exportData = await runtime.packService.getProjectExport({ level });
-      return {
-        contents: [
-          {
-            uri,
-            mimeType: RESOURCE_MIME_MARKDOWN,
-            text: `\`\`\`json\n${jsonText(exportData.header)}\n\`\`\`\n\n${exportData.content}`
-          }
-        ]
-      };
-    }
-
-    if (scope === "lane" && a && b) {
-      const laneId = a;
-      const level = normalizeExportLevel(b, "standard");
-      const exportData = await runtime.packService.getLaneExport({ laneId, level });
-      return {
-        contents: [
-          {
-            uri,
-            mimeType: RESOURCE_MIME_MARKDOWN,
-            text: `\`\`\`json\n${jsonText(exportData.header)}\n\`\`\`\n\n${exportData.content}`
-          }
-        ]
-      };
-    }
-
-    if (scope === "feature" && a && b) {
-      const featureKey = a;
-      const level = normalizeExportLevel(b, "standard");
-      const exportData = await runtime.packService.getFeatureExport({ featureKey, level });
-      return {
-        contents: [
-          {
-            uri,
-            mimeType: RESOURCE_MIME_MARKDOWN,
-            text: `\`\`\`json\n${jsonText(exportData.header)}\n\`\`\`\n\n${exportData.content}`
-          }
-        ]
-      };
-    }
-
-    if (scope === "plan" && a && b) {
-      const laneId = a;
-      const level = normalizeExportLevel(b, "standard");
-      const exportData = await runtime.packService.getPlanExport({ laneId, level });
-      return {
-        contents: [
-          {
-            uri,
-            mimeType: RESOURCE_MIME_MARKDOWN,
-            text: `\`\`\`json\n${jsonText(exportData.header)}\n\`\`\`\n\n${exportData.content}`
-          }
-        ]
-      };
-    }
-
-    if (scope === "mission" && a && b) {
-      const missionId = a;
-      const level = normalizeExportLevel(b, "standard");
-      const exportData = await runtime.packService.getMissionExport({ missionId, level });
-      return {
-        contents: [
-          {
-            uri,
-            mimeType: RESOURCE_MIME_MARKDOWN,
-            text: `\`\`\`json\n${jsonText(exportData.header)}\n\`\`\`\n\n${exportData.content}`
-          }
-        ]
-      };
-    }
-
-    if (scope === "conflict" && a && b && c) {
-      const laneId = a;
-      const peerLaneId = b === "base" ? null : b;
-      const level = normalizeExportLevel(c, "standard");
-      const exportData = await runtime.packService.getConflictExport({
-        laneId,
-        ...(peerLaneId ? { peerLaneId } : {}),
-        level
-      });
-      return {
-        contents: [
-          {
-            uri,
-            mimeType: RESOURCE_MIME_MARKDOWN,
-            text: `\`\`\`json\n${jsonText(exportData.header)}\n\`\`\`\n\n${exportData.content}`
-          }
-        ]
-      };
-    }
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Context packs have been removed. Use the unified memory system instead.");
   }
 
   if (head === "lane") {

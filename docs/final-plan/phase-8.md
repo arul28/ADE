@@ -68,7 +68,7 @@ If cr-sqlite works well, this phase is skipped entirely.
 #### Workstreams
 
 ##### W5: SpacetimeDB Schema Design
-- Translate all 63 SQLite tables to SpacetimeDB table definitions.
+- Translate all 103 SQLite tables to SpacetimeDB table definitions.
 - Design reducers for all write operations (mission lifecycle, lane management, agent state, etc.).
 - Design subscription queries for each UI view (mission list, lane list, activity feed, etc.).
 - Handle schema differences: SpacetimeDB uses different type system, no foreign keys (application-level enforcement).

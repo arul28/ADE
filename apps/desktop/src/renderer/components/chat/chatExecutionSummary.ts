@@ -8,6 +8,7 @@ export type ChatSubagentSnapshot = {
   updatedAt: string;
   summary: string | null;
   lastToolName?: string;
+  background?: boolean;
   usage?: {
     totalTokens?: number;
     toolUses?: number;
@@ -34,6 +35,7 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         updatedAt: envelope.timestamp,
         summary: existing?.summary ?? null,
         lastToolName: existing?.lastToolName,
+        background: event.background ?? existing?.background ?? false,
         usage: existing?.usage,
       });
       continue;

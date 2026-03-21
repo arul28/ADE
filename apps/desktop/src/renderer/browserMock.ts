@@ -1193,8 +1193,6 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       dispose: resolvedArg(undefined),
       updateSession: resolvedArg({ id: "mock" }),
       onEvent: noop,
-      listContextPacks: resolved([]),
-      fetchContextPack: resolvedArg({ content: "" }),
       changePermissionMode: resolvedArg(undefined),
       slashCommands: resolvedArg([]),
       fileSearch: resolvedArg([]),

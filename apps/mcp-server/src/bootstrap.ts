@@ -9,7 +9,6 @@ import { createOperationService } from "../../desktop/src/main/services/history/
 import { createLaneService } from "../../desktop/src/main/services/lanes/laneService";
 import { createSessionService } from "../../desktop/src/main/services/sessions/sessionService";
 import { createProjectConfigService } from "../../desktop/src/main/services/config/projectConfigService";
-import { createPackService } from "../../desktop/src/main/services/packs/packService";
 import { createConflictService } from "../../desktop/src/main/services/conflicts/conflictService";
 import { createGitOperationsService } from "../../desktop/src/main/services/git/gitOperationsService";
 import { createDiffService } from "../../desktop/src/main/services/diffs/diffService";
@@ -119,7 +118,6 @@ export type AdeMcpRuntime = {
   sessionService: ReturnType<typeof createSessionService>;
   operationService: ReturnType<typeof createOperationService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
-  packService: ReturnType<typeof createPackService>;
   conflictService: ReturnType<typeof createConflictService>;
   gitService: ReturnType<typeof createGitOperationsService>;
   diffService: ReturnType<typeof createDiffService>;
@@ -222,19 +220,6 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
     logger,
     projectConfigService,
     projectRoot,
-  });
-
-  const packService = createPackService({
-    db,
-    logger,
-    projectRoot,
-    projectId,
-    packsDir: paths.packsDir,
-    laneService,
-    sessionService,
-    projectConfigService,
-    operationService,
-    onEvent: () => {}
   });
 
   const conflictService = createConflictService({
@@ -381,7 +366,6 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
     db,
     projectId,
     projectRoot,
-    packService,
     conflictService,
     ptyService,
     prService: undefined,
@@ -442,7 +426,6 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
     sessionService,
     operationService,
     projectConfigService,
-    packService,
     conflictService,
     gitService,
     diffService,

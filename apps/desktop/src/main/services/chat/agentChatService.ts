@@ -28,7 +28,6 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createFileService } from "../files/fileService";
-import type { createPackService } from "../packs/packService";
 import type { createProcessService } from "../processes/processService";
 import { runGit } from "../git/git";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
@@ -363,6 +362,7 @@ const CLAUDE_REASONING_EFFORTS: Array<{ effort: string; description: string }> =
   { effort: "low", description: "Quick responses with minimal reasoning." },
   { effort: "medium", description: "Balanced reasoning depth and speed." },
   { effort: "high", description: "Deep reasoning for complex tasks." },
+  { effort: "max", description: "Maximum reasoning depth. Best for Opus on hard problems." },
 ];
 
 const CLAUDE_EFFORT_TO_TOKENS: Record<string, number> = {
@@ -552,6 +552,10 @@ function isPlanningApprovalGuarded(managed: ManagedChatSession): boolean {
 
 function buildPlanningApprovalViolation(toolName: string): string {
   return `PLANNER CONTRACT VIOLATION: '${toolName}' requested a provider-native approval flow during a planning step. Planning workers must stay inspect-only and return the plan via report_result instead.`;
+}
+
+function isBackgroundTask(item: Record<string, unknown>): boolean {
+  return !!(item.run_in_background || item.background);
 }
 
 function normalizePreview(text: string, maxChars = 220): string | null {
@@ -1000,7 +1004,6 @@ export function createAgentChatService(args: {
   transcriptsDir: string;
   projectId?: string;
   memoryService?: ReturnType<typeof createMemoryService> | null;
-  packService?: ReturnType<typeof createPackService> | null;
   fileService?: ReturnType<typeof createFileService> | null;
   episodicSummaryService?: EpisodicSummaryService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
@@ -1029,7 +1032,6 @@ export function createAgentChatService(args: {
     transcriptsDir,
     projectId,
     memoryService,
-    packService,
     fileService,
     episodicSummaryService,
     ctoStateService,
@@ -2693,6 +2695,7 @@ export function createAgentChatService(args: {
             type: "subagent_started",
             taskId,
             description: String(taskMsg.description ?? ""),
+            background: isBackgroundTask(taskMsg as Record<string, unknown>),
             turnId,
           });
           continue;
@@ -2913,8 +2916,19 @@ export function createAgentChatService(args: {
           continue;
         }
 
-        // prompt_suggestion — follow-up suggestions (consume silently for now)
+        // prompt_suggestion — follow-up suggestions forwarded to the UI
         if ((msg as any).type === "prompt_suggestion") {
+          const suggestionMsg = msg as Record<string, unknown>;
+          const suggestionText =
+            [suggestionMsg.suggestion, suggestionMsg.prompt, suggestionMsg.text]
+              .find((v): v is string => typeof v === "string") ?? null;
+          if (suggestionText) {
+            emitChatEvent(managed, {
+              type: "prompt_suggestion",
+              suggestion: suggestionText,
+              turnId,
+            });
+          }
           continue;
         }
       }
@@ -3281,15 +3295,6 @@ export function createAgentChatService(args: {
                 reuseExisting,
                 permissionMode: "full-auto",
               }),
-            listContextPacks,
-            fetchContextPack,
-            fetchMissionContext: async (missionId) => {
-              const result = await fetchContextPack({ scope: "mission", missionId, level: "standard" });
-              return {
-                content: result.content,
-                truncated: result.truncated,
-              };
-            },
           }));
         }
       }
@@ -3769,6 +3774,7 @@ export function createAgentChatService(args: {
           type: "subagent_started",
           taskId: itemId,
           description: String(item.description ?? item.title ?? "Delegated task"),
+          background: isBackgroundTask(item as Record<string, unknown>),
           turnId,
         });
       }
@@ -3781,6 +3787,144 @@ export function createAgentChatService(args: {
           turnId,
         });
       }
+      return;
+    }
+
+    // collabToolCall items → subagent events (Codex parallel agents)
+    if (itemType === "collabToolCall") {
+      const tool = String(item.tool ?? "");
+      const prompt = typeof item.prompt === "string" ? item.prompt : "";
+      const agentsStates = Array.isArray(item.agentsStates) ? item.agentsStates : [];
+      const newThreadId = typeof item.newThreadId === "string" ? item.newThreadId : null;
+
+      if (tool === "spawn_agent" && eventKind === "started") {
+        emitChatEvent(managed, {
+          type: "activity",
+          activity: "spawning_agent",
+          detail: prompt.slice(0, 80) || "Spawning parallel agent",
+          turnId,
+        });
+        emitChatEvent(managed, {
+          type: "subagent_started",
+          taskId: newThreadId ?? itemId,
+          description: prompt.slice(0, 120) || "Parallel agent",
+          background: isBackgroundTask(item as Record<string, unknown>),
+          turnId,
+        });
+      }
+
+      if ((tool === "send_input" || tool === "resume_agent") && eventKind === "completed") {
+        const receiverIds = Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds : [];
+        const targetId = typeof receiverIds[0] === "string" ? receiverIds[0] : itemId;
+        emitChatEvent(managed, {
+          type: "subagent_progress",
+          taskId: targetId,
+          summary: prompt || "Agent received input",
+          turnId,
+        });
+      }
+
+      if (tool === "wait" && eventKind === "completed") {
+        for (const agentState of agentsStates) {
+          if (!agentState || typeof agentState !== "object") continue;
+          const state = agentState as Record<string, unknown>;
+          const agentThreadId = typeof state.threadId === "string" ? state.threadId : itemId;
+          const summary = typeof state.summary === "string" ? state.summary
+            : typeof state.result === "string" ? state.result
+            : "";
+          const rawStatus = String(state.status ?? "completed");
+          const subagentStatus: "completed" | "failed" | "stopped" =
+            rawStatus === "failed" ? "failed"
+            : rawStatus === "stopped" ? "stopped"
+            : "completed";
+          emitChatEvent(managed, {
+            type: "subagent_result",
+            taskId: agentThreadId,
+            status: subagentStatus,
+            summary,
+            turnId,
+          });
+        }
+      }
+
+      if (tool === "close_agent" && eventKind === "completed") {
+        const receiverIds = Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds : [];
+        const targetId = typeof receiverIds[0] === "string" ? receiverIds[0] : itemId;
+        emitChatEvent(managed, {
+          type: "subagent_result",
+          taskId: targetId,
+          status: "stopped",
+          summary: "Agent closed",
+          turnId,
+        });
+      }
+
+      return;
+    }
+
+    // dynamicToolCall items → tool_call/tool_result events
+    if (itemType === "dynamicToolCall") {
+      const toolName = String(item.tool ?? "dynamic_tool");
+      if (eventKind === "started") {
+        emitChatEvent(managed, {
+          type: "activity",
+          activity: "tool_calling",
+          detail: toolName,
+          turnId,
+        });
+        emitChatEvent(managed, {
+          type: "tool_call",
+          tool: toolName,
+          args: item.arguments,
+          itemId,
+          turnId,
+        });
+      }
+      if (eventKind === "completed") {
+        const success = item.success !== false;
+        const contentItems = Array.isArray(item.contentItems) ? item.contentItems : [];
+        const resultText = contentItems
+          .map((ci: unknown) => {
+            if (typeof ci === "string") return ci;
+            if (ci && typeof ci === "object" && typeof (ci as Record<string, unknown>).text === "string") {
+              return (ci as Record<string, unknown>).text as string;
+            }
+            return "";
+          })
+          .filter(Boolean)
+          .join("\n");
+        emitChatEvent(managed, {
+          type: "tool_result",
+          tool: toolName,
+          result: resultText || (success ? "Completed" : "Failed"),
+          itemId,
+          turnId,
+          status: success ? "completed" : "failed",
+        });
+      }
+      return;
+    }
+
+    // webSearch items → web_search events
+    if (itemType === "webSearch") {
+      emitChatEvent(managed, {
+        type: "activity",
+        activity: "web_searching",
+        detail: String(item.query ?? "Searching the web"),
+        turnId,
+      });
+      let status: "running" | "completed" | "failed" = "running";
+      if (eventKind === "completed") {
+        status = String(item.status ?? "completed") === "failed" ? "failed" : "completed";
+      }
+      emitChatEvent(managed, {
+        type: "web_search",
+        query: String(item.query ?? ""),
+        action: typeof item.action === "string" ? item.action : undefined,
+        itemId,
+        turnId,
+        status,
+      });
       return;
     }
 
@@ -4060,6 +4204,54 @@ export function createAgentChatService(args: {
       return;
     }
 
+    if (method === "item/plan/delta") {
+      const delta = String((params.delta as string | undefined) ?? "");
+      if (!delta.length) return;
+      emitChatEvent(managed, {
+        type: "plan_text",
+        text: delta,
+        turnId: typeof params.turnId === "string" ? params.turnId : undefined,
+        itemId: typeof params.itemId === "string" ? params.itemId : undefined,
+      });
+      return;
+    }
+
+    if (method === "item/reasoning/summaryPartAdded") {
+      // Summary part boundary — no additional handling needed since we already
+      // merge reasoning deltas by turnId/itemId/summaryIndex.
+      return;
+    }
+
+    if (method === "item/autoApprovalReview/started") {
+      const targetItemId = String((params.targetItemId as string | undefined) ?? "");
+      if (targetItemId) {
+        emitChatEvent(managed, {
+          type: "auto_approval_review",
+          targetItemId,
+          reviewStatus: "started",
+          turnId: typeof params.turnId === "string" ? params.turnId : undefined,
+        });
+      }
+      return;
+    }
+
+    if (method === "item/autoApprovalReview/completed") {
+      const targetItemId = String((params.targetItemId as string | undefined) ?? "");
+      const action = typeof params.action === "string" ? params.action : undefined;
+      const review = typeof params.review === "string" ? params.review : undefined;
+      if (targetItemId) {
+        emitChatEvent(managed, {
+          type: "auto_approval_review",
+          targetItemId,
+          reviewStatus: "completed",
+          action,
+          review,
+          turnId: typeof params.turnId === "string" ? params.turnId : undefined,
+        });
+      }
+      return;
+    }
+
     // Log unhandled notification methods for debugging
     if (method) {
       logger.warn("agent_chat.codex_unhandled_notification", {
@@ -4317,6 +4509,7 @@ export function createAgentChatService(args: {
       permissionMode: claudePermissionMode as any,
       includePartialMessages: true,
       agentProgressSummaries: true,
+      promptSuggestions: true,
       maxBudgetUsd: chatConfig.sessionBudgetUsd ?? undefined,
       model: resolveClaudeCliModel(managed.session.model),
     };
@@ -4341,6 +4534,14 @@ export function createAgentChatService(args: {
         managed.session.computerUse,
       ) as any;
       if (canUseTool) opts.canUseTool = canUseTool as any;
+
+      // Enable MCP tool search for sessions with many MCP tools.
+      // When enabled, the SDK defers tool definitions and loads them on-demand
+      // via the ToolSearch tool, keeping the context window lean.
+      opts.env = {
+        ...opts.env as Record<string, string> | undefined,
+        ENABLE_TOOL_SEARCH: "auto",
+      };
     }
     const claudeDescriptor = resolveSessionModelDescriptor(managed.session);
     const claudeSupportsReasoning = claudeDescriptor?.capabilities.reasoning ?? true;
@@ -5714,6 +5915,18 @@ export function createAgentChatService(args: {
         ensureClaudeSessionRuntime(managed);
         prewarmClaudeV2Session(managed);
       }
+
+      // If V2 session is alive and model changed, notify SDK
+      if (managed.runtime?.kind === "claude" && managed.runtime.v2Session && modelId) {
+        const newCliModel = resolveClaudeCliModel(managed.session.model);
+        if (newCliModel && typeof (managed.runtime.v2Session as any).setModel === "function") {
+          try {
+            (managed.runtime.v2Session as any).setModel(newCliModel);
+          } catch (err) {
+            logger.warn("agent_chat.v2_set_model_failed", { sessionId: managed.session.id, error: String(err) });
+          }
+        }
+      }
     } else if (reasoningEffort !== undefined) {
       const prev = managed.session.reasoningEffort ?? null;
       managed.session.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
@@ -5788,84 +6001,6 @@ export function createAgentChatService(args: {
     // Ensure a Claude runtime exists and kick off pre-warming
     ensureClaudeSessionRuntime(managed);
     prewarmClaudeV2Session(managed);
-  };
-
-  const listContextPacks = async (args: { laneId?: string } = {}): Promise<import("../../../shared/types").ContextPackOption[]> => {
-    const packs: import("../../../shared/types").ContextPackOption[] = [
-      { scope: "project", label: "Project", description: "Live project context export", available: Boolean(packService) },
-    ];
-
-    if (args.laneId) {
-      packs.push(
-        { scope: "lane", label: "Lane", description: "Live lane context export", available: Boolean(packService), laneId: args.laneId },
-        { scope: "conflict", label: "Conflicts", description: "Live conflict context export", available: Boolean(packService), laneId: args.laneId },
-        { scope: "plan", label: "Plan", description: "Live plan context export", available: Boolean(packService), laneId: args.laneId }
-      );
-    }
-
-    packs.push(
-      {
-        scope: "feature",
-        label: "Feature",
-        description: "Feature-scoped export requires an explicit feature key",
-        available: Boolean(packService)
-      },
-      {
-        scope: "mission",
-        label: "Mission",
-        description: "Mission-scoped export requires an explicit mission selection",
-        available: Boolean(packService)
-      },
-    );
-
-    return packs;
-  };
-
-  const fetchContextPack = async (args: import("../../../shared/types").ContextPackFetchArgs): Promise<import("../../../shared/types").ContextPackFetchResult> => {
-    const MAX_CHARS = 50_000;
-    let content = "";
-    let truncated = false;
-    const level = args.level === "brief" ? "lite" : args.level === "detailed" ? "deep" : "standard";
-
-    try {
-      if (!packService) {
-        throw new Error("Live context export service is unavailable.");
-      }
-
-      const exportResult = await (async () => {
-        if (args.scope === "project") return await packService.getProjectExport({ level });
-        if (args.scope === "lane") {
-          if (!args.laneId?.trim()) throw new Error("Lane context requires laneId.");
-          return await packService.getLaneExport({ laneId: args.laneId.trim(), level });
-        }
-        if (args.scope === "conflict") {
-          if (!args.laneId?.trim()) throw new Error("Conflict context requires laneId.");
-          return await packService.getConflictExport({ laneId: args.laneId.trim(), level });
-        }
-        if (args.scope === "plan") {
-          if (!args.laneId?.trim()) throw new Error("Plan context requires laneId.");
-          return await packService.getPlanExport({ laneId: args.laneId.trim(), level });
-        }
-        if (args.scope === "feature") {
-          if (!args.featureKey?.trim()) throw new Error("Feature context requires featureKey.");
-          return await packService.getFeatureExport({ featureKey: args.featureKey.trim(), level });
-        }
-        if (!args.missionId?.trim()) throw new Error("Mission context requires missionId.");
-        return await packService.getMissionExport({ missionId: args.missionId.trim(), level });
-      })();
-
-      content = exportResult.content;
-      truncated = exportResult.truncated;
-
-      if (content.length > MAX_CHARS) {
-        content = content.slice(0, MAX_CHARS);
-        truncated = true;
-      }
-    } catch (error) {
-      content = `Failed to fetch ${args.scope} context: ${error instanceof Error ? error.message : String(error)}`;
-    }
-
-    return { scope: args.scope, content, truncated };
   };
 
   const listSubagents = ({ sessionId }: AgentChatSubagentListArgs): AgentChatSubagentSnapshot[] => {
@@ -6068,8 +6203,6 @@ export function createAgentChatService(args: {
     disposeAll,
     updateSession,
     warmupModel,
-    listContextPacks,
-    fetchContextPack,
     changePermissionMode,
     listSubagents,
     getSessionCapabilities,

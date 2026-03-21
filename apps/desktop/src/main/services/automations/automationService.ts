@@ -1398,9 +1398,6 @@ export function createAutomationService({
     if (raw === "provider-enabled" && (projectConfigService.get().effective.providerMode ?? "guest") === "guest") {
       return { status: "skipped", output: "Provider mode disabled." };
     }
-    if (action.type === "update-packs") {
-      return { status: "succeeded", output: "update-packs is deprecated; unified memory lifecycle runs automatically." };
-    }
     if (action.type === "predict-conflicts") {
       if (!conflictService) throw new Error("Conflict service unavailable");
       await conflictService.runPrediction(trigger.laneId ? { laneId: trigger.laneId } : {});

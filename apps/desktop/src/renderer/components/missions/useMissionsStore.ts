@@ -469,11 +469,15 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
     const localExternalMcp = isRecord(localPermissions.externalMcp) ? localPermissions.externalMcp : {};
     const effectiveExternalMcp = isRecord(effectivePermissions.externalMcp) ? effectivePermissions.externalMcp : {};
 
-    const rawPlannerProvider = readString(localOrchestrator.defaultPlannerProvider, effectiveOrchestrator.defaultPlannerProvider, "auto");
-    const plannerProvider = toPlannerProvider(rawPlannerProvider);
-
     const localOrcModel = isRecord(localOrchestrator.defaultOrchestratorModel) ? localOrchestrator.defaultOrchestratorModel : null;
     const effectiveOrcModel = isRecord(effectiveOrchestrator.defaultOrchestratorModel) ? effectiveOrchestrator.defaultOrchestratorModel : null;
+
+    // Legacy fallback: derive from deprecated defaultPlannerProvider if no orchestrator model
+    const rawLocal = localOrchestrator as Record<string, unknown>;
+    const rawEffective = effectiveOrchestrator as Record<string, unknown>;
+    const legacyPlannerProvider = toPlannerProvider(
+      readString(rawLocal.defaultPlannerProvider, rawEffective.defaultPlannerProvider, "auto")
+    );
 
     let orchestratorModel: ModelConfig;
     if (localOrcModel && typeof localOrcModel.modelId === "string") {
@@ -489,7 +493,7 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
         thinkingLevel: (effectiveOrcModel.thinkingLevel as import("../../../shared/types").ThinkingLevel) ?? undefined,
       };
     } else {
-      orchestratorModel = plannerProviderToModelConfig(plannerProvider);
+      orchestratorModel = plannerProviderToModelConfig(legacyPlannerProvider);
     }
 
     const permissionConfig: MissionPermissionConfig = {
@@ -511,7 +515,6 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
       missionSettingsDraft: {
         defaultOrchestratorModel: orchestratorModel,
         permissionConfig,
-        defaultPlannerProvider: plannerProvider,
         teammatePlanMode: toTeammatePlanMode(
           readString(localOrchestrator.teammatePlanMode, effectiveOrchestrator.teammatePlanMode, "auto")
         ),
@@ -546,7 +549,6 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
       const draft = state.missionSettingsDraft;
 
       const normalizedOrchestratorModel = draft.defaultOrchestratorModel ?? DEFAULT_ORCHESTRATOR_MODEL;
-      const normalizedPlannerProvider = modelConfigToPlannerProvider(normalizedOrchestratorModel);
       const normalizedCliMode = toCliMode(draft.cliMode);
       const normalizedCliSandbox = toCliSandboxPermissions(draft.cliSandboxPermissions);
       const normalizedInProcessMode = toInProcessMode(draft.inProcessMode);
@@ -554,12 +556,12 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
       const nextOrchestrator: Record<string, unknown> = {
         ...localOrchestrator,
         defaultOrchestratorModel: normalizedOrchestratorModel,
-        defaultPlannerProvider: normalizedPlannerProvider,
         teammatePlanMode: toTeammatePlanMode(draft.teammatePlanMode),
       };
       delete nextOrchestrator.requirePlanReview;
       delete nextOrchestrator.defaultDepthTier;
       delete nextOrchestrator.default_depth_tier;
+      delete nextOrchestrator.defaultPlannerProvider;
 
       const nextCli: Record<string, unknown> = {
         ...localCli,

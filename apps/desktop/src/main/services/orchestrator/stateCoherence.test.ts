@@ -122,7 +122,6 @@ async function createFixture() {
     db,
     projectId,
     projectRoot,
-    packService,
     ptyService,
     projectConfigService: null as any,
     aiIntegrationService: null as any,

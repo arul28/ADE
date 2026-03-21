@@ -61,9 +61,6 @@ function buildDeps(overrides: Partial<CtoOperatorToolDeps> = {}): CtoOperatorToo
     resumeChat: vi.fn().mockResolvedValue(baseSession),
     disposeChat: vi.fn().mockResolvedValue(undefined),
     ensureCtoSession: vi.fn().mockResolvedValue({ ...baseSession, id: "cto-session" }),
-    listContextPacks: vi.fn().mockResolvedValue([]),
-    fetchContextPack: vi.fn().mockResolvedValue({ scope: "mission", content: "ctx", truncated: false }),
-    fetchMissionContext: vi.fn().mockResolvedValue({ content: "ctx", truncated: false }),
     ...overrides,
   };
 }

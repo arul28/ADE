@@ -86,16 +86,6 @@ const APPROVED_CONFLICT_TARGETS: ConflictTarget[] = [
     columns: "run_id",
   },
   {
-    file: "src/main/services/packs/packService.ts",
-    table: "pack_heads",
-    columns: "project_id,pack_key",
-  },
-  {
-    file: "src/main/services/packs/packUtils.ts",
-    table: "packs_index",
-    columns: "pack_key",
-  },
-  {
     file: "src/main/services/processes/processService.ts",
     table: "process_runtime",
     columns: "project_id,lane_id,process_key",
