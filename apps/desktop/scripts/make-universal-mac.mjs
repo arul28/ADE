@@ -42,6 +42,7 @@ const outAppPath = resolveAbsolute(
 const mergeAsars = hasFlag("--merge-asars") || process.env.ADE_MERGE_ASARS === "1";
 const singleArchFiles = readFlag("--single-arch-files") ?? process.env.ADE_SINGLE_ARCH_FILES ?? undefined;
 const defaultX64ArchFiles = [
+  "Contents/Resources/app.asar.unpacked/node_modules/**/*darwin*/**/*",
   "Contents/Resources/app.asar.unpacked/node_modules/@anthropic-ai/claude-agent-sdk/vendor/**/*",
   "Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-darwin-*/**/*",
   "Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-*/**/*",
