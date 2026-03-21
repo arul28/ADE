@@ -1,0 +1,85 @@
+name: Prepare release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release. Accepts 1.2.3 or v1.2.3.
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.resolve.outputs.tag_name }}
+      target_sha: ${{ steps.resolve.outputs.target_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Resolve version and target commit
+        id: resolve
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="$(printf '%s' "$INPUT_VERSION" | tr -d '[:space:]')"
+          if [ -z "$version" ]; then
+            echo "::error::Version input cannot be empty."
+            exit 1
+          fi
+
+          case "$version" in
+            v*) tag_name="$version" ;;
+            *) tag_name="v$version" ;;
+          esac
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag_name" >/dev/null 2>&1; then
+            echo "::error::Tag $tag_name already exists on origin."
+            exit 1
+          fi
+
+          echo "tag_name=$tag_name" >> "$GITHUB_OUTPUT"
+          echo "target_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  validate:
+    needs: resolve
+    uses: ./.github/workflows/release-core.yml
+    with:
+      release_tag: ${{ needs.resolve.outputs.tag_name }}
+      target_ref: ${{ needs.resolve.outputs.target_sha }}
+      publish: false
+    secrets: inherit
+
+  create-tag:
+    needs:
+      - resolve
+      - validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ needs.resolve.outputs.tag_name }}
+          TARGET_SHA: ${{ needs.resolve.outputs.target_sha }}
+        run: |
+          gh api "repos/${{ github.repository }}/git/refs" \
+            -f ref="refs/tags/$TAG_NAME" \
+            -f sha="$TARGET_SHA"
+
+      - name: Dispatch official release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ needs.resolve.outputs.tag_name }}
+          TARGET_SHA: ${{ needs.resolve.outputs.target_sha }}
+        run: |
+          gh workflow run release.yml \
+            --ref main \
+            -f tag_name="$TAG_NAME" \
+            -f target_sha="$TARGET_SHA"
