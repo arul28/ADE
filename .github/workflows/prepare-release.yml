@@ -9,8 +9,7 @@ on:
         type: string
 
 permissions:
-  contents: write
-  actions: write
+  contents: read
 
 jobs:
   resolve:
@@ -56,30 +55,3 @@ jobs:
       target_ref: ${{ needs.resolve.outputs.target_sha }}
       publish: false
     secrets: inherit
-
-  create-tag:
-    needs:
-      - resolve
-      - validate
-    runs-on: ubuntu-latest
-    steps:
-      - name: Create release tag
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ needs.resolve.outputs.tag_name }}
-          TARGET_SHA: ${{ needs.resolve.outputs.target_sha }}
-        run: |
-          gh api "repos/${{ github.repository }}/git/refs" \
-            -f ref="refs/tags/$TAG_NAME" \
-            -f sha="$TARGET_SHA"
-
-      - name: Dispatch official release workflow
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ needs.resolve.outputs.tag_name }}
-          TARGET_SHA: ${{ needs.resolve.outputs.target_sha }}
-        run: |
-          gh workflow run release.yml \
-            --ref main \
-            -f tag_name="$TAG_NAME" \
-            -f target_sha="$TARGET_SHA"
