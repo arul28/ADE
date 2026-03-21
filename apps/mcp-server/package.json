@@ -12,7 +12,7 @@
   "dependencies": {
     "ai": "^6.0.94",
     "ai-sdk-provider-claude-code": "^3.4.2",
-    "node-cron": "^3.0.3",
+    "node-cron": "^4.2.1",
     "node-pty": "^1.1.0",
     "sql.js": "^1.13.0",
     "yaml": "^2.8.2"
