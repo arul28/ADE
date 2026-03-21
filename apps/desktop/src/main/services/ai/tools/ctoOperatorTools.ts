@@ -205,15 +205,20 @@ function resolveWorkspaceIdForLane(
   if (!deps.fileService) {
     throw new Error("File service is not available.");
   }
-  const workspaces = deps.fileService.listWorkspaces({ includeArchived: true });
+  const allWorkspaces = deps.fileService.listWorkspaces({ includeArchived: true });
   const explicitWorkspaceId = args.workspaceId?.trim() || "";
   if (explicitWorkspaceId) {
-    const workspace = workspaces.find((entry) => entry.id === explicitWorkspaceId) ?? null;
+    const workspace = allWorkspaces.find((entry) => entry.id === explicitWorkspaceId) ?? null;
     if (!workspace) throw new Error(`Workspace not found: ${explicitWorkspaceId}`);
     return workspace.id;
   }
   const laneId = args.laneId?.trim() || deps.defaultLaneId;
-  const laneWorkspace = workspaces.find((entry) => entry.laneId === laneId) ?? null;
+  // Prefer active workspaces; fall back to archived only if no active match.
+  const activeWorkspaces = deps.fileService.listWorkspaces({ includeArchived: false });
+  const laneWorkspace =
+    activeWorkspaces.find((entry) => entry.laneId === laneId) ??
+    allWorkspaces.find((entry) => entry.laneId === laneId) ??
+    null;
   if (laneWorkspace) return laneWorkspace.id;
   throw new Error(`Workspace not found for lane ${laneId}.`);
 }
@@ -492,8 +497,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.sendChatMessage = tool({
     description: "Send a message to an ADE chat session you are supervising.",
     inputSchema: z.object({
-      sessionId: z.string(),
-      text: z.string(),
+      sessionId: z.string().trim().min(1),
+      text: z.string().trim().min(1),
     }),
     execute: async ({ sessionId, text }) => {
       try {
@@ -508,7 +513,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.interruptChat = tool({
     description: "Interrupt a running ADE chat turn.",
     inputSchema: z.object({
-      sessionId: z.string(),
+      sessionId: z.string().trim().min(1),
     }),
     execute: async ({ sessionId }) => {
       try {
@@ -523,7 +528,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.resumeChat = tool({
     description: "Resume a previously ended ADE chat session so it can continue work.",
     inputSchema: z.object({
-      sessionId: z.string(),
+      sessionId: z.string().trim().min(1),
     }),
     execute: async ({ sessionId }) => {
       try {
@@ -548,7 +553,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.endChat = tool({
     description: "End and archive an ADE chat session.",
     inputSchema: z.object({
-      sessionId: z.string(),
+      sessionId: z.string().trim().min(1),
     }),
     execute: async ({ sessionId }) => {
       try {
@@ -563,7 +568,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.getChatStatus = tool({
     description: "Get the current status for an ADE chat session.",
     inputSchema: z.object({
-      sessionId: z.string(),
+      sessionId: z.string().trim().min(1),
     }),
     execute: async ({ sessionId }) => {
       const session = await deps.getChatStatus(sessionId);
@@ -1009,7 +1014,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.getPullRequestStatus = tool({
     description: "Inspect pull request status, checks, reviews, and comments through ADE's PR service.",
     inputSchema: z.object({
-      prId: z.string(),
+      prId: z.string().trim().min(1),
       includeChecks: z.boolean().optional().default(true),
       includeReviews: z.boolean().optional().default(true),
       includeComments: z.boolean().optional().default(false),
@@ -1042,8 +1047,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.commentOnPullRequest = tool({
     description: "Post a comment to a pull request through ADE's PR service.",
     inputSchema: z.object({
-      prId: z.string(),
-      body: z.string(),
+      prId: z.string().trim().min(1),
+      body: z.string().trim().min(1),
     }),
     execute: async ({ prId, body }) => {
       if (!deps.prService) return { success: false, error: "PR service is not available." };
@@ -1059,8 +1064,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.updatePullRequestTitle = tool({
     description: "Update a pull request title through ADE's PR service.",
     inputSchema: z.object({
-      prId: z.string(),
-      title: z.string(),
+      prId: z.string().trim().min(1),
+      title: z.string().trim().min(1),
     }),
     execute: async ({ prId, title }) => {
       if (!deps.prService) return { success: false, error: "PR service is not available." };
@@ -1076,8 +1081,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.updatePullRequestBody = tool({
     description: "Update a pull request body through ADE's PR service.",
     inputSchema: z.object({
-      prId: z.string(),
-      body: z.string(),
+      prId: z.string().trim().min(1),
+      body: z.string().min(1),
     }),
     execute: async ({ prId, body }) => {
       if (!deps.prService) return { success: false, error: "PR service is not available." };
@@ -1105,9 +1110,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.readWorkspaceFile = tool({
     description: "Read a file from an ADE workspace or lane without opening the renderer editor.",
     inputSchema: z.object({
-      workspaceId: z.string().optional(),
-      laneId: z.string().optional(),
-      path: z.string(),
+      workspaceId: z.string().trim().min(1).optional(),
+      laneId: z.string().trim().min(1).optional(),
+      path: z.string().trim().min(1),
     }),
     execute: async ({ workspaceId, laneId, path }) => {
       if (!deps.fileService) return { success: false, error: "File service is not available." };
@@ -1132,9 +1137,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.searchWorkspaceText = tool({
     description: "Search indexed text inside an ADE workspace or lane.",
     inputSchema: z.object({
-      workspaceId: z.string().optional(),
-      laneId: z.string().optional(),
-      query: z.string(),
+      workspaceId: z.string().trim().min(1).optional(),
+      laneId: z.string().trim().min(1).optional(),
+      query: z.string().trim().min(1),
       limit: z.number().int().positive().max(200).optional().default(50),
     }),
     execute: async ({ workspaceId, laneId, query, limit }) => {
@@ -1193,8 +1198,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.startManagedProcess = tool({
     description: "Start an ADE-managed lane process.",
     inputSchema: z.object({
-      laneId: z.string().optional(),
-      processId: z.string(),
+      laneId: z.string().trim().min(1).optional(),
+      processId: z.string().trim().min(1),
     }),
     execute: async ({ laneId, processId }) => {
       if (!deps.processService) return { success: false, error: "Process service is not available." };
@@ -1213,8 +1218,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.stopManagedProcess = tool({
     description: "Stop an ADE-managed lane process.",
     inputSchema: z.object({
-      laneId: z.string().optional(),
-      processId: z.string(),
+      laneId: z.string().trim().min(1).optional(),
+      processId: z.string().trim().min(1),
     }),
     execute: async ({ laneId, processId }) => {
       if (!deps.processService) return { success: false, error: "Process service is not available." };
@@ -1233,8 +1238,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.getManagedProcessLog = tool({
     description: "Read the bounded tail of an ADE-managed process log.",
     inputSchema: z.object({
-      laneId: z.string().optional(),
-      processId: z.string(),
+      laneId: z.string().trim().min(1).optional(),
+      processId: z.string().trim().min(1),
       maxBytes: z.number().int().positive().max(500_000).optional().default(40_000),
     }),
     execute: async ({ laneId, processId, maxBytes }) => {

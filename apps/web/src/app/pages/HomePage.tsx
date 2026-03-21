@@ -411,7 +411,7 @@ export function HomePage() {
                   Get started in 30 seconds
                 </h2>
                 <p className="mt-3 max-w-lg text-base text-muted-fg">
-                  Download the DMG, move ADE into Applications, and open. No account required.
+                  Download the latest macOS release, move ADE into Applications, and open. No account required.
                 </p>
               </Reveal>
 

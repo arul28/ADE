@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  CACHE_KEY: nm-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/mcp-server/package-lock.json','apps/web/package-lock.json') }}
+  CACHE_KEY: nm-linux-${{ hashFiles('apps/desktop/package-lock.json','apps/mcp-server/package-lock.json','apps/web/package-lock.json') }}
 
 jobs:
   # ── Stage 1: Install & cache ──────────────────────────────────────────

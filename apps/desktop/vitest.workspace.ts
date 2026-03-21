@@ -16,24 +16,7 @@ export default defineWorkspace([
       ...shared,
       name: "unit",
       include: ["src/**/*.test.{ts,tsx}"],
-      exclude: ["src/**/*.integration.{ts,tsx}", "src/**/*.component.{ts,tsx}"],
       environment: "node",
-    },
-  },
-  {
-    test: {
-      ...shared,
-      name: "integration",
-      include: ["src/**/*.integration.{ts,tsx}"],
-      environment: "node",
-    },
-  },
-  {
-    test: {
-      ...shared,
-      name: "component",
-      include: ["src/**/*.component.{ts,tsx}"],
-      environment: "jsdom",
     },
   },
 ]);

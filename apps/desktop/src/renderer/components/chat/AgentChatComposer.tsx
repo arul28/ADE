@@ -1018,7 +1018,7 @@ export function AgentChatComposer({
               const val = event.target.value;
               onDraftChange(val);
               if (slashPickerOpen && !val.startsWith("/")) { setSlashPickerOpen(false); setSlashQuery(""); }
-              if (val.startsWith("/")) { setSlashQuery(val.slice(1)); }
+              if (val.startsWith("/")) { setSlashQuery(val.slice(1)); setSlashCursor(0); }
             }}
             className={cn(
               "min-h-[40px] max-h-[160px] w-full resize-none bg-transparent px-4 py-3 text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/25",

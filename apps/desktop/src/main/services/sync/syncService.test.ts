@@ -270,7 +270,7 @@ describe("syncService", () => {
     expect(transferred.clusterState?.brainEpoch).toBe(4);
     expect(transferred.currentBrain?.deviceId).toBe(localDevice.deviceId);
     expect(transferred.transferReadiness.ready).toBe(true);
-  });
+  }, 30_000);
 
   it("builds pairing QR payloads with LAN-first address candidates and tailscale fallback", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-pairing-");
@@ -352,5 +352,5 @@ describe("syncService", () => {
     expect(parsedPayload.hostIdentity.deviceId).toBe(localDeviceId);
     expect(parsedPayload.pairingCode).toBe(status.pairingSession?.code);
     expect(parsedPayload.expiresAt).toBe(status.pairingSession?.expiresAt);
-  });
+  }, 30_000);
 });

@@ -666,11 +666,6 @@ export function SyncDevicesSection() {
                     <button type="button" style={primaryButton()} disabled={busy} onClick={handleConnect}>
                       Connect this desktop
                     </button>
-                    {(status.role === "viewer" || status.client.state === "connected") ? (
-                      <button type="button" style={outlineButton()} disabled={busy} onClick={handleDisconnect}>
-                        Disconnect this desktop
-                      </button>
-                    ) : null}
                   </div>
                 </>
               )}
