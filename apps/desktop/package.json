@@ -60,7 +60,7 @@
     "electron-updater": "^6.8.3",
     "framer-motion": "^12.34.2",
     "geist": "^1.7.0",
-    "lucide-react": "^0.563.0",
+    "lucide-react": "^0.577.0",
     "monaco-editor": "^0.55.1",
     "motion": "^12.34.2",
     "node-cron": "^3.0.3",
